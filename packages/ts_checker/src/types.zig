@@ -107,7 +107,11 @@ pub const TypeFlags = packed struct(u32) {
     /// `TypeFlagsEnumLiteral` (always paired with String/Number literal).
     is_enum_literal: bool = false,
 
-    _padding: u3 = 0,
+    /// Pool-owned generic declaration, distinct from its instantiated body.
+    /// References retain this identity and an argument list until expansion.
+    is_generic_definition: bool = false,
+
+    _padding: u2 = 0,
 };
 
 /// A union literal-type tag. Lives in the `LiteralData` payload of
@@ -142,8 +146,8 @@ pub const EnumLiteralInfo = struct {
 /// indexed by the same `TypeId` (SoA — see `Pool` below).
 pub const TypeHeader = struct {
     flags: TypeFlags,
-    /// Symbol that introduced this type (class / interface / type alias),
-    /// or 0 if synthetic.
+    /// Declaring HIR NodeId (not a StringId), or 0 if synthetic. The node
+    /// belongs to the source owner and must be remapped across type pools.
     symbol: u32,
     /// Index into the appropriate side-table column (literal_payloads,
     /// union_payloads, …). Zero is a valid "none" sentinel for the
@@ -317,6 +321,10 @@ pub const ObjectMember = struct {
     is_method: bool,
     visibility: MemberVisibility = .public,
     decl_node: hir.NodeId = hir.none_node_id,
+    /// Source-qualified declaring-class identity for imported non-public
+    /// members. This is metadata, not a property name or a local HIR node.
+    /// Zero means no imported origin; string IDs relocate with the type graph.
+    declaration_origin: StringId = 0,
 };
 
 pub const ObjectTypePayload = struct {
@@ -340,6 +348,15 @@ pub const InstantiationPayload = struct {
     args_len: u32,
 };
 
+pub const GenericDefinitionPayload = struct {
+    /// Declaration-scoped type parameter IDs in type_arg_pool.
+    parameters_start: u32,
+    parameters_len: u32,
+    /// Symbolic body. None is permitted only while an unpublished definition
+    /// is being assembled; it is not an empty object or an error-recovery type.
+    body: TypeId,
+};
+
 /// SoA pool of all interned types. The `Interner` (in `interner.zig`)
 /// owns this and exposes the `intern()` API.
 pub const Pool = struct {
@@ -361,6 +378,7 @@ pub const Pool = struct {
     signature_payloads: std.ArrayListUnmanaged(SignaturePayload),
     object_type_payloads: std.ArrayListUnmanaged(ObjectTypePayload),
     instantiation_payloads: std.ArrayListUnmanaged(InstantiationPayload),
+    generic_definition_payloads: std.ArrayListUnmanaged(GenericDefinitionPayload),
 
     /// Variable-arity element pools.
     member_pool: std.ArrayListUnmanaged(TypeId),
@@ -388,6 +406,7 @@ pub const Pool = struct {
             .signature_payloads = .empty,
             .object_type_payloads = .empty,
             .instantiation_payloads = .empty,
+            .generic_definition_payloads = .empty,
             .member_pool = .empty,
             .string_id_pool = .empty,
             .tuple_element_pool = .empty,
@@ -395,6 +414,7 @@ pub const Pool = struct {
             .signature_param_pool = .empty,
             .object_member_pool = .empty,
         };
+        errdefer p.deinit();
         // Reserve slot 0 in every payload column ("no payload").
         try p.literal_payloads.append(gpa, .{ .boolean_lit = false });
         try p.union_payloads.append(gpa, .{ .members_start = 0, .members_len = 0 });
@@ -410,6 +430,7 @@ pub const Pool = struct {
         try p.signature_payloads.append(gpa, std.mem.zeroes(SignaturePayload));
         try p.object_type_payloads.append(gpa, std.mem.zeroes(ObjectTypePayload));
         try p.instantiation_payloads.append(gpa, std.mem.zeroes(InstantiationPayload));
+        try p.generic_definition_payloads.append(gpa, std.mem.zeroes(GenericDefinitionPayload));
         try p.member_pool.append(gpa, Primitive.none);
         try p.string_id_pool.append(gpa, 0);
         try p.tuple_element_pool.append(gpa, .{ .type = Primitive.none, .is_optional = false, .is_rest = false });
@@ -457,6 +478,7 @@ pub const Pool = struct {
         self.signature_payloads.deinit(g);
         self.object_type_payloads.deinit(g);
         self.instantiation_payloads.deinit(g);
+        self.generic_definition_payloads.deinit(g);
         self.member_pool.deinit(g);
         self.string_id_pool.deinit(g);
         self.tuple_element_pool.deinit(g);
@@ -515,4 +537,14 @@ test "Pool: typeCount starts at first_dynamic" {
 
 test "TypeFlags: 4 bytes" {
     try T.expectEqual(@as(usize, 4), @sizeOf(TypeFlags));
+}
+
+test "Pool: initialization allocation failures release partial columns" {
+    const Probe = struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            var pool = try Pool.init(allocator);
+            defer pool.deinit();
+        }
+    };
+    try T.checkAllAllocationFailures(T.allocator, Probe.run, .{});
 }

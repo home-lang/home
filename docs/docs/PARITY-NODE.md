@@ -2,7 +2,7 @@
 
 Detailed per-module status for Home's `node:*` namespace. This is the
 drill-down view; the at-a-glance row is in the
-[README parity status](../README.md#nodejs-compatibility-packagesruntimesrcnode)
+[README parity status](/docs/PARITY-STATUS#nodejs-compatibility-packagesruntimesrcnode)
 section.
 
 > **Status:** The JS-callable bridge is live. A `require()` (CommonJS) of

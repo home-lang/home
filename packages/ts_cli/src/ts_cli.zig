@@ -26,6 +26,47 @@ const codes = ts_diagnostics.codes;
 
 pub const all_options = options_table.all_options;
 
+/// Resolve explicit tsconfig roots without changing their declared order.
+/// Unlike positional CLI files, relative entries belong to the config's
+/// directory. Both output lists remain caller-owned, including on OOM.
+pub fn appendProjectFilePaths(
+    gpa: std.mem.Allocator,
+    project_dir: []const u8,
+    files: []const []const u8,
+    inputs: *std.ArrayListUnmanaged([]const u8),
+    owned: *std.ArrayListUnmanaged([]u8),
+) !void {
+    try inputs.ensureUnusedCapacity(gpa, files.len);
+    try owned.ensureUnusedCapacity(gpa, files.len);
+    for (files) |file| {
+        const path = if (std.fs.path.isAbsolute(file))
+            try gpa.dupe(u8, file)
+        else
+            try std.fs.path.resolve(gpa, &.{ project_dir, file });
+        owned.appendAssumeCapacity(path);
+        inputs.appendAssumeCapacity(path);
+    }
+}
+
+test "CLI: explicit project roots resolve relative paths and preserve absolute paths and order" {
+    var inputs: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer inputs.deinit(std.testing.allocator);
+    var owned: std.ArrayListUnmanaged([]u8) = .empty;
+    defer {
+        for (owned.items) |path| std.testing.allocator.free(path);
+        owned.deinit(std.testing.allocator);
+    }
+    try appendProjectFilePaths(std.testing.allocator, "/repo/app", &.{
+        "src/first.ts", "../shared/second.ts", "/external/third.ts", "./src/last.ts",
+    }, &inputs, &owned);
+    try std.testing.expectEqual(@as(usize, 4), owned.items.len);
+    const expected = [_][]const u8{
+        "/repo/app/src/first.ts", "/repo/shared/second.ts", "/external/third.ts", "/repo/app/src/last.ts",
+    };
+    try std.testing.expectEqual(expected.len, inputs.items.len);
+    for (expected, inputs.items) |want, actual| try std.testing.expectEqualStrings(want, actual);
+}
+
 pub const ExitCode = enum(u8) {
     success = 0,
     type_errors = 1,

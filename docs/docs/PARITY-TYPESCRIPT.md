@@ -3,7 +3,7 @@
 Detailed per-feature status for Home's TypeScript frontend
 (`packages/ts_*`). This is the drill-down view; the at-a-glance
 section is in the
-[README parity status](../README.md#typescript-parity--home-tsc-vs-tsc--tsgo).
+[README parity status](/docs/PARITY-STATUS#typescript-parity--home-tsc-vs-tsc--tsgo).
 
 > **Headline:** 5,907 / 5,907 (100%) coarse, 5,907 / 5,907 (100%)
 > exact byte-for-byte against tsgo-generated conformance baselines.
@@ -212,7 +212,7 @@ component inference — 🟡 (`checkJsxGenericTagHasCorrectInferences`,
 🟢 Driver wires lex → parse → bind → check → emit end-to-end with
 multi-file program graph, parallel compile, source maps,
 tsc-compatible diagnostics, zig-dtsx fast path for `.d.ts`
-emission. CLI flag surface in [`packages/ts_cli`](../packages/ts_cli/).
+emission. CLI flag surface in [`packages/ts_cli`](https://github.com/home-lang/home/blob/main/packages/ts_cli/).
 
 ### JavaScript emit
 
@@ -292,7 +292,7 @@ and `--pretty` (ANSI colored with source-snippet excerpt).
 ### Diagnostic-code catalogue
 
 🟢 ~2,000 entries mirror the full upstream `diag(code, …)` table
-under [`packages/ts_diagnostics/src/ts_diagnostic_codes.zig`](../packages/ts_diagnostics/src/ts_diagnostic_codes.zig).
+under [`packages/ts_diagnostics/src/ts_diagnostic_codes.zig`](https://github.com/home-lang/home/blob/main/packages/ts_diagnostics/src/ts_diagnostic_codes.zig).
 Powers `home-lsp` hover-on-`TS1234`.
 
 ### Strict-mode flags
@@ -306,10 +306,10 @@ assignability), `useUnknownInCatchVariables` (TS18046),
 
 ## LSP
 
-See [README LSP coverage](../README.md#lsp--ide-coverage--home-lsp-vs-tsserver) for the
+See [README LSP coverage](/docs/PARITY-STATUS#lsp--ide-coverage--home-lsp-vs-tsserver) for the
 53 / ~70 wire methods routed (~76%). Canonical
 `SUPPORTED_METHODS` list lives in
-[`packages/ts_lsp_server/src/ts_lsp_server.zig`](../packages/ts_lsp_server/src/ts_lsp_server.zig).
+[`packages/ts_lsp_server/src/ts_lsp_server.zig`](https://github.com/home-lang/home/blob/main/packages/ts_lsp_server/src/ts_lsp_server.zig).
 
 ## Watch mode
 

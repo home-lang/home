@@ -317,7 +317,7 @@ Inspired by Rust's ownership system but simplified:
 
 ## Future Work
 
-See [TODO.md](../TODO.md) for detailed roadmap.
+See the [roadmap](/docs/ROADMAP-WEB-COMPETITIVE) for what is planned next.
 
 **High Priority**:
 
@@ -352,6 +352,6 @@ When adding new features:
 ## References
 
 - [Home Language Specification](./LANGUAGE.md) (TODO)
-- [TODO Roadmap](../TODO.md)
+- [Roadmap](/docs/ROADMAP-WEB-COMPETITIVE)
 - [Configuration Guide](./CONFIGURATION.md)
-- [Examples](../examples/)
+- [Examples](https://github.com/home-lang/home/blob/main/examples/)

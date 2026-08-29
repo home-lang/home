@@ -83,12 +83,105 @@ fn moduleIdFromPath(allocator: std.mem.Allocator, path: []const u8) ![]const u8 
     return out[0..w];
 }
 
+/// The register a constraint names, or null for an any-register class.
+/// `{dx}` and `={al}` name one; `r`, `=r`, `+r` do not.
+fn registerForConstraint(constraint: []const u8) ?[]const u8 {
+    // `{reg}` may be preceded by modifiers — `N{dx}` is written in this tree —
+    // so find the brace rather than requiring it at the front.
+    if (std.mem.indexOfScalar(u8, constraint, '{')) |open| {
+        if (std.mem.indexOfScalarPos(u8, constraint, open, '}')) |close| {
+            if (close > open + 1) return constraint[open + 1 .. close];
+        }
+    }
+    // Single-letter GCC register classes.
+    var c = constraint;
+    while (c.len > 0 and (c[0] == '=' or c[0] == '+' or c[0] == '&')) c = c[1..];
+    if (c.len == 1) {
+        return switch (c[0]) {
+            'a' => "rax",
+            'b' => "rbx",
+            'c' => "rcx",
+            'd' => "rdx",
+            'S' => "rsi",
+            'D' => "rdi",
+            else => null,
+        };
+    }
+    return null;
+}
+
+/// The name of `reg`'s enclosing register at the given width.
+///
+/// The template's mnemonic fixes the operand width — `cmpxchgl` takes a
+/// 32-bit register — so substituting a 64-bit name produces an instruction
+/// the assembler rejects. Sizes come from the operand's own Home type.
+fn sizedRegister(reg: []const u8, size: usize) []const u8 {
+    const full = fullRegister(reg);
+    const table = [_]struct { q: []const u8, d: []const u8, w: []const u8, b: []const u8 }{
+        .{ .q = "rax", .d = "eax", .w = "ax", .b = "al" },
+        .{ .q = "rbx", .d = "ebx", .w = "bx", .b = "bl" },
+        .{ .q = "rcx", .d = "ecx", .w = "cx", .b = "cl" },
+        .{ .q = "rdx", .d = "edx", .w = "dx", .b = "dl" },
+        .{ .q = "rsi", .d = "esi", .w = "si", .b = "sil" },
+        .{ .q = "rdi", .d = "edi", .w = "di", .b = "dil" },
+        .{ .q = "rbp", .d = "ebp", .w = "bp", .b = "bpl" },
+        .{ .q = "rsp", .d = "esp", .w = "sp", .b = "spl" },
+        .{ .q = "r8", .d = "r8d", .w = "r8w", .b = "r8b" },
+        .{ .q = "r9", .d = "r9d", .w = "r9w", .b = "r9b" },
+        .{ .q = "r10", .d = "r10d", .w = "r10w", .b = "r10b" },
+        .{ .q = "r11", .d = "r11d", .w = "r11w", .b = "r11b" },
+        .{ .q = "r12", .d = "r12d", .w = "r12w", .b = "r12b" },
+        .{ .q = "r13", .d = "r13d", .w = "r13w", .b = "r13b" },
+        .{ .q = "r14", .d = "r14d", .w = "r14w", .b = "r14b" },
+        .{ .q = "r15", .d = "r15d", .w = "r15w", .b = "r15b" },
+    };
+    for (table) |t| {
+        if (!std.mem.eql(u8, t.q, full)) continue;
+        return switch (size) {
+            1 => t.b,
+            2 => t.w,
+            4 => t.d,
+            else => t.q,
+        };
+    }
+    return reg;
+}
+
+/// The 64-bit register containing a named sub-register, so a value can be
+/// moved with one `movq` regardless of the width the template asks for.
+fn fullRegister(reg: []const u8) []const u8 {
+    const map = [_]struct { part: []const u8, full: []const u8 }{
+        .{ .part = "al", .full = "rax" },   .{ .part = "ax", .full = "rax" },
+        .{ .part = "eax", .full = "rax" },  .{ .part = "rax", .full = "rax" },
+        .{ .part = "bl", .full = "rbx" },   .{ .part = "bx", .full = "rbx" },
+        .{ .part = "ebx", .full = "rbx" },  .{ .part = "rbx", .full = "rbx" },
+        .{ .part = "cl", .full = "rcx" },   .{ .part = "cx", .full = "rcx" },
+        .{ .part = "ecx", .full = "rcx" },  .{ .part = "rcx", .full = "rcx" },
+        .{ .part = "dl", .full = "rdx" },   .{ .part = "dx", .full = "rdx" },
+        .{ .part = "edx", .full = "rdx" },  .{ .part = "rdx", .full = "rdx" },
+        .{ .part = "sil", .full = "rsi" },  .{ .part = "esi", .full = "rsi" },
+        .{ .part = "rsi", .full = "rsi" },  .{ .part = "dil", .full = "rdi" },
+        .{ .part = "edi", .full = "rdi" },  .{ .part = "rdi", .full = "rdi" },
+    };
+    for (map) |m| {
+        if (std.mem.eql(u8, m.part, reg)) return m.full;
+    }
+    return reg;
+}
+
 /// Names that must keep an unmangled symbol: they are named by hand-written
 /// assembly or by the linker script, which cannot know a module prefix.
+///
+/// `interrupt_dispatch` and `syscall_entry_dispatch` are called from the stubs in
+/// kernel/src/idt_stubs.s, which are written in assembly because an interrupt
+/// frame cannot be built in Home. Until a `link_name` attribute exists, a
+/// fixed name is the contract between the two.
 fn isBootEntryPoint(name: []const u8) bool {
     return std.mem.eql(u8, name, "kernel_main") or
         std.mem.eql(u8, name, "main") or
-        std.mem.eql(u8, name, "_start");
+        std.mem.eql(u8, name, "_start") or
+        std.mem.eql(u8, name, "interrupt_dispatch") or
+        std.mem.eql(u8, name, "syscall_entry_dispatch");
 }
 
 /// Prefix for module-variable symbols. Home keeps functions and variables in
@@ -221,9 +314,12 @@ fn sizeOfPrimitive(type_name: []const u8) ?usize {
         std.mem.eql(u8, type_name, "int") or std.mem.eql(u8, type_name, "uint")) return 8;
     // Pointers are word-sized whatever they point at.
     if (type_name.len > 0 and (type_name[0] == '*' or type_name[0] == '&')) return 8;
-    // A function type in a value position is a function pointer.
-    if (std.mem.startsWith(u8, type_name, "fn(") or
-        std.mem.startsWith(u8, type_name, "fn (")) return 8;
+    // A function type in a value position is a function pointer. Matched on
+    // the leading `fn` rather than an exact prefix, because the parser
+    // reconstructs an alias target's spelling and the exact punctuation that
+    // follows is not something this needs to depend on.
+    if (std.mem.startsWith(u8, type_name, "fn") and
+        (type_name.len == 2 or !std.ascii.isAlphanumeric(type_name[2]))) return 8;
     return null;
 }
 
@@ -501,6 +597,11 @@ pub const HomeKernelCodegen = struct {
     /// Import alias -> that module's symbol prefix, so `serial.writeChar()`
     /// can be lowered to the symbol serial.home actually defines.
     module_aliases: std.StringHashMap([]const u8),
+    /// Functions declared `extern`. Their symbols are defined outside Home —
+    /// by hand-written assembly or another object file — so they keep the name
+    /// as written at every reference site. Mangling them produced calls to
+    /// module-prefixed symbols that nothing defines.
+    extern_fns: std.StringHashMap(void),
     /// Frame slot holding the hidden destination pointer, for a function that
     /// returns an aggregate. 0 means this function does not return one.
     sret_slot: i32,
@@ -509,6 +610,9 @@ pub const HomeKernelCodegen = struct {
     current_return_type: []const u8,
     /// Interned `*T` names, so pointerTo can return a stable slice.
     pointer_type_names: std.StringHashMap([]const u8),
+    /// Type aliases: `type DriverInitFn = fn(): u32`. Resolved wherever a
+    /// written type is sized, so an alias is as good as the type it names.
+    type_aliases: std.StringHashMap([]const u8),
     /// Struct declarations from imported modules, awaiting layout alongside
     /// this file's own. Each carries the qualified name it is written as.
     pending_structs: std.ArrayList(PendingStruct),
@@ -547,6 +651,8 @@ pub const HomeKernelCodegen = struct {
         result.source_file = null;
         result.module_id = "";
         result.module_aliases = std.StringHashMap([]const u8).init(allocator);
+        result.extern_fns = std.StringHashMap(void).init(allocator);
+        result.type_aliases = std.StringHashMap([]const u8).init(allocator);
         result.pending_structs = .{ .items = &[_]PendingStruct{}, .capacity = 0 };
         result.pointer_type_names = std.StringHashMap([]const u8).init(allocator);
         result.sret_slot = 0;
@@ -573,6 +679,7 @@ pub const HomeKernelCodegen = struct {
         self.enum_values.deinit();
         self.imported_files.deinit();
         self.module_aliases.deinit();
+        self.type_aliases.deinit();
         self.pending_structs.deinit(self.allocator);
         self.pointer_type_names.deinit();
         self.import_arena.deinit();
@@ -800,6 +907,27 @@ pub const HomeKernelCodegen = struct {
         }
         if (self.structs.get(type_name)) |info| return info.size;
         if (self.enum_sizes.get(type_name)) |n| return n;
+        // An alias is as good as what it names. A struct field written as a
+        // type alias was otherwise unsizable, which makes the *whole* struct
+        // unlayoutable — core/driver_init.home lost every field of
+        // DriverDescriptor to one `init_fn: DriverInitFn`.
+        if (self.resolveAlias(type_name)) |target| return self.sizeOf(target);
+        return null;
+    }
+
+    /// Follow a type alias to the name it ultimately denotes, or null if this
+    /// is not an alias. Bounded, so a cycle (`type A = B` / `type B = A`)
+    /// cannot spin.
+    fn resolveAlias(self: *HomeKernelCodegen, name: []const u8) ?[]const u8 {
+        var current = name;
+        var hops: usize = 0;
+        while (hops < 8) : (hops += 1) {
+            const next = self.type_aliases.get(current) orelse {
+                return if (hops == 0) null else current;
+            };
+            if (std.mem.eql(u8, next, current)) return null;
+            current = next;
+        }
         return null;
     }
 
@@ -815,6 +943,7 @@ pub const HomeKernelCodegen = struct {
         if (split.alignment) |explicit| return explicit;
         const type_name = split.bare;
         if (self.structs.get(type_name)) |info| return info.alignment;
+        if (self.resolveAlias(type_name)) |target| return self.alignOf(target);
         if (self.arrayType(type_name)) |arr| return self.alignOf(arr.elem_type);
         if (isSliceType(type_name)) return 8;
         const size = self.sizeOf(type_name) orelse 8;
@@ -1131,6 +1260,7 @@ pub const HomeKernelCodegen = struct {
         const type_name = splitAlign(raw).bare;
         if (self.arrayType(type_name) != null) return true;
         if (isSliceType(type_name)) return true;
+        if (self.resolveAlias(type_name)) |target| return self.isStorageType(target);
         if (self.structs.get(type_name)) |info| {
             // A bitfield struct IS its backing integer, so one that fits in a
             // register is a value and is assigned like one — otherwise
@@ -1178,6 +1308,7 @@ pub const HomeKernelCodegen = struct {
 
     fn functionSymbol(self: *HomeKernelCodegen, name: []const u8) ![]const u8 {
         if (isBootEntryPoint(name) or self.module_id.len == 0) return name;
+        if (self.extern_fns.contains(name)) return name;
         return std.fmt.allocPrint(
             self.import_arena.allocator(),
             "{s}__{s}",
@@ -1229,8 +1360,36 @@ pub const HomeKernelCodegen = struct {
     }
 
     /// The declared type of an lvalue expression, or null if unknown.
+    /// The width a dereference of `operand` should load, from the pointee
+    /// type. Falls back to a machine word when the type is unknown or is an
+    /// aggregate, which is what the aggregate paths already assume.
+    fn derefLoadSize(self: *HomeKernelCodegen, operand: *ast.Expr) usize {
+        const ptr_type = self.typeOfLValue(operand) orelse return 8;
+        const pointee = pointeeType(ptr_type) orelse return 8;
+        return sizeOfPrimitive(pointee) orelse 8;
+    }
+
+    /// Whether a dereference of `operand` yields a signed value, so a narrow
+    /// load sign-extends rather than zero-extends.
+    fn derefIsSigned(self: *HomeKernelCodegen, operand: *ast.Expr) bool {
+        const ptr_type = self.typeOfLValue(operand) orelse return false;
+        const pointee = pointeeType(ptr_type) orelse return false;
+        return std.mem.eql(u8, pointee, "i8") or std.mem.eql(u8, pointee, "i16") or
+            std.mem.eql(u8, pointee, "i32") or std.mem.eql(u8, pointee, "isize");
+    }
+
     fn typeOfLValue(self: *HomeKernelCodegen, expr: *const ast.Expr) ?[]const u8 {
         switch (expr.*) {
+            // A cast states the type outright, and it is the only thing that
+            // does for `@as(*u32, @ptrFromInt(addr)).*` — the form used to
+            // read a hardware or bootloader structure. Without this the
+            // dereference falls back to a machine word and reads past the
+            // field.
+            .TypeCastExpr => |cast| return cast.target_type,
+            .ReflectExpr => |r| return switch (r.kind) {
+                .As, .PtrCast, .BitCast, .IntCast => r.target_type,
+                else => null,
+            },
             .Identifier => |id| {
                 if (self.local_types.get(id.name)) |t| return t;
                 if (self.global_vars.get(id.name)) |g| return g.type_name;
@@ -1319,7 +1478,12 @@ pub const HomeKernelCodegen = struct {
                 // A function's address is its label. Interrupt tables are
                 // built out of these.
                 if (self.declared_fns.contains(id.name)) {
-                    try self.print("    leaq {s}(%rip), %rax\n", .{id.name});
+                    // The address of a function is the address of its symbol,
+                    // which carries the module prefix like any other. Emitting
+                    // the bare name here produced a reference no object
+                    // defined — `&scheduler_tick` handed to a callback
+                    // registration linked against nothing.
+                    try self.print("    leaq {s}(%rip), %rax\n", .{try self.functionSymbol(id.name)});
                     return "fn()";
                 }
                 try self.print("    # ERROR: cannot take the address of {s}\n", .{id.name});
@@ -2135,6 +2299,365 @@ pub const HomeKernelCodegen = struct {
         }
     }
 
+    /// Call through a function pointer held in a struct field. Returns false
+    /// if the member is not such a field, so the caller can fall through to
+    /// its own diagnostic.
+    fn emitIndirectMemberCall(
+        self: *HomeKernelCodegen,
+        member: *const ast.MemberExpr,
+        args: []const *const ast.Expr,
+    ) anyerror!bool {
+        const base_type = self.typeOfLValue(member.object) orelse return false;
+        var owner = splitAlign(base_type).bare;
+        if (isPointerType(owner)) owner = pointeeType(owner) orelse owner;
+        const field = self.findField(owner, member.member) orelse return false;
+
+        // Only a function-typed field is callable.
+        const bare_field = splitAlign(field.type_name).bare;
+        const resolved = self.resolveAlias(bare_field) orelse bare_field;
+        if (!std.mem.startsWith(u8, resolved, "fn")) return false;
+
+        const arg_regs = [_][]const u8{ "rdi", "rsi", "rdx", "rcx", "r8", "r9" };
+        if (args.len > 0) {
+            var words: usize = 0;
+            var i: usize = args.len;
+            while (i > 0) {
+                i -= 1;
+                words += try self.pushArgument(args[i]);
+            }
+            for (0..words) |reg_idx| {
+                if (reg_idx >= arg_regs.len) break;
+                try self.print("    popq %{s}\n", .{arg_regs[reg_idx]});
+            }
+        }
+
+        // Load the pointer last, so evaluating the arguments cannot clobber it.
+        _ = try self.emitAddress(member.object) orelse return false;
+        if (field.offset > 0) {
+            try self.print("    addq ${d}, %rax\n", .{field.offset});
+        }
+        try self.writeAll("    movq (%rax), %rax\n");
+        try self.writeAll("    call *%rax\n");
+        return true;
+    }
+
+    /// Lower an inline-assembly block, marshalling its operands.
+    ///
+    /// Inputs are evaluated and placed where their constraints ask, the
+    /// template's `%[name]` and `%0`-style placeholders are replaced, and
+    /// register outputs are copied back out afterwards. Without this a block
+    /// like
+    ///
+    ///     asm volatile ("inb %[port], %[result]"
+    ///       : [result] "={al}" (result)
+    ///       : [port] "{dx}" (port))
+    ///
+    /// emitted nothing at all, and every port read in the kernel returned
+    /// whatever was in the stack slot.
+    ///
+    /// Constraints: `{reg}` and `={reg}` with an optional modifier prefix,
+    /// single-letter GCC register classes, `r` from a scratch pool, `m` for a
+    /// memory operand (the address is taken and the placeholder becomes
+    /// `(%reg)`), and a digit for a matching constraint, which reuses the
+    /// register of the operand it names.
+    fn emitInlineAsm(self: *HomeKernelCodegen, asm_node: ast.InlineAsm) anyerror!void {
+        if (asm_node.instruction.len == 0) return;
+
+        const arena = self.import_arena.allocator();
+
+        // No operands: emit as written, with GCC's `%%` escape reduced — this
+        // backend emits assembly directly, so a doubled percent is a literal.
+        if (asm_node.outputs.len == 0 and asm_node.inputs.len == 0) {
+            try self.printAsmText(try self.reducePercent(arena, asm_node.instruction));
+            return;
+        }
+
+        const Slot = struct {
+            op: ast.AsmOperand,
+            is_output: bool,
+            is_memory: bool,
+            reg: []const u8,
+            /// What replaces the placeholder: `%reg`, or `(%reg)` for memory.
+            text: []const u8,
+            /// Inputs, read-write operands, and matching constraints are
+            /// loaded before the instruction. Memory operands load an address.
+            loads: bool,
+            /// Register outputs are copied back after; memory outputs are
+            /// written by the instruction itself.
+            stores: bool,
+        };
+
+        const total = asm_node.outputs.len + asm_node.inputs.len;
+        var slots = try arena.alloc(Slot, total);
+
+        // Registers for operands whose constraint names no specific one.
+        // Chosen to avoid %rax, which every evaluation clobbers.
+        const scratch = [_][]const u8{ "r8", "r9", "r10", "r11", "r12", "r13" };
+        var next_scratch: usize = 0;
+
+        for (0..total) |i| {
+            const is_output = i < asm_node.outputs.len;
+            const op = if (is_output) asm_node.outputs[i] else asm_node.inputs[i - asm_node.outputs.len];
+
+            var c = op.constraint;
+            var read_write = false;
+            while (c.len > 0 and (c[0] == '=' or c[0] == '+' or c[0] == '&')) {
+                if (c[0] == '+') read_write = true;
+                c = c[1..];
+            }
+
+            // A digit names an earlier operand and shares its location.
+            if (c.len > 0 and std.ascii.isDigit(c[0])) {
+                const idx = std.fmt.parseInt(usize, c, 10) catch total;
+                if (idx >= i) {
+                    try self.print("    # ERROR: asm matching constraint \"{s}\" names no earlier operand\n", .{op.constraint});
+                    return;
+                }
+                slots[i] = .{
+                    .op = op,
+                    .is_output = is_output,
+                    .is_memory = slots[idx].is_memory,
+                    .reg = slots[idx].reg,
+                    .text = slots[idx].text,
+                    .loads = true,
+                    .stores = false,
+                };
+                continue;
+            }
+
+            const is_memory = c.len > 0 and c[0] == 'm';
+            const reg = if (is_memory) blk: {
+                if (next_scratch >= scratch.len) break :blk "";
+                const r = scratch[next_scratch];
+                next_scratch += 1;
+                break :blk r;
+            } else registerForConstraint(op.constraint) orelse blk: {
+                if (next_scratch >= scratch.len) break :blk "";
+                const r = scratch[next_scratch];
+                next_scratch += 1;
+                break :blk r;
+            };
+            if (reg.len == 0) {
+                try self.print("    # ERROR: too many register operands in asm\n", .{});
+                return;
+            }
+
+            slots[i] = .{
+                .op = op,
+                .is_output = is_output,
+                .is_memory = is_memory,
+                .reg = reg,
+                .text = if (is_memory)
+                    try std.fmt.allocPrint(arena, "(%{s})", .{fullRegister(reg)})
+                else
+                    try std.fmt.allocPrint(arena, "%{s}", .{sizedRegister(reg, self.asmOperandSize(op))}),
+                // A memory operand always needs its address, whichever
+                // direction it goes in.
+                .loads = is_memory or !is_output or read_write,
+                .stores = !is_memory and is_output,
+            };
+        }
+
+        // Evaluate everything that needs a value onto the stack first, then
+        // distribute. Evaluating straight into the target registers would let
+        // a later operand's own code generation clobber an earlier one.
+        var pushed: usize = 0;
+        for (slots) |slot| {
+            if (!slot.loads) continue;
+            if (slot.is_memory) {
+                _ = try self.emitAddress(slot.op.expr) orelse {
+                    try self.print("    # ERROR: asm memory operand has no address\n", .{});
+                    return;
+                };
+            } else {
+                try self.generateExpr(slot.op.expr);
+            }
+            try self.writeAll("    pushq %rax\n");
+            pushed += 1;
+        }
+        var remaining = pushed;
+        while (remaining > 0) : (remaining -= 1) {
+            // Pops come back in reverse, so walk the loading slots backwards.
+            var seen: usize = 0;
+            for (slots) |slot| {
+                if (!slot.loads) continue;
+                seen += 1;
+                if (seen != remaining) continue;
+                try self.print("    popq %{s}\n", .{fullRegister(slot.reg)});
+            }
+        }
+
+        // Substitute placeholders: named first, then positional.
+        var text: []const u8 = try arena.dupe(u8, asm_node.instruction);
+        for (slots) |slot| {
+            if (slot.op.name) |n| text = try self.substituteText(arena, text, n, slot.text);
+        }
+        for (slots, 0..) |slot, i| {
+            const pos = try std.fmt.allocPrint(arena, "{d}", .{i});
+            text = try self.substituteText(arena, text, pos, slot.text);
+        }
+        try self.printAsmText(try self.reducePercent(arena, text));
+
+        // Copy register outputs back to their destinations.
+        for (slots) |slot| {
+            if (!slot.stores) continue;
+            if (slot.op.expr.* == .NullLiteral) continue; // `-> T` names no destination
+
+            // Widen to the full register before storing. An instruction that
+            // writes a sub-register leaves the rest of the enclosing register
+            // alone — `inb %dx, %al` sets only %al — so copying the 64-bit
+            // register carries whatever the operand marshalling happened to
+            // leave in the upper bits. A u8 read back from a port then failed
+            // `c == 10` because the comparison sees all 64.
+            const osize = self.asmOperandSize(slot.op);
+            const signed = self.asmOperandIsSigned(slot.op);
+            if (osize < 8) {
+                const sub = sizedRegister(slot.reg, osize);
+                const insn = if (signed) switch (osize) {
+                    1 => "movsbq",
+                    2 => "movswq",
+                    4 => "movslq",
+                    else => unreachable,
+                } else switch (osize) {
+                    1 => "movzbq",
+                    2 => "movzwq",
+                    // A 32-bit mov zero-extends into the full register.
+                    4 => "movl",
+                    else => unreachable,
+                };
+                const dst = if (!signed and osize == 4) "eax" else "rax";
+                try self.print("    {s} %{s}, %{s}\n", .{ insn, sub, dst });
+            } else {
+                try self.print("    movq %{s}, %rax\n", .{fullRegister(slot.reg)});
+            }
+            if (slot.op.expr.* == .Identifier) {
+                const name = slot.op.expr.Identifier.name;
+                if (self.locals.get(name)) |offset| {
+                    try self.print("    movq %rax, {d}(%rbp)\n", .{offset});
+                    continue;
+                }
+                if (self.global_vars.get(name)) |g| {
+                    if (storeFor(g.size)) |st| {
+                        try self.print("    {s} %{s}, {s}(%rip)\n", .{ st.insn, st.reg, g.symbol });
+                        continue;
+                    }
+                }
+            }
+            try self.print("    # ERROR: asm output has no assignable destination\n", .{});
+        }
+    }
+
+    /// The width of an asm operand, from its own Home type. Falls back to a
+    /// machine word, which is what a register name without a suffix means.
+    fn asmOperandSize(self: *HomeKernelCodegen, op: ast.AsmOperand) usize {
+        // An explicit sub-register in the constraint settles it: `{al}` is a
+        // byte however the value is typed.
+        if (registerForConstraint(op.constraint)) |named| {
+            const full = fullRegister(named);
+            if (!std.mem.eql(u8, full, named)) {
+                if (std.mem.eql(u8, sizedRegister(named, 1), named)) return 1;
+                if (std.mem.eql(u8, sizedRegister(named, 2), named)) return 2;
+                if (std.mem.eql(u8, sizedRegister(named, 4), named)) return 4;
+            }
+        }
+        const t = self.typeOfLValue(op.expr) orelse return 8;
+        return sizeOfPrimitive(t) orelse 8;
+    }
+
+    /// Whether an asm operand's Home type is signed, so a narrow value read
+    /// back from a register sign-extends rather than zero-extends.
+    fn asmOperandIsSigned(self: *HomeKernelCodegen, op: ast.AsmOperand) bool {
+        const t = self.typeOfLValue(op.expr) orelse return false;
+        return std.mem.eql(u8, t, "i8") or std.mem.eql(u8, t, "i16") or
+            std.mem.eql(u8, t, "i32") or std.mem.eql(u8, t, "isize");
+    }
+
+    /// Replace every `%[name]` (or `%N` when `name` is a number) in `text`
+    /// with `replacement`.
+    fn substituteText(
+        self: *HomeKernelCodegen,
+        arena: std.mem.Allocator,
+        text: []const u8,
+        name: []const u8,
+        replacement: []const u8,
+    ) ![]const u8 {
+        _ = self;
+        const needle = if (name.len > 0 and std.ascii.isDigit(name[0]))
+            try std.fmt.allocPrint(arena, "%{s}", .{name})
+        else
+            try std.fmt.allocPrint(arena, "%[{s}]", .{name});
+        const count = std.mem.count(u8, text, needle);
+        if (count == 0) return text;
+        const out = try arena.alloc(u8, text.len - count * needle.len + count * replacement.len);
+        _ = std.mem.replace(u8, text, needle, replacement, out);
+        return out;
+    }
+
+    /// Emit an assembly template, one instruction per line.
+    ///
+    /// A multi-instruction block is written with `\n` separators inside the
+    /// string literal, and the lexeme reaches codegen with the escape
+    /// *unprocessed* — so `"pushfq\npopq %0"` would otherwise be emitted as a
+    /// single line containing a literal backslash, which the assembler
+    /// rejects. Translate the escapes and give each instruction its own line.
+    fn printAsmText(self: *HomeKernelCodegen, text: []const u8) !void {
+        var line_start: usize = 0;
+        var i: usize = 0;
+        var pending = false; // something was written on the current line
+        while (i < text.len) {
+            if (text[i] == '\\' and i + 1 < text.len and (text[i + 1] == 'n' or text[i + 1] == 't')) {
+                const kind = text[i + 1];
+                if (i > line_start) {
+                    if (!pending) try self.print("    ", .{});
+                    try self.print("{s}", .{text[line_start..i]});
+                    pending = true;
+                }
+                if (kind == 'n') {
+                    if (pending) try self.print("\n", .{});
+                    pending = false;
+                } else {
+                    if (!pending) try self.print("    ", .{});
+                    try self.print(" ", .{});
+                    pending = true;
+                }
+                i += 2;
+                line_start = i;
+                continue;
+            }
+            if (text[i] == '\n') {
+                if (i > line_start) {
+                    if (!pending) try self.print("    ", .{});
+                    try self.print("{s}", .{text[line_start..i]});
+                    pending = true;
+                }
+                if (pending) try self.print("\n", .{});
+                pending = false;
+                i += 1;
+                line_start = i;
+                continue;
+            }
+            i += 1;
+        }
+        if (line_start < text.len) {
+            if (!pending) try self.print("    ", .{});
+            try self.print("{s}", .{text[line_start..]});
+            pending = true;
+        }
+        if (pending) try self.print("\n", .{});
+    }
+
+    /// Reduce GCC's doubled-percent escape. In a C compiler's asm template
+    /// `%%` means a literal percent; this backend writes assembly directly, so
+    /// the doubling has to come back out or the assembler sees `%%cr3`.
+    fn reducePercent(self: *HomeKernelCodegen, arena: std.mem.Allocator, text: []const u8) ![]const u8 {
+        _ = self;
+        const count = std.mem.count(u8, text, "%%");
+        if (count == 0) return text;
+        const out = try arena.alloc(u8, text.len - count);
+        _ = std.mem.replace(u8, text, "%%", "%", out);
+        return out;
+    }
+
     /// Push one call argument, returning how many machine words it occupies.
     /// Pushes happen in reverse argument order, so within a slice the length
     /// is pushed first and the pointer second — leaving the pointer on top,
@@ -2358,6 +2881,26 @@ pub const HomeKernelCodegen = struct {
                     if (s2.else_block) |eb| try self.reserveLocals(eb.statements);
                 },
                 .WhileStmt => |s2| try self.reserveLocals(s2.body.statements),
+                // Loop bodies declare locals too. Only WhileStmt was walked,
+                // so a `let` inside a for or do-while got no frame slot and no
+                // recorded type — every later use of it was refused as an
+                // undefined variable or an untyped base, pointing at the use
+                // rather than at the declaration that was skipped.
+                .ForStmt => |s2| {
+                    // The iterator binding is a local of the loop as well.
+                    if (!self.locals.contains(s2.iterator)) {
+                        self.stack_offset -= 8;
+                        try self.locals.put(s2.iterator, self.stack_offset);
+                    }
+                    if (s2.index) |idx| {
+                        if (!self.locals.contains(idx)) {
+                            self.stack_offset -= 8;
+                            try self.locals.put(idx, self.stack_offset);
+                        }
+                    }
+                    try self.reserveLocals(s2.body.statements);
+                },
+                .DoWhileStmt => |s2| try self.reserveLocals(s2.body.statements),
                 .BlockStmt => |s2| try self.reserveLocals(s2.statements),
                 .ReturnStmt => |s2| {
                     if (s2.value) |v| try self.reserveLocalsInExpr(v);
@@ -2449,6 +2992,25 @@ pub const HomeKernelCodegen = struct {
         // be sized the *whole* struct is unlayoutable — not just the field.
         try self.collectImports(program, 0);
 
+        // Type aliases first: a struct field may be written as an alias, and
+        // an unsizable field makes the whole struct unlayoutable.
+        for (program.statements) |stmt| {
+            if (stmt == .TypeAliasDecl) {
+                const decl = stmt.TypeAliasDecl;
+                if (!self.type_aliases.contains(decl.name)) {
+                    try self.type_aliases.put(decl.name, decl.target_type);
+                }
+            }
+        }
+
+        // Extern names must be known before any call is lowered, since a call
+        // can precede the declaration in the file.
+        for (program.statements) |stmt| {
+            if (stmt == .FnDecl and stmt.FnDecl.is_extern) {
+                try self.extern_fns.put(stmt.FnDecl.name, {});
+            }
+        }
+
         try self.foldModuleConstants(program);
         try self.collectEnums(program);
         try self.layoutStructs(program);
@@ -2482,8 +3044,9 @@ pub const HomeKernelCodegen = struct {
     fn generateStmt(self: *HomeKernelCodegen, stmt: ast.Stmt) !void {
         switch (stmt) {
             .FnDecl => |func| {
-                // Forward declarations (issue #17) bind the name only.
-                if (func.is_forward_decl) return;
+                // Forward declarations (issue #17) bind the name only, and an
+                // extern names a symbol something else defines.
+                if (func.is_forward_decl or func.is_extern) return;
 
                 // Respect the `export` keyword. The previous heuristic — any
                 // name starting with "kernel_", plus "main" — both missed
@@ -2910,8 +3473,7 @@ pub const HomeKernelCodegen = struct {
                 try self.print("    movq ${d}, %rax\n", .{if (lit.value) @as(i64, 1) else @as(i64, 0)});
             },
             .InlineAsm => |asm_node| {
-                // Emit inline assembly instruction directly
-                try self.print("    {s}\n", .{asm_node.instruction});
+                try self.emitInlineAsm(asm_node);
             },
             .StringLiteral => |lit| {
                 // Intern by content: labels used to be the literal's pointer
@@ -2971,6 +3533,10 @@ pub const HomeKernelCodegen = struct {
                         } else if (self.symbol_table.lookupMemberSymbol(module_name, func_name)) |symbol| {
                             // A Zig module reached through FFI.
                             try self.generateFFICall(symbol, call.args);
+                        } else if (try self.emitIndirectMemberCall(member, call.args)) {
+                            // A function pointer held in a struct field —
+                            // `driver.init_fn()`. Driver tables and callback
+                            // records are built out of these.
                         } else {
                             try self.print("    # ERROR: unresolved call {s}.{s}\n", .{ module_name, func_name });
                         }
@@ -3133,6 +3699,29 @@ pub const HomeKernelCodegen = struct {
                 }
             },
             .IndexExpr, .MemberExpr => {
+                // `module.CONSTANT` is a compile-time value, not a field read.
+                // Imported constants are registered under their qualified name,
+                // but only the identifier path consulted that table — so a
+                // constant reached through its module alias was treated as a
+                // field of a value and refused.
+                if (expr.* == .MemberExpr) {
+                    const m = expr.MemberExpr;
+                    if (m.object.* == .Identifier) {
+                        const key = try std.fmt.allocPrint(
+                            self.import_arena.allocator(),
+                            "{s}.{s}",
+                            .{ m.object.Identifier.name, m.member },
+                        );
+                        if (self.globals.get(key)) |value| {
+                            try self.print("    movq ${d}, %rax\n", .{value});
+                            return;
+                        }
+                        if (self.enum_values.get(key)) |value| {
+                            try self.print("    movq ${d}, %rax\n", .{value});
+                            return;
+                        }
+                    }
+                }
                 // A bitfield member is a bit range inside an integer, not a
                 // value at a byte offset: load the whole backing integer,
                 // shift it down, and mask.
@@ -3210,7 +3799,28 @@ pub const HomeKernelCodegen = struct {
                         try self.writeAll("    sete %al\n");
                         try self.writeAll("    movzbq %al, %rax\n");
                     },
-                    .Deref => try self.writeAll("    movq (%rax), %rax\n"),
+                    .Deref => {
+                        // Load the pointee's width, not a machine word.
+                        // Reading eight bytes through a *u32 pulls in whatever
+                        // follows it: parse_boot_info_mb1 read Multiboot's
+                        // flags and mem_lower as a single value, and the
+                        // memory size printed empty.
+                        const size = self.derefLoadSize(unary.operand);
+                        const signed = self.derefIsSigned(unary.operand);
+                        if (signed and size < 8) {
+                            const insn = switch (size) {
+                                1 => "movsbq",
+                                2 => "movswq",
+                                4 => "movslq",
+                                else => unreachable,
+                            };
+                            try self.print("    {s} (%rax), %rax\n", .{insn});
+                        } else if (loadFor(size)) |ld| {
+                            try self.print("    {s} (%rax), %{s}\n", .{ ld.insn, ld.reg });
+                        } else {
+                            try self.writeAll("    movq (%rax), %rax\n");
+                        }
+                    },
                     else => {
                         try self.print("    # unsupported unary operator: {s}\n", .{@tagName(unary.op)});
                     },

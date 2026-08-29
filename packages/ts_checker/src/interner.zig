@@ -1,9 +1,9 @@
 //! Type interner — Phase 3 / Phase 5 of TS_PARITY_PLAN.
 //!
-//! Wraps the SoA `Pool` with structural-equality interning so two
-//! lookups for the same type return the same `TypeId`. Identity
-//! becomes `id_a == id_b`, the foundation for the relation cache
-//! key (§5.4).
+//! Wraps the SoA `Pool` with structural-equality interning for immutable
+//! type keys. Objects, callable signatures, and declaration-scoped type
+//! parameters retain distinct identities. TypeIds key the relation cache;
+//! different identities can still be structurally compatible.
 //!
 //! Phase 5.A.7 introduces 64-shard lock striping for the dedup
 //! tables. Each shard owns its own `TypeKey → TypeId` map, key arena,
@@ -17,9 +17,8 @@
 //! retain their numeric ids and every existing `pool.headers.items[id]`
 //! call site keeps working unchanged.
 //!
-//! Verified architectural advantage: tsgo has no global type interner
-//! (Appendix D.2). Identity comparisons in tsgo require structural
-//! recursion through the relation cache; in Home they are O(1).
+//! Equal TypeIds provide a constant-time identity check. Distinct types
+//! require the relation engine to determine structural compatibility.
 
 const std = @import("std");
 const types = @import("types.zig");
@@ -139,16 +138,6 @@ pub const TypeKey = union(Kind) {
         origin: TypeId,
         args: []const TypeId,
     },
-    /// Function signature: `(p1: T1, p2: T2) => R` — `params`
-    /// captures the parameter type ids in declaration order. Explicit
-    /// `this` parameters are keyed separately from ordinary params.
-    signature: struct {
-        params: []const TypeId,
-        return_type: TypeId,
-        is_construct: bool,
-        is_abstract_construct: bool = false,
-        this_type: TypeId = types.Primitive.none,
-    },
 
     pub const Kind = enum(u8) {
         string_lit,
@@ -167,12 +156,11 @@ pub const TypeKey = union(Kind) {
         tuple,
         type_parameter,
         instantiation,
-        signature,
     };
 
     pub fn hash(self: TypeKey) u64 {
         var hasher = std.hash.Wyhash.init(0xC73C73C73C73C73C);
-        hasher.update(&[_]u8{@intFromEnum(@as(Kind, self))});
+        hasher.update(&[_]u8{@backingInt(@as(Kind, self))});
         switch (self) {
             .string_lit => |id| hasher.update(std.mem.asBytes(&id)),
             .number_lit => |bits| hasher.update(std.mem.asBytes(&bits)),
@@ -181,7 +169,7 @@ pub const TypeKey = union(Kind) {
             .enum_lit => |e| {
                 hasher.update(std.mem.asBytes(&e.enum_name));
                 hasher.update(std.mem.asBytes(&e.member_name));
-                hasher.update(&[_]u8{@intFromEnum(@as(types.LiteralTag, e.value))});
+                hasher.update(&[_]u8{@backingInt(@as(types.LiteralTag, e.value))});
                 switch (e.value) {
                     .string_lit => |sid| hasher.update(std.mem.asBytes(&sid)),
                     .number_lit => |bits| hasher.update(std.mem.asBytes(&bits)),
@@ -201,8 +189,8 @@ pub const TypeKey = union(Kind) {
             .mapped => |m| {
                 hasher.update(std.mem.asBytes(&m.constraint));
                 hasher.update(std.mem.asBytes(&m.template));
-                hasher.update(std.mem.asBytes(&@intFromEnum(m.readonly)));
-                hasher.update(std.mem.asBytes(&@intFromEnum(m.optional)));
+                hasher.update(std.mem.asBytes(&@backingInt(m.readonly)));
+                hasher.update(std.mem.asBytes(&@backingInt(m.optional)));
             },
             .indexed_access => |ia| {
                 hasher.update(std.mem.asBytes(&ia.object));
@@ -215,7 +203,7 @@ pub const TypeKey = union(Kind) {
                 for (tl.types) |t| hasher.update(std.mem.asBytes(&t));
             },
             .string_mapping => |sm| {
-                hasher.update(&[_]u8{@intFromEnum(sm.kind)});
+                hasher.update(&[_]u8{@backingInt(sm.kind)});
                 hasher.update(std.mem.asBytes(&sm.inner));
             },
             .tuple => |elems| {
@@ -230,19 +218,12 @@ pub const TypeKey = union(Kind) {
                 hasher.update(std.mem.asBytes(&tp.name));
                 hasher.update(std.mem.asBytes(&tp.constraint));
                 hasher.update(std.mem.asBytes(&tp.default));
-                hasher.update(&[_]u8{@intFromEnum(tp.variance)});
+                hasher.update(&[_]u8{@backingInt(tp.variance)});
                 hasher.update(&[_]u8{@intFromBool(tp.is_const)});
             },
             .instantiation => |inst| {
                 hasher.update(std.mem.asBytes(&inst.origin));
                 for (inst.args) |a| hasher.update(std.mem.asBytes(&a));
-            },
-            .signature => |sig| {
-                for (sig.params) |p| hasher.update(std.mem.asBytes(&p));
-                hasher.update(std.mem.asBytes(&sig.return_type));
-                hasher.update(&[_]u8{@intFromBool(sig.is_construct)});
-                hasher.update(&[_]u8{@intFromBool(sig.is_abstract_construct)});
-                hasher.update(std.mem.asBytes(&sig.this_type));
             },
         }
         return hasher.final();
@@ -317,14 +298,6 @@ pub const TypeKey = union(Kind) {
             .instantiation => |a| {
                 const b = other.instantiation;
                 return a.origin == b.origin and std.mem.eql(TypeId, a.args, b.args);
-            },
-            .signature => |a| {
-                const b = other.signature;
-                return a.is_construct == b.is_construct and
-                    a.is_abstract_construct == b.is_abstract_construct and
-                    a.return_type == b.return_type and
-                    a.this_type == b.this_type and
-                    std.mem.eql(TypeId, a.params, b.params);
             },
         };
     }
@@ -409,6 +382,7 @@ pub const Interner = struct {
             .pool = try Pool.init(gpa),
             .shards = undefined,
         };
+        errdefer self.pool.deinit();
         // Pre-reserve generous header capacity so concurrent readers
         // never observe a reallocation in flight.
         try self.pool.headers.ensureTotalCapacity(gpa, POOL_INITIAL_CAPACITY);
@@ -572,6 +546,90 @@ pub const Interner = struct {
     pub fn internKeyof(self: *Interner, operand: TypeId) !TypeId {
         const key: TypeKey = .{ .keyof = operand };
         return try self.internKey(key, .{ .is_keyof = true });
+    }
+
+    pub fn internTupleType(self: *Interner, elements: []const types.TupleElement) !TypeId {
+        return self.internOwnedGraphKey(.{ .tuple = elements }, .{ .is_tuple = true });
+    }
+
+    pub fn internInstantiation(self: *Interner, origin: TypeId, args: []const TypeId) !TypeId {
+        return self.internOwnedGraphKey(.{ .instantiation = .{ .origin = origin, .args = args } }, .{ .is_instantiation = true });
+    }
+
+    /// Reserve a declaration identity before constructing its symbolic body.
+    /// Recursive references may point at it during construction, but callers
+    /// must complete the definition before exposing the graph to consumers.
+    /// Unlike structural keys, separate declarations must never deduplicate.
+    pub fn reserveGenericDefinition(self: *Interner) !TypeId {
+        self.pool_mu.lock();
+        defer self.pool_mu.unlock();
+        try self.pool.generic_definition_payloads.ensureUnusedCapacity(self.gpa, 1);
+        try self.pool.headers.ensureUnusedCapacity(self.gpa, 1);
+        const payload: u32 = @intCast(self.pool.generic_definition_payloads.items.len);
+        const id = self.pool.typeCount();
+        self.pool.generic_definition_payloads.appendAssumeCapacity(.{ .parameters_start = 0, .parameters_len = 0, .body = Primitive.none });
+        self.pool.headers.appendAssumeCapacity(.{ .flags = .{ .is_generic_definition = true }, .symbol = 0, .payload = payload });
+        return id;
+    }
+
+    /// With exclusive ownership of the unpublished definition, complete once,
+    /// publishing parameters and body together after allocation
+    /// succeeds. Parameters are identities, not names, and the pool owns them.
+    pub fn completeGenericDefinition(self: *Interner, definition: TypeId, parameters: []const TypeId, body: TypeId) error{ OutOfMemory, InvalidTypeGraph }!void {
+        const current = self.genericDefinition(definition) orelse return error.InvalidTypeGraph;
+        if (current.body != Primitive.none or body == Primitive.none or body >= self.pool.typeCount()) return error.InvalidTypeGraph;
+        for (parameters, 0..) |parameter, i| {
+            if (parameter >= self.pool.typeCount()) return error.InvalidTypeGraph;
+            const flags = self.pool.flagsOf(parameter);
+            if (!flags.is_type_parameter or flags.is_union or flags.is_intersection) return error.InvalidTypeGraph;
+            if (std.mem.indexOfScalar(TypeId, parameters[0..i], parameter) != null) return error.InvalidTypeGraph;
+        }
+        // The caller may borrow a slice from this pool. Snapshot it before a
+        // reserve can relocate type_arg_pool; a failed allocation publishes no
+        // parameter slice and leaves the definition safely retryable.
+        const owned = try self.gpa.dupe(TypeId, parameters);
+        defer self.gpa.free(owned);
+        self.pool_mu.lock();
+        defer self.pool_mu.unlock();
+        try self.pool.type_arg_pool.ensureUnusedCapacity(self.gpa, owned.len);
+        const start: u32 = @intCast(self.pool.type_arg_pool.items.len);
+        self.pool.type_arg_pool.appendSliceAssumeCapacity(owned);
+        self.pool.generic_definition_payloads.items[self.pool.payloadOf(definition)] = .{
+            .parameters_start = if (owned.len == 0) 0 else start,
+            .parameters_len = @intCast(owned.len),
+            .body = body,
+        };
+    }
+
+    pub fn genericDefinition(self: *const Interner, id: TypeId) ?types.GenericDefinitionPayload {
+        if (id >= self.pool.typeCount()) return null;
+        const flags = self.pool.flagsOf(id);
+        if (!flags.is_generic_definition or flags.is_union or flags.is_intersection) return null;
+        const index = self.pool.payloadOf(id);
+        if (index == 0 or index >= self.pool.generic_definition_payloads.items.len) return null;
+        return self.pool.generic_definition_payloads.items[index];
+    }
+
+    // These variable-length keys must own their slices just like unions,
+    // signatures, and template literals; callers may release their buffers.
+    fn internOwnedGraphKey(self: *Interner, key: TypeKey, flags: types.TypeFlags) !TypeId {
+        const shard = &self.shards[shardIndexFor(key.hash())];
+        shard.mu.lockShared();
+        if (shard.table.getContext(key, KeyHashCtx{})) |id| {
+            shard.mu.unlockShared();
+            return id;
+        }
+        shard.mu.unlockShared();
+        shard.mu.lock();
+        defer shard.mu.unlock();
+        if (shard.table.getContext(key, KeyHashCtx{})) |id| return id;
+        const allocator = shard.key_arena.allocator();
+        const owned: TypeKey = switch (key) {
+            .tuple => |elements| .{ .tuple = try allocator.dupe(types.TupleElement, elements) },
+            .instantiation => |value| .{ .instantiation = .{ .origin = value.origin, .args = try allocator.dupe(TypeId, value.args) } },
+            else => unreachable,
+        };
+        return self.publishKeyLocked(shard, owned, flags);
     }
 
     pub fn internTemplateLiteral(self: *Interner, texts: []const StringId, type_parts: []const TypeId) !TypeId {
@@ -785,9 +843,9 @@ pub const Interner = struct {
         return tp.constraint;
     }
 
-    /// Intern a function signature type: `(p1: T1, p2: T2) => R`.
-    /// `param_types` is consumed via dupe; caller may free its
-    /// original copy.
+    /// Create a distinct function signature: `(p1: T1, p2: T2) => R`.
+    /// Parameter storage is copied. Signatures carry separately attached
+    /// semantic metadata and must not be deduplicated by erased shape.
     pub fn internSignature(self: *Interner, param_types: []const TypeId, return_type: TypeId, is_construct: bool) !TypeId {
         return try self.internSignatureWithAbstract(param_types, return_type, is_construct, false);
     }
@@ -816,37 +874,53 @@ pub const Interner = struct {
         is_abstract_construct: bool,
         this_type: TypeId,
     ) !TypeId {
-        const probe: TypeKey = .{ .signature = .{
-            .params = param_types,
+        // Signatures, like declaration-scoped objects, have identity beyond
+        // their erased parameter/return shape. Predicates, rest/optional
+        // parameters, generics and source provenance are attached by the
+        // checker after creation. Sharing a TypeId here lets one callable's
+        // metadata change another's behavior. Structural compatibility is
+        // the relation engine's job, not proof that these owners are equal.
+        self.pool_mu.lock();
+        defer self.pool_mu.unlock();
+        // Rebuilding a signature often borrows signatureParams from this
+        // very column. Preserve its offset before reserve can relocate it.
+        const borrowed_offset: ?usize = blk: {
+            const existing = self.pool.type_arg_pool.items;
+            if (param_types.len == 0 or param_types.len > existing.len) break :blk null;
+            const first = @intFromPtr(existing.ptr);
+            const input = @intFromPtr(param_types.ptr);
+            if (input < first) break :blk null;
+            const bytes = input - first;
+            if (bytes % @sizeOf(TypeId) != 0) break :blk null;
+            const offset = bytes / @sizeOf(TypeId);
+            break :blk if (offset <= existing.len - param_types.len) offset else null;
+        };
+        // Reserve every column before publishing any lengths. Failed
+        // allocation may retain capacity but cannot expose a partial type.
+        try self.pool.type_arg_pool.ensureUnusedCapacity(self.gpa, param_types.len);
+        try self.pool.signature_payloads.ensureUnusedCapacity(self.gpa, 1);
+        try self.pool.headers.ensureUnusedCapacity(self.gpa, 1);
+        const start: u32 = @intCast(self.pool.type_arg_pool.items.len);
+        const payload: u32 = @intCast(self.pool.signature_payloads.items.len);
+        const id: TypeId = @intCast(self.pool.headers.items.len);
+        const parameters = if (borrowed_offset) |offset|
+            self.pool.type_arg_pool.items[offset..][0..param_types.len]
+        else
+            param_types;
+        self.pool.type_arg_pool.appendSliceAssumeCapacity(parameters);
+        self.pool.signature_payloads.appendAssumeCapacity(.{
+            .type_params_start = 0,
+            .type_params_len = 0,
+            .params_start = start,
+            .params_len = @intCast(param_types.len),
             .return_type = return_type,
             .is_construct = is_construct,
             .is_abstract_construct = is_abstract_construct and is_construct,
+            .has_this_type = this_type != types.Primitive.none,
             .this_type = this_type,
-        } };
-        const h = probe.hash();
-        const shard_idx = shardIndexFor(h);
-        const shard = &self.shards[shard_idx];
-
-        shard.mu.lockShared();
-        if (shard.table.getContext(probe, KeyHashCtx{})) |found| {
-            shard.mu.unlockShared();
-            return found;
-        }
-        shard.mu.unlockShared();
-
-        shard.mu.lock();
-        defer shard.mu.unlock();
-        if (shard.table.getContext(probe, KeyHashCtx{})) |found| return found;
-
-        const owned = try shard.key_arena.allocator().dupe(TypeId, param_types);
-        const owned_key: TypeKey = .{ .signature = .{
-            .params = owned,
-            .return_type = return_type,
-            .is_construct = is_construct,
-            .is_abstract_construct = is_abstract_construct and is_construct,
-            .this_type = this_type,
-        } };
-        return try self.publishKeyLocked(shard, owned_key, .{ .is_signature = true });
+        });
+        self.pool.headers.appendAssumeCapacity(.{ .flags = .{ .is_signature = true }, .symbol = 0, .payload = payload });
+        return id;
     }
 
     /// Look up the return type of a signature TypeId. Returns null
@@ -882,6 +956,21 @@ pub const Interner = struct {
     /// `objectMember(id, name)` to get a property's type.
     pub fn internObjectType(self: *Interner, members: []const types.ObjectMember) !TypeId {
         return self.internObjectTypeWithIndex(members, types.Primitive.none, types.Primitive.none);
+    }
+
+    /// Complete a fresh, unpublished empty object. Reserving object identities
+    /// before filling their members permits cyclic module namespace graphs.
+    /// The caller must own the object exclusively until the graph is complete.
+    pub fn completeFreshObjectType(self: *Interner, id: TypeId, members: []const types.ObjectMember) !void {
+        self.pool_mu.lock();
+        defer self.pool_mu.unlock();
+        std.debug.assert(self.pool.flagsOf(id).is_object_type);
+        const index = self.pool.payloadOf(id);
+        std.debug.assert(self.pool.object_type_payloads.items[index].members_len == 0);
+        const start: u32 = @intCast(self.pool.object_member_pool.items.len);
+        try self.pool.object_member_pool.appendSlice(self.gpa, members);
+        self.pool.object_type_payloads.items[index].members_start = start;
+        self.pool.object_type_payloads.items[index].members_len = @intCast(members.len);
     }
 
     /// Like `internObjectType` but also wires `string`-key and
@@ -1026,9 +1115,9 @@ pub const Interner = struct {
     /// owning shard, takes the read lock for an optimistic dedup
     /// probe, and falls through to the write lock + Pool append on a
     /// miss. For keys whose payload contains caller-owned slices
-    /// (union, intersection, template_literal, signature), prefer the
+    /// (union, intersection, template_literal), prefer the
     /// dedicated `internUnion` / `internIntersection` /
-    /// `internTemplateLiteral` / `internSignature` entry points which
+    /// `internTemplateLiteral` entry points which
     /// dupe the slice into the shard arena before publishing.
     fn internKey(self: *Interner, key: TypeKey, flags: types.TypeFlags) !TypeId {
         const h = key.hash();
@@ -1223,23 +1312,6 @@ pub const Interner = struct {
                 });
                 break :blk idx;
             },
-            .signature => |sig| blk: {
-                const start: u32 = @intCast(self.pool.type_arg_pool.items.len);
-                try self.pool.type_arg_pool.appendSlice(self.gpa, sig.params);
-                const idx: u32 = @intCast(self.pool.signature_payloads.items.len);
-                try self.pool.signature_payloads.append(self.gpa, .{
-                    .type_params_start = 0,
-                    .type_params_len = 0,
-                    .params_start = start,
-                    .params_len = @intCast(sig.params.len),
-                    .return_type = sig.return_type,
-                    .is_construct = sig.is_construct,
-                    .is_abstract_construct = sig.is_abstract_construct,
-                    .has_this_type = sig.this_type != types.Primitive.none,
-                    .this_type = sig.this_type,
-                });
-                break :blk idx;
-            },
         };
         const id: TypeId = @intCast(self.pool.headers.items.len);
         try self.pool.headers.append(self.gpa, .{
@@ -1371,6 +1443,75 @@ pub const Interner = struct {
 // =============================================================================
 
 const T = std.testing;
+
+test "interner: generic definitions own parameter identities and recursive reference graphs" {
+    var i = try Interner.init(T.allocator);
+    defer i.deinit();
+    const parameter = try i.internFreshTypeParameterWithVariance(17, Primitive.none, Primitive.none, .covariant);
+    const other_parameter = try i.internFreshTypeParameterWithVariance(17, Primitive.none, Primitive.none, .covariant);
+    const definition = try i.reserveGenericDefinition();
+    const other = try i.reserveGenericDefinition();
+    try T.expect(definition != other);
+    try T.expect(!i.pool.flagsOf(definition).is_object_type);
+    try T.expectEqual(Primitive.none, i.genericDefinition(definition).?.body);
+    const nested = try i.internTupleType(&.{.{ .type = parameter, .is_optional = false, .is_rest = false }});
+    const reference = try i.internInstantiation(definition, &.{nested});
+    const body = try i.internObjectType(&.{.{ .name = 1, .type = reference, .is_optional = true, .is_readonly = false, .is_method = false }});
+    var parameters = [_]TypeId{parameter};
+    try i.completeGenericDefinition(definition, &parameters, body);
+    parameters[0] = other_parameter;
+    const payload = i.genericDefinition(definition).?;
+    try T.expectEqualSlices(TypeId, &.{parameter}, i.pool.type_arg_pool.items[payload.parameters_start..][0..payload.parameters_len]);
+    try T.expectEqual(body, payload.body);
+    try T.expectEqual(reference, i.objectMember(body, 1).?);
+    try T.expectEqual(reference, try i.internInstantiation(definition, &.{nested}));
+    try T.expect(reference != try i.internInstantiation(other, &.{nested}));
+    const union_type = try i.internUnion(&.{ definition, Primitive.undefined_t });
+    try T.expectEqual(null, i.genericDefinition(union_type));
+    try T.expectError(error.InvalidTypeGraph, i.completeGenericDefinition(definition, &.{parameter}, body));
+    try T.expectError(error.InvalidTypeGraph, i.completeGenericDefinition(other, &.{Primitive.string_t}, body));
+    try T.expectError(error.InvalidTypeGraph, i.completeGenericDefinition(other, &.{ parameter, parameter }, body));
+    try T.expectError(error.InvalidTypeGraph, i.completeGenericDefinition(other, &.{parameter}, Primitive.none));
+    try T.expectEqual(Primitive.none, i.genericDefinition(other).?.body);
+    // Borrowing from the same pool remains safe if completion grows its column.
+    try i.completeGenericDefinition(other, i.pool.type_arg_pool.items[payload.parameters_start..][0..payload.parameters_len], body);
+    try T.expectEqual(body, i.genericDefinition(other).?.body);
+}
+
+test "interner: generic definition publication is atomic on allocation failure" {
+    const Probe = struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            var i = try Interner.init(allocator);
+            defer i.deinit();
+            const parameter = try i.internFreshTypeParameterWithVariance(1, Primitive.none, Primitive.none, .covariant);
+            const count = i.pool.typeCount();
+            const definitions = i.pool.generic_definition_payloads.items.len;
+            const definition = i.reserveGenericDefinition() catch |err| {
+                try T.expectEqual(count, i.pool.typeCount());
+                try T.expectEqual(definitions, i.pool.generic_definition_payloads.items.len);
+                return err;
+            };
+            const arguments = i.pool.type_arg_pool.items.len;
+            i.completeGenericDefinition(definition, &.{parameter}, parameter) catch |err| {
+                try T.expectEqual(arguments, i.pool.type_arg_pool.items.len);
+                try T.expectEqualDeep(types.GenericDefinitionPayload{ .parameters_start = 0, .parameters_len = 0, .body = Primitive.none }, i.genericDefinition(definition).?);
+                return err;
+            };
+            try T.expectEqual(parameter, i.genericDefinition(definition).?.body);
+        }
+    };
+    try T.checkAllAllocationFailures(T.allocator, Probe.run, .{});
+}
+
+test "Interner: initialization allocation failures release the pool" {
+    const Probe = struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            var value = try Interner.init(allocator);
+            defer value.deinit();
+        }
+    };
+    try T.checkAllAllocationFailures(T.allocator, Probe.run, .{});
+}
 const string_interner = @import("string_interner");
 
 test "Interner: primitive ids round-trip without allocation" {
@@ -1469,6 +1610,43 @@ test "Interner: union flattens multiple nested unions" {
     for (members) |m| {
         try T.expect(!i.pool.flagsOf(m).is_union);
     }
+}
+
+test "Interner: signature identity survives equal shapes and borrowed pool growth" {
+    var i = try Interner.init(T.allocator);
+    defer i.deinit();
+    const params: [260]TypeId = @splat(Primitive.number_t);
+    const first = try i.internSignature(&params, Primitive.boolean_t, false);
+    const second = try i.internSignature(i.signatureParams(first), Primitive.boolean_t, false);
+    try T.expect(first != second);
+    try T.expectEqualSlices(TypeId, &params, i.signatureParams(first));
+    try T.expectEqualSlices(TypeId, &params, i.signatureParams(second));
+    const function = try i.internSignatureWithThisType(&.{Primitive.unknown}, Primitive.boolean_t, false, true, Primitive.string_t);
+    const constructor = try i.internSignatureWithThisType(&.{Primitive.unknown}, Primitive.boolean_t, true, true, Primitive.string_t);
+    try T.expect(!i.pool.signature_payloads.items[i.pool.payloadOf(function)].is_abstract_construct);
+    const construct = i.pool.signature_payloads.items[i.pool.payloadOf(constructor)];
+    try T.expect(construct.is_construct and construct.is_abstract_construct and construct.has_this_type);
+    try T.expectEqual(Primitive.string_t, construct.this_type);
+}
+
+test "Interner: signature allocation failure publishes no partial columns" {
+    const Check = struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            var i = try Interner.init(allocator);
+            defer i.deinit();
+            const headers = i.pool.headers.items.len;
+            const signatures = i.pool.signature_payloads.items.len;
+            const arguments = i.pool.type_arg_pool.items.len;
+            const params: [260]TypeId = @splat(Primitive.number_t);
+            _ = i.internSignature(&params, Primitive.boolean_t, false) catch |err| {
+                try T.expectEqual(headers, i.pool.headers.items.len);
+                try T.expectEqual(signatures, i.pool.signature_payloads.items.len);
+                try T.expectEqual(arguments, i.pool.type_arg_pool.items.len);
+                return err;
+            };
+        }
+    };
+    try T.checkAllAllocationFailures(T.allocator, Check.run, .{});
 }
 
 test "Interner: signature accessors ignore folded union signature flags" {
@@ -1588,6 +1766,17 @@ test "Interner: const type parameter flag participates in identity" {
     try T.expectEqual(konst, konst_again);
     try T.expect(!i.typeParameterIsConst(normal));
     try T.expect(i.typeParameterIsConst(konst));
+}
+
+test "Interner: fresh recursive objects retain reserved identities" {
+    var i = try Interner.init(T.allocator);
+    defer i.deinit();
+    const a = try i.internObjectType(&.{});
+    const b = try i.internObjectType(&.{});
+    try i.completeFreshObjectType(a, &.{.{ .name = 1, .type = b, .is_optional = false, .is_readonly = true, .is_method = false }});
+    try i.completeFreshObjectType(b, &.{.{ .name = 2, .type = a, .is_optional = false, .is_readonly = true, .is_method = false }});
+    try T.expectEqual(b, i.objectMember(a, 1).?);
+    try T.expectEqual(a, i.objectMember(b, 2).?);
 }
 
 test "Interner: fresh type parameters preserve declaration identity" {

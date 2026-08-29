@@ -659,4 +659,4 @@ All matchers provide clear error messages:
 
 - [Quick Start Guide](TESTING*QUICK*START.md)
 - [Complete Testing Guide](MODERN*TESTING_GUIDE.md)
-- [Examples](../packages/testing/examples/)
+- [Examples](https://github.com/home-lang/home/blob/main/packages/testing/examples/)

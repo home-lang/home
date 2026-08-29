@@ -1528,6 +1528,16 @@ pub const TypeChecker = struct {
                 for (fn_decl.params) |param| {
                     const param_type = try self.parseTypeName(param.type_name);
                     try func_env.define(param.name, param_type);
+                    // Also define them in the ownership tracker. Parameters
+                    // were registered only in the type environment, so the
+                    // tracker never reset their state at a function boundary
+                    // and whatever a *previous* function's variable of the
+                    // same name had left behind persisted. A parameter named
+                    // `cmd` inherited a moved state from an unrelated
+                    // function and every use of it reported "Use of moved
+                    // value" — for a u64, which is Copy and cannot be moved
+                    // at all.
+                    try self.ownership_tracker.define(param.name, param_type, fn_decl.node.loc);
                 }
 
                 // Type check function body with the function environment

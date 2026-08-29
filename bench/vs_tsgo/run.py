@@ -5,13 +5,16 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import json
 import os
 import platform
+import re
 import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 try:
@@ -23,6 +26,8 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 CORPUS = HERE / "corpus"
 TOOLS = HERE / ".tools"
+TSC_TOOLS = TOOLS / "tsc"
+TSGO_TOOLS = TOOLS / "tsgo"
 RESULTS = HERE / "results"
 MANIFEST = HERE / "corpus.toml"
 
@@ -63,17 +68,29 @@ def write(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
-def shared_config() -> str:
+def shared_config(*, jsx: bool = False, check_js: bool = False) -> str:
+    compiler_options: dict[str, object] = {
+        "strict": True,
+        "noEmit": True,
+        "noLib": True,
+        "skipLibCheck": True,
+        "pretty": False,
+    }
+    if jsx:
+        compiler_options["jsx"] = "preserve"
+    if check_js:
+        compiler_options["allowJs"] = True
+        compiler_options["checkJs"] = True
+    if jsx:
+        include = ["src/**/*.ts", "src/**/*.tsx"]
+    elif check_js:
+        include = ["src/**/*.js", "src/**/*.d.ts"]
+    else:
+        include = ["src/**/*.ts"]
     return json.dumps(
         {
-            "compilerOptions": {
-                "strict": True,
-                "noEmit": True,
-                "noLib": True,
-                "skipLibCheck": True,
-                "pretty": False,
-            },
-            "include": ["src/**/*.ts"],
+            "compilerOptions": compiler_options,
+            "include": include,
         },
         indent=2,
     ) + "\n"
@@ -156,18 +173,738 @@ def generate_deep_types(directory: Path, repetitions: int) -> None:
     write(directory / "src/deep-types.ts", "".join(blocks))
 
 
+def import_graph_source(index: int) -> str:
+    if index == 0:
+        return """export interface Model0<T> {
+  readonly current: T;
+}
+
+export function make0<T>(value: T): Model0<T> {
+  return { current: value };
+}
+
+export const marker0: Model0<number> = make0(0);
+"""
+
+    previous = index - 1
+    return f"""import {{ Model{previous}, make{previous} }} from "./module-{previous:04d}";
+
+export interface Model{index}<T> {{
+  readonly current: T;
+  readonly previous: Model{previous}<T>;
+}}
+
+export function make{index}<T>(value: T): Model{index}<T> {{
+  return {{ current: value, previous: make{previous}(value) }};
+}}
+
+export const marker{index}: Model{index}<number> = make{index}({index});
+"""
+
+
+def generate_import_graph(directory: Path, modules: int) -> None:
+    write(directory / "tsconfig.json", shared_config())
+    generate_minimal_lib(directory)
+    for index in range(modules):
+        write(directory / f"src/module-{index:04d}.ts", import_graph_source(index))
+    last = modules - 1
+    write(
+        directory / "src/index.ts",
+        f'import {{ Model{last}, make{last} }} from "./module-{last:04d}";\n'
+        f"export const result: Model{last}<string> = make{last}(\"home\");\n",
+    )
+
+
+def reexport_leaf_source(index: int) -> str:
+    return f"""export interface Item{index}<T> {{
+  readonly id: number;
+  readonly value: T;
+}}
+
+export function create{index}<T>(value: T): Item{index}<T> {{
+  return {{ id: {index}, value }};
+}}
+"""
+
+
+def generate_reexport_graph(directory: Path, leaves: int, barrel_size: int) -> None:
+    if leaves % barrel_size != 0:
+        raise ValueError("reexport graph leaves must be divisible by barrel size")
+    write(directory / "tsconfig.json", shared_config())
+    generate_minimal_lib(directory)
+    for index in range(leaves):
+        write(directory / f"src/leaf-{index:04d}.ts", reexport_leaf_source(index))
+
+    index_lines: list[str] = []
+    barrel_count = leaves // barrel_size
+    for barrel in range(barrel_count):
+        first = barrel * barrel_size
+        exports = [
+            f'export * from "./leaf-{leaf:04d}";\n'
+            for leaf in range(first, first + barrel_size)
+        ]
+        write(directory / f"src/barrel-{barrel:02d}.ts", "".join(exports))
+        index_lines.append(
+            f'import {{ Item{first}, create{first} }} from "./barrel-{barrel:02d}";\n'
+            f"const value{barrel}: Item{first}<number> = create{first}({first});\n"
+        )
+    values = ", ".join(f"value{barrel}.value" for barrel in range(barrel_count))
+    index_lines.append(f"export const values = [{values}] as const;\n")
+    write(directory / "src/index.ts", "".join(index_lines))
+
+
+def generate_tsx_components(directory: Path, components: int) -> None:
+    write(directory / "tsconfig.json", shared_config(jsx=True))
+    generate_minimal_lib(directory)
+    blocks = [
+        "declare global {\n"
+        "  namespace JSX {\n"
+        "    interface Element { readonly kind: string; }\n"
+        "    interface IntrinsicElements {\n"
+        "      article: { readonly id?: string; readonly children?: unknown };\n"
+        "      h2: { readonly children?: unknown };\n"
+        "      span: { readonly children?: unknown };\n"
+        "    }\n"
+        "  }\n"
+        "}\n\n"
+        "interface CardProps<T> {\n"
+        "  readonly label: string;\n"
+        "  readonly value: T;\n"
+        "  readonly active: boolean;\n"
+        "}\n\n"
+    ]
+    for index in range(components):
+        blocks.append(
+            f"export function Card{index}(props: CardProps<number>): JSX.Element {{\n"
+            "  return (\n"
+            f'    <article id="card-{index}">\n'
+            "      <h2>{props.label}</h2>\n"
+            "      <span>{props.active ? props.value : 0}</span>\n"
+            "    </article>\n"
+            "  );\n"
+            "}\n\n"
+            f'export const card{index}: JSX.Element = <Card{index} label="Card {index}" value={{{index}}} active={{{index} % 2 == 0}} />;\n\n'
+        )
+    write(directory / "src/components.tsx", "".join(blocks))
+
+
+def generate_generic_calls(directory: Path, calls: int) -> None:
+    write(directory / "tsconfig.json", shared_config())
+    generate_minimal_lib(directory)
+    blocks = [
+        "interface Entity<N extends number> {\n"
+        "  readonly id: N;\n"
+        "  readonly label: `entity-${N}`;\n"
+        "  readonly active: boolean;\n"
+        "}\n\n"
+        "type PickFields<T, K extends keyof T> = { readonly [P in K]: T[P] };\n\n"
+        "declare function project<T, K extends readonly (keyof T)[]>(\n"
+        "  value: T,\n"
+        "  keys: K,\n"
+        "): PickFields<T, K[number]>;\n\n"
+        "declare function field<T, K extends keyof T>(value: T, key: K): T[K];\n\n"
+        "declare function transform<T, U>(value: T, mapper: (input: T) => U): U;\n\n"
+    ]
+    for index in range(calls):
+        active = "true" if index % 2 == 0 else "false"
+        blocks.append(
+            f"const entity{index}: Entity<{index}> = {{ id: {index}, label: \"entity-{index}\", active: {active} }};\n"
+            f'const selected{index} = project(entity{index}, ["id", "label"] as const);\n'
+            f'const label{index}: `entity-{index}` = field(selected{index}, "label");\n'
+            f"export const result{index}: PickFields<Entity<{index}>, \"id\" | \"label\"> = transform(\n"
+            f"  selected{index},\n"
+            "  value => ({ id: value.id, label: value.label }),\n"
+            ");\n\n"
+        )
+    write(directory / "src/generic-calls.ts", "".join(blocks))
+
+
+def generate_control_flow(directory: Path, functions: int) -> None:
+    write(directory / "tsconfig.json", shared_config())
+    generate_minimal_lib(directory)
+    blocks = [
+        "type WorkflowEvent<N extends number> =\n"
+        "  | { readonly kind: \"queued\"; readonly id: N }\n"
+        "  | { readonly kind: \"running\"; readonly id: N; readonly progress: number }\n"
+        "  | { readonly kind: \"complete\"; readonly id: N; readonly output: { readonly label: string; readonly score: number } }\n"
+        "  | { readonly kind: \"failed\"; readonly id: N; readonly error: { readonly message: string; readonly retryable: boolean } };\n\n"
+        "interface Summary<N extends number> {\n"
+        "  readonly id: N;\n"
+        "  readonly label: string;\n"
+        "  readonly score: number;\n"
+        "  readonly terminal: boolean;\n"
+        "}\n\n"
+    ]
+    for index in range(functions):
+        blocks.append(
+            f"export function summarize{index}(event: WorkflowEvent<{index}>): Summary<{index}> {{\n"
+            "  let label: string;\n"
+            "  let score: number;\n"
+            "  let terminal: boolean;\n"
+            "  switch (event.kind) {\n"
+            "    case \"queued\":\n"
+            "      label = \"queued\";\n"
+            "      score = 0;\n"
+            "      terminal = false;\n"
+            "      break;\n"
+            "    case \"running\":\n"
+            "      label = \"running\";\n"
+            "      score = event.progress;\n"
+            "      terminal = false;\n"
+            "      break;\n"
+            "    case \"complete\":\n"
+            "      label = event.output.label;\n"
+            "      score = event.output.score;\n"
+            "      terminal = true;\n"
+            "      break;\n"
+            "    case \"failed\":\n"
+            "      label = event.error.message;\n"
+            "      score = event.error.retryable ? 1 : 0;\n"
+            "      terminal = true;\n"
+            "      break;\n"
+            "    default: {\n"
+            "      const exhaustive: never = event;\n"
+            "      return exhaustive;\n"
+            "    }\n"
+            "  }\n"
+            "  return { id: event.id, label, score, terminal };\n"
+            "}\n\n"
+            f"export const summary{index}: Summary<{index}> = summarize{index}({{\n"
+            f"  kind: \"complete\", id: {index}, output: {{ label: \"item-{index}\", score: {index} }},\n"
+            "});\n\n"
+        )
+    write(directory / "src/control-flow.ts", "".join(blocks))
+
+
+def generate_type_predicates(directory: Path, families: int) -> None:
+    write(directory / "tsconfig.json", shared_config())
+    generate_minimal_lib(directory)
+    blocks: list[str] = []
+    for index in range(families):
+        active = "true" if index % 2 == 0 else "false"
+        blocks.append(
+            f"interface Ready{index} {{\n"
+            '  readonly kind: "ready";\n'
+            f"  readonly id: {index};\n"
+            "  readonly payload: { readonly label: string; readonly score: number };\n"
+            "  readonly meta: { readonly active: boolean };\n"
+            "}\n\n"
+            f"interface Pending{index} {{\n"
+            '  readonly kind: "pending";\n'
+            f"  readonly id: {index};\n"
+            "  readonly progress: number;\n"
+            "}\n\n"
+            f"interface Failed{index} {{\n"
+            '  readonly kind: "failed";\n'
+            f"  readonly id: {index};\n"
+            "  readonly error: { readonly message: string; readonly retryable: boolean };\n"
+            "}\n\n"
+            f"type Input{index} = Ready{index} | Pending{index} | Failed{index};\n\n"
+            f"function isReady{index}(value: Input{index}): value is Ready{index} {{\n"
+            '  return value.kind === "ready";\n'
+            "}\n\n"
+            f"function assertReady{index}(value: Input{index}): asserts value is Ready{index} {{\n"
+            f"  if (!isReady{index}(value)) throw value;\n"
+            "}\n\n"
+            f"function summarize{index}(value: Input{index}): readonly [{index}, string, number, boolean] {{\n"
+            f"  if (isReady{index}(value)) {{\n"
+            "    return [value.id, value.payload.label, value.payload.score, value.meta.active];\n"
+            "  }\n"
+            f'  return [value.id, value.kind, 0, false];\n'
+            "}\n\n"
+            f"function requireReady{index}(value: Input{index}): Ready{index} {{\n"
+            f"  assertReady{index}(value);\n"
+            "  return value;\n"
+            "}\n\n"
+            f"const candidate{index}: Input{index} = {{\n"
+            f'  kind: "ready", id: {index},\n'
+            f'  payload: {{ label: "item-{index}", score: {index} }},\n'
+            f"  meta: {{ active: {active} }},\n"
+            "};\n"
+            f"const summary{index} = summarize{index}(candidate{index});\n"
+            f"const required{index}: Ready{index} = requireReady{index}(candidate{index});\n"
+            f"export const predicateResult{index}: readonly [{index}, string, number, boolean, string] = [\n"
+            f"  summary{index}[0], summary{index}[1], summary{index}[2], summary{index}[3], required{index}.payload.label,\n"
+            "];\n\n"
+        )
+    write(directory / "src/type-predicates.ts", "".join(blocks))
+
+
+def generate_null_safe_access(directory: Path, families: int) -> None:
+    write(directory / "tsconfig.json", shared_config())
+    generate_minimal_lib(directory)
+    blocks: list[str] = []
+    for index in range(families):
+        metric_index = index % 2
+        blocks.append(
+            f"interface NullableRecord{index} {{\n"
+            f"  readonly id: {index};\n"
+            "  readonly fallback: string;\n"
+            "  readonly profile?: {\n"
+            "    readonly label?: string;\n"
+            "    readonly metrics?: readonly [number, number];\n"
+            "    readonly format?: (prefix: string) => string;\n"
+            "  };\n"
+            "}\n\n"
+            f"function readNullable{index}(\n"
+            f"  value: NullableRecord{index} | null | undefined,\n"
+            "): readonly [number, string, number, string, string] {\n"
+            f'  const label = value?.profile?.label ?? value?.fallback ?? "missing-{index}";\n'
+            f"  const score = value?.profile?.metrics?.[{metric_index}] ?? 0;\n"
+            "  const formatted = value?.profile?.format?.(label) ?? label;\n"
+            "  const fallback = value!.fallback;\n"
+            f"  return [value?.id ?? {index}, label, score, formatted, fallback];\n"
+            "}\n\n"
+            f"const nullableInput{index}: NullableRecord{index} = {{\n"
+            f"  id: {index},\n"
+            f'  fallback: "fallback-{index}",\n'
+            "  profile: {\n"
+            f'    label: "item-{index}",\n'
+            f"    metrics: [{index}, {index + 1}],\n"
+            "    format: (prefix) => prefix,\n"
+            "  },\n"
+            "};\n"
+            f"export const nullSafeResult{index}: readonly [number, string, number, string, string] =\n"
+            f"  readNullable{index}(nullableInput{index});\n\n"
+        )
+    write(directory / "src/null-safe-access.ts", "".join(blocks))
+
+
+def generate_destructuring(directory: Path, families: int) -> None:
+    write(directory / "tsconfig.json", shared_config())
+    generate_minimal_lib(directory)
+    blocks: list[str] = []
+    for index in range(families):
+        active = "  active: false,\n" if index % 2 else ""
+        blocks.append(f"""interface BindingRecord{index} {{
+  readonly id: number;
+  readonly meta: {{ readonly label: string; readonly score: number }};
+  readonly slots: readonly [number, string];
+  readonly active?: boolean;
+}}
+
+interface BindingProjection{index} {{
+  readonly id: number;
+  readonly active: boolean;
+  readonly label: string;
+  readonly score: number;
+  readonly first: number;
+  readonly second: string;
+}}
+
+function projectBindings{index}(input: BindingRecord{index}): BindingProjection{index} {{
+  const {{ meta: {{ label, score }}, slots: [first, second], active = true, ...identity }} = input;
+  const spread = {{ ...identity, active, label, score, first, second }};
+  return spread;
+}}
+
+export const destructured{index}: BindingProjection{index} = projectBindings{index}({{
+  id: {index},
+  meta: {{ label: "item-{index}", score: {index} }},
+  slots: [{index}, "slot-{index}"],
+{active}}});
+export const consumedBindings{index}: readonly [number, string, boolean] = [
+  destructured{index}.id, destructured{index}.second, destructured{index}.active,
+];
+
+""")
+    write(directory / "src/destructuring.ts", "".join(blocks))
+
+
+def generate_overload_resolution(directory: Path, groups: int) -> None:
+    write(directory / "tsconfig.json", shared_config())
+    generate_minimal_lib(directory)
+    blocks = [
+        "interface RouteResult<K extends string, N extends number, V> {\n"
+        "  readonly kind: K;\n"
+        "  readonly id: N;\n"
+        "  readonly value: V;\n"
+        "}\n\n"
+        "declare function route<N extends number>(kind: \"text\", id: N, payload: string): RouteResult<\"text\", N, string>;\n"
+        "declare function route<N extends number>(kind: \"count\", id: N, payload: number): RouteResult<\"count\", N, number>;\n"
+        "declare function route<N extends number>(kind: \"flag\", id: N, payload: boolean): RouteResult<\"flag\", N, boolean>;\n"
+        "declare function route<N extends number>(kind: \"point\", id: N, payload: { readonly x: number; readonly y: number }): RouteResult<\"point\", N, { readonly x: number; readonly y: number }>;\n"
+        "declare function route<N extends number>(kind: \"pair\", id: N, payload: readonly [string, number]): RouteResult<\"pair\", N, readonly [string, number]>;\n"
+        "declare function route<N extends number>(kind: \"record\", id: N, payload: { readonly label: string; readonly active: boolean }): RouteResult<\"record\", N, { readonly label: string; readonly active: boolean }>;\n"
+        "declare function route<N extends number>(kind: \"callback\", id: N, payload: (value: number) => string): RouteResult<\"callback\", N, (value: number) => string>;\n"
+        "declare function route<N extends number>(kind: \"nested\", id: N, payload: { readonly meta: { readonly id: number } }): RouteResult<\"nested\", N, { readonly meta: { readonly id: number } }>;\n\n"
+    ]
+    for index in range(groups):
+        active = "true" if index % 2 == 0 else "false"
+        blocks.append(
+            f'const text{index}: RouteResult<"text", {index}, string> = route("text", {index}, "item-{index}");\n'
+            f'const count{index}: RouteResult<"count", {index}, number> = route("count", {index}, {index});\n'
+            f'const flag{index}: RouteResult<"flag", {index}, boolean> = route("flag", {index}, {active});\n'
+            f'const point{index}: RouteResult<"point", {index}, {{ readonly x: number; readonly y: number }}> = route("point", {index}, {{ x: {index}, y: {index + 1} }});\n'
+            f'const pair{index}: RouteResult<"pair", {index}, readonly [string, number]> = route("pair", {index}, ["item-{index}", {index}] as const);\n'
+            f'const record{index}: RouteResult<"record", {index}, {{ readonly label: string; readonly active: boolean }}> = route("record", {index}, {{ label: "item-{index}", active: {active} }});\n'
+            f'const callback{index}: RouteResult<"callback", {index}, (value: number) => string> = route("callback", {index}, (value: number) => `item-{index}-${{value}}`);\n'
+            f'const nested{index}: RouteResult<"nested", {index}, {{ readonly meta: {{ readonly id: number }} }}> = route("nested", {index}, {{ meta: {{ id: {index} }} }});\n'
+            f"export const overloadResult{index}: readonly [{index}, string, number, boolean, number, string, string, number] = [\n"
+            f"  text{index}.id, text{index}.value, count{index}.value, flag{index}.value, point{index}.value.x,\n"
+            f"  pair{index}.value[0], callback{index}.value({index}), nested{index}.value.meta.id,\n"
+            "];\n\n"
+        )
+    write(directory / "src/overload-resolution.ts", "".join(blocks))
+
+
+def generate_class_hierarchy(directory: Path, families: int) -> None:
+    write(directory / "tsconfig.json", shared_config())
+    generate_minimal_lib(directory)
+    blocks: list[str] = []
+    for index in range(families):
+        blocks.append(
+            f"interface View{index}<N extends number> {{\n"
+            "  readonly id: N;\n"
+            "  readonly label: string;\n"
+            "  describe(prefix: string): string;\n"
+            "}\n\n"
+            f"class Base{index}<T, N extends number> {{\n"
+            "  constructor(public readonly id: N, protected readonly value: T) {}\n"
+            "  getValue(): T { return this.value; }\n"
+            "  describe(prefix: string): string { return prefix; }\n"
+            "}\n\n"
+            f"class Derived{index} extends Base{index}<{{ readonly label: string; readonly score: number }}, {index}> implements View{index}<{index}> {{\n"
+            "  readonly label: string;\n"
+            "  constructor(label: string, score: number) {\n"
+            f"    super({index}, {{ label, score }});\n"
+            "    this.label = label;\n"
+            "  }\n"
+            "  override getValue(): { readonly label: string; readonly score: number } {\n"
+            "    return super.getValue();\n"
+            "  }\n"
+            "  override describe(prefix: string): string {\n"
+            "    return `${prefix}:${this.label}`;\n"
+            "  }\n"
+            "  score(): number { return this.getValue().score; }\n"
+            "}\n\n"
+            f'const instance{index}: Derived{index} = new Derived{index}("item-{index}", {index});\n'
+            f"const view{index}: View{index}<{index}> = instance{index};\n"
+            f"export const classResult{index}: readonly [{index}, string, number, string] = [\n"
+            f'  view{index}.id, view{index}.label, instance{index}.score(), view{index}.describe("class"),\n'
+            "];\n\n"
+        )
+    write(directory / "src/class-hierarchy.ts", "".join(blocks))
+
+
+def generate_structural_objects(directory: Path, families: int) -> None:
+    write(directory / "tsconfig.json", shared_config())
+    generate_minimal_lib(directory)
+    blocks: list[str] = []
+    for index in range(families):
+        active = "true" if index % 2 == 0 else "false"
+        blocks.append(
+            f"interface Target{index}<N extends number> {{\n"
+            "  readonly id: N;\n"
+            "  readonly nested: {\n"
+            "    readonly label: string;\n"
+            "    readonly optional?: { readonly active: boolean };\n"
+            "  };\n"
+            "  readonly pair: readonly [string, number];\n"
+            "  readonly flags: { readonly enabled: boolean } & { readonly visible: boolean };\n"
+            "  transform: <T extends { readonly value: number }>(input: T) => { readonly id: N; readonly input: T };\n"
+            "}\n\n"
+            f"type Source{index} = {{\n"
+            f"  readonly id: {index};\n"
+            "  readonly nested: {\n"
+            "    readonly label: string;\n"
+            "    readonly optional: { readonly active: boolean };\n"
+            "    readonly extra: number;\n"
+            "  };\n"
+            "  readonly pair: readonly [string, number];\n"
+            "  readonly flags: { readonly enabled: boolean; readonly visible: boolean; readonly extra: string };\n"
+            f"  transform: <T extends {{ readonly value: number }}>(input: T) => {{ readonly id: {index}; readonly input: T; readonly extra: boolean }};\n"
+            "  readonly extra: string;\n"
+            "};\n\n"
+            f"function transform{index}<T extends {{ readonly value: number }}>(input: T): {{ readonly id: {index}; readonly input: T; readonly extra: boolean }} {{\n"
+            f"  return {{ id: {index}, input, extra: true }};\n"
+            "}\n\n"
+            f"const source{index}: Source{index} = {{\n"
+            f"  id: {index},\n"
+            f'  nested: {{ label: "item-{index}", optional: {{ active: {active} }}, extra: {index} }},\n'
+            f'  pair: ["item-{index}", {index}],\n'
+            f'  flags: {{ enabled: {active}, visible: true, extra: "flag-{index}" }},\n'
+            f"  transform: transform{index},\n"
+            f'  extra: "source-{index}",\n'
+            "};\n\n"
+            f"const target{index}: Target{index}<{index}> = source{index};\n"
+            f"function consume{index}(value: Target{index}<{index}>): readonly [{index}, string, number, boolean, number] {{\n"
+            f"  const transformed = value.transform({{ value: {index}, label: \"value-{index}\" }});\n"
+            "  return [value.id, value.nested.label, value.pair[1], value.flags.visible, transformed.input.value];\n"
+            "}\n"
+            f"export const structuralResult{index}: readonly [{index}, string, number, boolean, number] = consume{index}(source{index});\n\n"
+        )
+    write(directory / "src/structural-objects.ts", "".join(blocks))
+
+
+def generate_interface_composition(directory: Path, families: int) -> None:
+    write(directory / "tsconfig.json", shared_config())
+    generate_minimal_lib(directory)
+    blocks: list[str] = []
+    for index in range(families):
+        active = "true" if index % 2 == 0 else "false"
+        blocks.append(
+            f"interface Identity{index}<N extends number> {{\n"
+            "  readonly id: N;\n"
+            "}\n\n"
+            f"interface Payload{index}<T> {{\n"
+            "  readonly payload: T;\n"
+            "}\n\n"
+            f"interface Composite{index}<T, N extends number> extends Identity{index}<N>, Payload{index}<T> {{\n"
+            "  readonly label: string;\n"
+            "}\n\n"
+            f"interface Composite{index}<T, N extends number> {{\n"
+            "  readonly meta: { readonly active: boolean; readonly tags: readonly [string, number] };\n"
+            "  summarize(prefix: string): string;\n"
+            "}\n\n"
+            f"namespace Composite{index} {{\n"
+            "  export interface Snapshot<N extends number> {\n"
+            "    readonly id: N;\n"
+            "    readonly summary: string;\n"
+            "  }\n"
+            "  export function snapshot<N extends number>(\n"
+            "    value: { readonly id: N; summarize(prefix: string): string },\n"
+            "  ): Snapshot<N> {\n"
+            '    return { id: value.id, summary: value.summarize("merged") };\n'
+            "  }\n"
+            "}\n\n"
+            f"const composite{index}: Composite{index}<{{ readonly value: number; readonly name: string }}, {index}> = {{\n"
+            f"  id: {index},\n"
+            f'  payload: {{ value: {index}, name: "item-{index}" }},\n'
+            f'  label: "composite-{index}",\n'
+            f'  meta: {{ active: {active}, tags: ["tag-{index}", {index}] }},\n'
+            "  summarize(prefix: string): string { return `${prefix}:${this.label}`; },\n"
+            "};\n\n"
+            f"const snapshot{index}: Composite{index}.Snapshot<{index}> = Composite{index}.snapshot(composite{index});\n"
+            f"function consumeComposite{index}(value: Composite{index}<{{ readonly value: number; readonly name: string }}, {index}>): readonly [{index}, string, number, boolean, string] {{\n"
+            "  return [value.id, value.label, value.payload.value, value.meta.active, value.summarize(\"consume\")];\n"
+            "}\n"
+            f"export const interfaceResult{index}: readonly [{index}, string, number, boolean, string, string] = [\n"
+            f"  ...consumeComposite{index}(composite{index}), snapshot{index}.summary,\n"
+            "];\n\n"
+        )
+    write(directory / "src/interface-composition.ts", "".join(blocks))
+
+
+def generate_variadic_tuples(directory: Path, families: int) -> None:
+    write(directory / "tsconfig.json", shared_config())
+    generate_minimal_lib(directory)
+    blocks = [
+        "type Head<T extends readonly unknown[]> = "
+        "T extends readonly [infer H, ...readonly unknown[]] ? H : never;\n"
+        "type Tail<T extends readonly unknown[]> = "
+        "T extends readonly [unknown, ...infer R] ? readonly [...R] : readonly [];\n\n"
+        "declare function concat<A extends readonly unknown[], B extends readonly unknown[]>(\n"
+        "  left: A,\n"
+        "  right: B,\n"
+        "): readonly [...A, ...B];\n\n"
+        "declare function capture<T extends readonly unknown[]>(...values: T): T;\n\n"
+    ]
+    for index in range(families):
+        active = "true" if index % 2 == 0 else "false"
+        blocks.append(
+            f'const left{index} = [{index}, "item-{index}", {{ value: {index} }}] as const;\n'
+            f'const right{index} = [{active}, [{index}, "tail-{index}"] as const] as const;\n'
+            f"const combined{index} = concat(left{index}, right{index});\n"
+            f"type Tuple{index} = readonly [\n"
+            f"  {index},\n"
+            f'  "item-{index}",\n'
+            f"  {{ readonly value: {index} }},\n"
+            f"  {active},\n"
+            f'  readonly [{index}, "tail-{index}"],\n'
+            "];\n"
+            f"const checked{index}: Tuple{index} = combined{index};\n"
+            f"const head{index}: Head<Tuple{index}> = {index};\n"
+            f"const tail{index}: Tail<Tuple{index}> = [\n"
+            f'  "item-{index}", {{ value: {index} }}, {active}, [{index}, "tail-{index}"],\n'
+            "];\n"
+            f"const captured{index} = capture(...checked{index});\n"
+            f"function consumeTuple{index}(value: Tuple{index}): readonly [{index}, \"item-{index}\", {active}, number] {{\n"
+            "  return [value[0], value[1], value[3], value.length];\n"
+            "}\n"
+            f"export const tupleResult{index} = {{\n"
+            f"  head: head{index}, tail: tail{index}, result: consumeTuple{index}(captured{index}),\n"
+            "};\n\n"
+        )
+    write(directory / "src/variadic-tuples.ts", "".join(blocks))
+
+
+def generate_checkjs_jsdoc(directory: Path, families: int) -> None:
+    write(directory / "tsconfig.json", shared_config(check_js=True))
+    generate_minimal_lib(directory)
+    blocks = ["// @ts-check\n\n"]
+    for index in range(families):
+        active = "true" if index % 2 == 0 else "false"
+        blocks.append(
+            "/**\n"
+            f" * @typedef {{object}} Model{index}\n"
+            " * @property {number} id\n"
+            " * @property {string} name\n"
+            " * @property {{ active: boolean, label: string }} meta\n"
+            " */\n\n"
+            "/**\n"
+            " * @template T\n"
+            f" * @typedef {{object}} Box{index}\n"
+            " * @property {T} value\n"
+            " * @property {string} label\n"
+            " */\n\n"
+            "/**\n"
+            f" * @callback Project{index}\n"
+            f" * @param {{Model{index}}} input\n"
+            " * @returns {string}\n"
+            " */\n\n"
+            "/**\n"
+            f" * @template {{Model{index}}} T\n"
+            " * @param {T} value\n"
+            " * @returns {T}\n"
+            " */\n"
+            f"function preserve{index}(value) {{\n"
+            "  return value;\n"
+            "}\n\n"
+            f"class Store{index} {{\n"
+            "  /**\n"
+            f"   * @param {{Box{index}<Model{index}>}} box\n"
+            "   */\n"
+            "  constructor(box) {\n"
+            "    this.box = box;\n"
+            "  }\n\n"
+            "  /**\n"
+            f"   * @param {{Project{index}}} project\n"
+            "   * @returns {string}\n"
+            "   */\n"
+            "  read(project) {\n"
+            "    return project(this.box.value);\n"
+            "  }\n"
+            "}\n\n"
+            f"/** @type {{Model{index}}} */\n"
+            f"const model{index} = {{\n"
+            f'  id: {index}, name: "model-{index}", meta: {{ active: {active}, label: "meta-{index}" }},\n'
+            "};\n"
+            f"const preserved{index} = preserve{index}(model{index});\n"
+            f"/** @type {{Box{index}<Model{index}>}} */\n"
+            f"const box{index} = {{ value: preserved{index}, label: \"box-{index}\" }};\n"
+            f"/** @type {{Project{index}}} */\n"
+            f"const project{index} = (input) => `${{input.meta.label}}:${{input.name}}`;\n"
+            f"const store{index} = new Store{index}(box{index});\n"
+            f"const rendered{index} = store{index}.read(project{index});\n"
+            "/** @type {{ id: number, name: string, active: boolean, rendered: string }} */\n"
+            f"export const jsdocResult{index} = {{\n"
+            f"  id: preserved{index}.id,\n"
+            f"  name: preserved{index}.name,\n"
+            f"  active: preserved{index}.meta.active,\n"
+            f"  rendered: rendered{index},\n"
+            "};\n\n"
+        )
+    write(directory / "src/checkjs-jsdoc.js", "".join(blocks).rstrip() + "\n")
+
+
+def generate_commonjs_graph(directory: Path, families: int) -> None:
+    if families < 1:
+        raise ValueError("CommonJS graph workloads require at least one family")
+    write(directory / "tsconfig.json", shared_config(check_js=True))
+    generate_minimal_lib(directory)
+    app: list[str] = []
+    for index in range(families):
+        suffix = f"{index:04d}"
+        active = "true" if index % 2 == 0 else "false"
+        write(
+            directory / f"src/owner-{suffix}.js",
+            f"class Service{index} {{\n"
+            f"  id = {index};\n"
+            f'  label = "service-{index}";\n'
+            f'  meta = {{ active: {active}, score: {index} }};\n'
+            "}\n"
+            f"class Alternate{index} {{\n"
+            f"  id = {index};\n"
+            f"  label = {index};\n"
+            f'  meta = {{ active: {active}, score: {index} }};\n'
+            "}\n"
+            f"module.exports = new Service{index}();\n"
+            f"module.exports = new Alternate{index}();\n",
+        )
+        app.append(
+            f'const service{index} = require("./owner-{suffix}");\n'
+            f"/** @type {{number}} */ const id{index} = service{index}.id;\n"
+            f"/** @type {{string | number}} */ const label{index} = service{index}.label;\n"
+            f"/** @type {{boolean}} */ const active{index} = service{index}.meta.active;\n"
+            f"/** @type {{number}} */ const score{index} = service{index}.meta.score;\n"
+        )
+    write(directory / "src/index.js", "".join(app))
+
+
+def generate_recursive_generics(directory: Path, families: int) -> None:
+    if families < 1:
+        raise ValueError("recursive generic workloads require at least one family")
+    write(directory / "tsconfig.json", shared_config())
+    generate_minimal_lib(directory)
+    write(directory / "src/owner.ts",
+          "type Link<T> = { readonly item: T; readonly next: Link<T[]> };\n"
+          "export declare class Box<T> { readonly value: Link<T>; }\n")
+    blocks = ["import { Box } from './owner';\n"]
+    for index in range(families):
+        blocks.append(
+            f"interface Payload{index} {{ readonly id: number; readonly tag{index}: string; }}\n"
+            f"declare const source{index}: Box<Payload{index}>;\n"
+            f"const selected{index} = source{index}.value.next.next.next.next.item;\n"
+            f"const typed{index}: Payload{index}[][][][] = selected{index};\n"
+            f"const leaf{index}: number = selected{index}[0][0][0][0].id;\n"
+        )
+    write(directory / "src/recursive-generics.ts", "".join(blocks))
+
+
 def cmd_corpus() -> None:
     cfg = manifest()["generated"]
     shutil.rmtree(CORPUS, ignore_errors=True)
     generate_startup(CORPUS / "startup")
     generate_many_files(CORPUS / "many_files", cfg["many_files_count"])
     generate_deep_types(CORPUS / "deep_types", cfg["deep_types_repetitions"])
+    generate_import_graph(CORPUS / "import_graph", cfg["import_graph_modules"])
+    generate_reexport_graph(
+        CORPUS / "reexport_graph",
+        cfg["reexport_graph_leaves"],
+        cfg["reexport_graph_barrel_size"],
+    )
+    generate_tsx_components(CORPUS / "tsx_components", cfg["tsx_components"])
+    generate_generic_calls(CORPUS / "generic_calls", cfg["generic_calls"])
+    generate_control_flow(CORPUS / "control_flow", cfg["control_flow_functions"])
+    generate_type_predicates(
+        CORPUS / "type_predicates",
+        cfg["type_predicate_families"],
+    )
+    generate_type_predicates(
+        CORPUS / "type_predicates_large",
+        cfg["type_predicate_large_families"],
+    )
+    generate_null_safe_access(
+        CORPUS / "null_safe_access",
+        cfg["null_safe_access_families"],
+    )
+    generate_destructuring(CORPUS / "destructuring", cfg["destructuring_families"])
+    generate_overload_resolution(CORPUS / "overload_resolution", cfg["overload_call_groups"])
+    generate_class_hierarchy(CORPUS / "class_hierarchy", cfg["class_hierarchy_families"])
+    generate_structural_objects(CORPUS / "structural_objects", cfg["structural_object_families"])
+    generate_interface_composition(
+        CORPUS / "interface_composition",
+        cfg["interface_composition_families"],
+    )
+    generate_variadic_tuples(
+        CORPUS / "variadic_tuples",
+        cfg["variadic_tuple_families"],
+    )
+    generate_checkjs_jsdoc(
+        CORPUS / "checkjs_jsdoc",
+        cfg["checkjs_jsdoc_families"],
+    )
+    generate_commonjs_graph(
+        CORPUS / "commonjs_graph",
+        cfg["commonjs_graph_families"],
+    )
+    generate_recursive_generics(CORPUS / "recursive_generics", cfg["recursive_generic_families"])
     print(f"Generated deterministic corpus in {CORPUS}")
 
 
 def cmd_setup() -> None:
     versions = manifest()["compilers"]
-    TOOLS.mkdir(parents=True, exist_ok=True)
     run(
         [
             "npm",
@@ -175,9 +912,19 @@ def cmd_setup() -> None:
             "--no-save",
             "--no-package-lock",
             "--prefix",
-            str(TOOLS),
+            str(TSC_TOOLS),
             f"typescript@{versions['tsc']['version']}",
-            f"@typescript/native-preview@{versions['tsgo']['version']}",
+        ]
+    )
+    run(
+        [
+            "npm",
+            "install",
+            "--no-save",
+            "--no-package-lock",
+            "--prefix",
+            str(TSGO_TOOLS),
+            f"typescript@{versions['tsgo']['version']}",
         ]
     )
 
@@ -185,8 +932,8 @@ def cmd_setup() -> None:
 def compiler_commands() -> dict[str, list[str]]:
     home = Path(os.environ.get("HOME_TSC", ROOT / "zig-out/bin/home-tsc"))
     commands = {
-        "tsc": [str(TOOLS / "node_modules/.bin/tsc")],
-        "tsgo": [str(TOOLS / "node_modules/.bin/tsgo")],
+        "tsc": [str(TSC_TOOLS / "node_modules/.bin/tsc")],
+        "tsgo": [str(TSGO_TOOLS / "node_modules/.bin/tsc")],
         "home": [str(home)],
     }
     missing = [name for name, command in commands.items() if not Path(command[0]).is_file()]
@@ -200,6 +947,109 @@ def version_output(command: list[str]) -> str:
     return (result.stdout or result.stderr).strip()
 
 
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def artifact_provenance(path: Path) -> dict[str, object]:
+    requested = path.absolute()
+    resolved = path.resolve(strict=True)
+    if not resolved.is_file():
+        raise SystemExit(f"benchmark artifact is not a file: {resolved}")
+    return {
+        "path": str(requested),
+        "resolved_path": str(resolved),
+        "size": resolved.stat().st_size,
+        "sha256": sha256_file(resolved),
+    }
+
+
+def native_tsgo_payload() -> Path:
+    system = {"Darwin": "darwin", "Linux": "linux", "Windows": "win32"}.get(platform.system())
+    machine = platform.machine().lower()
+    architecture = {
+        "amd64": "x64",
+        "x86_64": "x64",
+        "aarch64": "arm64",
+        "arm64": "arm64",
+    }.get(machine)
+    if system is None or architecture is None:
+        raise SystemExit(f"cannot identify native TS 7 payload for {platform.system()} {platform.machine()}")
+    executable = "tsc.exe" if system == "win32" else "tsc"
+    return (
+        TSGO_TOOLS
+        / "node_modules"
+        / "@typescript"
+        / f"typescript-{system}-{architecture}"
+        / "lib"
+        / executable
+    )
+
+
+def resolved_tool(name: str) -> Path:
+    path = shutil.which(name)
+    if path is None:
+        raise SystemExit(f"{name} is required for benchmark provenance")
+    return Path(path)
+
+
+def benchmark_provenance(commands: dict[str, list[str]]) -> dict[str, object]:
+    node = resolved_tool("node")
+    hyperfine = resolved_tool("hyperfine")
+    tsc_payload = TSC_TOOLS / "node_modules" / "typescript" / "lib" / "_tsc.js"
+    records: dict[str, object] = {
+        "schema": 1,
+        "compilers": {
+            "tsc": {
+                "command": commands["tsc"],
+                "launcher": artifact_provenance(Path(commands["tsc"][0])),
+                "payload": artifact_provenance(tsc_payload),
+            },
+            "tsgo": {
+                "command": commands["tsgo"],
+                "launcher": artifact_provenance(Path(commands["tsgo"][0])),
+                "payload": artifact_provenance(native_tsgo_payload()),
+            },
+            "home": {
+                "command": commands["home"],
+                "executable": artifact_provenance(Path(commands["home"][0])),
+            },
+        },
+        "tools": {
+            "node": {
+                "version": version_output([str(node)]),
+                "executable": artifact_provenance(node),
+            },
+            "hyperfine": {
+                "version": version_output([str(hyperfine)]),
+                "executable": artifact_provenance(hyperfine),
+            },
+            "python": {
+                "version": platform.python_version(),
+                "executable": artifact_provenance(Path(sys.executable)),
+            },
+        },
+    }
+    return records
+
+
+def verified_compiler_versions(commands: dict[str, list[str]]) -> dict[str, str]:
+    versions = {name: version_output(command) for name, command in commands.items()}
+    pinned = manifest()["compilers"]
+    for name in ("tsc", "tsgo"):
+        expected = f"Version {pinned[name]['version']}"
+        if versions.get(name) != expected:
+            raise SystemExit(
+                f"{name} version mismatch: expected {expected!r}, got {versions.get(name)!r}; "
+                "run './bench/vs_tsgo/run.sh setup' before benchmarking"
+            )
+    return versions
+
+
 def validate(commands: dict[str, list[str]], workload: str) -> None:
     config = CORPUS / workload / "tsconfig.json"
     for name, command in commands.items():
@@ -211,14 +1061,212 @@ def validate(commands: dict[str, list[str]], workload: str) -> None:
         if result.returncode != 0 or result.stdout or result.stderr:
             details = (result.stdout + result.stderr).strip()
             raise SystemExit(f"{name} failed validation for {workload}:\n{details}")
+    if workload == "destructuring":
+        validate_destructuring_negatives(commands)
+    elif workload in ("type_predicates", "type_predicates_large"):
+        validate_type_predicate_negatives(commands, workload)
+    elif workload in ("import_graph", "reexport_graph"):
+        validate_graph_negatives(commands, workload)
+    elif workload == "variadic_tuples":
+        validate_variadic_tuple_negatives(commands)
+    elif workload == "commonjs_graph":
+        validate_commonjs_graph_negatives(commands)
+    elif workload == "recursive_generics":
+        validate_recursive_generic_negatives(commands)
 
 
-def cmd_cold(runs: int, warmup: int) -> Path:
+def validate_commonjs_graph_negatives(commands: dict[str, list[str]]) -> None:
+    families = manifest()["generated"]["commonjs_graph_families"]
+    indices = sorted({0, families // 2, families - 1})
+    invalid = "".join(
+        f"/** @type {{boolean}} */ const wrongLabel{index} = service{index}.label;\n"
+        f"const missing{index} = service{index}.missing;\n"
+        for index in indices
+    )
+    with tempfile.TemporaryDirectory(prefix="home-bench-commonjs-") as temporary:
+        project = Path(temporary) / "project"
+        shutil.copytree(CORPUS / "commonjs_graph", project)
+        source_path = project / "src/index.js"
+        write(source_path, source_path.read_text(encoding="utf-8") + invalid)
+        for name, command in commands.items():
+            result = subprocess.run(
+                command + ["--noEmit", "-p", str(project / "tsconfig.json")],
+                capture_output=True,
+                text=True,
+            )
+            details = result.stdout + result.stderr
+            codes = sorted(re.findall(r"\berror TS(\d+):", details))
+            expected = ["2322"] * len(indices) + ["2339"] * len(indices)
+            if result.returncode not in (1, 2) or codes != expected:
+                raise SystemExit(f"{name} failed commonjs_graph negative controls:\n{details}")
+
+
+def validate_recursive_generic_negatives(commands: dict[str, list[str]]) -> None:
+    families = manifest()["generated"]["recursive_generic_families"]
+    indices = sorted({0, families // 2, families - 1})
+    invalid = "".join(
+        f"const wrongLeaf{index}: string = selected{index}[0][0][0][0].id;\n"
+        f"const wrongContainer{index}: {{ id: string }}[][][][] = selected{index};\n"
+        f"const missing{index} = selected{index}[0][0][0][0].missing;\n"
+        for index in indices
+    )
+    with tempfile.TemporaryDirectory(prefix="home-bench-recursive-") as temporary:
+        project = Path(temporary) / "project"
+        shutil.copytree(CORPUS / "recursive_generics", project)
+        source_path = project / "src/recursive-generics.ts"
+        write(source_path, source_path.read_text(encoding="utf-8") + invalid)
+        for name, command in commands.items():
+            result = subprocess.run(command + ["--noEmit", "-p", str(project / "tsconfig.json")],
+                                    capture_output=True, text=True)
+            details = result.stdout + result.stderr
+            codes = sorted(re.findall(r"\berror TS(\d+):", details))
+            if result.returncode not in (1, 2) or codes != ["2322"] * (2 * len(indices)) + ["2339"] * len(indices):
+                raise SystemExit(f"{name} failed recursive_generics negative controls:\n{details}")
+
+
+def validate_variadic_tuple_negatives(commands: dict[str, list[str]]) -> None:
+    # Exercise the actual inferred/conditional/spread results from the timed
+    # workload. Mutations are confined to a temporary copy and are never timed.
+    invalid = """
+const invalidConcatResult: string = combined0[0];
+const invalidConditionalHead: Head<Tuple0> = "wrong";
+const invalidConditionalTail: number = tail0[0];
+const invalidCapturedSpread: number = captured0[1];
+const invalidConsumedResult: string = tupleResult0.result[2];
+combined0[0] = 0;
+const invalidTupleBounds = combined0[5];
+"""
+    with tempfile.TemporaryDirectory(prefix="home-bench-tuples-") as temporary:
+        project = Path(temporary) / "project"
+        shutil.copytree(CORPUS / "variadic_tuples", project)
+        source_path = project / "src/variadic-tuples.ts"
+        write(source_path, source_path.read_text(encoding="utf-8") + invalid)
+        for name, command in commands.items():
+            result = subprocess.run(command + ["--noEmit", "-p", str(project / "tsconfig.json")],
+                                    capture_output=True, text=True)
+            details = result.stdout + result.stderr
+            codes = sorted(re.findall(r"\berror TS(\d+):", details))
+            if result.returncode not in (1, 2) or codes != ["2322"] * 5 + ["2493", "2540"]:
+                raise SystemExit(f"{name} failed variadic_tuples negative controls:\n{details}")
+
+
+def validate_graph_negatives(commands: dict[str, list[str]], workload: str) -> None:
+    # Exercise the imported generic shape itself, not a locally declared
+    # equivalent. Accepting the positive graph with imported `any` is not
+    # equivalent semantic work and cannot qualify for timing (#487).
+    invalid = {
+        "import_graph": "\nexport const invalidImportedProperty: number = result.current;\nresult.missing;\n",
+        "reexport_graph": "\nexport const invalidImportedProperty: string = value0.value;\nvalue0.missing;\n",
+    }[workload]
+    with tempfile.TemporaryDirectory(prefix="home-bench-graph-") as temporary:
+        project = Path(temporary) / "project"
+        shutil.copytree(CORPUS / workload, project)
+        source_path = project / "src/index.ts"
+        write(source_path, source_path.read_text(encoding="utf-8") + invalid)
+        for name, command in commands.items():
+            result = subprocess.run(command + ["--noEmit", "-p", str(project / "tsconfig.json")],
+                                    capture_output=True, text=True)
+            details = result.stdout + result.stderr
+            codes = sorted(re.findall(r"\berror TS(\d+):", details))
+            if result.returncode not in (1, 2) or codes != ["2322", "2339"]:
+                raise SystemExit(f"{name} failed {workload} negative controls:\n{details}")
+
+
+def validate_type_predicate_negatives(commands: dict[str, list[str]], workload: str) -> None:
+    # Both guards and assertion functions must narrow to the real object
+    # shape, not any or the original union. These mutations are never timed.
+    with tempfile.TemporaryDirectory(prefix="home-bench-predicates-") as temporary:
+        project = Path(temporary) / "project"
+        shutil.copytree(CORPUS / workload, project)
+        source_path = project / "src/type-predicates.ts"
+        source = source_path.read_text(encoding="utf-8")
+        anchors = ["  if (isReady0(value)) {\n", "  assertReady0(value);\n"]
+        for index, anchor in enumerate(anchors):
+            if source.count(anchor) != 1:
+                raise SystemExit("type-predicate negative-control anchor is not unique")
+            invalid = (
+                f"  const invalidLabel{index}: number = value.payload.label;\n"
+                f"  const invalidProgress{index} = value.progress;\n"
+            )
+            source = source.replace(anchor, anchor + invalid, 1)
+        write(source_path, source)
+        for name, command in commands.items():
+            result = subprocess.run(
+                command + ["--noEmit", "-p", str(project / "tsconfig.json")],
+                capture_output=True,
+                text=True,
+            )
+            details = result.stdout + result.stderr
+            codes = sorted(re.findall(r"\berror TS(\d+):", details))
+            if result.returncode == 0 or codes != ["2322"] * 2 + ["2339"] * 2:
+                raise SystemExit(f"{name} failed {workload} negative controls:\n{details}")
+
+
+def validate_destructuring_negatives(commands: dict[str, list[str]]) -> None:
+    # Check the inferred bindings themselves so a checker cannot pass the
+    # positive workload by erasing projections to any or retaining removed keys.
+    with tempfile.TemporaryDirectory(prefix="home-bench-destructuring-") as temporary:
+        project = Path(temporary) / "project"
+        shutil.copytree(CORPUS / "destructuring", project)
+        source_path = project / "src/destructuring.ts"
+        source = source_path.read_text(encoding="utf-8")
+        anchor = (
+            "function projectBindings0(input: BindingRecord0): BindingProjection0 {\n"
+            "  const { meta: { label, score }, slots: [first, second], active = true, ...identity } = input;\n"
+        )
+        if source.count(anchor) != 1:
+            raise SystemExit("destructuring negative-control anchor is not unique")
+        invalid = (
+            "  const invalidLabel: number = label;\n"
+            "  const invalidTuple: number = second;\n"
+            "  const invalidRest: string = identity.id;\n"
+            "  const invalidDefault: string = active;\n"
+            "  const invalidOmitted = identity.meta;\n"
+        )
+        write(source_path, source.replace(anchor, anchor + invalid, 1))
+        for name, command in commands.items():
+            result = subprocess.run(
+                command + ["--noEmit", "-p", str(project / "tsconfig.json")],
+                capture_output=True,
+                text=True,
+            )
+            details = result.stdout + result.stderr
+            codes = sorted(re.findall(r"\berror TS(\d+):", details))
+            if result.returncode == 0 or codes != ["2322"] * 4 + ["2339"]:
+                raise SystemExit(f"{name} failed destructuring negative controls:\n{details}")
+
+
+def selected_workloads(requested: list[str] | None) -> list[str]:
+    available = manifest()["workloads"]
+    if requested is None:
+        return list(available)
+    if not requested:
+        raise SystemExit("select at least one workload")
+    if len(set(requested)) != len(requested):
+        raise SystemExit("duplicate workloads would overwrite measured rounds")
+    unknown = [name for name in requested if name not in available]
+    if unknown:
+        raise SystemExit(f"unknown workload: {', '.join(unknown)}")
+    return list(requested)
+
+
+def cmd_cold(runs: int, warmup: int, workloads: list[str] | None = None) -> Path:
+    workloads = selected_workloads(workloads)
     if not shutil.which("hyperfine"):
         raise SystemExit("hyperfine is required (brew install hyperfine)")
     if not CORPUS.is_dir():
         cmd_corpus()
     commands = compiler_commands()
+    versions = verified_compiler_versions(commands)
+    preflight_provenance = benchmark_provenance(commands)
+    # Validate the entire selection before creating a result directory or
+    # timing any workload. A later admission failure must not leave an
+    # apparently complete report containing only the earlier/easier cases.
+    for workload in workloads:
+        validate(commands, workload)
+    admitted_provenance = benchmark_provenance(commands)
+    if admitted_provenance != preflight_provenance:
+        raise SystemExit("benchmark artifacts changed during admission; no timing results were created")
     stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     output = RESULTS / stamp
     output.mkdir(parents=True)
@@ -229,29 +1277,82 @@ def cmd_cold(runs: int, warmup: int) -> Path:
         "processor": platform.processor(),
         "runs": runs,
         "warmup": warmup,
-        "compilers": {name: version_output(command) for name, command in commands.items()},
+        "schedule": "round-robin interleaved",
+        "validation_schema": 3,
+        "workloads": workloads,
+        "compilers": versions,
+        "provenance": {
+            "status": "measuring",
+            "before": preflight_provenance,
+            "after": None,
+        },
     }
-    write(output / "metadata.json", json.dumps(metadata, indent=2) + "\n")
-    for workload in manifest()["workloads"]:
-        validate(commands, workload)
-        config = CORPUS / workload / "tsconfig.json"
-        for name, command in commands.items():
-            benchmark = command + ["--noEmit", "-p", str(config)]
-            run(
-                [
+    metadata_path = output / "metadata.json"
+    write(metadata_path, json.dumps(metadata, indent=2) + "\n")
+    try:
+        for workload in workloads:
+            config = CORPUS / workload / "tsconfig.json"
+            benchmarks = {
+                name: command + ["--noEmit", "-p", str(config)]
+                for name, command in commands.items()
+            }
+            names = list(benchmarks)
+
+            # Warm and measure in balanced round-robin order. Running every sample
+            # for compiler A before compiler B lets changing workstation load bias
+            # the comparison; rotating the order makes each compiler occupy every
+            # position equally while retaining Hyperfine's process timer.
+            for index in range(warmup):
+                order = names[index % len(names) :] + names[: index % len(names)]
+                for name in order:
+                    subprocess.run(
+                        benchmarks[name],
+                        check=True,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+
+            print(f"+ hyperfine interleaved {workload}: {runs} runs after {warmup} warmups", flush=True)
+            for index in range(runs):
+                offset = index % len(names)
+                order = names[offset:] + names[:offset]
+                command_line = [
                     "hyperfine",
                     "--shell=none",
-                    "--warmup",
-                    str(warmup),
                     "--runs",
-                    str(runs),
+                    "1",
+                    "--style",
+                    "none",
                     "--export-json",
-                    str(output / f"{workload}-{name}.json"),
-                    "--command-name",
-                    f"{name} {workload}",
-                    shlex.join(benchmark),
+                    str(output / f"{workload}-round-{index:03d}.json"),
                 ]
-            )
+                for name in order:
+                    command_line.extend(
+                        [
+                            "--command-name",
+                            f"{name} {workload}",
+                            shlex.join(benchmarks[name]),
+                        ]
+                    )
+                subprocess.run(command_line, check=True)
+    except BaseException as error:
+        metadata["provenance"]["status"] = "incomplete"
+        metadata["failure"] = {"type": type(error).__name__, "message": str(error)}
+        try:
+            metadata["provenance"]["after"] = benchmark_provenance(commands)
+        except BaseException as provenance_error:
+            metadata["provenance"]["after_error"] = str(provenance_error)
+        write(metadata_path, json.dumps(metadata, indent=2) + "\n")
+        raise
+
+    final_provenance = benchmark_provenance(commands)
+    metadata["provenance"]["after"] = final_provenance
+    if final_provenance != preflight_provenance:
+        metadata["provenance"]["status"] = "changed"
+        write(metadata_path, json.dumps(metadata, indent=2) + "\n")
+        raise SystemExit(f"benchmark artifacts changed during measurement; retained invalid results in {output}")
+    metadata["provenance"]["status"] = "verified"
+    write(metadata_path, json.dumps(metadata, indent=2) + "\n")
     print(f"Results: {output}")
     return output
 
@@ -276,6 +1377,7 @@ def main() -> int:
     cold = sub.add_parser("cold", help="run validated cold frontend benchmarks")
     cold.add_argument("--runs", type=int, default=10)
     cold.add_argument("--warmup", type=int, default=3)
+    cold.add_argument("--workload", action="append", help="select a workload; repeat for several (default: all)")
     report = sub.add_parser("report", help="render a Markdown report")
     report.add_argument("results", nargs="?", type=Path)
     sub.add_parser("all", help="generate corpus, set up tools, benchmark, and report")
@@ -285,7 +1387,7 @@ def main() -> int:
     elif args.command == "setup":
         cmd_setup()
     elif args.command == "cold":
-        cmd_cold(args.runs, args.warmup)
+        cmd_cold(args.runs, args.warmup, args.workload)
     elif args.command == "report":
         cmd_report(args.results)
     else:

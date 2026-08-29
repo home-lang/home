@@ -33,6 +33,7 @@ const relation = @import("relation.zig");
 const lower = @import("lower.zig");
 const lib = @import("lib.zig");
 const unicode_case = @import("unicode_case.zig");
+const source_markers_mod = @import("source_markers.zig");
 const string_interner = @import("string_interner");
 const binder_mod = @import("binder");
 
@@ -249,6 +250,12 @@ pub const ExternalResolver = struct {
         // and enums are both type/value exports; interfaces and type
         // aliases are type-only declarations.
         exported_value: bool = false,
+        /// For an exported module namespace alias, the actual module owner.
+        /// Empty for ordinary declarations and type-only value projections.
+        namespace_module_path: []const u8 = "",
+        /// Exact value-space availability from a complete bound export query.
+        /// Null means the resolver cannot safely close a namespace's shape.
+        runtime_value: ?bool = null,
         /// True when the queried CommonJS value export was declared by a
         /// getter-only or non-writable `Object.defineProperty` descriptor.
         exported_value_readonly: bool = false,
@@ -271,6 +278,9 @@ pub const ExternalResolver = struct {
         /// alias `mod.name` cannot reference a type-only export). Additive:
         /// resolvers that don't compute it leave it false.
         type_only_export: bool = false,
+        /// The restriction originates at an `import type` declaration in
+        /// the alias chain (TS1361), rather than an `export type` (TS1362).
+        type_only_import: bool = false,
         /// When `type_only_export` is true: the resolved module's path and
         /// the byte offset of the type-only export declaration within it.
         /// Anchors the TS1377 "'{0}' was exported here" cross-file
@@ -365,6 +375,23 @@ pub const ExternalResolver = struct {
             name: []const u8,
             resolution_mode: []const u8,
         ) ?ModuleExport = null,
+        /// Enumerate the non-default names projected by a resolved module.
+        /// Used to diagnose real export-star ambiguity without guessing from
+        /// the number of star declarations in the importing source.
+        moduleExportNames: ?*const fn (
+            self: *anyopaque,
+            specifier: []const u8,
+            containing_file: []const u8,
+        ) ?[]const []const u8 = null,
+        /// Whether two module projections refer to the same actual exported
+        /// declaration. Null means provenance is unavailable, not equality.
+        sameModuleExport: ?*const fn (
+            self: *anyopaque,
+            left_specifier: []const u8,
+            right_specifier: []const u8,
+            containing_file: []const u8,
+            name: []const u8,
+        ) ?bool = null,
         // Declaration-emit portability query for inferred exported
         // variables initialized by an imported call expression. Returns
         // the first type reference in the imported function's declared
@@ -418,6 +445,15 @@ pub const ExternalResolver = struct {
         return f(self.ptr, specifier, containing_file, name, resolution_mode);
     }
 
+    pub fn moduleExportNames(
+        self: ExternalResolver,
+        specifier: []const u8,
+        containing_file: []const u8,
+    ) ?[]const []const u8 {
+        const f = self.vtable.moduleExportNames orelse return null;
+        return f(self.ptr, specifier, containing_file);
+    }
+
     pub fn inferredExportUnsafeReference(
         self: ExternalResolver,
         specifier: []const u8,
@@ -460,6 +496,19 @@ pub const ScriptObjectExpando = struct {
     has_jsdoc_typedef: bool = false,
 };
 
+/// A program-global binding whose TypeId is in the receiving checker's type
+/// interner. Names use that checker's string keyspace. This is name lookup,
+/// not owner transfer: callers must separately install any semantic metadata
+/// required by the type before publishing a binding.
+pub const ProgramGlobalBinding = struct {
+    name: hir_mod.StringId,
+    type: TypeId,
+    /// True for `var`/function-style bindings that become properties of
+    /// `globalThis`; false for top-level lexical `let`/`const` bindings and
+    /// type-space entries.
+    is_global_this_property: bool = false,
+};
+
 pub const ModuleInterfaceAugmentation = struct {
     target_path: []const u8,
     source_path: []const u8 = "",
@@ -476,14 +525,39 @@ pub const ModuleInterfaceAugmentation = struct {
 
 pub const ProgramExportedClass = struct {
     target_path: []const u8,
+    /// Source-owned local declarations share generic metadata, but must never
+    /// be surfaced as exports merely because an importer spells their name.
+    local_only: bool = false,
+    /// Export binding location may differ from the owning class declaration.
+    export_name: []const u8 = "",
+    declaration_path: []const u8 = "",
+    declaration_pos: ?u32 = null,
     ambient_module_name: []const u8 = "",
     class_name: []const u8,
     type_parameter_names: []const []const u8 = &.{},
+    /// Borrowed source-owned metadata; consumer integration is staged separately.
+    schema: ?*const ProgramClassSchema.Schema = null,
     is_default: bool = false,
     is_export_assignment_target: bool = false,
     members: []const ProgramExportedClassMember = &.{},
     static_members: []const ProgramExportedClassMember = &.{},
+
+    pub fn exportedName(self: ProgramExportedClass) []const u8 {
+        return if (self.export_name.len > 0) self.export_name else self.class_name;
+    }
 };
+
+pub const ProgramClassSchema = @import("program_schema.zig");
+
+const ProgramDeclarationContext = struct {
+    pub fn hash(_: ProgramDeclarationContext, key: *const ProgramClassSchema.Declaration) u64 {
+        return std.hash.Wyhash.hash(key.position, key.path);
+    }
+    pub fn eql(_: ProgramDeclarationContext, a: *const ProgramClassSchema.Declaration, b: *const ProgramClassSchema.Declaration) bool {
+        return a.position == b.position and std.mem.eql(u8, a.path, b.path);
+    }
+};
+const ProgramTypeError = CheckError || error{UnsupportedProgramType};
 
 pub const ProgramMemberVisibility = enum {
     public,
@@ -515,6 +589,13 @@ pub const ProgramExportedValue = struct {
     kind: ProgramExportedValueKind,
     parameters: []const ProgramTypeReference = &.{},
     result: ProgramTypeReference = .{},
+    declaration: ?*const ProgramClassSchema.Declaration = null,
+};
+
+pub const ProgramExportedType = struct {
+    target_path: []const u8,
+    export_name: []const u8,
+    declaration: *const ProgramClassSchema.Declaration,
 };
 
 pub const ProgramAmbientModuleInterfaceExport = struct {
@@ -532,6 +613,10 @@ pub const ProgramAmbientModuleInterfaceExport = struct {
 pub const ProgramCommonJsExport = struct {
     module_path: []const u8,
     name: []const u8,
+    /// Whole-export type projected from the declaration module's checked
+    /// owner. Null while that owner has not been checked or when its type is
+    /// outside the lossless program-schema subset.
+    whole_export_schema: ?*const ProgramClassSchema.Schema = null,
     private_type_name: []const u8 = "",
     private_module_name: []const u8 = "",
     /// The declaration module's `export =` target is explicitly `any`.
@@ -2835,8 +2920,8 @@ pub const TsCodes = struct {
 
 /// Per-alias generic info: the type-parameter TypeIds in
 /// declaration order plus the body TypeId those parameters
-/// substitute into. Owned by the checker; the slice lives in the
-/// checker's diag/scratch arena.
+/// substitute into. The parameter slice is allocator-owned and moves
+/// from Checker to CheckedTypes together with the alias table.
 pub const GenericAliasInfo = struct {
     params: []TypeId,
     body: TypeId,
@@ -3187,6 +3272,42 @@ const NamespaceFunctionGroup = struct {
 const DeclarationKey = struct {
     name: hir_mod.StringId,
     virtual_section_start: usize,
+};
+
+const VisibleNamedTypeKey = struct {
+    container: NodeId,
+    name: hir_mod.StringId,
+    virtual_section_start: usize,
+};
+
+const VisibleAnnotatedValueKey = struct {
+    container: NodeId,
+    name: hir_mod.StringId,
+    virtual_section_start: usize,
+};
+
+const NamedShapeCandidateBucket = struct {
+    head: usize = std.math.maxInt(usize),
+    count: usize = 0,
+};
+
+const NamedShapeCandidate = struct {
+    name: hir_mod.StringId,
+    type: TypeId,
+    next: usize,
+};
+
+const LocalValueContainerIndex = struct {
+    const Entry = struct { declaration: NodeId, ordinal: usize };
+    const StatementKey = struct { node: NodeId, virtual_section_start: usize };
+
+    declarations: std.AutoHashMapUnmanaged(DeclarationKey, Entry) = .empty,
+    statement_ordinals: std.AutoHashMapUnmanaged(StatementKey, usize) = .empty,
+
+    fn deinit(self: *LocalValueContainerIndex, gpa: std.mem.Allocator) void {
+        self.declarations.deinit(gpa);
+        self.statement_ordinals.deinit(gpa);
+    }
 };
 
 const JsDocGlobalDeclEntry = struct {
@@ -3614,12 +3735,283 @@ fn jsonStringContentEnd(src: []const u8, content_start: usize) ?usize {
 const SourceFacts = struct {
     check_js_directive: ?bool = null,
     allow_js_directive: ?bool = null,
+    declaration_true_directive: ?bool = null,
+    no_implicit_references_true_directive: ?bool = null,
     explicitly_disables_check_js: ?bool = null,
     strict_false_directive: ?bool = null,
     legacy_decorators: ?bool = null,
     no_lib_true_directive: ?bool = null,
     contains_import_meta: ?bool = null,
     use_define_for_class_fields_true: ?bool = null,
+    jsx_syntax: ?bool = null,
+    jsx_factory_scanned: bool = false,
+    jsx_factory: ?[]const u8 = null,
+    jsx_fragment_factory_scanned: bool = false,
+    jsx_fragment_factory: ?[]const u8 = null,
+    react_jsx_reference: ?bool = null,
+    react16_jsx_reference: ?bool = null,
+    react18_jsx_reference: ?bool = null,
+    may_have_jsdoc: ?bool = null,
+    reference_types_node: ?bool = null,
+    target_es2016_or_later: ?bool = null,
+    lib_directive_excludes_dom_element: ?bool = null,
+};
+
+const RecoveredParameterSyntax = struct {
+    declaration_start: u32,
+    declaration_end: u32,
+    type_name: hir_mod.StringId,
+    optional: bool,
+    use_spans_start: u32 = 0,
+    use_spans_len: u32 = std.math.maxInt(u32),
+};
+
+const RecoveredParameterUseSpan = struct {
+    body_open: u32,
+    last_use: u32,
+};
+
+const SourceFunctionSpan = struct {
+    node: NodeId,
+    start: u32,
+    end: u32,
+    parent: u32 = std.math.maxInt(u32),
+};
+
+const JsDocNamedDeclarationKind = enum {
+    typedef,
+    callback,
+};
+
+const JsDocNamedDeclarationKey = struct {
+    name: hir_mod.StringId,
+    owner_function: NodeId,
+    kind: JsDocNamedDeclarationKind,
+};
+
+const JsDocNamedDeclarationAnyKey = struct {
+    name: hir_mod.StringId,
+    kind: JsDocNamedDeclarationKind,
+};
+
+const JsDocNamedDeclaration = struct {
+    comment_start: usize,
+};
+
+const PriorJsDocPropertyAssignment = struct {
+    node: NodeId,
+    start: u32,
+    section: usize,
+};
+
+/// Owned declaration and signature metadata for a checked source file.
+/// TypeIds/StringIds/NodeIds belong to the accompanying interner and HIR;
+/// consumers must retain that owner rather than treating these as global IDs.
+/// Transient control-flow scopes and in-progress resolution caches stay in
+/// Checker. Type graphs and allocator-owned containers move without copying.
+/// Structural payloads alone are insufficient: retain inference markers,
+/// tuple layouts, index signatures, nominal origins, and declaration metadata.
+/// Borrowed display strings/type-argument slices are copied on capture; the
+/// diagnostic arena and transient flow/resolution state are not retained.
+pub const CheckedTypes = struct {
+    type_names: std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId) = .empty,
+    generic_aliases: std.AutoHashMapUnmanaged(hir_mod.StringId, GenericAliasInfo) = .empty,
+    generic_interfaces_by_decl: std.AutoHashMapUnmanaged(NodeId, GenericAliasInfo) = .empty,
+    generic_interface_decl_by_instance: std.AutoHashMapUnmanaged(TypeId, NodeId) = .empty,
+    generic_fns: std.AutoHashMapUnmanaged(hir_mod.StringId, []TypeId) = .empty,
+    generic_signature_params: std.AutoHashMapUnmanaged(TypeId, []TypeId) = .empty,
+    class_instance_types: std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId) = .empty,
+    class_static_types: std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId) = .empty,
+    rest_signatures: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
+    signature_this_params: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
+    constructor_signature_visibility: std.AutoHashMapUnmanaged(TypeId, ConstructorVisibility) = .empty,
+    signature_min_args: std.AutoHashMapUnmanaged(TypeId, usize) = .empty,
+    signature_display_min_args: std.AutoHashMapUnmanaged(TypeId, usize) = .empty,
+    signature_nullish_array_defaults: std.AutoHashMapUnmanaged(TypeId, []bool) = .empty,
+    signature_param_names: std.AutoHashMapUnmanaged(TypeId, []hir_mod.StringId) = .empty,
+    signature_decl_nodes: std.AutoHashMapUnmanaged(TypeId, NodeId) = .empty,
+    signature_param_nodes: std.AutoHashMapUnmanaged(TypeId, []NodeId) = .empty,
+    signature_param_name_occurrences: std.AutoHashMapUnmanaged(TypeId, []hir_mod.StringId) = .empty,
+    fn_predicates: std.AutoHashMapUnmanaged(hir_mod.StringId, FnPredicate) = .empty,
+    signature_predicates: std.AutoHashMapUnmanaged(TypeId, FnPredicate) = .empty,
+    member_predicates: std.AutoHashMapUnmanaged(TypeMemberKey, FnPredicate) = .empty,
+    signature_param_predicates: std.AutoHashMapUnmanaged(SignatureParamKey, FnPredicate) = .empty,
+    overloads: std.AutoHashMapUnmanaged(hir_mod.StringId, std.ArrayListUnmanaged(TypeId)) = .empty,
+    overload_has_implementation: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
+    type_parameter_decl_nodes: std.AutoHashMapUnmanaged(TypeId, NodeId) = .empty,
+    type_parameter_placeholder_targets: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
+    recursive_interface_targets: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
+    mapped_type_params: std.AutoHashMapUnmanaged(NodeId, TypeId) = .empty,
+    inferred_variance: std.AutoHashMapUnmanaged(TypeId, types.Variance) = .empty,
+
+    commonjs_export_narrows: std.AutoHashMapUnmanaged(MemberKey, TypeId) = .empty,
+    checkjs_object_expando_narrows: std.AutoHashMapUnmanaged(MemberKey, TypeId) = .empty,
+    merged_class_instance_types: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
+    class_this_types: std.AutoHashMapUnmanaged(NodeId, TypeId) = .empty,
+    class_constructor_sigs: std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId) = .empty,
+    class_static_type_by_node: std.AutoHashMapUnmanaged(NodeId, TypeId) = .empty,
+    class_name_by_instance: std.AutoHashMapUnmanaged(TypeId, hir_mod.StringId) = .empty,
+    interface_extends_visibility_class: std.AutoHashMapUnmanaged(hir_mod.StringId, hir_mod.StringId) = .empty,
+    class_decl_by_instance: std.AutoHashMapUnmanaged(TypeId, NodeId) = .empty,
+    decl_single_base: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
+    relation_display_base: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
+    class_name_by_static: std.AutoHashMapUnmanaged(TypeId, hir_mod.StringId) = .empty,
+    class_parent: std.AutoHashMapUnmanaged(hir_mod.StringId, hir_mod.StringId) = .empty,
+    abstract_classes: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
+    private_constructor_classes: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
+    protected_constructor_classes: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
+    class_accessor_setter_types: std.AutoHashMapUnmanaged(ClassAccessorKey, TypeId) = .empty,
+    named_type_by_id: std.AutoHashMapUnmanaged(TypeId, hir_mod.StringId) = .empty,
+    last_iface_decl_for_name: std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId) = .empty,
+    recursive_indexed_access_aliases: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
+    recursive_mapped_index_aliases: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
+    namespace_value_object_types: std.AutoHashMapUnmanaged(NodeId, TypeId) = .empty,
+    jsdoc_constrained_type_params: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
+    string_named_export_types: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
+    type_alias_bodies: std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId) = .empty,
+    unknown_empty_object_types: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
+    enum_member_values: std.AutoHashMapUnmanaged(MemberKey, f64) = .empty,
+    enum_member_string_values: std.AutoHashMapUnmanaged(MemberKey, hir_mod.StringId) = .empty,
+    enum_member_string_syntax: std.AutoHashMapUnmanaged(MemberKey, bool) = .empty,
+    const_enums: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
+    enum_nominal_names: std.AutoHashMapUnmanaged(TypeId, hir_mod.StringId) = .empty,
+    enum_nominal_decls: std.AutoHashMapUnmanaged(TypeId, NodeId) = .empty,
+    ambient_const_enums: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
+    numeric_enums: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
+    var_decl_types: std.AutoHashMapUnmanaged(VarDeclKey, TypeId) = .empty,
+    var_decl_explicit: std.AutoHashMapUnmanaged(VarDeclKey, bool) = .empty,
+    var_decl_jsdoc_type_names: std.AutoHashMapUnmanaged(VarDeclKey, hir_mod.StringId) = .empty,
+    var_decl_annotation_nodes: std.AutoHashMapUnmanaged(VarDeclKey, NodeId) = .empty,
+    this_type_markers: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
+    no_infer_types: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
+    readonly_index_types: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
+    index_param_names: std.AutoHashMapUnmanaged(TypeId, IndexParamNames) = .empty,
+    generator_type_info: std.AutoHashMapUnmanaged(TypeId, GeneratorTypeInfo) = .empty,
+    tuple_origin_types: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
+    array_origin_types: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
+    normalized_object_literal_unions: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
+    tuple_trailing_rest_types: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
+    tuple_trailing_variadic_types: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
+    infer_type_parameters: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
+    jsdoc_generic_typedef_aliases: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
+    jsdoc_typedef_object_types: std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId) = .empty,
+    jsdoc_callback_signatures: std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId) = .empty,
+    interface_merge_predecessor: std.AutoHashMapUnmanaged(NodeId, NodeId) = .empty,
+    module_augmentation_callback_signatures: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
+    module_augmented_interface_types: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
+    synthetic_program_class_origins: std.AutoHashMapUnmanaged(TypeId, hir_mod.StringId) = .empty,
+    class_constructor_overload_sigs: std.AutoHashMapUnmanaged(hir_mod.StringId, std.ArrayListUnmanaged(TypeId)) = .empty,
+    overload_decls: std.AutoHashMapUnmanaged(hir_mod.StringId, std.ArrayListUnmanaged(NodeId)) = .empty,
+    class_private_members: std.AutoHashMapUnmanaged(
+        hir_mod.StringId,
+        std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ) = .empty,
+    class_protected_members: std.AutoHashMapUnmanaged(
+        hir_mod.StringId,
+        std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ) = .empty,
+    class_static_private_members: std.AutoHashMapUnmanaged(
+        hir_mod.StringId,
+        std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ) = .empty,
+    class_static_protected_members: std.AutoHashMapUnmanaged(
+        hir_mod.StringId,
+        std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ) = .empty,
+    class_instance_member_names: std.AutoHashMapUnmanaged(
+        hir_mod.StringId,
+        std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ) = .empty,
+    class_static_member_names: std.AutoHashMapUnmanaged(
+        hir_mod.StringId,
+        std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ) = .empty,
+    class_abstract_members: std.AutoHashMapUnmanaged(
+        hir_mod.StringId,
+        std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ) = .empty,
+    class_abstract_members_order: std.AutoHashMapUnmanaged(
+        hir_mod.StringId,
+        std.ArrayListUnmanaged(hir_mod.StringId),
+    ) = .empty,
+    class_abstract_property_origins: std.AutoHashMapUnmanaged(
+        hir_mod.StringId,
+        std.AutoHashMapUnmanaged(hir_mod.StringId, hir_mod.StringId),
+    ) = .empty,
+    class_property_members: std.AutoHashMapUnmanaged(
+        hir_mod.StringId,
+        std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ) = .empty,
+    class_accessor_members: std.AutoHashMapUnmanaged(
+        hir_mod.StringId,
+        std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ) = .empty,
+    class_getter_members: std.AutoHashMapUnmanaged(
+        hir_mod.StringId,
+        std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ) = .empty,
+    class_static_getter_members: std.AutoHashMapUnmanaged(
+        hir_mod.StringId,
+        std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ) = .empty,
+    class_method_members: std.AutoHashMapUnmanaged(
+        hir_mod.StringId,
+        std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ) = .empty,
+    class_private_method_members: std.AutoHashMapUnmanaged(
+        hir_mod.StringId,
+        std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ) = .empty,
+    class_static_private_method_members: std.AutoHashMapUnmanaged(
+        hir_mod.StringId,
+        std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ) = .empty,
+    class_private_set_only_accessors: std.AutoHashMapUnmanaged(
+        hir_mod.StringId,
+        std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ) = .empty,
+    class_static_private_set_only_accessors: std.AutoHashMapUnmanaged(
+        hir_mod.StringId,
+        std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ) = .empty,
+    pattern_index_signatures: std.AutoHashMapUnmanaged(TypeId, []PatternIndexSignature) = .empty,
+    symbolic_tuple_layouts: std.AutoHashMapUnmanaged(TypeId, []const SymbolicTupleSegment) = .empty,
+    jsdoc_constraint_display_names: std.AutoHashMapUnmanaged(TypeId, []const u8) = .empty,
+    alias_display_names: std.AutoHashMapUnmanaged(TypeId, []const u8) = .empty,
+    diagnostic_union_display_names: std.AutoHashMapUnmanaged(TypeId, []const u8) = .empty,
+    qualified_alias_diagnostic_names: std.AutoHashMapUnmanaged(TypeId, []const u8) = .empty,
+    alias_type_args: std.AutoHashMapUnmanaged(TypeId, []const TypeId) = .empty,
+    builtin_object_names: std.AutoHashMapUnmanaged(TypeId, []const u8) = .empty,
+
+    // Checker borrows these values from its arena, source, interner, or
+    // program inputs. CheckedTypes owns independent copies of every slice.
+    const borrowed_slices = .{ "jsdoc_constraint_display_names", "alias_display_names", "diagnostic_union_display_names", "qualified_alias_diagnostic_names", "alias_type_args", "builtin_object_names" };
+    const owned_slices = .{ "generic_fns", "generic_signature_params", "signature_nullish_array_defaults", "signature_param_names", "signature_param_nodes", "signature_param_name_occurrences", "pattern_index_signatures", "symbolic_tuple_layouts" };
+    const nested_containers = .{ "overloads", "class_constructor_overload_sigs", "overload_decls", "class_private_members", "class_protected_members", "class_static_private_members", "class_static_protected_members", "class_instance_member_names", "class_static_member_names", "class_abstract_members", "class_abstract_members_order", "class_abstract_property_origins", "class_property_members", "class_accessor_members", "class_getter_members", "class_static_getter_members", "class_method_members", "class_private_method_members", "class_static_private_method_members", "class_private_set_only_accessors", "class_static_private_set_only_accessors" };
+
+    pub fn deinit(self: *CheckedTypes, gpa: std.mem.Allocator) void {
+        inline for (owned_slices ++ borrowed_slices) |name| {
+            var values = @field(self, name).valueIterator();
+            while (values.next()) |value| gpa.free(value.*);
+        }
+        inline for (.{ "generic_aliases", "generic_interfaces_by_decl" }) |name| {
+            var values = @field(self, name).valueIterator();
+            while (values.next()) |value| gpa.free(value.params);
+        }
+        inline for (nested_containers) |name| {
+            var values = @field(self, name).valueIterator();
+            while (values.next()) |value| value.deinit(gpa);
+        }
+        inline for (comptime std.meta.fieldNames(CheckedTypes)) |name| @field(self, name).deinit(gpa);
+        self.* = .{};
+    }
+};
+
+const TypeOnlyOriginKind = enum { none, import_type, export_type };
+
+const GenericInterfaceRefreshKey = struct {
+    decl: NodeId,
+    instantiated: TypeId,
 };
 
 pub const Checker = struct {
@@ -3676,6 +4068,15 @@ pub const Checker = struct {
     /// `signature_subs`) never pollute the cache.
     subst_memo: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
     subst_memo_subs: ?*const std.AutoHashMapUnmanaged(TypeId, TypeId) = null,
+    /// Lazily records whether this source contains any untyped `let`/`var`
+    /// declaration whose type can evolve through later assignments. Most
+    /// typed sources contain none; in that common case identifier lookup can
+    /// skip the source-order flow search entirely.
+    may_have_evolving_any_candidates: ?bool = null,
+    /// Lazily records whether any simple assignment targets an identifier's
+    /// dotted member. Function-expando definite-assignment analysis cannot
+    /// produce state or diagnostics without at least one such assignment.
+    may_have_expando_property_assignments: ?bool = null,
     declared_identifier_lookup: bool,
     report_unresolved_in_namespace_scope: bool,
     /// Set while type-checking the contents of a class computed-property
@@ -3964,6 +4365,15 @@ pub const Checker = struct {
     /// `lowererLowerWithTypeParams` so `b: Box`, `b: SomeInterface`,
     /// or `b: SomeAlias` all resolve at the annotation site.
     type_names: std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId),
+    /// Reverse display-name lookup for registered named types. Entries are
+    /// validated against `type_names` before use so name rebinding cannot
+    /// leave a stale diagnostic identity.
+    named_type_by_id: std.AutoHashMapUnmanaged(TypeId, hir_mod.StringId),
+    /// Monotonic membership proves never-registered TypeIds cannot occur in
+    /// `type_names`. Rebinding may leave obsolete IDs, which only cause an
+    /// extra full scan. This has the same lifetime as the type-name table.
+    registered_named_type_ids: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
+    registered_named_type_ids_complete: bool = true,
     /// Most-recent `interface_decl` node that registered a type under
     /// each name. Lets the interface-merge logic in
     /// `checkInterfaceDecl` confirm the previous declaration shares
@@ -3993,6 +4403,14 @@ pub const Checker = struct {
     /// body. Member refreshes must not fall back to a same-named interface
     /// from another namespace.
     generic_interface_decl_by_instance: std.AutoHashMapUnmanaged(TypeId, NodeId),
+    /// Completed generic-interface `extends` refreshes. The substituted body
+    /// is structurally interned, so `(declaration, instantiated body)` is a
+    /// stable identity for repeating the same inheritance work.
+    generic_interface_refresh_cache: std.AutoHashMapUnmanaged(GenericInterfaceRefreshKey, TypeId) = .empty,
+    /// Exact refreshes currently walking their inherited interfaces. A
+    /// recursive inheritance path cannot contribute new index information
+    /// by re-entering the same substituted body, so defer that edge.
+    generic_interface_refresh_active: std.AutoHashMapUnmanaged(GenericInterfaceRefreshKey, void) = .empty,
     /// Generic alias instantiations currently being materialized.
     /// Recursive mapped aliases such as
     /// `type Circular<T> = { [K in keyof T]: Circular<T> }` must defer
@@ -4302,6 +4720,11 @@ pub const Checker = struct {
     /// so TS2345/TS2322 prose renders `Date` instead of falling through
     /// to the positional placeholder. Strings are static ÃÂ¢ÃÂÃÂ no arena.
     builtin_object_names: std.AutoHashMapUnmanaged(TypeId, []const u8),
+    /// The fixed Function member recipe shares its private any[] and rest
+    /// signatures. Each outer object still gets a fresh declaration identity.
+    /// Published only after complete construction; shares the interner and
+    /// rest-signature table lifetime, not the attached source lifetime.
+    builtin_function_members: ?[2]types.ObjectMember = null,
     /// Function name ÃÂ¢ÃÂÃÂ list of overload signature TypeIds in
     /// declaration order. Populated when multiple `function f(...)`
     /// declarations share a name (overloads + implementation). The
@@ -4504,11 +4927,11 @@ pub const Checker = struct {
     /// same import node returns `false` to break the cycle. See
     /// `reservedNameOnInterfaceImport.ts`.
     import_equals_runtime_in_progress: std.AutoHashMapUnmanaged(NodeId, void),
-    /// TS1362 memo: maps a plain-imported local name to whether its source
-    /// module exports it via a type-only export. Keyed by name so the
+    /// TS1361/TS1362 memo: preserves the actual restriction's origin kind.
+    /// Keyed by name so the
     /// expensive cross-module `moduleExport` query (which recompiles the
     /// target module) runs at most once per name rather than per value-use.
-    cross_module_type_only_export_cache: std.AutoHashMapUnmanaged(hir_mod.StringId, bool),
+    cross_module_type_only_export_cache: std.AutoHashMapUnmanaged(hir_mod.StringId, TypeOnlyOriginKind),
     /// Cycle guard for `typeOfPatternBindingFromSource`. A
     /// self-referential destructuring binding (`const [a,b] = [...args]`
     /// / `const {...rest} = rest`) resolves the binding's type by
@@ -4542,7 +4965,6 @@ pub const Checker = struct {
     /// diagnostics. Null for explicit return annotations.
     current_function_return_sig: ?TypeId = null,
     current_function_return_from_jsdoc: bool = false,
-    current_function_return_from_paired_setter: bool = false,
     current_async_function_return_check: bool = false,
     /// Instance type expected from an explicit `return <expr>` inside
     /// a constructor body. Set only while walking a constructor so
@@ -4602,10 +5024,14 @@ pub const Checker = struct {
     /// pattern metadata must keep the binder symbolic while true-branch uses
     /// still substitute to the captured type.
     infer_type_parameters: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
+    /// Active structural-inference pairs. Recursive generic aliases can
+    /// revisit the same pair without contributing a new candidate.
+    active_inference_pairs: std.AutoHashMapUnmanaged(u64, void) = .empty,
     /// Hard-coded `lib.d.ts` substitute ÃÂ¢ÃÂÃÂ `String.prototype`,
     /// `Array<T>.prototype`, `Object` global. Populated lazily on
     /// first member-access against the corresponding receiver.
     lib_cache: lib.LibCache = .{},
+    empty_apparent_object_type: TypeId = types.Primitive.none,
     diagnostics: std.ArrayListUnmanaged(Diagnostic),
     diag_arena: std.heap.ArenaAllocator,
     /// Source bytes used for directive scanning (`// @ts-ignore` /
@@ -4613,9 +5039,145 @@ pub const Checker = struct {
     /// post-processing runs and the diagnostics list is left as-is.
     source: ?[]const u8 = null,
     source_facts: SourceFacts = .{},
+    /// Exact raw substring positions, shared by feature prefilters and
+    /// directive parsers. Rebuilt whenever the attached source changes.
+    source_markers: ?source_markers_mod.Index = null,
     parameter_annotation_index: std.ArrayListUnmanaged(NodeId) = .empty,
+    parameter_annotations_by_name: std.AutoHashMapUnmanaged(
+        hir_mod.StringId,
+        std.ArrayListUnmanaged(NodeId),
+    ) = .empty,
     parameter_annotation_index_built: bool = false,
+    /// Source-level parameter annotations grouped by identifier name. Some
+    /// parser-recovery compatibility paths need the original spelling, but
+    /// rescanning the whole prefix for every use makes repeated names (such as
+    /// TSX `props`) superlinear. Values retain source order for reverse lookup.
+    recovered_parameter_syntax: std.AutoHashMapUnmanaged(
+        hir_mod.StringId,
+        std.ArrayListUnmanaged(RecoveredParameterSyntax),
+    ) = .empty,
+    recovered_parameter_syntax_built: bool = false,
+    recovered_parameter_use_spans: std.ArrayListUnmanaged(RecoveredParameterUseSpan) = .empty,
+    /// JSDoc lookup repeatedly asks which function owns the same comment
+    /// positions. Cache immutable HIR containment results so source scans do
+    /// not multiply a full node walk by every referenced typedef.
+    source_function_containing_pos_cache: std.AutoHashMapUnmanaged(u32, NodeId) = .empty,
+    source_function_spans: std.ArrayListUnmanaged(SourceFunctionSpan) = .empty,
+    source_function_spans_indexed: bool = false,
+    source_function_spans_valid: bool = false,
+    /// First function binding by name in each immutable statement container.
+    /// Scope walks and binder precedence remain with the calling resolver.
+    function_decls_by_container: std.AutoHashMapUnmanaged(
+        NodeId,
+        std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId),
+    ) = .empty,
+    /// First local value declaration and exact statement boundaries, partitioned
+    /// by virtual source section. Ordinals preserve recovery-node ordering too.
+    local_value_decls_by_container: std.AutoHashMapUnmanaged(NodeId, LocalValueContainerIndex) = .empty,
+    /// Named `@typedef` and `@callback` blocks in a physical JS source.
+    /// JSDoc lowering probes several declaration categories per reference;
+    /// indexing once avoids repeated whole-source negative scans.
+    jsdoc_named_declarations: std.AutoHashMapUnmanaged(JsDocNamedDeclarationKey, JsDocNamedDeclaration) = .empty,
+    jsdoc_named_declarations_any_scope: std.AutoHashMapUnmanaged(JsDocNamedDeclarationAnyKey, JsDocNamedDeclaration) = .empty,
+    jsdoc_named_declarations_built: bool = false,
+    /// Generic aliases materialized from JSDoc typedefs. Subsequent
+    /// instantiations can reuse the registered generic body and run the
+    /// normal substitution/constraint path instead of reparsing the typedef.
+    jsdoc_generic_typedef_aliases: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
+    /// Resolved non-generic JSDoc typedef object shapes in a physical source.
+    /// These are immutable, but the same alias is commonly referenced from
+    /// callbacks, constraints, parameters, and variable annotations.
+    jsdoc_typedef_object_types: std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId) = .empty,
+    /// Resolved non-generic JSDoc callback signatures in a physical source.
+    jsdoc_callback_signatures: std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId) = .empty,
+    /// Plain member assignments with a leading JSDoc `@type`. Checked-JS
+    /// property writes otherwise search every HIR node for each assignment,
+    /// making repeated constructor fields quadratic even when none of those
+    /// writes has a declaration tag.
+    prior_jsdoc_property_assignments: std.ArrayListUnmanaged(PriorJsDocPropertyAssignment) = .empty,
+    prior_jsdoc_property_assignments_built: bool = false,
     source_has_virtual_sections: bool = false,
+    /// UMD globals require an `export as namespace` declaration. Cache a
+    /// conservative keyword prefilter so ordinary type references do not
+    /// repeatedly scan an entire source file looking for one.
+    source_may_have_umd_namespace_export: bool = false,
+    /// `declare var name: any` compatibility lookup is source-based. Keep a
+    /// conservative syntax prefilter so ordinary function-local declarations
+    /// do not rescan a source that cannot contain that form.
+    source_may_have_declare_any_var: bool = false,
+    /// Namespace-style `import local = Qualified.Name` lookup otherwise walks
+    /// enclosing statement lists for every qualified/member access.
+    source_may_have_import_equals: bool = false,
+    /// Import lookup helpers otherwise walk the source root for every
+    /// identifier and type reference, even in import-free programs.
+    source_may_have_import_declaration: bool = false,
+    /// JSDoc `@import` lookup scans source text rather than bound imports.
+    /// Keep an exact tag prefilter so ordinary JSDoc type references do not
+    /// rescan files that cannot contain such a declaration.
+    source_may_have_jsdoc_import_tag: bool = false,
+    /// CommonJS binding lookup walks the source root for every candidate
+    /// member access. Attached source without `require` cannot produce one.
+    source_may_have_require_binding: bool = false,
+    /// Namespace value lookup walks lexical and root statement lists. Source
+    /// text without any namespace/module spelling cannot produce those HIR
+    /// declarations; HIR-only checker setups retain the unfiltered path.
+    source_may_have_namespace_declaration: bool = false,
+    /// Class/enum use-before-declaration analysis recursively collects names
+    /// and references. Skip it when attached source cannot declare either.
+    source_may_have_class_or_enum_declaration: bool = false,
+    /// Enum member lookup walks enclosing statement lists. A class-only file
+    /// cannot satisfy it even though the broader class/enum feature bit is set.
+    source_may_have_enum_declaration: bool = false,
+    /// Type-alias compatibility lookups otherwise walk enclosing and root
+    /// statement lists for ordinary named types in alias-free sources.
+    source_may_have_type_alias_declaration: bool = false,
+    /// Checked-JS computed prototype replacement requires a computed access to
+    /// `prototype` assigned an object literal. Avoid whole-HIR probes otherwise.
+    source_may_have_computed_prototype_assignment: bool = false,
+    /// Legacy checked-JS constructor recovery walks assignments and source
+    /// prefixes looking for `Ctor.prototype`. Files without that exact syntax
+    /// cannot participate, so keep the negative path constant-time.
+    source_may_have_prototype_assignment: bool = false,
+    /// Protected-member syntax is uncommon, but accessibility probes run for
+    /// every property access. External/imported protected members remain
+    /// discoverable from object-member metadata even when this source has no
+    /// `protected` spelling.
+    source_may_have_protected_member: bool = false,
+    visible_named_type_decls: std.AutoHashMapUnmanaged(VisibleNamedTypeKey, NodeId) = .empty,
+    visible_type_alias_decls: std.AutoHashMapUnmanaged(VisibleNamedTypeKey, NodeId) = .empty,
+    indexed_named_type_containers: std.AutoHashMapUnmanaged(NodeId, void) = .empty,
+    visible_same_name_value_decls: std.AutoHashMapUnmanaged(VisibleNamedTypeKey, NodeId) = .empty,
+    indexed_same_name_value_containers: std.AutoHashMapUnmanaged(NodeId, void) = .empty,
+    source_var_declaration_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
+    source_var_declarations_indexed: bool = false,
+    visible_namespace_decls: std.AutoHashMapUnmanaged(VisibleNamedTypeKey, NodeId) = .empty,
+    indexed_namespace_containers: std.AutoHashMapUnmanaged(NodeId, void) = .empty,
+    containers_with_dotted_namespace_decls: std.AutoHashMapUnmanaged(NodeId, void) = .empty,
+    interface_merge_predecessor: std.AutoHashMapUnmanaged(NodeId, NodeId) = .empty,
+    /// First simple variable declaration per lexical statement container.
+    /// Annotation lookup uses source order, so indexing that first binding
+    /// avoids rescanning large blocks for every later identifier read.
+    visible_annotated_value_decls: std.AutoHashMapUnmanaged(VisibleAnnotatedValueKey, NodeId) = .empty,
+    indexed_annotated_value_containers: std.AutoHashMapUnmanaged(NodeId, void) = .empty,
+    /// Successful heritage resolution is immutable for a checked source node.
+    /// Cache only successes so forward and recovery paths can still resolve
+    /// after later declarations have been registered.
+    class_extends_instance_type_cache: std.AutoHashMapUnmanaged(NodeId, TypeId) = .empty,
+    class_extends_static_type_cache: std.AutoHashMapUnmanaged(NodeId, TypeId) = .empty,
+    class_extends_call_static_type_cache: std.AutoHashMapUnmanaged(NodeId, TypeId) = .empty,
+    named_shape_non_class_cache: std.AutoHashMapUnmanaged(TypeId, hir_mod.StringId) = .empty,
+    named_shape_any_cache: std.AutoHashMapUnmanaged(TypeId, hir_mod.StringId) = .empty,
+    /// A failed shape search stays valid until a named type is registered or
+    /// rebound. Class registrations only remove non-class candidates, so they
+    /// cannot turn a miss into a match. Keep both preference modes distinct.
+    named_shape_misses: std.AutoHashMapUnmanaged(u64, u64) = .empty,
+    type_names_generation: u64 = 0,
+    /// Every matching named shape must occur in each queried member's bucket.
+    /// Candidates remain with the type-name table across resets and rebinding;
+    /// current bindings and full shape equality are checked before acceptance.
+    named_shape_member_facts: std.AutoHashMapUnmanaged(u64, NamedShapeCandidateBucket) = .empty,
+    named_shape_candidates: std.ArrayListUnmanaged(NamedShapeCandidate) = .empty,
+    named_shape_member_facts_complete: bool = true,
     allow_js_enabled: bool = false,
     no_emit_enabled: bool = false,
     check_js_enabled: bool = false,
@@ -4629,6 +5191,11 @@ pub const Checker = struct {
     jsx_factory_compiler_option_present: bool = false,
     jsx_fragment_factory_compiler_option_present: bool = false,
     jsx_fragment_factory_scope_required: bool = false,
+    jsx_intrinsic_attributes_decl_scanned: bool = false,
+    jsx_intrinsic_attributes_decl: bool = false,
+    jsx_namespace_decl_scanned: bool = false,
+    jsx_namespace_decl: bool = false,
+    jsx_local_factory_namespace_type_cache: std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId) = .empty,
     /// True when the effective JSX mode is the classic `react` runtime
     /// (`@jsx: react` directive, tsconfig `jsx: react`, or the classic
     /// emit runtime with the jsx option present). tsgo only emits
@@ -4716,10 +5283,17 @@ pub const Checker = struct {
     /// These are properties of `globalThis`, `window`, and `self`, but not
     /// of the nullable `top: Window | null` DOM binding.
     program_global_var_names: []const []const u8 = &.{},
+    /// Source-owned value types relocated into this checker's type pool.
+    /// Local lexical/module bindings take precedence over these entries.
+    program_global_value_types: []const ProgramGlobalBinding = &.{},
     /// Type-space names contributed by sibling global script files.
     /// Program compilation supplies these so per-file checking can resolve
     /// interfaces, aliases, classes, enums, and namespaces from global libs.
     program_global_type_names: []const []const u8 = &.{},
+    /// Source-owned non-generic type bindings relocated into this checker's
+    /// type pool. Generic declarations additionally require their transferred
+    /// parameter metadata and are not published through this slice yet.
+    program_global_types: []const ProgramGlobalBinding = &.{},
     /// Program-level namespace roots contributed by `declare global {
     /// namespace X { ... } }` blocks in sibling files. Borrowed from
     /// the driver/program while checking this file.
@@ -4738,7 +5312,20 @@ pub const Checker = struct {
     /// Program-level exported class declarations discovered in sibling
     /// files. Borrowed from the driver/program while checking this file.
     program_exported_classes: []const ProgramExportedClass = &.{},
+    program_generic_definitions: std.HashMapUnmanaged(*const ProgramClassSchema.Declaration, TypeId, ProgramDeclarationContext, 80) = .empty,
+    program_definition_classes: std.AutoHashMapUnmanaged(TypeId, struct { name: hir_mod.StringId, origin: hir_mod.StringId }) = .empty,
+    program_local_class_names: std.StringHashMapUnmanaged(void) = .empty,
+    program_local_class_names_built: bool = false,
+    generic_instances: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
+    generic_instance_origins: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
+    generic_expansion_active: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
+    program_generic_defaults_active: std.AutoHashMapUnmanaged(*const ProgramClassSchema.Declaration, void) = .empty,
+    program_schema_support: std.AutoHashMapUnmanaged(*const ProgramClassSchema.Schema, bool) = .empty,
+    program_module_namespace_types: std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId) = .empty,
+    free_type_parameter_pending: std.ArrayListUnmanaged(TypeId) = .empty,
+    free_type_parameter_visited: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
     program_exported_values: []const ProgramExportedValue = &.{},
+    program_exported_types: []const ProgramExportedType = &.{},
     synthetic_program_class_origins: std.AutoHashMapUnmanaged(TypeId, hir_mod.StringId) = .empty,
     /// Program-level exported interfaces declared inside ambient external
     /// modules. Borrowed from the driver/program while checking this file.
@@ -4841,6 +5428,7 @@ pub const Checker = struct {
             .class_private_set_only_accessors = .empty,
             .class_static_private_set_only_accessors = .empty,
             .type_names = .empty,
+            .named_type_by_id = .empty,
             .last_iface_decl_for_name = .empty,
             .generic_aliases = .empty,
             .generic_interfaces_by_decl = .empty,
@@ -4919,6 +5507,10 @@ pub const Checker = struct {
             .pattern_binding_source_in_progress = .empty,
             .return_annotation_in_progress = .empty,
             .generator_type_info = .empty,
+            .recovered_parameter_syntax = .empty,
+            .source_function_containing_pos_cache = .empty,
+            .jsdoc_named_declarations = .empty,
+            .jsdoc_named_declarations_any_scope = .empty,
             .current_generator_info = null,
             .current_async_function_return_check = false,
             .function_body_depth = 0,
@@ -4955,14 +5547,92 @@ pub const Checker = struct {
     /// honor `// @ts-ignore` and `// @ts-expect-error` directives.
     /// The slice must outlive the checker; we don't copy it.
     pub fn setSource(self: *Checker, source: []const u8) void {
+        self.clearProgramGenericInstances();
+        self.program_schema_support.clearRetainingCapacity();
+        self.program_module_namespace_types.clearRetainingCapacity();
         self.source = source;
         self.source_facts = .{};
-        self.parameter_annotation_index.clearRetainingCapacity();
-        self.parameter_annotation_index_built = false;
+        self.source_markers = source_markers_mod.Index.scan(source);
+        const markers = &self.source_markers.?;
+        self.jsx_intrinsic_attributes_decl_scanned = false;
+        self.jsx_intrinsic_attributes_decl = false;
+        self.jsx_namespace_decl_scanned = false;
+        self.jsx_namespace_decl = false;
+        self.jsx_local_factory_namespace_type_cache.clearRetainingCapacity();
+        self.clearParameterAnnotationIndex();
+        var recovered_it = self.recovered_parameter_syntax.valueIterator();
+        while (recovered_it.next()) |items| items.deinit(self.gpa);
+        self.recovered_parameter_syntax.clearRetainingCapacity();
+        self.recovered_parameter_syntax_built = false;
+        self.recovered_parameter_use_spans.clearRetainingCapacity();
+        self.source_function_containing_pos_cache.clearRetainingCapacity();
+        self.source_function_spans.clearRetainingCapacity();
+        self.source_function_spans_indexed = false;
+        self.source_function_spans_valid = false;
+        self.source_var_declaration_names.clearRetainingCapacity();
+        self.source_var_declarations_indexed = false;
+        var function_decls_it = self.function_decls_by_container.valueIterator();
+        while (function_decls_it.next()) |entries| entries.deinit(self.gpa);
+        self.function_decls_by_container.clearRetainingCapacity();
+        var local_values_it = self.local_value_decls_by_container.valueIterator();
+        while (local_values_it.next()) |index| index.deinit(self.gpa);
+        self.local_value_decls_by_container.clearRetainingCapacity();
+        self.jsdoc_named_declarations.clearRetainingCapacity();
+        self.jsdoc_named_declarations_any_scope.clearRetainingCapacity();
+        self.jsdoc_named_declarations_built = false;
+        self.jsdoc_generic_typedef_aliases.clearRetainingCapacity();
+        self.jsdoc_typedef_object_types.clearRetainingCapacity();
+        self.jsdoc_callback_signatures.clearRetainingCapacity();
+        self.prior_jsdoc_property_assignments.clearRetainingCapacity();
+        self.prior_jsdoc_property_assignments_built = false;
         self.source_has_virtual_sections =
-            std.mem.indexOf(u8, source, "@filename:") != null or
-            std.mem.indexOf(u8, source, "@Filename:") != null;
+            markers.contains("@filename:") or markers.contains("@Filename:");
+        self.source_may_have_umd_namespace_export =
+            markers.contains("export") and markers.contains("namespace") and markers.contains("as");
+        self.source_may_have_declare_any_var =
+            markers.contains("declare") and markers.contains("var") and
+            markers.contains(":") and markers.contains("any");
+        self.source_may_have_import_equals =
+            markers.contains("import") and markers.contains("=");
+        self.source_may_have_import_declaration = markers.contains("import");
+        self.source_may_have_jsdoc_import_tag = markers.contains("@import");
+        self.source_may_have_require_binding = markers.contains("require") and self.sourceSliceMentionsIdentifier(source, "require");
+        self.source_may_have_namespace_declaration =
+            markers.contains("namespace") or markers.contains("module") or markers.contains("global");
+        self.source_may_have_class_or_enum_declaration =
+            markers.contains("class") or markers.contains("enum");
+        self.source_may_have_enum_declaration = markers.contains("enum");
+        self.source_may_have_type_alias_declaration = markers.contains("type");
+        self.source_may_have_computed_prototype_assignment =
+            markers.contains("prototype") and markers.contains("[") and
+            markers.contains("=") and markers.contains("{");
+        self.source_may_have_prototype_assignment = markers.contains(".prototype");
+        self.source_may_have_protected_member = markers.contains("protected");
+        self.may_have_expando_property_assignments = null;
         self.virtual_section_start_cache.clearRetainingCapacity();
+        self.visible_named_type_decls.clearRetainingCapacity();
+        self.visible_type_alias_decls.clearRetainingCapacity();
+        self.indexed_named_type_containers.clearRetainingCapacity();
+        self.visible_same_name_value_decls.clearRetainingCapacity();
+        self.indexed_same_name_value_containers.clearRetainingCapacity();
+        self.visible_namespace_decls.clearRetainingCapacity();
+        self.indexed_namespace_containers.clearRetainingCapacity();
+        self.containers_with_dotted_namespace_decls.clearRetainingCapacity();
+        self.interface_merge_predecessor.clearRetainingCapacity();
+        self.visible_annotated_value_decls.clearRetainingCapacity();
+        self.indexed_annotated_value_containers.clearRetainingCapacity();
+        self.class_extends_instance_type_cache.clearRetainingCapacity();
+        self.class_extends_static_type_cache.clearRetainingCapacity();
+        self.class_extends_call_static_type_cache.clearRetainingCapacity();
+        self.named_shape_non_class_cache.clearRetainingCapacity();
+        self.named_shape_any_cache.clearRetainingCapacity();
+        self.named_shape_misses.clearRetainingCapacity();
+    }
+
+    fn sourceMarkerPosition(self: *const Checker, comptime marker: []const u8) ?usize {
+        const source = self.source orelse return null;
+        if (self.source_markers) |*markers| return markers.indexOf(marker);
+        return std.mem.indexOf(u8, source, marker);
     }
 
     pub fn setCheckJsEnabled(self: *Checker, enabled: bool) void {
@@ -5097,8 +5767,16 @@ pub const Checker = struct {
         self.program_global_var_names = names;
     }
 
+    pub fn setProgramGlobalValueTypes(self: *Checker, bindings: []const ProgramGlobalBinding) void {
+        self.program_global_value_types = bindings;
+    }
+
     pub fn setProgramGlobalTypeNames(self: *Checker, names: []const []const u8) void {
         self.program_global_type_names = names;
+    }
+
+    pub fn setProgramGlobalTypes(self: *Checker, bindings: []const ProgramGlobalBinding) void {
+        self.program_global_types = bindings;
     }
 
     pub fn setAmbientGlobalNamespaceRoots(self: *Checker, roots: []const []const u8) void {
@@ -5110,11 +5788,19 @@ pub const Checker = struct {
     }
 
     pub fn setProgramExportedClasses(self: *Checker, classes: []const ProgramExportedClass) void {
+        self.clearProgramGenericInstances();
+        self.program_schema_support.clearRetainingCapacity();
+        self.program_module_namespace_types.clearRetainingCapacity();
         self.program_exported_classes = classes;
     }
 
     pub fn setProgramExportedValues(self: *Checker, values: []const ProgramExportedValue) void {
+        self.program_module_namespace_types.clearRetainingCapacity();
         self.program_exported_values = values;
+    }
+
+    pub fn setProgramExportedTypes(self: *Checker, values: []const ProgramExportedType) void {
+        self.program_exported_types = values;
     }
 
     pub fn setProgramAmbientModuleInterfaceExports(self: *Checker, exports: []const ProgramAmbientModuleInterfaceExport) void {
@@ -5162,6 +5848,24 @@ pub const Checker = struct {
             s.deinit(self.gpa);
         }
         self.narrow_scopes.deinit(self.gpa);
+        self.program_module_namespace_types.deinit(self.gpa);
+        self.clearProgramGenericInstances();
+        self.program_generic_definitions.deinit(self.gpa);
+        self.program_definition_classes.deinit(self.gpa);
+        self.program_local_class_names.deinit(self.gpa);
+        self.generic_instances.deinit(self.gpa);
+        self.generic_instance_origins.deinit(self.gpa);
+        self.generic_expansion_active.deinit(self.gpa);
+        if (self.engine.type_resolver) |resolver| {
+            if (resolver.context == @as(*anyopaque, @ptrCast(self))) {
+                self.engine.type_resolver = null;
+                self.engine.generic_instance_origins = null;
+            }
+        }
+        self.program_generic_defaults_active.deinit(self.gpa);
+        self.program_schema_support.deinit(self.gpa);
+        self.free_type_parameter_pending.deinit(self.gpa);
+        self.free_type_parameter_visited.deinit(self.gpa);
         for (self.member_narrow_scopes.items) |*scope| {
             var s = scope.*;
             s.deinit(self.gpa);
@@ -5178,6 +5882,7 @@ pub const Checker = struct {
         while (symbolic_layout_it.next()) |layout| self.gpa.free(layout.*);
         self.symbolic_tuple_layouts.deinit(self.gpa);
         self.infer_type_parameters.deinit(self.gpa);
+        self.active_inference_pairs.deinit(self.gpa);
         self.class_instance_types.deinit(self.gpa);
         self.synthetic_program_class_origins.deinit(self.gpa);
         self.module_augmentation_callback_signatures.deinit(self.gpa);
@@ -5261,6 +5966,8 @@ pub const Checker = struct {
         while (cspsoa_it.next()) |set| set.deinit(self.gpa);
         self.class_static_private_set_only_accessors.deinit(self.gpa);
         self.type_names.deinit(self.gpa);
+        self.named_type_by_id.deinit(self.gpa);
+        self.registered_named_type_ids.deinit(self.gpa);
         self.last_iface_decl_for_name.deinit(self.gpa);
         var ga_it = self.generic_aliases.valueIterator();
         while (ga_it.next()) |info| self.gpa.free(info.params);
@@ -5271,6 +5978,8 @@ pub const Checker = struct {
         while (gid_it.next()) |info| self.gpa.free(info.params);
         self.generic_interfaces_by_decl.deinit(self.gpa);
         self.generic_interface_decl_by_instance.deinit(self.gpa);
+        self.generic_interface_refresh_cache.deinit(self.gpa);
+        self.generic_interface_refresh_active.deinit(self.gpa);
         self.active_generic_aliases.deinit(self.gpa);
         self.variance_relation_in_progress.deinit(self.gpa);
         self.reported_deep_instantiation_nodes.deinit(self.gpa);
@@ -5388,7 +6097,49 @@ pub const Checker = struct {
         self.lib_cache.deinit(self.gpa);
         self.diagnostics.deinit(self.gpa);
         self.virtual_section_start_cache.deinit(self.gpa);
+        self.visible_named_type_decls.deinit(self.gpa);
+        self.visible_type_alias_decls.deinit(self.gpa);
+        self.indexed_named_type_containers.deinit(self.gpa);
+        self.visible_same_name_value_decls.deinit(self.gpa);
+        self.indexed_same_name_value_containers.deinit(self.gpa);
+        self.source_var_declaration_names.deinit(self.gpa);
+        self.visible_namespace_decls.deinit(self.gpa);
+        self.indexed_namespace_containers.deinit(self.gpa);
+        self.containers_with_dotted_namespace_decls.deinit(self.gpa);
+        self.interface_merge_predecessor.deinit(self.gpa);
+        self.visible_annotated_value_decls.deinit(self.gpa);
+        self.indexed_annotated_value_containers.deinit(self.gpa);
+        self.class_extends_instance_type_cache.deinit(self.gpa);
+        self.class_extends_static_type_cache.deinit(self.gpa);
+        self.class_extends_call_static_type_cache.deinit(self.gpa);
+        self.named_shape_non_class_cache.deinit(self.gpa);
+        self.named_shape_any_cache.deinit(self.gpa);
+        self.named_shape_misses.deinit(self.gpa);
+        self.named_shape_member_facts.deinit(self.gpa);
+        self.named_shape_candidates.deinit(self.gpa);
         self.parameter_annotation_index.deinit(self.gpa);
+        var parameter_annotations_it = self.parameter_annotations_by_name.valueIterator();
+        while (parameter_annotations_it.next()) |items| items.deinit(self.gpa);
+        self.parameter_annotations_by_name.deinit(self.gpa);
+        self.jsx_local_factory_namespace_type_cache.deinit(self.gpa);
+        var recovered_it = self.recovered_parameter_syntax.valueIterator();
+        while (recovered_it.next()) |items| items.deinit(self.gpa);
+        self.recovered_parameter_syntax.deinit(self.gpa);
+        self.recovered_parameter_use_spans.deinit(self.gpa);
+        self.source_function_containing_pos_cache.deinit(self.gpa);
+        self.source_function_spans.deinit(self.gpa);
+        var function_decls_it = self.function_decls_by_container.valueIterator();
+        while (function_decls_it.next()) |entries| entries.deinit(self.gpa);
+        self.function_decls_by_container.deinit(self.gpa);
+        var local_values_it = self.local_value_decls_by_container.valueIterator();
+        while (local_values_it.next()) |index| index.deinit(self.gpa);
+        self.local_value_decls_by_container.deinit(self.gpa);
+        self.jsdoc_named_declarations.deinit(self.gpa);
+        self.jsdoc_named_declarations_any_scope.deinit(self.gpa);
+        self.jsdoc_generic_typedef_aliases.deinit(self.gpa);
+        self.jsdoc_typedef_object_types.deinit(self.gpa);
+        self.jsdoc_callback_signatures.deinit(self.gpa);
+        self.prior_jsdoc_property_assignments.deinit(self.gpa);
         self.ts_ignore_lines.deinit(self.gpa);
         self.ts_expect_error_lines.deinit(self.gpa);
         self.ts_expect_error_directive_lines.deinit(self.gpa);
@@ -5403,6 +6154,42 @@ pub const Checker = struct {
     pub fn typeParameterVariance(self: *const Checker, tp_id: TypeId) types.Variance {
         if (self.inferred_variance.get(tp_id)) |v| return v;
         return self.interner.typeParameterVariance(tp_id);
+    }
+
+    /// Transfer the checked result into fresh, stable source-file storage
+    /// after all checking and diagnostic rendering. Rebind the relation
+    /// engine in the same operation so it cannot borrow the dying Checker.
+    /// On allocation failure both the checker and destination are unchanged.
+    /// Only borrowed leaf slices are copied, never interned type graphs.
+    pub fn takeCheckedTypes(self: *Checker, destination: *CheckedTypes) !void {
+        inline for (comptime std.meta.fieldNames(CheckedTypes)) |name| {
+            std.debug.assert(@field(destination, name).capacity() == 0);
+        }
+        var prepared: CheckedTypes = .{};
+        errdefer prepared.deinit(self.gpa);
+        inline for (CheckedTypes.borrowed_slices) |name| {
+            const from = &@field(self, name);
+            const to = &@field(prepared, name);
+            try to.ensureTotalCapacity(self.gpa, from.count());
+            var entries = from.iterator();
+            while (entries.next()) |entry| {
+                const Element = @typeInfo(@TypeOf(entry.value_ptr.*)).pointer.child;
+                const copy = try self.gpa.dupe(Element, entry.value_ptr.*);
+                to.putAssumeCapacity(entry.key_ptr.*, copy);
+            }
+        }
+        // All fallible work is finished. Move owned containers intact and
+        // release the original borrowed-slice maps without freeing their leaves.
+        inline for (CheckedTypes.borrowed_slices) |name| {
+            @field(self, name).deinit(self.gpa);
+            @field(self, name) = @field(prepared, name);
+        }
+        inline for (comptime std.meta.fieldNames(CheckedTypes)) |name| {
+            @field(prepared, name) = @field(self, name);
+            @field(self, name) = .empty;
+        }
+        destination.* = prepared;
+        self.engine.setRestSignatures(&destination.rest_signatures);
     }
 
     /// Check a complete source file. The HIR root must be a
@@ -5938,6 +6725,7 @@ pub const Checker = struct {
     fn checkJSDocLegacyModuleNamepathTypes(self: *Checker, root: NodeId) CheckError!void {
         if (!self.sourceHasCheckJsDirective()) return;
         const src = self.source orelse return;
+        if (std.mem.indexOf(u8, src, "{module:") == null) return;
         var comment_start: usize = 0;
         while (std.mem.indexOfPos(u8, src, comment_start, "/**")) |open| {
             const body_start = open + 3;
@@ -6866,7 +7654,7 @@ pub const Checker = struct {
                         if (try self.jsDocObjectSkeletonFromPropertyTags(src, body)) |typedef_t| {
                             const typedef_name = self.string_interner.intern(tag.name) catch return error.OutOfMemory;
                             if (!self.type_names.contains(typedef_name)) {
-                                try self.type_names.put(self.gpa, typedef_name, typedef_t);
+                                try self.putTypeName(typedef_name, typedef_t);
                                 try self.registerAliasDisplayText(typedef_t, tag.name);
                             }
                         }
@@ -8003,7 +8791,7 @@ pub const Checker = struct {
                     )
                 else
                     types.Primitive.unknown;
-                try self.type_names.put(self.gpa, id.name, placeholder);
+                try self.putTypeName(id.name, placeholder);
             }
             return;
         }
@@ -8042,7 +8830,7 @@ pub const Checker = struct {
             .is_type_alias = true,
             .body_node = ta.aliased,
         });
-        try self.type_names.put(self.gpa, id.name, types.Primitive.unknown);
+        try self.putTypeName(id.name, types.Primitive.unknown);
     }
 
     /// Scan the source for `// @ts-ignore` and `// @ts-expect-error`
@@ -8594,17 +9382,9 @@ pub const Checker = struct {
                         r.value != hir_mod.none_node_id and
                         ret_t != types.Primitive.none and
                         ret_t != types.Primitive.any and
-                        ret_t != types.Primitive.unknown and
                         ret_t != types.Primitive.never and
                         (self.declaredReturnNeedsLiteralAssignabilityCheck(declared) or
-                            (self.strict_flags.no_unchecked_indexed_access and
-                                self.typeIncludesUndefined(ret_t) and
-                                declaredReturnPrimitiveNeedsAssignabilityCheck(declared)) or
-                            (self.current_function_return_node != hir_mod.none_node_id and
-                                self.hir.kindOf(self.current_function_return_node) == .type_predicate_type and
-                                declaredReturnPrimitiveNeedsAssignabilityCheck(declared)) or
-                            ((self.current_function_return_from_jsdoc or self.current_function_return_from_paired_setter) and
-                                declaredReturnPrimitiveNeedsAssignabilityCheck(declared))) and
+                            declaredReturnPrimitiveNeedsAssignabilityCheck(declared)) and
                         !self.enumMemberExpressionMatchesReturnAnnotation(r.value, self.current_function_return_node) and
                         !self.enumLiteralAssignableToEnumUnion(ret_t, declared) and
                         !(try self.literalExpressionAssignableToTarget(r.value, declared)) and
@@ -11983,17 +12763,18 @@ pub const Checker = struct {
 
     fn sourceContainsImportMeta(self: *Checker) bool {
         if (self.source_facts.contains_import_meta) |cached| return cached;
-        const src = self.source orelse return false;
-        const result = std.mem.indexOf(u8, src, "import.meta") != null;
+        if (self.source == null) return false;
+        const result = self.sourceMarkerPosition("import.meta") != null;
         self.source_facts.contains_import_meta = result;
         return result;
     }
 
     fn checkUntypedModuleAugmentation(self: *Checker, node: NodeId) CheckError!void {
         if (self.hir.kindOf(node) != .namespace_decl) return;
-        if (!self.rootHasTopLevelExternalModuleMarker(node)) return;
         const ns = hir_mod.namespaceOf(self.hir, node);
         if (ns.name == hir_mod.none_node_id or self.hir.kindOf(ns.name) != .identifier) return;
+        if (!self.namespaceNameIsStringLiteral(ns.name)) return;
+        if (!self.rootHasTopLevelExternalModuleMarker(node)) return;
         const module_name_id = hir_mod.identifierOf(self.hir, ns.name).name;
         const module_name = self.string_interner.get(module_name_id);
         if (module_name.len == 0 or std.mem.indexOfScalar(u8, module_name, '.') != null) return;
@@ -12052,10 +12833,10 @@ pub const Checker = struct {
     fn checkMissingModuleAugmentationTarget(self: *Checker, node: NodeId) CheckError!void {
         if (self.hir.kindOf(node) != .namespace_decl) return;
         if (self.virtualSectionIsDeclarationFile(node)) return;
-        if (!self.rootHasTopLevelExternalModuleMarker(node)) return;
         const ns = hir_mod.namespaceOf(self.hir, node);
         if (ns.name == hir_mod.none_node_id or self.hir.kindOf(ns.name) != .identifier) return;
         if (!self.namespaceNameIsStringLiteral(ns.name)) return;
+        if (!self.rootHasTopLevelExternalModuleMarker(node)) return;
         const module_name_id = hir_mod.identifierOf(self.hir, ns.name).name;
         const module_name = self.string_interner.get(module_name_id);
         if (module_name.len == 0) return;
@@ -12446,25 +13227,24 @@ pub const Checker = struct {
         for (stmts, 0..) |left_raw, left_i| {
             const left = self.unwrapExportDecl(left_raw);
             if (left == hir_mod.none_node_id) continue;
+            if (self.hir.kindOf(left) != .enum_decl) continue;
             const left_name = self.declarationName(left) orelse continue;
             const left_section = self.virtualSectionStartForNode(left);
-            for (stmts[left_i + 1 ..]) |right_raw| {
+            for (stmts, 0..) |right_raw, right_i| {
+                if (right_i == left_i) continue;
                 const right = self.unwrapExportDecl(right_raw);
                 if (right == hir_mod.none_node_id) continue;
                 if (self.virtualSectionStartForNode(right) != left_section) continue;
                 const right_name = self.declarationName(right) orelse continue;
                 if (right_name != left_name) continue;
 
-                const left_is_enum = self.hir.kindOf(left) == .enum_decl;
                 const right_is_enum = self.hir.kindOf(right) == .enum_decl;
-                if (left_is_enum and right_is_enum) {
+                if (right_is_enum) {
+                    if (right_i < left_i) continue;
                     try self.checkMergedEnumMemberDuplicateDiagnostics(left, right);
                     continue;
                 }
-                if (left_is_enum and self.enumMergeConflictsWithKind(right)) {
-                    try self.reportEnumDeclarationMergeDiagnostic(left);
-                    try self.reportEnumDeclarationMergeDiagnostic(right);
-                } else if (right_is_enum and self.enumMergeConflictsWithKind(left)) {
+                if (self.enumMergeConflictsWithKind(right)) {
                     try self.reportEnumDeclarationMergeDiagnostic(left);
                     try self.reportEnumDeclarationMergeDiagnostic(right);
                 }
@@ -12487,25 +13267,39 @@ pub const Checker = struct {
     }
 
     fn checkTypeAliasDeclarationMergeDiagnostics(self: *Checker, stmts: []const NodeId) CheckError!void {
-        for (stmts, 0..) |left_raw, left_i| {
-            const left = self.unwrapExportDecl(left_raw);
-            if (left == hir_mod.none_node_id) continue;
-            const left_kind = self.hir.kindOf(left);
-            if (left_kind != .type_alias_decl and left_kind != .class_decl and left_kind != .interface_decl) continue;
-            const left_name = self.declarationName(left) orelse continue;
-            const left_section = self.virtualSectionStartForNode(left);
-            for (stmts[left_i + 1 ..]) |right_raw| {
-                const right = self.unwrapExportDecl(right_raw);
-                if (right == hir_mod.none_node_id) continue;
-                if (self.virtualSectionStartForNode(right) != left_section) continue;
-                const right_kind = self.hir.kindOf(right);
-                if (right_kind != .type_alias_decl and right_kind != .class_decl and right_kind != .interface_decl) continue;
-                if (left_kind != .type_alias_decl and right_kind != .type_alias_decl) continue;
-                if (left_kind == .type_alias_decl and right_kind == .type_alias_decl) continue;
-                const right_name = self.declarationName(right) orelse continue;
-                if (right_name != left_name) continue;
-                try self.reportDuplicateIdentifierWithOther(left, left_name, right);
-                try self.reportDuplicateIdentifierWithOther(right, right_name, left);
+        var merge_targets: std.AutoHashMapUnmanaged(DeclarationKey, std.ArrayListUnmanaged(NodeId)) = .empty;
+        defer {
+            var it = merge_targets.valueIterator();
+            while (it.next()) |nodes| nodes.deinit(self.gpa);
+            merge_targets.deinit(self.gpa);
+        }
+
+        for (stmts) |raw| {
+            const node = self.unwrapExportDecl(raw);
+            if (node == hir_mod.none_node_id) continue;
+            const kind = self.hir.kindOf(node);
+            if (kind != .class_decl and kind != .interface_decl) continue;
+            const name = self.declarationName(node) orelse continue;
+            const key: DeclarationKey = .{
+                .name = name,
+                .virtual_section_start = self.virtualSectionStartForNode(node),
+            };
+            const gop = try merge_targets.getOrPut(self.gpa, key);
+            if (!gop.found_existing) gop.value_ptr.* = .empty;
+            try gop.value_ptr.append(self.gpa, node);
+        }
+
+        for (stmts) |raw| {
+            const alias = self.unwrapExportDecl(raw);
+            if (alias == hir_mod.none_node_id or self.hir.kindOf(alias) != .type_alias_decl) continue;
+            const name = self.declarationName(alias) orelse continue;
+            const targets = merge_targets.get(.{
+                .name = name,
+                .virtual_section_start = self.virtualSectionStartForNode(alias),
+            }) orelse continue;
+            for (targets.items) |target| {
+                try self.reportDuplicateIdentifierWithOther(alias, name, target);
+                try self.reportDuplicateIdentifierWithOther(target, name, alias);
             }
         }
     }
@@ -13791,6 +14585,7 @@ pub const Checker = struct {
 
     fn virtualSectionFilenameForNode(self: *Checker, node: NodeId) ?[]const u8 {
         const src = self.source orelse return null;
+        if (!self.sourceHasVirtualFilenameSections()) return null;
         const section = self.virtualSectionStartForNode(node);
         if (section >= src.len) return null;
         const line_end = std.mem.indexOfScalarPos(u8, src, section, '\n') orelse src.len;
@@ -13862,6 +14657,7 @@ pub const Checker = struct {
     }
 
     fn sourceHasUmdNamespaceExport(self: *Checker, name: hir_mod.StringId) bool {
+        if (!self.source_may_have_umd_namespace_export) return false;
         const src = self.source orelse return false;
         if (self.sourceHasVirtualFilenameSections() and self.sourceDirectiveIsTrue("@noImplicitReferences")) return false;
         const name_str = self.string_interner.get(name);
@@ -13937,6 +14733,7 @@ pub const Checker = struct {
     }
 
     fn findUmdNamespaceExportSection(self: *Checker, name: hir_mod.StringId, anchor: NodeId) ?usize {
+        if (!self.source_may_have_umd_namespace_export) return null;
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
         const anchor_section = self.virtualSectionStartForNode(anchor);
@@ -14660,6 +15457,12 @@ pub const Checker = struct {
             try self.checkExportStarExportAssignmentTargets(stmts);
             return;
         }
+        if (self.external_resolver) |resolver| {
+            if (resolver.vtable.moduleExportNames != null and self.importer_path.len != 0) {
+                try self.checkExternalExportStarConflicts(stmts, resolver);
+                return;
+            }
+        }
         var plain_star_count: usize = 0;
         var conflict_node: NodeId = hir_mod.none_node_id;
         var default_import_from_relative: NodeId = hir_mod.none_node_id;
@@ -14686,6 +15489,66 @@ pub const Checker = struct {
         try self.report(conflict_node, TsCodes.export_star_conflict, "Module has already exported a member with this name. Consider explicitly re-exporting to resolve the ambiguity.");
         if (default_import_from_relative != hir_mod.none_node_id) {
             try self.report(default_import_from_relative, TsCodes.no_default_export, "Module has no default export.");
+        }
+    }
+
+    fn checkExternalExportStarConflicts(
+        self: *Checker,
+        stmts: []const NodeId,
+        resolver: ExternalResolver,
+    ) CheckError!void {
+        var explicit_names: std.StringHashMapUnmanaged(void) = .empty;
+        defer explicit_names.deinit(self.gpa);
+        for (stmts) |stmt| {
+            if (self.hir.kindOf(stmt) != .export_decl) continue;
+            const ex = hir_mod.exportOf(self.hir, stmt);
+            if (ex.is_default) continue;
+            if (ex.namespace_alias != string_interner.empty_string_id) {
+                try explicit_names.put(self.gpa, self.string_interner.get(ex.namespace_alias), {});
+            }
+            for (hir_mod.exportNamed(self.hir, stmt)) |spec_node| {
+                if (self.hir.kindOf(spec_node) != .import_specifier) continue;
+                const spec = hir_mod.importSpecifierOf(self.hir, spec_node);
+                try explicit_names.put(self.gpa, self.string_interner.get(spec.local), {});
+            }
+            if (ex.decl != hir_mod.none_node_id) {
+                if (self.declarationName(ex.decl)) |name| {
+                    try explicit_names.put(self.gpa, self.string_interner.get(name), {});
+                }
+            }
+        }
+
+        const ProjectedSource = struct {
+            identity: []const u8,
+            specifier: []const u8,
+        };
+        var projected_by: std.StringHashMapUnmanaged(ProjectedSource) = .empty;
+        defer projected_by.deinit(self.gpa);
+        for (stmts) |stmt| {
+            const spec_id = self.virtualExportStarDeclarationSpecifier(stmt) orelse continue;
+            const specifier = self.string_interner.get(spec_id);
+            const names = resolver.moduleExportNames(specifier, self.importer_path) orelse continue;
+            const identity = if (resolver.resolve(specifier, self.importer_path)) |resolved|
+                resolved.path
+            else
+                specifier;
+            for (names) |name| {
+                if (std.mem.eql(u8, name, "default") or explicit_names.contains(name)) continue;
+                if (projected_by.get(name)) |previous| {
+                    if (std.mem.eql(u8, previous.identity, identity)) continue;
+                    if (resolver.vtable.sameModuleExport) |same_export| {
+                        if (same_export(resolver.ptr, previous.specifier, specifier, self.importer_path, name) orelse false) continue;
+                    }
+                    const msg = try std.fmt.allocPrint(
+                        self.diag_arena.allocator(),
+                        "Module \"{s}\" has already exported a member named '{s}'. Consider explicitly re-exporting to resolve the ambiguity.",
+                        .{ previous.specifier, name },
+                    );
+                    try self.report(stmt, TsCodes.export_star_conflict, msg);
+                    continue;
+                }
+                try projected_by.put(self.gpa, name, .{ .identity = identity, .specifier = specifier });
+            }
         }
     }
 
@@ -18877,9 +19740,6 @@ pub const Checker = struct {
         const prev_function_return_from_jsdoc = self.current_function_return_from_jsdoc;
         defer self.current_function_return_from_jsdoc = prev_function_return_from_jsdoc;
         self.current_function_return_from_jsdoc = false;
-        const prev_function_return_from_paired_setter = self.current_function_return_from_paired_setter;
-        defer self.current_function_return_from_paired_setter = prev_function_return_from_paired_setter;
-        self.current_function_return_from_paired_setter = false;
         const prev_async_return_check = self.current_async_function_return_check;
         defer self.current_async_function_return_check = prev_async_return_check;
         self.current_async_function_return_check = f.flags.is_async and !f.flags.is_generator;
@@ -18930,7 +19790,6 @@ pub const Checker = struct {
             // `(x: number) => number` at the assignment.
             var contextual_sig: ?TypeId = null;
             var declared_from_jsdoc = false;
-            var declared_from_paired_setter = false;
             const is_predicate_return = f.return_type != hir_mod.none_node_id and
                 self.hir.kindOf(f.return_type) == .type_predicate_type;
             const declared = if (is_predicate_return)
@@ -18957,7 +19816,6 @@ pub const Checker = struct {
                     }
                 }
                 if (self.pairedSetterContextualReturnType(node)) |setter_t| {
-                    declared_from_paired_setter = true;
                     break :blk setter_t;
                 }
                 // Call arguments receive contextual parameter types while
@@ -18993,7 +19851,6 @@ pub const Checker = struct {
                 self.current_function_return_node = if (f.return_type != hir_mod.none_node_id) f.return_type else hir_mod.none_node_id;
                 self.current_function_return_sig = contextual_sig;
                 self.current_function_return_from_jsdoc = declared_from_jsdoc;
-                self.current_function_return_from_paired_setter = declared_from_paired_setter;
             }
         }
         if (self.hir.kindOf(f.body) == .block_stmt) {
@@ -19082,7 +19939,8 @@ pub const Checker = struct {
         }
         if (f.return_type == hir_mod.none_node_id and
             !self.current_function_return_from_jsdoc and
-            (!has_contextual_return_value_body or f.flags.is_generator))
+            (!has_contextual_return_value_body or f.flags.is_generator or
+                self.functionContextReturnDiagnosticOwnedByOuterExpression(node)))
         {
             if (f.flags.is_generator) {
                 const gen_t = try self.inferredGeneratorTypeForFunction(node, f, true);
@@ -20026,13 +20884,34 @@ pub const Checker = struct {
     /// behavior for function declarations and function-valued bindings.
     fn checkExpandoPropertyUsedBeforeAssignment(self: *Checker, stmts: []const NodeId) CheckError!void {
         if (!self.strict_flags.strict_null_checks) return;
+        if (!self.hirMayHaveExpandoPropertyAssignment()) return;
         var states: ExpandoAssignmentMap = .empty;
         defer states.deinit(self.gpa);
         for (stmts) |s| try self.scanExpandoPropertyUseBeforeAssign(s, &states);
     }
 
+    fn hirMayHaveExpandoPropertyAssignment(self: *Checker) bool {
+        if (self.may_have_expando_property_assignments) |cached| return cached;
+        var node: NodeId = 1;
+        while (node < self.hir.nodeCount()) : (node += 1) {
+            if (self.hir.kindOf(node) != .assignment) continue;
+            const assignment = hir_mod.assignmentOf(self.hir, node);
+            if (assignment.op != null or assignment.target == hir_mod.none_node_id or
+                self.hir.kindOf(assignment.target) != .member_access) continue;
+            const member = hir_mod.memberOf(self.hir, assignment.target);
+            if (member.object == hir_mod.none_node_id or self.hir.kindOf(member.object) != .identifier) continue;
+            const object_name = self.string_interner.get(hir_mod.identifierOf(self.hir, member.object).name);
+            if (std.mem.eql(u8, object_name, "this") or std.mem.eql(u8, object_name, "super")) continue;
+            self.may_have_expando_property_assignments = true;
+            return true;
+        }
+        self.may_have_expando_property_assignments = false;
+        return false;
+    }
+
     fn checkExpandoPropertyCircularInference(self: *Checker, stmts: []const NodeId) CheckError!void {
         if (!self.sourceHasCheckJsDirective()) return;
+        if (!self.hirMayHaveExpandoPropertyAssignment()) return;
         for (stmts) |stmt| try self.scanExpandoPropertyCircularInference(stmt);
     }
 
@@ -20305,6 +21184,8 @@ pub const Checker = struct {
         const m = hir_mod.memberOf(self.hir, node);
         if (m.object == hir_mod.none_node_id or self.hir.kindOf(m.object) != .identifier) return null;
         const obj_id = hir_mod.identifierOf(self.hir, m.object);
+        const object_name = self.string_interner.get(obj_id.name);
+        if (std.mem.eql(u8, object_name, "this") or std.mem.eql(u8, object_name, "super")) return null;
         if (self.findNamedDeclInVirtualSection(m.object, obj_id.name)) |declaration| {
             const kind = self.hir.kindOf(declaration);
             if (kind == .class_decl or kind == .class_expr) return null;
@@ -20569,20 +21450,17 @@ pub const Checker = struct {
         target: NodeId,
     ) CheckError!?TypeId {
         if (target == hir_mod.none_node_id or self.hir.kindOf(target) != .member_access) return null;
+        try self.ensurePriorJsDocPropertyAssignmentIndex();
         const target_text = std.mem.trim(u8, self.nodeSourceTextOrEmpty(target), " \t\r\n");
         if (target_text.len == 0) return null;
         const section = if (self.sourceHasVirtualFilenameSections()) self.virtualSectionStartForNode(assignment_node) else 0;
         const assignment_start = self.hir.spanOf(assignment_node).start;
         var best_node: NodeId = hir_mod.none_node_id;
         var best_start: u32 = 0;
-        var candidate: NodeId = 1;
-        while (candidate < self.hir.nodeCount()) : (candidate += 1) {
-            if (self.hir.kindOf(candidate) != .assignment) continue;
-            const candidate_span = self.hir.spanOf(candidate);
-            if (candidate_span.start >= assignment_start or candidate_span.start < best_start) continue;
-            if (self.sourceHasVirtualFilenameSections() and self.virtualSectionStartForNode(candidate) != section) continue;
+        for (self.prior_jsdoc_property_assignments.items) |entry| {
+            if (entry.start >= assignment_start or entry.start < best_start or entry.section != section) continue;
+            const candidate = entry.node;
             const assignment = hir_mod.assignmentOf(self.hir, candidate);
-            if (assignment.op != null or assignment.target == hir_mod.none_node_id) continue;
             const candidate_text = std.mem.trim(u8, self.nodeSourceTextOrEmpty(assignment.target), " \t\r\n");
             if (!std.mem.eql(u8, candidate_text, target_text)) continue;
             const parent = self.hir.parentOf(candidate);
@@ -20594,7 +21472,7 @@ pub const Checker = struct {
                 try self.jsDocTypeForLeadingNode(candidate);
             if (declared_t == null) continue;
             best_node = candidate;
-            best_start = candidate_span.start;
+            best_start = entry.start;
         }
         if (best_node == hir_mod.none_node_id) return null;
         const parent = self.hir.parentOf(best_node);
@@ -20604,6 +21482,44 @@ pub const Checker = struct {
             best_node;
         return (try self.jsDocTypeForLeadingNode(anchor)) orelse
             try self.jsDocTypeForLeadingNode(best_node);
+    }
+
+    fn ensurePriorJsDocPropertyAssignmentIndex(self: *Checker) CheckError!void {
+        if (self.prior_jsdoc_property_assignments_built) return;
+        self.prior_jsdoc_property_assignments_built = true;
+        const src = self.source orelse return;
+        const has_virtual_sections = self.sourceHasVirtualFilenameSections();
+        var candidate: NodeId = 1;
+        while (candidate < self.hir.nodeCount()) : (candidate += 1) {
+            if (self.hir.kindOf(candidate) != .assignment) continue;
+            const assignment = hir_mod.assignmentOf(self.hir, candidate);
+            if (assignment.op != null or assignment.target == hir_mod.none_node_id or
+                self.hir.kindOf(assignment.target) != .member_access) continue;
+            const parent = self.hir.parentOf(candidate);
+            const anchor = if (parent != hir_mod.none_node_id and self.hir.kindOf(parent) == .expression_stmt)
+                parent
+            else
+                candidate;
+            const anchor_body = self.leadingJsDocBody(src, self.leadingJsDocStartForNode(anchor));
+            const candidate_body = if (anchor == candidate)
+                null
+            else
+                self.leadingJsDocBody(src, self.leadingJsDocStartForNode(candidate));
+            const anchor_has_type = if (anchor_body) |body|
+                jsDocBlockTagBracedTypeText(body, "@type") != null
+            else
+                false;
+            const candidate_has_type = if (candidate_body) |body|
+                jsDocBlockTagBracedTypeText(body, "@type") != null
+            else
+                false;
+            if (!anchor_has_type and !candidate_has_type) continue;
+            try self.prior_jsdoc_property_assignments.append(self.gpa, .{
+                .node = candidate,
+                .start = self.hir.spanOf(candidate).start,
+                .section = if (has_virtual_sections) self.virtualSectionStartForNode(candidate) else 0,
+            });
+        }
     }
 
     fn reportExpandoAssignmentInferenceErrors(
@@ -20793,6 +21709,7 @@ pub const Checker = struct {
         if (base_t < types.Primitive.first_dynamic or base_t >= self.interner.pool.typeCount()) return null;
         const base_flags = self.interner.pool.flagsOf(base_t);
         if (!base_flags.is_signature and !(base_flags.is_object_type and self.objectHasCallOrConstructSignature(base_t))) return null;
+        if (!self.hirMayHaveExpandoPropertyAssignment()) return null;
         var cur = ref_node;
         while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
             const stmts: []const NodeId = switch (self.hir.kindOf(cur)) {
@@ -23629,7 +24546,19 @@ pub const Checker = struct {
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
         const section = self.virtualSectionStartForNode(ident_node);
         const use_start = self.hir.spanOf(ident_node).start;
-        for (hir_mod.blockStmts(self.hir, root)) |raw| {
+        const stmts = hir_mod.blockStmts(self.hir, root);
+        self.indexVisibleAnnotatedValueDecls(root, stmts);
+        if (self.indexed_annotated_value_containers.contains(root)) {
+            const decl = self.visible_annotated_value_decls.get(.{
+                .container = root,
+                .name = ident.name,
+                .virtual_section_start = section,
+            }) orelse return false;
+            if (self.hir.spanOf(decl).start >= use_start) return false;
+            const variable = hir_mod.varDeclOf(self.hir, decl);
+            return self.typeAnnotationRootIsUnresolved(variable.type_annotation);
+        }
+        for (stmts) |raw| {
             if (self.virtualSectionStartForNode(raw) != section or self.hir.spanOf(raw).start >= use_start) continue;
             const decl = self.unwrapExportDecl(raw);
             const kind = self.hir.kindOf(decl);
@@ -23794,6 +24723,10 @@ pub const Checker = struct {
     }
 
     fn sourceHasReferenceTypesDirective(self: *Checker, wanted: []const u8) bool {
+        const cache_node = std.ascii.eqlIgnoreCase(wanted, "node");
+        if (cache_node) {
+            if (self.source_facts.reference_types_node) |result| return result;
+        }
         const src = self.source orelse return false;
         var lines = std.mem.splitScalar(u8, src, '\n');
         while (lines.next()) |raw_line| {
@@ -23810,8 +24743,12 @@ pub const Checker = struct {
             const quote = tail[pos];
             const value_start = pos + 1;
             const value_end = std.mem.indexOfScalarPos(u8, tail, value_start, quote) orelse continue;
-            if (std.ascii.eqlIgnoreCase(tail[value_start..value_end], wanted)) return true;
+            if (std.ascii.eqlIgnoreCase(tail[value_start..value_end], wanted)) {
+                if (cache_node) self.source_facts.reference_types_node = true;
+                return true;
+            }
         }
+        if (cache_node) self.source_facts.reference_types_node = false;
         return false;
     }
 
@@ -24358,29 +25295,38 @@ pub const Checker = struct {
     }
 
     fn sourceHasReactJsxReference(self: *Checker) bool {
+        if (self.source_facts.react_jsx_reference) |cached| return cached;
         const src = self.source orelse return false;
-        return std.mem.indexOf(u8, src, "/.lib/react") != null;
+        const result = std.mem.indexOf(u8, src, "/.lib/react") != null;
+        self.source_facts.react_jsx_reference = result;
+        return result;
     }
 
     fn sourceHasTargetEs2016OrLaterDirective(self: *Checker) bool {
+        if (self.source_facts.target_es2016_or_later) |cached| return cached;
         const src = self.source orelse return false;
-        const target_pos = std.mem.indexOf(u8, src, "@target") orelse return false;
+        const target_pos = std.mem.indexOf(u8, src, "@target") orelse {
+            self.source_facts.target_es2016_or_later = false;
+            return false;
+        };
         const line_end = std.mem.indexOfScalarPos(u8, src, target_pos, '\n') orelse src.len;
         var buf: [128]u8 = undefined;
         const raw_line = std.mem.trim(u8, src[target_pos..line_end], " \t\r");
         const n = @min(raw_line.len, buf.len);
         const line = std.ascii.lowerString(buf[0..n], raw_line[0..n]);
-        return std.mem.indexOf(u8, line, "es2016") != null or
+        const result = std.mem.indexOf(u8, line, "es2016") != null or
             std.mem.indexOf(u8, line, "es2017") != null or
             std.mem.indexOf(u8, line, "es2018") != null or
             std.mem.indexOf(u8, line, "es2019") != null or
             std.mem.indexOf(u8, line, "es202") != null or
             std.mem.indexOf(u8, line, "esnext") != null;
+        self.source_facts.target_es2016_or_later = result;
+        return result;
     }
 
     fn sourceLibDirectiveNeedsIterableIterator(self: *Checker) bool {
         const src = self.source orelse return false;
-        const lib_pos = std.mem.indexOf(u8, src, "@lib") orelse return false;
+        const lib_pos = self.sourceMarkerPosition("@lib") orelse return false;
         const line_end = std.mem.indexOfScalarPos(u8, src, lib_pos, '\n') orelse src.len;
         var buf: [256]u8 = undefined;
         const raw_line = std.mem.trim(u8, src[lib_pos..line_end], " \t\r");
@@ -24618,6 +25564,7 @@ pub const Checker = struct {
     }
 
     fn interfaceMergesWithClass(self: *Checker, interface_node: NodeId) bool {
+        if (self.source != null and !self.source_may_have_class_or_enum_declaration) return false;
         if (self.hir.kindOf(interface_node) != .interface_decl) return false;
         const it = hir_mod.interfaceOf(self.hir, interface_node);
         if (it.name == hir_mod.none_node_id or self.hir.kindOf(it.name) != .identifier) return false;
@@ -24739,6 +25686,7 @@ pub const Checker = struct {
     }
 
     fn checkClassUsedBeforeDeclaration(self: *Checker, stmts: []const NodeId) CheckError!void {
+        if (self.source != null and !self.source_may_have_class_or_enum_declaration) return;
         var class_names: std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId) = .empty;
         defer class_names.deinit(self.gpa);
         var enum_names: std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId) = .empty;
@@ -25817,6 +26765,7 @@ pub const Checker = struct {
         class_names: *const std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId),
         out: *std.ArrayListUnmanaged(NameRef),
     ) CheckError!void {
+        if (self.source != null and !self.source_may_have_import_equals) return;
         if (node == hir_mod.none_node_id) return;
         switch (self.hir.kindOf(node)) {
             .member_access => {
@@ -28577,7 +29526,7 @@ pub const Checker = struct {
     }
 
     fn moduleNamespaceTypeForSpecifier(self: *Checker, specifier: hir_mod.StringId, anchor: NodeId) CheckError!?TypeId {
-        if (!self.sourceHasVirtualFilenameSections()) return null;
+        if (!self.sourceHasVirtualFilenameSections()) return self.programModuleNamespaceType(self.string_interner.get(specifier), anchor);
         const spec = self.string_interner.get(specifier);
         const resolved = (try self.resolveVirtualModuleSpecifierPath(anchor, spec)) orelse return null;
         defer self.gpa.free(resolved);
@@ -29492,6 +30441,11 @@ pub const Checker = struct {
         if (parent == hir_mod.none_node_id) return null;
         var target_t: TypeId = types.Primitive.none;
         switch (self.hir.kindOf(parent)) {
+            .arrow_fn => {
+                if (hir_mod.fnDeclOf(self.hir, parent).body != fn_node) return null;
+                const contextual_t = self.declaredOrContextualReturnTypeForFunction(parent) orelse return null;
+                return if (self.typeIsBuiltinFunctionObject(contextual_t)) null else contextual_t;
+            },
             .binary_op => {
                 const b = hir_mod.binopOf(self.hir, parent);
                 if (b.op != .comma or b.rhs != fn_node) return null;
@@ -29584,7 +30538,16 @@ pub const Checker = struct {
                 },
                 .call_expr, .new_expr => {
                     for (hir_mod.callArgs(self.hir, parent)) |argument| {
-                        if (argument == child) return self.contextualCallOwnsReturnDiagnostic(parent);
+                        if (argument == child) {
+                            // Block callbacks infer their actual returns;
+                            // the call then checks the complete signature.
+                            // An expression callback can instead report at
+                            // its body when a single signature supplies context.
+                            const function = hir_mod.fnDeclOf(self.hir, fn_node);
+                            if (function.body != hir_mod.none_node_id and
+                                self.hir.kindOf(function.body) == .block_stmt) return true;
+                            return self.contextualCallOwnsReturnDiagnostic(parent);
+                        }
                     }
                     return false;
                 },
@@ -29620,7 +30583,8 @@ pub const Checker = struct {
 
     fn contextualCallOwnsReturnDiagnostic(self: *Checker, call_node: NodeId) bool {
         const call = hir_mod.callOf(self.hir, call_node);
-        if (self.hir.kindOf(call.callee) == .identifier) {
+        const inferring_type_arguments = hir_mod.callTypeArgs(self.hir, call_node).len == 0;
+        if (inferring_type_arguments and self.hir.kindOf(call.callee) == .identifier) {
             const callee_name = hir_mod.identifierOf(self.hir, call.callee).name;
             if (self.generic_fns.contains(callee_name)) return true;
             if (self.findFunctionDeclForNameNearNode(call.callee, callee_name)) |decl| {
@@ -29632,7 +30596,7 @@ pub const Checker = struct {
             if (self.resolving_function_signatures.contains(call.callee)) return false;
             callee_t = self.checkExpression(call.callee) catch return false;
         }
-        if (self.contextualCallableTypeIsGeneric(callee_t)) return true;
+        if (inferring_type_arguments and self.contextualCallableTypeIsGeneric(callee_t)) return true;
         return self.callableSignatureCount(callee_t) > 1;
     }
 
@@ -29730,6 +30694,20 @@ pub const Checker = struct {
         arg_index: usize,
     ) CheckError!?TypeId {
         const effective_sig = blk: {
+            const call_node = self.hir.parentOf(callee_node);
+            if (call_node != hir_mod.none_node_id and
+                (self.hir.kindOf(call_node) == .call_expr or self.hir.kindOf(call_node) == .new_expr))
+            {
+                const type_args = hir_mod.callTypeArgs(self.hir, call_node);
+                if (self.generic_signature_params.get(sig)) |type_params| {
+                    // Context uses supplied arguments immediately. The call
+                    // itself owns arity and constraint diagnostics.
+                    if (type_args.len != 0 and type_args.len == type_params.len) {
+                        var used_explicit = false;
+                        break :blk try self.instantiateSignatureWithExplicitTypeArgsUnchecked(call_node, sig, type_args, &used_explicit);
+                    }
+                }
+            }
             if (arg_index == 0 or
                 self.hir.kindOf(callee_node) != .member_access or
                 self.generic_signature_params.get(sig) == null) break :blk sig;
@@ -29754,7 +30732,10 @@ pub const Checker = struct {
             const relowered = try self.relowerSignatureParametersWithInferences(sig, &subs);
             break :blk self.substituteType(relowered, &subs) catch relowered;
         };
-        const params = self.interner.signatureParams(effective_sig);
+        // Checking earlier arguments can instantiate signatures and grow the
+        // parameter pool. Keep the later argument's context alive across it.
+        const params = try self.gpa.dupe(TypeId, self.interner.signatureParams(effective_sig));
+        defer self.gpa.free(params);
         if (arg_index > 0 and self.callCalleeHasOverloadSet(callee_node)) {
             const prior_count = @min(arg_index, params.len);
             for (args[0..prior_count], params[0..prior_count]) |prior_arg, prior_param_t| {
@@ -30056,16 +31037,12 @@ pub const Checker = struct {
         if (contextual_predicate) |predicate| {
             try self.signature_predicates.put(self.gpa, sig, predicate);
         }
-        // Signature interning is structural. When the inferred source has
-        // exactly the target shape, `sig == target_sig`; attaching the
-        // source arrow's parameter names would then overwrite the target's
-        // declaration names and corrupt assignment diagnostics.
-        if (sig != target_sig) {
-            if (source_t != types.Primitive.none) {
-                try self.copySignatureParamNames(sig, source_t);
-            } else {
-                try self.recordSignatureParamNames(sig, param_nodes);
-            }
+        // The inferred callable has its own identity and source names;
+        // the contextual target's declaration metadata remains unchanged.
+        if (source_t != types.Primitive.none) {
+            try self.copySignatureParamNames(sig, source_t);
+        } else {
+            try self.recordSignatureParamNames(sig, param_nodes);
         }
         self.hir.setType(fn_node, sig);
         if (f.name != hir_mod.none_node_id) self.hir.setType(f.name, sig);
@@ -30598,6 +31575,11 @@ pub const Checker = struct {
                     return self.contextualParameterTypeForFunctionParam(fn_node, param_node, target_t) != null;
                 },
                 .return_stmt => return self.returnedFunctionContextualParameterType(cur, fn_node, param_node) != null,
+                .arrow_fn => {
+                    if (hir_mod.fnDeclOf(self.hir, cur).body != prev) return false;
+                    const target_t = self.contextualTargetTypeForFunction(fn_node) orelse return false;
+                    return self.contextualParameterTypeForFunctionParam(fn_node, param_node, target_t) != null;
+                },
                 .object_property => {
                     const op = hir_mod.objectPropertyOf(self.hir, cur);
                     if (op.value == prev and !op.is_computed) {
@@ -35268,7 +36250,7 @@ pub const Checker = struct {
                 var object_context_claimed = false;
                 switch (self.hir.kindOf(parent)) {
                     .assignment, .var_decl, .let_decl, .const_decl => {},
-                    .call_expr, .new_expr, .conditional, .binary_op => {},
+                    .call_expr, .new_expr, .conditional, .binary_op, .arrow_fn => {},
                     .object_property => {
                         const property = hir_mod.objectPropertyOf(self.hir, parent);
                         if (property.value != node) break :blk null;
@@ -35294,8 +36276,12 @@ pub const Checker = struct {
                 else
                     self.contextualTargetTypeForFunction(node) orelse break :blk null;
                 if (target_t >= self.interner.pool.typeCount()) break :blk null;
-                if (self.containsEscapingContextualTypeParameter(target_t)) break :blk null;
-                break :blk self.contextualParameterTypeForFunctionParam(node, p, target_t);
+                const parameter_t = self.contextualParameterTypeForFunctionParam(node, p, target_t) orelse break :blk null;
+                // An unresolved return type does not prevent contextual typing
+                // of a parameter whose type is already known.
+                if (self.containsEscapingContextualTypeParameter(target_t) and
+                    self.containsEscapingContextualTypeParameter(parameter_t)) break :blk null;
+                break :blk parameter_t;
             } else null;
             const contextual_default_param_t: ?TypeId = if (!has_anno and !has_jsdoc_param_type and !is_this_param and
                 pp.default_value != hir_mod.none_node_id)
@@ -35764,7 +36750,7 @@ pub const Checker = struct {
             false;
         const ret_t: TypeId = if (f.return_type != hir_mod.none_node_id)
             (if (is_predicate)
-                types.Primitive.boolean_t
+                (if (hir_mod.typePredicateOf(self.hir, f.return_type).is_asserts) types.Primitive.void_t else types.Primitive.boolean_t)
             else if (self.typeAnnotationShouldBecomeErrorAny(f.return_type))
                 types.Primitive.any
             else
@@ -35915,20 +36901,21 @@ pub const Checker = struct {
             }
         }
         // Record the predicate so call sites can narrow.
-        if (is_predicate and f.name != hir_mod.none_node_id and self.hir.kindOf(f.name) == .identifier) {
+        if (is_predicate) {
             const pred = hir_mod.typePredicateOf(self.hir, f.return_type);
             const target_t: TypeId = if (pred.target_type != hir_mod.none_node_id)
                 (self.lowererLowerWithTypeParams(pred.target_type) catch types.Primitive.unknown)
             else
                 types.Primitive.unknown;
-            const fn_name = hir_mod.identifierOf(self.hir, f.name).name;
             const fn_pred: FnPredicate = .{
                 .param_index = self.normalizedPredicateParamIndex(hir_mod.fnParams(self.hir, node), pred.param_index),
                 .target_type = target_t,
                 .target_node = pred.target_type,
                 .is_asserts = pred.is_asserts,
             };
-            try self.fn_predicates.put(self.gpa, fn_name, fn_pred);
+            if (f.name != hir_mod.none_node_id and self.hir.kindOf(f.name) == .identifier) {
+                try self.fn_predicates.put(self.gpa, hir_mod.identifierOf(self.hir, f.name).name, fn_pred);
+            }
             try self.signature_predicates.put(self.gpa, sig, fn_pred);
         }
         if (jsdoc_predicate) |pred| {
@@ -37096,7 +38083,7 @@ pub const Checker = struct {
         if (self.source_facts.no_lib_true_directive) |cached| return cached;
         const src = self.source orelse return false;
         const result = blk: {
-            const pos = std.mem.indexOf(u8, src, "@noLib") orelse std.mem.indexOf(u8, src, "@nolib") orelse break :blk false;
+            const pos = self.sourceMarkerPosition("@noLib") orelse self.sourceMarkerPosition("@nolib") orelse break :blk false;
             const line_end = std.mem.indexOfScalarPos(u8, src, pos, '\n') orelse src.len;
             break :blk std.mem.indexOf(u8, src[pos..line_end], "true") != null;
         };
@@ -42232,7 +43219,7 @@ pub const Checker = struct {
                     try self.decl_single_base.put(self.gpa, final_instance_t, pt);
                 }
             }
-            try self.type_names.put(self.gpa, cid.name, final_instance_t);
+            try self.putTypeName(cid.name, final_instance_t);
             try self.class_instance_types.put(self.gpa, cid.name, final_instance_t);
             if (class_param_ids.items.len > 0) {
                 // Class parameters use the completed instance shape for the
@@ -43105,7 +44092,7 @@ pub const Checker = struct {
                 const cid = hir_mod.identifierOf(self.hir, c.name);
                 try self.class_instance_types.put(self.gpa, cid.name, instance_t);
                 try self.class_static_types.put(self.gpa, cid.name, static_t);
-                try self.type_names.put(self.gpa, cid.name, instance_t);
+                try self.putTypeName(cid.name, instance_t);
                 if (parent_instance_t) |pt| {
                     if (pt != instance_t and pt < self.interner.pool.typeCount() and
                         self.interner.pool.flagsOf(pt).is_object_type)
@@ -44583,6 +45570,7 @@ pub const Checker = struct {
         member_name: hir_mod.StringId,
         anchor: NodeId,
     ) CheckError!?TypeId {
+        if (self.source != null and !self.source_may_have_namespace_declaration) return null;
         // A namespace referenced from inside another namespace is resolved
         // relative to that lexical namespace, not only from the source-file
         // root. This is the value-space counterpart of qualified type lookup.
@@ -44644,10 +45632,14 @@ pub const Checker = struct {
                 break :blk self.hir.typeOf(member_node);
             },
             .fn_decl, .fn_expr => blk: {
+                const existing_t = self.hir.typeOf(member_node);
+                if (existing_t != types.Primitive.none) break :blk existing_t;
                 try self.checkFnDeclWithFlowBoundary(member_node);
                 break :blk self.hir.typeOf(member_node);
             },
             .var_decl, .let_decl, .const_decl => blk: {
+                const existing_t = self.hir.typeOf(member_node);
+                if (existing_t != types.Primitive.none) break :blk existing_t;
                 try self.checkNamespaceValueDecl(member_node);
                 break :blk self.hir.typeOf(member_node);
             },
@@ -44709,6 +45701,11 @@ pub const Checker = struct {
         member_name: hir_mod.StringId,
     ) CheckError!?TypeId {
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        if (self.indexed_namespace_containers.contains(root) and
+            !self.containers_with_dotted_namespace_decls.contains(root))
+        {
+            return null;
+        }
         var found: NodeId = hir_mod.none_node_id;
         for (hir_mod.blockStmts(self.hir, root)) |raw| {
             const ns_node = self.unwrapExportDecl(raw);
@@ -47177,26 +48174,19 @@ pub const Checker = struct {
         obj_t: TypeId,
         prop_name: hir_mod.StringId,
     ) CheckError!void {
-        var syntax_static_class: ?hir_mod.StringId = null;
-        var syntax_instance_class: ?hir_mod.StringId = null;
-        if (self.hir.kindOf(node) == .member_access) {
-            const m = hir_mod.memberOf(self.hir, node);
-            if (self.hir.kindOf(m.object) == .identifier) {
-                const ident = hir_mod.identifierOf(self.hir, m.object);
-                if (std.mem.eql(u8, self.string_interner.get(ident.name), "super")) return;
-                if (self.findVisibleNamedClassDecl(m.object, ident.name) != null) {
-                    syntax_static_class = ident.name;
-                } else {
-                    syntax_instance_class = self.explicitClassAnnotationName(m.object);
-                }
+        if (self.source != null and
+            !self.source_may_have_protected_member and
+            self.interface_extends_visibility_class.count() == 0 and
+            obj_t < self.interner.pool.typeCount())
+        {
+            const flags = self.interner.pool.flagsOf(obj_t);
+            if (!flags.is_union and !flags.is_intersection) {
+                const member = self.interner.objectMemberInfo(obj_t, prop_name);
+                if (member == null or member.?.visibility != .protected) return;
             }
         }
         const Receiver = struct { class_name: hir_mod.StringId, is_static: bool };
-        const receiver: Receiver = if (syntax_static_class) |name|
-            .{ .class_name = name, .is_static = true }
-        else if (syntax_instance_class) |name|
-            .{ .class_name = name, .is_static = false }
-        else if (self.class_name_by_instance.get(obj_t)) |name|
+        var receiver: ?Receiver = if (self.class_name_by_instance.get(obj_t)) |name|
             .{ .class_name = name, .is_static = false }
         else if (self.class_name_by_static.get(obj_t)) |name|
             .{ .class_name = name, .is_static = true }
@@ -47207,21 +48197,36 @@ pub const Checker = struct {
         else if (self.interfaceInheritedVisibilityClass(obj_t)) |name|
             .{ .class_name = name, .is_static = false }
         else
-            return;
-        const declaring_class = self.protectedMemberDeclaringClass(receiver.class_name, prop_name, receiver.is_static) orelse blk: {
-            const own_members = if (receiver.is_static)
-                self.class_static_member_names.getPtr(receiver.class_name)
+            null;
+        if (self.hir.kindOf(node) == .member_access) {
+            const m = hir_mod.memberOf(self.hir, node);
+            if (self.hir.kindOf(m.object) == .identifier) {
+                const ident = hir_mod.identifierOf(self.hir, m.object);
+                if (std.mem.eql(u8, self.string_interner.get(ident.name), "super")) return;
+                if (receiver == null) {
+                    if (self.findVisibleNamedClassDecl(m.object, ident.name) != null) {
+                        receiver = .{ .class_name = ident.name, .is_static = true };
+                    } else if (self.explicitClassAnnotationName(m.object)) |name| {
+                        receiver = .{ .class_name = name, .is_static = false };
+                    }
+                }
+            }
+        }
+        const resolved_receiver = receiver orelse return;
+        const declaring_class = self.protectedMemberDeclaringClass(resolved_receiver.class_name, prop_name, resolved_receiver.is_static) orelse blk: {
+            const own_members = if (resolved_receiver.is_static)
+                self.class_static_member_names.getPtr(resolved_receiver.class_name)
             else
-                self.class_instance_member_names.getPtr(receiver.class_name);
+                self.class_instance_member_names.getPtr(resolved_receiver.class_name);
             if (own_members) |members| {
                 if (members.contains(prop_name)) return;
-            } else if (self.classSyntaxMemberVisibility(receiver.class_name, prop_name, receiver.is_static)) |visibility| {
+            } else if (self.classSyntaxMemberVisibility(resolved_receiver.class_name, prop_name, resolved_receiver.is_static)) |visibility| {
                 if (visibility != .protected) return;
             }
             if (obj_t >= self.interner.pool.typeCount()) return;
             const member = self.interner.objectMemberInfo(obj_t, prop_name) orelse return;
             if (member.visibility != .protected) return;
-            break :blk receiver.class_name;
+            break :blk resolved_receiver.class_name;
         };
         if (self.nearestEnclosingClassInProtectedChain(node, declaring_class)) |access_class| {
             // TS2446's receiver constraint applies to instance members.
@@ -47229,12 +48234,12 @@ pub const Checker = struct {
             // constructor while lexically inside the declaring class or a
             // subclass; a redeclared static member has its own declaring
             // class and therefore still fails the lexical-chain test above.
-            if (receiver.is_static) return;
-            if (self.classIsOrExtendsClass(receiver.class_name, access_class)) return;
+            if (resolved_receiver.is_static) return;
+            if (self.classIsOrExtendsClass(resolved_receiver.class_name, access_class)) return;
             const prop_str = self.string_interner.get(prop_name);
             const access_display = try self.classDisplayName(node, access_class);
             defer self.gpa.free(access_display);
-            const receiver_display = try self.classDisplayName(node, receiver.class_name);
+            const receiver_display = try self.classDisplayName(node, resolved_receiver.class_name);
             defer self.gpa.free(receiver_display);
             const msg = try std.fmt.allocPrint(
                 self.diag_arena.allocator(),
@@ -47249,7 +48254,7 @@ pub const Checker = struct {
             });
             return;
         }
-        if (!receiver.is_static and self.hir.kindOf(node) == .member_access) {
+        if (!resolved_receiver.is_static and self.hir.kindOf(node) == .member_access) {
             const m = hir_mod.memberOf(self.hir, node);
             if (self.nodeIsThisReference(m.object) and self.enclosingThisHostHasExplicitThisParam(m.object)) return;
         }
@@ -47260,7 +48265,7 @@ pub const Checker = struct {
             members.contains(prop_name)
         else
             false) or self.classSyntaxMemberVisibility(declaring_class, prop_name, true) != null;
-        const owned_static_display: ?[]u8 = if (receiver.is_static and !declaring_class_owns_static)
+        const owned_static_display: ?[]u8 = if (resolved_receiver.is_static and !declaring_class_owns_static)
             try std.fmt.allocPrint(self.gpa, "typeof {s}", .{bare_class_display})
         else
             null;
@@ -49278,6 +50283,7 @@ pub const Checker = struct {
     }
 
     fn sourceHasDeclareAnyVarName(self: *Checker, name: hir_mod.StringId) bool {
+        if (!self.source_may_have_declare_any_var) return false;
         const src = self.source orelse return false;
         const raw = self.string_interner.get(name);
         var search_start: usize = 0;
@@ -49399,6 +50405,9 @@ pub const Checker = struct {
         right_t: TypeId,
         right: types.ObjectMember,
     ) bool {
+        if (left.declaration_origin != 0 or right.declaration_origin != 0) {
+            return left.declaration_origin == right.declaration_origin;
+        }
         const left_program_origin = self.synthetic_program_class_origins.get(left_t);
         const right_program_origin = self.synthetic_program_class_origins.get(right_t);
         if (left_program_origin != null or right_program_origin != null) {
@@ -49650,8 +50659,8 @@ pub const Checker = struct {
     fn sourceExplicitlyEnablesCheckJs(self: *Checker) bool {
         const src = self.source orelse return false;
         return blk: {
-            if (std.mem.indexOf(u8, src, "@ts-check") != null) break :blk true;
-            var search_start: usize = 0;
+            if (self.sourceMarkerPosition("@ts-check") != null) break :blk true;
+            var search_start = self.sourceMarkerPosition("@check") orelse break :blk false;
             while (std.mem.indexOfPos(u8, src, search_start, "@check")) |pos| {
                 search_start = pos + "@check".len;
                 if (src.len < pos + "@checkJs".len) continue;
@@ -49683,7 +50692,21 @@ pub const Checker = struct {
     }
 
     fn sourceDirectiveIsTrue(self: *Checker, marker: []const u8) bool {
+        const cached: *?bool = if (std.mem.eql(u8, marker, "@declaration"))
+            &self.source_facts.declaration_true_directive
+        else if (std.mem.eql(u8, marker, "@noImplicitReferences"))
+            &self.source_facts.no_implicit_references_true_directive
+        else
+            return self.scanSourceDirectiveIsTrue(marker);
+        if (cached.*) |result| return result;
+        const result = self.scanSourceDirectiveIsTrue(marker);
+        cached.* = result;
+        return result;
+    }
+
+    fn scanSourceDirectiveIsTrue(self: *const Checker, marker: []const u8) bool {
         const src = self.source orelse return false;
+        if (std.mem.startsWith(u8, marker, "@") and self.sourceMarkerPosition("@") == null) return false;
         const marker_pos = std.mem.indexOf(u8, src, marker) orelse return false;
         var rest = std.mem.trimStart(u8, src[marker_pos + marker.len ..], " \t");
         if (rest.len > 0 and rest[0] == ':') rest = std.mem.trimStart(u8, rest[1..], " \t");
@@ -49695,7 +50718,7 @@ pub const Checker = struct {
         if (self.source_facts.allow_js_directive) |cached| return cached;
         const src = self.source orelse return false;
         const result = blk: {
-            var search_start: usize = 0;
+            var search_start = self.sourceMarkerPosition("@allow") orelse break :blk false;
             while (std.mem.indexOfPos(u8, src, search_start, "@allow")) |pos| {
                 search_start = pos + "@allow".len;
                 if (src.len < pos + "@allowJs".len) continue;
@@ -49715,7 +50738,7 @@ pub const Checker = struct {
         if (self.source_facts.explicitly_disables_check_js) |cached| return cached;
         const src = self.source orelse return false;
         const result = blk: {
-            var search_start: usize = 0;
+            var search_start = self.sourceMarkerPosition("@check") orelse break :blk false;
             while (std.mem.indexOfPos(u8, src, search_start, "@check")) |pos| {
                 search_start = pos + "@check".len;
                 if (src.len < pos + "@checkJs".len) continue;
@@ -52510,13 +53533,29 @@ pub const Checker = struct {
 
     fn knownTypeDisplayName(self: *Checker, t: TypeId) ?[]const u8 {
         if (self.alias_display_names.get(t)) |display| return display;
+        // Directly named non-class types already have their authoritative
+        // reverse mapping. Only class instances need the structural pre-pass:
+        // an interface with the same shape may be the preferred diagnostic
+        // display name for those values.
+        const direct_name = self.namedTypeForId(t);
+        if (direct_name) |name| {
+            if (!self.class_instance_types.contains(name)) return self.string_interner.get(name);
+        }
         if (self.objectTypeHasNamedShape(t, true)) |name| return self.string_interner.get(name);
-        if (self.namedTypeForId(t)) |name| return self.string_interner.get(name);
+        if (direct_name) |name| return self.string_interner.get(name);
+        if (self.registeredTypeNameForId(t)) |name| return self.string_interner.get(name);
+        if (self.objectTypeHasNamedShape(t, false)) |name| return self.string_interner.get(name);
+        return null;
+    }
+
+    fn registeredTypeNameForId(self: *Checker, t: TypeId) ?hir_mod.StringId {
+        if (self.registered_named_type_ids_complete and !self.registered_named_type_ids.contains(t)) return null;
+        // Keep the original scan order. The reverse map may have lost a
+        // selected alias through rebinding while another alias still exists.
         var it = self.type_names.iterator();
         while (it.next()) |entry| {
-            if (entry.value_ptr.* == t) return self.string_interner.get(entry.key_ptr.*);
+            if (entry.value_ptr.* == t) return entry.key_ptr.*;
         }
-        if (self.objectTypeHasNamedShape(t, false)) |name| return self.string_interner.get(name);
         return null;
     }
 
@@ -52525,6 +53564,48 @@ pub const Checker = struct {
         const flags = self.interner.pool.flagsOf(t);
         if (!flags.is_object_type) return null;
         if (self.interner.objectMembers(t).len == 0) return null;
+        const cache = if (prefer_non_class)
+            &self.named_shape_non_class_cache
+        else
+            &self.named_shape_any_cache;
+        if (cache.get(t)) |name| return name;
+        const miss_key = (@as(u64, t) << 1) | @intFromBool(prefer_non_class);
+        if (self.named_shape_misses.get(miss_key) == self.type_names_generation) return null;
+        if (self.findNamedShapeCandidate(t, prefer_non_class)) |name| {
+            cache.put(self.gpa, t, name) catch {};
+            return name;
+        }
+        self.named_shape_misses.put(self.gpa, miss_key, self.type_names_generation) catch {};
+        return null;
+    }
+
+    fn findNamedShapeCandidate(self: *Checker, t: TypeId, prefer_non_class: bool) ?hir_mod.StringId {
+        if (!self.named_shape_member_facts_complete) return self.findNamedShapeSlow(t, prefer_non_class);
+        var smallest: NamedShapeCandidateBucket = .{};
+        for (self.interner.objectMembers(t)) |member| {
+            const bucket = self.named_shape_member_facts.get(self.namedShapeMemberFact(t, member)) orelse return null;
+            if (smallest.count == 0 or bucket.count < smallest.count) smallest = bucket;
+        }
+        var match: ?hir_mod.StringId = null;
+        var cursor = smallest.head;
+        while (cursor != std.math.maxInt(usize)) {
+            const candidate = self.named_shape_candidates.items[cursor];
+            cursor = candidate.next;
+            if (candidate.type == t or self.type_names.get(candidate.name) != candidate.type) continue;
+            if (prefer_non_class and self.class_instance_types.contains(candidate.name)) continue;
+            if (candidate.type >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(candidate.type).is_object_type) continue;
+            if (!self.objectTypesSameDisplayShape(t, candidate.type)) continue;
+            // Duplicate facts or re-registrations can repeat the same name.
+            // Only distinct matching names require the original scan order.
+            if (match) |name| {
+                if (name != candidate.name) return self.findNamedShapeSlow(t, prefer_non_class);
+            }
+            match = candidate.name;
+        }
+        return match;
+    }
+
+    fn findNamedShapeSlow(self: *Checker, t: TypeId, prefer_non_class: bool) ?hir_mod.StringId {
         var it = self.type_names.iterator();
         while (it.next()) |entry| {
             if (prefer_non_class and self.class_instance_types.contains(entry.key_ptr.*)) continue;
@@ -52532,9 +53613,64 @@ pub const Checker = struct {
             if (named_t == t or named_t >= self.interner.pool.typeCount()) continue;
             const named_flags = self.interner.pool.flagsOf(named_t);
             if (!named_flags.is_object_type) continue;
-            if (self.objectTypesSameDisplayShape(t, named_t)) return entry.key_ptr.*;
+            if (self.objectTypesSameDisplayShape(t, named_t)) {
+                return entry.key_ptr.*;
+            }
         }
         return null;
+    }
+
+    fn namedShapeMemberFact(self: *Checker, t: TypeId, member: types.ObjectMember) u64 {
+        const modifiers = @as(u32, @intFromBool(member.is_optional)) |
+            (@as(u32, @intFromBool(member.is_readonly)) << 1) |
+            (@as(u32, @intFromBool(member.is_method)) << 2);
+        const fields = [_]u32{
+            @intCast(self.interner.objectMembers(t).len),
+            self.interner.objectStringIndex(t),
+            self.interner.objectNumberIndex(t),
+            self.interner.objectSymbolIndex(t),
+            member.name,
+            member.type,
+            modifiers,
+        };
+        return std.hash.Wyhash.hash(0, std.mem.asBytes(&fields));
+    }
+
+    fn recordNamedShapeMemberFacts(self: *Checker, name: hir_mod.StringId, t: TypeId) void {
+        if (!self.named_shape_member_facts_complete) return;
+        if (t >= self.interner.pool.typeCount()) {
+            self.named_shape_member_facts_complete = false;
+            return;
+        }
+        if (!self.interner.pool.flagsOf(t).is_object_type) return;
+        for (self.interner.objectMembers(t)) |member| {
+            self.appendNamedShapeCandidate(self.namedShapeMemberFact(t, member), name, t) catch {
+                // An incomplete index cannot prove that a shape is absent.
+                self.named_shape_member_facts_complete = false;
+                return;
+            };
+        }
+    }
+
+    fn appendNamedShapeCandidate(self: *Checker, fact: u64, name: hir_mod.StringId, t: TypeId) !void {
+        const entry = try self.named_shape_member_facts.getOrPut(self.gpa, fact);
+        if (!entry.found_existing) entry.value_ptr.* = .{};
+        const index = self.named_shape_candidates.items.len;
+        try self.named_shape_candidates.append(self.gpa, .{ .name = name, .type = t, .next = entry.value_ptr.head });
+        entry.value_ptr.head = index;
+        entry.value_ptr.count += 1;
+    }
+
+    fn namedShapeMemberFactsAllow(self: *Checker, t: TypeId) bool {
+        if (!self.named_shape_member_facts_complete) return true;
+        // Equality requires every queried member to occur in one named shape
+        // with the same size and indexers. Individual facts are necessary,
+        // not sufficient: preserve the full comparison for possible matches.
+        // This also preserves the original duplicate-member scan semantics.
+        for (self.interner.objectMembers(t)) |member| {
+            if (!self.named_shape_member_facts.contains(self.namedShapeMemberFact(t, member))) return false;
+        }
+        return true;
     }
 
     fn objectTypesSameDisplayShape(self: *Checker, a: TypeId, b: TypeId) bool {
@@ -52634,7 +53770,8 @@ pub const Checker = struct {
     }
 
     fn classExtendsInstanceType(self: *Checker, extends_expr: NodeId) CheckError!?TypeId {
-        return switch (self.hir.kindOf(extends_expr)) {
+        if (self.class_extends_instance_type_cache.get(extends_expr)) |cached| return cached;
+        const result: ?TypeId = switch (self.hir.kindOf(extends_expr)) {
             .identifier => blk: {
                 const id = hir_mod.identifierOf(self.hir, extends_expr);
                 if (self.findLocalValueDeclBefore(self.enclosingClassNode(extends_expr), id.name)) |local_decl| {
@@ -52737,6 +53874,8 @@ pub const Checker = struct {
             },
             else => null,
         };
+        if (result) |resolved| self.class_extends_instance_type_cache.put(self.gpa, extends_expr, resolved) catch {};
+        return result;
     }
 
     fn instantiatedHeritageValueTypeRefInstance(
@@ -53450,6 +54589,7 @@ pub const Checker = struct {
                     .is_method = member.is_method,
                     .visibility = member.visibility,
                     .decl_node = member.decl_node,
+                    .declaration_origin = member.declaration_origin,
                 });
             }
             const str_idx = self.interner.objectStringIndex(t);
@@ -53761,7 +54901,8 @@ pub const Checker = struct {
     }
 
     fn classExtendsStaticType(self: *Checker, extends_expr: NodeId) CheckError!?TypeId {
-        return switch (self.hir.kindOf(extends_expr)) {
+        if (self.class_extends_static_type_cache.get(extends_expr)) |cached| return cached;
+        const result: ?TypeId = switch (self.hir.kindOf(extends_expr)) {
             .identifier => blk: {
                 const id = hir_mod.identifierOf(self.hir, extends_expr);
                 if (self.findVisibleNamedClassDecl(extends_expr, id.name)) |decl| {
@@ -53831,22 +54972,23 @@ pub const Checker = struct {
             },
             else => null,
         };
+        if (result) |resolved| self.class_extends_static_type_cache.put(self.gpa, extends_expr, resolved) catch {};
+        return result;
     }
 
     fn classExtendsCallStaticType(self: *Checker, extends_expr: NodeId) CheckError!TypeId {
+        if (self.class_extends_call_static_type_cache.get(extends_expr)) |cached| return cached;
         const type_args = hir_mod.callTypeArgs(self.hir, extends_expr);
-        if (type_args.len == 0) {
-            const static_t = try self.checkExpression(extends_expr);
-            return try self.refineHeritageFactoryStaticTypeFromArgs(extends_expr, static_t);
-        }
         const callee = hir_mod.callOf(self.hir, extends_expr).callee;
-        if (self.hir.kindOf(callee) == .identifier) {
-            const static_t = try self.checkExpression(extends_expr);
-            return try self.refineHeritageFactoryStaticTypeFromArgs(extends_expr, static_t);
-        }
-        const uninstantiated_t = try self.checkExpression(callee);
-        const static_t = try self.filteredInstantiationExpressionType(extends_expr, uninstantiated_t, type_args);
-        return try self.refineHeritageFactoryStaticTypeFromArgs(extends_expr, static_t);
+        const static_t = if (type_args.len == 0 or self.hir.kindOf(callee) == .identifier)
+            try self.checkExpression(extends_expr)
+        else blk: {
+            const uninstantiated_t = try self.checkExpression(callee);
+            break :blk try self.filteredInstantiationExpressionType(extends_expr, uninstantiated_t, type_args);
+        };
+        const result = try self.refineHeritageFactoryStaticTypeFromArgs(extends_expr, static_t);
+        self.class_extends_call_static_type_cache.put(self.gpa, extends_expr, result) catch {};
+        return result;
     }
 
     fn refineHeritageFactoryStaticTypeFromArgs(
@@ -59330,6 +60472,12 @@ pub const Checker = struct {
     }
 
     fn virtualRelativeModuleNamedExportRuntimeStatus(self: *Checker, node: NodeId, spec: []const u8, name: hir_mod.StringId) CheckError!ModuleExportRuntimeStatus {
+        // Ordinary multi-file programs resolve exports through the Program
+        // owner graph. Their per-file HIR cannot contain a sibling module,
+        // so scanning it as a virtual @filename bundle can only return
+        // unknown. Keep true self-imports on the local-source path.
+        if (!self.sourceHasVirtualFilenameSections() and
+            !(try self.relativeSpecifierTargetsCurrentSource(node, spec))) return .unknown;
         if (try self.virtualCommonJsModuleExportObjectType(node, spec)) |commonjs_t| {
             if ((try self.lookupObjectMember(commonjs_t, name)) != null) return .value;
         }
@@ -60440,6 +61588,20 @@ pub const Checker = struct {
             if (self.virtualSectionStartForNode(stmt) != anchor_section) continue;
             const imp = hir_mod.importOf(self.hir, stmt);
             const spec_text = self.string_interner.get(imp.module);
+            // Bound program declarations carry actual value types; a later
+            // external presence-only fallback must not erase them to `any`.
+            if (try self.programExportedClassTypeForImportBinding(stmt, local_name, anchor)) |class_t| return class_t;
+            if (try self.programExportedValueTypeForImportBinding(stmt, local_name)) |value_t| return value_t;
+            for (hir_mod.importNamed(self.hir, stmt)) |spec_node| {
+                if (self.hir.kindOf(spec_node) != .import_specifier) continue;
+                const imported = hir_mod.importSpecifierOf(self.hir, spec_node);
+                if (imported.local != local_name) continue;
+                if (self.external_resolver) |resolver| {
+                    if (resolver.moduleExport(spec_text, self.importer_path, self.string_interner.get(imported.imported))) |info| {
+                        if (info.namespace_module_path.len != 0) return self.programModuleNamespaceType(info.namespace_module_path, anchor);
+                    }
+                }
+            }
             if (self.importDeclIsRequireAssignment(stmt) and
                 imp.default_binding != hir_mod.none_node_id and
                 self.hir.kindOf(imp.default_binding) == .identifier and
@@ -60486,12 +61648,14 @@ pub const Checker = struct {
     }
 
     fn commonJsWholeExportTypeForRequireVariable(self: *Checker, object: NodeId) CheckError!?TypeId {
-        if (!self.sourceHasVirtualFilenameSections() or object == hir_mod.none_node_id or
-            self.hir.kindOf(object) != .identifier) return null;
+        if (object == hir_mod.none_node_id or self.hir.kindOf(object) != .identifier) return null;
         const name = hir_mod.identifierOf(self.hir, object).name;
         if (self.requireSpecifierForLocal(name, object)) |specifier| {
+            if (try self.programCommonJsWholeExportType(object, specifier)) |whole_t| return whole_t;
+            if (!self.sourceHasVirtualFilenameSections()) return null;
             if (try self.virtualCommonJsModuleExportObjectType(object, specifier)) |module_t| return module_t;
         }
+        if (!self.sourceHasVirtualFilenameSections()) return null;
         const root = self.rootBlockFor(object);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
         const section = self.virtualSectionStartForNode(object);
@@ -60608,6 +61772,7 @@ pub const Checker = struct {
     }
 
     fn importedTypeRefForLocal(self: *Checker, local_name: hir_mod.StringId, anchor: NodeId) CheckError!?TypeId {
+        if (self.source != null and !self.source_may_have_import_declaration) return null;
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
         const has_sections = self.sourceHasVirtualFilenameSections();
@@ -60898,9 +62063,33 @@ pub const Checker = struct {
     }
 
     fn programCommonJsWholeExportType(self: *Checker, node: NodeId, spec: []const u8) CheckError!?TypeId {
+        if (self.program_commonjs_exports.len == 0) return null;
+        if (self.external_resolver) |resolver| {
+            const containing = if (self.importer_path.len > 0)
+                self.importer_path
+            else
+                self.virtualSectionFilenameForNode(node) orelse "/__root__.ts";
+            if (resolver.resolve(spec, containing)) |resolved| {
+                if (try self.programCommonJsWholeExportTypeForPath(resolved.path)) |whole_t| return whole_t;
+            }
+        }
+        if (self.importer_path.len == 0) return null;
+        const directory = std.fs.path.dirname(self.importer_path) orelse "";
+        const resolved = std.fs.path.resolve(self.gpa, &.{ directory, spec }) catch return null;
+        defer self.gpa.free(resolved);
+        return self.programCommonJsWholeExportTypeForPath(resolved);
+    }
+
+    fn programCommonJsWholeExportTypeForPath(self: *Checker, resolved_path: []const u8) CheckError!?TypeId {
         for (self.program_commonjs_exports) |exported| {
-            if (exported.name.len != 0 or !exported.whole_export_is_any) continue;
-            if (try self.programImportTargetsPath(node, spec, exported.module_path)) return types.Primitive.any;
+            if (exported.name.len != 0 or !programModulePathMatches(resolved_path, exported.module_path)) continue;
+            if (exported.whole_export_is_any) return types.Primitive.any;
+            const owner_schema = exported.whole_export_schema orelse continue;
+            if (!try self.programSchemaSupported(owner_schema)) continue;
+            return self.instantiateProgramDeclaration(owner_schema.declaration, &.{}, &.{}) catch |err| switch (err) {
+                error.UnsupportedProgramType => continue,
+                error.OutOfMemory => return error.OutOfMemory,
+            };
         }
         return null;
     }
@@ -60937,6 +62126,7 @@ pub const Checker = struct {
     }
 
     fn importedReferenceLibTypeForLocal(self: *Checker, local_name: hir_mod.StringId, anchor: NodeId) CheckError!?TypeId {
+        if (self.source != null and !self.source_may_have_import_declaration) return null;
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
         const has_sections = self.sourceHasVirtualFilenameSections();
@@ -61343,6 +62533,7 @@ pub const Checker = struct {
         self: *Checker,
         object: NodeId,
     ) CheckError!?TypeId {
+        if (self.source != null and !self.source_may_have_require_binding) return null;
         if (object == hir_mod.none_node_id or self.hir.kindOf(object) != .identifier) return null;
         const name = hir_mod.identifierOf(self.hir, object).name;
         const root = self.rootBlockFor(object);
@@ -62313,6 +63504,7 @@ pub const Checker = struct {
 
     fn memberAccessOnVirtualJsDefaultImport(self: *Checker, object_node: NodeId, member_name: hir_mod.StringId) CheckError!bool {
         if (!self.sourceHasAllowJsDirective()) return false;
+        if (self.source != null and !self.source_may_have_import_declaration) return false;
         if (self.hir.kindOf(object_node) != .identifier) return false;
         if (std.mem.eql(u8, self.string_interner.get(member_name), "default")) return false;
         const local_name = hir_mod.identifierOf(self.hir, object_node).name;
@@ -62360,6 +63552,7 @@ pub const Checker = struct {
     }
 
     fn typeOnlyImportLocal(self: *Checker, local_name: hir_mod.StringId, anchor: NodeId) bool {
+        if (self.source != null and !self.source_may_have_import_declaration) return false;
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
         const anchor_section = if (self.sourceHasVirtualFilenameSections()) self.virtualSectionStartForNode(anchor) else 0;
@@ -62387,6 +63580,7 @@ pub const Checker = struct {
     /// a named type-only import, or the default/namespace binding node.
     /// Returns null when `local_name` is not a local type-only import.
     fn typeOnlyImportLocalDecl(self: *Checker, local_name: hir_mod.StringId, anchor: NodeId) ?NodeId {
+        if (self.source != null and !self.source_may_have_import_declaration) return null;
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
         const anchor_section = if (self.sourceHasVirtualFilenameSections()) self.virtualSectionStartForNode(anchor) else 0;
@@ -62579,6 +63773,7 @@ pub const Checker = struct {
     };
 
     fn plainNamedImport(self: *Checker, name: hir_mod.StringId, anchor: NodeId) ?PlainNamedImport {
+        if (self.source != null and !self.source_may_have_import_declaration) return null;
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
         const anchor_section = if (self.sourceHasVirtualFilenameSections()) self.virtualSectionStartForNode(anchor) else 0;
@@ -62650,6 +63845,8 @@ pub const Checker = struct {
     /// (`cross_module_type_only_export_cache`) so the module-recompiling
     /// `moduleExport` query runs at most once per name, not per value-use.
     fn nameIsCrossModuleTypeOnlyExport(self: *Checker, name: hir_mod.StringId, anchor: NodeId) bool {
+        if (!self.sourceHasVirtualFilenameSections())
+            return self.externalTypeOnlyOriginKind(name, anchor) == .export_type;
         const import = self.plainNamedImport(name, anchor) orelse return false;
         const spec = self.string_interner.get(import.module);
         if (self.sourceHasVirtualFilenameSections() and std.mem.startsWith(u8, spec, ".")) {
@@ -62657,13 +63854,35 @@ pub const Checker = struct {
             const status = self.virtualRelativeModuleNamedExportRuntimeStatus(anchor, spec, import.imported) catch .unknown;
             return status == .type_only_alias;
         }
+        return false;
+    }
+
+    fn externalTypeOnlyOriginKind(self: *Checker, name: hir_mod.StringId, anchor: NodeId) TypeOnlyOriginKind {
+        if (self.sourceHasVirtualFilenameSections()) return .none;
+        const import = self.plainNamedImport(name, anchor) orelse return .none;
+        // The module-level alias's cached restriction does not apply to a
+        // nearer value binding. Check scope before consulting the name cache.
+        if (self.module) |module| {
+            for (module.scopes.items) |scope| {
+                if (scope != module.root and scope.values.contains(name) and
+                    self.nodeIsAncestorOf(scope.introducing_node, anchor)) return .none;
+            }
+        }
+        if (self.findVisibleSameNameValueBinding(anchor, name) != null) return .none;
+        var parent = self.hir.parentOf(anchor);
+        while (parent != hir_mod.none_node_id) : (parent = self.hir.parentOf(parent)) {
+            const kind = self.hir.kindOf(parent);
+            if ((kind == .fn_decl or kind == .fn_expr or kind == .arrow_fn) and
+                self.functionParametersDeclareName(parent, name)) return .none;
+        }
         if (self.cross_module_type_only_export_cache.get(name)) |cached| return cached;
+        const spec = self.string_interner.get(import.module);
         const imported_text = self.string_interner.get(import.imported);
-        var result = false;
+        var result: TypeOnlyOriginKind = .none;
         if (self.external_resolver) |resolver| {
             if (resolver.moduleExport(spec, self.importer_path, imported_text)) |info| {
                 const bare_type_value_export = info.exported_value and std.mem.eql(u8, imported_text, "type");
-                result = info.type_only_export and !bare_type_value_export;
+                result = if (info.type_only_import) .import_type else if (info.type_only_export and !bare_type_value_export) .export_type else .none;
             }
         }
         self.cross_module_type_only_export_cache.put(self.gpa, name, result) catch {};
@@ -62773,6 +63992,7 @@ pub const Checker = struct {
     }
 
     fn localImportBindingExistsAt(self: *Checker, local_name: hir_mod.StringId, anchor: NodeId) bool {
+        if (self.source != null and !self.source_may_have_import_declaration) return false;
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
         const has_sections = self.sourceHasVirtualFilenameSections();
@@ -62927,7 +64147,9 @@ pub const Checker = struct {
 
     fn virtualSectionMatchesResolvedModule(self: *Checker, node: NodeId, resolved: []const u8, spec: []const u8) bool {
         const filename = self.relativeModuleFilenameForNode(node) orelse return false;
-        if (self.virtualPreferredResolvedModuleCandidateMatches(filename, resolved, spec)) |matches| return matches;
+        if (self.sourceHasVirtualFilenameSections()) {
+            if (self.virtualPreferredResolvedModuleCandidateMatches(filename, resolved, spec)) |matches| return matches;
+        }
         if (virtualRelativeSpecifierPrefersIndex(spec)) {
             const index_exts = [_][]const u8{ ".d.ts", ".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs" };
             for (index_exts) |ext| {
@@ -64034,6 +65256,9 @@ pub const Checker = struct {
                             self.mergeInterfaceDeclarationTypePreservingIndexes(existing_t, unified_t) catch unified_t
                         else
                             self.mergeInterfaceDeclarationType(existing_t, unified_t) catch unified_t;
+                        if (prev_decl != hir_mod.none_node_id and prev_decl != node) {
+                            try self.interface_merge_predecessor.put(self.gpa, node, prev_decl);
+                        }
                         // Back-patch EVERY prior same-scope same-named
                         // interface_decl's HIR type to the merged
                         // shape ÃÂ¢ÃÂÃÂ `resolveUnqualifiedNamespaceTypeRef`
@@ -64066,7 +65291,7 @@ pub const Checker = struct {
                 );
             }
             if (has_readonly_index) try self.readonly_index_types.put(self.gpa, final_t, {});
-            try self.type_names.put(self.gpa, id.name, final_t);
+            try self.putTypeName(id.name, final_t);
             if (recursive_provisional_t != types.Primitive.none and recursive_provisional_t != final_t) {
                 try self.recursive_interface_targets.put(self.gpa, recursive_provisional_t, final_t);
             }
@@ -64112,7 +65337,10 @@ pub const Checker = struct {
                     });
                 }
                 const merged_info = self.generic_aliases.get(id.name).?;
-                try self.backPatchSameScopeGenericInterfaces(node, id.name, merged_info.params, final_t);
+                try self.recordGenericInterfaceDecl(node, merged_info.params, final_t);
+                if (final_t != iface_t) {
+                    try self.backPatchSameScopeGenericInterfaces(node, id.name, merged_info.params, final_t);
+                }
             }
             self.hir.setType(it.name, final_t);
         }
@@ -64149,20 +65377,13 @@ pub const Checker = struct {
         params: []const TypeId,
         merged_t: TypeId,
     ) CheckError!void {
-        var target_path: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
-        defer target_path.deinit(self.gpa);
-        self.collectEnclosingNamespacePathNoFail(iface_decl, &target_path);
-        const root = self.rootBlockFor(iface_decl);
-        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return;
-        try self.backPatchGenericInterfacesInStmts(
-            hir_mod.blockStmts(self.hir, root),
-            target_path.items,
-            0,
-            iface_decl,
-            name,
-            params,
-            merged_t,
-        );
+        _ = name;
+        var current = self.interface_merge_predecessor.get(iface_decl) orelse return;
+        var guard: usize = 0;
+        while (current != hir_mod.none_node_id and guard < self.hir.nodeCount()) : (guard += 1) {
+            try self.recordGenericInterfaceDecl(current, params, merged_t);
+            current = self.interface_merge_predecessor.get(current) orelse break;
+        }
     }
 
     fn backPatchGenericInterfacesInStmts(
@@ -64504,19 +65725,16 @@ pub const Checker = struct {
     /// `namespace M2 { ... }` blocks where interfaces declared in
     /// different bodies still merge into one (`mergeTwoInterfaces2`).
     fn backPatchSameScopeInterfaces(self: *Checker, iface_decl: NodeId, name: hir_mod.StringId, merged_t: TypeId) void {
-        var target_path: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
-        defer target_path.deinit(self.gpa);
-        self.collectEnclosingNamespacePathNoFail(iface_decl, &target_path);
-        const root = self.rootBlockFor(iface_decl);
-        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return;
-        self.backPatchInterfacesInStmts(
-            hir_mod.blockStmts(self.hir, root),
-            target_path.items,
-            0,
-            iface_decl,
-            name,
-            merged_t,
-        );
+        _ = name;
+        var current = self.interface_merge_predecessor.get(iface_decl) orelse return;
+        var guard: usize = 0;
+        while (current != hir_mod.none_node_id and guard < self.hir.nodeCount()) : (guard += 1) {
+            if (self.hir.kindOf(current) != .interface_decl) break;
+            const iface = hir_mod.interfaceOf(self.hir, current);
+            self.hir.setType(current, merged_t);
+            if (iface.name != hir_mod.none_node_id) self.hir.setType(iface.name, merged_t);
+            current = self.interface_merge_predecessor.get(current) orelse break;
+        }
     }
 
     fn ensureSameScopeInterfaceMergeComplete(
@@ -64630,10 +65848,7 @@ pub const Checker = struct {
     fn declarationIsRootStatement(self: *Checker, node: NodeId) bool {
         const root = self.rootBlockFor(node);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
-        for (hir_mod.blockStmts(self.hir, root)) |raw| {
-            if (self.unwrapExportDecl(raw) == node) return true;
-        }
-        return false;
+        return self.declarationContainer(node) == root;
     }
 
     /// Combine the members of two interface types for declaration
@@ -65917,6 +67132,7 @@ pub const Checker = struct {
         extends_node: NodeId,
         child_members: []const types.ObjectMember,
     ) CheckError!void {
+        if (self.source != null and !self.source_may_have_class_or_enum_declaration) return;
         const class_name = self.unqualifiedTypeRefName(extends_node) orelse return;
         const root = self.rootBlockFor(iface_node);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return;
@@ -67309,6 +68525,14 @@ pub const Checker = struct {
         if (r.qualifier_len != 0) return;
         const decl = self.findVisibleNamedTypeDecl(ext_node, r.name) orelse return;
         if (self.hir.kindOf(decl) != .interface_decl) return;
+        // Completed interface declarations are back-patched when a later
+        // same-scope merge contributes members. Complete any unchecked merge
+        // siblings, but do not recreate the declaration's type parameters and
+        // inherited shape for every instantiation of every child interface.
+        if (self.hir.typeOf(decl) != types.Primitive.none) {
+            try self.ensureSameScopeInterfaceMergeComplete(decl, r.name);
+            return;
+        }
         if (self.interface_lower_in_progress.contains(decl)) return;
         try self.checkInterfaceDecl(decl);
     }
@@ -67405,6 +68629,13 @@ pub const Checker = struct {
         if (self.hir.kindOf(decl) != .interface_decl) return null;
         const extends = hir_mod.interfaceExtends(self.hir, decl);
         if (extends.len == 0) return null;
+        const refresh_key: GenericInterfaceRefreshKey = .{ .decl = decl, .instantiated = instantiated_t };
+        if (self.generic_interface_refresh_cache.get(refresh_key)) |cached| {
+            return if (cached == instantiated_t) null else cached;
+        }
+        if (self.generic_interface_refresh_active.contains(refresh_key)) return null;
+        try self.generic_interface_refresh_active.put(self.gpa, refresh_key, {});
+        defer _ = self.generic_interface_refresh_active.remove(refresh_key);
 
         try self.pushNarrowScope();
         defer self.popNarrowScope();
@@ -67441,7 +68672,10 @@ pub const Checker = struct {
                 changed = true;
             }
         }
-        if (!changed and inherited_readonly_index == self.readonly_index_types.contains(instantiated_t)) return null;
+        if (!changed and inherited_readonly_index == self.readonly_index_types.contains(instantiated_t)) {
+            try self.generic_interface_refresh_cache.put(self.gpa, refresh_key, instantiated_t);
+            return null;
+        }
         const refreshed = self.interner.internObjectTypeWithIndexAndSymbol(
             self.interner.objectMembers(instantiated_t),
             string_idx,
@@ -67450,6 +68684,7 @@ pub const Checker = struct {
         ) catch return error.OutOfMemory;
         if (inherited_readonly_index) try self.readonly_index_types.put(self.gpa, refreshed, {});
         try self.copyMemberPredicatesFromReceiver(refreshed, instantiated_t);
+        try self.generic_interface_refresh_cache.put(self.gpa, refresh_key, refreshed);
         return refreshed;
     }
 
@@ -67719,7 +68954,7 @@ pub const Checker = struct {
         else
             types.Primitive.number_t;
         if (!saw_string and !e.is_const) try self.numeric_enums.put(self.gpa, enum_name, {});
-        try self.type_names.put(self.gpa, enum_name, enum_t);
+        try self.putTypeName(enum_name, enum_t);
         self.hir.setType(node, enum_t);
         self.hir.setType(e.name, enum_t);
         if (self.strict_flags.isolated_declarations and
@@ -69103,6 +70338,7 @@ pub const Checker = struct {
     }
 
     fn enumDeclForNameAt(self: *Checker, name: hir_mod.StringId, anchor: NodeId) ?NodeId {
+        if (self.source != null and !self.source_may_have_enum_declaration) return null;
         if (self.module) |module| {
             if (module.root.lookup(name)) |sym| {
                 if (sym.decls.items.len > 0) {
@@ -69710,7 +70946,7 @@ pub const Checker = struct {
                     try self.reportSelfReferencedTypeAnnotationAtName(var_decl);
                     try self.reportTypeAliasCircular(ta.name, id.name);
                     self.hir.setType(node, types.Primitive.any);
-                    try self.type_names.put(self.gpa, id.name, types.Primitive.any);
+                    try self.putTypeName(id.name, types.Primitive.any);
                     self.hir.setType(ta.name, types.Primitive.any);
                     return;
                 }
@@ -69718,7 +70954,7 @@ pub const Checker = struct {
                     try self.reportReturnTypeAnnotationCircularOnce(return_type);
                     try self.reportTypeAliasCircular(ta.name, id.name);
                     self.hir.setType(node, types.Primitive.any);
-                    try self.type_names.put(self.gpa, id.name, types.Primitive.any);
+                    try self.putTypeName(id.name, types.Primitive.any);
                     self.hir.setType(ta.name, types.Primitive.any);
                     return;
                 }
@@ -69726,7 +70962,7 @@ pub const Checker = struct {
                     try self.reportMappedAliasCircularConstraint(ta.aliased);
                     try self.reportTypeAliasCircular(ta.name, id.name);
                     self.hir.setType(node, types.Primitive.any);
-                    try self.type_names.put(self.gpa, id.name, types.Primitive.any);
+                    try self.putTypeName(id.name, types.Primitive.any);
                     self.hir.setType(ta.name, types.Primitive.any);
                     return;
                 }
@@ -69765,7 +71001,7 @@ pub const Checker = struct {
             self.hir.setType(node, aliased_t);
             if (ta.name != hir_mod.none_node_id and self.hir.kindOf(ta.name) == .identifier) {
                 const id = hir_mod.identifierOf(self.hir, ta.name);
-                try self.type_names.put(self.gpa, id.name, aliased_t);
+                try self.putTypeName(id.name, aliased_t);
                 if (aliased_t >= types.Primitive.first_dynamic and aliased_t < self.interner.pool.typeCount()) {
                     const bare_name = self.string_interner.get(id.name);
                     const display = try self.diag_arena.allocator().dupe(u8, bare_name);
@@ -69905,7 +71141,7 @@ pub const Checker = struct {
             // Also expose the un-instantiated body via `type_names`
             // so a bare `Alias` (no type-args) resolves ÃÂ¢ÃÂÃÂ TS treats
             // it as `Alias<unknown, ÃÂ¢ÃÂÃÂ¦>`.
-            try self.type_names.put(self.gpa, id.name, body_t);
+            try self.putTypeName(id.name, body_t);
             try self.type_alias_bodies.put(self.gpa, id.name, body_t);
             self.hir.setType(ta.name, body_t);
         }
@@ -71053,10 +72289,20 @@ pub const Checker = struct {
     }
 
     fn findTypeAliasDeclInScope(self: *Checker, anchor: NodeId, name: hir_mod.StringId) ?NodeId {
+        if (self.source != null and !self.source_may_have_type_alias_declaration) return null;
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
         const anchor_section = self.virtualSectionStartForNode(anchor);
-        for (hir_mod.blockStmts(self.hir, root)) |raw| {
+        const statements = hir_mod.blockStmts(self.hir, root);
+        self.indexVisibleNamedTypeDecls(root, statements, self.sourceHasVirtualFilenameSections());
+        if (self.indexed_named_type_containers.contains(root)) {
+            return self.visible_type_alias_decls.get(.{
+                .container = root,
+                .name = name,
+                .virtual_section_start = anchor_section,
+            });
+        }
+        for (statements) |raw| {
             const decl = self.unwrapExportDecl(raw);
             if (decl == hir_mod.none_node_id or self.hir.kindOf(decl) != .type_alias_decl) continue;
             if (self.virtualSectionStartForNode(decl) != anchor_section) continue;
@@ -71069,6 +72315,7 @@ pub const Checker = struct {
 
     fn resolveForwardClassInstanceType(self: *Checker, anchor: NodeId, name: hir_mod.StringId) CheckError!?TypeId {
         if (self.class_instance_types.get(name)) |t| return t;
+        if (self.source != null and !self.source_may_have_class_or_enum_declaration) return null;
         // A namespace-local class lives in the namespace body, not the
         // file-root block, so the root scan below misses it — a namespace
         // *function*'s parameter/return annotation then collapses the
@@ -71349,7 +72596,7 @@ pub const Checker = struct {
         try self.class_name_by_instance.put(self.gpa, instance_t, cid.name);
         try self.class_name_by_static.put(self.gpa, static_t, cid.name);
         try self.class_decl_by_instance.put(self.gpa, instance_t, node);
-        try self.type_names.put(self.gpa, cid.name, instance_t);
+        try self.putTypeName(cid.name, instance_t);
         if (self.class_protected_members.fetchRemove(cid.name)) |old| {
             var owned = old.value;
             owned.deinit(self.gpa);
@@ -72193,6 +73440,7 @@ pub const Checker = struct {
 
     fn typeRefNameExists(self: *Checker, name: hir_mod.StringId) bool {
         if (self.type_names.contains(name)) return true;
+        if (self.programGlobalType(name) != null) return true;
         if (self.class_instance_types.contains(name)) return true;
         if (std.mem.eql(u8, self.string_interner.get(name), "Image")) return true;
         if (self.lookupNarrow(name)) |t| {
@@ -72867,7 +74115,8 @@ pub const Checker = struct {
         anchor: NodeId,
         name: hir_mod.StringId,
     ) ?NodeId {
-        const anchor_section = self.virtualSectionStartForNode(anchor);
+        const has_virtual_sections = self.sourceHasVirtualFilenameSections();
+        const anchor_section = if (has_virtual_sections) self.virtualSectionStartForNode(anchor) else 0;
         var cur: hir_mod.NodeId = self.hir.parentOf(anchor);
         while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
             const k = self.hir.kindOf(cur);
@@ -72876,25 +74125,47 @@ pub const Checker = struct {
                 hir_mod.blockStmts(self.hir, cur)
             else
                 hir_mod.namespaceBody(self.hir, cur);
-            for (stmts) |raw| {
-                const decl = self.unwrapExportDecl(raw);
-                switch (self.hir.kindOf(decl)) {
-                    .var_decl,
-                    .let_decl,
-                    .const_decl,
-                    .fn_decl,
-                    .fn_expr,
-                    .enum_decl,
-                    => {
-                        if (self.virtualSectionStartForNode(decl) != anchor_section) continue;
-                        const decl_name = self.declarationName(decl) orelse continue;
-                        if (decl_name == name) return decl;
-                    },
-                    else => {},
-                }
-            }
+
+            self.indexVisibleSameNameValueBindings(cur, stmts, has_virtual_sections);
+            if (self.visible_same_name_value_decls.get(.{
+                .container = cur,
+                .name = name,
+                .virtual_section_start = anchor_section,
+            })) |decl| return decl;
         }
         return null;
+    }
+
+    fn indexVisibleSameNameValueBindings(
+        self: *Checker,
+        container: NodeId,
+        stmts: []const NodeId,
+        has_virtual_sections: bool,
+    ) void {
+        if (self.indexed_same_name_value_containers.contains(container)) return;
+
+        for (stmts) |raw| {
+            const decl = self.unwrapExportDecl(raw);
+            switch (self.hir.kindOf(decl)) {
+                .var_decl,
+                .let_decl,
+                .const_decl,
+                .fn_decl,
+                .fn_expr,
+                .enum_decl,
+                => {},
+                else => continue,
+            }
+            const decl_name = self.declarationName(decl) orelse continue;
+            const section = if (has_virtual_sections) self.virtualSectionStartForNode(decl) else 0;
+            const gop = self.visible_same_name_value_decls.getOrPut(self.gpa, .{
+                .container = container,
+                .name = decl_name,
+                .virtual_section_start = section,
+            }) catch return;
+            if (!gop.found_existing) gop.value_ptr.* = decl;
+        }
+        self.indexed_same_name_value_containers.put(self.gpa, container, {}) catch {};
     }
 
     fn findVisibleNamedClassDecl(
@@ -72902,7 +74173,9 @@ pub const Checker = struct {
         anchor: NodeId,
         name: hir_mod.StringId,
     ) ?NodeId {
-        const anchor_section = self.virtualSectionStartForNode(anchor);
+        if (self.source != null and !self.source_may_have_class_or_enum_declaration) return null;
+        const has_virtual_sections = self.sourceHasVirtualFilenameSections();
+        const anchor_section = if (has_virtual_sections) self.virtualSectionStartForNode(anchor) else 0;
         var cur: hir_mod.NodeId = self.hir.parentOf(anchor);
         while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
             const k = self.hir.kindOf(cur);
@@ -72915,7 +74188,7 @@ pub const Checker = struct {
                 const decl = self.unwrapExportDecl(raw);
                 const decl_kind = self.hir.kindOf(decl);
                 if (decl_kind != .class_decl and decl_kind != .class_expr) continue;
-                if (self.virtualSectionStartForNode(decl) != anchor_section) continue;
+                if (has_virtual_sections and self.virtualSectionStartForNode(decl) != anchor_section) continue;
                 const decl_name = self.declarationName(decl) orelse continue;
                 if (decl_name == name) return decl;
             }
@@ -72928,7 +74201,8 @@ pub const Checker = struct {
         anchor: NodeId,
         name: hir_mod.StringId,
     ) ?NodeId {
-        const anchor_section = self.virtualSectionStartForNode(anchor);
+        const has_virtual_sections = self.sourceHasVirtualFilenameSections();
+        const anchor_section = if (has_virtual_sections) self.virtualSectionStartForNode(anchor) else 0;
         var cur: hir_mod.NodeId = self.hir.parentOf(anchor);
         while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
             const k = self.hir.kindOf(cur);
@@ -72937,6 +74211,19 @@ pub const Checker = struct {
                 hir_mod.blockStmts(self.hir, cur)
             else
                 hir_mod.namespaceBody(self.hir, cur);
+
+            self.indexVisibleNamedTypeDecls(cur, stmts, has_virtual_sections);
+            if (self.indexed_named_type_containers.contains(cur)) {
+                if (self.visible_named_type_decls.get(.{
+                    .container = cur,
+                    .name = name,
+                    .virtual_section_start = anchor_section,
+                })) |decl| return decl;
+                continue;
+            }
+
+            // Allocation failure while building the acceleration index is
+            // non-fatal. Preserve the original linear lookup as a fallback.
             for (stmts) |raw| {
                 const decl = self.unwrapExportDecl(raw);
                 const decl_kind = self.hir.kindOf(decl);
@@ -72947,12 +74234,50 @@ pub const Checker = struct {
                 {
                     continue;
                 }
-                if (self.virtualSectionStartForNode(decl) != anchor_section) continue;
+                if (has_virtual_sections and self.virtualSectionStartForNode(decl) != anchor_section) continue;
                 const decl_name = self.declarationName(decl) orelse continue;
                 if (decl_name == name) return decl;
             }
         }
         return null;
+    }
+
+    fn indexVisibleNamedTypeDecls(
+        self: *Checker,
+        container: NodeId,
+        stmts: []const NodeId,
+        has_virtual_sections: bool,
+    ) void {
+        if (self.indexed_named_type_containers.contains(container)) return;
+
+        for (stmts) |raw| {
+            const decl = self.unwrapExportDecl(raw);
+            const decl_kind = self.hir.kindOf(decl);
+            if (decl_kind != .interface_decl and
+                decl_kind != .type_alias_decl and
+                decl_kind != .class_decl and
+                decl_kind != .class_expr)
+            {
+                continue;
+            }
+            const decl_name = self.declarationName(decl) orelse continue;
+            const section = if (has_virtual_sections) self.virtualSectionStartForNode(decl) else 0;
+            const gop = self.visible_named_type_decls.getOrPut(self.gpa, .{
+                .container = container,
+                .name = decl_name,
+                .virtual_section_start = section,
+            }) catch return;
+            if (!gop.found_existing) gop.value_ptr.* = decl;
+            if (decl_kind == .type_alias_decl) {
+                const alias_gop = self.visible_type_alias_decls.getOrPut(self.gpa, .{
+                    .container = container,
+                    .name = decl_name,
+                    .virtual_section_start = section,
+                }) catch return;
+                if (!alias_gop.found_existing) alias_gop.value_ptr.* = decl;
+            }
+        }
+        self.indexed_named_type_containers.put(self.gpa, container, {}) catch {};
     }
 
     fn scopedGenericInterfaceInfo(
@@ -73232,6 +74557,13 @@ pub const Checker = struct {
         anchor: NodeId,
         name: hir_mod.StringId,
     ) bool {
+        if (self.findVisibleNamedTypeDecl(anchor, name) != null) return true;
+        if (self.source != null and
+            !self.source_may_have_enum_declaration and
+            !self.source_may_have_namespace_declaration)
+        {
+            return false;
+        }
         const anchor_section = self.virtualSectionStartForNode(anchor);
         var cur: hir_mod.NodeId = self.hir.parentOf(anchor);
         while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
@@ -73244,11 +74576,7 @@ pub const Checker = struct {
             for (stmts) |raw| {
                 const decl = self.unwrapExportDecl(raw);
                 const decl_kind = self.hir.kindOf(decl);
-                if (decl_kind != .interface_decl and
-                    decl_kind != .type_alias_decl and
-                    decl_kind != .class_decl and
-                    decl_kind != .class_expr and
-                    decl_kind != .enum_decl and
+                if (decl_kind != .enum_decl and
                     decl_kind != .namespace_decl)
                 {
                     continue;
@@ -74074,7 +75402,7 @@ pub const Checker = struct {
         if (self.typeNodeHasArraySyntax(type_node)) {
             try self.array_origin_types.put(self.gpa, result, {});
         }
-        return result;
+        return self.resolveGenericType(result);
     }
 
     fn typeNodeHasResolutionError(self: *Checker, type_node: NodeId) bool {
@@ -74381,6 +75709,9 @@ pub const Checker = struct {
                 }
                 if (self.lowerBuiltinObjectType(name_str)) |t| return t;
                 if (self.type_names.get(id.name)) |t| return t;
+                if (self.programGlobalType(id.name)) |t| {
+                    if (!self.visibleTypeDeclarationExistsAt(type_node, id.name)) return t;
+                }
                 if (try self.reportInvalidUppercasePrimitiveTypeRef(type_node, id.name)) return types.Primitive.any;
             },
             .literal_number => {
@@ -74629,6 +75960,8 @@ pub const Checker = struct {
                     }
                     return types.Primitive.any;
                 }
+                if (try self.programExportedClassInstanceTypeForImportedName(r.name, type_node)) |instance| return instance;
+                if (try self.programExportedTypeForLocal(r.name, type_node)) |instance| return instance;
                 if (!self.nameHasEnclosingTypeParameter(r.name, type_node)) {
                     if (self.findVisibleNamedTypeDecl(type_node, r.name)) |decl| {
                         const params = self.typeParamNodesOfDecl(decl);
@@ -74662,8 +75995,12 @@ pub const Checker = struct {
                         // parameter to a concrete type. The lexical binder
                         // still wins over a same-named runtime value.
                         if (self.nameHasEnclosingTypeParameter(r.name, type_node)) return type_position_t;
-                        if (self.findVisibleSameNameValueBinding(type_node, r.name) != null and
-                            !self.visibleTypeDeclarationExistsAt(type_node, r.name))
+                        // A narrowed runtime value does not occupy type
+                        // space. Continue declaration lookup when a local
+                        // or program-global type has the same name.
+                        if (self.findVisibleSameNameValueBinding(type_node, r.name) == null) return t;
+                        if (!self.visibleTypeDeclarationExistsAt(type_node, r.name) and
+                            !self.programHasGlobalTypeName(r.name))
                         {
                             if (try self.resolveUnqualifiedImportEqualsTypeRef(type_node, r.name)) |import_t| return import_t;
                             if (try self.importedTypeRefForLocal(r.name, type_node)) |import_t| return import_t;
@@ -74673,7 +76010,6 @@ pub const Checker = struct {
                             try self.reportValueUsedAsTypeDidYouMeanTypeofOnce(type_node, r.name);
                             return types.Primitive.any;
                         }
-                        return t;
                     }
                     if (self.enclosingDeclaredTypeParameterType(r.name, type_node)) |t| return t;
                     if (try self.jsDocContainingTemplateParamType(type_node, r.name)) |t| return t;
@@ -74715,7 +76051,6 @@ pub const Checker = struct {
                     if (try self.umdGlobalTypeForName(r.name, type_node)) |t| return t;
                     if (try self.importedReferenceLibTypeForLocal(r.name, type_node)) |t| return t;
                     if (try self.resolveForwardClassInstanceType(type_node, r.name)) |t| return t;
-                    if (self.programHasGlobalTypeName(r.name)) return types.Primitive.any;
                     if (std.mem.eql(u8, name_str, "Object")) {
                         if (self.lowerBuiltinObjectType(name_str)) |t| return t;
                     }
@@ -74775,7 +76110,8 @@ pub const Checker = struct {
                         try self.reportCannotFindNameOnce(type_node, r.name);
                         return types.Primitive.any;
                     }
-                    if (self.findVisibleSameNameValueBinding(type_node, r.name) != null and
+                    const is_program_global_type = self.programHasGlobalTypeName(r.name);
+                    if (!is_program_global_type and self.findVisibleSameNameValueBinding(type_node, r.name) != null and
                         !self.visibleTypeDeclarationExistsAt(type_node, r.name))
                     {
                         if (try self.checkJsDestructuredRequireClassInstanceType(type_node, r.name)) |class_t| {
@@ -74792,6 +76128,12 @@ pub const Checker = struct {
                         if (self.type_names.get(r.name)) |t| return t;
                         return try self.lowerer.lower(type_node);
                     }
+                    // Program-wide name discovery is only an unresolved
+                    // sibling-declaration fallback. It must not erase a
+                    // type that this checker can resolve from its own HIR,
+                    // including forward and merged declarations.
+                    if (self.programGlobalType(r.name)) |t| return t;
+                    if (is_program_global_type) return types.Primitive.any;
                     if (self.visibleValueOnlyDeclarationExistsAt(type_node, r.name)) {
                         try self.reportValueUsedAsTypeDidYouMeanTypeofOnce(type_node, r.name);
                         return types.Primitive.any;
@@ -75758,6 +77100,13 @@ pub const Checker = struct {
                             try self.reportGlobalThisMissingProperty(ia.index, key, "typeof globalThis");
                             return types.Primitive.any;
                         }
+                        if (self.program_global_value_types.len > 0) {
+                            const operand = hir_mod.typeofTypeOf(self.hir, ia.object).operand;
+                            const name = self.string_interner.lookup("globalThis").?;
+                            if (!self.programGlobalThisNameIsShadowed(operand, name)) {
+                                if (self.programGlobalThisPropertyType(key)) |t| return t;
+                            }
+                        }
                     }
                 }
                 if (try self.resolveTypeofComputedIndexedMember(ia.index, obj)) |resolved| return resolved;
@@ -75766,6 +77115,38 @@ pub const Checker = struct {
                 }
                 try self.checkInvalidMappedObjectIndexedAccessType(type_node, ia.object, ia.index);
                 if (self.hir.kindOf(ia.object) == .intersection_type and self.containsFreeTypeParameter(obj)) {
+                    return self.interner.internIndexedAccess(obj, idx) catch return error.OutOfMemory;
+                }
+                // An indexed access through an array-constrained type
+                // parameter is still dependent on the eventual tuple
+                // argument. Reducing `K[number]` through K's array
+                // constraint here loses tuple precision before call
+                // inference can substitute K. Other generic indexed
+                // accesses, such as `T["x"]`, continue through the normal
+                // resolution path below.
+                if (self.isBareTypeParameter(obj) and idx == types.Primitive.number_t) {
+                    if (self.typeParameterConstraint(obj)) |constraint| {
+                        if (self.typeIsArrayLikeObject(constraint)) {
+                            return self.interner.internIndexedAccess(obj, idx) catch return error.OutOfMemory;
+                        }
+                    }
+                }
+                // A constrained key still represents the eventual argument,
+                // not every key admitted by its constraint. Preserve that
+                // dependency so signature substitution can select the member.
+                if (self.containsFreeTypeParameter(idx)) {
+                    const object_flags = self.interner.pool.flagsOf(obj);
+                    if (object_flags.is_object_type and !object_flags.is_union and !object_flags.is_intersection and
+                        self.interner.objectMembers(obj).len == 0)
+                    {
+                        // A uniform dictionary has no key-dependent member
+                        // types; every permitted string key selects this value.
+                        const string_index = self.interner.objectStringIndex(obj);
+                        const number_index = self.interner.objectNumberIndex(obj);
+                        if (string_index != types.Primitive.none and
+                            (number_index == types.Primitive.none or number_index == string_index) and
+                            (self.engine.isAssignableTo(idx, types.Primitive.string_t) catch false)) return string_index;
+                    }
                     return self.interner.internIndexedAccess(obj, idx) catch return error.OutOfMemory;
                 }
                 if (try self.resolveObjectIndexedAccessType(obj, idx)) |resolved| return resolved;
@@ -75981,7 +77362,10 @@ pub const Checker = struct {
                     try self.checkTypePredicateConstraints(ft.return_type, fn_params);
                 }
                 const ret_t = if (ft.return_type != hir_mod.none_node_id)
-                    (if (is_predicate) types.Primitive.boolean_t else try self.lowererLowerWithTypeParams(ft.return_type))
+                    (if (is_predicate)
+                        (if (hir_mod.typePredicateOf(self.hir, ft.return_type).is_asserts) types.Primitive.void_t else types.Primitive.boolean_t)
+                    else
+                        try self.lowererLowerWithTypeParams(ft.return_type))
                 else
                     types.Primitive.any;
                 const is_construct = self.hir.kindOf(type_node) == .constructor_type;
@@ -76483,7 +77867,7 @@ pub const Checker = struct {
             {
                 if (self.type_names.get(r.name)) |existing| return existing;
                 const synth = self.interner.internObjectType(&.{}) catch return error.OutOfMemory;
-                try self.type_names.put(self.gpa, r.name, synth);
+                try self.putTypeName(r.name, synth);
                 return synth;
             }
             return null;
@@ -77118,7 +78502,10 @@ pub const Checker = struct {
             full_path.items[0] = exported_root;
             break :blk full_path.items;
         } else full_path.items[1..];
-        if (try self.programExportedClassInstanceTypeForImportPath(import_info.import_node, import_info.specifier, leaf_name)) |t| return t;
+        if (namespace_path.len == 0) {
+            if (try self.programExportedClassInstanceTypeForImportPath(import_info.import_node, import_info.specifier, leaf_name, type_node)) |t| return t;
+            if (try self.programExportedTypeForImportPath(import_info.import_node, import_info.specifier, leaf_name, type_node)) |t| return t;
+        }
         var exported_t = try self.virtualRelativeModuleExportType(type_node, import_info.specifier, namespace_path, leaf_name);
         const spec = self.string_interner.get(import_info.specifier);
         if (exported_t == null and std.mem.startsWith(u8, spec, ".")) {
@@ -77175,6 +78562,7 @@ pub const Checker = struct {
     }
 
     fn localImportEqualsDecl(self: *Checker, local_name: hir_mod.StringId, anchor: NodeId) ?NodeId {
+        if (self.source != null and !self.source_may_have_import_equals) return null;
         var cur = anchor;
         while (cur != hir_mod.none_node_id) {
             const stmts: []const NodeId = blk: {
@@ -77807,6 +79195,7 @@ pub const Checker = struct {
     }
 
     fn resolveUnqualifiedImportEqualsTypeRef(self: *Checker, type_node: NodeId, name: hir_mod.StringId) CheckError!?TypeId {
+        if (self.source != null and !self.source_may_have_import_equals) return null;
         var cur = type_node;
         while (cur != hir_mod.none_node_id) {
             const stmts: []const NodeId = blk: {
@@ -78022,6 +79411,7 @@ pub const Checker = struct {
         stmts: []const NodeId,
         path: []const hir_mod.StringId,
     ) ?NodeId {
+        if (self.source != null and !self.source_may_have_namespace_declaration) return null;
         if (path.len == 0) return null;
         for (stmts) |raw| {
             const node = self.unwrapExportDecl(raw);
@@ -78043,6 +79433,8 @@ pub const Checker = struct {
         anchor: NodeId,
         path: []const hir_mod.StringId,
     ) ?NodeId {
+        const has_virtual_sections = self.sourceHasVirtualFilenameSections();
+        const anchor_section = if (has_virtual_sections) self.virtualSectionStartForNode(anchor) else 0;
         var cur = anchor;
         while (cur != hir_mod.none_node_id) {
             const stmts: []const NodeId = blk: {
@@ -78051,6 +79443,20 @@ pub const Checker = struct {
                 break :blk &[_]NodeId{};
             };
             if (stmts.len > 0) {
+                if (path.len == 1) {
+                    self.indexVisibleNamespaceDecls(cur, stmts, has_virtual_sections);
+                    if (self.indexed_namespace_containers.contains(cur)) {
+                        if (self.visible_namespace_decls.get(.{
+                            .container = cur,
+                            .name = path[0],
+                            .virtual_section_start = anchor_section,
+                        })) |ns_node| return ns_node;
+                        const parent = self.hir.parentOf(cur);
+                        if (parent == cur or parent == hir_mod.none_node_id) break;
+                        cur = parent;
+                        continue;
+                    }
+                }
                 if (self.findNamespaceByPath(stmts, path)) |ns_node| return ns_node;
             }
             const parent = self.hir.parentOf(cur);
@@ -78058,6 +79464,31 @@ pub const Checker = struct {
             cur = parent;
         }
         return null;
+    }
+
+    fn indexVisibleNamespaceDecls(
+        self: *Checker,
+        container: NodeId,
+        stmts: []const NodeId,
+        has_virtual_sections: bool,
+    ) void {
+        if (self.indexed_namespace_containers.contains(container)) return;
+        for (stmts) |raw| {
+            const decl = self.unwrapExportDecl(raw);
+            if (decl == hir_mod.none_node_id or self.hir.kindOf(decl) != .namespace_decl) continue;
+            const decl_name = self.declarationName(decl) orelse continue;
+            if (std.mem.indexOfScalar(u8, self.string_interner.get(decl_name), '.') != null) {
+                self.containers_with_dotted_namespace_decls.put(self.gpa, container, {}) catch {};
+            }
+            const section = if (has_virtual_sections) self.virtualSectionStartForNode(decl) else 0;
+            const gop = self.visible_namespace_decls.getOrPut(self.gpa, .{
+                .container = container,
+                .name = decl_name,
+                .virtual_section_start = section,
+            }) catch return;
+            if (!gop.found_existing) gop.value_ptr.* = decl;
+        }
+        self.indexed_namespace_containers.put(self.gpa, container, {}) catch {};
     }
 
     fn findGlobalAugmentedNamespaceByPath(
@@ -78462,6 +79893,11 @@ pub const Checker = struct {
     ) ?bool {
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        if (self.indexed_namespace_containers.contains(root) and
+            !self.containers_with_dotted_namespace_decls.contains(root))
+        {
+            return null;
+        }
         const root_text = self.string_interner.get(root_name);
         const member_text = self.string_interner.get(member_name);
         var found_root = false;
@@ -79995,28 +81431,39 @@ pub const Checker = struct {
                 variadic_index = segment_index;
             }
             if (variadic_index) |rest_index| {
-                if (rest_index + 1 < layout.len) {
-                    const fixed_count = layout.len - 1;
-                    if (check_len < fixed_count) return false;
-                    for (layout[0..rest_index], 0..) |segment, index| {
-                        if (!try self.matchInfer(self.tupleElementType(check, index), segment.type, subs)) return false;
-                    }
-                    const suffix = layout.len - rest_index - 1;
-                    for (layout[rest_index + 1 ..], 0..) |segment, suffix_index| {
-                        const check_index = check_len - suffix + suffix_index;
-                        if (!try self.matchInfer(self.tupleElementType(check, check_index), segment.type, subs)) return false;
-                    }
-                    var middle: std.ArrayListUnmanaged(TypeId) = .empty;
-                    defer middle.deinit(self.gpa);
-                    for (rest_index..check_len - suffix) |index| {
-                        try middle.append(self.gpa, self.tupleElementType(check, index));
-                    }
-                    const middle_tuple = try self.internTupleFromTypes(
-                        middle.items,
-                        self.typeIsReadonlyArrayLike(check),
-                    );
-                    return try self.matchInfer(middle_tuple, layout[rest_index].type, subs);
+                const fixed_count = layout.len - 1;
+                if (check_len < fixed_count) return false;
+                for (layout[0..rest_index], 0..) |segment, index| {
+                    const check_element = self.tupleElementType(check, index);
+                    const matches = if (self.containsInferTypeParameter(segment.type))
+                        try self.matchInfer(check_element, segment.type, subs)
+                    else
+                        try self.conditionalExtendsRelation(check_element, segment.type);
+                    if (!matches) return false;
                 }
+                const suffix = layout.len - rest_index - 1;
+                for (layout[rest_index + 1 ..], 0..) |segment, suffix_index| {
+                    const check_index = check_len - suffix + suffix_index;
+                    const check_element = self.tupleElementType(check, check_index);
+                    const matches = if (self.containsInferTypeParameter(segment.type))
+                        try self.matchInfer(check_element, segment.type, subs)
+                    else
+                        try self.conditionalExtendsRelation(check_element, segment.type);
+                    if (!matches) return false;
+                }
+                var middle: std.ArrayListUnmanaged(TypeId) = .empty;
+                defer middle.deinit(self.gpa);
+                for (rest_index..check_len - suffix) |index| {
+                    try middle.append(self.gpa, self.tupleElementType(check, index));
+                }
+                const middle_tuple = try self.internTupleFromTypes(
+                    middle.items,
+                    self.typeIsReadonlyArrayLike(check),
+                );
+                if (!self.containsInferTypeParameter(layout[rest_index].type)) {
+                    return try self.conditionalExtendsRelation(middle_tuple, layout[rest_index].type);
+                }
+                return try self.matchInfer(middle_tuple, layout[rest_index].type, subs);
             }
         }
         const ext_prefix = self.tupleFixedPrefixCount(ext);
@@ -80176,63 +81623,55 @@ pub const Checker = struct {
     }
 
     fn containsFreeTypeParameter(self: *Checker, t: TypeId) bool {
-        if (t >= self.interner.pool.typeCount()) return false;
-        const flags = self.interner.pool.flagsOf(t);
-        if (flags.is_type_parameter) return true;
-        if (flags.is_union) {
-            for (self.interner.unionMembers(t)) |m| if (self.containsFreeTypeParameter(m)) return true;
-            return false;
-        }
-        if (flags.is_intersection) {
-            for (self.interner.intersectionMembers(t)) |m| if (self.containsFreeTypeParameter(m)) return true;
-            return false;
-        }
-        if (flags.is_object_type) {
-            const members = self.interner.objectMembers(t);
-            for (members) |m| if (self.containsFreeTypeParameter(m.type)) return true;
-            const string_idx = self.interner.objectStringIndex(t);
-            if (string_idx != types.Primitive.none and self.containsFreeTypeParameter(string_idx)) return true;
-            const number_idx = self.interner.objectNumberIndex(t);
-            if (number_idx != types.Primitive.none and self.containsFreeTypeParameter(number_idx)) return true;
-            return false;
-        }
-        if (flags.is_signature) {
-            const params = self.interner.signatureParams(t);
-            for (params) |p| if (self.containsFreeTypeParameter(p)) return true;
-            if (self.interner.signatureReturn(t)) |r| if (self.containsFreeTypeParameter(r)) return true;
-            return false;
-        }
-        if (flags.is_keyof) {
-            const payload_idx = self.interner.pool.payloadOf(t);
-            if (payload_idx >= self.interner.pool.keyof_payloads.items.len) return false;
-            const k = self.interner.pool.keyof_payloads.items[payload_idx];
-            return self.containsFreeTypeParameter(k.operand);
-        }
-        if (flags.is_indexed_access) {
-            const payload_idx = self.interner.pool.payloadOf(t);
-            if (payload_idx >= self.interner.pool.indexed_access_payloads.items.len) return false;
-            const ia = self.interner.pool.indexed_access_payloads.items[payload_idx];
-            return self.containsFreeTypeParameter(ia.object) or self.containsFreeTypeParameter(ia.index);
-        }
-        if (flags.is_conditional) {
-            const c = self.interner.conditionalPayload(t);
-            return self.containsFreeTypeParameter(c.check_type) or
-                self.containsFreeTypeParameter(c.extends_type) or
-                self.containsFreeTypeParameter(c.true_branch) or
-                self.containsFreeTypeParameter(c.false_branch);
-        }
-        if (flags.is_mapped) {
-            const m = self.interner.mappedPayload(t);
-            return self.containsFreeTypeParameter(m.constraint) or self.containsFreeTypeParameter(m.template);
-        }
-        if (flags.is_template_literal) {
-            for (self.interner.templateLiteralTypes(t)) |part| {
-                if (self.containsFreeTypeParameter(part)) return true;
+        if (t < types.Primitive.first_dynamic or t >= self.interner.pool.typeCount()) return false;
+        // Type graphs can contain cycles. Visit each identity once instead of
+        // recurring into a namespace/object indefinitely. This walk does not
+        // call back into checking, so its scratch storage is reusable between
+        // queries. Allocation failure conservatively means unknown.
+        if (self.interner.pool.flagsOf(t).is_type_parameter) return true;
+        const allocator = self.gpa;
+        const pending = &self.free_type_parameter_pending;
+        const visited = &self.free_type_parameter_visited;
+        pending.clearRetainingCapacity();
+        visited.clearRetainingCapacity();
+        pending.append(allocator, t) catch return true;
+        while (pending.pop()) |current| {
+            if (current < types.Primitive.first_dynamic or current >= self.interner.pool.typeCount()) continue;
+            const entry = visited.getOrPut(allocator, current) catch return true;
+            if (entry.found_existing) continue;
+            const flags = self.interner.pool.flagsOf(current);
+            if (flags.is_type_parameter) return true;
+            if (flags.is_union) {
+                pending.appendSlice(allocator, self.interner.unionMembers(current)) catch return true;
+            } else if (flags.is_intersection) {
+                pending.appendSlice(allocator, self.interner.intersectionMembers(current)) catch return true;
+            } else if (flags.is_object_type) {
+                for (self.interner.objectMembers(current)) |member| pending.append(allocator, member.type) catch return true;
+                pending.appendSlice(allocator, &.{ self.interner.objectStringIndex(current), self.interner.objectNumberIndex(current) }) catch return true;
+            } else if (flags.is_signature) {
+                pending.appendSlice(allocator, self.interner.signatureParams(current)) catch return true;
+                if (self.interner.signatureReturn(current)) |result| pending.append(allocator, result) catch return true;
+            } else if (flags.is_keyof) {
+                const index = self.interner.pool.payloadOf(current);
+                if (index < self.interner.pool.keyof_payloads.items.len)
+                    pending.append(allocator, self.interner.pool.keyof_payloads.items[index].operand) catch return true;
+            } else if (flags.is_indexed_access) {
+                const index = self.interner.pool.payloadOf(current);
+                if (index < self.interner.pool.indexed_access_payloads.items.len) {
+                    const access = self.interner.pool.indexed_access_payloads.items[index];
+                    pending.appendSlice(allocator, &.{ access.object, access.index }) catch return true;
+                }
+            } else if (flags.is_conditional) {
+                const conditional = self.interner.conditionalPayload(current);
+                pending.appendSlice(allocator, &.{ conditional.check_type, conditional.extends_type, conditional.true_branch, conditional.false_branch }) catch return true;
+            } else if (flags.is_mapped) {
+                const mapped = self.interner.mappedPayload(current);
+                pending.appendSlice(allocator, &.{ mapped.constraint, mapped.template }) catch return true;
+            } else if (flags.is_template_literal) {
+                pending.appendSlice(allocator, self.interner.templateLiteralTypes(current)) catch return true;
+            } else if (flags.is_string_mapping) {
+                pending.append(allocator, self.interner.stringMappingPayload(current).inner) catch return true;
             }
-            return false;
-        }
-        if (flags.is_string_mapping) {
-            return self.containsFreeTypeParameter(self.interner.stringMappingPayload(t).inner);
         }
         return false;
     }
@@ -81042,6 +82481,9 @@ pub const Checker = struct {
             return self.interner.internObjectType(&members) catch types.Primitive.unknown;
         }
         if (std.mem.eql(u8, name, "Function")) {
+            if (self.builtin_function_members) |*members| {
+                return self.interner.internObjectType(members) catch types.Primitive.unknown;
+            }
             const any_array = self.interner.internArrayType(self.string_interner, types.Primitive.any) catch
                 return types.Primitive.unknown;
             const sig_call = self.interner.internSignature(&[_]TypeId{any_array}, types.Primitive.any, false) catch
@@ -81066,7 +82508,9 @@ pub const Checker = struct {
                     .is_method = true,
                 },
             };
-            return self.interner.internObjectType(&members) catch types.Primitive.unknown;
+            const result = self.interner.internObjectType(&members) catch return types.Primitive.unknown;
+            self.builtin_function_members = members;
+            return result;
         }
         if (std.mem.eql(u8, name, "RegExp")) {
             const string_t = types.Primitive.string_t;
@@ -82165,6 +83609,7 @@ pub const Checker = struct {
         }
         if (!flags.is_object_type) return false;
         for (self.interner.objectMembers(t)) |member| {
+            if (member.visibility != .public) continue;
             if (self.string_interner.getOptional(member.name)) |name| {
                 if (std.mem.startsWith(u8, name, "#")) continue;
             }
@@ -84161,6 +85606,19 @@ pub const Checker = struct {
         if (self.varDeclHasJsDocTypeTag(decl)) return false;
         if (v.init == hir_mod.none_node_id) return true;
         return self.hir.kindOf(v.init) == .literal_undefined or self.hir.kindOf(v.init) == .literal_null;
+    }
+
+    fn sourceMayHaveUntypedEvolvingAnyCandidate(self: *Checker) bool {
+        if (self.may_have_evolving_any_candidates) |cached| return cached;
+        var candidate: NodeId = 1;
+        while (candidate < self.hir.nodeCount()) : (candidate += 1) {
+            if (self.varDeclIsUntypedEvolvingAnyCandidate(candidate)) {
+                self.may_have_evolving_any_candidates = true;
+                return true;
+            }
+        }
+        self.may_have_evolving_any_candidates = false;
+        return false;
     }
 
     fn varDeclIsCapturedEvolvingAnyCandidate(self: *Checker, decl: NodeId) bool {
@@ -86537,6 +87995,12 @@ pub const Checker = struct {
                 }
             } else {
                 init_type = try self.checkExpression(v.init);
+                if (self.requireCallSpecifier(v.init)) |specifier| {
+                    if (try self.programCommonJsWholeExportType(v.init, specifier)) |whole_t| {
+                        init_type = whole_t;
+                        self.hir.setType(v.init, whole_t);
+                    }
+                }
                 init_type = try self.narrowWhileConditionedDestructuringSource(node, v, init_type);
             }
             if (declared_type == types.Primitive.none and
@@ -86675,6 +88139,7 @@ pub const Checker = struct {
             } else if (nk == .object_pattern and
                 self.objectBindingPatternHasRest(v.name) and
                 !self.typeIsAnyLike(init_type) and
+                (self.typeIncludesNull(init_type) or self.typeIncludesUndefined(init_type)) and
                 self.initializerIdentifierNullishAnnotationText(node, v.init) != null)
             {
                 const target_text = self.initializerIdentifierNullishAnnotationText(node, v.init).?;
@@ -87162,6 +88627,8 @@ pub const Checker = struct {
             if (nk == .object_pattern and
                 v.init != hir_mod.none_node_id and
                 !object_rest_nullish_union_binding_diag_fired and
+                self.strict_flags.strict_null_checks and
+                (self.typeIncludesNull(final_type) or self.typeIncludesUndefined(final_type)) and
                 self.objectBindingPatternHasRest(v.name))
             {
                 if (self.initializerIdentifierNullishAnnotationText(node, v.init)) |target_text| {
@@ -88255,6 +89722,7 @@ pub const Checker = struct {
     /// qualified member-assigned constructors.
     fn enclosingPrototypeMethodConstructor(self: *Checker, fn_node: NodeId) ?NodeId {
         if (!self.sourceHasCheckJsDirective()) return null;
+        if (self.source != null and !self.source_may_have_prototype_assignment) return null;
         var owner: ?hir_mod.StringId = null;
         const parent = self.hir.parentOf(fn_node);
         if (parent != hir_mod.none_node_id and self.hir.kindOf(parent) == .assignment) {
@@ -89300,6 +90768,9 @@ pub const Checker = struct {
     }
 
     fn checkerAssignableTo(self: *Checker, source_t: TypeId, target_t: TypeId) CheckError!bool {
+        const resolved_source = try self.resolveGenericType(source_t);
+        const resolved_target = try self.resolveGenericType(target_t);
+        if (resolved_source != source_t or resolved_target != target_t) return self.checkerAssignableTo(resolved_source, resolved_target);
         if (self.noInferInnerType(source_t)) |inner| return self.checkerAssignableTo(inner, target_t);
         if (self.noInferInnerType(target_t)) |inner| return self.checkerAssignableTo(source_t, inner);
         if ((self.synthetic_program_class_origins.contains(source_t) or
@@ -89812,6 +91283,28 @@ pub const Checker = struct {
         }
         if (try self.classStaticSatisfiesConstructorObjectConstraint(source_t, target_t)) return true;
         if (self.engine.isAssignableTo(source_t, target_t) catch false) return true;
+        if (target_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(target_t).is_object_type and
+            !self.interner.pool.flagsOf(target_t).is_union)
+        {
+            const source_flags = self.interner.pool.flagsOf(source_t);
+            const bigint = source_t == types.Primitive.bigint_t or (source_flags.is_bigint and source_flags.is_literal);
+            if (source_t == types.Primitive.object_t or bigint) {
+                // TS getApparentType maps non-primitive `object` to the empty
+                // object type. BigInt's global wrapper also defaults to that
+                // type when the selected libraries do not declare BigInt.
+                // This is a structural-object comparison, not permission for
+                // a bigint primitive to satisfy the non-primitive `object` type.
+                const declared_wrapper = if (bigint) blk: {
+                    const name = self.string_interner.lookup("BigInt") orelse break :blk null;
+                    break :blk self.type_names.get(name);
+                } else null;
+                const apparent = declared_wrapper orelse blk: {
+                    if (self.empty_apparent_object_type == types.Primitive.none) self.empty_apparent_object_type = try self.interner.internObjectType(&.{});
+                    break :blk self.empty_apparent_object_type;
+                };
+                if (self.engine.isAssignableTo(apparent, target_t) catch return error.OutOfMemory) return true;
+            }
+        }
         if (try self.objectSourceAssignableToMappedTarget(source_t, target_t)) return true;
         return try self.mappedArraySourceAssignableToArrayTarget(source_t, target_t);
     }
@@ -90860,7 +92353,8 @@ pub const Checker = struct {
         const target_program_origin = self.synthetic_program_class_origins.get(target_t);
         if (source_program_origin != null or target_program_origin != null) {
             return source_program_origin != null and target_program_origin != null and
-                source_program_origin.? == target_program_origin.?;
+                source_program_origin.? == target_program_origin.? and
+                self.alias_type_args.get(source_t) == null and self.alias_type_args.get(target_t) == null;
         }
         const source_name = self.classNameForInstanceType(source_t) orelse return false;
         const target_name = self.classNameForInstanceType(target_t) orelse return false;
@@ -91291,6 +92785,8 @@ pub const Checker = struct {
         source_t: TypeId,
         target_t: TypeId,
     ) CheckError!bool {
+        if (!self.objectHasCallOrConstructSignature(source_t) and
+            !self.objectHasCallOrConstructSignature(target_t)) return true;
         const source_this = (try self.memberAccessEffectiveThisType(value_node, source_t)) orelse return true;
         if (source_this == types.Primitive.void_t) return true;
         const target_this = (try self.memberAccessEffectiveThisType(target_node, target_t)) orelse return true;
@@ -91305,10 +92801,9 @@ pub const Checker = struct {
         if (node != hir_mod.none_node_id) {
             const kind = self.hir.kindOf(node);
             if (kind == .fn_decl or kind == .fn_expr or kind == .arrow_fn) {
-                // Same-shaped predicate and boolean signatures share a
-                // structural TypeId. The function syntax is authoritative
-                // for an assignment source, so an unannotated/boolean
-                // function must not inherit a predicate from that TypeId.
+                // Explicit function syntax determines the source predicate;
+                // only an unannotated expression may inherit a contextual
+                // predicate from its checked signature.
                 if (try self.predicateForFnNode(node)) |predicate| return predicate;
                 // A contextually typed function expression inherits the
                 // target's predicate. `const assert: Assert = value => {}`
@@ -91356,7 +92851,15 @@ pub const Checker = struct {
                 if (self.lookupMemberPredicate(receiver_t, member.name)) |pred| return pred;
             }
         }
-        return self.signature_predicates.get(t);
+        if (self.signature_predicates.get(t)) |predicate| return predicate;
+        if (t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(t).is_union) {
+            var signatures: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer signatures.deinit(self.gpa);
+            if (try self.collectResolvedUnionSignatures(t, false, &signatures) and signatures.items.len == 1) {
+                return self.signature_predicates.get(signatures.items[0]);
+            }
+        }
+        return null;
     }
 
     fn assignmentExpressionPredicatesAssignable(
@@ -92149,6 +93652,7 @@ pub const Checker = struct {
     }
 
     fn namespaceImportSpecifierForLocal(self: *Checker, local_name: hir_mod.StringId, anchor: NodeId) ?[]const u8 {
+        if (self.source != null and !self.source_may_have_import_declaration) return null;
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
         const anchor_section = if (self.sourceHasVirtualFilenameSections()) self.virtualSectionStartForNode(anchor) else 0;
@@ -92870,8 +94374,22 @@ pub const Checker = struct {
         const base = jsDocTypeBaseName(trimmed);
         if (base.len == 0) return null;
         if (try self.jsDocImportedNameType(src, base)) |t| return t;
+        // JSDoc declarations occupy type space and take precedence over
+        // same-spelled JavaScript values. Resolve the indexed type-space
+        // candidates before value-space diagnostic probes, which otherwise
+        // walk lexical statements for every ordinary typedef reference.
+        if (try self.jsDocCallbackSignature(src, base)) |sig| return sig;
+        if (base.len == trimmed.len) {
+            if (try self.jsDocGenericTypedefTypeTextToType(src, base, "")) |t| return t;
+        }
+        if (try self.jsDocTypedefObjectSkeleton(src, base)) |t| return t;
+        if (try self.jsDocTypedefAliasType(src, base)) |t| return t;
+        const base_name = self.string_interner.intern(base) catch return error.OutOfMemory;
+        if (self.lookupNarrow(base_name)) |narrow_t| {
+            if (narrow_t < self.interner.pool.typeCount() and
+                self.interner.pool.flagsOf(narrow_t).is_type_parameter) return narrow_t;
+        }
         if (self.jsdoc_diagnostic_anchor != hir_mod.none_node_id) {
-            const base_name = self.string_interner.intern(base) catch return error.OutOfMemory;
             if (try self.checkJsDestructuredRequireClassInstanceType(self.jsdoc_diagnostic_anchor, base_name)) |class_t| {
                 return class_t;
             }
@@ -92881,19 +94399,12 @@ pub const Checker = struct {
         if (try self.reportJsDocClassExpressionVariableUsedAsType(src, base)) return types.Primitive.any;
         if (try self.reportJsDocBareFunctionUsedAsType(src, base)) return types.Primitive.any;
         if (try self.reportUnsupportedJsConstructorTemplateReference(src, base)) return types.Primitive.any;
-        if (try self.jsDocCallbackSignature(src, base)) |sig| return sig;
-        if (base.len == trimmed.len) {
-            if (try self.jsDocGenericTypedefTypeTextToType(src, base, "")) |t| return t;
-        }
-        if (try self.jsDocTypedefObjectSkeleton(src, base)) |t| return t;
-        if (try self.jsDocTypedefAliasType(src, base)) |t| return t;
         const simple_t = try self.jsDocSimpleNameType(src, base, base.len == trimmed.len);
         if (simple_t) |t| {
             if (!self.typeIsAnyLike(t)) return t;
         }
         if (base.len == trimmed.len and self.jsdoc_diagnostic_anchor != hir_mod.none_node_id) {
-            const name = self.string_interner.intern(base) catch return error.OutOfMemory;
-            if (try self.jsDocRequireAliasType(self.jsdoc_diagnostic_anchor, name, true)) |t| return t;
+            if (try self.jsDocRequireAliasType(self.jsdoc_diagnostic_anchor, base_name, true)) |t| return t;
         }
         if (simple_t) |t| return t;
         if (try self.jsDocUnresolvedSimpleNameToType(src, trimmed, base)) |t| return t;
@@ -93029,6 +94540,7 @@ pub const Checker = struct {
         src: []const u8,
         name_text: []const u8,
     ) CheckError!bool {
+        if (self.source != null and !self.source_may_have_require_binding) return false;
         const anchor = self.jsdoc_diagnostic_anchor;
         if (anchor == hir_mod.none_node_id or name_text.len == 0) return false;
         const name = self.string_interner.intern(name_text) catch return error.OutOfMemory;
@@ -93077,6 +94589,7 @@ pub const Checker = struct {
         src: []const u8,
         name_text: []const u8,
     ) CheckError!bool {
+        if (self.source != null and !self.source_may_have_require_binding) return false;
         const anchor = self.jsdoc_diagnostic_anchor;
         if (anchor == hir_mod.none_node_id or name_text.len == 0) return false;
         const name = self.string_interner.intern(name_text) catch return error.OutOfMemory;
@@ -93218,7 +94731,7 @@ pub const Checker = struct {
         if (anchor == hir_mod.none_node_id) return null;
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
-        const fn_node = self.findFunctionDeclInStatements(hir_mod.blockStmts(self.hir, root), name) orelse return null;
+        const fn_node = self.findFunctionDeclInContainer(root, name) orelse return null;
         const existing = self.hir.typeOf(fn_node);
         if (existing != types.Primitive.none and !self.typeIsAnyLike(existing)) return existing;
         const sig = try self.checkFnSignatureOnly(fn_node);
@@ -93837,6 +95350,7 @@ pub const Checker = struct {
     fn jsDocImportedNameType(self: *Checker, src: []const u8, base: []const u8) CheckError!?TypeId {
         const anchor = self.jsdoc_diagnostic_anchor;
         if (anchor == hir_mod.none_node_id or base.len == 0) return null;
+        if (self.source != null and !self.source_may_have_jsdoc_import_tag) return null;
         var search: usize = 0;
         var match_count: usize = 0;
         var spec_buf: [512]u8 = undefined;
@@ -94209,6 +95723,13 @@ pub const Checker = struct {
             return instantiated;
         }
 
+        const generic_name = self.string_interner.intern(name) catch return error.OutOfMemory;
+        if (!self.source_has_virtual_sections and self.jsdoc_generic_typedef_aliases.contains(generic_name)) {
+            if (try self.jsDocGenericNominalTypeTextToType(src, name, args_text, type_text)) |cached_typedef_t| {
+                return cached_typedef_t;
+            }
+        }
+
         if (try self.jsDocGenericTypedefTypeTextToType(src, name, args_text)) |typedef_t| {
             return typedef_t;
         }
@@ -94261,7 +95782,15 @@ pub const Checker = struct {
             try arg_types.append(self.gpa, arg_t);
             try arg_positions.append(self.gpa, self.sliceStartPos(src, arg_text));
         }
-        var search_start: usize = 0;
+        var search_start: usize = if (self.canUseJsDocNamedDeclarationIndex(src)) blk: {
+            const declaration = (try self.indexedJsDocNamedDeclaration(
+                name,
+                .typedef,
+                self.jsdoc_diagnostic_anchor,
+                true,
+            )) orelse return null;
+            break :blk declaration.comment_start;
+        } else 0;
         while (std.mem.indexOfPos(u8, src, search_start, "/**")) |start| {
             const body_start = start + 3;
             const end = std.mem.indexOfPos(u8, src, body_start, "*/") orelse return null;
@@ -94369,6 +95898,7 @@ pub const Checker = struct {
                     .is_type_alias = true,
                 });
             }
+            try self.jsdoc_generic_typedef_aliases.put(self.gpa, alias_name, {});
             if (subs.count() > 0) {
                 try self.extendSubstitutionsByMatchingTypeParamNames(generic_body, formal_params.items, &subs);
                 typedef_t = self.substituteType(typedef_t, &subs) catch typedef_t;
@@ -95387,6 +96917,7 @@ pub const Checker = struct {
     }
 
     fn jsDocImportedNamespaceMemberType(self: *Checker, src: []const u8, type_text: []const u8) CheckError!?TypeId {
+        if (self.source != null and !self.source_may_have_jsdoc_import_tag) return null;
         var dot_count: usize = 0;
         var dot_pos: usize = 0;
         for (type_text, 0..) |c, i| {
@@ -95572,7 +97103,19 @@ pub const Checker = struct {
         wanted_name: []const u8,
         out_type_params: *std.ArrayListUnmanaged(TypeId),
     ) CheckError!?TypeId {
-        var search_start: usize = 0;
+        const wanted_id = self.string_interner.intern(wanted_name) catch return error.OutOfMemory;
+        if (!self.source_has_virtual_sections) {
+            if (self.jsdoc_callback_signatures.get(wanted_id)) |cached| return cached;
+        }
+        var search_start: usize = if (self.canUseJsDocNamedDeclarationIndex(src)) blk: {
+            const declaration = (try self.indexedJsDocNamedDeclaration(
+                wanted_name,
+                .callback,
+                self.jsdoc_diagnostic_anchor,
+                true,
+            )) orelse return null;
+            break :blk declaration.comment_start;
+        } else 0;
         while (std.mem.indexOfPos(u8, src, search_start, "/**")) |start| {
             const body_start = start + 3;
             const end = std.mem.indexOfPos(u8, src, body_start, "*/") orelse return null;
@@ -95661,6 +97204,9 @@ pub const Checker = struct {
             }
             const sig = self.interner.internSignature(params.items, ret_t, false) catch return error.OutOfMemory;
             try self.recordJsDocSignatureArity(sig, omittable.items, has_rest);
+            if (!self.source_has_virtual_sections and !has_templates) {
+                try self.jsdoc_callback_signatures.put(self.gpa, wanted_id, sig);
+            }
             return sig;
         }
         return null;
@@ -95820,7 +97366,13 @@ pub const Checker = struct {
     }
 
     fn leadingJsDocBodyWithStart(self: *Checker, src: []const u8, decl_start: u32) ?JsDocBody {
-        _ = self;
+        if (self.source_facts.may_have_jsdoc) |cached| {
+            if (!cached) return null;
+        } else {
+            const may_have_jsdoc = std.mem.indexOf(u8, src, "/**") != null;
+            self.source_facts.may_have_jsdoc = may_have_jsdoc;
+            if (!may_have_jsdoc) return null;
+        }
         var limit = @min(@as(usize, decl_start), src.len);
         var trimmed_end = limit;
         while (trimmed_end > 0 and std.ascii.isWhitespace(src[trimmed_end - 1])) : (trimmed_end -= 1) {}
@@ -95830,12 +97382,33 @@ pub const Checker = struct {
         {
             limit = trimmed_end - "export".len;
         }
-        const before = src[0..limit];
-        const end = std.mem.lastIndexOf(u8, before, "*/") orelse return null;
-        if (!jsDocTrailingTriviaOnly(before[end + 2 ..])) return null;
-        const start = std.mem.lastIndexOf(u8, before[0..end], "/**") orelse return null;
+        // Walk backward through only the trivia adjacent to the declaration.
+        // A whole-prefix `lastIndexOf` makes a large file with many functions
+        // quadratic even though the relevant comment is always local.
+        var cursor = limit;
+        const end = while (true) {
+            while (cursor > 0 and std.ascii.isWhitespace(src[cursor - 1])) cursor -= 1;
+            if (cursor >= 2 and std.mem.eql(u8, src[cursor - 2 .. cursor], "*/")) {
+                break cursor - 2;
+            }
+            var line_start = cursor;
+            while (line_start > 0 and src[line_start - 1] != '\n' and src[line_start - 1] != '\r') {
+                line_start -= 1;
+            }
+            const line_comment = std.mem.indexOf(u8, src[line_start..cursor], "//") orelse return null;
+            cursor = line_start + line_comment;
+        };
+        var start_cursor = end;
+        const start = while (start_cursor > 0) {
+            start_cursor -= 1;
+            if (start_cursor + 2 > end or
+                src[start_cursor] != '/' or
+                src[start_cursor + 1] != '*') continue;
+            if (start_cursor + 2 < src.len and src[start_cursor + 2] == '*') break start_cursor;
+            return null;
+        } else return null;
         return .{
-            .body = before[start + 3 .. end],
+            .body = src[start + 3 .. end],
             .start = start + 3,
         };
     }
@@ -95938,6 +97511,184 @@ pub const Checker = struct {
         return trimmed[0..i];
     }
 
+    fn canUseJsDocNamedDeclarationIndex(self: *const Checker, src: []const u8) bool {
+        const full_source = self.source orelse return false;
+        return !self.source_has_virtual_sections and
+            src.ptr == full_source.ptr and
+            src.len == full_source.len;
+    }
+
+    fn jsDocNamedTagNameOnLine(line_text: []const u8, tag: []const u8) ?[]const u8 {
+        var line = std.mem.trim(u8, line_text, " \t\r");
+        if (line.len > 0 and line[0] == '*') line = std.mem.trimStart(u8, line[1..], " \t\r");
+        if (!std.mem.startsWith(u8, line, tag)) return null;
+        if (line.len > tag.len and isJsDocIdentChar(line[tag.len])) return null;
+        var rest = std.mem.trimStart(u8, line[tag.len..], " \t\r");
+        if (rest.len > 0 and rest[0] == '{') {
+            const type_len = jsDocBalancedBraceLen(rest);
+            if (type_len == 0) return null;
+            rest = std.mem.trimStart(u8, rest[type_len..], " \t\r");
+        }
+        var name_end: usize = 0;
+        while (name_end < rest.len and
+            (isJsDocIdentChar(rest[name_end]) or rest[name_end] == '.' or rest[name_end] == '~')) : (name_end += 1)
+        {}
+        return if (name_end == 0) null else rest[0..name_end];
+    }
+
+    fn ensureJsDocNamedDeclarationIndex(self: *Checker) CheckError!void {
+        if (self.jsdoc_named_declarations_built) return;
+        self.jsdoc_named_declarations_built = true;
+        const src = self.source orelse return;
+        if (self.source_has_virtual_sections) return;
+
+        const IndexedBlock = struct {
+            comment_start: usize,
+            body_start: usize,
+            body_end: usize,
+            owner_function: NodeId = hir_mod.none_node_id,
+            owner_span_len: u32 = std.math.maxInt(u32),
+        };
+        var blocks: std.ArrayListUnmanaged(IndexedBlock) = .empty;
+        defer blocks.deinit(self.gpa);
+
+        var search_start: usize = 0;
+        while (std.mem.indexOfPos(u8, src, search_start, "/**")) |comment_start| {
+            const body_start = comment_start + 3;
+            const body_end = std.mem.indexOfPos(u8, src, body_start, "*/") orelse break;
+            search_start = body_end + 2;
+            try blocks.append(self.gpa, .{
+                .comment_start = comment_start,
+                .body_start = body_start,
+                .body_end = body_end,
+            });
+        }
+
+        var node: NodeId = 0;
+        while (node < self.hir.nodeCount()) : (node += 1) {
+            switch (self.hir.kindOf(node)) {
+                .fn_decl, .fn_expr, .arrow_fn => {},
+                else => continue,
+            }
+            const span = self.hir.spanOf(node);
+            var low: usize = 0;
+            var high = blocks.items.len;
+            while (low < high) {
+                const mid = low + (high - low) / 2;
+                if (blocks.items[mid].comment_start < span.start) {
+                    low = mid + 1;
+                } else {
+                    high = mid;
+                }
+            }
+            const span_len = span.end - span.start;
+            var block_index = low;
+            while (block_index < blocks.items.len and blocks.items[block_index].comment_start < span.end) : (block_index += 1) {
+                if (span_len >= blocks.items[block_index].owner_span_len) continue;
+                blocks.items[block_index].owner_function = node;
+                blocks.items[block_index].owner_span_len = span_len;
+            }
+        }
+
+        for (blocks.items) |block| {
+            const body = src[block.body_start..block.body_end];
+            if (jsDocTypedefDeclaredName(body)) |name_text| {
+                if (!jsDocTypedefIsMalformedClosure(body, name_text)) {
+                    const name = self.string_interner.intern(name_text) catch return error.OutOfMemory;
+                    const declaration: JsDocNamedDeclaration = .{ .comment_start = block.comment_start };
+                    const scoped_key: JsDocNamedDeclarationKey = .{
+                        .name = name,
+                        .owner_function = block.owner_function,
+                        .kind = .typedef,
+                    };
+                    if (!self.jsdoc_named_declarations.contains(scoped_key)) {
+                        try self.jsdoc_named_declarations.put(self.gpa, scoped_key, declaration);
+                    }
+                    const any_key: JsDocNamedDeclarationAnyKey = .{ .name = name, .kind = .typedef };
+                    if (!self.jsdoc_named_declarations_any_scope.contains(any_key)) {
+                        try self.jsdoc_named_declarations_any_scope.put(self.gpa, any_key, declaration);
+                    }
+                }
+            }
+            const parsed_tags: ?[]ts_parser.jsdoc.Tag = ts_parser.jsdoc.parse(self.gpa, body) catch null;
+            defer if (parsed_tags) |tags| self.gpa.free(tags);
+            if (parsed_tags) |tags| {
+                for (tags) |tag| {
+                    if (tag.kind != .typedef_tag or tag.name.len == 0) continue;
+                    if (jsDocTypedefIsMalformedClosure(body, tag.name)) continue;
+                    const name = self.string_interner.intern(tag.name) catch return error.OutOfMemory;
+                    const declaration: JsDocNamedDeclaration = .{ .comment_start = block.comment_start };
+                    const scoped_key: JsDocNamedDeclarationKey = .{
+                        .name = name,
+                        .owner_function = block.owner_function,
+                        .kind = .typedef,
+                    };
+                    if (!self.jsdoc_named_declarations.contains(scoped_key)) {
+                        try self.jsdoc_named_declarations.put(self.gpa, scoped_key, declaration);
+                    }
+                    const any_key: JsDocNamedDeclarationAnyKey = .{ .name = name, .kind = .typedef };
+                    if (!self.jsdoc_named_declarations_any_scope.contains(any_key)) {
+                        try self.jsdoc_named_declarations_any_scope.put(self.gpa, any_key, declaration);
+                    }
+                }
+            }
+            var line_start: usize = 0;
+            var i: usize = 0;
+            while (i <= body.len) : (i += 1) {
+                if (i < body.len and body[i] != '\n') continue;
+                const line = body[line_start..i];
+                line_start = i + 1;
+                for ([_]struct { tag: []const u8, kind: JsDocNamedDeclarationKind }{
+                    .{ .tag = "@typedef", .kind = .typedef },
+                    .{ .tag = "@callback", .kind = .callback },
+                }) |entry| {
+                    const name_text = jsDocNamedTagNameOnLine(line, entry.tag) orelse continue;
+                    if (entry.kind == .typedef and jsDocTypedefIsMalformedClosure(body, name_text)) continue;
+                    const name = self.string_interner.intern(name_text) catch return error.OutOfMemory;
+                    const declaration: JsDocNamedDeclaration = .{ .comment_start = block.comment_start };
+                    const scoped_key: JsDocNamedDeclarationKey = .{
+                        .name = name,
+                        .owner_function = block.owner_function,
+                        .kind = entry.kind,
+                    };
+                    if (!self.jsdoc_named_declarations.contains(scoped_key)) {
+                        try self.jsdoc_named_declarations.put(self.gpa, scoped_key, declaration);
+                    }
+                    const any_key: JsDocNamedDeclarationAnyKey = .{ .name = name, .kind = entry.kind };
+                    if (!self.jsdoc_named_declarations_any_scope.contains(any_key)) {
+                        try self.jsdoc_named_declarations_any_scope.put(self.gpa, any_key, declaration);
+                    }
+                }
+            }
+        }
+    }
+
+    fn indexedJsDocNamedDeclaration(
+        self: *Checker,
+        name_text: []const u8,
+        kind: JsDocNamedDeclarationKind,
+        anchor: NodeId,
+        any_scope: bool,
+    ) CheckError!?JsDocNamedDeclaration {
+        try self.ensureJsDocNamedDeclarationIndex();
+        const name = self.string_interner.intern(name_text) catch return error.OutOfMemory;
+        if (any_scope) {
+            return self.jsdoc_named_declarations_any_scope.get(.{ .name = name, .kind = kind });
+        }
+        const owner = self.enclosingFunctionLike(anchor) orelse hir_mod.none_node_id;
+        if (self.jsdoc_named_declarations.get(.{
+            .name = name,
+            .owner_function = owner,
+            .kind = kind,
+        })) |declaration| return declaration;
+        if (owner == hir_mod.none_node_id) return null;
+        return self.jsdoc_named_declarations.get(.{
+            .name = name,
+            .owner_function = hir_mod.none_node_id,
+            .kind = kind,
+        });
+    }
+
     fn jsDocTypedefObjectSkeleton(
         self: *Checker,
         src: []const u8,
@@ -95945,30 +97696,45 @@ pub const Checker = struct {
     ) CheckError!?TypeId {
         if (wanted_name.len == 0) return null;
         const wanted_id = self.string_interner.intern(wanted_name) catch return error.OutOfMemory;
+        if (!self.source_has_virtual_sections) {
+            if (self.jsdoc_typedef_object_types.get(wanted_id)) |cached| return cached;
+        }
         if (self.resolving_jsdoc_typedef_aliases.contains(wanted_id)) return types.Primitive.any;
         try self.resolving_jsdoc_typedef_aliases.put(self.gpa, wanted_id, {});
         defer _ = self.resolving_jsdoc_typedef_aliases.remove(wanted_id);
 
-        var search_start: usize = 0;
+        var search_start: usize = if (self.canUseJsDocNamedDeclarationIndex(src)) blk: {
+            const declaration = (try self.indexedJsDocNamedDeclaration(
+                wanted_name,
+                .typedef,
+                self.jsdoc_diagnostic_anchor,
+                true,
+            )) orelse return null;
+            break :blk declaration.comment_start;
+        } else 0;
         while (std.mem.indexOfPos(u8, src, search_start, "/**")) |start| {
             const body_start = start + 3;
             const end = std.mem.indexOfPos(u8, src, body_start, "*/") orelse return null;
             defer search_start = end + 2;
             const body = src[body_start..end];
             if (jsDocTypedefIsMalformedClosure(body, wanted_name)) continue;
+            const cacheable = !self.source_has_virtual_sections and std.mem.indexOf(u8, body, "@template") == null;
             if (jsDocTypedefTypeText(body, wanted_name)) |type_text| {
                 if (try self.jsDocObjectSkeletonFromTypeText(type_text)) |t| {
                     try self.registerAliasDisplayText(t, wanted_name);
+                    if (cacheable) try self.jsdoc_typedef_object_types.put(self.gpa, wanted_id, t);
                     return t;
                 }
                 if (try self.jsDocObjectSkeletonFromPropertyTags(src, body)) |t| {
                     try self.registerAliasDisplayText(t, wanted_name);
+                    if (cacheable) try self.jsdoc_typedef_object_types.put(self.gpa, wanted_id, t);
                     return t;
                 }
             }
             if (jsDocBlockHasNamedTag(body, "@typedef", wanted_name)) {
                 if (try self.jsDocObjectSkeletonFromPropertyTags(src, body)) |t| {
                     try self.registerAliasDisplayText(t, wanted_name);
+                    if (cacheable) try self.jsdoc_typedef_object_types.put(self.gpa, wanted_id, t);
                     return t;
                 }
             }
@@ -95979,10 +97745,12 @@ pub const Checker = struct {
                 if (!std.mem.eql(u8, tag.name, wanted_name)) continue;
                 if (try self.jsDocObjectSkeletonFromTypeText(tag.type_text)) |t| {
                     try self.registerAliasDisplayText(t, wanted_name);
+                    if (cacheable) try self.jsdoc_typedef_object_types.put(self.gpa, wanted_id, t);
                     return t;
                 }
                 if (try self.jsDocObjectSkeletonFromPropertyTags(src, body)) |t| {
                     try self.registerAliasDisplayText(t, wanted_name);
+                    if (cacheable) try self.jsdoc_typedef_object_types.put(self.gpa, wanted_id, t);
                     return t;
                 }
             }
@@ -96102,7 +97870,15 @@ pub const Checker = struct {
         const pass_count: usize = if (use_function != null) 2 else 1;
         var pass: usize = 0;
         while (pass < pass_count) : (pass += 1) {
-            var search_start: usize = 0;
+            var search_start: usize = if (self.canUseJsDocNamedDeclarationIndex(src)) blk: {
+                const declaration = (try self.indexedJsDocNamedDeclaration(
+                    wanted_name,
+                    .typedef,
+                    self.jsdoc_diagnostic_anchor,
+                    false,
+                )) orelse return null;
+                break :blk declaration.comment_start;
+            } else 0;
             while (std.mem.indexOfPos(u8, src, search_start, "/**")) |start| {
                 const body_start = start + 3;
                 const end = std.mem.indexOfPos(u8, src, body_start, "*/") orelse return null;
@@ -96144,6 +97920,20 @@ pub const Checker = struct {
         if (name_end == 0) return null;
         if (!std.mem.eql(u8, trailing[0..name_end], wanted_name)) return null;
         return rest[brace_pos + 1 .. brace_pos + type_len - 1];
+    }
+
+    fn jsDocTypedefDeclaredName(body: []const u8) ?[]const u8 {
+        const tag_pos = std.mem.indexOf(u8, body, "@typedef") orelse return null;
+        const rest = body[tag_pos + "@typedef".len ..];
+        const brace_pos = std.mem.indexOfScalar(u8, rest, '{') orelse return null;
+        const type_len = jsDocBalancedBraceLen(rest[brace_pos..]);
+        if (type_len == 0) return null;
+        const trailing = std.mem.trimStart(u8, rest[brace_pos + type_len ..], " \t\r\n*");
+        var name_end: usize = 0;
+        while (name_end < trailing.len and
+            (isJsDocIdentChar(trailing[name_end]) or trailing[name_end] == '.' or trailing[name_end] == '~')) : (name_end += 1)
+        {}
+        return if (name_end == 0) null else trailing[0..name_end];
     }
 
     fn jsDocTypedefIsMalformedClosure(body: []const u8, wanted_name: []const u8) bool {
@@ -96212,6 +98002,9 @@ pub const Checker = struct {
     }
 
     fn jsDocTypedefNameExistsInSliceAt(self: *Checker, anchor: NodeId, src: []const u8, wanted: []const u8) bool {
+        if (self.canUseJsDocNamedDeclarationIndex(src)) {
+            return (self.indexedJsDocNamedDeclaration(wanted, .typedef, anchor, false) catch return false) != null;
+        }
         const use_function = self.enclosingFunctionLike(anchor);
         var search_start: usize = 0;
         while (std.mem.indexOfPos(u8, src, search_start, "/**")) |start| {
@@ -96241,6 +98034,86 @@ pub const Checker = struct {
 
     fn sourceFunctionContainingPos(self: *Checker, pos: usize) ?NodeId {
         const source_pos: u32 = @intCast(@min(pos, std.math.maxInt(u32)));
+        if (self.source_function_containing_pos_cache.get(source_pos)) |cached| {
+            return if (cached == hir_mod.none_node_id) null else cached;
+        }
+        const best = if (self.buildSourceFunctionSpanIndex())
+            self.indexedSourceFunctionContainingPos(source_pos)
+        else
+            self.sourceFunctionContainingPosSlow(source_pos);
+        self.source_function_containing_pos_cache.put(
+            self.gpa,
+            source_pos,
+            best orelse hir_mod.none_node_id,
+        ) catch {};
+        return best;
+    }
+
+    fn buildSourceFunctionSpanIndex(self: *Checker) bool {
+        if (self.source_function_spans_indexed) return self.source_function_spans_valid;
+        self.source_function_spans_indexed = true;
+        var node: NodeId = 0;
+        while (node < self.hir.nodeCount()) : (node += 1) {
+            switch (self.hir.kindOf(node)) {
+                .fn_decl, .fn_expr, .arrow_fn => {},
+                else => continue,
+            }
+            const span = self.hir.spanOf(node);
+            if (span.end <= span.start) continue;
+            self.source_function_spans.append(self.gpa, .{
+                .node = node,
+                .start = span.start,
+                .end = span.end,
+            }) catch return false;
+        }
+        std.mem.sort(SourceFunctionSpan, self.source_function_spans.items, {}, struct {
+            fn lessThan(_: void, a: SourceFunctionSpan, b: SourceFunctionSpan) bool {
+                if (a.start != b.start) return a.start < b.start;
+                if (a.end != b.end) return a.end > b.end;
+                // The old node-order scan picks the lowest NodeId on ties.
+                return a.node > b.node;
+            }
+        }.lessThan);
+        const no_parent = std.math.maxInt(u32);
+        var parent: u32 = no_parent;
+        for (self.source_function_spans.items, 0..) |*span, index| {
+            while (parent != no_parent and
+                self.source_function_spans.items[parent].end <= span.start)
+            {
+                parent = self.source_function_spans.items[parent].parent;
+            }
+            // Normal function ranges are disjoint or nested. Preserve the
+            // original minimum-span scan for malformed crossing ranges.
+            if (parent != no_parent and span.end > self.source_function_spans.items[parent].end) return false;
+            span.parent = parent;
+            parent = @intCast(index);
+        }
+        self.source_function_spans_valid = true;
+        return true;
+    }
+
+    fn indexedSourceFunctionContainingPos(self: *Checker, source_pos: u32) ?NodeId {
+        const spans = self.source_function_spans.items;
+        var low: usize = 0;
+        var high = spans.len;
+        while (low < high) {
+            const middle = low + (high - low) / 2;
+            if (spans[middle].start <= source_pos) {
+                low = middle + 1;
+            } else {
+                high = middle;
+            }
+        }
+        if (low == 0) return null;
+        var index: u32 = @intCast(low - 1);
+        while (spans[index].end <= source_pos) {
+            index = spans[index].parent;
+            if (index == std.math.maxInt(u32)) return null;
+        }
+        return spans[index].node;
+    }
+
+    fn sourceFunctionContainingPosSlow(self: *Checker, source_pos: u32) ?NodeId {
         var best: ?NodeId = null;
         var best_len: u32 = std.math.maxInt(u32);
         var node: NodeId = 0;
@@ -97826,7 +99699,7 @@ pub const Checker = struct {
         if (!std.mem.eql(u8, self.string_interner.get(id.name), "Promise")) return false;
         if (self.sourceHasNoLibTrueDirective()) return false;
 
-        const has_lib_directive = if (self.source) |src| std.mem.indexOf(u8, src, "@lib") != null else false;
+        const has_lib_directive = self.sourceMarkerPosition("@lib") != null;
         const has_promise_constructor = if (has_lib_directive)
             !self.sourceLibDirectiveExcludes("es2015")
         else
@@ -100019,6 +101892,60 @@ pub const Checker = struct {
 
     fn findLocalValueDeclBeforeExpression(self: *Checker, node: NodeId, name: hir_mod.StringId) ?NodeId {
         const has_sections = self.sourceHasVirtualFilenameSections();
+        const section = if (has_sections) self.virtualSectionStartForNode(node) else 0;
+        var anchor = node;
+        var scope = self.hir.parentOf(node);
+        while (scope != hir_mod.none_node_id) {
+            const stmts = self.containerStatements(scope) orelse {
+                anchor = scope;
+                scope = self.hir.parentOf(scope);
+                continue;
+            };
+            if (stmts.len <= 1) return self.findLocalValueDeclBeforeExpressionSlow(node, name);
+            const index = self.local_value_decls_by_container.getPtr(scope) orelse blk: {
+                self.indexLocalValueDeclarations(scope, stmts, has_sections) catch
+                    return self.findLocalValueDeclBeforeExpressionSlow(node, name);
+                break :blk self.local_value_decls_by_container.getPtr(scope).?;
+            };
+            const entry = index.declarations.get(.{ .name = name, .virtual_section_start = section }) orelse return null;
+            if (index.statement_ordinals.get(.{ .node = anchor, .virtual_section_start = section })) |boundary| {
+                if (entry.ordinal >= boundary) return null;
+            }
+            return entry.declaration;
+        }
+        return null;
+    }
+
+    fn indexLocalValueDeclarations(self: *Checker, container: NodeId, stmts: []const NodeId, has_sections: bool) !void {
+        var index: LocalValueContainerIndex = .{};
+        errdefer index.deinit(self.gpa);
+        for (stmts, 0..) |stmt, ordinal| {
+            const section = if (has_sections) self.virtualSectionStartForNode(stmt) else 0;
+            const decl = if (self.hir.kindOf(stmt) == .export_decl) hir_mod.exportOf(self.hir, stmt).decl else stmt;
+            // The original scanner stops at either a statement or the direct
+            // declaration inside its export wrapper, before considering it.
+            for ([_]NodeId{ stmt, decl }) |boundary_node| {
+                if (boundary_node == hir_mod.none_node_id) continue;
+                const boundary = try index.statement_ordinals.getOrPut(self.gpa, .{
+                    .node = boundary_node,
+                    .virtual_section_start = section,
+                });
+                if (!boundary.found_existing) boundary.value_ptr.* = ordinal;
+            }
+            if (decl == hir_mod.none_node_id) continue;
+            switch (self.hir.kindOf(decl)) {
+                .var_decl, .let_decl, .const_decl, .fn_decl, .fn_expr, .class_decl, .class_expr => {},
+                else => continue,
+            }
+            const name = self.declarationName(decl) orelse continue;
+            const entry = try index.declarations.getOrPut(self.gpa, .{ .name = name, .virtual_section_start = section });
+            if (!entry.found_existing) entry.value_ptr.* = .{ .declaration = decl, .ordinal = ordinal };
+        }
+        try self.local_value_decls_by_container.put(self.gpa, container, index);
+    }
+
+    fn findLocalValueDeclBeforeExpressionSlow(self: *Checker, node: NodeId, name: hir_mod.StringId) ?NodeId {
+        const has_sections = self.sourceHasVirtualFilenameSections();
         const anchor_section = if (has_sections) self.virtualSectionStartForNode(node) else 0;
         var anchor = node;
         var scope = self.hir.parentOf(node);
@@ -100260,6 +102187,8 @@ pub const Checker = struct {
     }
 
     fn lookupObjectMember(self: *Checker, obj_t: TypeId, name: hir_mod.StringId) CheckError!?TypeId {
+        const expanded_object = try self.resolveGenericType(obj_t);
+        if (expanded_object != obj_t) return self.lookupObjectMember(expanded_object, name);
         if (self.module_augmented_interface_types.get(obj_t)) |merged_t| {
             if (merged_t != obj_t) return try self.lookupObjectMember(merged_t, name);
         }
@@ -100649,6 +102578,10 @@ pub const Checker = struct {
     }
 
     fn refreshedGenericAliasObjectMember(self: *Checker, obj_t: TypeId, name: hir_mod.StringId) CheckError!?TypeId {
+        // These members already come from their owning definition. A display
+        // name is not authority to reinstantiate them from this file's alias
+        // table (which may name a different declaration or an older body).
+        if (self.generic_instance_origins.contains(obj_t)) return null;
         const args = self.alias_type_args.get(obj_t) orelse return null;
         const display = self.alias_display_names.get(obj_t) orelse return null;
         const lt = std.mem.indexOfScalar(u8, display, '<') orelse return null;
@@ -101059,11 +102992,28 @@ pub const Checker = struct {
         is_construct: bool,
     ) bool {
         for (signatures) |existing| {
-            if (self.nonGenericUnionSignatureMatch(existing, candidate, is_construct) and
-                self.nonGenericUnionSignatureMatch(candidate, existing, is_construct))
-            {
-                return true;
+            if (!self.signatureMatchesKind(existing, is_construct) or !self.signatureMatchesKind(candidate, is_construct)) continue;
+            const existing_params = self.interner.signatureParams(existing);
+            const candidate_params = self.interner.signatureParams(candidate);
+            // Partial matching finds a contract usable across branches;
+            // it must not deduplicate distinct overloads of the result.
+            // For example, (a, b?) and (a, b?, c?) retain both arities.
+            if (existing_params.len != candidate_params.len or
+                self.signatureMinRequiredArgs(existing, existing_params) != self.signatureMinRequiredArgs(candidate, candidate_params) or
+                self.rest_signatures.contains(existing) != self.rest_signatures.contains(candidate)) continue;
+            if (self.signatureThisParam(existing)) |existing_this| {
+                if (self.signatureThisParam(candidate)) |candidate_this| {
+                    if (!(self.engine.isIdenticalTo(existing_this, candidate_this) catch false)) continue;
+                }
             }
+            var identical = true;
+            for (existing_params, candidate_params) |a, b| {
+                if (!(self.engine.isIdenticalTo(a, b) catch false)) {
+                    identical = false;
+                    break;
+                }
+            }
+            if (identical) return true;
         }
         return false;
     }
@@ -101079,17 +103029,11 @@ pub const Checker = struct {
         var this_types: std.ArrayListUnmanaged(TypeId) = .empty;
         defer this_types.deinit(self.gpa);
         var is_abstract_construct = false;
-        var effective_representative = representative;
         for (matched) |signature| {
             try returns.append(
                 self.gpa,
                 self.interner.signatureReturn(signature) orelse types.Primitive.any,
             );
-            if (self.interner.signatureParams(signature).len >
-                self.interner.signatureParams(effective_representative).len)
-            {
-                effective_representative = signature;
-            }
             if (self.signatureThisParam(signature)) |this_t| {
                 try this_types.append(self.gpa, this_t);
             }
@@ -101097,20 +103041,24 @@ pub const Checker = struct {
         }
         const return_t = try self.unionOrAny(returns.items);
         try self.registerDiagnosticUnionDisplayName(return_t, returns.items);
-        const params = self.interner.signatureParams(effective_representative);
+        // Matching selected the parameter contract accepted by every
+        // branch. Substituting a longer branch here can make required
+        // parameters optional or allow calls rejected by another branch.
+        const params = self.interner.signatureParams(representative);
+        const min_args = self.signatureMinRequiredArgs(representative, params);
         const result = self.interner.internSignatureWithAbstract(
             params,
             return_t,
             is_construct,
             is_construct and is_abstract_construct,
         ) catch return error.OutOfMemory;
-        try self.copySignatureParamNames(result, effective_representative);
+        try self.copySignatureParamNames(result, representative);
         try self.signature_min_args.put(
             self.gpa,
             result,
-            self.signatureMinRequiredArgs(effective_representative, params),
+            min_args,
         );
-        if (self.rest_signatures.contains(effective_representative)) {
+        if (self.rest_signatures.contains(representative)) {
             try self.rest_signatures.put(self.gpa, result, {});
         }
         if (this_types.items.len > 0) {
@@ -101120,7 +103068,33 @@ pub const Checker = struct {
                 self.interner.internIntersection(this_types.items) catch return error.OutOfMemory;
             try self.signature_this_params.put(self.gpa, result, this_t);
         }
+        try self.recordUnionSignaturePredicate(result, matched);
         return result;
+    }
+
+    /// A union call promises a predicate only when every constituent does,
+    /// for the same argument and predicate kind. Its successful result can
+    /// be any constituent's target, so combine the targets covariantly.
+    /// A synthesized target has no single source annotation node.
+    fn recordUnionSignaturePredicate(self: *Checker, result: TypeId, signatures: []const TypeId) CheckError!void {
+        if (signatures.len == 0) return;
+        const first = self.signature_predicates.get(signatures[0]) orelse return;
+        var targets: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer targets.deinit(self.gpa);
+        for (signatures) |signature| {
+            const predicate = self.signature_predicates.get(signature) orelse return;
+            if (predicate.param_index != first.param_index or predicate.is_asserts != first.is_asserts) return;
+            if (predicate.target_type == types.Primitive.none) {
+                if (first.target_type != types.Primitive.none) return;
+            } else {
+                if (first.target_type == types.Primitive.none) return;
+                try targets.append(self.gpa, try self.resolvePredicateTarget(predicate));
+            }
+        }
+        var combined = first;
+        combined.target_type = if (targets.items.len == 0) types.Primitive.none else try self.unionOrAny(targets.items);
+        combined.target_node = hir_mod.none_node_id;
+        try self.signature_predicates.put(self.gpa, result, combined);
     }
 
     fn unionSignatureTypeAtPosition(self: *Checker, signature: TypeId, position: usize) ?TypeId {
@@ -101156,6 +103130,7 @@ pub const Checker = struct {
     ) CheckError!TypeId {
         const left_params = self.interner.signatureParams(left);
         const right_params = self.interner.signatureParams(right);
+        const min_args = @max(self.signatureMinRequiredArgs(left, left_params), self.signatureMinRequiredArgs(right, right_params));
         const left_rest = self.rest_signatures.contains(left) and left_params.len > 0;
         const right_rest = self.rest_signatures.contains(right) and right_params.len > 0;
         const left_is_longest = left_params.len >= right_params.len;
@@ -101201,10 +103176,7 @@ pub const Checker = struct {
         try self.signature_min_args.put(
             self.gpa,
             result,
-            @max(
-                self.signatureMinRequiredArgs(left, left_params),
-                self.signatureMinRequiredArgs(right, right_params),
-            ),
+            min_args,
         );
         if (either_has_rest) try self.rest_signatures.put(self.gpa, result, {});
         const left_this = self.signatureThisParam(left);
@@ -101218,6 +103190,7 @@ pub const Checker = struct {
                 self.interner.internIntersection(&.{ left_this.?, right_this.? }) catch return error.OutOfMemory;
             try self.signature_this_params.put(self.gpa, result, this_t);
         }
+        try self.recordUnionSignaturePredicate(result, &.{ left, right });
         return result;
     }
 
@@ -101228,8 +103201,9 @@ pub const Checker = struct {
         out: *std.ArrayListUnmanaged(TypeId),
     ) CheckError!bool {
         if (t >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(t).is_union) return false;
-        const members = self.interner.unionMembers(t);
-        if (members.len != 2) return false;
+        const members = try self.gpa.dupe(TypeId, self.interner.unionMembers(t));
+        defer self.gpa.free(members);
+        if (members.len < 2) return false;
 
         var signatures: std.ArrayListUnmanaged(TypeId) = .empty;
         defer signatures.deinit(self.gpa);
@@ -101259,11 +103233,7 @@ pub const Checker = struct {
             const len = signatures.items.len - start;
             if (len == 0) return true;
             for (signatures.items[start .. start + len]) |signature| {
-                if (self.unionSignatureHasFreeGenericParameters(signature) or
-                    (!is_construct and
-                        self.interner.signatureParams(signature).len == 0 and
-                        self.signatureThisParam(signature) != null))
-                {
+                if (self.unionSignatureHasFreeGenericParameters(signature)) {
                     return false;
                 }
             }
@@ -102214,6 +104184,7 @@ pub const Checker = struct {
     }
 
     fn namespaceImportDeclForLocal(self: *Checker, local_name: hir_mod.StringId, anchor: NodeId) ?NodeId {
+        if (self.source != null and !self.source_may_have_import_declaration) return null;
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
         const has_sections = self.sourceHasVirtualFilenameSections();
@@ -104280,6 +106251,14 @@ pub const Checker = struct {
         if (self.program_exported_values.len == 0 or self.hir.kindOf(import_node) != .import_decl) return null;
         const imp = hir_mod.importOf(self.hir, import_node);
         const spec = self.string_interner.get(imp.module);
+        if (imp.default_binding != hir_mod.none_node_id and self.hir.kindOf(imp.default_binding) == .identifier and
+            hir_mod.identifierOf(self.hir, imp.default_binding).name == local_name)
+        {
+            for (self.program_exported_values) |value| {
+                if (!std.mem.eql(u8, value.export_name, "default")) continue;
+                if (try self.programImportTargetsPath(import_node, spec, value.target_path)) return self.programExportedValueType(value);
+            }
+        }
         for (hir_mod.importNamed(self.hir, import_node)) |spec_node| {
             if (self.hir.kindOf(spec_node) != .import_specifier) continue;
             const imported = hir_mod.importSpecifierOf(self.hir, spec_node);
@@ -104293,20 +106272,148 @@ pub const Checker = struct {
                 matched = value;
             }
             if (matched) |value| {
-                return switch (value.kind) {
-                    .variable => try self.programTypeReferenceType(value.result),
-                    .function => blk: {
-                        var params: std.ArrayListUnmanaged(TypeId) = .empty;
-                        defer params.deinit(self.gpa);
-                        for (value.parameters) |param| {
-                            try params.append(self.gpa, try self.programTypeReferenceType(param));
-                        }
-                        const result = try self.programTypeReferenceType(value.result);
-                        break :blk self.interner.internSignature(params.items, result, false) catch return error.OutOfMemory;
-                    },
-                };
+                return try self.programExportedValueType(value);
             }
         }
+        return null;
+    }
+
+    fn programExportedValueType(self: *Checker, value: ProgramExportedValue) CheckError!?TypeId {
+        if (value.declaration) |declaration| {
+            const definition_id = self.programGenericDefinition(declaration) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                error.UnsupportedProgramType => return null,
+            };
+            if (declaration.is_function) return self.interner.genericDefinition(definition_id).?.body;
+            return try self.resolveGenericType(try self.interner.internInstantiation(definition_id, &.{}));
+        }
+        return switch (value.kind) {
+            .variable => try self.programTypeReferenceType(value.result),
+            .function => blk: {
+                var params: std.ArrayListUnmanaged(TypeId) = .empty;
+                defer params.deinit(self.gpa);
+                for (value.parameters) |param| try params.append(self.gpa, try self.programTypeReferenceType(param));
+                const result = try self.programTypeReferenceType(value.result);
+                break :blk self.interner.internSignature(params.items, result, false) catch return error.OutOfMemory;
+            },
+        };
+    }
+
+    fn programExportedTypeForLocal(self: *Checker, name: hir_mod.StringId, anchor: NodeId) CheckError!?TypeId {
+        if (self.program_exported_types.len == 0 or self.nameHasEnclosingTypeParameter(name, anchor)) return null;
+        if (self.findVisibleNamedTypeDecl(anchor, name)) |local| {
+            const position = self.hir.spanOf(local).start;
+            for (self.program_exported_types) |entry| {
+                if (entry.declaration.position == position and std.mem.eql(u8, entry.declaration.path, self.importer_path))
+                    return self.programDeclarationTypeReference(entry.declaration, anchor);
+            }
+            return null;
+        }
+        if (self.module) |module| {
+            const symbol = module.root.types.get(name) orelse module.root.values.get(name) orelse return null;
+            if (!symbol.flags.is_import) return null;
+        }
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        for (hir_mod.blockStmts(self.hir, root)) |statement| {
+            if (self.hir.kindOf(statement) != .import_decl) continue;
+            const import = hir_mod.importOf(self.hir, statement);
+            if (import.default_binding != hir_mod.none_node_id and self.hir.kindOf(import.default_binding) == .identifier and
+                hir_mod.identifierOf(self.hir, import.default_binding).name == name)
+                return self.programExportedTypeForImportPath(statement, import.module, self.string_interner.intern("default") catch return error.OutOfMemory, anchor);
+            for (hir_mod.importNamed(self.hir, statement)) |specifier| {
+                const item = hir_mod.importSpecifierOf(self.hir, specifier);
+                if (item.local == name) return self.programExportedTypeForImportPath(statement, import.module, item.imported, anchor);
+            }
+        }
+        return null;
+    }
+
+    fn programExportedTypeForImportPath(self: *Checker, import_node: NodeId, specifier: hir_mod.StringId, name: hir_mod.StringId, anchor: NodeId) CheckError!?TypeId {
+        for (self.program_exported_types) |entry| {
+            if (!std.mem.eql(u8, entry.export_name, self.string_interner.get(name))) continue;
+            if (!try self.programImportTargetsPath(import_node, self.string_interner.get(specifier), entry.target_path)) continue;
+            return self.programDeclarationTypeReference(entry.declaration, anchor);
+        }
+        return null;
+    }
+
+    /// Construct the whole runtime export shape, not a class-only namespace.
+    /// Reserve all reachable namespace identities before publishing any of
+    /// them, so namespace aliases/cycles retain types through ordinary object
+    /// consumption (captures, element access and destructuring included).
+    fn programModuleNamespaceType(self: *Checker, spec: []const u8, anchor: NodeId) CheckError!?TypeId {
+        const resolver = self.external_resolver orelse return null;
+        if (resolver.vtable.moduleExportNames == null or resolver.vtable.moduleExport == null) return null;
+        const resolved = resolver.resolve(spec, self.importer_path) orelse return null;
+        const root_path = self.string_interner.intern(resolved.path) catch return error.OutOfMemory;
+        if (self.program_module_namespace_types.get(root_path)) |cached| return if (cached == types.Primitive.none) null else cached;
+        const Pending = struct { path: hir_mod.StringId, type: TypeId };
+        var pending: std.ArrayListUnmanaged(Pending) = .empty;
+        defer pending.deinit(self.gpa);
+        var reserved: std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId) = .empty;
+        defer reserved.deinit(self.gpa);
+        const root_type = self.interner.internObjectType(&.{}) catch return error.OutOfMemory;
+        try reserved.put(self.gpa, root_path, root_type);
+        try pending.append(self.gpa, .{ .path = root_path, .type = root_type });
+        var cursor: usize = 0;
+        while (cursor < pending.items.len) : (cursor += 1) {
+            const item = pending.items[cursor];
+            const path = self.string_interner.get(item.path);
+            // Enumeration must be complete. If facts are unavailable, do not
+            // publish a partial closed shape that invents missing properties.
+            const names = resolver.moduleExportNames(path, self.importer_path) orelse return self.unavailableProgramModuleNamespace(root_path);
+            var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+            defer members.deinit(self.gpa);
+            for (0..names.len + 1) |index| {
+                const is_optional_default = index == names.len;
+                const name = if (is_optional_default) "default" else names[index];
+                const info = resolver.moduleExport(path, self.importer_path, name) orelse {
+                    if (is_optional_default) continue;
+                    return self.unavailableProgramModuleNamespace(root_path);
+                };
+                if (!(info.runtime_value orelse return self.unavailableProgramModuleNamespace(root_path))) continue;
+                const member_name = self.string_interner.intern(name) catch return error.OutOfMemory;
+                var member_type: TypeId = types.Primitive.any;
+                if (info.namespace_module_path.len != 0) {
+                    const namespace_path = self.string_interner.intern(info.namespace_module_path) catch return error.OutOfMemory;
+                    const cached = self.program_module_namespace_types.get(namespace_path);
+                    if (cached == types.Primitive.none) return self.unavailableProgramModuleNamespace(root_path);
+                    member_type = cached orelse reserved.get(namespace_path) orelse blk: {
+                        const fresh = self.interner.internObjectType(&.{}) catch return error.OutOfMemory;
+                        try reserved.put(self.gpa, namespace_path, fresh);
+                        try pending.append(self.gpa, .{ .path = namespace_path, .type = fresh });
+                        break :blk fresh;
+                    };
+                } else {
+                    for (self.program_exported_classes) |class| {
+                        if (class.local_only) continue;
+                        if (class.ambient_module_name.len != 0 or !std.mem.eql(u8, class.target_path, path) or
+                            !std.mem.eql(u8, class.exportedName(), name)) continue;
+                        const class_name = self.string_interner.intern(class.class_name) catch return error.OutOfMemory;
+                        member_type = try self.syntheticProgramClassStaticType(class, class_name, null, anchor);
+                        break;
+                    } else {
+                        for (self.program_exported_values) |value| {
+                            if (!std.mem.eql(u8, value.target_path, path) or !std.mem.eql(u8, value.export_name, name)) continue;
+                            member_type = (try self.programExportedValueType(value)) orelse return self.unavailableProgramModuleNamespace(root_path);
+                            break;
+                        }
+                    }
+                }
+                try members.append(self.gpa, .{ .name = member_name, .type = member_type, .is_optional = false, .is_readonly = true, .is_method = false });
+            }
+            try self.interner.completeFreshObjectType(item.type, members.items);
+        }
+        try self.program_module_namespace_types.ensureUnusedCapacity(self.gpa, @intCast(pending.items.len));
+        for (pending.items) |item| self.program_module_namespace_types.putAssumeCapacity(item.path, item.type);
+        return root_type;
+    }
+
+    fn unavailableProgramModuleNamespace(self: *Checker, path: hir_mod.StringId) CheckError!?TypeId {
+        // Unknown is cached separately from a valid empty namespace, avoiding
+        // repeated allocation/query work for unsupported external shapes.
+        try self.program_module_namespace_types.put(self.gpa, path, types.Primitive.none);
         return null;
     }
 
@@ -104319,21 +106426,303 @@ pub const Checker = struct {
         if (std.mem.eql(u8, reference.name, "unknown")) return types.Primitive.unknown;
         if (reference.target_path.len == 0) return types.Primitive.any;
         for (self.program_exported_classes) |exported_class| {
+            if (exported_class.local_only) continue;
             if (!std.mem.eql(u8, exported_class.target_path, reference.target_path)) continue;
             if (reference.is_default and !exported_class.is_default) continue;
-            if (!reference.is_default and !std.mem.eql(u8, exported_class.class_name, reference.name)) continue;
+            if (!reference.is_default and !std.mem.eql(u8, exported_class.exportedName(), reference.name)) continue;
             const class_name = self.string_interner.intern(exported_class.class_name) catch return error.OutOfMemory;
             return try self.syntheticProgramClassInstanceType(exported_class, class_name);
         }
         return types.Primitive.any;
     }
 
-    fn programExportedClassTypeForImportBinding(
+    fn clearProgramGenericInstances(self: *Checker) void {
+        self.program_generic_definitions.clearRetainingCapacity();
+        self.program_definition_classes.clearRetainingCapacity();
+        self.program_local_class_names.clearRetainingCapacity();
+        self.program_local_class_names_built = false;
+        self.generic_instances.clearRetainingCapacity();
+        self.generic_instance_origins.clearRetainingCapacity();
+    }
+
+    fn resolveGenericTypeForEngine(context: *anyopaque, t: TypeId) anyerror!TypeId {
+        const self: *Checker = @ptrCast(@alignCast(context));
+        return self.resolveGenericType(t);
+    }
+
+    /// Expand only the requested surface. Substitution retains nested generic
+    /// references, so a growing recursive body never requires eager unrolling.
+    fn resolveGenericType(self: *Checker, t: TypeId) CheckError!TypeId {
+        if (t >= self.interner.pool.typeCount()) return t;
+        const flags = self.interner.pool.flagsOf(t);
+        if (!flags.is_instantiation) return t;
+        if (self.generic_instances.get(t)) |result| return result;
+        if (self.generic_expansion_active.contains(t)) return t;
+        try self.generic_expansion_active.put(self.gpa, t, {});
+        defer _ = self.generic_expansion_active.remove(t);
+        if (flags.is_union or flags.is_intersection) {
+            const members = if (flags.is_union) self.interner.unionMembers(t) else self.interner.intersectionMembers(t);
+            const snapshot = try self.gpa.dupe(TypeId, members);
+            defer self.gpa.free(snapshot);
+            for (snapshot) |*member| member.* = try self.resolveGenericType(member.*);
+            const result = if (flags.is_union) try self.interner.internUnion(snapshot) else try self.interner.internIntersection(snapshot);
+            try self.generic_instances.put(self.gpa, t, result);
+            return result;
+        }
+        const index = self.interner.pool.payloadOf(t);
+        if (index >= self.interner.pool.instantiation_payloads.items.len) return t;
+        const reference = self.interner.pool.instantiation_payloads.items[index];
+        const definition = self.interner.genericDefinition(reference.origin) orelse return t;
+        if (definition.body == types.Primitive.none or definition.parameters_len != reference.args_len) return t;
+        const args = try self.gpa.dupe(TypeId, self.interner.pool.type_arg_pool.items[reference.args_start..][0..reference.args_len]);
+        defer self.gpa.free(args);
+        const parameters = self.interner.pool.type_arg_pool.items[definition.parameters_start..][0..definition.parameters_len];
+        var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+        defer subs.deinit(self.gpa);
+        for (parameters, args) |parameter, arg| try subs.put(self.gpa, parameter, arg);
+        const substituted = try self.substituteType(definition.body, &subs);
+        const result = try self.resolveGenericType(substituted);
+        // A non-productive alias cycle remains symbolic; never publish a
+        // guessed body as a completed instantiation.
+        if (result == t) return t;
+        try self.generic_instances.put(self.gpa, t, result);
+        // Only a directly materialized object body belongs to this definition.
+        // Identity/reference aliases reuse another type; recording their name
+        // as its origin would make recursion identity depend on lookup order.
+        if (self.interner.pool.flagsOf(definition.body).is_object_type and result == substituted)
+            try self.generic_instance_origins.put(self.gpa, result, reference.origin);
+        if (self.program_definition_classes.get(reference.origin)) |class| {
+            try self.synthetic_program_class_origins.put(self.gpa, result, class.origin);
+            try self.class_name_by_instance.put(self.gpa, result, class.name);
+            if (args.len > 0) try self.alias_type_args.put(self.gpa, result, try self.diag_arena.allocator().dupe(TypeId, args));
+            try self.registerAliasDisplayNameInner(result, class.name, args, true);
+        }
+        return result;
+    }
+
+    fn programGenericDefinition(self: *Checker, declaration: *const ProgramClassSchema.Declaration) ProgramTypeError!TypeId {
+        if (self.program_generic_definitions.get(declaration)) |definition| return definition;
+        const definition = try self.interner.reserveGenericDefinition();
+        try self.program_generic_definitions.put(self.gpa, declaration, definition);
+        errdefer self.clearProgramGenericInstances();
+        const parameters = try self.gpa.alloc(TypeId, declaration.parameters.len);
+        defer self.gpa.free(parameters);
+        for (declaration.parameters, parameters) |parameter, *id| {
+            id.* = try self.interner.internFreshTypeParameterWithFlags(
+                self.string_interner.intern(parameter.name) catch return error.OutOfMemory,
+                types.Primitive.none,
+                types.Primitive.none,
+                types.Variance.fromHirBits(parameter.variance),
+                parameter.is_const,
+            );
+        }
+        for (declaration.parameters, parameters) |parameter, id| {
+            const constraint = if (parameter.constraint) |expression| try self.lowerProgramExpression(expression, declaration, parameters) else types.Primitive.none;
+            const default = if (parameter.default) |expression| try self.lowerProgramExpression(expression, declaration, parameters) else types.Primitive.none;
+            const payload = &self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(id)];
+            payload.constraint = constraint;
+            payload.default = default;
+        }
+        const expression = declaration.body orelse return error.UnsupportedProgramType;
+        const body = try self.lowerProgramExpression(expression, declaration, parameters);
+        self.interner.completeGenericDefinition(definition, parameters, body) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.InvalidTypeGraph => return error.UnsupportedProgramType,
+        };
+        if (declaration.is_class) try self.program_definition_classes.put(self.gpa, definition, .{
+            .name = self.string_interner.intern(declaration.name) catch return error.OutOfMemory,
+            .origin = try self.programSchemaDeclarationOrigin(declaration),
+        });
+        if (declaration.is_function) try self.recordGenericSignatureParams(body, parameters);
+        self.engine.type_resolver = .{ .context = self, .resolve = resolveGenericTypeForEngine };
+        self.engine.generic_instance_origins = &self.generic_instance_origins;
+        return definition;
+    }
+
+    fn programSchemaSupported(self: *Checker, schema: *const ProgramClassSchema.Schema) CheckError!bool {
+        if (self.program_schema_support.get(schema)) |supported| return supported;
+        const supported = try schema.isSupported(self.gpa);
+        try self.program_schema_support.put(self.gpa, schema, supported);
+        return supported;
+    }
+
+    fn programGenericClassReference(self: *Checker, class: ProgramExportedClass, anchor: NodeId) CheckError!?TypeId {
+        const schema = class.schema orelse return null;
+        if (anchor == hir_mod.none_node_id or self.hir.kindOf(anchor) != .type_ref) return null;
+        if (!try self.programSchemaSupported(schema)) return null;
+        return self.programDeclarationTypeReference(schema.declaration, anchor);
+    }
+
+    fn programDeclarationTypeReference(self: *Checker, declaration: *const ProgramClassSchema.Declaration, anchor: NodeId) CheckError!?TypeId {
+        if (anchor == hir_mod.none_node_id or self.hir.kindOf(anchor) != .type_ref) return null;
+        const nodes = hir_mod.typeRefArgs(self.hir, anchor);
+        const params = declaration.parameters;
+        if (params.len == 0 and nodes.len != 0) {
+            const message = try std.fmt.allocPrint(self.diag_arena.allocator(), "Type '{s}' is not generic.", .{declaration.name});
+            try self.reportOnce(anchor, TsCodes.type_not_generic, message);
+            for (nodes) |node| _ = try self.lowererLowerWithTypeParams(node);
+            return types.Primitive.unknown;
+        }
+        var minimum: usize = 0;
+        for (params, 0..) |param, i| if (param.default == null) {
+            minimum = i + 1;
+        };
+        if (nodes.len < minimum or nodes.len > params.len) {
+            var label: std.ArrayListUnmanaged(u8) = .empty;
+            defer label.deinit(self.gpa);
+            try label.appendSlice(self.gpa, declaration.name);
+            try label.append(self.gpa, '<');
+            for (params, 0..) |param, i| {
+                if (i != 0) try label.appendSlice(self.gpa, ", ");
+                try label.appendSlice(self.gpa, param.name);
+            }
+            try label.append(self.gpa, '>');
+            const message = if (minimum == params.len)
+                try std.fmt.allocPrint(self.diag_arena.allocator(), "Generic type '{s}' requires {d} type argument(s).", .{ label.items, params.len })
+            else
+                try std.fmt.allocPrint(self.diag_arena.allocator(), "Generic type '{s}' requires between {d} and {d} type arguments.", .{ label.items, minimum, params.len });
+            try self.reportOnce(anchor, if (minimum == params.len) TsCodes.generic_type_requires_args else TsCodes.generic_type_requires_between_args, message);
+            // Invalid outer arity does not suppress diagnostics in its args.
+            for (nodes) |node| _ = try self.lowererLowerWithTypeParams(node);
+            return types.Primitive.unknown;
+        }
+        const args = try self.gpa.alloc(TypeId, nodes.len);
+        defer self.gpa.free(args);
+        for (nodes, args) |node, *arg| arg.* = try self.lowererLowerWithTypeParams(node);
+        return self.instantiateProgramDeclaration(declaration, args, nodes) catch |err| switch (err) {
+            error.UnsupportedProgramType => return null,
+            error.OutOfMemory => return error.OutOfMemory,
+        };
+    }
+
+    fn instantiateProgramDeclaration(self: *Checker, declaration: *const ProgramClassSchema.Declaration, supplied: []const TypeId, arg_nodes: []const NodeId) ProgramTypeError!TypeId {
+        return self.resolveGenericType(try self.programDeclarationReference(declaration, supplied, arg_nodes));
+    }
+
+    fn programDeclarationReference(self: *Checker, declaration: *const ProgramClassSchema.Declaration, supplied: []const TypeId, arg_nodes: []const NodeId) ProgramTypeError!TypeId {
+        const params = declaration.parameters;
+        if (supplied.len > params.len) return error.UnsupportedProgramType;
+        const args = try self.gpa.alloc(TypeId, params.len);
+        defer self.gpa.free(args);
+        @memset(args, types.Primitive.unknown);
+        @memcpy(args[0..supplied.len], supplied);
+        if (supplied.len < params.len) {
+            if (self.program_generic_defaults_active.contains(declaration)) return error.UnsupportedProgramType;
+            try self.program_generic_defaults_active.put(self.gpa, declaration, {});
+            defer _ = self.program_generic_defaults_active.remove(declaration);
+            for (params[supplied.len..], supplied.len..) |param, i| {
+                const default = param.default orelse return error.UnsupportedProgramType;
+                args[i] = try self.lowerProgramExpression(default, declaration, args);
+            }
+        }
+        // Constraints are checked at every use, including cache hits. The
+        // effective argument list resolves dependent defaults/constraints in
+        // the declaration environment rather than the importing file.
+        for (params, 0..) |param, i| {
+            if (i >= arg_nodes.len or self.diagnosticExists(arg_nodes[i], TsCodes.type_does_not_satisfy_constraint)) continue;
+            const expression = param.constraint orelse continue;
+            const constraint = try self.resolveGenericType(try self.lowerProgramExpression(expression, declaration, args));
+            const name = self.string_interner.intern(param.name) catch return error.OutOfMemory;
+            const parameter = try self.interner.internTypeParameterWithFlags(name, constraint, types.Primitive.none, types.Variance.fromHirBits(param.variance), param.is_const);
+            try self.checkTypeArgSatisfiesConstraintImpl(arg_nodes[i], parameter, args[i], !self.typeNodeHasResolutionError(arg_nodes[i]));
+        }
+        return self.interner.internInstantiation(try self.programGenericDefinition(declaration), args);
+    }
+
+    fn programSchemaDeclarationOrigin(self: *Checker, declaration: *const ProgramClassSchema.Declaration) CheckError!hir_mod.StringId {
+        const text = try std.fmt.allocPrint(self.diag_arena.allocator(), "decl:{d}:{s}:{d}", .{ declaration.path.len, declaration.path, declaration.position });
+        return self.string_interner.intern(text) catch error.OutOfMemory;
+    }
+
+    fn programExpressionMembers(self: *Checker, members: []const ProgramClassSchema.Member, declaration: *const ProgramClassSchema.Declaration, args: []const TypeId) ProgramTypeError![]types.ObjectMember {
+        const result = try self.gpa.alloc(types.ObjectMember, members.len);
+        errdefer self.gpa.free(result);
+        for (members, result) |member, *out| out.* = .{
+            .name = self.string_interner.intern(member.name) catch return error.OutOfMemory,
+            .type = try self.lowerProgramExpression(member.type, declaration, args),
+            .is_optional = member.optional,
+            .is_readonly = member.readonly,
+            .is_method = member.method,
+            .visibility = member.visibility,
+            .declaration_origin = if (member.visibility == .public) 0 else try self.programSchemaDeclarationOrigin(declaration),
+        };
+        return result;
+    }
+
+    fn lowerProgramExpression(self: *Checker, expression: *const ProgramClassSchema.Expression, declaration: *const ProgramClassSchema.Declaration, args: []const TypeId) ProgramTypeError!TypeId {
+        switch (expression.*) {
+            .unsupported => return error.UnsupportedProgramType,
+            .primitive => |type_id| return type_id,
+            .parameter => |parameter| {
+                for (declaration.parameters, args) |*param, arg| if (param == parameter) return arg;
+                return error.UnsupportedProgramType;
+            },
+            .string => |value| return self.interner.internStringLiteral(self.string_interner.intern(value) catch return error.OutOfMemory),
+            .number => |value| return self.interner.internNumberLiteral(value),
+            .boolean => |value| return self.interner.internBooleanLiteral(value),
+            .array => |element| {
+                const element_type = try self.lowerProgramExpression(element, declaration, args);
+                return self.interner.internArrayType(self.string_interner, element_type) catch error.OutOfMemory;
+            },
+            .readonly_array => |element| return self.internReadonlyArrayType(try self.lowerProgramExpression(element, declaration, args)),
+            .object => |members| {
+                const result = try self.programExpressionMembers(members, declaration, args);
+                defer self.gpa.free(result);
+                return self.interner.internObjectType(result);
+            },
+            .tuple => |elements| {
+                const result = try self.gpa.alloc(types.TupleElement, elements.len);
+                defer self.gpa.free(result);
+                for (elements, result) |element, *out| out.* = .{
+                    .type = try self.lowerProgramExpression(element.type, declaration, args),
+                    .is_optional = element.optional,
+                    .is_rest = element.rest,
+                };
+                return self.interner.internTupleType(result);
+            },
+            .union_type, .intersection => |members| {
+                const result = try self.gpa.alloc(TypeId, members.len);
+                defer self.gpa.free(result);
+                for (members, result) |member, *out| out.* = try self.lowerProgramExpression(member, declaration, args);
+                return if (expression.* == .union_type) self.interner.internUnion(result) else self.interner.internIntersection(result);
+            },
+            .function => |function| {
+                const params = try self.gpa.alloc(TypeId, function.parameters.len);
+                defer self.gpa.free(params);
+                const optional = try self.gpa.alloc(bool, params.len);
+                defer self.gpa.free(optional);
+                var rest = false;
+                for (function.parameters, params, optional) |param, *out, *omittable| {
+                    out.* = try self.lowerProgramExpression(param.type, declaration, args);
+                    omittable.* = param.optional or param.rest;
+                    rest = rest or param.rest;
+                }
+                const this_type = if (function.this_type) |receiver| try self.lowerProgramExpression(receiver, declaration, args) else types.Primitive.none;
+                const sig = try self.interner.internSignatureWithThisType(params, try self.lowerProgramExpression(function.result, declaration, args), false, false, this_type);
+                try self.recordSignatureMinArgs(sig, optional);
+                if (this_type != types.Primitive.none) try self.signature_this_params.put(self.gpa, sig, this_type);
+                if (rest) try self.rest_signatures.put(self.gpa, sig, {});
+                return sig;
+            },
+            .reference => |ref| {
+                const values = try self.gpa.alloc(TypeId, ref.arguments.len);
+                defer self.gpa.free(values);
+                for (ref.arguments, values) |arg, *out| out.* = try self.lowerProgramExpression(arg, declaration, args);
+                return self.programDeclarationReference(ref.declaration, values, &.{});
+            },
+            .indexed_access => |indexed| {
+                const object_t = try self.lowerProgramExpression(indexed.object, declaration, args);
+                const index_t = try self.lowerProgramExpression(indexed.index, declaration, args);
+                return self.interner.internIndexedAccess(object_t, index_t) catch return error.OutOfMemory;
+            },
+        }
+    }
+
+    fn programExportedClassForImportBinding(
         self: *Checker,
         import_node: NodeId,
         local_name: hir_mod.StringId,
-        anchor: NodeId,
-    ) CheckError!?TypeId {
+    ) CheckError!?ProgramExportedClass {
         if (self.program_exported_classes.len == 0) return null;
         if (self.hir.kindOf(import_node) != .import_decl) return null;
         const imp = hir_mod.importOf(self.hir, import_node);
@@ -104343,6 +106732,7 @@ pub const Checker = struct {
             hir_mod.identifierOf(self.hir, imp.default_binding).name == local_name)
         {
             for (self.program_exported_classes) |exported_class| {
+                if (exported_class.local_only) continue;
                 if (self.importDeclIsRequireAssignment(import_node)) {
                     if (!exported_class.is_export_assignment_target or
                         !self.moduleNameMatchesSpecifier(exported_class.ambient_module_name, spec)) continue;
@@ -104350,8 +106740,7 @@ pub const Checker = struct {
                     if (!exported_class.is_default) continue;
                     if (!try self.programImportTargetsPath(import_node, spec, exported_class.target_path)) continue;
                 }
-                const class_name = self.string_interner.intern(exported_class.class_name) catch return error.OutOfMemory;
-                return try self.syntheticProgramClassStaticType(exported_class, class_name, local_name, anchor);
+                return exported_class;
             }
         }
         for (hir_mod.importNamed(self.hir, import_node)) |spec_node| {
@@ -104360,16 +106749,23 @@ pub const Checker = struct {
             if (sp.local != local_name) continue;
             const imported_name_text = self.string_interner.get(sp.imported);
             for (self.program_exported_classes) |exported_class| {
-                if (!std.mem.eql(u8, exported_class.class_name, imported_name_text)) continue;
+                if (exported_class.local_only) continue;
+                if (!std.mem.eql(u8, exported_class.exportedName(), imported_name_text)) continue;
                 if (std.mem.startsWith(u8, spec, ".")) {
                     if (!try self.programImportTargetsPath(import_node, spec, exported_class.target_path)) continue;
                 } else {
                     if (!std.mem.eql(u8, exported_class.ambient_module_name, spec)) continue;
                 }
-                return try self.syntheticProgramClassStaticType(exported_class, sp.imported, local_name, anchor);
+                return exported_class;
             }
         }
         return null;
+    }
+
+    fn programExportedClassTypeForImportBinding(self: *Checker, import_node: NodeId, local_name: hir_mod.StringId, anchor: NodeId) CheckError!?TypeId {
+        const class = (try self.programExportedClassForImportBinding(import_node, local_name)) orelse return null;
+        const name = self.string_interner.intern(if (class.is_default) class.class_name else class.exportedName()) catch return error.OutOfMemory;
+        return try self.syntheticProgramClassStaticType(class, name, local_name, anchor);
     }
 
     fn programExportedClassInstanceTypeForImportedName(
@@ -104378,10 +106774,41 @@ pub const Checker = struct {
         anchor: NodeId,
     ) CheckError!?TypeId {
         if (self.program_exported_classes.len == 0) return null;
+        // Reject unrelated names before lexical scans. Local classes use an
+        // owner-specific name index so nested declarations are not limited to
+        // the module root table; lexical lookup below still proves visibility.
+        if (self.module) |module| {
+            if (!self.sourceHasVirtualFilenameSections()) {
+                const symbol = module.root.types.get(local_name) orelse module.root.values.get(local_name);
+                if (symbol == null or !symbol.?.flags.is_import) {
+                    if (!self.program_local_class_names_built) {
+                        for (self.program_exported_classes) |class| {
+                            if (class.schema != null and std.mem.eql(u8, class.declaration_path, self.importer_path))
+                                try self.program_local_class_names.put(self.gpa, class.class_name, {});
+                        }
+                        self.program_local_class_names_built = true;
+                    }
+                    if (!self.program_local_class_names.contains(self.string_interner.get(local_name))) return null;
+                }
+            }
+        }
+        if (self.nameHasEnclosingTypeParameter(local_name, anchor)) return null;
+        if (self.findVisibleNamedTypeDecl(anchor, local_name)) |declaration| {
+            if (self.hir.kindOf(declaration) != .class_decl) return null;
+            const position = self.hir.spanOf(declaration).start;
+            for (self.program_exported_classes) |class| {
+                if (class.declaration_pos != position or !std.mem.eql(u8, class.declaration_path, self.importer_path)) continue;
+                return self.programGenericClassReference(class, anchor);
+            }
+            return null;
+        }
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
         for (hir_mod.blockStmts(self.hir, root)) |stmt| {
             if (self.hir.kindOf(stmt) != .import_decl) continue;
+            if (try self.programExportedClassForImportBinding(stmt, local_name)) |class| {
+                if (try self.programGenericClassReference(class, anchor)) |instance| return instance;
+            }
             const imp = hir_mod.importOf(self.hir, stmt);
             if (imp.default_binding != hir_mod.none_node_id and
                 self.hir.kindOf(imp.default_binding) == .identifier and
@@ -104425,17 +106852,20 @@ pub const Checker = struct {
         import_node: NodeId,
         specifier: hir_mod.StringId,
         class_name: hir_mod.StringId,
+        anchor: NodeId,
     ) CheckError!?TypeId {
         if (self.program_exported_classes.len == 0) return null;
         const spec = self.string_interner.get(specifier);
         const class_name_text = self.string_interner.get(class_name);
         for (self.program_exported_classes) |exported_class| {
-            if (!std.mem.eql(u8, exported_class.class_name, class_name_text)) continue;
+            if (exported_class.local_only) continue;
+            if (!std.mem.eql(u8, exported_class.exportedName(), class_name_text)) continue;
             if (std.mem.startsWith(u8, spec, ".")) {
                 if (!try self.programImportTargetsPath(import_node, spec, exported_class.target_path)) continue;
             } else if (!self.moduleNameMatchesSpecifier(exported_class.ambient_module_name, spec)) {
                 continue;
             }
+            if (try self.programGenericClassReference(exported_class, anchor)) |instance| return instance;
             return try self.syntheticProgramClassInstanceType(exported_class, class_name);
         }
         return null;
@@ -104445,10 +106875,11 @@ pub const Checker = struct {
         self: *Checker,
         exported_class: ProgramExportedClass,
         class_name: hir_mod.StringId,
-        local_name: hir_mod.StringId,
+        local_name: ?hir_mod.StringId,
         anchor: NodeId,
     ) CheckError!TypeId {
         _ = anchor;
+        const origin = try self.syntheticProgramClassOrigin(exported_class);
         var class_params: std.ArrayListUnmanaged(TypeId) = .empty;
         defer class_params.deinit(self.gpa);
         try self.pushNarrowScope();
@@ -104481,9 +106912,9 @@ pub const Checker = struct {
                     .protected => .protected,
                     .private => .private,
                 },
+                .declaration_origin = if (member.visibility == .public) 0 else origin,
             });
         }
-        try self.appendSyntheticProgramClassNominalBrand(exported_class, &instance_members);
         const instance_t = self.interner.internObjectType(instance_members.items) catch return error.OutOfMemory;
         const any_array = self.interner.internArrayType(self.string_interner, types.Primitive.any) catch return error.OutOfMemory;
         const construct_params = [_]TypeId{any_array};
@@ -104493,6 +106924,7 @@ pub const Checker = struct {
         if (class_params.items.len > 0) try self.recordGenericSignatureParams(construct_sig, class_params.items);
         const construct_name = self.string_interner.intern("__construct") catch return error.OutOfMemory;
         const name_name = self.string_interner.intern("name") catch return error.OutOfMemory;
+        const prototype_name = self.string_interner.intern("prototype") catch return error.OutOfMemory;
         var static_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer static_members.deinit(self.gpa);
         try static_members.append(self.gpa, .{
@@ -104509,6 +106941,13 @@ pub const Checker = struct {
             .is_readonly = true,
             .is_method = false,
         });
+        try static_members.append(self.gpa, .{
+            .name = prototype_name,
+            .type = instance_t,
+            .is_optional = false,
+            .is_readonly = true,
+            .is_method = false,
+        });
         for (exported_class.static_members) |member| {
             const member_name = self.string_interner.intern(member.name) catch return error.OutOfMemory;
             const member_t = try self.programExportedClassMemberType(member.type_name);
@@ -104518,6 +106957,12 @@ pub const Checker = struct {
                 .is_optional = false,
                 .is_readonly = false,
                 .is_method = member.is_method,
+                .visibility = switch (member.visibility) {
+                    .public => .public,
+                    .protected => .protected,
+                    .private => .private,
+                },
+                .declaration_origin = if (member.visibility == .public) 0 else origin,
             });
         }
         const static_t = self.interner.internObjectType(static_members.items) catch return error.OutOfMemory;
@@ -104526,23 +106971,16 @@ pub const Checker = struct {
         else
             self.string_interner.get(class_name);
         try self.registerAliasDisplayText(instance_t, display);
-        const origin = try self.syntheticProgramClassOrigin(exported_class);
         try self.synthetic_program_class_origins.put(self.gpa, instance_t, origin);
         try self.class_name_by_instance.put(self.gpa, instance_t, class_name);
         try self.class_name_by_static.put(self.gpa, static_t, class_name);
-        try self.class_instance_types.put(self.gpa, local_name, instance_t);
-        try self.class_static_types.put(self.gpa, local_name, static_t);
-        try self.type_names.put(self.gpa, local_name, instance_t);
-        if (class_name != local_name) {
-            try self.class_instance_types.put(self.gpa, class_name, instance_t);
-            try self.class_static_types.put(self.gpa, class_name, static_t);
-            try self.type_names.put(self.gpa, class_name, instance_t);
-        }
-        if (class_params.items.len > 0) {
-            try self.registerSyntheticProgramClassGeneric(local_name, class_params.items, instance_t);
-            if (class_name != local_name) {
-                try self.registerSyntheticProgramClassGeneric(class_name, class_params.items, instance_t);
-            }
+        // Namespace members do not introduce unqualified names in the
+        // importing scope. Only an actual local import binding does.
+        if (local_name) |binding| {
+            try self.class_instance_types.put(self.gpa, binding, instance_t);
+            try self.class_static_types.put(self.gpa, binding, static_t);
+            try self.putTypeName(binding, instance_t);
+            if (class_params.items.len > 0) try self.registerSyntheticProgramClassGeneric(binding, class_params.items, instance_t);
         }
         return static_t;
     }
@@ -104568,6 +107006,7 @@ pub const Checker = struct {
         exported_class: ProgramExportedClass,
         class_name: hir_mod.StringId,
     ) CheckError!TypeId {
+        const origin = try self.syntheticProgramClassOrigin(exported_class);
         var instance_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer instance_members.deinit(self.gpa);
         for (exported_class.members) |member| {
@@ -104584,52 +107023,29 @@ pub const Checker = struct {
                     .protected => .protected,
                     .private => .private,
                 },
+                .declaration_origin = if (member.visibility == .public) 0 else origin,
             });
         }
-        try self.appendSyntheticProgramClassNominalBrand(exported_class, &instance_members);
         const instance_t = self.interner.internObjectType(instance_members.items) catch return error.OutOfMemory;
         const display = if (exported_class.is_default)
             try self.programDefaultClassDisplayName(exported_class.target_path)
         else
             self.string_interner.get(class_name);
         try self.registerAliasDisplayText(instance_t, display);
-        const origin = try self.syntheticProgramClassOrigin(exported_class);
         try self.synthetic_program_class_origins.put(self.gpa, instance_t, origin);
         return instance_t;
     }
 
-    fn appendSyntheticProgramClassNominalBrand(
-        self: *Checker,
-        exported_class: ProgramExportedClass,
-        members: *std.ArrayListUnmanaged(types.ObjectMember),
-    ) CheckError!void {
-        var nominal = false;
-        for (exported_class.members) |member| {
-            if (member.visibility != .public) {
-                nominal = true;
-                break;
-            }
-        }
-        if (!nominal) return;
-        const origin = try self.syntheticProgramClassOrigin(exported_class);
-        const origin_text = self.string_interner.get(origin);
-        const brand_text = try std.fmt.allocPrint(self.diag_arena.allocator(), "__home_class_origin_{s}", .{origin_text});
-        const brand = self.string_interner.intern(brand_text) catch return error.OutOfMemory;
-        try members.append(self.gpa, .{
-            .name = brand,
-            .type = types.Primitive.never,
-            .is_optional = false,
-            .is_readonly = true,
-            .is_method = false,
-            .visibility = .private,
-        });
-    }
-
     fn syntheticProgramClassOrigin(self: *Checker, exported_class: ProgramExportedClass) CheckError!hir_mod.StringId {
+        if (exported_class.declaration_pos) |position| {
+            const path = exported_class.declaration_path;
+            const text = try std.fmt.allocPrint(self.diag_arena.allocator(), "decl:{d}:{s}:{d}", .{ path.len, path, position });
+            return self.string_interner.intern(text) catch error.OutOfMemory;
+        }
         const text = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
-            "{s}::{s}::{s}",
-            .{ exported_class.target_path, exported_class.ambient_module_name, exported_class.class_name },
+            "{d}:{s}{d}:{s}{d}:{s}",
+            .{ exported_class.target_path.len, exported_class.target_path, exported_class.ambient_module_name.len, exported_class.ambient_module_name, exported_class.class_name.len, exported_class.class_name },
         );
         return self.string_interner.intern(text) catch error.OutOfMemory;
     }
@@ -107227,6 +109643,7 @@ pub const Checker = struct {
                                     !self.signatureTypeArgCountMatches(sig, overload_type_arg_nodes.len)) continue;
                                 if (overload_type_arg_nodes.len > 0 and
                                     !try self.explicitTypeArgsSatisfySignatureConstraints(node, sig, overload_type_arg_nodes)) continue;
+                                if (try self.signatureDefinitelyRejectsLiteralArguments(sig, args, arg_types.items)) continue;
                                 const effective_sig = if (overload_type_arg_nodes.len > 0) blk_eff: {
                                     var used_explicit_type_args = false;
                                     break :blk_eff try self.instantiateSignatureWithExplicitTypeArgsUnchecked(node, sig, overload_type_arg_nodes, &used_explicit_type_args);
@@ -108490,6 +110907,11 @@ pub const Checker = struct {
                 if (try self.reportProgramRequireBindingMissingMember(node, m.object, m.name)) {
                     break :blk types.Primitive.any;
                 }
+                if (self.programGlobalThisReceiver(m.object)) {
+                    if (self.programGlobalThisPropertyType(m.name)) |t| {
+                        break :blk try self.optionalChainResult(t, member_is_optional_chain);
+                    }
+                }
                 if ((try self.schemaStaticProjectionForKey(obj_t, m.name, 0)) orelse
                     (try self.lookupObjectMember(obj_t, m.name))) |t|
                 {
@@ -109007,6 +111429,24 @@ pub const Checker = struct {
                 } else resolved_raw_obj_t;
                 const index_receiver_t = self.annotatedTupleUnionForIdentifier(e.object) orelse obj_t;
                 const idx_t = try self.checkExpression(e.index);
+                if (self.programGlobalThisReceiver(e.object)) {
+                    const global_key: ?hir_mod.StringId = if (self.hir.kindOf(e.index) == .literal_string)
+                        try self.globalThisTypeIndexKeyId(e.index)
+                    else
+                        self.singleStringLiteralIndexKey(idx_t);
+                    if (global_key) |key| {
+                        if (!self.checking_element_write_target) {
+                            if (try self.elementAccessNarrowKey(node)) |narrow_key| {
+                                if (self.lookupMemberNarrow(narrow_key)) |t| {
+                                    break :blk try self.optionalChainResult(t, element_is_optional_chain);
+                                }
+                            }
+                        }
+                        if (self.programGlobalThisPropertyType(key)) |t| {
+                            break :blk try self.optionalChainResult(t, element_is_optional_chain);
+                        }
+                    }
+                }
                 if (self.hir.kindOf(e.object) == .identifier and
                     self.visibleAnnotatedIdentifierType(e.object) == types.Primitive.any)
                 {
@@ -111170,7 +113610,7 @@ pub const Checker = struct {
             },
             else => types.Primitive.any,
         };
-        const result_t = (try self.inlineJsDocCastType(node, t)) orelse t;
+        const result_t = try self.resolveGenericType((try self.inlineJsDocCastType(node, t)) orelse t);
         try self.checkJsDocSatisfiesExpression(node, result_t);
         self.hir.setType(node, result_t);
         return result_t;
@@ -111337,7 +113777,7 @@ pub const Checker = struct {
         const import_meta_t = self.interner.internObjectType(members.items) catch return error.OutOfMemory;
         // `ImportMeta` is a lib-provided global type, and source-level
         // `declare global` declarations augment that same symbol.
-        try self.type_names.put(self.gpa, import_meta_name, import_meta_t);
+        try self.putTypeName(import_meta_name, import_meta_t);
         return import_meta_t;
     }
 
@@ -115176,6 +117616,26 @@ pub const Checker = struct {
         try self.checkFunctionWithContextualSignatureMode(fn_node, sig, true, null);
     }
 
+    fn functionSignatureMatchesContext(self: *Checker, fn_node: NodeId, target_sig: TypeId) bool {
+        const source_sig = self.hir.typeOf(fn_node);
+        if (!self.interner.isSignature(source_sig) or !self.interner.isSignature(target_sig)) return false;
+        if (self.interner.signatureReturn(source_sig) != self.interner.signatureReturn(target_sig) or
+            self.signatureThisParam(source_sig) != self.signatureThisParam(target_sig)) return false;
+        const source_param_count = self.interner.signatureParams(source_sig).len;
+        var index: usize = 0;
+        for (hir_mod.fnParams(self.hir, fn_node)) |param_node| {
+            if (self.hir.kindOf(param_node) != .parameter or self.isThisParameter(param_node)) continue;
+            if (index >= source_param_count) return false;
+            const source_param = self.interner.signatureParams(source_sig)[index];
+            const param = hir_mod.parameterOf(self.hir, param_node);
+            const target_param = self.contextualParameterTypeForSignature(target_sig, index, param.flags.is_rest) orelse return false;
+            if (source_param != target_param and
+                !(self.engine.isIdenticalTo(source_param, target_param) catch false)) return false;
+            index += 1;
+        }
+        return index == source_param_count;
+    }
+
     fn checkFunctionWithContextualSignatureMode(
         self: *Checker,
         fn_node: NodeId,
@@ -115304,23 +117764,34 @@ pub const Checker = struct {
                     else
                         body_start;
                 } else null;
-                try self.diagnostics.append(self.gpa, .{
-                    .node = f.body,
-                    .pos = diagnostic_pos,
-                    .code = TsCodes.type_not_assignable,
-                    .message = msg,
-                });
+                if (!self.diagnosticExistsWithMessage(f.body, TsCodes.type_not_assignable, msg)) {
+                    try self.diagnostics.append(self.gpa, .{
+                        .node = f.body,
+                        .pos = diagnostic_pos,
+                        .code = TsCodes.type_not_assignable,
+                        .message = msg,
+                    });
+                }
             }
         }
     }
 
     fn clearCachedTypesWithin(self: *Checker, root: NodeId) void {
         if (root == hir_mod.none_node_id) return;
+        const root_span = self.hir.spanOf(root);
+        const root_span_is_reliable = root_span.end > root_span.start;
         var node: NodeId = 0;
         while (node < self.hir.nodeCount()) : (node += 1) {
-            if (node == root or self.nodeIsAncestorOf(root, node)) {
+            if (node == root) {
                 self.hir.setType(node, types.Primitive.none);
+                continue;
             }
+            if (root_span_is_reliable) {
+                const candidate_span = self.hir.spanOf(node);
+                if (candidate_span.end > candidate_span.start and
+                    (candidate_span.start < root_span.start or candidate_span.end > root_span.end)) continue;
+            }
+            if (self.nodeIsAncestorOf(root, node)) self.hir.setType(node, types.Primitive.none);
         }
     }
 
@@ -116869,10 +119340,15 @@ pub const Checker = struct {
     }
 
     fn sourceSectionHasJsxSyntax(self: *Checker, anchor: NodeId) bool {
+        if (!self.sourceHasVirtualFilenameSections()) {
+            if (self.source_facts.jsx_syntax) |cached| return cached;
+        }
         const src = self.sourceSectionForNode(anchor);
-        return std.mem.indexOf(u8, src, "<>") != null or
+        const result = std.mem.indexOf(u8, src, "<>") != null or
             std.mem.indexOf(u8, src, "</") != null or
             std.mem.indexOf(u8, src, "/>") != null;
+        if (!self.sourceHasVirtualFilenameSections()) self.source_facts.jsx_syntax = result;
+        return result;
     }
 
     fn jsxPragmaReferencesImport(self: *Checker, anchor: NodeId, name: hir_mod.StringId) bool {
@@ -116894,36 +119370,59 @@ pub const Checker = struct {
     }
 
     fn sourceJsxFactoryPragmaValueAt(self: *Checker, anchor: NodeId) ?[]const u8 {
+        const cacheable = !self.sourceHasVirtualFilenameSections();
+        if (cacheable and self.source_facts.jsx_factory_scanned) return self.source_facts.jsx_factory;
         const src = self.sourceSectionForNode(anchor);
         var lines = std.mem.splitScalar(u8, src, '\n');
         while (lines.next()) |line_raw| {
             const line = std.mem.trim(u8, line_raw, " \t\r/*");
-            if (jsxDirectiveLineValue(line, "@jsxFactory")) |value| return value;
+            if (jsxDirectiveLineValue(line, "@jsxFactory")) |value| {
+                if (cacheable) {
+                    self.source_facts.jsx_factory_scanned = true;
+                    self.source_facts.jsx_factory = value;
+                }
+                return value;
+            }
             if (std.mem.startsWith(u8, line, "@jsx") and line.len > "@jsx".len and
                 (line["@jsx".len] == ' ' or line["@jsx".len] == '\t'))
             {
-                if (jsxDirectiveLineValue(line, "@jsx")) |value| return value;
+                if (jsxDirectiveLineValue(line, "@jsx")) |value| {
+                    if (cacheable) {
+                        self.source_facts.jsx_factory_scanned = true;
+                        self.source_facts.jsx_factory = value;
+                    }
+                    return value;
+                }
             }
         }
-        if (self.source) |all_source| {
+        if (!cacheable) if (self.source) |all_source| {
             var all_lines = std.mem.splitScalar(u8, all_source, '\n');
             while (all_lines.next()) |line_raw| {
                 const line = std.mem.trim(u8, line_raw, " \t\r/*");
                 if (!std.mem.startsWith(u8, line, "@jsxFactory:")) continue;
                 if (jsxDirectiveLineValue(line, "@jsxFactory")) |value| return value;
             }
-        }
+        };
+        if (cacheable) self.source_facts.jsx_factory_scanned = true;
         return null;
     }
 
     fn sourceJsxFragPragmaValueAt(self: *Checker, anchor: NodeId) ?[]const u8 {
+        const cacheable = !self.sourceHasVirtualFilenameSections();
+        if (cacheable and self.source_facts.jsx_fragment_factory_scanned) return self.source_facts.jsx_fragment_factory;
         const src = self.sourceSectionForNode(anchor);
         var lines = std.mem.splitScalar(u8, src, '\n');
         while (lines.next()) |line_raw| {
             const line = std.mem.trim(u8, line_raw, " \t\r/*");
-            if (jsxDirectiveLineValue(line, "@jsxFrag")) |value| return value;
-            if (jsxDirectiveLineValue(line, "@jsxfrag")) |value| return value;
+            if (jsxDirectiveLineValue(line, "@jsxFrag") orelse jsxDirectiveLineValue(line, "@jsxfrag")) |value| {
+                if (cacheable) {
+                    self.source_facts.jsx_fragment_factory_scanned = true;
+                    self.source_facts.jsx_fragment_factory = value;
+                }
+                return value;
+            }
         }
+        if (cacheable) self.source_facts.jsx_fragment_factory_scanned = true;
         return null;
     }
 
@@ -116949,6 +119448,24 @@ pub const Checker = struct {
     }
 
     fn jsxLocalFactoryNamespaceType(self: *Checker, anchor: NodeId, leaf_name: hir_mod.StringId) CheckError!?TypeId {
+        const cacheable = !self.sourceHasVirtualFilenameSections();
+        if (cacheable) {
+            if (self.jsx_local_factory_namespace_type_cache.get(leaf_name)) |cached| {
+                return if (cached == types.Primitive.none) null else cached;
+            }
+        }
+        const result = try self.jsxLocalFactoryNamespaceTypeUncached(anchor, leaf_name);
+        if (cacheable) {
+            try self.jsx_local_factory_namespace_type_cache.put(
+                self.gpa,
+                leaf_name,
+                result orelse types.Primitive.none,
+            );
+        }
+        return result;
+    }
+
+    fn jsxLocalFactoryNamespaceTypeUncached(self: *Checker, anchor: NodeId, leaf_name: hir_mod.StringId) CheckError!?TypeId {
         const factory_root = self.jsxFactoryRootName(self.jsxFactoryNameText(anchor)) orelse return null;
         const local_name = self.string_interner.intern(factory_root) catch return error.OutOfMemory;
         const import_info = (try self.localImportModuleInfo(local_name, anchor)) orelse return null;
@@ -117204,7 +119721,7 @@ pub const Checker = struct {
         const instance_name = self.string_interner.intern(instance_name_text) catch return error.OutOfMemory;
         if (self.type_names.get(instance_name)) |existing| return existing;
         const instance_t = try self.htmlElementType();
-        try self.type_names.put(self.gpa, instance_name, instance_t);
+        try self.putTypeName(instance_name, instance_t);
         try self.registerAliasDisplayText(instance_t, instance_name_text);
         return instance_t;
     }
@@ -117230,7 +119747,7 @@ pub const Checker = struct {
         }) catch return error.OutOfMemory;
         try self.registerAliasDisplayText(react_child_t, "ReactChild");
         const react_child_name = self.string_interner.intern("ReactChild") catch return error.OutOfMemory;
-        try self.type_names.put(self.gpa, react_child_name, react_child_t);
+        try self.putTypeName(react_child_name, react_child_t);
         const nested_array_t = self.interner.internArrayType(self.string_interner, types.Primitive.any) catch return error.OutOfMemory;
         const fragment_element_t = self.interner.internUnion(&[_]TypeId{
             react_child_t,
@@ -117259,7 +119776,7 @@ pub const Checker = struct {
         };
         const react_node_t = self.interner.internUnion(&members) catch return error.OutOfMemory;
         try self.registerAliasDisplayText(react_node_t, "ReactNode");
-        try self.type_names.put(self.gpa, name, react_node_t);
+        try self.putTypeName(name, react_node_t);
         return react_node_t;
     }
 
@@ -117269,13 +119786,19 @@ pub const Checker = struct {
     /// `react.d.ts` declares `props: P & { children?: ReactNode }`;
     /// the JSX managed-attrs prose keeps each lib's constituent order.
     fn sourceHasReact16JsxReference(self: *Checker) bool {
+        if (self.source_facts.react16_jsx_reference) |cached| return cached;
         const src = self.source orelse return false;
-        return std.mem.indexOf(u8, src, "/.lib/react16") != null;
+        const result = std.mem.indexOf(u8, src, "/.lib/react16") != null;
+        self.source_facts.react16_jsx_reference = result;
+        return result;
     }
 
     fn sourceHasReact18JsxReference(self: *Checker) bool {
+        if (self.source_facts.react18_jsx_reference) |cached| return cached;
         const src = self.source orelse return false;
-        return std.mem.indexOf(u8, src, "/.lib/react18/") != null;
+        const result = std.mem.indexOf(u8, src, "/.lib/react18/") != null;
+        self.source_facts.react18_jsx_reference = result;
+        return result;
     }
 
     /// `{ children?: ReactNode | undefined }` — the children
@@ -117394,6 +119917,17 @@ pub const Checker = struct {
     }
 
     fn jsxHasNamespaceDecl(self: *Checker, anchor: NodeId) CheckError!bool {
+        const cacheable = !self.sourceHasVirtualFilenameSections();
+        if (cacheable and self.jsx_namespace_decl_scanned) return self.jsx_namespace_decl;
+        const result = try self.jsxHasNamespaceDeclUncached(anchor);
+        if (cacheable) {
+            self.jsx_namespace_decl_scanned = true;
+            self.jsx_namespace_decl = result;
+        }
+        return result;
+    }
+
+    fn jsxHasNamespaceDeclUncached(self: *Checker, anchor: NodeId) CheckError!bool {
         const jsx_name = self.string_interner.intern("JSX") catch return error.OutOfMemory;
         const element_name = self.string_interner.intern("Element") catch return error.OutOfMemory;
         if ((try self.jsxLocalFactoryNamespaceType(anchor, element_name)) != null) return true;
@@ -118276,6 +120810,7 @@ pub const Checker = struct {
 
     fn checkJsObjectLiteralExpandoMemberKey(self: *Checker, node: NodeId) CheckError!?MemberKey {
         if (!self.sourceHasCheckJsDirective()) return null;
+        if (!self.hirMayHaveExpandoPropertyAssignment()) return null;
         const prop_name = self.propertyAccessName(node) orelse return null;
         const object = self.propertyAccessObject(node) orelse return null;
         if (self.memberAccessObjectIsGlobalThisThis(object)) return null;
@@ -118604,6 +121139,22 @@ pub const Checker = struct {
 
     fn identifierNamesUntypedObjectLiteralBindingInScope(self: *Checker, name: hir_mod.StringId, from_node: NodeId) bool {
         const use_start = self.hir.spanOf(from_node).start;
+        if (self.enclosingFunctionLike(from_node) == null) {
+            if (self.module) |module| {
+                if (module.root.lookup(name)) |symbol| {
+                    for (symbol.decls.items) |raw_decl| {
+                        const decl = self.unwrapExportDecl(raw_decl);
+                        const kind = self.hir.kindOf(decl);
+                        if (kind != .var_decl and kind != .let_decl and kind != .const_decl) continue;
+                        if (self.hir.spanOf(decl).start > use_start) continue;
+                        const variable = hir_mod.varDeclOf(self.hir, decl);
+                        if (variable.type_annotation != hir_mod.none_node_id or self.varDeclHasJsDocTypeTag(decl)) return false;
+                        return variable.init != hir_mod.none_node_id and self.hir.kindOf(variable.init) == .object_literal;
+                    }
+                    return false;
+                }
+            }
+        }
         const has_sections = self.sourceHasVirtualFilenameSections();
         const section_start = if (has_sections) self.virtualSectionStartForNode(from_node) else 0;
         var cur = self.hir.parentOf(from_node);
@@ -118987,6 +121538,27 @@ pub const Checker = struct {
                 else => null,
             };
             if (stmts) |items| {
+                self.indexVisibleAnnotatedValueDecls(cur, items);
+                if (self.indexed_annotated_value_containers.contains(cur)) {
+                    if (self.visible_annotated_value_decls.get(.{
+                        .container = cur,
+                        .name = id.name,
+                        .virtual_section_start = if (self.sourceHasVirtualFilenameSections())
+                            self.virtualSectionStartForNode(node)
+                        else
+                            0,
+                    })) |decl| {
+                        if (self.hir.spanOf(decl).start <= use_start) {
+                            const variable = hir_mod.varDeclOf(self.hir, decl);
+                            if (variable.type_annotation == hir_mod.none_node_id) return null;
+                            const cached_t = self.hir.typeOf(variable.name);
+                            if (cached_t != types.Primitive.none) return cached_t;
+                            const active_t = (self.lowerActiveValueTypeAnnotation(id.name, variable.type_annotation) catch types.Primitive.any) orelse return null;
+                            return self.adjustAmbientUnresolvedBareTypeAnnotation(variable.is_ambient, variable.type_annotation, active_t) catch types.Primitive.any;
+                        }
+                    }
+                    continue;
+                }
                 for (items) |stmt| {
                     if (self.hir.spanOf(stmt).start > use_start) break;
                     const decl = if (self.hir.kindOf(stmt) == .export_decl) hir_mod.exportOf(self.hir, stmt).decl else stmt;
@@ -119008,6 +121580,7 @@ pub const Checker = struct {
                 }
             }
         }
+        if (self.findVisibleSameNameValueBinding(node, id.name) != null) return null;
         const nearest_annotation = self.nearestPriorParameterAnnotation(id.name, use_start);
         if (nearest_annotation != hir_mod.none_node_id) {
             return self.lowerActiveValueTypeAnnotation(id.name, nearest_annotation) catch types.Primitive.any;
@@ -119038,9 +121611,17 @@ pub const Checker = struct {
         return null;
     }
 
+    fn clearParameterAnnotationIndex(self: *Checker) void {
+        self.parameter_annotation_index.clearRetainingCapacity();
+        var it = self.parameter_annotations_by_name.valueIterator();
+        while (it.next()) |items| items.deinit(self.gpa);
+        self.parameter_annotations_by_name.clearRetainingCapacity();
+        self.parameter_annotation_index_built = false;
+    }
+
     fn nearestPriorParameterAnnotation(self: *Checker, name: hir_mod.StringId, use_start: u32) NodeId {
         if (!self.parameter_annotation_index_built) {
-            self.parameter_annotation_index.clearRetainingCapacity();
+            self.clearParameterAnnotationIndex();
             var candidate: NodeId = 1;
             while (candidate < self.hir.nodeCount()) : (candidate += 1) {
                 if (self.hir.kindOf(candidate) != .parameter) continue;
@@ -119052,7 +121633,17 @@ pub const Checker = struct {
                     continue;
                 }
                 self.parameter_annotation_index.append(self.gpa, candidate) catch {
-                    self.parameter_annotation_index.clearRetainingCapacity();
+                    self.clearParameterAnnotationIndex();
+                    return hir_mod.none_node_id;
+                };
+                const name_id = hir_mod.identifierOf(self.hir, parameter.name).name;
+                const gop = self.parameter_annotations_by_name.getOrPut(self.gpa, name_id) catch {
+                    self.clearParameterAnnotationIndex();
+                    return hir_mod.none_node_id;
+                };
+                if (!gop.found_existing) gop.value_ptr.* = .empty;
+                gop.value_ptr.append(self.gpa, candidate) catch {
+                    self.clearParameterAnnotationIndex();
                     return hir_mod.none_node_id;
                 };
             }
@@ -119061,11 +121652,11 @@ pub const Checker = struct {
 
         var nearest_annotation = hir_mod.none_node_id;
         var nearest_start: u32 = 0;
-        for (self.parameter_annotation_index.items) |candidate| {
+        const candidates = self.parameter_annotations_by_name.getPtr(name) orelse return hir_mod.none_node_id;
+        for (candidates.items) |candidate| {
             const span = self.hir.spanOf(candidate);
             if (span.start > use_start) continue;
             const parameter = hir_mod.parameterOf(self.hir, candidate);
-            if (hir_mod.identifierOf(self.hir, parameter.name).name != name) continue;
             if (nearest_annotation == hir_mod.none_node_id or span.start >= nearest_start) {
                 nearest_start = span.start;
                 nearest_annotation = parameter.type_annotation;
@@ -119076,55 +121667,163 @@ pub const Checker = struct {
 
     fn recoveredSourceParameterAnnotationType(self: *Checker, node: NodeId, name: hir_mod.StringId) ?TypeId {
         const source = self.source orelse return null;
+        // This recovery path recognizes TypeScript `name: Type` parameter
+        // syntax that was not retained on the HIR node. JavaScript sections
+        // cannot declare parameters with TS annotations, and JSDoc supplies
+        // their types through the dedicated parameter-tag path.
+        if (self.sourcePositionIsJsLike(self.hir.spanOf(node).start)) return null;
+        if (self.identifierIsBoundBySourceUnannotatedParameter(node, name)) return null;
         const raw_use_start: usize = @intCast(self.hir.spanOf(node).start);
         const use_start = @min(raw_use_start, source.len);
         const name_text = self.string_interner.get(name);
         if (name_text.len == 0 or use_start < name_text.len) return null;
-        var search_end = use_start;
-        while (std.mem.lastIndexOf(u8, source[0..search_end], name_text)) |found| {
-            if (found > 0 and (std.ascii.isAlphanumeric(source[found - 1]) or source[found - 1] == '_' or source[found - 1] == '$')) {
-                search_end = found;
-                continue;
-            }
-            var cursor = found + name_text.len;
-            while (cursor < use_start and std.ascii.isWhitespace(source[cursor])) cursor += 1;
-            const optional = cursor < use_start and source[cursor] == '?';
-            if (optional) cursor += 1;
-            while (cursor < use_start and std.ascii.isWhitespace(source[cursor])) cursor += 1;
-            if (cursor >= use_start or source[cursor] != ':') {
-                search_end = found;
-                continue;
-            }
-            if (!sourceParameterDeclarationContainsUse(source, found, use_start)) {
-                search_end = found;
-                continue;
-            }
-            cursor += 1;
-            while (cursor < use_start and std.ascii.isWhitespace(source[cursor])) cursor += 1;
-            const type_start = cursor;
-            while (cursor < use_start and
-                (std.ascii.isAlphanumeric(source[cursor]) or source[cursor] == '_' or source[cursor] == '$')) cursor += 1;
-            if (cursor == type_start) {
-                search_end = found;
-                continue;
-            }
-            const type_end = cursor;
-            while (cursor < use_start and std.ascii.isWhitespace(source[cursor])) cursor += 1;
-            if (cursor >= use_start or
-                (source[cursor] != ',' and source[cursor] != ')' and source[cursor] != '='))
-            {
-                search_end = found;
-                continue;
-            }
-            const type_name = self.string_interner.intern(source[type_start..type_end]) catch return null;
-            const base = self.contextualCallParameterTypeForRecoveredAnnotation(node, type_name) orelse
-                self.recoveredNamedTypeAt(node, type_name) orelse {
-                search_end = found;
-                continue;
-            };
-            return if (optional) self.unionWithUndefined(base) catch base else base;
+        const entries = self.recoveredParameterSyntaxForName(name) orelse return null;
+        var index = entries.len;
+        while (index > 0) {
+            index -= 1;
+            const entry = entries[index];
+            if (entry.declaration_start >= use_start or entry.declaration_end >= use_start) continue;
+            const use_spans = self.recovered_parameter_use_spans.items[entry.use_spans_start .. entry.use_spans_start + entry.use_spans_len];
+            const contains_use = for (use_spans) |span| {
+                if (use_start > span.body_open and use_start <= span.last_use) break true;
+            } else false;
+            if (!contains_use) continue;
+            const base = self.contextualCallParameterTypeForRecoveredAnnotation(node, entry.type_name) orelse
+                self.recoveredNamedTypeAt(node, entry.type_name) orelse continue;
+            return if (entry.optional) self.unionWithUndefined(base) catch base else base;
         }
         return null;
+    }
+
+    fn identifierIsBoundBySourceUnannotatedParameter(
+        self: *Checker,
+        node: NodeId,
+        name: hir_mod.StringId,
+    ) bool {
+        const source = self.source orelse return false;
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const kind = self.hir.kindOf(cur);
+            if (kind != .fn_decl and kind != .fn_expr and kind != .arrow_fn) continue;
+            for (hir_mod.fnParams(self.hir, cur)) |parameter_node| {
+                if (self.hir.kindOf(parameter_node) != .parameter) continue;
+                const parameter = hir_mod.parameterOf(self.hir, parameter_node);
+                if (parameter.name == hir_mod.none_node_id or
+                    self.hir.kindOf(parameter.name) != .identifier or
+                    hir_mod.identifierOf(self.hir, parameter.name).name != name)
+                {
+                    continue;
+                }
+                if (parameter.type_annotation != hir_mod.none_node_id) return false;
+                const name_span = self.hir.spanOf(parameter.name);
+                var cursor = @min(@as(usize, name_span.end), source.len);
+                while (cursor < source.len and std.ascii.isWhitespace(source[cursor])) cursor += 1;
+                if (cursor < source.len and source[cursor] == '?') {
+                    cursor += 1;
+                    while (cursor < source.len and std.ascii.isWhitespace(source[cursor])) cursor += 1;
+                }
+                // Do not rely on the recovered parameter's span covering a
+                // missing annotation. A delimiter/default/arrow token proves
+                // there is no `: Type`; comments and other ambiguous syntax
+                // conservatively retain the full recovery path.
+                return cursor < source.len and
+                    (source[cursor] == ',' or source[cursor] == ')' or source[cursor] == '=');
+            }
+        }
+        return false;
+    }
+
+    fn recoveredParameterSyntaxForName(
+        self: *Checker,
+        name: hir_mod.StringId,
+    ) ?[]const RecoveredParameterSyntax {
+        if (!self.recovered_parameter_syntax_built and !self.buildRecoveredParameterSyntaxIndex()) return null;
+        const cached = self.recovered_parameter_syntax.getPtr(name) orelse return &.{};
+        // Materialize immutable containment ranges only for names that reach
+        // recovery. Most parsed annotations never need the source fallback.
+        for (cached.items) |*entry| {
+            if (entry.use_spans_len != std.math.maxInt(u32)) continue;
+            const start = self.recovered_parameter_use_spans.items.len;
+            appendSourceParameterUseSpans(
+                self.source orelse return null,
+                entry.declaration_start,
+                self.gpa,
+                &self.recovered_parameter_use_spans,
+            ) catch {
+                self.clearRecoveredParameterSyntaxIndex();
+                return null;
+            };
+            entry.use_spans_start = @intCast(start);
+            entry.use_spans_len = @intCast(self.recovered_parameter_use_spans.items.len - start);
+        }
+        return cached.items;
+    }
+
+    fn buildRecoveredParameterSyntaxIndex(self: *Checker) bool {
+        const source = self.source orelse return false;
+        var scan: usize = 0;
+        while (scan < source.len) {
+            if (!std.ascii.isAlphabetic(source[scan]) and source[scan] != '_' and source[scan] != '$') {
+                scan += 1;
+                continue;
+            }
+            const name_start = scan;
+            scan += 1;
+            while (scan < source.len and
+                (std.ascii.isAlphanumeric(source[scan]) or source[scan] == '_' or source[scan] == '$')) scan += 1;
+            const name_end = scan;
+            var cursor = name_end;
+            while (cursor < source.len and std.ascii.isWhitespace(source[cursor])) cursor += 1;
+            const optional = cursor < source.len and source[cursor] == '?';
+            if (optional) cursor += 1;
+            while (cursor < source.len and std.ascii.isWhitespace(source[cursor])) cursor += 1;
+            if (cursor >= source.len or source[cursor] != ':') continue;
+            cursor += 1;
+            while (cursor < source.len and std.ascii.isWhitespace(source[cursor])) cursor += 1;
+            const type_start = cursor;
+            while (cursor < source.len and
+                (std.ascii.isAlphanumeric(source[cursor]) or source[cursor] == '_' or source[cursor] == '$')) cursor += 1;
+            if (cursor == type_start) continue;
+            const type_end = cursor;
+            while (cursor < source.len and std.ascii.isWhitespace(source[cursor])) cursor += 1;
+            if (cursor >= source.len or
+                (source[cursor] != ',' and source[cursor] != ')' and source[cursor] != '='))
+            {
+                continue;
+            }
+            const name = self.string_interner.intern(source[name_start..name_end]) catch {
+                self.clearRecoveredParameterSyntaxIndex();
+                return false;
+            };
+            const type_name = self.string_interner.intern(source[type_start..type_end]) catch {
+                self.clearRecoveredParameterSyntaxIndex();
+                return false;
+            };
+            const entry = self.recovered_parameter_syntax.getOrPut(self.gpa, name) catch {
+                self.clearRecoveredParameterSyntaxIndex();
+                return false;
+            };
+            if (!entry.found_existing) entry.value_ptr.* = .empty;
+            entry.value_ptr.append(self.gpa, .{
+                .declaration_start = @intCast(name_start),
+                .declaration_end = @intCast(cursor),
+                .type_name = type_name,
+                .optional = optional,
+            }) catch {
+                self.clearRecoveredParameterSyntaxIndex();
+                return false;
+            };
+        }
+        self.recovered_parameter_syntax_built = true;
+        return true;
+    }
+
+    fn clearRecoveredParameterSyntaxIndex(self: *Checker) void {
+        var recovered_it = self.recovered_parameter_syntax.valueIterator();
+        while (recovered_it.next()) |items| items.deinit(self.gpa);
+        self.recovered_parameter_syntax.clearRetainingCapacity();
+        self.recovered_parameter_use_spans.clearRetainingCapacity();
+        self.recovered_parameter_syntax_built = false;
     }
 
     fn contextualCallParameterTypeForRecoveredAnnotation(
@@ -119221,6 +121920,39 @@ pub const Checker = struct {
         return self.type_names.get(name);
     }
 
+    fn appendSourceParameterUseSpans(
+        source: []const u8,
+        name_start: usize,
+        gpa: std.mem.Allocator,
+        spans: *std.ArrayListUnmanaged(RecoveredParameterUseSpan),
+    ) !void {
+        var open_search_end = name_start;
+        while (std.mem.lastIndexOfScalar(u8, source[0..open_search_end], '(')) |open_paren| {
+            open_search_end = open_paren;
+            var depth: usize = 1;
+            var cursor = open_paren + 1;
+            while (cursor < source.len and depth > 0) : (cursor += 1) {
+                if (source[cursor] == '(') depth += 1;
+                if (source[cursor] == ')') depth -= 1;
+            }
+            if (depth != 0) continue;
+            const close_paren = cursor - 1;
+            if (close_paren < name_start) continue;
+            const body_open = std.mem.indexOfScalarPos(u8, source, close_paren + 1, '{') orelse continue;
+            if (std.mem.indexOfScalar(u8, source[close_paren + 1 .. body_open], ';') != null) continue;
+            depth = 1;
+            cursor = body_open + 1;
+            while (cursor < source.len and depth > 0) : (cursor += 1) {
+                if (source[cursor] == '{') depth += 1;
+                if (source[cursor] == '}') depth -= 1;
+            }
+            try spans.append(gpa, .{
+                .body_open = @intCast(body_open),
+                .last_use = @intCast(if (depth == 0) cursor - 1 else source.len),
+            });
+        }
+    }
+
     fn sourceParameterDeclarationContainsUse(source: []const u8, name_start: usize, use_start: usize) bool {
         var open_search_end = name_start;
         while (std.mem.lastIndexOfScalar(u8, source[0..open_search_end], '(')) |open_paren| {
@@ -119279,12 +122011,17 @@ pub const Checker = struct {
 
     fn sourceHasDirectSelfConditionalAssignmentBeforeUse(self: *Checker, node: NodeId, name: hir_mod.StringId) bool {
         const source = self.source orelse return false;
+        // A conditional RHS must contain '?'. These exact byte-absence
+        // gates avoid identifier searches without changing the source-based
+        // boundary or RHS checks below (including comments and strings).
+        if (self.sourceMarkerPosition("?") == null) return false;
         const raw_use_start: usize = @intCast(self.hir.spanOf(node).start);
         const use_start = @min(raw_use_start, source.len);
         const statement_end = std.mem.lastIndexOfScalar(u8, source[0..use_start], ';') orelse return false;
         const prior_end = std.mem.lastIndexOfScalar(u8, source[0..statement_end], ';');
         const statement_start = if (prior_end) |end| end + 1 else 0;
         const statement = std.mem.trim(u8, source[statement_start..statement_end], " \t\r\n");
+        if (std.mem.indexOfScalar(u8, statement, '?') == null) return false;
         const name_text = self.string_interner.get(name);
         var search_start: usize = 0;
         var cursor: usize = 0;
@@ -119328,6 +122065,27 @@ pub const Checker = struct {
                 else => null,
             };
             if (stmts) |items| {
+                self.indexVisibleAnnotatedValueDecls(cur, items);
+                if (self.indexed_annotated_value_containers.contains(cur)) {
+                    if (self.visible_annotated_value_decls.get(.{
+                        .container = cur,
+                        .name = id.name,
+                        .virtual_section_start = if (self.sourceHasVirtualFilenameSections())
+                            self.virtualSectionStartForNode(node)
+                        else
+                            0,
+                    })) |decl| {
+                        if (self.hir.spanOf(decl).start <= use_start) {
+                            const variable = hir_mod.varDeclOf(self.hir, decl);
+                            if (variable.type_annotation == hir_mod.none_node_id) return null;
+                            const cached_t = self.hir.typeOf(variable.name);
+                            if (cached_t != types.Primitive.none) return cached_t;
+                            const annotated_t = self.lowerValueTypeAnnotation(id.name, variable.type_annotation) catch types.Primitive.any;
+                            return self.adjustAmbientUnresolvedBareTypeAnnotation(variable.is_ambient, variable.type_annotation, annotated_t) catch types.Primitive.any;
+                        }
+                    }
+                    continue;
+                }
                 for (items) |stmt| {
                     if (self.hir.spanOf(stmt).start > use_start) break;
                     const decl = if (self.hir.kindOf(stmt) == .export_decl) hir_mod.exportOf(self.hir, stmt).decl else stmt;
@@ -119404,6 +122162,28 @@ pub const Checker = struct {
                 else => null,
             };
             if (stmts) |items| {
+                if (k == .block_stmt and cur == self.rootBlockFor(node)) {
+                    if (self.module) |module| {
+                        if (module.root.lookup(id.name)) |symbol| {
+                            const has_sections = self.sourceHasVirtualFilenameSections();
+                            const section = if (has_sections) self.virtualSectionStartForNode(node) else 0;
+                            for (symbol.decls.items) |decl| {
+                                const dk = self.hir.kindOf(decl);
+                                if (dk != .var_decl and dk != .let_decl and dk != .const_decl) continue;
+                                if (has_sections and self.virtualSectionStartForNode(decl) != section) continue;
+                                if (self.hir.spanOf(decl).start > use_start) continue;
+                                const variable = hir_mod.varDeclOf(self.hir, decl);
+                                if (variable.type_annotation == hir_mod.none_node_id and
+                                    !self.varDeclHasJsDocTypeTag(decl))
+                                {
+                                    return variable.name;
+                                }
+                                return null;
+                            }
+                            return null;
+                        }
+                    }
+                }
                 for (items) |stmt| {
                     if (self.hir.spanOf(stmt).start > use_start) break;
                     const decl = self.unwrapExportDecl(stmt);
@@ -119440,7 +122220,21 @@ pub const Checker = struct {
         const root = self.rootBlockFor(node);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
         const use_start = self.hir.spanOf(node).start;
-        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+        const statements = hir_mod.blockStmts(self.hir, root);
+        self.indexVisibleAnnotatedValueDecls(root, statements);
+        if (self.indexed_annotated_value_containers.contains(root)) {
+            const declaration = self.visible_annotated_value_decls.get(.{
+                .container = root,
+                .name = name,
+                .virtual_section_start = if (self.sourceHasVirtualFilenameSections())
+                    self.virtualSectionStartForNode(node)
+                else
+                    0,
+            }) orelse return null;
+            if (self.hir.spanOf(declaration).start > use_start) return null;
+            return hir_mod.varDeclOf(self.hir, declaration).type_annotation;
+        }
+        for (statements) |stmt| {
             if (self.hir.spanOf(stmt).start > use_start) break;
             const decl = self.unwrapExportDecl(stmt);
             const dk = self.hir.kindOf(decl);
@@ -119484,6 +122278,24 @@ pub const Checker = struct {
                 else => null,
             };
             if (stmts) |items| {
+                self.indexVisibleAnnotatedValueDecls(cur, items);
+                if (self.indexed_annotated_value_containers.contains(cur)) {
+                    if (self.visible_annotated_value_decls.get(.{
+                        .container = cur,
+                        .name = id.name,
+                        .virtual_section_start = if (self.sourceHasVirtualFilenameSections())
+                            self.virtualSectionStartForNode(node)
+                        else
+                            0,
+                    })) |decl| {
+                        if (self.hir.spanOf(decl).start <= use_start) {
+                            const variable = hir_mod.varDeclOf(self.hir, decl);
+                            if (variable.type_annotation == hir_mod.none_node_id) return null;
+                            return variable.type_annotation;
+                        }
+                    }
+                    continue;
+                }
                 for (items) |stmt| {
                     if (self.hir.spanOf(stmt).start > use_start) break;
                     const decl = if (self.hir.kindOf(stmt) == .export_decl) hir_mod.exportOf(self.hir, stmt).decl else stmt;
@@ -119511,6 +122323,64 @@ pub const Checker = struct {
             }
         }
         return null;
+    }
+
+    fn indexVisibleAnnotatedValueDecls(
+        self: *Checker,
+        container: NodeId,
+        stmts: []const NodeId,
+    ) void {
+        if (self.indexed_annotated_value_containers.contains(container)) return;
+        for (stmts) |statement| {
+            const declaration = self.unwrapExportDecl(statement);
+            const kind = self.hir.kindOf(declaration);
+            if (kind != .var_decl and kind != .let_decl and kind != .const_decl) continue;
+            const variable = hir_mod.varDeclOf(self.hir, declaration);
+            if (variable.name == hir_mod.none_node_id or
+                self.hir.kindOf(variable.name) != .identifier) continue;
+            const key: VisibleAnnotatedValueKey = .{
+                .container = container,
+                .name = hir_mod.identifierOf(self.hir, variable.name).name,
+                .virtual_section_start = if (self.sourceHasVirtualFilenameSections())
+                    self.virtualSectionStartForNode(declaration)
+                else
+                    0,
+            };
+            const entry = self.visible_annotated_value_decls.getOrPut(self.gpa, key) catch return;
+            if (!entry.found_existing) entry.value_ptr.* = declaration;
+        }
+        self.indexed_annotated_value_containers.put(self.gpa, container, {}) catch {};
+    }
+
+    /// Signature and declaration checking store the resolved static type on a
+    /// simple binding name. Reuse that result for later identifier reads
+    /// instead of walking the same lexical scopes and lowering the same
+    /// annotation again. Destructuring bindings stay on the existing path,
+    /// which projects the requested element from the full annotation.
+    fn cachedSimpleAnnotatedIdentifierType(
+        self: *Checker,
+        type_node: NodeId,
+        name: hir_mod.StringId,
+    ) ?TypeId {
+        const owner = self.hir.parentOf(type_node);
+        if (owner == hir_mod.none_node_id) return null;
+        const name_node: NodeId = switch (self.hir.kindOf(owner)) {
+            .parameter => blk: {
+                const parameter = hir_mod.parameterOf(self.hir, owner);
+                if (parameter.type_annotation != type_node) return null;
+                break :blk parameter.name;
+            },
+            .var_decl, .let_decl, .const_decl => blk: {
+                const variable = hir_mod.varDeclOf(self.hir, owner);
+                if (variable.type_annotation != type_node) return null;
+                break :blk variable.name;
+            },
+            else => return null,
+        };
+        if (name_node == hir_mod.none_node_id or self.hir.kindOf(name_node) != .identifier) return null;
+        if (hir_mod.identifierOf(self.hir, name_node).name != name) return null;
+        const cached = self.hir.typeOf(name_node);
+        return if (cached != types.Primitive.none) cached else null;
     }
 
     fn expressionRootHasUnresolvedAnnotation(self: *Checker, node: NodeId) bool {
@@ -119544,6 +122414,7 @@ pub const Checker = struct {
     }
 
     fn localTypeAliasDeclForNameAt(self: *Checker, name: hir_mod.StringId, anchor: NodeId) ?NodeId {
+        if (self.source != null and !self.source_may_have_type_alias_declaration) return null;
         if (anchor == hir_mod.none_node_id) return null;
         var cur: NodeId = self.hir.parentOf(anchor);
         while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
@@ -119564,6 +122435,7 @@ pub const Checker = struct {
     }
 
     fn typeAliasDeclForNameAt(self: *Checker, name: hir_mod.StringId, anchor: NodeId) ?NodeId {
+        if (self.source != null and !self.source_may_have_type_alias_declaration) return null;
         if (self.localTypeAliasDeclForNameAt(name, anchor)) |decl| return decl;
         if (self.module) |module| {
             if (module.root.lookup(name)) |sym| {
@@ -120170,6 +123042,37 @@ pub const Checker = struct {
             }
         }
         return true;
+    }
+
+    /// Reject an overload before generic inference when a fixed, non-generic
+    /// literal parameter cannot accept the corresponding literal expression.
+    /// All composite and contextual cases stay on the full resolution path.
+    fn signatureDefinitelyRejectsLiteralArguments(
+        self: *Checker,
+        sig: TypeId,
+        args: []const NodeId,
+        arg_types: []const TypeId,
+    ) CheckError!bool {
+        const params = self.interner.signatureParams(sig);
+        const is_variadic = self.rest_signatures.contains(sig) and params.len > 0;
+        const fixed_count: usize = if (is_variadic) params.len - 1 else params.len;
+        for (args, 0..) |arg, arg_i| {
+            if (self.hir.kindOf(arg) == .spread) continue;
+            const fixed_pos = self.fixedParamPositionBeforeArg(args, arg_types, arg_i);
+            if (fixed_pos >= fixed_count) break;
+            const param_t = params[fixed_pos];
+            if (param_t >= self.interner.pool.typeCount()) continue;
+            const param_flags = self.interner.pool.flagsOf(param_t);
+            if (!param_flags.is_literal or param_flags.is_enum_literal) continue;
+            const param_literal = self.interner.literalOfOrNull(param_t) orelse continue;
+            switch (param_literal) {
+                .string_lit, .number_lit, .boolean_lit => {},
+                else => continue,
+            }
+            const arg_literal_t = (try self.expressionNarrowLiteralType(arg)) orelse continue;
+            if (!self.switchLiteralUnitsAreEqual(arg_literal_t, param_t)) return true;
+        }
+        return false;
     }
 
     fn reportNoOverloadMatchesWithLastOverload(
@@ -121735,6 +124638,7 @@ pub const Checker = struct {
         }
         var selected_applicable: TypeId = types.Primitive.none;
         for (sigs.items) |sig| {
+            if (try self.signatureDefinitelyRejectsLiteralArguments(sig, args, arg_types)) continue;
             const effective_sig = try self.instantiateSignatureFromArgs(sig, args, arg_types);
             if (!try self.signatureAccepts(call_node, effective_sig, args, arg_types)) continue;
             if (preserve_intersection_order) {
@@ -121825,37 +124729,18 @@ pub const Checker = struct {
                     for (branch_sigs.items) |sig| {
                         const this_t = self.signatureThisParam(sig) orelse continue;
                         saw_this_param = true;
-                        var effective_this: TypeId = this_t;
-                        // The signature_this_params map is keyed only on
-                        // signature TypeId, so when two union members
-                        // share an identical method signature shape only
-                        // the last branch's `this`-type is retained. If
-                        // the cached `this_t` matches one of the union
-                        // members (suggesting `this: this`/`this: <self>`),
-                        // use the current branch as its effective `this`
-                        // so each branch contributes its own type to the
-                        // unmet set.
-                        if (this_t != branch) {
-                            var this_t_is_union_member = false;
-                            for (self.interner.unionMembers(receiver_t)) |other| {
-                                if (other == this_t) {
-                                    this_t_is_union_member = true;
-                                    break;
-                                }
-                            }
-                            if (this_t_is_union_member) effective_this = branch;
-                        }
-                        // Check the actual receiver (the union) against
-                        // the effective `this`-type for this branch.
-                        if (try self.thisContextAssignableTo(receiver_t, effective_this)) continue;
+                        // Callable identities retain each declaration's
+                        // actual receiver; never replace it with a union
+                        // branch merely because the type IDs happen to match.
+                        if (try self.thisContextAssignableTo(receiver_t, this_t)) continue;
                         var seen = false;
                         for (unmet_this.items) |existing| {
-                            if (existing == effective_this) {
+                            if (existing == this_t) {
                                 seen = true;
                                 break;
                             }
                         }
-                        if (!seen) try unmet_this.append(self.gpa, effective_this);
+                        if (!seen) try unmet_this.append(self.gpa, this_t);
                     }
                 }
                 if (!saw_this_param) return;
@@ -121863,7 +124748,13 @@ pub const Checker = struct {
             } else {
                 var call_sigs: std.ArrayListUnmanaged(TypeId) = .empty;
                 defer call_sigs.deinit(self.gpa);
-                try self.collectCallSignatures(callee_t, &call_sigs);
+                // A union requires a receiver accepted by every branch;
+                // its combined signature intersects those requirements.
+                // Raw branch signatures here would treat it as an overload
+                // set and incorrectly accept any one matching receiver.
+                if (!try self.collectResolvedUnionSignatures(callee_t, false, &call_sigs)) {
+                    try self.collectCallSignatures(callee_t, &call_sigs);
+                }
                 for (call_sigs.items) |sig| {
                     const this_t = self.signatureThisParam(sig) orelse continue;
                     saw_this_param = true;
@@ -121883,10 +124774,9 @@ pub const Checker = struct {
                 if (!saw_this_param) return;
             }
         }
-        // Relate a structurally incomplete receiver through the same
-        // missing-property elaboration used by assignments. TypeScript
-        // prefers TS2741 here when exactly one required `this` member is
-        // absent, while incompatible existing members retain TS2684.
+        // Native TS 7 uses the structural missing-property diagnostic for
+        // a single required object member (TS 6 keeps TS2684). Preserve
+        // that elaboration; combined receiver intersections remain TS2684.
         if (unmet_this.items.len == 1 and
             try self.tryReportSinglePropertyMissing(call_node, m.object, receiver_t, unmet_this.items[0]))
         {
@@ -122413,6 +125303,7 @@ pub const Checker = struct {
         local_name: hir_mod.StringId,
         anchor: NodeId,
     ) ?[]const u8 {
+        if (self.source != null and !self.source_may_have_require_binding) return null;
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
         const section = self.virtualSectionStartForNode(anchor);
@@ -122752,6 +125643,16 @@ pub const Checker = struct {
         const params = self.generic_signature_params.get(sig) orelse return;
         for (params) |param| {
             if (subs.contains(param)) continue;
+            // Source-owned signatures have no declaration node in this HIR.
+            // Their parameter payload already holds the owner's lowered
+            // default, including references to earlier parameter identities.
+            if (param < self.interner.pool.typeCount() and self.interner.pool.flagsOf(param).is_type_parameter) {
+                const default = self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(param)].default;
+                if (default != types.Primitive.none) {
+                    try subs.put(self.gpa, param, try self.substituteType(default, subs));
+                    continue;
+                }
+            }
             const decl = self.type_parameter_decl_nodes.get(param) orelse
                 self.type_parameter_decl_nodes.get(self.resolvedTypeParameterPlaceholder(param)) orelse continue;
             if (self.hir.kindOf(decl) != .type_parameter) continue;
@@ -124221,6 +127122,8 @@ pub const Checker = struct {
         try self.copySignatureParamNames(sig, fallback);
         if (self.rest_signatures.contains(fallback)) try self.rest_signatures.put(self.gpa, sig, {});
         if (self.signature_min_args.get(fallback)) |min_args| try self.signature_min_args.put(self.gpa, sig, min_args);
+        if (self.generic_signature_params.get(fallback)) |type_params| try self.recordGenericSignatureParams(sig, type_params);
+        if (self.signature_predicates.get(fallback)) |predicate| try self.signature_predicates.put(self.gpa, sig, predicate);
         return sig;
     }
 
@@ -127292,6 +130195,13 @@ pub const Checker = struct {
                         }
                     }
                     const t = self.hir.typeOf(decl);
+                    if (!self.declared_identifier_lookup and
+                        v.type_annotation != hir_mod.none_node_id and
+                        t != types.Primitive.none and
+                        self.hir.typeOf(v.name) == t)
+                    {
+                        return t;
+                    }
                     if (v.type_annotation != hir_mod.none_node_id and
                         (self.declared_identifier_lookup or t == types.Primitive.none))
                     {
@@ -127794,15 +130704,29 @@ pub const Checker = struct {
             (is_this and this_rebound_plain_function and self.thisInsideObjectLiteralMethod(node) and self.currentThisType() != null))
         {
             var active_annotation_t: ?TypeId = null;
+            var visible_annotation_node: ?NodeId = null;
+            var cached_visible_annotation_t: ?TypeId = null;
             if (!self.isDeclNameSlot(node)) {
-                if (self.visibleAnnotatedIdentifierTypeNode(node)) |type_node| {
-                    if (self.typeAnnotationShouldBecomeErrorAny(type_node)) return types.Primitive.any;
+                visible_annotation_node = self.visibleAnnotatedIdentifierTypeNode(node);
+                if (visible_annotation_node) |type_node| {
+                    cached_visible_annotation_t = self.cachedSimpleAnnotatedIdentifierType(type_node, id.name);
+                    const cached_annotation = cached_visible_annotation_t orelse types.Primitive.none;
+                    if ((cached_annotation == types.Primitive.none or
+                        cached_annotation == types.Primitive.any or
+                        cached_annotation == types.Primitive.unknown) and
+                        self.typeAnnotationShouldBecomeErrorAny(type_node))
+                    {
+                        return types.Primitive.any;
+                    }
                 }
             }
             if (!self.isDeclNameSlot(node)) {
-                const is_evolving_untyped = self.identifierIsUntypedUninitializedVar(node);
-                const visible_annotation_node = self.visibleAnnotatedIdentifierTypeNode(node);
-                const recovered_annotation_t = self.recoveredSourceParameterAnnotationType(node, id.name);
+                const may_have_evolving_any = self.sourceMayHaveUntypedEvolvingAnyCandidate();
+                const is_evolving_untyped = may_have_evolving_any and self.identifierIsUntypedUninitializedVar(node);
+                const recovered_annotation_t = if (visible_annotation_node == null)
+                    self.recoveredSourceParameterAnnotationType(node, id.name)
+                else
+                    null;
                 if (recovered_annotation_t) |declared_t| {
                     const declared_non_null = self.subtractNullUndefined(declared_t) catch declared_t;
                     const narrow_t = self.lookupNarrow(id.name);
@@ -127848,8 +130772,9 @@ pub const Checker = struct {
                 if (!is_evolving_untyped and self.sourceHasDirectSelfConditionalAssignmentBeforeUse(node, id.name)) {
                     if ((self.recoveredEvolvingAnyFlowTypeAt(node, id.name) catch null) != null) return types.Primitive.any;
                 }
-                active_annotation_t = self.visibleActiveAnnotatedIdentifierTypeInner(node, recovered_annotation_t, true);
-                if (active_annotation_t == null) {
+                active_annotation_t = cached_visible_annotation_t orelse
+                    self.visibleActiveAnnotatedIdentifierTypeInner(node, recovered_annotation_t, true);
+                if (active_annotation_t == null and may_have_evolving_any) {
                     if (self.definiteEvolvingAnyFlowTypeAt(node, id.name) catch null) |flow_t| {
                         if (self.lookupNarrow(id.name)) |narrow_t| {
                             if (narrow_t != types.Primitive.any and
@@ -128106,10 +131031,18 @@ pub const Checker = struct {
             }) catch return types.Primitive.any;
             return types.Primitive.any;
         }
+        const external_type_only_origin = if (!self.isDeclNameSlot(node) and
+            !self.nodeHasAncestorKind(node, .typeof_type) and
+            !self.isComputedKeyInAmbientClassMember(node) and
+            !self.isTypeOnlyValueUseInAmbientClassHeritage(node))
+            self.externalTypeOnlyOriginKind(id.name, node)
+        else
+            TypeOnlyOriginKind.none;
         if (!self.isDeclNameSlot(node) and !self.nodeHasAncestorKind(node, .typeof_type) and
             !self.isComputedKeyInAmbientClassMember(node) and
             !self.isTypeOnlyValueUseInAmbientClassHeritage(node) and
-            (self.crossModuleTypeOnlyImportOrigin(id.name, node) catch null) != null)
+            ((self.crossModuleTypeOnlyImportOrigin(id.name, node) catch null) != null or
+                external_type_only_origin == .import_type))
         {
             const msg = std.fmt.allocPrint(
                 self.diag_arena.allocator(),
@@ -128129,7 +131062,7 @@ pub const Checker = struct {
             !self.nodeHasAncestorKind(node, .typeof_type) and !self.isComputedKeyInAmbientClassMember(node) and
             !self.isTypeOnlyValueUseInAmbientClassHeritage(node) and
             !self.typeOnlyValueUseCoveredByVerbatimDefaultExport(node) and
-            self.nameIsCrossModuleTypeOnlyExport(id.name, node))
+            (if (self.sourceHasVirtualFilenameSections()) self.nameIsCrossModuleTypeOnlyExport(id.name, node) else external_type_only_origin == .export_type))
         {
             const msg = std.fmt.allocPrint(
                 self.diag_arena.allocator(),
@@ -128243,6 +131176,31 @@ pub const Checker = struct {
                 // Look for a sibling var_decl/let_decl/const_decl
                 // before this node.
                 const stmts = hir_mod.blockStmts(self.hir, cur);
+                self.indexVisibleAnnotatedValueDecls(cur, stmts);
+                if (self.indexed_annotated_value_containers.contains(cur)) {
+                    if (self.visible_annotated_value_decls.get(.{
+                        .container = cur,
+                        .name = id.name,
+                        .virtual_section_start = if (self.sourceHasVirtualFilenameSections())
+                            self.virtualSectionStartForNode(node)
+                        else
+                            0,
+                    })) |declaration| {
+                        if (self.resolveValueDeclInStmt(declaration, node, id) catch null) |t| return t;
+                    }
+                }
+                const has_virtual_sections = self.sourceHasVirtualFilenameSections();
+                self.indexVisibleSameNameValueBindings(cur, stmts, has_virtual_sections);
+                if (self.visible_same_name_value_decls.get(.{
+                    .container = cur,
+                    .name = id.name,
+                    .virtual_section_start = if (has_virtual_sections)
+                        self.virtualSectionStartForNode(node)
+                    else
+                        0,
+                })) |declaration| {
+                    if (self.resolveValueDeclInStmt(declaration, node, id) catch null) |t| return t;
+                }
                 for (stmts) |s| {
                     if (self.resolveValueDeclInStmt(s, node, id) catch null) |t| return t;
                 }
@@ -128677,6 +131635,9 @@ pub const Checker = struct {
                     return types.Primitive.any;
                 }
             }
+            if (self.program_global_value_types.len > 0 and !self.isDeclNameSlot(node)) {
+                if (self.programGlobalValueType(id.name)) |t| return t;
+            }
             // Module is bound and the name is unknown ÃÂ¢ÃÂÃÂ emit TS2304
             // unless the identifier is a recognized built-in (e.g.
             // `console`, `undefined`, global constructors). Skip
@@ -128781,6 +131742,10 @@ pub const Checker = struct {
                 self.reportCannotFindNameOnce(node, id.name) catch {};
             }
         }
+        if (self.program_global_value_types.len > 0 and !self.isDeclNameSlot(node)) {
+            if (self.programGlobalValueType(id.name)) |t| return t;
+        }
+
         // Lib globals ÃÂ¢ÃÂÃÂ `Object` carries the keys/values/entries/
         // assign namespace. `NaN` / `Infinity` are number-typed values.
         // `isNaN` / `isFinite` / `parseFloat` / `parseInt` get loose
@@ -130019,7 +132984,7 @@ pub const Checker = struct {
     /// (any `es2017*` lib counts as covering es2017, etc.).
     fn sourceLibDirectiveExcludes(self: *Checker, required: []const u8) bool {
         const src = self.source orelse return false;
-        const lib_pos = std.mem.indexOf(u8, src, "@lib") orelse return false;
+        const lib_pos = self.sourceMarkerPosition("@lib") orelse return false;
         const line_end = std.mem.indexOfScalarPos(u8, src, lib_pos, '\n') orelse src.len;
         var buf: [256]u8 = undefined;
         const raw_line = std.mem.trim(u8, src[lib_pos..line_end], " \t\r");
@@ -130030,7 +132995,7 @@ pub const Checker = struct {
 
     fn sourceLibDirectiveExcludesExplicitResourceManagement(self: *Checker) bool {
         const src = self.source orelse return false;
-        const lib_pos = std.mem.indexOf(u8, src, "@lib") orelse return false;
+        const lib_pos = self.sourceMarkerPosition("@lib") orelse return false;
         const line_end = std.mem.indexOfScalarPos(u8, src, lib_pos, '\n') orelse src.len;
         var buf: [256]u8 = undefined;
         const raw_line = std.mem.trim(u8, src[lib_pos..line_end], " \t\r");
@@ -130046,16 +133011,21 @@ pub const Checker = struct {
     }
 
     fn sourceLibDirectiveExcludesDomElement(self: *Checker) bool {
-        if (self.sourceHasNoLibTrueDirective()) return true;
-        if (self.sourceHasReferenceLibDirective("dom")) return false;
-        const src = self.source orelse return false;
-        const lib_pos = std.mem.indexOf(u8, src, "@lib") orelse return false;
-        const line_end = std.mem.indexOfScalarPos(u8, src, lib_pos, '\n') orelse src.len;
-        var buf: [256]u8 = undefined;
-        const raw_line = std.mem.trim(u8, src[lib_pos..line_end], " \t\r");
-        const n = @min(raw_line.len, buf.len);
-        const line = std.ascii.lowerString(buf[0..n], raw_line[0..n]);
-        return std.mem.indexOf(u8, line, "dom") == null;
+        if (self.source_facts.lib_directive_excludes_dom_element) |cached| return cached;
+        const result = result: {
+            if (self.sourceHasNoLibTrueDirective()) break :result true;
+            if (self.sourceHasReferenceLibDirective("dom")) break :result false;
+            const src = self.source orelse break :result false;
+            const lib_pos = self.sourceMarkerPosition("@lib") orelse break :result false;
+            const line_end = std.mem.indexOfScalarPos(u8, src, lib_pos, '\n') orelse src.len;
+            var buf: [256]u8 = undefined;
+            const raw_line = std.mem.trim(u8, src[lib_pos..line_end], " \t\r");
+            const n = @min(raw_line.len, buf.len);
+            const line = std.ascii.lowerString(buf[0..n], raw_line[0..n]);
+            break :result std.mem.indexOf(u8, line, "dom") == null;
+        };
+        self.source_facts.lib_directive_excludes_dom_element = result;
+        return result;
     }
 
     /// True if a lib-gated builtin (e.g. `SharedArrayBuffer`) is
@@ -130134,7 +133104,7 @@ pub const Checker = struct {
             "es2024"
         else
             self.libGatedPropertyMember(receiver_t, member_name) orelse return false;
-        const has_lib_directive = if (self.source) |src| std.mem.indexOf(u8, src, "@lib") != null else false;
+        const has_lib_directive = self.sourceMarkerPosition("@lib") != null;
         if (has_lib_directive) {
             if (!self.sourceLibDirectiveExcludes(required)) return false;
         } else if (!self.sourceTargetExcludesLib(required)) return false;
@@ -130164,135 +133134,144 @@ pub const Checker = struct {
         const s = self.string_interner.get(name);
         if (std.mem.eql(u8, s, "ITextWriter")) {
             const src = self.source orelse return true;
-            const lib_pos = std.mem.indexOf(u8, src, "@lib") orelse return true;
+            const lib_pos = self.sourceMarkerPosition("@lib") orelse return true;
             const line_end = std.mem.indexOfScalarPos(u8, src, lib_pos, '\n') orelse src.len;
             return std.mem.indexOf(u8, src[lib_pos..line_end], "scripthost") != null;
         }
         if (std.mem.eql(u8, s, "Iterator") or
             std.mem.eql(u8, s, "fetch") or
             std.mem.eql(u8, s, "Image")) return true;
-        const builtins = [_][]const u8{
+        return builtin_name_set.has(s);
+    }
+
+    const builtin_name_set = blk: {
+        @setEvalBranchQuota(100_000);
+        const names = builtinNames();
+        var entries: [names.len]struct { []const u8 } = undefined;
+        for (names, 0..) |name, i| entries[i] = .{name};
+        break :blk std.StaticStringMap(void).initComptime(entries);
+    };
+
+    fn builtinNames() []const []const u8 {
+        return &.{
             // Core globals / values.
-            "console",                    "undefined",              "NaN",
-            "Infinity",                   "globalThis",             "this",
-            "new.target",                 "window",                 "self",
-            "top",                        "document",               "name",
-            "Element",                    "Node",                   "HTMLElement",
-            "HTMLBodyElement",            "HTMLDivElement",         "HTMLAnchorElement",
-            "HTMLImageElement",           "HTMLInputElement",       "HTMLSpanElement",
-            "HTMLButtonElement",          "HTMLFormElement",        "HTMLCanvasElement",
-            "HTMLSelectElement",          "HTMLTextAreaElement",    "HTMLLabelElement",
-            "HTMLLinkElement",            "HTMLScriptElement",      "HTMLStyleElement",
-            "HTMLHeadElement",            "HTMLMetaElement",        "HTMLTitleElement",
-            "HTMLOptionElement",          "HTMLOptGroupElement",    "HTMLUListElement",
-            "HTMLOListElement",           "HTMLLIElement",          "HTMLTableElement",
-            "HTMLTableRowElement",        "HTMLTableCellElement",   "HTMLTableSectionElement",
-            "HTMLIFrameElement",          "HTMLVideoElement",       "HTMLAudioElement",
-            "HTMLMediaElement",           "HTMLSourceElement",      "HTMLTrackElement",
-            "HTMLPictureElement",         "HTMLParagraphElement",   "HTMLHRElement",
-            "HTMLHeadingElement",         "HTMLBRElement",          "HTMLDataListElement",
-            "HTMLOutputElement",          "HTMLDialogElement",      "HTMLDetailsElement",
-            "HTMLEmbedElement",           "HTMLFieldSetElement",    "HTMLLegendElement",
-            "HTMLObjectElement",          "HTMLParamElement",       "HTMLProgressElement",
-            "HTMLQuoteElement",           "HTMLTemplateElement",    "HTMLTimeElement",
-            "Event",                      "EventTarget",            "MouseEvent",
-            "KeyboardEvent",              "FocusEvent",             "Document",
-            "Window",                     "Location",               "Navigator",
-            "History",                    "Storage",                "URL",
-            "URLSearchParams",            "Blob",                   "File",
-            "FileReader",                 "FormData",               "Headers",
-            "HTMLElementTagNameMap",      "Request",                "Response",
+            "console",                      "undefined",                  "NaN",
+            "Infinity",                     "globalThis",                 "this",
+            "new.target",                   "window",                     "self",
+            "top",                          "document",                   "name",
+            "Element",                      "Node",                       "HTMLElement",
+            "HTMLBodyElement",              "HTMLDivElement",             "HTMLAnchorElement",
+            "HTMLImageElement",             "HTMLInputElement",           "HTMLSpanElement",
+            "HTMLButtonElement",            "HTMLFormElement",            "HTMLCanvasElement",
+            "HTMLSelectElement",            "HTMLTextAreaElement",        "HTMLLabelElement",
+            "HTMLLinkElement",              "HTMLScriptElement",          "HTMLStyleElement",
+            "HTMLHeadElement",              "HTMLMetaElement",            "HTMLTitleElement",
+            "HTMLOptionElement",            "HTMLOptGroupElement",        "HTMLUListElement",
+            "HTMLOListElement",             "HTMLLIElement",              "HTMLTableElement",
+            "HTMLTableRowElement",          "HTMLTableCellElement",       "HTMLTableSectionElement",
+            "HTMLIFrameElement",            "HTMLVideoElement",           "HTMLAudioElement",
+            "HTMLMediaElement",             "HTMLSourceElement",          "HTMLTrackElement",
+            "HTMLPictureElement",           "HTMLParagraphElement",       "HTMLHRElement",
+            "HTMLHeadingElement",           "HTMLBRElement",              "HTMLDataListElement",
+            "HTMLOutputElement",            "HTMLDialogElement",          "HTMLDetailsElement",
+            "HTMLEmbedElement",             "HTMLFieldSetElement",        "HTMLLegendElement",
+            "HTMLObjectElement",            "HTMLParamElement",           "HTMLProgressElement",
+            "HTMLQuoteElement",             "HTMLTemplateElement",        "HTMLTimeElement",
+            "Event",                        "EventTarget",                "MouseEvent",
+            "KeyboardEvent",                "FocusEvent",                 "Document",
+            "Window",                       "Location",                   "Navigator",
+            "History",                      "Storage",                    "URL",
+            "URLSearchParams",              "Blob",                       "File",
+            "FileReader",                   "FormData",                   "Headers",
+            "HTMLElementTagNameMap",        "Request",                    "Response",
             // Constructors / namespaces.
-            "Math",                       "JSON",                   "Object",
-            "Array",                      "String",                 "Number",
-            "Boolean",                    "Symbol",                 "BigInt",
-            "Error",                      "TypeError",              "RangeError",
-            "SyntaxError",                "Promise",                "Map",
-            "Set",                        "WeakMap",                "WeakSet",
-            "Date",                       "RegExp",                 "Function",
-            "Proxy",                      "Reflect",                "TemplateStringsArray",
-            "ArrayBuffer",                "ArrayBufferView",        "Uint8Array",
-            "Uint8ClampedArray",
-            "Int8Array",                  "Uint16Array",            "Int16Array",
-            "Uint32Array",                "Int32Array",             "Float16Array",
-            "Float32Array",               "Float64Array",           "BigUint64Array",
-            "BigInt64Array",              "SharedArrayBuffer",      "Atomics",
-            "Intl",                       "Temporal",               "indexedDB",
-            "IDBKeyRange",                "IDBFactory",             "IDBDatabase",
-            "IDBObjectStore",             "IDBIndex",               "IDBCursor",
-            "IDBCursorWithValue",         "IDBTransaction",         "IDBRequest",
-            "IDBOpenDBRequest",           "AudioContext",           "OfflineAudioContext",
-            "MediaStream",                "MediaStreamTrack",       "MediaRecorder",
-            "RTCPeerConnection",          "RTCDataChannel",         "RTCSessionDescription",
-            "RTCIceCandidate",            "caches",                 "Cache",
-            "CacheStorage",               "Notification",           "PaymentRequest",
-            "PaymentResponse",            "ServiceWorker",          "ServiceWorkerRegistration",
-            "ServiceWorkerContainer",     "PushManager",            "PushSubscription",
-            "WebGLRenderingContext",      "WebGL2RenderingContext", "WebGLBuffer",
-            "WebGLTexture",               "WebGLShader",            "WebGLProgram",
-            "WebGLFramebuffer",           "WebGLRenderbuffer",      "WebGLUniformLocation",
-            "WebGLVertexArrayObject",     "WebGLQuery",             "WebGLSampler",
-            "WebGLSync",                  "WebGLTransformFeedback", "WebGLActiveInfo",
-            "WebGLShaderPrecisionFormat", "HTMLElement",            "HTMLDivElement",
-            "HTMLSpanElement",            "HTMLParagraphElement",   "HTMLHeadingElement",
-            "HTMLInputElement",           "HTMLButtonElement",      "HTMLSelectElement",
-            "HTMLOptionElement",          "HTMLTextAreaElement",    "HTMLFormElement",
-            "HTMLImageElement",           "HTMLAnchorElement",      "HTMLCanvasElement",
-            "HTMLVideoElement",           "HTMLAudioElement",       "HTMLIFrameElement",
-            "HTMLLinkElement",            "HTMLMetaElement",        "HTMLScriptElement",
-            "HTMLStyleElement",           "HTMLTableElement",       "HTMLTableRowElement",
-            "HTMLTableCellElement",       "HTMLLabelElement",       "HTMLDialogElement",
-            "HTMLDetailsElement",         "HTMLTemplateElement",    "HTMLPictureElement",
-            "HTMLSourceElement",          "HTMLProgressElement",    "HTMLMeterElement",
-            "HTMLFieldSetElement",        "HTMLLegendElement",      "HTMLOutputElement",
-            "HTMLDataListElement",        "HTMLBodyElement",        "HTMLHeadElement",
-            "HTMLHtmlElement",            "HTMLTitleElement",       "HTMLBaseElement",
-            "GPU",                        "GPUAdapter",             "GPUDevice",
-            "GPUBuffer",                  "GPUTexture",             "GPUTextureView",
-            "GPUSampler",                 "GPUBindGroup",           "GPUBindGroupLayout",
-            "GPUPipelineLayout",          "GPURenderPipeline",      "GPUComputePipeline",
-            "GPUShaderModule",            "GPUCommandEncoder",      "GPUCommandBuffer",
-            "GPURenderPassEncoder",       "GPUComputePassEncoder",  "GPUQueue",
-            "GPUCanvasContext",           "GPUQuerySet",            "GPURenderBundle",
-            "GPURenderBundleEncoder",     "Event",                  "UIEvent",
-            "MouseEvent",                 "KeyboardEvent",          "FocusEvent",
-            "InputEvent",                 "CompositionEvent",       "TouchEvent",
-            "PointerEvent",               "WheelEvent",             "DragEvent",
-            "ClipboardEvent",             "AnimationEvent",         "TransitionEvent",
-            "ProgressEvent",              "SubmitEvent",            "FormDataEvent",
-            "MessageEvent",               "CloseEvent",             "HashChangeEvent",
-            "PopStateEvent",              "StorageEvent",           "ErrorEvent",
-            "BeforeUnloadEvent",          "PageTransitionEvent",    "SecurityPolicyViolationEvent",
-            "CustomEvent",                "CSSStyleSheet",          "CSSStyleDeclaration",
-            "CSSRule",                    "CSSStyleRule",           "CSSGroupingRule",
-            "CSSMediaRule",               "CSSSupportsRule",        "CSSConditionRule",
-            "CSSContainerRule",           "CSSLayerBlockRule",      "CSSLayerStatementRule",
-            "CSSImportRule",              "CSSPageRule",            "CSSKeyframesRule",
-            "CSSKeyframeRule",            "CSSFontFaceRule",        "CSSNamespaceRule",
+            "Math",                         "JSON",                       "Object",
+            "Array",                        "String",                     "Number",
+            "Boolean",                      "Symbol",                     "BigInt",
+            "Error",                        "TypeError",                  "RangeError",
+            "SyntaxError",                  "Promise",                    "Map",
+            "Set",                          "WeakMap",                    "WeakSet",
+            "Date",                         "RegExp",                     "Function",
+            "Proxy",                        "Reflect",                    "TemplateStringsArray",
+            "ArrayBuffer",                  "ArrayBufferView",            "Uint8Array",
+            "Uint8ClampedArray",            "Int8Array",                  "Uint16Array",
+            "Int16Array",                   "Uint32Array",                "Int32Array",
+            "Float16Array",                 "Float32Array",               "Float64Array",
+            "BigUint64Array",               "BigInt64Array",              "SharedArrayBuffer",
+            "Atomics",                      "Intl",                       "Temporal",
+            "indexedDB",                    "IDBKeyRange",                "IDBFactory",
+            "IDBDatabase",                  "IDBObjectStore",             "IDBIndex",
+            "IDBCursor",                    "IDBCursorWithValue",         "IDBTransaction",
+            "IDBRequest",                   "IDBOpenDBRequest",           "AudioContext",
+            "OfflineAudioContext",          "MediaStream",                "MediaStreamTrack",
+            "MediaRecorder",                "RTCPeerConnection",          "RTCDataChannel",
+            "RTCSessionDescription",        "RTCIceCandidate",            "caches",
+            "Cache",                        "CacheStorage",               "Notification",
+            "PaymentRequest",               "PaymentResponse",            "ServiceWorker",
+            "ServiceWorkerRegistration",    "ServiceWorkerContainer",     "PushManager",
+            "PushSubscription",             "WebGLRenderingContext",      "WebGL2RenderingContext",
+            "WebGLBuffer",                  "WebGLTexture",               "WebGLShader",
+            "WebGLProgram",                 "WebGLFramebuffer",           "WebGLRenderbuffer",
+            "WebGLUniformLocation",         "WebGLVertexArrayObject",     "WebGLQuery",
+            "WebGLSampler",                 "WebGLSync",                  "WebGLTransformFeedback",
+            "WebGLActiveInfo",              "WebGLShaderPrecisionFormat", "HTMLElement",
+            "HTMLDivElement",               "HTMLSpanElement",            "HTMLParagraphElement",
+            "HTMLHeadingElement",           "HTMLInputElement",           "HTMLButtonElement",
+            "HTMLSelectElement",            "HTMLOptionElement",          "HTMLTextAreaElement",
+            "HTMLFormElement",              "HTMLImageElement",           "HTMLAnchorElement",
+            "HTMLCanvasElement",            "HTMLVideoElement",           "HTMLAudioElement",
+            "HTMLIFrameElement",            "HTMLLinkElement",            "HTMLMetaElement",
+            "HTMLScriptElement",            "HTMLStyleElement",           "HTMLTableElement",
+            "HTMLTableRowElement",          "HTMLTableCellElement",       "HTMLLabelElement",
+            "HTMLDialogElement",            "HTMLDetailsElement",         "HTMLTemplateElement",
+            "HTMLPictureElement",           "HTMLSourceElement",          "HTMLProgressElement",
+            "HTMLMeterElement",             "HTMLFieldSetElement",        "HTMLLegendElement",
+            "HTMLOutputElement",            "HTMLDataListElement",        "HTMLBodyElement",
+            "HTMLHeadElement",              "HTMLHtmlElement",            "HTMLTitleElement",
+            "HTMLBaseElement",              "GPU",                        "GPUAdapter",
+            "GPUDevice",                    "GPUBuffer",                  "GPUTexture",
+            "GPUTextureView",               "GPUSampler",                 "GPUBindGroup",
+            "GPUBindGroupLayout",           "GPUPipelineLayout",          "GPURenderPipeline",
+            "GPUComputePipeline",           "GPUShaderModule",            "GPUCommandEncoder",
+            "GPUCommandBuffer",             "GPURenderPassEncoder",       "GPUComputePassEncoder",
+            "GPUQueue",                     "GPUCanvasContext",           "GPUQuerySet",
+            "GPURenderBundle",              "GPURenderBundleEncoder",     "Event",
+            "UIEvent",                      "MouseEvent",                 "KeyboardEvent",
+            "FocusEvent",                   "InputEvent",                 "CompositionEvent",
+            "TouchEvent",                   "PointerEvent",               "WheelEvent",
+            "DragEvent",                    "ClipboardEvent",             "AnimationEvent",
+            "TransitionEvent",              "ProgressEvent",              "SubmitEvent",
+            "FormDataEvent",                "MessageEvent",               "CloseEvent",
+            "HashChangeEvent",              "PopStateEvent",              "StorageEvent",
+            "ErrorEvent",                   "BeforeUnloadEvent",          "PageTransitionEvent",
+            "SecurityPolicyViolationEvent", "CustomEvent",                "CSSStyleSheet",
+            "CSSStyleDeclaration",          "CSSRule",                    "CSSStyleRule",
+            "CSSGroupingRule",              "CSSMediaRule",               "CSSSupportsRule",
+            "CSSConditionRule",             "CSSContainerRule",           "CSSLayerBlockRule",
+            "CSSLayerStatementRule",        "CSSImportRule",              "CSSPageRule",
+            "CSSKeyframesRule",             "CSSKeyframeRule",            "CSSFontFaceRule",
+            "CSSNamespaceRule",
             // Global functions.
-            "eval",                       "parseInt",               "parseFloat",
-            "isNaN",                      "isFinite",               "encodeURI",
-            "decodeURI",                  "encodeURIComponent",     "decodeURIComponent",
+                        "eval",                       "parseInt",
+            "parseFloat",                   "isNaN",                      "isFinite",
+            "encodeURI",                    "decodeURI",                  "encodeURIComponent",
+            "decodeURIComponent",
             // Timers / scheduling.
-            "setTimeout",                 "clearTimeout",           "setInterval",
-            "clearInterval",              "setImmediate",           "clearImmediate",
-            "queueMicrotask",
+                      "setTimeout",                 "clearTimeout",
+            "setInterval",                  "clearInterval",              "setImmediate",
+            "clearImmediate",               "queueMicrotask",
             // Node.js / CommonJS.
-                        "process",                "Buffer",
-            "require",                    "module",                 "exports",
-            "__dirname",                  "__filename",
+                        "process",
+            "Buffer",                       "require",                    "module",
+            "exports",                      "__dirname",                  "__filename",
             // Dynamic `import("ÃÂ¢ÃÂÃÂ¦")` parses the keyword as an
             // identifier callee ÃÂ¢ÃÂÃÂ exempt it from TS2304.
-                        "import",
+            "import",
             // Common ambient names emitted by the parser for
             // module / class shapes that don't have full
             // resolution wired up yet.
-            "super",
+                                  "super",
         };
-        for (builtins) |b| {
-            if (std.mem.eql(u8, s, b)) return true;
-        }
-        return false;
     }
 
     /// Common type-only names from `lib.es5.d.ts` (and friends) that
@@ -130513,7 +133492,7 @@ pub const Checker = struct {
         // Without it, indexing `arguments` under `noImplicitAny` over-reports
         // TS7053. Pins paramTagOnFunctionUsingArguments.
         const t = self.interner.internObjectTypeWithIndex(&members, types.Primitive.none, types.Primitive.any) catch return error.OutOfMemory;
-        try self.type_names.put(self.gpa, name, t);
+        try self.putTypeName(name, t);
         if (!self.builtin_object_names.contains(t)) {
             try self.builtin_object_names.put(self.gpa, t, "IArguments");
         }
@@ -130732,7 +133711,7 @@ pub const Checker = struct {
 
         const symbol_t = self.interner.internObjectType(members.items) catch return error.OutOfMemory;
         const symbol_constructor_name = self.string_interner.intern("SymbolConstructor") catch return error.OutOfMemory;
-        try self.type_names.put(self.gpa, symbol_constructor_name, symbol_t);
+        try self.putTypeName(symbol_constructor_name, symbol_t);
         return symbol_t;
     }
 
@@ -133244,7 +136223,7 @@ pub const Checker = struct {
             .{ .name = self.string_interner.intern("finish") catch return error.OutOfMemory, .type = try self.seedAnySig0(types.Primitive.void_t), .is_optional = false, .is_readonly = false, .is_method = true },
         };
         const t = self.interner.internObjectType(&members) catch return error.OutOfMemory;
-        try self.type_names.put(self.gpa, name, t);
+        try self.putTypeName(name, t);
         return t;
     }
 
@@ -134713,15 +137692,15 @@ pub const Checker = struct {
         };
         const global_this_t = self.interner.internObjectType(&global_members) catch return error.OutOfMemory;
         const global_name = self.string_interner.intern("typeof globalThis") catch return error.OutOfMemory;
-        try self.type_names.put(self.gpa, window_name, window_t);
-        try self.type_names.put(self.gpa, global_name, global_this_t);
+        try self.putTypeName(window_name, window_t);
+        try self.putTypeName(global_name, global_this_t);
         return self.interner.internIntersection(&[_]TypeId{ window_t, global_this_t }) catch return error.OutOfMemory;
     }
 
     fn bareGlobalThisType(self: *Checker) CheckError!TypeId {
         const t = self.interner.internObjectType(&.{}) catch return error.OutOfMemory;
         const global_name = self.string_interner.intern("typeof globalThis") catch return error.OutOfMemory;
-        try self.type_names.put(self.gpa, global_name, t);
+        try self.putTypeName(global_name, t);
         return t;
     }
 
@@ -138880,8 +141859,21 @@ pub const Checker = struct {
         param_t: TypeId,
         arg_t: TypeId,
     ) CheckError!void {
+        return self.checkTypeArgSatisfiesConstraintImpl(arg_node, param_t, arg_t, false);
+    }
+
+    fn checkTypeArgSatisfiesConstraintImpl(
+        self: *Checker,
+        arg_node: NodeId,
+        param_t: TypeId,
+        arg_t: TypeId,
+        argument_resolved: bool,
+    ) CheckError!void {
         if (arg_node == hir_mod.none_node_id) return;
-        if (arg_t == types.Primitive.any or arg_t == types.Primitive.unknown or arg_t == types.Primitive.never) return;
+        if (arg_t == types.Primitive.any or arg_t == types.Primitive.never) return;
+        // A successfully resolved `unknown` argument is not an error-recovery
+        // placeholder and must satisfy the constraint like every other type.
+        if (arg_t == types.Primitive.unknown and !argument_resolved) return;
         const constraint_param = self.resolvedTypeParameterPlaceholder(param_t);
         if (constraint_param >= self.interner.pool.typeCount()) return;
         if (!self.interner.pool.flagsOf(constraint_param).is_type_parameter) return;
@@ -138970,7 +141962,8 @@ pub const Checker = struct {
             (try self.allocTypeArgSignatureConstraintHeaderName(info)) orelse return
         else
             (try self.typeArgConstraintTypeName(constraint, false)) orelse
-                (try self.typeParameterConstraintSourceName(constraint_param)) orelse return;
+                (try self.typeParameterConstraintSourceName(constraint_param)) orelse
+                (try self.allocObjectTypeShape(constraint)) orelse return;
         // Special-case the upstream wording for `extends object`:
         // null and undefined are excluded from the `object` type even
         // though they pass our default `isAssignableTo` heuristic.
@@ -142349,6 +145342,34 @@ pub const Checker = struct {
         }
     }
 
+    fn programGlobalThisReceiver(self: *Checker, object_node: NodeId) bool {
+        if (self.program_global_value_types.len == 0) return false;
+        if (!self.memberAccessObjectIsGlobalThisThis(object_node)) return false;
+        if (self.hir.kindOf(object_node) == .identifier) {
+            const name = hir_mod.identifierOf(self.hir, object_node).name;
+            if (std.mem.eql(u8, self.string_interner.get(name), "globalThis") and
+                self.programGlobalThisNameIsShadowed(object_node, name)) return false;
+        }
+        return true;
+    }
+
+    fn programGlobalThisNameIsShadowed(self: *Checker, anchor: NodeId, name: hir_mod.StringId) bool {
+        if (self.module) |module| {
+            for (module.scopes.items) |scope| {
+                if (!scope.values.contains(name)) continue;
+                if (scope == module.root or self.nodeIsAncestorOf(scope.introducing_node, anchor)) return true;
+            }
+        }
+        if (self.findVisibleSameNameValueBinding(anchor, name) != null) return true;
+        var parent = self.hir.parentOf(anchor);
+        while (parent != hir_mod.none_node_id) : (parent = self.hir.parentOf(parent)) {
+            const kind = self.hir.kindOf(parent);
+            if ((kind == .fn_decl or kind == .fn_expr or kind == .arrow_fn) and
+                self.functionParametersDeclareName(parent, name)) return true;
+        }
+        return false;
+    }
+
     fn reportNonStrictGlobalArrowThisNameAccess(
         self: *Checker,
         node: NodeId,
@@ -142410,6 +145431,7 @@ pub const Checker = struct {
     }
 
     fn globalThisHasProperty(self: *Checker, anchor: NodeId, name: hir_mod.StringId) bool {
+        if (self.programGlobalThisPropertyType(name) != null) return true;
         const raw = self.string_interner.get(name);
         if (std.mem.eql(u8, raw, "globalThis") or
             std.mem.eql(u8, raw, "Float64Array") or
@@ -142946,6 +145968,7 @@ pub const Checker = struct {
     }
 
     fn checkJsComputedPrototypeObjectLiteralOwnerName(self: *Checker, node: NodeId) ?hir_mod.StringId {
+        if (self.source != null and !self.source_may_have_computed_prototype_assignment) return null;
         const node_span = self.hir.spanOf(node);
         var candidate: NodeId = 1;
         while (candidate < self.hir.nodeCount()) : (candidate += 1) {
@@ -143072,6 +146095,7 @@ pub const Checker = struct {
 
     fn reportUnsupportedJsPrototypeObjectThisMembers(self: *Checker, object_node: NodeId, object_t: TypeId) CheckError!void {
         if (!self.sourceHasCheckJsDirective() or self.hir.kindOf(object_node) != .object_literal) return;
+        if (self.source != null and !self.source_may_have_prototype_assignment) return;
         var assignment_node = hir_mod.none_node_id;
         var candidate: NodeId = 1;
         while (candidate < self.hir.nodeCount()) : (candidate += 1) {
@@ -149921,6 +152945,14 @@ pub const Checker = struct {
         // Rest signatures have variable arity; their subtype rules differ
         // from the fixed-arity case modeled here. Bail to stay faithful.
         if (self.rest_signatures.contains(source) or self.rest_signatures.contains(target)) return false;
+        // A callable's receiver and predicate are semantic parts of the
+        // signature even when its ordinary parameters/return type match.
+        // Dropping a branch based only on erased payloads can invent a
+        // narrowing promise or discard a required receiver.
+        if (!(self.signatureThisTypesAssignable(source, target) catch false)) return false;
+        const t_ret = self.interner.signatureReturn(target) orelse types.Primitive.any;
+        if (t_ret != types.Primitive.void_t and t_ret != types.Primitive.any and
+            !(self.signaturePredicatesAssignable(source, target) catch false)) return false;
         if (self.signatureIsAnyFunctionSubtypeSource(source, target)) return true;
         const sp = self.interner.signatureParams(source);
         const tp = self.interner.signatureParams(target);
@@ -149952,7 +152984,6 @@ pub const Checker = struct {
             }
         }
         // Return-type relation: a void/any target return accepts anything.
-        const t_ret = self.interner.signatureReturn(target) orelse types.Primitive.any;
         if (t_ret == types.Primitive.void_t or t_ret == types.Primitive.any) return true;
         const s_ret = self.interner.signatureReturn(source) orelse types.Primitive.any;
         return self.engine.isSubtypeOf(s_ret, t_ret) catch false;
@@ -149988,8 +153019,13 @@ pub const Checker = struct {
             self.interner.objectSymbolIndex(target) != types.Primitive.none)
             return false;
 
+        // `objectMemberInfo` and recursive subtype checks may intern
+        // additional object shapes, so keep this iteration independent
+        // from `object_member_pool` reallocations.
+        const target_members = self.gpa.dupe(types.ObjectMember, self.interner.objectMembers(target)) catch return false;
+        defer self.gpa.free(target_members);
         var saw_callable_member = false;
-        for (self.interner.objectMembers(target)) |tm| {
+        for (target_members) |tm| {
             const sm = self.interner.objectMemberInfo(source, tm.name) orelse {
                 if (tm.is_optional) continue;
                 return false;
@@ -150046,10 +153082,9 @@ pub const Checker = struct {
     /// `'hello' | undefined` parameter) the union is left intact, so the
     /// downstream call-arity check still fires TS2554 for `f()`.
     ///
-    /// Scoped to unions whose every constituent is a bare call signature:
-    /// general union construction is left untouched to avoid perturbing
-    /// unrelated reduction behavior. Returns the (possibly reduced)
-    /// interned type for `members`.
+    /// Also handles objects with callable members using the structural
+    /// subtype relation. General union construction is left untouched.
+    /// Returns the (possibly reduced) interned type for `members`.
     fn internConditionalUnion(self: *Checker, members: []const TypeId) CheckError!TypeId {
         // `any` absorbs the other branch of a conditional expression in
         // TypeScript. Keeping `any | T` here makes downstream calls reject
@@ -150060,12 +153095,13 @@ pub const Checker = struct {
         const u = try self.internUnionReducingStringSubtypes(members);
         if (u >= self.interner.pool.typeCount()) return u;
         if (!self.interner.pool.flagsOf(u).is_union) return u;
-        // Only reduce when every constituent is a bare call signature ÃÂ¢ÃÂÃÂ
-        // the union-of-function-types shape tsc subtype-reduces here.
+        // Methods retain distinct signature identities too. Reduce their
+        // owning object types using the same strict callable relation,
+        // rather than relying on erased signatures sharing a TypeId.
         const union_members = self.interner.unionMembers(u);
         if (union_members.len < 2) return u;
         for (union_members) |m| {
-            if (!self.interner.isSignature(m)) return u;
+            if (!self.interner.isSignature(m) and !self.interner.pool.flagsOf(m).is_object_type) return u;
             if (self.signatureIsConstruct(m)) return u;
         }
         var kept = std.ArrayListUnmanaged(TypeId).empty;
@@ -150079,7 +153115,7 @@ pub const Checker = struct {
             const source = kept.items[i];
             for (kept.items, 0..) |target, j| {
                 if (j == i) continue;
-                if (self.strictCallableSubtype(source, target)) {
+                if (self.strictUnionReductionSubtype(source, target)) {
                     _ = kept.orderedRemove(i);
                     break;
                 }
@@ -150446,6 +153482,9 @@ pub const Checker = struct {
         for (0..n) |i| {
             try self.inferFromPair(param_ts[i], arg_ts[i], &subs);
         }
+        // Apply defaults in declaration order even when a parameter appears
+        // only inside a symbolic return type, or only in a later default.
+        try self.applyGenericSignatureDefaults(sig, &subs);
         // Default-type fallback: walk every TypeId reachable from the
         // signature (params + return) and, for any type-parameter id
         // not already substituted, fall back to its declaration-site
@@ -150928,71 +153967,98 @@ pub const Checker = struct {
         }
         // Both signatures: match params slot-by-slot and return types.
         if (p_flags.is_signature and a_flags.is_signature) {
-            if (p_payload >= pool.signature_payloads.items.len) return;
-            if (pool.payloadOf(arg_t) >= pool.signature_payloads.items.len) return;
-            const pp = try self.gpa.dupe(TypeId, self.interner.signatureParams(param_t));
-            defer self.gpa.free(pp);
-            if (self.generic_signature_params.get(arg_t) != null and
-                self.generic_signature_params.get(param_t) == null and
-                self.signatureHasBareGenericRestParam(param_t))
-            {
-                if (self.interner.signatureReturn(param_t)) |return_t| {
-                    if (return_t < pool.typeCount()) {
-                        const return_flags = pool.flagsOf(return_t);
-                        if (return_flags.is_type_parameter and
-                            !return_flags.is_union and
-                            !return_flags.is_intersection and
-                            !return_flags.is_object_type and
-                            !return_flags.is_signature and
-                            !subs.contains(return_t))
-                        {
-                            try subs.put(self.gpa, return_t, types.Primitive.unknown);
-                        }
-                    }
+            if (self.generic_signature_params.get(param_t)) |local_params| {
+                // A generic callback binds its own parameters. Inferences
+                // inside that signature can constrain free outer parameters,
+                // but must not instantiate the callback's local binders.
+                var scoped_subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+                defer scoped_subs.deinit(self.gpa);
+                try self.copyInferSubs(subs, &scoped_subs);
+                for (local_params) |local| _ = scoped_subs.remove(local);
+                try self.inferFromSignaturePair(param_t, arg_t, &scoped_subs);
+                var inferred = scoped_subs.iterator();
+                while (inferred.next()) |entry| {
+                    if (std.mem.indexOfScalar(TypeId, local_params, entry.key_ptr.*) != null) continue;
+                    try subs.put(self.gpa, entry.key_ptr.*, entry.value_ptr.*);
                 }
                 return;
             }
-            const raw_ap = self.interner.signatureParams(arg_t);
-            var logical_ap: std.ArrayListUnmanaged(TypeId) = .empty;
-            defer logical_ap.deinit(self.gpa);
-            _ = try self.appendLogicalSignatureInferenceParams(arg_t, raw_ap, &logical_ap);
-            const ap = logical_ap.items;
-            try self.inferRestTupleFromSignatureParams(param_t, pp, arg_t, raw_ap, subs);
-            const m = @min(pp.len, ap.len);
-            var source_subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
-            defer source_subs.deinit(self.gpa);
-            for (0..m) |i| {
-                const expected_param = self.substituteType(pp[i], subs) catch pp[i];
-                const actual_param = ap[i];
-                if ((actual_param == types.Primitive.any or actual_param == types.Primitive.unknown) and
-                    self.containsFreeTypeParameter(expected_param))
-                {
-                    continue;
-                }
-                if (actual_param >= pool.typeCount()) continue;
-                const af = pool.flagsOf(actual_param);
-                if (af.is_type_parameter) {
-                    if (!source_subs.contains(actual_param)) {
-                        try source_subs.put(self.gpa, actual_param, expected_param);
-                    }
-                    continue;
-                }
-                try self.inferFromPair(expected_param, actual_param, subs);
-            }
-            if (self.interner.signatureReturn(param_t)) |pr| {
-                if (self.interner.signatureReturn(arg_t)) |ar| {
-                    const actual_ret = self.substituteType(ar, &source_subs) catch ar;
-                    const inferred_param_ret = self.substituteType(pr, subs) catch pr;
-                    const parameter_inference_already_fixed_generator = inferred_param_ret != pr and
-                        self.generator_type_info.contains(inferred_param_ret) and
-                        self.generator_type_info.contains(actual_ret);
-                    if (!parameter_inference_already_fixed_generator) {
-                        try self.inferFromCovariantPair(pr, actual_ret, subs);
+            try self.inferFromSignaturePair(param_t, arg_t, subs);
+        }
+    }
+
+    fn inferFromSignaturePair(
+        self: *Checker,
+        param_t: TypeId,
+        arg_t: TypeId,
+        subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
+    ) CheckError!void {
+        const pool = &self.interner.pool;
+        const p_payload = pool.payloadOf(param_t);
+        if (p_payload >= pool.signature_payloads.items.len) return;
+        if (pool.payloadOf(arg_t) >= pool.signature_payloads.items.len) return;
+        const pp = try self.gpa.dupe(TypeId, self.interner.signatureParams(param_t));
+        defer self.gpa.free(pp);
+        if (self.generic_signature_params.get(arg_t) != null and
+            self.generic_signature_params.get(param_t) == null and
+            self.signatureHasBareGenericRestParam(param_t))
+        {
+            if (self.interner.signatureReturn(param_t)) |return_t| {
+                if (return_t < pool.typeCount()) {
+                    const return_flags = pool.flagsOf(return_t);
+                    if (return_flags.is_type_parameter and
+                        !return_flags.is_union and
+                        !return_flags.is_intersection and
+                        !return_flags.is_object_type and
+                        !return_flags.is_signature and
+                        !subs.contains(return_t))
+                    {
+                        try subs.put(self.gpa, return_t, types.Primitive.unknown);
                     }
                 }
             }
             return;
         }
+        const raw_ap = self.interner.signatureParams(arg_t);
+        var logical_ap: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer logical_ap.deinit(self.gpa);
+        _ = try self.appendLogicalSignatureInferenceParams(arg_t, raw_ap, &logical_ap);
+        const ap = logical_ap.items;
+        try self.inferRestTupleFromSignatureParams(param_t, pp, arg_t, raw_ap, subs);
+        const m = @min(pp.len, ap.len);
+        var source_subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+        defer source_subs.deinit(self.gpa);
+        for (0..m) |i| {
+            const expected_param = self.substituteType(pp[i], subs) catch pp[i];
+            const actual_param = ap[i];
+            if ((actual_param == types.Primitive.any or actual_param == types.Primitive.unknown) and
+                self.containsFreeTypeParameter(expected_param))
+            {
+                continue;
+            }
+            if (actual_param >= pool.typeCount()) continue;
+            const af = pool.flagsOf(actual_param);
+            if (af.is_type_parameter) {
+                if (!source_subs.contains(actual_param)) {
+                    try source_subs.put(self.gpa, actual_param, expected_param);
+                }
+                continue;
+            }
+            try self.inferFromPair(expected_param, actual_param, subs);
+        }
+        if (self.interner.signatureReturn(param_t)) |pr| {
+            if (self.interner.signatureReturn(arg_t)) |ar| {
+                const actual_ret = self.substituteType(ar, &source_subs) catch ar;
+                const inferred_param_ret = self.substituteType(pr, subs) catch pr;
+                const parameter_inference_already_fixed_generator = inferred_param_ret != pr and
+                    self.generator_type_info.contains(inferred_param_ret) and
+                    self.generator_type_info.contains(actual_ret);
+                if (!parameter_inference_already_fixed_generator) {
+                    try self.inferFromCovariantPair(pr, actual_ret, subs);
+                }
+            }
+        }
+        return;
     }
 
     fn inferFromCovariantPair(
@@ -151064,7 +154130,12 @@ pub const Checker = struct {
         const param_name = (try self.genericInstanceBaseName(param_t)) orelse return false;
         const arg_name = (try self.genericInstanceBaseName(arg_t)) orelse return false;
         if (param_name != arg_name) return false;
+        const pair_key = (@as(u64, param_t) << 32) | @as(u64, arg_t);
+        const pair_entry = try self.active_inference_pairs.getOrPut(self.gpa, pair_key);
+        if (pair_entry.found_existing) return true;
+        defer _ = self.active_inference_pairs.remove(pair_key);
         for (param_args, arg_args) |param_arg, arg_arg| {
+            if (!self.containsFreeTypeParameter(param_arg)) continue;
             try self.inferFromPair(param_arg, arg_arg, subs);
         }
         return true;
@@ -152890,7 +155961,6 @@ pub const Checker = struct {
         if (!self.interner.isSignature(sig) or subs.count() == 0) return sig;
         const old_params = try self.gpa.dupe(TypeId, self.interner.signatureParams(sig));
         defer self.gpa.free(old_params);
-        const param_nodes = self.signature_param_nodes.get(sig);
         try self.pushNarrowScope();
         defer self.popNarrowScope();
         var subs_it = subs.iterator();
@@ -152908,19 +155978,11 @@ pub const Checker = struct {
         var params: std.ArrayListUnmanaged(TypeId) = .empty;
         defer params.deinit(self.gpa);
         var changed = false;
-        for (old_params, 0..) |param, param_index| {
-            var refreshed = param;
-            if (param_nodes) |nodes| {
-                if (param_index < nodes.len and self.hir.kindOf(nodes[param_index]) == .parameter) {
-                    const annotation = hir_mod.parameterOf(self.hir, nodes[param_index]).type_annotation;
-                    if (annotation != hir_mod.none_node_id and
-                        self.firstSignatureType(param) != null)
-                    {
-                        refreshed = self.lowererLowerWithTypeParams(annotation) catch refreshed;
-                    }
-                }
-            }
-            refreshed = try self.relowerObjectTypeMembersWithInferences(refreshed, subs);
+        for (old_params) |param| {
+            // Apply call inference to the instantiated type graph. Re-lowering
+            // the declaration here discards the receiver's substitutions.
+            const substituted = try self.substituteType(param, subs);
+            const refreshed = try self.relowerObjectTypeMembersWithInferences(substituted, subs);
             if (refreshed != param) changed = true;
             try params.append(self.gpa, refreshed);
         }
@@ -154691,6 +157753,21 @@ pub const Checker = struct {
             const result = self.interner.internIntersection(new.items) catch return t;
             return try self.finishSubstitutedMappedType(t, result, subs);
         }
+        if (flags.is_instantiation) {
+            const reference = self.interner.pool.instantiation_payloads.items[payload_idx];
+            const args = try self.gpa.dupe(TypeId, self.interner.pool.type_arg_pool.items[reference.args_start..][0..reference.args_len]);
+            defer self.gpa.free(args);
+            for (args) |*arg| arg.* = try self.substituteType(arg.*, subs);
+            // Substitute the argument graph, never expand the referenced body.
+            return self.interner.internInstantiation(reference.origin, args);
+        }
+        if (flags.is_tuple) {
+            const tuple = self.interner.pool.tuple_payloads.items[payload_idx];
+            const elements = try self.gpa.dupe(types.TupleElement, self.interner.pool.tuple_element_pool.items[tuple.elements_start..][0..tuple.elements_len]);
+            defer self.gpa.free(elements);
+            for (elements) |*element| element.type = try self.substituteType(element.type, subs);
+            return self.interner.internTupleType(elements);
+        }
         if (flags.is_signature) {
             if (payload_idx >= self.interner.pool.signature_payloads.items.len) return t;
             const params = self.interner.signatureParams(t);
@@ -154770,6 +157847,23 @@ pub const Checker = struct {
                 try self.substituteType(this_t, effective_subs)
             else
                 null;
+            // An unaffected substitution retains this declaration's callable
+            // identity. Equal shapes from different declarations still have
+            // different IDs. Predicate targets live outside the shape and
+            // must take the metadata-substitution path below.
+            const original_type_params = self.generic_signature_params.get(t) orelse &.{};
+            var has_predicate_metadata = self.signature_predicates.contains(t);
+            for (0..@min(params_snapshot.len, @as(usize, std.math.maxInt(u16)) + 1)) |param_ix| {
+                if (self.signature_param_predicates.contains(.{ .signature = t, .param_index = @intCast(param_ix) })) {
+                    has_predicate_metadata = true;
+                    break;
+                }
+            }
+            if (!has_predicate_metadata and
+                std.mem.eql(TypeId, new.items, params_snapshot) and
+                ret == sig_payload.return_type and
+                this_t_opt == self.signatureThisParam(t) and
+                std.mem.eql(TypeId, preserved_params.items, original_type_params)) return t;
             const new_sig = if (this_t_opt) |this_t|
                 self.interner.internSignatureWithThisType(
                     new.items,
@@ -154834,6 +157928,9 @@ pub const Checker = struct {
         }
         if (flags.is_object_type) {
             if (payload_idx >= self.interner.pool.object_type_payloads.items.len) return t;
+            if (try self.materializeSubstitutedVariadicTuple(t, subs)) |materialized| {
+                return materialized;
+            }
             const orig = self.interner.objectMembers(t);
             const orig_snapshot = try self.gpa.dupe(types.ObjectMember, orig);
             defer self.gpa.free(orig_snapshot);
@@ -154848,6 +157945,7 @@ pub const Checker = struct {
                     .is_method = om.is_method,
                     .visibility = om.visibility,
                     .decl_node = om.decl_node,
+                    .declaration_origin = om.declaration_origin,
                 });
             }
             // Preserve and substitute index signatures so `T[]`
@@ -154906,7 +158004,10 @@ pub const Checker = struct {
                     errdefer self.gpa.free(next_layout);
                     for (layout, next_layout) |segment, *next| {
                         next.* = .{
-                            .type = try self.substituteType(segment.type, subs),
+                            .type = if (self.infer_type_parameters.contains(segment.type))
+                                segment.type
+                            else
+                                try self.substituteType(segment.type, subs),
                             .is_variadic = segment.is_variadic,
                         };
                     }
@@ -155066,7 +158167,7 @@ pub const Checker = struct {
             var new_parts: std.ArrayListUnmanaged(TypeId) = .empty;
             defer new_parts.deinit(self.gpa);
             var changed = false;
-            var all_literal = true;
+            var all_concrete = true;
             var buf: std.ArrayListUnmanaged(u8) = .empty;
             defer buf.deinit(self.gpa);
             for (texts_snapshot, 0..) |text_sid, i| {
@@ -155075,15 +158176,13 @@ pub const Checker = struct {
                     const new_part = try self.substituteType(part_types_snapshot[i], subs);
                     try new_parts.append(self.gpa, new_part);
                     if (new_part != part_types_snapshot[i]) changed = true;
-                    if (self.stringLiteralValueFromType(new_part)) |lit_sid| {
-                        try buf.appendSlice(self.gpa, self.string_interner.get(lit_sid));
-                    } else {
-                        all_literal = false;
+                    if (all_concrete and !try self.appendTemplateTypeSubstitutionString(new_part, &buf)) {
+                        all_concrete = false;
                     }
                 }
             }
             if (!changed) return t;
-            if (all_literal) {
+            if (all_concrete) {
                 const sid = self.string_interner.intern(buf.items) catch return error.OutOfMemory;
                 return self.interner.internStringLiteral(sid) catch return t;
             }
@@ -155125,6 +158224,34 @@ pub const Checker = struct {
             return substituted_param;
         }
         return t;
+    }
+
+    fn materializeSubstitutedVariadicTuple(
+        self: *Checker,
+        t: TypeId,
+        subs: *const std.AutoHashMapUnmanaged(TypeId, TypeId),
+    ) CheckError!?TypeId {
+        const layout = self.symbolic_tuple_layouts.get(t) orelse return null;
+        if (layout.len == 0) return null;
+        for (layout) |segment| {
+            if (!segment.is_variadic) return null;
+        }
+
+        var elements: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer elements.deinit(self.gpa);
+        for (layout) |segment| {
+            const substituted = try self.substituteType(segment.type, subs);
+            if (!self.isActualTupleType(substituted)) return null;
+            const len: usize = @intCast(self.fixedTupleLength(substituted) orelse return null);
+            if (self.tupleRestMinRequiredCount(substituted) != len) return null;
+            if (elements.items.len + len >= max_tuple_representation_elements) return null;
+            for (0..len) |index| {
+                const element_t = self.tupleElementType(substituted, index);
+                if (element_t == types.Primitive.none) return null;
+                try elements.append(self.gpa, element_t);
+            }
+        }
+        return try self.internTupleFromTypes(elements.items, self.typeIsReadonlyArrayLike(t));
     }
 
     fn substituteThisTypeParametersInReturn(self: *Checker, ret: TypeId, receiver_t: TypeId) CheckError!TypeId {
@@ -156314,8 +159441,13 @@ pub const Checker = struct {
                 self.functionExpressionHasContextSensitiveParameters(args[i]))
             {
                 if (self.firstSignatureType(param_t)) |contextual_sig| {
-                    self.removePriorDiagnosticsInNodeSpan(args[i], TsCodes.property_does_not_exist);
-                    try self.checkFunctionWithContextualSignature(args[i], contextual_sig);
+                    // Recheck only when inference changes the callback's
+                    // context; an identical context already has body types
+                    // and diagnostics from its first check.
+                    if (!self.functionSignatureMatchesContext(args[i], contextual_sig)) {
+                        self.removePriorDiagnosticsInNodeSpan(args[i], TsCodes.property_does_not_exist);
+                        try self.checkFunctionWithContextualSignature(args[i], contextual_sig);
+                    }
                 }
             }
             const inferred_instantiation_boundary = inferred_generic_callback and
@@ -164340,6 +167472,8 @@ pub const Checker = struct {
     }
 
     fn resolveObjectIndexedAccessType(self: *Checker, object_t: TypeId, index_t: TypeId) CheckError!?TypeId {
+        const expanded_object = try self.resolveGenericType(object_t);
+        if (expanded_object != object_t) return self.resolveObjectIndexedAccessType(expanded_object, index_t);
         const obj = (try self.nonNullableIntersectionConstraint(object_t)) orelse
             self.typeParameterConstraint(object_t) orelse
             object_t;
@@ -165926,23 +169060,35 @@ pub const Checker = struct {
     }
 
     fn sourceHasVarDeclarationText(self: *Checker, name: hir_mod.StringId) bool {
-        const src = self.source orelse return false;
-        const raw_name = self.string_interner.get(name);
-        var search_start: usize = 0;
-        while (std.mem.indexOfPos(u8, src, search_start, "var")) |var_pos| {
-            search_start = var_pos + "var".len;
-            if (var_pos > 0 and isJsDocIdentChar(src[var_pos - 1])) continue;
-            if (search_start < src.len and isJsDocIdentChar(src[search_start])) continue;
-            var p = search_start;
-            while (p < src.len and (src[p] == ' ' or src[p] == '\t' or src[p] == '\r' or src[p] == '\n')) : (p += 1) {}
-            if (!std.mem.startsWith(u8, src[p..], raw_name)) continue;
-            if (p + raw_name.len < src.len and isJsDocIdentChar(src[p + raw_name.len])) continue;
-            return true;
+        if (!self.source_var_declarations_indexed) {
+            var node: NodeId = 1;
+            while (node < self.hir.nodeCount()) : (node += 1) {
+                if (self.hir.kindOf(node) != .var_decl) continue;
+                const variable = hir_mod.varDeclOf(self.hir, node);
+                if (variable.name == hir_mod.none_node_id or self.hir.kindOf(variable.name) != .identifier) continue;
+                const declared_name = hir_mod.identifierOf(self.hir, variable.name).name;
+                self.source_var_declaration_names.put(self.gpa, declared_name, {}) catch {
+                    return self.sourceHasVarDeclarationByHir(name);
+                };
+            }
+            self.source_var_declarations_indexed = true;
+        }
+        return self.source_var_declaration_names.contains(name);
+    }
+
+    fn sourceHasVarDeclarationByHir(self: *Checker, name: hir_mod.StringId) bool {
+        var node: NodeId = 1;
+        while (node < self.hir.nodeCount()) : (node += 1) {
+            if (self.hir.kindOf(node) != .var_decl) continue;
+            const variable = hir_mod.varDeclOf(self.hir, node);
+            if (variable.name == hir_mod.none_node_id or self.hir.kindOf(variable.name) != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, variable.name).name == name) return true;
         }
         return false;
     }
 
     fn programHasGlobalVarName(self: *Checker, name: hir_mod.StringId) bool {
+        if (self.programGlobalValueType(name) != null) return true;
         const raw_name = self.string_interner.get(name);
         for (self.program_global_var_names) |program_name| {
             if (std.mem.eql(u8, program_name, raw_name)) return true;
@@ -165951,11 +169097,33 @@ pub const Checker = struct {
     }
 
     fn programHasGlobalTypeName(self: *Checker, name: hir_mod.StringId) bool {
+        if (self.programGlobalType(name) != null) return true;
         const raw_name = self.string_interner.get(name);
         for (self.program_global_type_names) |program_name| {
             if (std.mem.eql(u8, program_name, raw_name)) return true;
         }
         return false;
+    }
+
+    fn programGlobalValueType(self: *const Checker, name: hir_mod.StringId) ?TypeId {
+        for (self.program_global_value_types) |binding| {
+            if (binding.name == name) return binding.type;
+        }
+        return null;
+    }
+
+    fn programGlobalThisPropertyType(self: *const Checker, name: hir_mod.StringId) ?TypeId {
+        for (self.program_global_value_types) |binding| {
+            if (binding.name == name and binding.is_global_this_property) return binding.type;
+        }
+        return null;
+    }
+
+    fn programGlobalType(self: *const Checker, name: hir_mod.StringId) ?TypeId {
+        for (self.program_global_types) |binding| {
+            if (binding.name == name) return binding.type;
+        }
+        return null;
     }
 
     fn sourceHasLexicalValueDeclarationText(self: *Checker, name: hir_mod.StringId) bool {
@@ -166311,8 +169479,14 @@ pub const Checker = struct {
         const af = self.interner.pool.flagsOf(arg_t);
         const pf = self.interner.pool.flagsOf(param_t);
         if (!af.is_object_type or !pf.is_object_type) return false;
+        // The assignability checks below can recursively intern object types,
+        // growing object_member_pool and invalidating its borrowed slice.
+        // Keep the target requirements stable for the duration of the walk.
+        var target_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer target_members.deinit(self.gpa);
+        try target_members.appendSlice(self.gpa, self.interner.objectMembers(param_t));
         var saw_symbol_requirement = false;
-        for (self.interner.objectMembers(param_t)) |tm| {
+        for (target_members.items) |tm| {
             if (!self.isSymbolNamedMember(tm.name)) continue;
             saw_symbol_requirement = true;
             const sm_t = self.interner.objectMember(arg_t, tm.name) orelse {
@@ -166600,6 +169774,13 @@ pub const Checker = struct {
     }
 
     fn identifierFunctionReferenceHasTooManyRequiredParams(self: *Checker, arg_node: NodeId, target_t: TypeId) CheckError!bool {
+        // This diagnostic can only apply to a callable target. Establish that
+        // from the type before walking lexical declarations to discover
+        // whether an identifier was initialized with a function expression.
+        var target_sigs: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer target_sigs.deinit(self.gpa);
+        try self.collectCallSignatures(target_t, &target_sigs);
+        if (target_sigs.items.len == 0) return false;
         const init_node = self.visibleFunctionInitializerForIdentifier(arg_node) orelse return false;
         const count = self.functionExpressionRequiredValueParamCount(init_node);
         if (count == 0) return false;
@@ -166671,6 +169852,19 @@ pub const Checker = struct {
         if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .identifier) return null;
         const id = hir_mod.identifierOf(self.hir, node);
         const use_start = self.hir.spanOf(node).start;
+        if (self.enclosingFunctionLike(node) == null) {
+            if (self.module) |module| {
+                if (module.root.lookup(id.name)) |symbol| {
+                    for (symbol.decls.items) |raw_decl| {
+                        const declaration = self.unwrapExportDecl(raw_decl);
+                        const kind = self.hir.kindOf(declaration);
+                        if (kind != .var_decl and kind != .let_decl and kind != .const_decl) continue;
+                        if (self.hir.spanOf(declaration).start <= use_start) return declaration;
+                    }
+                    return null;
+                }
+            }
+        }
         var cur = self.hir.parentOf(node);
         while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
             const k = self.hir.kindOf(cur);
@@ -168218,6 +171412,20 @@ pub const Checker = struct {
                         if (self.hir.kindOf(d) == .fn_decl) return d;
                     }
                 }
+                for (sym.decls.items) |d| {
+                    const kind = self.hir.kindOf(d);
+                    if (kind != .var_decl and kind != .let_decl and kind != .const_decl) continue;
+                    const initializer = hir_mod.varDeclOf(self.hir, d).init;
+                    if (initializer == hir_mod.none_node_id) continue;
+                    const initializer_kind = self.hir.kindOf(initializer);
+                    if (initializer_kind == .fn_decl or initializer_kind == .fn_expr or initializer_kind == .arrow_fn) {
+                        return initializer;
+                    }
+                }
+                // The binder has a definitive same-name value declaration,
+                // but it is not function-like (commonly a class). Avoid
+                // rescanning every top-level statement for that negative.
+                return null;
             }
         }
         if (self.findFunctionDeclForNameNearNode(anchor, name)) |fn_node| return fn_node;
@@ -168268,7 +171476,7 @@ pub const Checker = struct {
         var scope = anchor;
         while (scope != hir_mod.none_node_id) : (scope = self.hir.parentOf(scope)) {
             if (self.hir.kindOf(scope) != .block_stmt) continue;
-            if (self.findFunctionDeclInStatements(hir_mod.blockStmts(self.hir, scope), name)) |fn_node| return fn_node;
+            if (self.findFunctionDeclInContainer(scope, name)) |fn_node| return fn_node;
         }
         if (self.hir.kindOf(anchor) == .identifier) return self.findSiblingFunctionDecl(anchor);
         return null;
@@ -168772,6 +171980,10 @@ pub const Checker = struct {
     ) CheckError!bool {
         if (!self.sourceHasCheckJsDirective() or !self.isInAssignmentTargetChain(node) or
             object_node == hir_mod.none_node_id or self.hir.kindOf(object_node) != .identifier) return false;
+        // This diagnostic only reconciles declarations from distinct
+        // `@filename` sections in compiler fixtures. A physical source has a
+        // single section, so `has_other_class` below can never become true.
+        if (!self.sourceHasVirtualFilenameSections()) return false;
         const object = hir_mod.identifierOf(self.hir, object_node);
         const root = self.rootBlockFor(node);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
@@ -169432,14 +172644,39 @@ pub const Checker = struct {
     fn findSiblingFunctionDecl(self: *Checker, callee_node: NodeId) ?NodeId {
         if (self.hir.kindOf(callee_node) != .identifier) return null;
         const id = hir_mod.identifierOf(self.hir, callee_node);
+        const root = self.rootBlockFor(callee_node);
         var cur = self.hir.parentOf(callee_node);
         while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
             const k = self.hir.kindOf(cur);
+            if (k == .fn_decl or k == .fn_expr or k == .arrow_fn) {
+                for (hir_mod.fnParams(self.hir, cur)) |param| {
+                    if (self.hir.kindOf(param) != .parameter) continue;
+                    const payload = hir_mod.parameterOf(self.hir, param);
+                    if (payload.name == hir_mod.none_node_id or self.hir.kindOf(payload.name) != .identifier) continue;
+                    if (hir_mod.identifierOf(self.hir, payload.name).name == id.name) return null;
+                }
+            }
             if (k == .namespace_decl) {
-                return self.findFunctionDeclInStatements(hir_mod.namespaceBody(self.hir, cur), id.name);
+                return self.findFunctionDeclInContainer(cur, id.name);
             }
             if (k == .block_stmt) {
-                if (self.findFunctionDeclInStatements(hir_mod.blockStmts(self.hir, cur), id.name)) |fn_node| return fn_node;
+                if (cur == root) {
+                    if (self.module) |module| {
+                        if (module.root.lookup(id.name)) |symbol| {
+                            for (symbol.decls.items) |declaration| {
+                                if (self.hir.kindOf(declaration) == .fn_decl) return declaration;
+                                const decl_kind = self.hir.kindOf(declaration);
+                                if (decl_kind != .var_decl and decl_kind != .let_decl and decl_kind != .const_decl) continue;
+                                const initializer = hir_mod.varDeclOf(self.hir, declaration).init;
+                                if (initializer == hir_mod.none_node_id) continue;
+                                const init_kind = self.hir.kindOf(initializer);
+                                if (init_kind == .fn_decl or init_kind == .fn_expr or init_kind == .arrow_fn) return initializer;
+                            }
+                            return null;
+                        }
+                    }
+                }
+                if (self.findFunctionDeclInContainer(cur, id.name)) |fn_node| return fn_node;
             }
         }
         return null;
@@ -169449,6 +172686,41 @@ pub const Checker = struct {
         const fn_node = self.findSiblingFunctionDecl(callee_node) orelse return null;
         const sig = self.hir.typeOf(fn_node);
         return if (self.interner.isSignature(sig)) sig else null;
+    }
+
+    fn findFunctionDeclInContainer(self: *Checker, container: NodeId, name: hir_mod.StringId) ?NodeId {
+        const stmts = self.containerStatements(container) orelse return null;
+        // Empty and singleton lists already have constant lookup cost.
+        if (stmts.len <= 1) return self.findFunctionDeclInStatements(stmts, name);
+        if (self.function_decls_by_container.getPtr(container)) |entries| return entries.get(name);
+        self.indexFunctionDeclsInContainer(container, stmts) catch
+            return self.findFunctionDeclInStatements(stmts, name);
+        return self.function_decls_by_container.getPtr(container).?.get(name);
+    }
+
+    fn indexFunctionDeclsInContainer(self: *Checker, container: NodeId, stmts: []const NodeId) !void {
+        var entries: std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId) = .empty;
+        errdefer entries.deinit(self.gpa);
+        for (stmts) |stmt| {
+            const declaration = self.unwrapExportDecl(stmt);
+            const fn_node = switch (self.hir.kindOf(declaration)) {
+                .fn_decl => declaration,
+                .var_decl, .let_decl, .const_decl => blk: {
+                    const initializer = hir_mod.varDeclOf(self.hir, declaration).init;
+                    if (initializer == hir_mod.none_node_id) continue;
+                    const kind = self.hir.kindOf(initializer);
+                    if (kind != .fn_decl and kind != .fn_expr and kind != .arrow_fn) continue;
+                    break :blk initializer;
+                },
+                else => continue,
+            };
+            const name = self.declarationName(declaration) orelse continue;
+            const entry = try entries.getOrPut(self.gpa, name);
+            if (!entry.found_existing) entry.value_ptr.* = fn_node;
+        }
+        // Publish only a complete index. On allocation failure the caller can
+        // still use the original scanner without observing partial entries.
+        try self.function_decls_by_container.put(self.gpa, container, entries);
     }
 
     fn findFunctionDeclInStatements(self: *Checker, stmts: []const NodeId, name: hir_mod.StringId) ?NodeId {
@@ -169943,6 +173215,7 @@ pub const Checker = struct {
         if (self.rest_signatures.contains(source_t)) try self.rest_signatures.put(self.gpa, probe, {});
         if (self.signature_min_args.get(source_t)) |min_args| try self.signature_min_args.put(self.gpa, probe, min_args);
         if (relation_this) |this_t| try self.signature_this_params.put(self.gpa, probe, this_t);
+        if (self.signature_predicates.get(source_t)) |predicate| try self.signature_predicates.put(self.gpa, probe, predicate);
         return try self.checkerAssignableTo(probe, target_t);
     }
 
@@ -179565,7 +182838,7 @@ pub const Checker = struct {
             },
         };
         const t = self.interner.internObjectType(&element_members) catch return error.OutOfMemory;
-        try self.type_names.put(self.gpa, name, t);
+        try self.putTypeName(name, t);
         const base_members = element_members ++ [_]types.ObjectMember{.{
             .name = self.string_interner.intern("__home_display_base") catch return error.OutOfMemory,
             .type = types.Primitive.undefined_t,
@@ -179575,7 +182848,7 @@ pub const Checker = struct {
         }};
         const base_t = self.interner.internObjectType(&base_members) catch return error.OutOfMemory;
         const base_name = self.string_interner.intern("ReactElement<any>") catch return error.OutOfMemory;
-        try self.type_names.put(self.gpa, base_name, base_t);
+        try self.putTypeName(base_name, base_t);
         try self.relation_display_base.put(self.gpa, t, base_t);
         return t;
     }
@@ -179849,6 +183122,19 @@ pub const Checker = struct {
     }
 
     fn jsxHasIntrinsicAttributesDecl(self: *Checker, anchor: NodeId) bool {
+        const cacheable = !self.sourceHasVirtualFilenameSections();
+        if (cacheable and self.jsx_intrinsic_attributes_decl_scanned) {
+            return self.jsx_intrinsic_attributes_decl;
+        }
+        const result = self.jsxHasIntrinsicAttributesDeclUncached(anchor);
+        if (cacheable) {
+            self.jsx_intrinsic_attributes_decl_scanned = true;
+            self.jsx_intrinsic_attributes_decl = result;
+        }
+        return result;
+    }
+
+    fn jsxHasIntrinsicAttributesDeclUncached(self: *Checker, anchor: NodeId) bool {
         // Inline `declare namespace JSX { interface IntrinsicAttributes
         // { ÃÂ¢ÃÂÃÂ¦ } }` ÃÂ¢ÃÂÃÂ direct lookup.
         const jsx_name = self.string_interner.intern("JSX") catch return false;
@@ -181195,10 +184481,31 @@ pub const Checker = struct {
         return hir_mod.none_node_id;
     }
 
+    fn putTypeName(self: *Checker, name: hir_mod.StringId, t: TypeId) CheckError!void {
+        const previous = self.type_names.get(name);
+        try self.type_names.put(self.gpa, name, t);
+        if (previous != t) {
+            self.type_names_generation += 1;
+            self.recordNamedShapeMemberFacts(name, t);
+            if (self.registered_named_type_ids_complete) {
+                self.registered_named_type_ids.put(self.gpa, t, {}) catch {
+                    // A partial index cannot prove that an ID is absent.
+                    self.registered_named_type_ids_complete = false;
+                };
+            }
+        }
+        if (previous) |previous_t| {
+            if (previous_t != t and self.named_type_by_id.get(previous_t) == name) {
+                _ = self.named_type_by_id.remove(previous_t);
+            }
+        }
+        try self.named_type_by_id.put(self.gpa, t, name);
+    }
+
     fn namedTypeForId(self: *Checker, t: TypeId) ?hir_mod.StringId {
-        var it = self.type_names.iterator();
-        while (it.next()) |entry| {
-            if (entry.value_ptr.* == t) return entry.key_ptr.*;
+        if (self.named_type_by_id.get(t)) |name| {
+            if (self.type_names.get(name) == t) return name;
+            _ = self.named_type_by_id.remove(t);
         }
         // Partial class instance types built inside per-field
         // initializer checks aren't in `type_names` yet but they are
@@ -181770,6 +185077,7 @@ pub const Checker = struct {
         anchor: NodeId,
     ) ?NodeId {
         if (!self.sourceHasCheckJsDirective() or !self.virtualSectionIsJsLike(anchor)) return null;
+        if (self.source != null and !self.source_may_have_namespace_declaration) return null;
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
         for (hir_mod.blockStmts(self.hir, root)) |raw| {
@@ -183640,14 +186948,37 @@ pub const Checker = struct {
         if (callee == hir_mod.none_node_id) return null;
         if (self.hir.kindOf(callee) == .identifier) {
             const name = hir_mod.identifierOf(self.hir, callee).name;
+            const root = self.rootBlockFor(callee);
             var cur = self.hir.parentOf(callee);
             while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+                const kind = self.hir.kindOf(cur);
+                if (kind == .fn_decl or kind == .fn_expr or kind == .arrow_fn) {
+                    for (hir_mod.fnParams(self.hir, cur)) |param| {
+                        if (self.hir.kindOf(param) != .parameter) continue;
+                        const payload = hir_mod.parameterOf(self.hir, param);
+                        if (payload.name == hir_mod.none_node_id or self.hir.kindOf(payload.name) != .identifier) continue;
+                        if (hir_mod.identifierOf(self.hir, payload.name).name == name) return null;
+                    }
+                }
                 const statements: ?[]const NodeId = switch (self.hir.kindOf(cur)) {
                     .block_stmt => hir_mod.blockStmts(self.hir, cur),
                     .namespace_decl => hir_mod.namespaceBody(self.hir, cur),
                     else => null,
                 };
                 if (statements) |items| {
+                    if (cur == root) {
+                        if (self.module) |module| {
+                            if (module.root.lookup(name)) |sym| {
+                                var found: ?NodeId = null;
+                                for (sym.decls.items) |declaration| {
+                                    if (self.hir.kindOf(declaration) != .fn_decl) continue;
+                                    if (found != null) return null;
+                                    found = declaration;
+                                }
+                                return found;
+                            }
+                        }
+                    }
                     if (self.singleNamedFunctionDecl(items, name)) |decl| return decl;
                 }
             }
@@ -186193,6 +189524,57 @@ fn newSetup(source: []const u8) !*TestSetup {
     return s;
 }
 
+fn testCheckedTypesCapture(allocator: std.mem.Allocator) !void {
+    const s = try newSetup("");
+    // Map allocations, capture, and cleanup all use the same allocator.
+    s.checker.gpa = allocator;
+    defer destroySetup(s);
+    var label = [_]u8{ 'A', 'l', 'i', 'a', 's' };
+    var args = [_]TypeId{ types.Primitive.string_t, types.Primitive.number_t };
+    inline for (CheckedTypes.borrowed_slices) |name| {
+        if (comptime std.mem.eql(u8, name, "alias_type_args")) {
+            try @field(s.checker, name).put(allocator, types.Primitive.string_t, &args);
+        } else {
+            try @field(s.checker, name).put(allocator, types.Primitive.string_t, &label);
+        }
+    }
+    try s.checker.no_infer_types.put(allocator, types.Primitive.string_t, types.Primitive.number_t);
+    try s.checker.rest_signatures.put(allocator, types.Primitive.string_t, {});
+    s.engine.setRestSignatures(&s.checker.rest_signatures);
+    var result: CheckedTypes = .{};
+    defer result.deinit(allocator);
+    s.checker.takeCheckedTypes(&result) catch |err| {
+        inline for (comptime std.meta.fieldNames(CheckedTypes)) |name| {
+            try T.expectEqual(@as(usize, 0), @field(result, name).capacity());
+        }
+        inline for (CheckedTypes.borrowed_slices) |name| {
+            try T.expectEqual(@as(usize, 1), @field(s.checker, name).count());
+        }
+        try T.expect(s.checker.no_infer_types.contains(types.Primitive.string_t));
+        try T.expect(s.checker.rest_signatures.contains(types.Primitive.string_t));
+        try T.expect(s.engine.rest_signatures.? == &s.checker.rest_signatures);
+        return err;
+    };
+    @memset(&label, '!');
+    args[0] = types.Primitive.never;
+    inline for (CheckedTypes.borrowed_slices) |name| {
+        if (comptime std.mem.eql(u8, name, "alias_type_args")) {
+            try T.expectEqualSlices(TypeId, &.{ types.Primitive.string_t, types.Primitive.number_t }, @field(result, name).get(types.Primitive.string_t).?);
+        } else {
+            try T.expectEqualStrings("Alias", @field(result, name).get(types.Primitive.string_t).?);
+        }
+    }
+    inline for (comptime std.meta.fieldNames(CheckedTypes)) |name| {
+        try T.expectEqual(@as(usize, 0), @field(s.checker, name).capacity());
+    }
+    try T.expectEqual(types.Primitive.number_t, result.no_infer_types.get(types.Primitive.string_t).?);
+    try T.expect(s.engine.rest_signatures.? == &result.rest_signatures);
+}
+
+test "checker: checked type capture owns borrowed slices and is transactional on OOM" {
+    try std.testing.checkAllAllocationFailures(T.allocator, testCheckedTypesCapture, .{});
+}
+
 fn newTsxSetup(source: []const u8) !*TestSetup {
     const s = try T.allocator.create(TestSetup);
     errdefer T.allocator.destroy(s);
@@ -188009,6 +191391,112 @@ test "checker: virtual file export stars do not use single-source conflict heuri
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.export_star_conflict);
     }
+}
+
+const ExportNameSetResolver = struct {
+    overlapping: bool,
+    same_origin: ?bool = null,
+
+    const vtable = ExternalResolver.VTable{
+        .resolve = resolveImpl,
+        .moduleExportNames = moduleExportNamesImpl,
+        .sameModuleExport = sameModuleExportImpl,
+    };
+
+    fn sameModuleExportImpl(ptr: *anyopaque, _: []const u8, _: []const u8, _: []const u8, _: []const u8) ?bool {
+        const self: *ExportNameSetResolver = @ptrCast(@alignCast(ptr));
+        return self.same_origin;
+    }
+
+    fn resolveImpl(_: *anyopaque, specifier: []const u8, _: []const u8) ?ExternalResolver.Resolution {
+        const path = if (std.mem.eql(u8, specifier, "./a-alias")) "./a" else specifier;
+        return .{ .path = path, .is_declaration = true };
+    }
+
+    fn moduleExportNamesImpl(
+        ptr: *anyopaque,
+        specifier: []const u8,
+        _: []const u8,
+    ) ?[]const []const u8 {
+        const self: *ExportNameSetResolver = @ptrCast(@alignCast(ptr));
+        if (std.mem.eql(u8, specifier, "./a")) return &.{ "A", "shared" };
+        if (std.mem.eql(u8, specifier, "./a-alias")) return &.{ "A", "shared" };
+        if (std.mem.eql(u8, specifier, "./b")) return &.{"B"};
+        if (std.mem.eql(u8, specifier, "./c")) {
+            return if (self.overlapping) &.{ "C", "shared" } else &.{"C"};
+        }
+        return null;
+    }
+};
+
+test "checker: external export stars compare projected names" {
+    const s = try newSetup(
+        \\export * from "./a";
+        \\export * from "./b";
+        \\export * from "./c";
+    );
+    defer destroySetup(s);
+    var resolver = ExportNameSetResolver{ .overlapping = false };
+    s.checker.setExternalResolver(.{ .ptr = &resolver, .vtable = &ExportNameSetResolver.vtable });
+    s.checker.setImporterPath("/index.ts");
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.export_star_conflict));
+}
+
+test "checker: external export stars report real projected name conflicts" {
+    const s = try newSetup(
+        \\export * from "./a";
+        \\export * from "./b";
+        \\export * from "./c";
+    );
+    defer destroySetup(s);
+    var resolver = ExportNameSetResolver{ .overlapping = true };
+    s.checker.setExternalResolver(.{ .ptr = &resolver, .vtable = &ExportNameSetResolver.vtable });
+    s.checker.setImporterPath("/index.ts");
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.export_star_conflict));
+}
+
+test "checker: external export stars require proven same declaration origins" {
+    for ([_]?bool{ true, false, null }) |same_origin| {
+        const s = try newSetup(
+            \\export * from "./a";
+            \\export * from "./c";
+        );
+        defer destroySetup(s);
+        var resolver = ExportNameSetResolver{ .overlapping = true, .same_origin = same_origin };
+        s.checker.setExternalResolver(.{ .ptr = &resolver, .vtable = &ExportNameSetResolver.vtable });
+        s.checker.setImporterPath("/index.ts");
+        try s.checker.checkSourceFile(s.root);
+        try T.expectEqual(@as(usize, if (same_origin orelse false) 0 else 1), checkerCountCode(s, TsCodes.export_star_conflict));
+    }
+}
+
+test "checker: explicit export resolves external star ambiguity" {
+    const s = try newSetup(
+        \\export { shared } from "./a";
+        \\export * from "./a";
+        \\export * from "./c";
+    );
+    defer destroySetup(s);
+    var resolver = ExportNameSetResolver{ .overlapping = true };
+    s.checker.setExternalResolver(.{ .ptr = &resolver, .vtable = &ExportNameSetResolver.vtable });
+    s.checker.setImporterPath("/index.ts");
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.export_star_conflict));
+}
+
+test "checker: export stars resolving to one module are unambiguous" {
+    const s = try newSetup(
+        \\export * from "./a";
+        \\export * from "./a-alias";
+    );
+    defer destroySetup(s);
+    var resolver = ExportNameSetResolver{ .overlapping = true };
+    s.checker.setExternalResolver(.{ .ptr = &resolver, .vtable = &ExportNameSetResolver.vtable });
+    s.checker.setImporterPath("/index.ts");
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.export_star_conflict));
 }
 
 test "checker: virtual js export stars resolve TypeScript source extensions" {
@@ -193624,6 +197112,204 @@ test "checker: ambient export assignment class is a require alias type" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.value_used_as_type_did_you_mean_typeof));
+}
+
+test "checker: source-owned local class metadata is not an import binding" {
+    const s = try newSetup("import { Hidden } from './owner';");
+    defer destroySetup(s);
+    s.checker.setImporterPath("/app.ts");
+    s.checker.setProgramExportedClasses(&.{.{ .target_path = "/owner.ts", .class_name = "Hidden", .local_only = true }});
+    const import_node = hir_mod.blockStmts(&s.hir, s.root)[0];
+    try T.expectEqual(null, try s.checker.programExportedClassForImportBinding(import_node, try s.sint.intern("Hidden")));
+    try T.expectEqual(null, try s.checker.programExportedClassInstanceTypeForImportPath(import_node, try s.sint.intern("./owner"), try s.sint.intern("Hidden"), import_node));
+}
+
+test "checker: source-owned instantiated members do not refresh from display-name aliases" {
+    const s = try newSetup("class Box<T> { value!: number; }");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    var params = [_]ProgramClassSchema.Parameter{.{ .name = "T" }};
+    const parameter: ProgramClassSchema.Expression = .{ .parameter = &params[0] };
+    const body: ProgramClassSchema.Expression = .{ .object = &.{.{ .name = "value", .type = &parameter }} };
+    const declaration: ProgramClassSchema.Declaration = .{ .path = "/owner.ts", .position = 0, .name = "Box", .parameters = &params, .body = &body, .is_class = true };
+    const instance = try s.checker.instantiateProgramDeclaration(&declaration, &.{types.Primitive.string_t}, &.{});
+    try T.expectEqual(types.Primitive.string_t, (try s.checker.lookupObjectMember(instance, try s.sint.intern("value"))).?);
+}
+
+test "checker: source-owned generic instances retain concrete recursive arguments and owners" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    var params = [_]ProgramClassSchema.Parameter{.{ .name = "T" }};
+    const parameter: ProgramClassSchema.Expression = .{ .parameter = &params[0] };
+    var declaration: ProgramClassSchema.Declaration = .{ .path = "/owner.ts", .position = 7, .name = "Link", .parameters = &params, .is_class = true };
+    const ref: ProgramClassSchema.Expression = .{ .reference = .{ .declaration = &declaration, .arguments = &.{&parameter} } };
+    const body: ProgramClassSchema.Expression = .{ .object = &.{
+        .{ .name = "item", .type = &parameter, .visibility = .private },
+        .{ .name = "next", .type = &ref, .optional = true },
+    } };
+    declaration.body = &body;
+    const first = try s.checker.instantiateProgramDeclaration(&declaration, &.{types.Primitive.string_t}, &.{});
+    const repeat = try s.checker.instantiateProgramDeclaration(&declaration, &.{types.Primitive.string_t}, &.{});
+    const other_args = try s.checker.instantiateProgramDeclaration(&declaration, &.{types.Primitive.number_t}, &.{});
+    const item = try s.sint.intern("item");
+    const next = try s.sint.intern("next");
+    try T.expectEqual(first, repeat);
+    try T.expect(first != other_args);
+    try T.expect(!try s.checker.checkerAssignableTo(first, other_args));
+    try T.expectEqual(types.Primitive.string_t, s.ti.objectMember(first, item).?);
+    try T.expectEqual(types.Primitive.number_t, s.ti.objectMember(other_args, item).?);
+    try T.expectEqual(first, try s.checker.resolveGenericType(s.ti.objectMember(first, next).?));
+    try T.expectEqual(other_args, try s.checker.resolveGenericType(s.ti.objectMember(other_args, next).?));
+    try T.expect(s.ti.objectMemberInfo(first, next).?.is_optional);
+    try T.expectEqual(s.ti.objectMemberInfo(first, item).?.declaration_origin, s.ti.objectMemberInfo(other_args, item).?.declaration_origin);
+    // A separately collected alias of the same declaration shares its cache
+    // identity, but a genuinely different owner must remain distinct.
+    var alias = declaration;
+    try T.expectEqual(first, try s.checker.instantiateProgramDeclaration(&alias, &.{types.Primitive.string_t}, &.{}));
+    alias.path = "/other.ts";
+    const other_owner = try s.checker.instantiateProgramDeclaration(&alias, &.{types.Primitive.string_t}, &.{});
+    try T.expect(s.ti.objectMemberInfo(first, item).?.declaration_origin != s.ti.objectMemberInfo(other_owner, item).?.declaration_origin);
+}
+
+test "checker: source-owned growing recursion expands only requested surfaces" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    var params = [_]ProgramClassSchema.Parameter{.{ .name = "T" }};
+    const parameter: ProgramClassSchema.Expression = .{ .parameter = &params[0] };
+    const array: ProgramClassSchema.Expression = .{ .array = &parameter };
+    var declaration: ProgramClassSchema.Declaration = .{ .path = "/owner.ts", .position = 7, .name = "Link", .parameters = &params };
+    const ref: ProgramClassSchema.Expression = .{ .reference = .{ .declaration = &declaration, .arguments = &.{&array} } };
+    const body: ProgramClassSchema.Expression = .{ .object = &.{ .{ .name = "item", .type = &parameter }, .{ .name = "next", .type = &ref } } };
+    declaration.body = &body;
+    var instance = try s.checker.instantiateProgramDeclaration(&declaration, &.{types.Primitive.string_t}, &.{});
+    const item = try s.sint.intern("item");
+    const next = try s.sint.intern("next");
+    try T.expectEqual(@as(u32, 1), s.checker.generic_instances.count());
+    for (0..64) |depth| {
+        var element = s.ti.objectMember(instance, item).?;
+        for (0..depth) |_| element = s.ti.objectNumberIndex(element);
+        try T.expectEqual(types.Primitive.string_t, element);
+        const reference = s.ti.objectMember(instance, next).?;
+        instance = try s.checker.resolveGenericType(reference);
+        try T.expectEqual(instance, try s.checker.resolveGenericType(reference));
+    }
+    try T.expectEqual(@as(u32, 65), s.checker.generic_instances.count());
+    try T.expectEqual(@as(u32, 1), s.checker.program_generic_definitions.count());
+    try T.expectEqual(@as(u32, 0), s.checker.generic_expansion_active.count());
+}
+
+test "checker: source-owned transparent aliases preserve the expanded object's origin" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    var params = [_]ProgramClassSchema.Parameter{.{ .name = "T" }};
+    const parameter: ProgramClassSchema.Expression = .{ .parameter = &params[0] };
+    const body: ProgramClassSchema.Expression = .{ .object = &.{.{ .name = "item", .type = &parameter }} };
+    const declaration: ProgramClassSchema.Declaration = .{ .path = "/owner.ts", .position = 0, .name = "Box", .parameters = &params, .body = &body, .is_class = true };
+    const instance = try s.checker.instantiateProgramDeclaration(&declaration, &.{types.Primitive.string_t}, &.{});
+    const origin = s.checker.generic_instance_origins.get(instance).?;
+    const identity: ProgramClassSchema.Declaration = .{ .path = "/owner.ts", .position = 1, .name = "Identity", .parameters = &params, .body = &parameter };
+    try T.expectEqual(instance, try s.checker.instantiateProgramDeclaration(&identity, &.{instance}, &.{}));
+    try T.expectEqual(origin, s.checker.generic_instance_origins.get(instance).?);
+    const reference: ProgramClassSchema.Expression = .{ .reference = .{ .declaration = &declaration, .arguments = &.{&parameter} } };
+    const alias: ProgramClassSchema.Declaration = .{ .path = "/owner.ts", .position = 2, .name = "Alias", .parameters = &params, .body = &reference };
+    try T.expectEqual(instance, try s.checker.instantiateProgramDeclaration(&alias, &.{types.Primitive.string_t}, &.{}));
+    try T.expectEqual(origin, s.checker.generic_instance_origins.get(instance).?);
+    const plain = try s.ti.internObjectType(&.{});
+    try T.expectEqual(plain, try s.checker.instantiateProgramDeclaration(&identity, &.{plain}, &.{}));
+    try T.expect(!s.checker.generic_instance_origins.contains(plain));
+}
+
+test "checker: source-owned dependent defaults use earlier effective arguments" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    const string: ProgramClassSchema.Expression = .{ .primitive = types.Primitive.string_t };
+    var params = [_]ProgramClassSchema.Parameter{ .{ .name = "T", .default = &string }, .{ .name = "U" } };
+    const first: ProgramClassSchema.Expression = .{ .parameter = &params[0] };
+    const second: ProgramClassSchema.Expression = .{ .parameter = &params[1] };
+    const array: ProgramClassSchema.Expression = .{ .array = &first };
+    params[1].default = &array;
+    const body: ProgramClassSchema.Expression = .{ .object = &.{.{ .name = "value", .type = &second }} };
+    const declaration: ProgramClassSchema.Declaration = .{ .path = "/owner.ts", .position = 0, .name = "Box", .parameters = &params, .body = &body };
+    const implicit = try s.checker.instantiateProgramDeclaration(&declaration, &.{}, &.{});
+    const explicit = try s.checker.instantiateProgramDeclaration(&declaration, &.{types.Primitive.number_t}, &.{});
+    const value = try s.sint.intern("value");
+    const string_array = try s.ti.internArrayType(&s.sint, types.Primitive.string_t);
+    const number_array = try s.ti.internArrayType(&s.sint, types.Primitive.number_t);
+    // Array type IDs need not canonicalize, so compare their numeric index.
+    try T.expect(try s.engine.isAssignableTo(s.ti.objectMember(implicit, value).?, string_array));
+    try T.expect(try s.engine.isAssignableTo(s.ti.objectMember(explicit, value).?, number_array));
+    try T.expect(!try s.engine.isAssignableTo(s.ti.objectMember(explicit, value).?, string_array));
+}
+
+test "checker: source-owned factory defaults substitute earlier arguments without consumer HIR" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    const string: ProgramClassSchema.Expression = .{ .primitive = types.Primitive.string_t };
+    var params = [_]ProgramClassSchema.Parameter{ .{ .name = "T", .default = &string }, .{ .name = "U" } };
+    const first: ProgramClassSchema.Expression = .{ .parameter = &params[0] };
+    const second: ProgramClassSchema.Expression = .{ .parameter = &params[1] };
+    const array: ProgramClassSchema.Expression = .{ .array = &first };
+    params[1].default = &array;
+    const function: ProgramClassSchema.Expression = .{ .function = .{ .parameters = &.{}, .result = &second } };
+    const declaration: ProgramClassSchema.Declaration = .{ .path = "/owner.ts", .position = 0, .name = "make", .parameters = &params, .body = &function, .is_function = true };
+    const signature = (try s.checker.programExportedValueType(.{ .target_path = "/owner.ts", .export_name = "make", .kind = .function, .declaration = &declaration })).?;
+    const actual = try s.checker.instantiateSignatureFromArgs(signature, &.{}, &.{});
+    const result = s.ti.signatureReturn(actual).?;
+    try T.expectEqual(types.Primitive.string_t, s.ti.objectNumberIndex(result));
+    const declared = s.checker.generic_signature_params.get(signature).?;
+    var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+    defer subs.deinit(T.allocator);
+    try subs.put(T.allocator, declared[0], types.Primitive.number_t);
+    try s.checker.applyGenericSignatureDefaults(signature, &subs);
+    try T.expectEqual(types.Primitive.number_t, s.ti.objectNumberIndex(subs.get(declared[1]).?));
+}
+
+test "checker: source-owned anonymous constraints report without a local declaration node" {
+    const s = try newSetup("let value: { id: number };");
+    defer destroySetup(s);
+    const variable = hir_mod.blockStmts(&s.hir, s.root)[0];
+    const arg_node = hir_mod.varDeclOf(&s.hir, variable).type_annotation;
+    const arg = try s.checker.lowererLowerWithTypeParams(arg_node);
+    const constraint = try s.ti.internObjectType(&.{.{
+        .name = try s.sint.intern("id"),
+        .type = types.Primitive.string_t,
+        .is_optional = false,
+        .is_readonly = false,
+        .is_method = false,
+    }});
+    const param = try s.ti.internTypeParameter(try s.sint.intern("T"), constraint, types.Primitive.none);
+    try s.checker.checkTypeArgSatisfiesConstraint(arg_node, param, arg);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_does_not_satisfy_constraint));
+}
+
+test "checker: source-owned structural constraints use empty apparent types without inventing properties" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    const member: types.ObjectMember = .{
+        .name = try s.sint.intern("value"),
+        .type = types.Primitive.string_t,
+        .is_optional = true,
+        .is_readonly = false,
+        .is_method = false,
+    };
+    const weak = try s.ti.internObjectType(&.{member});
+    var required_member = member;
+    required_member.is_optional = false;
+    const required = try s.ti.internObjectType(&.{required_member});
+    for ([_]TypeId{ types.Primitive.object_t, types.Primitive.bigint_t }) |source| {
+        try T.expect(try s.checker.genericConstraintAssignable(source, weak));
+        try T.expect(!try s.checker.genericConstraintAssignable(source, required));
+    }
+    try T.expect(!try s.checker.genericConstraintAssignable(types.Primitive.bigint_t, types.Primitive.object_t));
+    const wrapper = try s.ti.internObjectType(&.{.{
+        .name = member.name,
+        .type = types.Primitive.number_t,
+        .is_optional = false,
+        .is_readonly = false,
+        .is_method = false,
+    }});
+    try s.checker.putTypeName(try s.sint.intern("BigInt"), wrapper);
+    try T.expect(!try s.checker.genericConstraintAssignable(types.Primitive.bigint_t, weak));
 }
 
 test "checker: program ambient export assignment class is a require alias type" {
@@ -199421,6 +203107,103 @@ test "checker: strict false directive suppresses conditional var TS2454" {
     }
 }
 
+test "checker: conditional assignment filters match original source scans" {
+    const Reference = struct {
+        fn scan(self: *Checker, node: NodeId, name: hir_mod.StringId) bool {
+            const source = self.source orelse return false;
+            const raw_use_start: usize = @intCast(self.hir.spanOf(node).start);
+            const use_start = @min(raw_use_start, source.len);
+            const statement_end = std.mem.lastIndexOfScalar(u8, source[0..use_start], ';') orelse return false;
+            const prior_end = std.mem.lastIndexOfScalar(u8, source[0..statement_end], ';');
+            const statement_start = if (prior_end) |end| end + 1 else 0;
+            const statement = std.mem.trim(u8, source[statement_start..statement_end], " \t\r\n");
+            const name_text = self.string_interner.get(name);
+            var search_start: usize = 0;
+            var cursor: usize = 0;
+            while (std.mem.indexOfPos(u8, statement, search_start, name_text)) |name_start| {
+                search_start = name_start + name_text.len;
+                if (name_start > 0 and (std.ascii.isAlphanumeric(statement[name_start - 1]) or statement[name_start - 1] == '_' or statement[name_start - 1] == '$')) continue;
+                const name_end = name_start + name_text.len;
+                if (name_end < statement.len and (std.ascii.isAlphanumeric(statement[name_end]) or statement[name_end] == '_' or statement[name_end] == '$')) continue;
+                cursor = name_end;
+                while (cursor < statement.len and std.ascii.isWhitespace(statement[cursor])) cursor += 1;
+                if (cursor >= statement.len or statement[cursor] != '=') continue;
+                if (cursor + 1 < statement.len and (statement[cursor + 1] == '=' or statement[cursor + 1] == '>')) continue;
+                break;
+            } else return false;
+            const rhs = statement[cursor + 1 ..];
+            return std.mem.indexOfScalar(u8, rhs, '?') != null and
+                std.mem.indexOfScalar(u8, rhs, ':') != null and
+                std.mem.indexOf(u8, rhs, name_text) != null;
+        }
+
+        fn compare(s: *TestSetup, node: NodeId, source: []const u8) !void {
+            for ([_]bool{ true, false }) |cached_markers| {
+                s.checker.setSource(source);
+                if (!cached_markers) s.checker.source_markers = null;
+                for (0..source.len + 3) |pos| {
+                    s.hir.spans.items[node] = .{ .start = @intCast(pos), .end = @intCast(pos) };
+                    for ([_][]const u8{ "x", "xx", "y", "_x", "$x", "flag", "use", "absent" }) |text| {
+                        const name = try s.sint.intern(text);
+                        try T.expectEqual(
+                            scan(&s.checker, node, name),
+                            s.checker.sourceHasDirectSelfConditionalAssignmentBeforeUse(node, name),
+                        );
+                    }
+                }
+            }
+        }
+    };
+    const s = try newSetup("x;");
+    defer destroySetup(s);
+    var builder = hir_mod.Builder.init(&s.hir);
+    defer builder.deinit();
+    const name = try s.sint.intern("x");
+    const node = try builder.addIdentifier(.{ .start = 0, .end = 0 }, name);
+    for ([_][]const u8{
+        "",                       "x",                            ";;;",                                 "x = flag ? x : 0; use",               "let x; x = 1; use",
+        "xx = flag ? x : 0; use", "_x = flag ? x : 0; use",       "$x = flag ? x : 0; use",              "x == flag ? x : 0; use",              "x => flag ? x : 0; use",
+        "x === x ? x : 0; use",   "x = 1, x = flag ? x : 0; use", "x = 1, y = flag ? x : 0; use",        "if (flag) { x = flag ? x : 0; use }", "x = flag ? x : 0; y = 1; use",
+        "x = '? : x'; use",       "/* ? : */ x = 1; use",         "x = 1 /* ? : x */; use",              "x = flag ? y : 0; use",               "x = flag ? x; use",
+        "x = flag : x; use",      "x\t=\r\nflag ? x : 0;\r\nuse", "x = flag ? x : 0; use; later = '?';", "x = '\x00\xff? : x'; use",            "x = '?; : x'; use",
+    }) |source| try Reference.compare(s, node, source);
+    var seed: u32 = 0xdecafbad;
+    var buffer: [128]u8 = undefined;
+    const alphabet = "xx_y$=?>:; '\n\r\t\x00\xff";
+    for (0..128) |round| {
+        const len = round % buffer.len;
+        for (buffer[0..len]) |*byte| {
+            seed = seed *% 1664525 +% 1013904223;
+            byte.* = alphabet[seed % alphabet.len];
+        }
+        try Reference.compare(s, node, buffer[0..len]);
+    }
+}
+
+test "checker: conditional assignment filters retain positives and source replacement" {
+    const s = try newSetup("x;");
+    defer destroySetup(s);
+    var builder = hir_mod.Builder.init(&s.hir);
+    defer builder.deinit();
+    const name = try s.sint.intern("x");
+    const node = try builder.addIdentifier(.{ .start = 0, .end = 0 }, name);
+    const Case = struct { source: []const u8, expected: bool };
+    for ([_]Case{
+        .{ .source = "x = flag ? x : 0; use", .expected = true },
+        .{ .source = "x = 1; use", .expected = false },
+        .{ .source = "x = '? : x'; use", .expected = true },
+        .{ .source = "/* ? : */ x = 1; use", .expected = false },
+        .{ .source = "x = flag ? x : 0; y = 1; use", .expected = false },
+        .{ .source = "x = flag ? x : 0; use", .expected = true },
+    }) |case| {
+        s.checker.setSource(case.source);
+        s.hir.spans.items[node] = .{ .start = @intCast(case.source.len), .end = @intCast(case.source.len) };
+        try T.expectEqual(case.expected, s.checker.sourceHasDirectSelfConditionalAssignmentBeforeUse(node, name));
+    }
+    s.checker.source = null;
+    try T.expect(!s.checker.sourceHasDirectSelfConditionalAssignmentBeforeUse(node, name));
+}
+
 test "checker: source fact cache resets when source changes" {
     const s = try newSetup("const value = 1;");
     defer destroySetup(s);
@@ -199453,6 +203236,76 @@ test "checker: source fact cache resets when source changes" {
     try T.expect(!s.checker.sourceHasUseDefineForClassFieldsTrueDirective());
 }
 
+test "checker: source marker feature facts match independent substring searches" {
+    const s = try newSetup("const value = 1;");
+    defer destroySetup(s);
+    for ([_][]const u8{
+        "",                                                                           "const value = 1;",                                             "// @Filename: a.ts\n// @filename: b.ts",
+        "export namespace N as any declare var value: any; import x = require('x');", "myclassify enumtype global module .prototype [ = { protected", "'@import' /* require */",
+        "requires require1 $require _require require$ require_",                      "\xffrequire\xc3\xa9",                                          "require",
+        "prototype[ = {",                                                             "prototype[ {",                                                 "enum",
+        "type",
+    }) |source| {
+        s.checker.setSource(source);
+        try T.expectEqual(std.mem.indexOf(u8, source, "@filename:") != null or std.mem.indexOf(u8, source, "@Filename:") != null, s.checker.source_has_virtual_sections);
+        try T.expectEqual(std.mem.indexOf(u8, source, "export") != null and std.mem.indexOf(u8, source, "namespace") != null and std.mem.indexOf(u8, source, "as") != null, s.checker.source_may_have_umd_namespace_export);
+        try T.expectEqual(std.mem.indexOf(u8, source, "declare") != null and std.mem.indexOf(u8, source, "var") != null and std.mem.indexOfScalar(u8, source, ':') != null and std.mem.indexOf(u8, source, "any") != null, s.checker.source_may_have_declare_any_var);
+        try T.expectEqual(std.mem.indexOf(u8, source, "import") != null and std.mem.indexOfScalar(u8, source, '=') != null, s.checker.source_may_have_import_equals);
+        try T.expectEqual(std.mem.indexOf(u8, source, "import") != null, s.checker.source_may_have_import_declaration);
+        try T.expectEqual(std.mem.indexOf(u8, source, "@import") != null, s.checker.source_may_have_jsdoc_import_tag);
+        try T.expectEqual(s.checker.sourceSliceMentionsIdentifier(source, "require"), s.checker.source_may_have_require_binding);
+        try T.expectEqual(std.mem.indexOf(u8, source, "namespace") != null or std.mem.indexOf(u8, source, "module") != null or std.mem.indexOf(u8, source, "global") != null, s.checker.source_may_have_namespace_declaration);
+        try T.expectEqual(std.mem.indexOf(u8, source, "class") != null or std.mem.indexOf(u8, source, "enum") != null, s.checker.source_may_have_class_or_enum_declaration);
+        try T.expectEqual(std.mem.indexOf(u8, source, "enum") != null, s.checker.source_may_have_enum_declaration);
+        try T.expectEqual(std.mem.indexOf(u8, source, "type") != null, s.checker.source_may_have_type_alias_declaration);
+        try T.expectEqual(std.mem.indexOf(u8, source, "prototype") != null and std.mem.indexOfScalar(u8, source, '[') != null and std.mem.indexOfScalar(u8, source, '=') != null and std.mem.indexOfScalar(u8, source, '{') != null, s.checker.source_may_have_computed_prototype_assignment);
+        try T.expectEqual(std.mem.indexOf(u8, source, ".prototype") != null, s.checker.source_may_have_prototype_assignment);
+        try T.expectEqual(std.mem.indexOf(u8, source, "protected") != null, s.checker.source_may_have_protected_member);
+        inline for (source_markers_mod.patterns) |marker| {
+            try T.expectEqual(std.mem.indexOf(u8, source, marker), s.checker.sourceMarkerPosition(marker));
+        }
+    }
+}
+
+test "checker: source marker directives preserve precedence casing and fallback" {
+    const s = try newSetup("const value = 1;");
+    defer destroySetup(s);
+    const cases = .{
+        // source, noLib, checkJs enabled, checkJs disabled, allowJs
+        .{ "", false, false, false, false },
+        .{ "// @nolib:true\n// @noLib:false", false, false, false, false },
+        .{ "// @noLib:false\n// @noLib:true", false, false, false, false },
+        .{ "// @nolib:untrue\n", true, false, false, false },
+        .{ "// @noLib:TRUE\n", false, false, false, false },
+        .{ "// @checkJs:false\n// @checkJs:true", false, false, true, false },
+        .{ "// @checkJs:false\n// @ts-check", false, true, true, false },
+        .{ "@checkOther @checkjS:true @allowOther @allowJS:true", false, true, false, true },
+        .{ "@checkJs:TRUE @allowJs:TRUE", false, false, false, false },
+        .{ "@checkJS:trueish @allowJs:trueish", false, true, false, true },
+        .{ "@check @allow", false, false, false, false },
+        .{ "@CheckJs:true @AllowJs:true", false, false, false, false },
+        .{ "@checkJs:\ntrue @allowJs:\ntrue", false, false, false, false },
+    };
+    inline for (cases) |case| {
+        for ([_]bool{ true, false }) |indexed| {
+            s.checker.setSource(case[0]);
+            if (!indexed) s.checker.source_markers = null;
+            try T.expectEqual(case[1], s.checker.sourceHasNoLibTrueDirective());
+            try T.expectEqual(case[2], s.checker.sourceExplicitlyEnablesCheckJs());
+            try T.expectEqual(case[3], s.checker.sourceExplicitlyDisablesCheckJs());
+            try T.expectEqual(case[4], s.checker.sourceHasAllowJsDirective());
+        }
+    }
+    s.checker.setSource("plain:true");
+    try T.expect(s.checker.scanSourceDirectiveIsTrue("plain"));
+    try T.expect(!s.checker.scanSourceDirectiveIsTrue("@declaration"));
+    s.checker.setSource("@declaration:TRUE");
+    try T.expect(s.checker.scanSourceDirectiveIsTrue("@declaration"));
+    s.checker.source = null;
+    try T.expect(s.checker.sourceMarkerPosition("@") == null);
+    try T.expect(!s.checker.sourceExplicitlyEnablesCheckJs());
+}
+
 test "checker: parameter annotation index resets with source facts" {
     const s = try newSetup(
         \\function read(value: string) {
@@ -199466,10 +203319,679 @@ test "checker: parameter annotation index resets with source facts" {
     try T.expect(annotation != hir_mod.none_node_id);
     try T.expect(s.checker.parameter_annotation_index_built);
     try T.expectEqual(@as(usize, 1), s.checker.parameter_annotation_index.items.len);
+    _ = s.checker.recoveredParameterSyntaxForName(value_name);
+    try T.expect(s.checker.recovered_parameter_use_spans.items.len > 0);
 
     s.checker.setSource("const value = 1;");
     try T.expect(!s.checker.parameter_annotation_index_built);
     try T.expectEqual(@as(usize, 0), s.checker.parameter_annotation_index.items.len);
+    try T.expectEqual(@as(usize, 0), s.checker.recovered_parameter_use_spans.items.len);
+}
+
+test "checker: recovered parameter use ranges match source scanning" {
+    const sources = [_][]const u8{
+        "function outer(value: T) { function inner(other: U) { value; } value; }",
+        "call({ active: false, }); function later(value: T) { value; }",
+        "function outer(cb = function (value: T) { value; }) { cb(); }",
+        "function pending(value: T) { value",
+        "((value: T",
+        "function read(value: T) { const text = '{(x)}'; value; }",
+    };
+    for (sources) |source| {
+        var spans: std.ArrayListUnmanaged(RecoveredParameterUseSpan) = .empty;
+        defer spans.deinit(T.allocator);
+        for (0..source.len + 1) |name_start| {
+            spans.clearRetainingCapacity();
+            try Checker.appendSourceParameterUseSpans(source, name_start, T.allocator, &spans);
+            for (0..source.len + 1) |use_start| {
+                const indexed = for (spans.items) |span| {
+                    if (use_start > span.body_open and use_start <= span.last_use) break true;
+                } else false;
+                try T.expectEqual(
+                    Checker.sourceParameterDeclarationContainsUse(source, name_start, use_start),
+                    indexed,
+                );
+            }
+        }
+    }
+}
+
+test "checker: indexed source function containment matches the full scan" {
+    const s = try newSetup(
+        \\const before = 1;
+        \\function outer(value: number) {
+        \\  const first = () => value;
+        \\  function inner() { return () => value; }
+        \\  return function tail() { return value; };
+        \\}
+        \\const second = () => 1;
+    );
+    defer destroySetup(s);
+
+    var pos: u32 = 0;
+    while (pos <= s.checker.source.?.len) : (pos += 1) {
+        try T.expectEqual(
+            s.checker.sourceFunctionContainingPosSlow(pos),
+            s.checker.sourceFunctionContainingPos(pos),
+        );
+    }
+    try T.expect(s.checker.source_function_spans_valid);
+    try T.expect(s.checker.source_function_spans.items.len > 0);
+    s.checker.setSource("const after = 2;");
+    try T.expect(!s.checker.source_function_spans_indexed);
+    try T.expect(!s.checker.source_function_spans_valid);
+    try T.expectEqual(@as(usize, 0), s.checker.source_function_spans.items.len);
+    try T.expectEqual(@as(u32, 0), s.checker.source_function_containing_pos_cache.count());
+}
+
+test "checker: function declaration index matches statement scanning" {
+    const s = try newSetup(
+        \\export function repeated(value: number): number;
+        \\export function repeated(value: number) { return value; }
+        \\const numberOnly = 1;
+        \\var expression = function Inner() { return 1; };
+        \\export const arrow = () => 2;
+        \\const { destructured } = { destructured: () => 3 };
+        \\export { numberOnly };
+        \\namespace N {
+        \\  export function repeated() { return 4; }
+        \\  const arrow = () => 5;
+        \\  const numberOnly = 6;
+        \\}
+        \\function outer(repeated: () => number) {
+        \\  let expression = function () { return 7; };
+        \\  function arrow() { return 8; }
+        \\  return expression();
+        \\}
+    );
+    defer destroySetup(s);
+    const names = [_][]const u8{ "repeated", "numberOnly", "expression", "Inner", "arrow", "destructured", "outer", "missing" };
+    var container: NodeId = 1;
+    while (container < s.hir.nodeCount()) : (container += 1) {
+        const statements = s.checker.containerStatements(container) orelse continue;
+        for (names) |text| {
+            const name = try s.sint.intern(text);
+            const expected = s.checker.findFunctionDeclInStatements(statements, name);
+            try T.expectEqual(expected, s.checker.findFunctionDeclInContainer(container, name));
+            try T.expectEqual(expected, s.checker.findFunctionDeclInContainer(container, name));
+        }
+    }
+    try T.expect(s.checker.function_decls_by_container.count() > 0);
+    s.checker.setSource("const next = 1;");
+    try T.expectEqual(@as(u32, 0), s.checker.function_decls_by_container.count());
+}
+
+test "checker: function declaration index retains scanner on allocation failure" {
+    for (0..2) |fail_index| {
+        const s = try newSetup("function first() {} const second = () => 1;");
+        defer destroySetup(s);
+        const name = try s.sint.intern("second");
+        const expected = s.checker.findFunctionDeclInStatements(hir_mod.blockStmts(&s.hir, s.root), name);
+        const allocator = s.checker.gpa;
+        var failing = std.testing.FailingAllocator.init(allocator, .{ .fail_index = fail_index });
+        const actual = blk: {
+            s.checker.gpa = failing.allocator();
+            defer s.checker.gpa = allocator;
+            break :blk s.checker.findFunctionDeclInContainer(s.root, name);
+        };
+        try T.expect(failing.has_induced_failure);
+        try T.expectEqual(expected, actual);
+        try T.expectEqual(@as(u32, 0), s.checker.function_decls_by_container.count());
+        try T.expectEqual(failing.allocated_bytes, failing.freed_bytes);
+        try T.expectEqual(expected, s.checker.findFunctionDeclInContainer(s.root, name));
+    }
+}
+
+test "checker: local value declaration index matches scope section and boundary scans" {
+    const s = try newSetup(
+        \\// @filename: first.ts
+        \\export const first = 1;
+        \\const later = first;
+        \\function f(first: number) { const inner = first; return inner; }
+        \\class C {}
+        \\enum E { Member }
+        \\{ later; const first = 2; const later = first; }
+        \\namespace N { export const first = 3; const later = first; }
+        \\const { destructured } = { destructured: 1 };
+        \\export { first };
+        \\// @filename: second.ts
+        \\const first = 4;
+        \\const later = first;
+        \\function f() { later; const inner = 5; return inner; }
+    );
+    defer destroySetup(s);
+    const names = [_][]const u8{ "first", "later", "inner", "f", "C", "E", "destructured", "missing" };
+    var node: NodeId = 1;
+    while (node < s.hir.nodeCount()) : (node += 1) {
+        for (names) |text| {
+            const name = try s.sint.intern(text);
+            const expected = s.checker.findLocalValueDeclBeforeExpressionSlow(node, name);
+            try T.expectEqual(expected, s.checker.findLocalValueDeclBeforeExpression(node, name));
+            try T.expectEqual(expected, s.checker.findLocalValueDeclBeforeExpression(node, name));
+        }
+    }
+    try T.expect(s.checker.local_value_decls_by_container.count() > 0);
+    s.checker.setSource("const next = 1;");
+    try T.expectEqual(@as(u32, 0), s.checker.local_value_decls_by_container.count());
+}
+
+test "checker: local value declaration index retains scanner on allocation failure" {
+    for (0..3) |fail_index| {
+        const s = try newSetup("const first = 1; const second = first;");
+        defer destroySetup(s);
+        const name = try s.sint.intern("first");
+        var use = hir_mod.none_node_id;
+        var node: NodeId = 1;
+        while (node < s.hir.nodeCount()) : (node += 1) {
+            if (s.hir.kindOf(node) == .identifier and hir_mod.identifierOf(&s.hir, node).name == name and
+                !s.checker.isDeclNameSlot(node)) use = node;
+        }
+        try T.expect(use != hir_mod.none_node_id);
+        const expected = s.checker.findLocalValueDeclBeforeExpressionSlow(use, name);
+        try T.expect(expected != null);
+        const allocator = s.checker.gpa;
+        var failing = std.testing.FailingAllocator.init(allocator, .{ .fail_index = fail_index });
+        const actual = blk: {
+            s.checker.gpa = failing.allocator();
+            defer s.checker.gpa = allocator;
+            break :blk s.checker.findLocalValueDeclBeforeExpression(use, name);
+        };
+        try T.expect(failing.has_induced_failure);
+        try T.expectEqual(expected, actual);
+        try T.expectEqual(@as(u32, 0), s.checker.local_value_decls_by_container.count());
+        try T.expectEqual(failing.allocated_bytes, failing.freed_bytes);
+        try T.expectEqual(expected, s.checker.findLocalValueDeclBeforeExpression(use, name));
+    }
+}
+
+test "checker: registered type ID index preserves rebinding aliases and source lifetime" {
+    const s = try newSetup("const value = 1;");
+    defer destroySetup(s);
+    const a = try s.sint.intern("A");
+    const b = try s.sint.intern("B");
+    try T.expect(s.checker.registeredTypeNameForId(types.Primitive.number_t) == null);
+    try T.expect(s.checker.knownTypeDisplayName(types.Primitive.number_t) == null);
+    try s.checker.putTypeName(a, types.Primitive.number_t);
+    try s.checker.putTypeName(b, types.Primitive.number_t);
+    try T.expectEqual(b, s.checker.namedTypeForId(types.Primitive.number_t).?);
+    try s.checker.putTypeName(b, types.Primitive.string_t);
+    try T.expect(s.checker.namedTypeForId(types.Primitive.number_t) == null);
+    try T.expectEqual(a, s.checker.registeredTypeNameForId(types.Primitive.number_t).?);
+    try T.expectEqualStrings("A", s.checker.knownTypeDisplayName(types.Primitive.number_t).?);
+    s.checker.setSource("const next = 2;");
+    try T.expectEqualStrings("A", s.checker.knownTypeDisplayName(types.Primitive.number_t).?);
+    try s.checker.putTypeName(a, types.Primitive.string_t);
+    try T.expect(s.checker.registered_named_type_ids.contains(types.Primitive.number_t));
+    try T.expect(s.checker.registeredTypeNameForId(types.Primitive.number_t) == null);
+    try T.expect(s.checker.knownTypeDisplayName(types.Primitive.number_t) == null);
+    try s.checker.putTypeName(a, types.Primitive.number_t);
+    try T.expectEqualStrings("A", s.checker.knownTypeDisplayName(types.Primitive.number_t).?);
+}
+
+test "checker: registered type ID index preserves structural class and alias precedence" {
+    const s = try newSetup("const value = 1;");
+    defer destroySetup(s);
+    const class_name = try s.sint.intern("ClassShape");
+    const interface_name = try s.sint.intern("InterfaceShape");
+    const member = types.ObjectMember{
+        .name = try s.sint.intern("value"),
+        .type = types.Primitive.number_t,
+        .is_optional = false,
+        .is_readonly = false,
+        .is_method = false,
+    };
+    const query = try s.ti.internObjectType(&.{member});
+    const class_type = try s.ti.internObjectType(&.{member});
+    const interface_type = try s.ti.internObjectType(&.{member});
+    try s.checker.putTypeName(class_name, class_type);
+    try s.checker.class_instance_types.put(s.checker.gpa, class_name, class_type);
+    try T.expect(!s.checker.registered_named_type_ids.contains(query));
+    try T.expectEqualStrings("ClassShape", s.checker.knownTypeDisplayName(query).?);
+    try T.expectEqualStrings("ClassShape", s.checker.knownTypeDisplayName(class_type).?);
+    try s.checker.putTypeName(interface_name, interface_type);
+    try T.expectEqualStrings("InterfaceShape", s.checker.knownTypeDisplayName(query).?);
+    try T.expectEqualStrings("InterfaceShape", s.checker.knownTypeDisplayName(class_type).?);
+    try T.expectEqualStrings("InterfaceShape", s.checker.knownTypeDisplayName(interface_type).?);
+    try s.checker.alias_display_names.put(s.checker.gpa, query, "AliasShape");
+    try T.expectEqualStrings("AliasShape", s.checker.knownTypeDisplayName(query).?);
+}
+
+test "checker: registered type ID index falls back after allocation failure" {
+    const s = try newSetup("const value = 1;");
+    defer destroySetup(s);
+    const a = try s.sint.intern("A");
+    const b = try s.sint.intern("B");
+    const allocator = s.checker.gpa;
+    // Reserve authoritative maps so the optional membership index is the
+    // only allocation attempted by the first primitive registration.
+    try s.checker.type_names.ensureUnusedCapacity(allocator, 2);
+    try s.checker.named_type_by_id.ensureUnusedCapacity(allocator, 2);
+    var failing = std.testing.FailingAllocator.init(allocator, .{ .fail_index = 0 });
+    {
+        s.checker.gpa = failing.allocator();
+        defer s.checker.gpa = allocator;
+        try s.checker.putTypeName(a, types.Primitive.number_t);
+    }
+    try T.expect(failing.has_induced_failure);
+    try T.expect(!s.checker.registered_named_type_ids_complete);
+    try T.expect(!s.checker.registered_named_type_ids.contains(types.Primitive.number_t));
+    try s.checker.putTypeName(b, types.Primitive.number_t);
+    try s.checker.putTypeName(b, types.Primitive.string_t);
+    try T.expect(s.checker.namedTypeForId(types.Primitive.number_t) == null);
+    try T.expectEqual(a, s.checker.registeredTypeNameForId(types.Primitive.number_t).?);
+    try T.expectEqualStrings("A", s.checker.knownTypeDisplayName(types.Primitive.number_t).?);
+    s.checker.setSource("const next = 2;");
+    try T.expect(!s.checker.registered_named_type_ids_complete);
+    try T.expectEqualStrings("A", s.checker.knownTypeDisplayName(types.Primitive.number_t).?);
+}
+
+test "checker: named shape misses expire on registration and rebinding" {
+    for ([_]bool{ false, true }) |prefer_non_class| {
+        const s = try newSetup("const value = 1;");
+        defer destroySetup(s);
+        const property = try s.sint.intern("value");
+        const name = try s.sint.intern("Named");
+        const members = [_]types.ObjectMember{.{
+            .name = property,
+            .type = types.Primitive.number_t,
+            .is_optional = false,
+            .is_readonly = false,
+            .is_method = false,
+        }};
+        const query = try s.ti.internObjectType(&members);
+        const matching = try s.ti.internObjectType(&members);
+        const mismatch = try s.ti.internObjectType(&.{.{
+            .name = property,
+            .type = types.Primitive.string_t,
+            .is_optional = false,
+            .is_readonly = false,
+            .is_method = false,
+        }});
+        const miss_key = (@as(u64, query) << 1) | @intFromBool(prefer_non_class);
+        try T.expect(s.checker.objectTypeHasNamedShape(query, prefer_non_class) == null);
+        try T.expectEqual(s.checker.type_names_generation, s.checker.named_shape_misses.get(miss_key).?);
+        try s.checker.putTypeName(name, mismatch);
+        try T.expect(s.checker.named_shape_misses.get(miss_key).? != s.checker.type_names_generation);
+        try T.expect(s.checker.objectTypeHasNamedShape(query, prefer_non_class) == null);
+        const generation = s.checker.type_names_generation;
+        try s.checker.putTypeName(name, mismatch);
+        try T.expectEqual(generation, s.checker.type_names_generation);
+        try s.checker.putTypeName(name, matching);
+        try T.expectEqual(@as(u32, 1), s.checker.type_names.count());
+        try T.expectEqual(name, s.checker.objectTypeHasNamedShape(query, prefer_non_class).?);
+        s.checker.setSource("const next = 2;");
+        try T.expectEqual(@as(u32, 0), s.checker.named_shape_misses.count());
+    }
+}
+
+test "checker: named shape misses keep class preference separate" {
+    const s = try newSetup("const value = 1;");
+    defer destroySetup(s);
+    const property = try s.sint.intern("value");
+    const class_name = try s.sint.intern("ClassShape");
+    const interface_name = try s.sint.intern("InterfaceShape");
+    const members = [_]types.ObjectMember{.{
+        .name = property,
+        .type = types.Primitive.number_t,
+        .is_optional = false,
+        .is_readonly = false,
+        .is_method = false,
+    }};
+    const query = try s.ti.internObjectType(&members);
+    const class_type = try s.ti.internObjectType(&members);
+    const interface_type = try s.ti.internObjectType(&members);
+    try s.checker.putTypeName(class_name, class_type);
+    try s.checker.class_instance_types.put(s.checker.gpa, class_name, class_type);
+    try T.expect(s.checker.objectTypeHasNamedShape(query, true) == null);
+    try T.expectEqual(class_name, s.checker.objectTypeHasNamedShape(query, false).?);
+    try s.checker.putTypeName(interface_name, interface_type);
+    try T.expectEqual(interface_name, s.checker.objectTypeHasNamedShape(query, true).?);
+}
+
+test "checker: named shape member facts preserve full comparison semantics" {
+    const s = try newSetup("const value = 1;");
+    defer destroySetup(s);
+    const name = try s.sint.intern("Named");
+    const x = try s.sint.intern("x");
+    const y = try s.sint.intern("y");
+    const members = [_]types.ObjectMember{
+        .{ .name = x, .type = types.Primitive.number_t, .is_optional = false, .is_readonly = false, .is_method = false },
+        .{ .name = y, .type = types.Primitive.string_t, .is_optional = false, .is_readonly = false, .is_method = false },
+    };
+    const named = try s.ti.internObjectType(&members);
+    try s.checker.putTypeName(name, named);
+    var queries: std.ArrayListUnmanaged(TypeId) = .empty;
+    defer queries.deinit(T.allocator);
+    try queries.append(T.allocator, try s.ti.internObjectType(&.{ members[1], members[0] }));
+    try queries.append(T.allocator, try s.ti.internObjectType(&.{ members[0], members[0] }));
+    var ignored_metadata = members;
+    ignored_metadata[0].visibility = .private;
+    ignored_metadata[0].decl_node = s.root;
+    try queries.append(T.allocator, try s.ti.internObjectType(&ignored_metadata));
+    for (0..8) |modifiers| {
+        var changed = members;
+        changed[0].is_optional = modifiers & 1 != 0;
+        changed[0].is_readonly = modifiers & 2 != 0;
+        changed[0].is_method = modifiers & 4 != 0;
+        try queries.append(T.allocator, try s.ti.internObjectType(&changed));
+        try queries.append(T.allocator, try s.ti.internObjectTypeWithIndex(&changed, types.Primitive.number_t, types.Primitive.none));
+        try queries.append(T.allocator, try s.ti.internObjectTypeWithIndex(&changed, types.Primitive.none, types.Primitive.number_t));
+        try queries.append(T.allocator, try s.ti.internObjectTypeWithIndexAndSymbol(&changed, types.Primitive.none, types.Primitive.none, types.Primitive.number_t));
+    }
+    for (queries.items) |query| {
+        const equal = s.checker.objectTypesSameDisplayShape(query, named);
+        if (equal) try T.expect(s.checker.namedShapeMemberFactsAllow(query));
+        for ([_]bool{ false, true }) |prefer_non_class| {
+            try T.expectEqual(if (equal) @as(?hir_mod.StringId, name) else null, s.checker.objectTypeHasNamedShape(query, prefer_non_class));
+        }
+    }
+    s.checker.setSource("const next = 2;");
+    try T.expect(s.checker.namedShapeMemberFactsAllow(queries.items[0]));
+    try T.expectEqual(name, s.checker.objectTypeHasNamedShape(queries.items[0], true).?);
+}
+
+test "checker: named shape member facts do not accept combined or obsolete facts" {
+    const s = try newSetup("const value = 1;");
+    defer destroySetup(s);
+    const name = try s.sint.intern("Named");
+    const x = try s.sint.intern("x");
+    const y = try s.sint.intern("y");
+    var members = [_]types.ObjectMember{
+        .{ .name = x, .type = types.Primitive.number_t, .is_optional = false, .is_readonly = false, .is_method = false },
+        .{ .name = y, .type = types.Primitive.string_t, .is_optional = false, .is_readonly = false, .is_method = false },
+    };
+    const original = try s.ti.internObjectType(&members);
+    try s.checker.putTypeName(name, original);
+    members[0].type = types.Primitive.string_t;
+    members[1].type = types.Primitive.number_t;
+    try s.checker.putTypeName(name, try s.ti.internObjectType(&members));
+    members[0].type = types.Primitive.number_t;
+    const combined = try s.ti.internObjectType(&members);
+    try T.expect(s.checker.namedShapeMemberFactsAllow(combined));
+    try T.expect(s.checker.objectTypeHasNamedShape(combined, false) == null);
+    try T.expect(s.checker.namedShapeMemberFactsAllow(original));
+    try T.expect(s.checker.objectTypeHasNamedShape(original, false) == null);
+}
+
+test "checker: builtin Function recipe preserves fresh objects and rest signatures" {
+    const s = try newSetup("const value = 1;");
+    defer destroySetup(s);
+    const first = s.checker.lowerBuiltinObjectType("Function").?;
+    try T.expect(first != types.Primitive.unknown);
+    const recipe = s.checker.builtin_function_members.?;
+    const count = s.ti.pool.typeCount();
+    const second = s.checker.lowerBuiltinObjectType("Function").?;
+    try T.expect(first != second);
+    try T.expectEqual(count + 1, s.ti.pool.typeCount());
+    try T.expectEqualStrings("Function", s.checker.builtin_object_names.get(first).?);
+    try T.expectEqualStrings("Function", s.checker.builtin_object_names.get(second).?);
+    try T.expect(try s.engine.isAssignableTo(first, second));
+    try T.expect(try s.engine.isAssignableTo(second, first));
+    for (recipe, 0..) |member, i| {
+        try T.expectEqualStrings(if (i == 0) "__call" else "call", s.sint.get(member.name));
+        try T.expectEqual(member.type, s.ti.objectMember(second, member.name).?);
+        try T.expect(member.is_method and !member.is_optional and !member.is_readonly);
+        try T.expect(s.checker.rest_signatures.contains(member.type));
+        try T.expectEqual(types.Primitive.any, s.ti.signatureReturn(member.type).?);
+        const params = s.ti.signatureParams(member.type);
+        try T.expectEqual(i + 1, params.len);
+        if (i == 1) try T.expectEqual(types.Primitive.any, params[0]);
+        try T.expectEqual(types.Primitive.any, s.ti.objectNumberIndex(params[params.len - 1]));
+    }
+    try T.expectEqual(s.ti.signatureParams(recipe[0].type)[0], s.ti.signatureParams(recipe[1].type)[1]);
+    s.checker.setSource("// @noLib: true\n// @lib: es5\nconst next = 2;");
+    const before_third = s.ti.pool.typeCount();
+    const third = s.checker.lowerBuiltinObjectType("Function").?;
+    try T.expect(third != first and third != second);
+    try T.expectEqual(before_third + 1, s.ti.pool.typeCount());
+    for (recipe) |member| {
+        try T.expectEqual(member.type, s.ti.objectMember(third, member.name).?);
+        try T.expect(s.checker.rest_signatures.contains(member.type));
+    }
+    try T.expect(s.checker.lowerBuiltinObjectTypeRaw("function") == null);
+}
+
+test "checker: builtin Function recipe matches fresh construction structurally" {
+    const s = try newSetup("const value = 1;");
+    defer destroySetup(s);
+    const shared = s.checker.lowerBuiltinObjectType("Function").?;
+    const shared_recipe = s.checker.builtin_function_members.?;
+    // The unprimed path is the original constructor. Compare its fresh
+    // component IDs structurally, without changing public object identity.
+    s.checker.builtin_function_members = null;
+    const fresh = s.checker.lowerBuiltinObjectType("Function").?;
+    try T.expect(shared != fresh);
+    try T.expect(try s.engine.isAssignableTo(shared, fresh));
+    try T.expect(try s.engine.isAssignableTo(fresh, shared));
+    for (shared_recipe, s.checker.builtin_function_members.?) |before, after| {
+        try T.expectEqual(before.name, after.name);
+        try T.expect(before.type != after.type);
+        try T.expect(try s.engine.isAssignableTo(before.type, after.type));
+        try T.expect(try s.engine.isAssignableTo(after.type, before.type));
+        try T.expect(s.checker.rest_signatures.contains(before.type));
+        try T.expect(s.checker.rest_signatures.contains(after.type));
+    }
+}
+
+test "checker: builtin Function recipe allocation failures never publish partial state" {
+    for ([_]bool{ false, true }) |primed| {
+        var failures: usize = 0;
+        var reached_success = false;
+        for (0..128) |fail_offset| {
+            var failing = T.FailingAllocator.init(T.allocator, .{});
+            {
+                // Initialize normally, then fail every allocation position in
+                // the constructor itself. All arenas retain this allocator so
+                // string bytes, signature keys, pools, and metadata are covered.
+                const gpa = failing.allocator();
+                var sint = try string_interner.Interner.init(gpa);
+                defer sint.deinit();
+                var hir = try Hir.init(gpa);
+                defer hir.deinit();
+                var ti = try interner.Interner.init(gpa);
+                defer ti.deinit();
+                var engine = try relation.Engine.init(gpa, &ti);
+                defer engine.deinit();
+                var checker = Checker.init(gpa, &hir, &ti, &sint, &engine);
+                defer checker.deinit();
+                if (primed) {
+                    try T.expect(checker.lowerBuiltinObjectTypeRaw("Function").? != types.Primitive.unknown);
+                    // Ensure a cached hit needs an outer-object pool growth.
+                    while (ti.pool.object_type_payloads.items.len < ti.pool.object_type_payloads.capacity) {
+                        _ = try ti.internObjectType(&.{});
+                    }
+                }
+                failing.fail_index = failing.alloc_index + fail_offset;
+                failing.resize_fail_index = failing.resize_index;
+                const result = checker.lowerBuiltinObjectTypeRaw("Function").?;
+                if (failing.has_induced_failure) {
+                    failures += 1;
+                    try T.expectEqual(types.Primitive.unknown, result);
+                    try T.expectEqual(primed, checker.builtin_function_members != null);
+                } else {
+                    try T.expect(result != types.Primitive.unknown);
+                    reached_success = true;
+                }
+                failing.fail_index = std.math.maxInt(usize);
+                failing.resize_fail_index = std.math.maxInt(usize);
+                const recovered = checker.lowerBuiltinObjectTypeRaw("Function").?;
+                try T.expect(recovered != types.Primitive.unknown);
+                if (result != types.Primitive.unknown) try T.expect(result != recovered);
+                for (checker.builtin_function_members.?) |member| {
+                    try T.expect(checker.rest_signatures.contains(member.type));
+                    try T.expectEqual(member.type, ti.objectMember(recovered, member.name).?);
+                }
+            }
+            try T.expectEqual(failing.allocated_bytes, failing.freed_bytes);
+            if (reached_success) break;
+        }
+        try T.expect(reached_success and failures > 0);
+    }
+}
+
+test "checker: builtin name static index preserves all spellings and misses" {
+    const s = try newSetup("const value = 1;");
+    defer destroySetup(s);
+    for (Checker.builtinNames()) |name| {
+        try T.expect(s.checker.isBuiltinName(try s.sint.intern(name)));
+        var buffer: [256]u8 = undefined;
+        const prefix = try s.sint.intern(try std.fmt.bufPrint(&buffer, "!{s}", .{name}));
+        try T.expect(!s.checker.isBuiltinName(prefix));
+        const suffix = try s.sint.intern(try std.fmt.bufPrint(&buffer, "{s}!", .{name}));
+        try T.expect(!s.checker.isBuiltinName(suffix));
+    }
+    for ([_][]const u8{ "", "promise", "PROMISE", "ConSolE", "myValue", "\u{03c0}" }) |name| {
+        try T.expect(!s.checker.isBuiltinName(try s.sint.intern(name)));
+    }
+}
+
+test "checker: builtin name static index retains source dependent exceptions" {
+    const s = try newSetup("const value = 1;");
+    defer destroySetup(s);
+    const writer = try s.sint.intern("ITextWriter");
+    s.checker.source = null;
+    try T.expect(s.checker.isBuiltinName(writer));
+    const cases = .{
+        .{ "const value = 1;", true },
+        .{ "// @lib: es5\nconst value = 1;", false },
+        .{ "// @lib: es5,scripthost\nconst value = 1;", true },
+        .{ "// @lib: dom\n// scripthost\nconst value = 1;", false },
+    };
+    inline for (cases) |case| {
+        s.checker.setSource(case[0]);
+        try T.expectEqual(case[1], s.checker.isBuiltinName(writer));
+        for ([_][]const u8{ "Iterator", "fetch", "Image" }) |name| {
+            try T.expect(s.checker.isBuiltinName(try s.sint.intern(name)));
+        }
+    }
+}
+
+test "checker: named shape candidate index preserves ambiguity rebinding and source lifetime" {
+    const s = try newSetup("const value = 1;");
+    defer destroySetup(s);
+    const a = try s.sint.intern("A");
+    const b = try s.sint.intern("B");
+    const c = try s.sint.intern("C");
+    const members = [_]types.ObjectMember{
+        .{ .name = try s.sint.intern("x"), .type = types.Primitive.number_t, .is_optional = false, .is_readonly = false, .is_method = false },
+        .{ .name = try s.sint.intern("y"), .type = types.Primitive.string_t, .is_optional = false, .is_readonly = false, .is_method = false },
+    };
+    const first = try s.ti.internObjectType(&members);
+    const second = try s.ti.internObjectType(&members);
+    var changed = members;
+    changed[0].type = types.Primitive.string_t;
+    const mismatch = try s.ti.internObjectType(&changed);
+    const queries = [_]TypeId{
+        try s.ti.internObjectType(&members),
+        try s.ti.internObjectType(&.{ members[1], members[0] }),
+        try s.ti.internObjectType(&.{ members[0], members[0] }),
+        first,
+        second,
+        mismatch,
+    };
+    try s.checker.putTypeName(a, first);
+    try s.checker.putTypeName(b, second);
+    try s.checker.putTypeName(c, mismatch);
+    for (0..24) |stage| {
+        switch (stage) {
+            0 => {},
+            1 => try s.checker.class_instance_types.put(s.checker.gpa, b, second),
+            2 => try s.checker.putTypeName(b, mismatch),
+            3 => try s.checker.putTypeName(a, mismatch),
+            4 => try s.checker.putTypeName(c, first),
+            5 => try s.checker.putTypeName(a, first),
+            6 => s.checker.setSource("const next = 2;"),
+            else => {
+                var buffer: [32]u8 = undefined;
+                const name = try s.sint.intern(try std.fmt.bufPrint(&buffer, "Extra{d}", .{stage}));
+                try s.checker.putTypeName(name, if (stage % 2 == 0) first else mismatch);
+            },
+        }
+        for (queries) |query| {
+            for ([_]bool{ false, true }) |prefer_non_class| {
+                try T.expectEqual(s.checker.findNamedShapeSlow(query, prefer_non_class), s.checker.findNamedShapeCandidate(query, prefer_non_class));
+            }
+        }
+    }
+}
+
+test "checker: named shape candidate index rejects hash collision candidates" {
+    const s = try newSetup("const value = 1;");
+    defer destroySetup(s);
+    const good_name = try s.sint.intern("Good");
+    const wrong_name = try s.sint.intern("Wrong");
+    const member = types.ObjectMember{
+        .name = try s.sint.intern("value"),
+        .type = types.Primitive.number_t,
+        .is_optional = false,
+        .is_readonly = false,
+        .is_method = false,
+    };
+    const named = try s.ti.internObjectType(&.{member});
+    const query = try s.ti.internObjectType(&.{member});
+    var wrong_member = member;
+    wrong_member.type = types.Primitive.string_t;
+    const wrong = try s.ti.internObjectType(&.{wrong_member});
+    try s.checker.putTypeName(good_name, named);
+    try s.checker.putTypeName(wrong_name, wrong);
+    // Force a collision into the queried bucket. It must remain a candidate,
+    // never an accepted shape without the original complete comparison.
+    try s.checker.appendNamedShapeCandidate(s.checker.namedShapeMemberFact(query, member), wrong_name, wrong);
+    try s.checker.appendNamedShapeCandidate(s.checker.namedShapeMemberFact(query, member), good_name, named);
+    for ([_]bool{ false, true }) |prefer_non_class| {
+        try T.expectEqual(good_name, s.checker.findNamedShapeCandidate(query, prefer_non_class).?);
+    }
+    try s.checker.putTypeName(good_name, wrong);
+    try T.expect(s.checker.findNamedShapeCandidate(query, false) == null);
+}
+
+test "checker: named shape member facts fall back after allocation failure" {
+    for (0..2) |fail_index| {
+        const s = try newSetup("const value = 1;");
+        defer destroySetup(s);
+        const name = try s.sint.intern("Named");
+        const member = types.ObjectMember{
+            .name = try s.sint.intern("value"),
+            .type = types.Primitive.number_t,
+            .is_optional = false,
+            .is_readonly = false,
+            .is_method = false,
+        };
+        const named = try s.ti.internObjectType(&.{member});
+        const query = try s.ti.internObjectType(&.{member});
+        const allocator = s.checker.gpa;
+        var failing = std.testing.FailingAllocator.init(allocator, .{ .fail_index = fail_index });
+        {
+            s.checker.gpa = failing.allocator();
+            defer s.checker.gpa = allocator;
+            s.checker.recordNamedShapeMemberFacts(name, named);
+        }
+        try T.expect(failing.has_induced_failure);
+        try T.expect(!s.checker.named_shape_member_facts_complete);
+        try s.checker.putTypeName(name, named);
+        try T.expectEqual(name, s.checker.objectTypeHasNamedShape(query, true).?);
+    }
+}
+
+test "checker: source recovery skips an unannotated lexical parameter" {
+    const s = try newSetup(
+        \\interface Formatter { format?: (prefix: string) => string; }
+        \\const formatter: Formatter = { format: (prefix) => prefix };
+    );
+    defer destroySetup(s);
+
+    const prefix_name = try s.checker.string_interner.intern("prefix");
+    var use_node = hir_mod.none_node_id;
+    var node: NodeId = 1;
+    while (node < s.hir.nodeCount()) : (node += 1) {
+        if (s.hir.kindOf(node) != .identifier) continue;
+        if (hir_mod.identifierOf(&s.hir, node).name != prefix_name) continue;
+        if (s.checker.isDeclNameSlot(node)) continue;
+        use_node = node;
+    }
+    try T.expect(use_node != hir_mod.none_node_id);
+    try T.expect(s.checker.identifierIsBoundBySourceUnannotatedParameter(use_node, prefix_name));
+    try T.expect(s.checker.recoveredSourceParameterAnnotationType(use_node, prefix_name) == null);
 }
 
 test "checker: strict false directive suppresses typed let TS2454" {
@@ -200203,6 +204725,115 @@ test "checker: top exposes sibling global var declarations" {
     try s.checker.checkSourceFile(s.root);
 
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
+}
+
+test "checker: relocated program globals retain value type and globalThis property types" {
+    const b = try newBoundSetup(
+        \\const goodValue: number = foreignValue;
+        \\const badValue: string = foreignValue;
+        \\const goodGlobalThis: number = globalThis.foreignValue;
+        \\const badGlobalThis: string = globalThis.foreignValue;
+        \\declare const typed: ForeignType;
+        \\const goodType: number = typed;
+        \\const badType: string = typed;
+        \\function local(globalThis: { foreignValue: string }) {
+        \\    const good: string = globalThis.foreignValue;
+        \\    const goodBracket: string = globalThis["foreignValue"];
+        \\    const goodIndex: (typeof globalThis)["foreignValue"] = "local";
+        \\}
+        \\const goodBracket: number = globalThis["foreignValue"];
+        \\const badBracket: string = globalThis["foreignValue"];
+        \\const badIndex: (typeof globalThis)["foreignValue"] = "wrong";
+        \\type BadGeneric = ForeignType<string>;
+    );
+    defer destroyBoundSetup(b);
+    const values = [_]ProgramGlobalBinding{.{
+        .name = try b.base.sint.intern("foreignValue"),
+        .type = types.Primitive.number_t,
+        .is_global_this_property = true,
+    }};
+    const type_bindings = [_]ProgramGlobalBinding{.{
+        .name = try b.base.sint.intern("ForeignType"),
+        .type = types.Primitive.number_t,
+    }};
+    b.base.checker.setProgramGlobalValueTypes(&values);
+    b.base.checker.setProgramGlobalTypes(&type_bindings);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(types.Primitive.number_t, statementVarInitType(b.base, 0));
+    try T.expectEqual(types.Primitive.number_t, statementVarInitType(b.base, 2));
+    try T.expectEqual(types.Primitive.number_t, statementVarInitType(b.base, 5));
+    try T.expectEqual(types.Primitive.number_t, statementVarInitType(b.base, 8));
+    try T.expectEqual(types.Primitive.number_t, statementVarType(b.base, 10));
+    try T.expectEqual(@as(usize, 5), checkerCountCode(b.base, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.type_not_generic));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.global_this_no_index_signature));
+}
+
+test "checker: relocated structural globals preserve members and call signatures" {
+    const b = try newBoundSetup(
+        \\const valueGood: string = foreignObject.value;
+        \\const valueBad: number = foreignObject.value;
+        \\foreignObject.missing;
+        \\const callGood: string = foreignFunction(1);
+        \\const callBad: number = foreignFunction(1);
+        \\foreignFunction("bad");
+        \\declare const annotated: ForeignShape;
+        \\const annotationBad: number = annotated.value;
+    );
+    defer destroyBoundSetup(b);
+    const object_t = try b.base.ti.internObjectType(&.{.{
+        .name = try b.base.sint.intern("value"),
+        .type = types.Primitive.string_t,
+        .is_optional = false,
+        .is_readonly = false,
+        .is_method = false,
+    }});
+    const function_t = try b.base.ti.internSignature(&.{types.Primitive.number_t}, types.Primitive.string_t, false);
+    const values = [_]ProgramGlobalBinding{
+        .{ .name = try b.base.sint.intern("foreignObject"), .type = object_t },
+        .{ .name = try b.base.sint.intern("foreignFunction"), .type = function_t },
+    };
+    const type_bindings = [_]ProgramGlobalBinding{.{
+        .name = try b.base.sint.intern("ForeignShape"),
+        .type = object_t,
+    }};
+    b.base.checker.setProgramGlobalValueTypes(&values);
+    b.base.checker.setProgramGlobalTypes(&type_bindings);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 3), checkerCountCode(b.base, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.argument_type_mismatch));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.cannot_find_name));
+}
+
+test "checker: relocated globals preserve lexical shadowing and globalThis exclusions" {
+    const b = try newBoundSetup(
+        \\export {};
+        \\const shadowed = "local";
+        \\const good: string = shadowed;
+        \\const lexicalGood: number = lexical;
+        \\globalThis.lexical;
+        \\declare const localTyped: ForeignType;
+        \\const localGood: string = localTyped;
+        \\type ForeignType = string;
+    );
+    defer destroyBoundSetup(b);
+    const values = [_]ProgramGlobalBinding{
+        .{ .name = try b.base.sint.intern("shadowed"), .type = types.Primitive.number_t },
+        .{ .name = try b.base.sint.intern("lexical"), .type = types.Primitive.number_t },
+    };
+    const type_bindings = [_]ProgramGlobalBinding{.{
+        .name = try b.base.sint.intern("ForeignType"),
+        .type = types.Primitive.number_t,
+    }};
+    b.base.checker.setProgramGlobalValueTypes(&values);
+    b.base.checker.setProgramGlobalTypes(&type_bindings);
+    b.base.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.global_this_no_index_signature));
 }
 
 test "checker: top is nullable Window without global var properties" {
@@ -204706,6 +209337,160 @@ test "checker: program ambient require namespaces retain private class origin" {
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.subsequent_var_type_mismatch));
 }
 
+const StaticValueModuleResolver = struct {
+    const vtable = ExternalResolver.VTable{ .resolve = resolve, .moduleExport = moduleExport, .moduleExportNames = names };
+
+    fn resolve(_: *anyopaque, spec: []const u8, _: []const u8) ?ExternalResolver.Resolution {
+        const path = if (std.mem.eql(u8, spec, "./a")) "/a.ts" else if (std.mem.eql(u8, spec, "./b")) "/b.ts" else spec;
+        return .{ .path = path, .is_declaration = true };
+    }
+
+    fn names(_: *anyopaque, _: []const u8, _: []const u8) ?[]const []const u8 {
+        return &.{ "Secret", "peer", "label", "TypeOnly" };
+    }
+
+    fn moduleExport(_: *anyopaque, spec: []const u8, _: []const u8, name: []const u8) ?ExternalResolver.ModuleExport {
+        const peer = std.mem.eql(u8, name, "peer");
+        const value = peer or std.mem.eql(u8, name, "Secret") or std.mem.eql(u8, name, "label");
+        return .{
+            .module_name = "\"fixture\"",
+            .exported_type = std.mem.eql(u8, name, "Secret") or std.mem.eql(u8, name, "TypeOnly"),
+            .exported_value = value,
+            .runtime_value = value,
+            .namespace_module_path = if (peer) (if (std.mem.eql(u8, spec, "/a.ts")) "/b.ts" else "/a.ts") else "",
+        };
+    }
+};
+
+test "checker: free type parameter queries traverse cycles without losing reachable parameters" {
+    const s = try newSetup("export {};");
+    defer destroySetup(s);
+    const name = try s.sint.intern("T");
+    const parameter = try s.ti.internFreshTypeParameterWithFlags(name, types.Primitive.unknown, types.Primitive.none, .bivariant, false);
+    inline for (.{ false, true }) |has_parameter| {
+        const a = try s.ti.internObjectType(&.{});
+        const b = try s.ti.internObjectType(&.{});
+        try s.ti.completeFreshObjectType(a, &.{.{ .name = name, .type = b, .is_optional = false, .is_readonly = false, .is_method = false }});
+        try s.ti.completeFreshObjectType(b, &.{
+            .{ .name = name, .type = if (has_parameter) parameter else types.Primitive.string_t, .is_optional = false, .is_readonly = false, .is_method = false },
+            .{ .name = try s.sint.intern("peer"), .type = a, .is_optional = false, .is_readonly = false, .is_method = false },
+        });
+        try T.expectEqual(has_parameter, s.checker.containsFreeTypeParameter(a));
+        try T.expectEqual(has_parameter, s.checker.containsFreeTypeParameter(b));
+    }
+}
+
+test "checker: program static values survive namespace consumption without leaking names" {
+    const s = try newSetup(
+        \\import { Secret as Named } from './a';
+        \\import * as ns from './a';
+        \\class Secret { local!: number; }
+        \\const count: number = Named.count;
+        \\Named.missing;
+        \\const copy = ns;
+        \\const badCopy: string = copy.Secret.count;
+        \\const { Secret: Alias } = ns;
+        \\const badAlias: string = Alias.count;
+        \\const goodLabel: string = copy.label;
+        \\const badLabel: number = copy.label;
+        \\const badCycle: string = copy.peer.peer.Secret.count;
+        \\const local: Secret = { local: 1 };
+        \\copy.TypeOnly;
+    );
+    defer destroySetup(s);
+    var resolver: StaticValueModuleResolver = .{};
+    s.checker.setExternalResolver(.{ .ptr = &resolver, .vtable = &StaticValueModuleResolver.vtable });
+    s.checker.setImporterPath("/app.ts");
+    const members = [_]ProgramExportedClassMember{.{ .name = "count", .type_name = "number" }};
+    const classes = [_]ProgramExportedClass{
+        .{ .target_path = "/a.ts", .class_name = "Secret", .static_members = &members },
+        .{ .target_path = "/b.ts", .class_name = "Secret", .static_members = &members },
+    };
+    const values = [_]ProgramExportedValue{
+        .{ .target_path = "/a.ts", .export_name = "label", .kind = .variable, .result = .{ .name = "string" } },
+        .{ .target_path = "/b.ts", .export_name = "label", .kind = .variable, .result = .{ .name = "string" } },
+    };
+    s.checker.setProgramExportedClasses(&classes);
+    s.checker.setProgramExportedValues(&values);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 6), s.checker.diagnostics.items.len);
+}
+
+test "checker: keyof exposes only public class members through mapped types" {
+    const s = try newSetup(
+        \\class Visible {
+        \\  private hidden!: string;
+        \\  protected inherited!: number;
+        \\  value!: string;
+        \\}
+        \\type Keys = keyof Visible;
+        \\const good: Keys = "value";
+        \\const badPrivate: Keys = "hidden";
+        \\const badProtected: Keys = "inherited";
+        \\type Surface<T> = { [P in keyof T]: T[P] };
+        \\const surface: Surface<Visible> = { value: "ok" };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), s.checker.diagnostics.items.len);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: imported nominal origins are metadata without synthetic members" {
+    const s = try newSetup("export {};");
+    defer destroySetup(s);
+    const name = try s.sint.intern("Secret");
+    const members = [_]ProgramExportedClassMember{
+        .{ .name = "key", .type_name = "string", .visibility = .private },
+        .{ .name = "value", .type_name = "string" },
+    };
+    const first: ProgramExportedClass = .{ .target_path = "/a.ts", .class_name = "Secret", .members = &members };
+    const second: ProgramExportedClass = .{ .target_path = "/b.ts", .class_name = "Secret", .members = &members };
+    const first_type = try s.checker.syntheticProgramClassInstanceType(first, name);
+    const alias_type = try s.checker.syntheticProgramClassInstanceType(first, name);
+    const second_type = try s.checker.syntheticProgramClassInstanceType(second, name);
+    for ([_]TypeId{ first_type, alias_type, second_type }) |instance| {
+        const actual = s.ti.objectMembers(instance);
+        try T.expectEqual(@as(usize, 2), actual.len);
+        try T.expectEqualStrings("key", s.sint.get(actual[0].name));
+        try T.expectEqualStrings("value", s.sint.get(actual[1].name));
+        try T.expect(actual[0].declaration_origin != 0);
+        try T.expectEqual(@as(hir_mod.StringId, 0), actual[1].declaration_origin);
+    }
+    try T.expect(try s.checker.checkerAssignableTo(first_type, alias_type));
+    try T.expect(!try s.checker.checkerAssignableTo(first_type, second_type));
+    // Length-prefixing prevents module/class separators inside a source path
+    // from making distinct declaration coordinates compare equal.
+    const one = try s.checker.syntheticProgramClassOrigin(.{ .target_path = "/x::y", .ambient_module_name = "z", .class_name = "Secret" });
+    const two = try s.checker.syntheticProgramClassOrigin(.{ .target_path = "/x", .ambient_module_name = "y::z", .class_name = "Secret" });
+    try T.expect(one != two);
+}
+
+test "checker: imported nominal origins survive generic substitution" {
+    const s = try newSetup("export {};");
+    defer destroySetup(s);
+    const parameter = try s.ti.internFreshTypeParameterWithFlags(try s.sint.intern("T"), types.Primitive.unknown, types.Primitive.none, .invariant, false);
+    const member: types.ObjectMember = .{
+        .name = try s.sint.intern("key"),
+        .type = parameter,
+        .is_optional = false,
+        .is_readonly = false,
+        .is_method = false,
+        .visibility = .private,
+        .declaration_origin = try s.sint.intern("source:Secret"),
+    };
+    const original = try s.ti.internObjectType(&.{member});
+    var substitutions: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+    defer substitutions.deinit(T.allocator);
+    try substitutions.put(T.allocator, parameter, types.Primitive.string_t);
+    const mapped = try s.checker.substituteType(original, &substitutions);
+    var expected = member;
+    expected.type = types.Primitive.string_t;
+    try T.expectEqualDeep(expected, s.ti.objectMembers(mapped)[0]);
+}
+
 test "checker: repeated structural vars and for-head typeof share the hoisted type" {
     const s = try newSetup(
         \\interface Point { x: number; y: number; }
@@ -207969,6 +212754,26 @@ test "checker: generic tuple spread return reconstructs variadic tuple" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.type_not_assignable);
     }
+}
+
+test "checker: variadic tuple instantiation materializes concat and conditional slices" {
+    const s = try newSetup(
+        \\type Head<T extends readonly unknown[]> = T extends readonly [infer H, ...readonly unknown[]] ? H : never;
+        \\type Tail<T extends readonly unknown[]> = T extends readonly [unknown, ...infer R] ? readonly [...R] : readonly [];
+        \\declare function concat<A extends readonly unknown[], B extends readonly unknown[]>(left: A, right: B): readonly [...A, ...B];
+        \\declare function capture<T extends readonly unknown[]>(...values: T): T;
+        \\const left = [0, "item", { value: 0 }] as const;
+        \\const right = [true, [0, "tail"] as const] as const;
+        \\type Combined = readonly [0, "item", { readonly value: 0 }, true, readonly [0, "tail"]];
+        \\const combined: Combined = concat(left, right);
+        \\const captured: Combined = capture(...combined);
+        \\const head: Head<Combined> = 0;
+        \\const tail: Tail<Combined> = ["item", { value: 0 }, true, [0, "tail"]];
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
 }
 
 test "checker: keyof variadic tuple includes array prototype keys" {
@@ -218793,6 +223598,122 @@ test "checker: primitive constraint classification stays shallow" {
     try T.expect(!s.checker.typeParameterConstraintPrefersLiteralInference(parameter_t));
 }
 
+test "checker: callable union reduction respects predicate targets and receiver types" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    const plain = try s.ti.internSignature(&.{types.Primitive.unknown}, types.Primitive.boolean_t, false);
+    const number_guard = try s.ti.internSignature(&.{types.Primitive.unknown}, types.Primitive.boolean_t, false);
+    const string_guard = try s.ti.internSignature(&.{types.Primitive.unknown}, types.Primitive.boolean_t, false);
+    for ([_]TypeId{ number_guard, string_guard }, [_]TypeId{ types.Primitive.number_t, types.Primitive.string_t }) |sig, target| {
+        try s.checker.signature_predicates.put(T.allocator, sig, .{
+            .param_index = 0,
+            .target_type = target,
+            .target_node = hir_mod.none_node_id,
+            .is_asserts = false,
+        });
+    }
+    try T.expect(s.checker.strictCallableSubtype(number_guard, plain));
+    try T.expect(!s.checker.strictCallableSubtype(plain, number_guard));
+    try T.expect(!s.checker.strictCallableSubtype(number_guard, string_guard));
+    try T.expect(!s.checker.strictCallableSubtype(string_guard, number_guard));
+    for ([_][2]TypeId{ .{ plain, number_guard }, .{ number_guard, plain } }) |pair| {
+        try T.expectEqual(plain, try s.checker.internArrayElementUnion(&pair));
+        try T.expectEqual(plain, try s.checker.internConditionalUnion(&pair));
+    }
+
+    const left = try s.ti.internSignatureWithThisType(&.{}, types.Primitive.number_t, false, false, types.Primitive.string_t);
+    const right = try s.ti.internSignatureWithThisType(&.{}, types.Primitive.number_t, false, false, types.Primitive.number_t);
+    try T.expect(!s.checker.strictCallableSubtype(left, right));
+    try T.expect(!s.checker.strictCallableSubtype(right, left));
+    const union_t = try s.checker.internArrayElementUnion(&.{ left, right });
+    try T.expect(s.ti.pool.flagsOf(union_t).is_union);
+    try T.expectEqual(@as(usize, 2), s.ti.unionMembers(union_t).len);
+}
+
+test "checker: callable union reduction does not invent an array predicate" {
+    for ([_][]const u8{
+        "declare function guard(value: unknown): value is number; declare function plain(value: unknown): boolean;",
+        "declare function plain(value: unknown): boolean; declare function guard(value: unknown): value is number;",
+    }) |declarations| {
+        const source = try std.fmt.allocPrint(T.allocator,
+            \\{s}
+            \\declare let value: unknown;
+            \\const first = [guard, plain];
+            \\const second = [plain, guard];
+            \\if (first[0](value)) {{ const bad: number = value; }}
+            \\if (second[0](value)) {{ const bad: number = value; }}
+            \\const guards = [guard, guard];
+            \\if (guards[0](value)) {{ const good: number = value; }}
+        , .{declarations});
+        defer T.allocator.free(source);
+        const b = try newBoundSetup(source);
+        defer destroyBoundSetup(b);
+        try b.base.checker.checkSourceFile(b.base.root);
+        try T.expectEqual(@as(usize, 2), b.base.checker.diagnostics.items.len);
+        for (b.base.checker.diagnostics.items) |diagnostic| {
+            try T.expectEqual(TsCodes.type_not_assignable, diagnostic.code);
+        }
+    }
+}
+
+test "checker: callable union composition requires compatible predicate kinds and positions" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    const number_guard = try s.ti.internSignature(&.{ types.Primitive.unknown, types.Primitive.unknown }, types.Primitive.boolean_t, false);
+    const string_guard = try s.ti.internSignature(&.{ types.Primitive.unknown, types.Primitive.unknown }, types.Primitive.boolean_t, false);
+    const plain = try s.ti.internSignature(&.{ types.Primitive.unknown, types.Primitive.unknown }, types.Primitive.boolean_t, false);
+    const any_return = try s.ti.internSignature(&.{ types.Primitive.any, types.Primitive.any }, types.Primitive.any, false);
+    const number_pred: FnPredicate = .{ .param_index = 0, .target_type = types.Primitive.number_t, .target_node = hir_mod.none_node_id, .is_asserts = false };
+    var string_pred = number_pred;
+    string_pred.target_type = types.Primitive.string_t;
+    try s.checker.signature_predicates.put(T.allocator, number_guard, number_pred);
+    try s.checker.signature_predicates.put(T.allocator, string_guard, string_pred);
+    try T.expect(!s.checker.strictCallableSubtype(any_return, number_guard));
+
+    const combined = try s.checker.combineUnionSignaturePair(number_guard, string_guard, false);
+    const predicate = s.checker.signature_predicates.get(combined).?;
+    try T.expectEqual(try s.ti.internUnion(&.{ types.Primitive.number_t, types.Primitive.string_t }), predicate.target_type);
+    try T.expectEqual(hir_mod.none_node_id, predicate.target_node);
+    const matched = try s.checker.internMatchedUnionSignature(number_guard, &.{ number_guard, string_guard }, false);
+    try T.expectEqual(predicate.target_type, s.checker.signature_predicates.get(matched).?.target_type);
+    const mixed = try s.checker.combineUnionSignaturePair(number_guard, plain, false);
+    try T.expect(!s.checker.signature_predicates.contains(mixed));
+    string_pred.param_index = 1;
+    try s.checker.signature_predicates.put(T.allocator, string_guard, string_pred);
+    const different_position = try s.checker.combineUnionSignaturePair(number_guard, string_guard, false);
+    try T.expect(!s.checker.signature_predicates.contains(different_position));
+    string_pred.param_index = 0;
+    string_pred.is_asserts = true;
+    try s.checker.signature_predicates.put(T.allocator, string_guard, string_pred);
+    const different_kind = try s.checker.combineUnionSignaturePair(number_guard, string_guard, false);
+    try T.expect(!s.checker.signature_predicates.contains(different_kind));
+}
+
+test "checker: callable union composition handles three predicate branches and combined receivers" {
+    const b = try newBoundSetup(
+        \\declare const flag: boolean;
+        \\declare let value: unknown;
+        \\declare function numberGuard(value: unknown): value is number;
+        \\declare function stringGuard(value: unknown): value is string;
+        \\declare function booleanGuard(value: unknown): value is boolean;
+        \\const guard = flag ? numberGuard : flag ? stringGuard : booleanGuard;
+        \\if (guard(value)) { const good: string | number | boolean = value; }
+        \\if (guard(value)) { const bad: number = value; }
+        \\declare function left(this: { left: number }): number;
+        \\declare function right(this: { right: number }): number;
+        \\const run = flag ? left : right;
+        \\const complete = { left: 1, right: 2, run };
+        \\const good: number = complete.run();
+        \\const partial = { left: 1, run };
+        \\partial.run();
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 2), b.base.checker.diagnostics.items.len);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.this_context_not_assignable));
+}
+
 test "checker: empty substitutions preserve type graph identity" {
     const s = try newSetup("");
     defer destroySetup(s);
@@ -218812,6 +223733,68 @@ test "checker: empty substitutions preserve type graph identity" {
 
     try T.expectEqual(signature_t, try s.checker.substituteType(signature_t, &empty_subs));
     try T.expectEqual(type_count, s.checker.interner.pool.typeCount());
+}
+
+test "checker: unaffected substitution retains callable identity without erasing hidden predicates" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    const type_param = try s.ti.internFreshTypeParameterWithVariance(
+        try s.checker.string_interner.intern("T"),
+        types.Primitive.unknown,
+        types.Primitive.none,
+        .bivariant,
+    );
+    var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+    defer subs.deinit(T.allocator);
+    try subs.put(T.allocator, type_param, types.Primitive.string_t);
+    const plain = try s.ti.internSignature(&.{types.Primitive.number_t}, types.Primitive.number_t, false);
+    const count = s.ti.pool.typeCount();
+    try T.expectEqual(plain, try s.checker.substituteType(plain, &subs));
+    try T.expectEqual(count, s.ti.pool.typeCount());
+    const distinct = try s.ti.internSignature(&.{types.Primitive.number_t}, types.Primitive.number_t, false);
+    try T.expect(plain != distinct);
+
+    const generic = try s.ti.internSignature(&.{type_param}, type_param, false);
+    try s.checker.recordGenericSignatureParams(generic, &.{type_param});
+    const instantiated = try s.checker.substituteType(generic, &subs);
+    try T.expect(instantiated != generic);
+    try T.expectEqual(types.Primitive.string_t, s.ti.signatureReturn(instantiated).?);
+    try T.expect(!s.checker.generic_signature_params.contains(instantiated));
+    try T.expect(s.checker.generic_signature_params.contains(generic));
+
+    const guard = try s.ti.internSignature(&.{types.Primitive.unknown}, types.Primitive.boolean_t, false);
+    try s.checker.signature_predicates.put(T.allocator, guard, .{
+        .param_index = 0,
+        .target_type = type_param,
+        .target_node = hir_mod.none_node_id,
+        .is_asserts = false,
+    });
+    const instantiated_guard = try s.checker.substituteType(guard, &subs);
+    try T.expect(instantiated_guard != guard);
+    try T.expectEqual(types.Primitive.string_t, s.checker.signature_predicates.get(instantiated_guard).?.target_type);
+    try T.expectEqual(type_param, s.checker.signature_predicates.get(guard).?.target_type);
+}
+
+test "checker: callback inference keeps local binders scoped and infers free outer types" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    const name = try s.checker.string_interner.intern("T");
+    const outer = try s.ti.internFreshTypeParameterWithVariance(name, types.Primitive.unknown, types.Primitive.none, .bivariant);
+    const local = try s.ti.internFreshTypeParameterWithVariance(name, types.Primitive.unknown, types.Primitive.none, .bivariant);
+    const source_local = try s.ti.internFreshTypeParameterWithVariance(name, types.Primitive.unknown, types.Primitive.none, .bivariant);
+    const target = try s.ti.internSignature(&.{local}, outer, false);
+    try s.checker.recordGenericSignatureParams(target, &.{local});
+    const source = try s.ti.internSignature(&.{source_local}, types.Primitive.string_t, false);
+    try s.checker.recordGenericSignatureParams(source, &.{source_local});
+    var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+    defer subs.deinit(T.allocator);
+    try s.checker.inferFromPair(target, source, &subs);
+    try T.expectEqual(types.Primitive.string_t, subs.get(outer).?);
+    try T.expect(!subs.contains(local));
+    try T.expect(!subs.contains(source_local));
+    const instantiated = try s.checker.substituteType(target, &subs);
+    try T.expectEqualSlices(TypeId, &.{local}, s.checker.generic_signature_params.get(instantiated).?);
+    try T.expectEqual(types.Primitive.string_t, s.ti.signatureReturn(instantiated).?);
 }
 
 test "checker: call inference only instantiates generic signatures" {
@@ -229184,6 +234167,46 @@ test "checker: homomorphic mapped inference accepts intersection argument" {
     }
 }
 
+test "checker: inferred tuple keys instantiate mapped generic returns" {
+    const b = try newBoundSetup(
+        \\interface Entity<N extends number> {
+        \\  readonly id: N;
+        \\  readonly label: `entity-${N}`;
+        \\  readonly active: boolean;
+        \\}
+        \\type PickFields<T, K extends keyof T> = { readonly [P in K]: T[P] };
+        \\declare function project<T, K extends readonly (keyof T)[]>(value: T, keys: K): PickFields<T, K[number]>;
+        \\declare function field<T, K extends keyof T>(value: T, key: K): T[K];
+        \\const entity: Entity<1> = { id: 1, label: "entity-1", active: true };
+        \\const selected = project(entity, ["id", "label"] as const);
+        \\const label: "entity-1" = field(selected, "label");
+    );
+    defer destroyBoundSetup(b);
+    const s = b.base;
+    s.checker.setStrictFlags(.{
+        .strict_null_checks = true,
+        .strict_function_types = true,
+        .strict_bind_call_apply = true,
+        .strict_property_initialization = true,
+        .no_implicit_any = true,
+        .no_implicit_this = true,
+    });
+    try s.checker.checkSourceFile(s.root);
+    const selected_t = statementVarInitType(s, 5);
+    try T.expect(s.ti.pool.flagsOf(selected_t).is_object_type);
+    const id_name = s.sint.lookup("id").?;
+    const label_name = s.sint.lookup("label").?;
+    const active_name = s.sint.lookup("active").?;
+    try T.expect((try s.checker.lookupObjectMember(selected_t, id_name)) != null);
+    const label_t = (try s.checker.lookupObjectMember(selected_t, label_name)) orelse return error.TestExpectedEqual;
+    try expectStringLiteralType(s, label_t, "entity-1");
+    try T.expect((try s.checker.lookupObjectMember(selected_t, active_name)) == null);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.type_not_assignable);
+        try T.expect(d.code != TsCodes.argument_type_mismatch);
+    }
+}
+
 test "checker: reverse mapped inference accepts nested computed accessors" {
     const s = try newSetup(
         \\type PropDesc<T> = { value?: T; get?(): T; set?(value: T): void };
@@ -229328,6 +234351,301 @@ test "checker: const tuple paths reduce recursive conditional aliases" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
+}
+
+test "checker: callable identity keeps boolean properties out of predicate narrowing" {
+    inline for (.{
+        "number(value: unknown): value is number; plain(value: unknown): boolean;",
+        "plain(value: unknown): boolean; number(value: unknown): value is number;",
+    }) |members| {
+        const s = try newBoundSetup("export {}; interface Guards {" ++ members ++ "}\n" ++
+            \\declare const guards: Guards;
+            \\declare let value: unknown;
+            \\const plain = guards.plain;
+            \\if (plain(value)) { const badAlias: number = value; }
+            \\if (guards.plain(value)) { const badDirect: number = value; }
+            \\const box = { p: guards.plain };
+            \\if (box.p(value)) { const badWrapper: number = value; }
+            \\const badGuard: (value: unknown) => value is number = guards.plain;
+            \\const guard = guards.number;
+            \\if (guard(value)) { const good: number = value; }
+        );
+        defer destroyBoundSetup(s);
+        s.base.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+        try s.base.checker.checkSourceFile(s.base.root);
+        try T.expectEqual(@as(usize, 4), checkerCountCode(s.base, TsCodes.type_not_assignable));
+        try T.expectEqual(@as(usize, 4), s.base.checker.diagnostics.items.len);
+    }
+}
+
+test "checker: assertion declarations return void without aliasing boolean guards" {
+    const b = try newBoundSetup(
+        \\declare function isText(value: unknown): value is string;
+        \\declare function assertText(value: unknown): asserts value is string;
+        \\declare let value: unknown;
+        \\const goodGuard: boolean = isText(value);
+        \\const goodAssertion: void = assertText(value);
+        \\const badResult: boolean = assertText(value);
+        \\const badSignature: (value: unknown) => boolean = assertText;
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{ .strict_null_checks = true, .strict_function_types = true, .no_implicit_any = true });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(b.base, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 2), b.base.checker.diagnostics.items.len);
+}
+
+test "checker: assertion function types return void" {
+    const b = try newBoundSetup(
+        \\type Guard = (value: unknown) => value is string;
+        \\type Assert = (value: unknown) => asserts value is string;
+        \\declare const guard: Guard;
+        \\declare const assert: Assert;
+        \\declare let value: unknown;
+        \\const goodGuard: boolean = guard(value);
+        \\const goodAssertion: void = assert(value);
+        \\const badResult: boolean = assert(value);
+        \\const badSignature: (value: unknown) => boolean = assert;
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{ .strict_null_checks = true, .strict_function_types = true, .no_implicit_any = true });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(b.base, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 2), b.base.checker.diagnostics.items.len);
+}
+
+test "checker: assertion methods return void" {
+    const b = try newBoundSetup(
+        \\interface Checks {
+        \\    isText(value: unknown): value is string;
+        \\    assertText(value: unknown): asserts value is string;
+        \\}
+        \\declare const checks: Checks;
+        \\declare let value: unknown;
+        \\const goodGuard: boolean = checks.isText(value);
+        \\const goodAssertion: void = checks.assertText(value);
+        \\const badResult: boolean = checks.assertText(value);
+        \\const badSignature: (value: unknown) => boolean = checks.assertText;
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{ .strict_null_checks = true, .strict_function_types = true, .no_implicit_any = true });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(b.base, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 2), b.base.checker.diagnostics.items.len);
+}
+
+test "checker: generic interface callbacks retain instantiated receiver parameters" {
+    const b = try newBoundSetup(
+        \\interface Mapper<T> { project<U>(callback: (value: T) => U): U; }
+        \\declare const mapper: Mapper<{ label: string }>;
+        \\const result = mapper.project(value => value.label);
+        \\const good: string = result;
+        \\const bad: number = result;
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{ .strict_null_checks = true, .strict_function_types = true, .no_implicit_any = true });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 1), b.base.checker.diagnostics.items.len);
+}
+
+test "checker: generic interface callbacks preserve block and explicit results" {
+    const b = try newBoundSetup(
+        \\interface Mapper<T> { project<U>(callback: (value: T) => U): U; }
+        \\declare const mapper: Mapper<{ label: string }>;
+        \\const block = mapper.project(value => { return value.label; });
+        \\const expression = mapper.project(function(value) { return value.label; });
+        \\const explicit = mapper.project<string>(value => value.label);
+        \\const goodBlock: string = block;
+        \\const goodExpression: string = expression;
+        \\const goodExplicit: string = explicit;
+        \\const badBlock: number = block;
+        \\const badExpression: number = expression;
+        \\const badExplicit: number = explicit;
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{ .strict_null_checks = true, .strict_function_types = true, .no_implicit_any = true });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 3), checkerCountCode(b.base, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 3), b.base.checker.diagnostics.items.len);
+}
+
+test "checker: generic interface callbacks preserve nested and separate receiver types" {
+    const b = try newBoundSetup(
+        \\interface Mapper<T> {
+        \\  project<U>(callback: (value: T) => U): U;
+        \\  nested<U>(callback: (value: T) => (suffix: string) => U): U;
+        \\}
+        \\declare const text: Mapper<{ label: string }>;
+        \\declare const numeric: Mapper<{ label: number }>;
+        \\const textResult = text.project(value => value.label);
+        \\const numericResult = numeric.project(value => value.label);
+        \\const nestedResult = text.nested(value => suffix => value.label + suffix);
+        \\const goodText: string = textResult;
+        \\const goodNumeric: number = numericResult;
+        \\const goodNested: string = nestedResult;
+        \\const badText: number = textResult;
+        \\const badNumeric: string = numericResult;
+        \\const badNested: number = nestedResult;
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{ .strict_null_checks = true, .strict_function_types = true, .no_implicit_any = true });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 3), checkerCountCode(b.base, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 3), b.base.checker.diagnostics.items.len);
+}
+
+test "checker: generic interface callbacks retain constraints defaults and shadowing" {
+    const b = try newBoundSetup(
+        \\interface Mapper<T> {
+        \\  project<U extends string>(callback: (value: T) => U): U;
+        \\  defaulted<U = T>(callback?: (value: T) => U): U;
+        \\  shadow<T>(value: T, callback: (value: T) => T): T;
+        \\}
+        \\declare const mapper: Mapper<{ label: string }>;
+        \\const projected = mapper.project(value => value.label);
+        \\const defaulted = mapper.defaulted();
+        \\const inferred = mapper.defaulted(value => value.label);
+        \\const shadowed = mapper.shadow(1, value => value);
+        \\const goodProjected: string = projected;
+        \\const goodDefaulted: { label: string } = defaulted;
+        \\const goodInferred: string = inferred;
+        \\const goodShadowed: number = shadowed;
+        \\const badProjected: number = projected;
+        \\const badDefaulted: number = defaulted;
+        \\const badInferred: number = inferred;
+        \\const badShadowed: string = shadowed;
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{ .strict_null_checks = true, .strict_function_types = true, .no_implicit_any = true });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 4), checkerCountCode(b.base, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 4), b.base.checker.diagnostics.items.len);
+}
+
+test "checker: generic interface callbacks reject incompatible arguments" {
+    const b = try newBoundSetup(
+        \\interface Mapper<T> { project<U>(callback: (value: T) => U): U; }
+        \\declare const mapper: Mapper<{ label: string }>;
+        \\mapper.project((value: { count: number }) => value.count);
+        \\mapper.project<number>(value => value.label);
+        \\mapper.project(value => value.missing);
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{ .strict_null_checks = true, .strict_function_types = true, .no_implicit_any = true });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.argument_type_mismatch));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 3), b.base.checker.diagnostics.items.len);
+}
+
+test "checker: generic interface callbacks preserve inferred indexed rest arguments" {
+    const b = try newBoundSetup(
+        \\interface Emitter<Events extends { [K in keyof Events]: unknown[] }> {
+        \\  on<K extends keyof Events>(event: K, listener: (...args: Events[K]) => void): void;
+        \\}
+        \\declare const emitter: Emitter<{ warn: [string]; disconnect: [{ code: number }, number] }>;
+        \\emitter.on("disconnect", (event, index) => {
+        \\  const goodCode: number = event.code;
+        \\  const goodIndex: number = index;
+        \\  const badCode: string = event.code;
+        \\  const badIndex: string = index;
+        \\});
+        \\emitter.on("warn", message => {
+        \\  const goodMessage: string = message;
+        \\  const badMessage: number = message;
+        \\});
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{ .strict_null_checks = true, .strict_function_types = true, .no_implicit_any = true });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 3), checkerCountCode(b.base, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 3), b.base.checker.diagnostics.items.len);
+}
+
+test "checker: primitive return contracts reject incompatible synchronous values" {
+    const b = try newBoundSetup(
+        \\function text(value: number): string { return value; }
+        \\function numeric(value: string): number { return value; }
+        \\function flag(value: string): boolean { return value; }
+        \\function integer(value: number): bigint { return value; }
+        \\function token(value: bigint): symbol { return value; }
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{ .strict_null_checks = true, .strict_function_types = true, .no_implicit_any = true });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 5), checkerCountCode(b.base, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 5), b.base.checker.diagnostics.items.len);
+}
+
+test "checker: primitive return contracts reject incompatible awaited values" {
+    const b = try newBoundSetup(
+        \\async function direct(value: number): Promise<string> { return value; }
+        \\async function promised(value: Promise<number>): Promise<string> { return value; }
+        \\async function awaited(value: PromiseLike<string>): Promise<number> { return await value; }
+        \\async function branch(value: string, flag: boolean): Promise<boolean> {
+        \\  if (flag) return value;
+        \\  return false;
+        \\}
+        \\const expression = async (value: number): Promise<string> => value;
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{ .strict_null_checks = true, .strict_function_types = true, .no_implicit_any = true });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 5), checkerCountCode(b.base, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 5), b.base.checker.diagnostics.items.len);
+}
+
+test "checker: primitive return contracts reject unknown and strict nullish values" {
+    const b = try newBoundSetup(
+        \\function text(value: unknown): string { return value; }
+        \\async function numeric(value: unknown): Promise<number> { return value; }
+        \\function nullText(): string { return null; }
+        \\function absentFlag(): boolean { return; }
+        \\function optionalText(value: string | undefined): string { return value; }
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{ .strict_null_checks = true, .strict_function_types = true, .no_implicit_any = true });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 5), checkerCountCode(b.base, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 5), b.base.checker.diagnostics.items.len);
+}
+
+test "checker: primitive return contracts preserve non-strict nullish and any values" {
+    const b = try newBoundSetup(
+        \\function text(): string { return null; }
+        \\function numeric(): number { return undefined; }
+        \\function anyText(value: any): string { return value; }
+        \\async function nullText(): Promise<string> { return null; }
+        \\async function anyNumber(value: any): Promise<number> { return value; }
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{ .strict_null_checks = false });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 0), b.base.checker.diagnostics.items.len);
+}
+
+test "checker: primitive return contracts preserve valid values and callback ownership" {
+    const b = try newBoundSetup(
+        \\function text<T extends string>(value: T): string { return value; }
+        \\function numeric(value: number | string): number { if (typeof value === "number") return value; return 0; }
+        \\function flag(): boolean { return true; }
+        \\function integer(value: bigint): bigint { return value; }
+        \\function token(value: symbol): symbol { return value; }
+        \\async function direct(value: string): Promise<string> { return value; }
+        \\async function promised(value: Promise<string>): Promise<string> { return value; }
+        \\async function awaited(value: PromiseLike<number>): Promise<number> { return await value; }
+        \\async function nested(): Promise<string> { function inner(): number { return 1; } return "ok"; }
+        \\declare function consume(callback: () => string): void;
+        \\consume(() => { return 1; });
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{ .strict_null_checks = true, .strict_function_types = true, .no_implicit_any = true });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.argument_type_mismatch));
+    try T.expectEqual(@as(usize, 1), b.base.checker.diagnostics.items.len);
 }
 
 test "checker: async expression-bodied arrows infer structural Promise returns" {
@@ -248879,6 +254197,27 @@ test "checker: tsgo parity follow-up bare type value export overrides alias meta
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_only_export_used_as_value));
 }
 
+test "checker: cross-module import-type origin reports TS1361 without a spurious call error" {
+    const s = try newSetup(
+        \\import { fn } from "./alias";
+        \\type Signature = typeof fn;
+        \\fn(1);
+        \\function local(fn: (value: number) => number) { return fn(1); }
+    );
+    defer destroySetup(s);
+    var stub = CrossModuleStubResolver{
+        .canned_module_name = "\"alias\"",
+        .exported_name = "fn",
+        .exported_type = false,
+        .exported_value = true,
+        .type_only_export = true,
+        .type_only_import = true,
+    };
+    try runCrossModuleCheck(s, &stub);
+    try T.expectEqual(@as(usize, 1), s.checker.diagnostics.items.len);
+    try T.expectEqual(TsCodes.type_only_import_used_as_value, s.checker.diagnostics.items[0].code);
+}
+
 test "checker: ambiguous type-only export specifiers publish aliases without TS2661" {
     const b = try newBoundSetup(
         \\// @filename: /imports.ts
@@ -255246,6 +260585,7 @@ const CrossModuleStubResolver = struct {
     /// When true, the canned name is reported as a TYPE-ONLY export
     /// (`export type { name }`) — drives TS1379/TS1362.
     type_only_export: bool = false,
+    type_only_import: bool = false,
     ambient_module: bool = false,
     ambient_module_exports_known: bool = false,
     unsafe_symbol_name: []const u8 = "",
@@ -255288,6 +260628,7 @@ const CrossModuleStubResolver = struct {
                 (!self.exported_type and !self.cannot_be_named and !self.type_only_export)),
             .cannot_be_named = self.cannot_be_named and matches,
             .type_only_export = is_type_only,
+            .type_only_import = self.type_only_import and matches,
             .export_path = if (is_type_only) "/dep.ts" else "",
             .export_pos = 0,
             .ambient_module = self.ambient_module,

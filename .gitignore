@@ -108,3 +108,4 @@ app-with-resources
 /js
 /file:
 /.codex-cache-final
+/codex-git-shadow.git

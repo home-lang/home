@@ -18,19 +18,28 @@ const ts_emit = @import("ts_emit");
 const tsconfig_mod = @import("tsconfig");
 const ts_checker = @import("ts_checker");
 const ts_cache = @import("ts_cache");
+const DirectiveLines = @import("directive_lines.zig").Iterator;
 
 pub const NodeId = hir_mod.NodeId;
 pub const Hir = hir_mod.Hir;
 pub const Token = ts_lexer.Token;
 pub const StrictFlags = ts_checker.StrictFlags;
+pub const TypeId = ts_checker.TypeId;
+pub const Primitive = ts_checker.Primitive;
+pub const SourceMarkerMatcher = ts_checker.SourceMarkerMatcher;
 pub const ExternalResolver = ts_checker.ExternalResolver;
+pub const source_owners = @import("source_owners.zig");
+pub const StringInterner = string_interner.Interner;
 pub const ScriptObjectExpando = ts_checker.ScriptObjectExpando;
+pub const ProgramGlobalBinding = ts_checker.ProgramGlobalBinding;
 pub const ModuleInterfaceAugmentation = ts_checker.ModuleInterfaceAugmentation;
 pub const ProgramExportedClass = ts_checker.ProgramExportedClass;
+pub const ProgramClassSchema = ts_checker.ProgramClassSchema;
 pub const ProgramExportedClassMember = ts_checker.ProgramExportedClassMember;
 pub const ProgramMemberVisibility = ts_checker.ProgramMemberVisibility;
 pub const ProgramTypeReference = ts_checker.ProgramTypeReference;
 pub const ProgramExportedValue = ts_checker.ProgramExportedValue;
+pub const ProgramExportedType = ts_checker.ProgramExportedType;
 pub const ProgramExportedValueKind = ts_checker.ProgramExportedValueKind;
 pub const ProgramAmbientModuleInterfaceExport = ts_checker.ProgramAmbientModuleInterfaceExport;
 pub const ProgramCommonJsExport = ts_checker.ProgramCommonJsExport;
@@ -236,6 +245,20 @@ pub const Compilation = struct {
     type_interner: ts_checker.Interner,
     /// Relation engine — caches assignability/subtype results.
     type_engine: ts_checker.Engine,
+    /// Checked declaration/signature metadata. Its TypeIds and source nodes
+    /// belong to this compilation, and survive the temporary Checker.
+    checked_types: ts_checker.CheckedTypes = .{},
+    /// Set only after semantic checking and metadata capture complete. A
+    /// bind-only or early scanner-recovery result is not a typed source owner.
+    checked_types_ready: bool = false,
+    /// Preparation owns all parser state needed by the later checker. The
+    /// parser itself is gone before a prepared compilation is published.
+    is_declaration_file: bool = false,
+    has_syntactic_parse_diagnostics: bool = false,
+    jsx_comma_recovery_spans: std.ArrayListUnmanaged(hir_mod.Span) = .empty,
+    /// Checking is one-shot. After a failed check only deinit is permitted;
+    /// changed source/parser options require a newly prepared compilation.
+    check_state: enum { unavailable, bound, checking, checked } = .unavailable,
     /// Emitted JavaScript text.
     js: []u8,
     /// All diagnostics from every phase, in source order.
@@ -256,9 +279,11 @@ pub const Compilation = struct {
         self.diagnostics.deinit(self.gpa);
         for (self.references.items) |r| self.gpa.free(r.name);
         self.references.deinit(self.gpa);
+        self.jsx_comma_recovery_spans.deinit(self.gpa);
         self.module.deinit();
         self.gpa.destroy(self.module);
         self.type_engine.deinit();
+        self.checked_types.deinit(self.gpa);
         self.type_interner.deinit();
         self.tokens.deinit(self.gpa);
         self.hir.deinit();
@@ -271,9 +296,27 @@ pub const Compilation = struct {
         const id = self.interner.lookup(name) orelse return null;
         return self.module.root.values.get(id) orelse self.module.root.types.get(id) orelse self.module.root.namespaces.get(id);
     }
+
+    /// Borrow immutable source storage for the owner registry. Unregister the
+    /// returned owner's ID before destroying or replacing this compilation.
+    pub fn sourceOwner(self: *const Compilation, path: []const u8) error{UncheckedSource}!source_owners.Source {
+        if (!self.checked_types_ready) return error.UncheckedSource;
+        return .{
+            .hir = &self.hir,
+            .strings = &self.interner,
+            .types = &self.type_interner,
+            .checked = &self.checked_types,
+            .path = path,
+            .text = self.source,
+        };
+    }
 };
 
 pub const CompileOptions = struct {
+    /// Optional program-wide name keyspace. Preparation retains its own
+    /// handle; caller and compilation lifetimes may end independently.
+    /// HIR nodes, binder scopes and TypeIds remain owned by each source.
+    shared_strings: ?*const string_interner.Interner = null,
     /// File id for diagnostics + module identity.
     file_id: u32 = 0,
     /// JS emit options (indent, newline, semicolon style).
@@ -284,6 +327,10 @@ pub const CompileOptions = struct {
     /// Type-check only. Used by `--noEmit` and conformance surveys
     /// that are checking diagnostics rather than JS output.
     no_emit: bool = false,
+    /// Stop after lexing, parsing, and binding. Internal module-graph queries
+    /// use this when they need immutable symbol/export metadata but no
+    /// semantic diagnostics or JavaScript output.
+    bind_only: bool = false,
     /// Keep the first source file for each resolver package ID and turn
     /// later physical copies into redirects. tsgo defaults this on.
     deduplicate_packages: bool = true,
@@ -331,6 +378,10 @@ pub const CompileOptions = struct {
     /// `checkJs` is enabled. Callers that know the virtual file kind
     /// can set this directly.
     allow_js: bool = false,
+    /// Report semantic diagnostics for JavaScript files admitted by
+    /// `allowJs`. A file-level `// @ts-check` directive still enables
+    /// checking when this project option is false.
+    check_js: bool = false,
     suppress_js_check_diagnostics: bool = false,
     /// Optional parsed tsconfig. When present, the driver applies
     /// the relevant compilerOptions:
@@ -370,14 +421,21 @@ pub const CompileOptions = struct {
     script_object_expandos: []const ScriptObjectExpando = &.{},
     /// Top-level `var` names contributed by sibling global scripts.
     program_global_var_names: []const []const u8 = &.{},
+    /// Program-global value types already relocated into this compilation's
+    /// type interner.
+    program_global_value_types: []const ProgramGlobalBinding = &.{},
     /// Type-space names contributed by sibling global scripts.
     program_global_type_names: []const []const u8 = &.{},
+    /// Non-generic program-global types already relocated into this
+    /// compilation's type interner.
+    program_global_types: []const ProgramGlobalBinding = &.{},
     /// Program-level relative module interface augmentations discovered
     /// in sibling files.
     module_interface_augmentations: []const ModuleInterfaceAugmentation = &.{},
     /// Program-level exported classes discovered in sibling files.
     program_exported_classes: []const ProgramExportedClass = &.{},
     program_exported_values: []const ProgramExportedValue = &.{},
+    program_exported_types: []const ProgramExportedType = &.{},
     /// Program-level exported interfaces declared inside ambient external
     /// modules in sibling files.
     program_ambient_module_interface_exports: []const ProgramAmbientModuleInterfaceExport = &.{},
@@ -1479,7 +1537,7 @@ fn virtualReferencePathExists(source: []const u8, path: []const u8) bool {
 }
 
 fn directiveValue(source: []const u8, name: []const u8) ?[]const u8 {
-    var lines = std.mem.splitScalar(u8, source, '\n');
+    var lines: DirectiveLines = .{ .source = source };
     while (lines.next()) |line_raw| {
         const line = std.mem.trim(u8, line_raw, " \t\r/*");
         if (!std.mem.startsWith(u8, line, "@")) continue;
@@ -1493,7 +1551,7 @@ fn directiveValue(source: []const u8, name: []const u8) ?[]const u8 {
 }
 
 fn compilerOptionDirectiveValue(source: []const u8, name: []const u8) ?[]const u8 {
-    var lines = std.mem.splitScalar(u8, source, '\n');
+    var lines: DirectiveLines = .{ .source = source };
     while (lines.next()) |line_raw| {
         const marker = directiveValueStart(line_raw, name) orelse continue;
         var value = std.mem.trim(u8, marker, " \t:");
@@ -1508,7 +1566,7 @@ fn compilerOptionDirectiveValue(source: []const u8, name: []const u8) ?[]const u
 }
 
 fn sourceHasJsxCompilerOptionDirective(source: []const u8) bool {
-    var lines = std.mem.splitScalar(u8, source, '\n');
+    var lines: DirectiveLines = .{ .source = source };
     while (lines.next()) |line_raw| {
         const marker = directiveValueStart(line_raw, "jsx") orelse continue;
         const trimmed = std.mem.trim(u8, marker, " \t");
@@ -1788,6 +1846,9 @@ pub fn optionsFromConfig(cfg: *const tsconfig_mod.TsConfig) CompileOptions {
     if (cfg.compiler_options.skip_lib_check) |on| {
         opts.skip_lib_check = on;
     }
+    opts.allow_js = cfg.compiler_options.allow_js orelse false;
+    opts.check_js = cfg.compiler_options.check_js orelse false;
+    opts.no_emit = cfg.compiler_options.no_emit orelse false;
     if (cfg.compiler_options.types) |names| {
         opts.compiler_type_reference_names = names;
     }
@@ -1865,6 +1926,24 @@ pub fn compileSource(
     source: []const u8,
     options: CompileOptions,
 ) CompileError!*Compilation {
+    const c = try prepareSource(gpa, source, options);
+    errdefer {
+        c.deinit();
+        gpa.destroy(c);
+    }
+    if (!options.bind_only) try checkPreparedSource(c, options);
+    return c;
+}
+
+/// Parse and bind a source without checking or emitting it. Source bytes
+/// remain caller-owned. Keep the parser-affecting options unchanged when
+/// passing this result to checkPreparedSource; program semantic facts can
+/// be supplied after the full import closure has been discovered.
+pub fn prepareSource(
+    gpa: std.mem.Allocator,
+    source: []const u8,
+    options: CompileOptions,
+) CompileError!*Compilation {
     const c = gpa.create(Compilation) catch return error.OutOfMemory;
     errdefer gpa.destroy(c);
 
@@ -1884,7 +1963,10 @@ pub fn compileSource(
         .has_errors = false,
     };
 
-    c.interner = string_interner.Interner.init(gpa) catch return error.OutOfMemory;
+    c.interner = if (options.shared_strings) |shared|
+        shared.share()
+    else
+        string_interner.Interner.init(gpa) catch return error.OutOfMemory;
     errdefer c.interner.deinit();
 
     c.hir = hir_mod.Hir.init(gpa) catch return error.OutOfMemory;
@@ -1907,14 +1989,8 @@ pub fn compileSource(
 
     try reportInvalidReferenceDirectiveSyntaxDiagnostics(gpa, c, source);
     try reportSelfReferencePathDiagnostics(gpa, c, source, options);
-    try reportMissingReferencePathDiagnostics(gpa, c, source, options);
-    try reportMissingReferenceTypesDiagnostics(gpa, c, source, options);
-    try reportMissingCompilerTypeReferenceDiagnostics(gpa, c, source, options);
     try extractReferenceDirectives(gpa, c, source);
     try appendJsonModuleValidationDiagnostics(gpa, c, source, options.importer_path);
-
-    const effective_import_helpers = options.emit.import_helpers or (directiveBool(source, "importHelpers") orelse false);
-    const effective_experimental_decorators = legacyDecoratorsEnabled(source, options);
 
     // ------ Lex ------
     var tsx_lex_source: ?[]u8 = null;
@@ -2116,13 +2192,18 @@ pub fn compileSource(
         }
     }
     try appendJsxDirectiveDiagnostics(gpa, c, source, options);
+    c.is_declaration_file = is_declaration_file;
+    c.has_syntactic_parse_diagnostics = has_syntactic_parse_diagnostics;
+    c.jsx_comma_recovery_spans = parser.jsx_comma_recovery_spans;
+    parser.jsx_comma_recovery_spans = .empty;
+    errdefer c.jsx_comma_recovery_spans.deinit(gpa);
 
     // ------ Bind ------
     var bind = binder.Binder.init(gpa, &c.hir, &c.interner, options.file_id) catch return error.OutOfMemory;
+    defer bind.deinit();
     errdefer {
         bind.module.deinit();
         gpa.destroy(bind.module);
-        bind.deinit();
     }
 
     bind.bindSourceFile(c.root) catch |err| switch (err) {
@@ -2141,20 +2222,47 @@ pub fn compileSource(
         c.has_errors = true;
     }
     c.module = bind.module;
-    bind.deinit();
-    // Own bind no longer drops module on errdefer.
 
-    // ------ Type check ------
+    // Initialize owned type storage even for bind-only and recovery results.
     c.type_interner = ts_checker.Interner.init(gpa) catch return error.OutOfMemory;
     errdefer c.type_interner.deinit();
     c.type_engine = ts_checker.Engine.init(gpa, &c.type_interner) catch return error.OutOfMemory;
     errdefer c.type_engine.deinit();
+    c.check_state = .bound;
+    sortDiagnosticsBySourceOrder(c.diagnostics.items);
+    return c;
+}
+
+/// Finish a prepared source in place, preserving its HIR, tokens and binder
+/// owners. Completed checks are idempotent for the same options; this is not
+/// an incremental recheck API. On failure the caller must destroy the result.
+/// Scanner recovery without a usable root remains an untyped result.
+pub fn checkPreparedSource(c: *Compilation, options: CompileOptions) CompileError!void {
+    if (c.check_state == .checked) return;
+    const can_check = c.check_state == .bound;
+    std.debug.assert((can_check or c.check_state == .unavailable) and !options.bind_only);
+    c.check_state = .checking;
+    const gpa = c.gpa;
+    const source = c.source;
+    const has_syntactic_parse_diagnostics = c.has_syntactic_parse_diagnostics;
+    const effective_import_helpers = options.emit.import_helpers or (directiveBool(source, "importHelpers") orelse false);
+    const effective_experimental_decorators = legacyDecoratorsEnabled(source, options);
+    // Missing-reference checks depend on the completed program, not parsing.
+    try reportMissingReferencePathDiagnostics(gpa, c, source, options);
+    try reportMissingReferenceTypesDiagnostics(gpa, c, source, options);
+    try reportMissingCompilerTypeReferenceDiagnostics(gpa, c, source, options);
+    if (!can_check) {
+        sortDiagnosticsBySourceOrder(c.diagnostics.items);
+        c.check_state = .checked;
+        return;
+    }
+    // ------ Type check ------
     var checker = ts_checker.Checker.init(gpa, &c.hir, &c.type_interner, &c.interner, &c.type_engine);
     defer checker.deinit();
     checker.setModule(c.module);
     checker.setSource(source);
     checker.setTsx(options.is_tsx);
-    checker.setIsDeclarationFile(is_declaration_file);
+    checker.setIsDeclarationFile(c.is_declaration_file);
     // tsc/tsgo suppress every grammar diagnostic (`grammarErrorOnNode`)
     // once the source file has any parse error. Mirror that by telling
     // the checker whether the parser produced a true syntactic diagnostic.
@@ -2163,7 +2271,7 @@ pub fn compileSource(
     // as grammar errors. They therefore must not populate
     // SourceFile.parseDiagnostics or suppress sibling checker grammar errors.
     checker.setHasParseDiagnostics(has_syntactic_parse_diagnostics);
-    checker.setJsxCommaRecoverySpans(parser.jsx_comma_recovery_spans.items);
+    checker.setJsxCommaRecoverySpans(c.jsx_comma_recovery_spans.items);
     checker.setJsxOptionPresent(jsxOptionPresent(source, options));
     checker.setJsxPreserveOption(options.jsx_preserve_option);
     checker.setJsxFactoryName(compilerOptionDirectiveValue(source, "jsxFactory") orelse options.emit.jsx_factory);
@@ -2184,7 +2292,7 @@ pub fn compileSource(
     checker.setTargetEmitEs5(options.emit.es_target == .es5);
     checker.setTargetEs5Baseline(options.report_deprecated_target_es5);
     checker.setTargetSupportsTopLevelAwait(options.emit.es_target.supportsNativeAsync());
-    checker.setIntlNumberFormatModernOptions(@intFromEnum(options.emit.es_target) >= @intFromEnum(EsTarget.es2023));
+    checker.setIntlNumberFormatModernOptions(@backingInt(options.emit.es_target) >= @backingInt(EsTarget.es2023));
     checker.setPrivateIdentifierDownlevelCollisionEnabled(!options.no_emit and !options.emit.es_target.supportsNativePrivateFields());
     checker.setReflectSuperStaticInitializerCollisionEnabled(!options.emit.es_target.supportsNativeClassFields());
     checker.setAllowImportingTsExtensionsEnabled(options.allow_importing_ts_extensions or
@@ -2197,8 +2305,14 @@ pub fn compileSource(
     if (options.program_global_var_names.len > 0) {
         checker.setProgramGlobalVarNames(options.program_global_var_names);
     }
+    if (options.program_global_value_types.len > 0) {
+        checker.setProgramGlobalValueTypes(options.program_global_value_types);
+    }
     if (options.program_global_type_names.len > 0) {
         checker.setProgramGlobalTypeNames(options.program_global_type_names);
+    }
+    if (options.program_global_types.len > 0) {
+        checker.setProgramGlobalTypes(options.program_global_types);
     }
     if (options.ambient_global_namespace_roots.len > 0) {
         checker.setAmbientGlobalNamespaceRoots(options.ambient_global_namespace_roots);
@@ -2211,6 +2325,9 @@ pub fn compileSource(
     }
     if (options.program_exported_values.len > 0) {
         checker.setProgramExportedValues(options.program_exported_values);
+    }
+    if (options.program_exported_types.len > 0) {
+        checker.setProgramExportedTypes(options.program_exported_types);
     }
     if (options.program_ambient_module_interface_exports.len > 0) {
         checker.setProgramAmbientModuleInterfaceExports(options.program_ambient_module_interface_exports);
@@ -2304,7 +2421,7 @@ pub fn compileSource(
             diagnostic_message = "'import type' declarations can only be used in TypeScript files.";
         }
         const suppress_js_check_diagnostics = options.suppress_js_check_diagnostics or
-            sourceIsUncheckedJsAtPos(source, diag_pos, options.allow_js);
+            sourceIsUncheckedJsAtPos(source, diag_pos, options.allow_js, options.check_js);
         if (suppress_js_check_diagnostics and !checkerDiagnosticSurfacesInUncheckedJs(d.code, diagnostic_message, source)) continue;
         if (has_syntactic_parse_diagnostics and
             d.code == ts_checker.check.TsCodes.destructuring_decl_must_have_initializer)
@@ -2415,7 +2532,9 @@ pub fn compileSource(
     // re-walking newlines.
     sortDiagnosticsBySourceOrder(c.diagnostics.items);
 
-    return c;
+    try checker.takeCheckedTypes(&c.checked_types);
+    c.checked_types_ready = c.root != hir_mod.none_node_id;
+    c.check_state = .checked;
 }
 
 fn diagnosticSpanLen(hir: *const Hir, node: NodeId, pos: u32, code: u32) u32 {
@@ -3428,12 +3547,13 @@ fn sanitizeTsxLexSource(gpa: std.mem.Allocator, source: []const u8) ![]u8 {
 }
 
 fn sourceIsUncheckedJs(source: []const u8) bool {
-    return sourceIsUncheckedJsAtPos(source, 0, false);
+    return sourceIsUncheckedJsAtPos(source, 0, false, false);
 }
 
-fn sourceIsUncheckedJsAtPos(source: []const u8, pos: usize, allow_js_enabled: bool) bool {
+fn sourceIsUncheckedJsAtPos(source: []const u8, pos: usize, allow_js_enabled: bool, check_js_enabled: bool) bool {
     const allow_js = allow_js_enabled or (directiveBool(source, "allowJs") orelse false);
     if (!allow_js) return false;
+    if (check_js_enabled) return false;
     if (directiveBool(source, "checkJs") orelse false) return false;
     if (sourceHasTsCheck(source)) return false;
     const filename = virtualFilenameAtPos(source, pos) orelse return virtualFilenameIsJs(source);
@@ -3984,7 +4104,7 @@ fn jsonStringEnd(source: []const u8, quote: usize, quote_char: u8) ?usize {
 }
 
 fn directiveBool(source: []const u8, name: []const u8) ?bool {
-    var lines = std.mem.splitScalar(u8, source, '\n');
+    var lines: DirectiveLines = .{ .source = source };
     while (lines.next()) |raw_line| {
         const line = std.mem.trim(u8, raw_line, " \t\r");
         const marker = directiveValueStart(line, name) orelse continue;
@@ -4027,6 +4147,44 @@ fn isDirectiveNameChar(c: u8) bool {
 
 const T = std.testing;
 
+test {
+    _ = @import("directive_lines.zig");
+    _ = source_owners;
+}
+
+test "driver: candidate directive lines preserve parser-specific precedence" {
+    const Case = struct {
+        source: []const u8,
+        value: ?[]const u8,
+        option: ?[]const u8,
+        boolean: ?bool,
+    };
+    for ([_]Case{
+        .{ .source = "plain\nplain", .value = null, .option = null, .boolean = null },
+        .{ .source = "prefix @other: true @checkJs: true\n// @checkJs: false", .value = "false", .option = "false", .boolean = false },
+        .{ .source = "// @checkJsSuffix:true\n// @CHECKJS: true", .value = "Suffix:true", .option = "true", .boolean = true },
+        .{ .source = "// @checkJs: false\n// @checkJs: true", .value = "false", .option = "false", .boolean = false },
+        .{ .source = "// @checkJs:\n// @checkJs: true", .value = "", .option = null, .boolean = true },
+        .{ .source = "@checkJs: TrUe*/ trailing", .value = "TrUe", .option = "TrUe", .boolean = true },
+        .{ .source = "text '@checkJs:true'", .value = null, .option = "true'", .boolean = true },
+        .{ .source = "plain@checkJs:true\n", .value = null, .option = "true", .boolean = true },
+        .{ .source = "// @checkJs: notABool\n// @checkJs: false", .value = "notABool", .option = "notABool", .boolean = false },
+    }) |case| {
+        const value = directiveValue(case.source, "checkJs");
+        if (case.value) |expected| {
+            try T.expectEqualStrings(expected, value orelse return error.MissingDirectiveValue);
+        } else try T.expect(value == null);
+        const option = compilerOptionDirectiveValue(case.source, "checkJs");
+        if (case.option) |expected| {
+            try T.expectEqualStrings(expected, option orelse return error.MissingOptionValue);
+        } else try T.expect(option == null);
+        try T.expectEqual(case.boolean, directiveBool(case.source, "checkJs"));
+    }
+    try T.expect(sourceHasJsxCompilerOptionDirective("@jsxOther: react\n@JsX: react"));
+    try T.expect(!sourceHasJsxCompilerOptionDirective("@bad @jsx: react"));
+    try T.expect(!sourceHasJsxCompilerOptionDirective("// @jsx react\n"));
+}
+
 test "driver: same-position diagnostics prefer shorter source span" {
     var diags = [_]Diagnostic{
         .{
@@ -4051,6 +4209,144 @@ test "driver: same-position diagnostics prefer shorter source span" {
 
     try T.expectEqual(@as(u32, 2454), diags[0].code);
     try T.expectEqual(@as(u32, 2365), diags[1].code);
+}
+
+test "driver: bind-only compilation exposes exports without semantic checking" {
+    var compilation = try compileSource(
+        T.allocator,
+        "export const value: string = 1;",
+        .{ .bind_only = true, .no_emit = true },
+    );
+    defer {
+        compilation.deinit();
+        T.allocator.destroy(compilation);
+    }
+
+    const value_id = compilation.interner.lookup("value") orelse return error.MissingExport;
+    const symbol = compilation.module.root.values.get(value_id) orelse return error.MissingExport;
+    try T.expect(symbol.flags.is_export);
+    try T.expectEqual(@as(usize, 0), compilation.diagnostics.items.len);
+    try T.expectEqual(@as(usize, 0), compilation.js.len);
+    try T.expectError(error.UncheckedSource, compilation.sourceOwner("/bound.ts"));
+}
+
+test "driver: checked owner readiness is distinct from diagnostic success" {
+    inline for (.{ "", "export const value: string = 1;" }) |source| {
+        const compilation = try compileSource(T.allocator, source, .{ .strict = true, .no_emit = true });
+        defer {
+            compilation.deinit();
+            T.allocator.destroy(compilation);
+        }
+        const owner = try compilation.sourceOwner("/checked.ts");
+        try T.expect(owner.checked == &compilation.checked_types);
+        try T.expect(owner.hir == &compilation.hir);
+        try T.expectEqualStrings(source, owner.text);
+        try T.expectEqual(source.len != 0, compilation.has_errors);
+    }
+}
+
+test "driver: prepared source checks and emits once without replacing bound owners" {
+    const source = "export const value: string = 1;";
+    const options: CompileOptions = .{ .strict = true };
+    const c = try prepareSource(T.allocator, source, options);
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    const module = c.module;
+    const root = c.root;
+    const tokens = c.tokens.items.ptr;
+    const symbol = c.lookupTopLevel("value") orelse return error.MissingExport;
+    try T.expectEqual(.bound, c.check_state);
+    try T.expectEqual(@as(usize, 0), c.diagnostics.items.len);
+    try T.expectEqual(@as(usize, 0), c.js.len);
+    try T.expectError(error.UncheckedSource, c.sourceOwner("/prepared.ts"));
+
+    try checkPreparedSource(c, options);
+    try T.expectEqual(.checked, c.check_state);
+    try T.expect(c.module == module and c.tokens.items.ptr == tokens);
+    try T.expectEqual(root, c.root);
+    try T.expect(c.lookupTopLevel("value").? == symbol);
+    try T.expectEqual(@as(usize, 1), c.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 2322), c.diagnostics.items[0].code);
+    try T.expect(std.mem.indexOf(u8, c.js, "export const value = 1;") != null);
+    _ = try c.sourceOwner("/prepared.ts");
+    const output = c.js.ptr;
+    try checkPreparedSource(c, options);
+    try T.expect(c.js.ptr == output);
+    try T.expectEqual(@as(usize, 1), c.diagnostics.items.len);
+}
+
+test "driver: prepared sources retain shared names independently of the caller" {
+    var names = try StringInterner.init(T.allocator);
+    const c = prepareSource(T.allocator, "export const shared: string = 1;", .{ .shared_strings = &names }) catch |err| {
+        names.deinit();
+        return err;
+    };
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    const shared_storage = c.interner.sharesStorageWith(&names);
+    names.deinit();
+    try T.expect(shared_storage);
+    try T.expect(c.lookupTopLevel("shared") != null);
+    try checkPreparedSource(c, .{ .no_emit = true });
+    try T.expectEqual(@as(usize, 1), c.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 2322), c.diagnostics.items[0].code);
+
+    // A preparation failure after retaining the store releases its handle.
+    // The surviving compilation can still use the same keyspace.
+    var failing = T.FailingAllocator.init(T.allocator, .{ .fail_index = 1 });
+    try T.expectError(error.OutOfMemory, prepareSource(failing.allocator(), "", .{ .shared_strings = &c.interner }));
+    try T.expectEqual(c.interner.lookup("shared").?, try c.interner.intern("shared"));
+}
+
+test "driver: prepared sources retain parser recovery after parser destruction" {
+    const cases = [_]struct { source: []const u8, options: CompileOptions, jsx_recovery_count: usize = 0 }{
+        .{ .source = "const x = ; let y: string = 1;", .options = .{ .no_emit = true } },
+        .{ .source = "const x = <div>{1, 2}</div>;", .options = .{ .is_tsx = true, .jsx_option_present = true, .no_emit = true } },
+        .{ .source = "const x = <div /><span />;", .options = .{ .is_tsx = true, .jsx_option_present = true, .no_emit = true }, .jsx_recovery_count = 1 },
+        .{ .source = "export const value: string;", .options = .{ .importer_path = "/types.d.ts", .no_emit = true } },
+        .{ .source = "const pattern = /\\w+/; const text = String.raw`\\u{}`;", .options = .{ .no_emit = true } },
+    };
+    for (cases) |case| {
+        const direct = try compileSource(T.allocator, case.source, case.options);
+        defer {
+            direct.deinit();
+            T.allocator.destroy(direct);
+        }
+        const prepared = try prepareSource(T.allocator, case.source, case.options);
+        defer {
+            prepared.deinit();
+            T.allocator.destroy(prepared);
+        }
+        try T.expectEqual(case.jsx_recovery_count, prepared.jsx_comma_recovery_spans.items.len);
+        try checkPreparedSource(prepared, case.options);
+        try T.expectEqual(direct.has_errors, prepared.has_errors);
+        try T.expectEqual(direct.is_declaration_file, prepared.is_declaration_file);
+        try T.expectEqual(direct.has_syntactic_parse_diagnostics, prepared.has_syntactic_parse_diagnostics);
+        try T.expectEqual(direct.diagnostics.items.len, prepared.diagnostics.items.len);
+        for (direct.diagnostics.items, prepared.diagnostics.items) |expected, actual| {
+            try T.expectEqual(expected.code, actual.code);
+            try T.expectEqual(expected.pos, actual.pos);
+            try T.expectEqualStrings(expected.message, actual.message);
+        }
+    }
+}
+
+test "driver: failed prepared checking remains safely deinitializable" {
+    const c = try prepareSource(T.allocator, "export const value: string = 1;", .{});
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    var failing = T.FailingAllocator.init(T.allocator, .{ .fail_index = 0 });
+    c.gpa = failing.allocator();
+    defer c.gpa = T.allocator;
+    try T.expectError(error.OutOfMemory, checkPreparedSource(c, .{ .no_emit = true }));
+    try T.expectEqual(.checking, c.check_state);
+    try T.expectError(error.UncheckedSource, c.sourceOwner("/failed.ts"));
 }
 
 test "driver: reserved binding comma recovery keeps semantic diagnostic first" {
@@ -4804,6 +5100,353 @@ test "driver: function with generics" {
     try T.expect(sym.flags.is_function);
 }
 
+fn testCheckedValueType(compilation: *Compilation, name: []const u8) !ts_checker.TypeId {
+    const symbol = compilation.lookupTopLevel(name) orelse return error.TestExpectedEqual;
+    if (symbol.decls.items.len == 0) return error.TestExpectedEqual;
+    const result = compilation.hir.typeOf(symbol.decls.items[0]);
+    try T.expect(result != ts_checker.Primitive.none);
+    return result;
+}
+
+test "driver: checked signature metadata outlives the checker" {
+    const c = try compileSource(T.allocator,
+        \\interface Box<T> { value: T; }
+        \\declare function project<T extends string = 'default'>(value: T): Box<T>;
+        \\declare function tuple(...args: [number, string]): number;
+        \\declare function fixed(n: number, s: string): number;
+        \\declare function wrong(flag: boolean): number;
+        \\declare function optional(this: Box<string>, first: number, second?: string): void;
+        \\declare function isText(value: unknown): value is string;
+        \\declare function assertText(value: unknown): asserts value is string;
+        \\declare function overloaded(value: string): string;
+        \\declare function overloaded(value: number): number;
+    , .{ .strict = true, .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    try T.expect(!c.has_errors);
+    // This is queried only after compileSource destroyed its local Checker.
+    try T.expect(c.type_engine.rest_signatures.? == &c.checked_types.rest_signatures);
+    const tuple_sig = try testCheckedValueType(c, "tuple");
+    const fixed_sig = try testCheckedValueType(c, "fixed");
+    const wrong_sig = try testCheckedValueType(c, "wrong");
+    try T.expect(c.checked_types.rest_signatures.contains(tuple_sig));
+    try T.expect(try c.type_engine.isAssignableTo(tuple_sig, fixed_sig));
+    try T.expect(try c.type_engine.isAssignableTo(fixed_sig, tuple_sig));
+    try T.expect(!try c.type_engine.isAssignableTo(wrong_sig, tuple_sig));
+
+    const project_sig = try testCheckedValueType(c, "project");
+    const params = c.checked_types.generic_signature_params.get(project_sig).?;
+    try T.expectEqual(@as(usize, 1), params.len);
+    const param = c.type_interner.pool.type_parameter_payloads.items[c.type_interner.pool.payloadOf(params[0])];
+    try T.expectEqual(ts_checker.Primitive.string_t, param.constraint);
+    try T.expect(param.default != ts_checker.Primitive.none);
+    const return_type = c.type_interner.signatureReturn(project_sig).?;
+    try T.expectEqual(params[0], c.type_interner.objectMember(return_type, c.interner.lookup("value").?).?);
+    const box = c.checked_types.generic_aliases.get(c.interner.lookup("Box").?).?;
+    try T.expectEqual(@as(usize, 1), box.params.len);
+    try T.expect(c.checked_types.type_names.contains(c.interner.lookup("Box").?));
+
+    const optional_sig = try testCheckedValueType(c, "optional");
+    try T.expectEqual(@as(usize, 1), c.checked_types.signature_min_args.get(optional_sig).?);
+    try T.expect(c.checked_types.signature_this_params.contains(optional_sig));
+    const names = c.checked_types.signature_param_names.get(optional_sig).?;
+    try T.expectEqualStrings("first", c.interner.get(names[0]));
+    const declaration = c.checked_types.signature_decl_nodes.get(optional_sig).?;
+    try T.expectEqual(hir_mod.NodeKind.fn_decl, c.hir.kindOf(declaration));
+    const guard = c.checked_types.signature_predicates.get(try testCheckedValueType(c, "isText")).?;
+    try T.expectEqual(ts_checker.Primitive.string_t, guard.target_type);
+    try T.expect(!guard.is_asserts);
+    const assertion = c.checked_types.fn_predicates.get(c.interner.lookup("assertText").?).?;
+    try T.expect(assertion.is_asserts);
+    try T.expectEqual(@as(usize, 2), c.checked_types.overloads.get(c.interner.lookup("overloaded").?).?.items.len);
+}
+
+test "driver: checked type metadata has independent compilation ownership" {
+    const first = try compileSource(T.allocator,
+        \\declare function identity<T extends string>(value: T): T;
+        \\declare function tuple(...args: [string, number]): void;
+    , .{ .strict = true, .no_emit = true });
+    defer {
+        first.deinit();
+        T.allocator.destroy(first);
+    }
+    const signature = try testCheckedValueType(first, "identity");
+    const parameter = first.checked_types.generic_signature_params.get(signature).?[0];
+    {
+        const second = try compileSource(T.allocator,
+            \\declare function identity<T extends number>(value: T): T;
+            \\declare function tuple(...args: [number, string]): void;
+        , .{ .strict = true, .no_emit = true });
+        defer {
+            second.deinit();
+            T.allocator.destroy(second);
+        }
+        try T.expect(second.type_engine.rest_signatures.? == &second.checked_types.rest_signatures);
+        try T.expect(first.type_engine.rest_signatures.? != second.type_engine.rest_signatures.?);
+        const second_sig = try testCheckedValueType(second, "identity");
+        const second_param = second.checked_types.generic_signature_params.get(second_sig).?[0];
+        try T.expectEqual(ts_checker.Primitive.number_t, second.type_interner.pool.type_parameter_payloads.items[second.type_interner.pool.payloadOf(second_param)].constraint);
+    }
+    // Destroying a later checker and compilation must not invalidate the
+    // earlier result even when symbol/type IDs happen to have equal numbers.
+    try T.expectEqual(parameter, first.checked_types.generic_signature_params.get(signature).?[0]);
+    try T.expectEqual(ts_checker.Primitive.string_t, first.type_interner.pool.type_parameter_payloads.items[first.type_interner.pool.payloadOf(parameter)].constraint);
+    try T.expect(first.checked_types.rest_signatures.contains(try testCheckedValueType(first, "tuple")));
+}
+
+test "driver: checked interpretation metadata outlives the checker" {
+    const c = try compileSource(T.allocator,
+        \\declare function choose<T>(first: T, second: NoInfer<T>): T;
+        \\type Context = ThisType<{ label: string }>;
+        \\interface ReadonlyMap { readonly [entry: string]: number; }
+        \\interface Attributes { [key: `data-${string}`]: string; }
+        \\type Tail = [number, ...string[]];
+        \\type Repeated<T extends unknown[]> = [...T, number, ...T];
+        \\type List = number[];
+        \\declare function stream(): Generator<string, number, boolean>;
+    , .{ .strict = true, .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    try T.expect(!c.has_errors);
+    const choose = try testCheckedValueType(c, "choose");
+    const params = c.type_interner.signatureParams(choose);
+    try T.expectEqual(params[0], c.checked_types.no_infer_types.get(params[1]).?);
+    const context = c.checked_types.type_names.get(c.interner.lookup("Context").?).?;
+    const receiver = c.checked_types.this_type_markers.get(context).?;
+    try T.expectEqual(ts_checker.Primitive.string_t, c.type_interner.objectMember(receiver, c.interner.lookup("label").?).?);
+    const readonly = c.checked_types.type_names.get(c.interner.lookup("ReadonlyMap").?).?;
+    try T.expect(c.checked_types.readonly_index_types.contains(readonly));
+    const index = c.checked_types.index_param_names.get(readonly).?;
+    try T.expectEqualStrings("entry", c.interner.get(index.string));
+    try T.expect(index.string_decl != hir_mod.none_node_id);
+    const attributes = c.checked_types.type_names.get(c.interner.lookup("Attributes").?).?;
+    const patterns = c.checked_types.pattern_index_signatures.get(attributes).?;
+    try T.expectEqual(@as(usize, 1), patterns.len);
+    try T.expectEqual(ts_checker.Primitive.string_t, patterns[0].value_type);
+    try T.expect(patterns[0].decl_node != hir_mod.none_node_id);
+    try T.expect(patterns[0].key_type < c.type_interner.pool.typeCount());
+    const tail = c.checked_types.type_names.get(c.interner.lookup("Tail").?).?;
+    try T.expect(c.checked_types.tuple_origin_types.contains(tail));
+    try T.expectEqual(ts_checker.Primitive.string_t, c.checked_types.tuple_trailing_rest_types.get(tail).?);
+    const repeated = c.checked_types.generic_aliases.get(c.interner.lookup("Repeated").?).?;
+    const segments = c.checked_types.symbolic_tuple_layouts.get(repeated.body).?;
+    try T.expectEqual(@as(usize, 3), segments.len);
+    try T.expect(segments[0].is_variadic and !segments[1].is_variadic and segments[2].is_variadic);
+    try T.expectEqual(repeated.params[0], segments[0].type);
+    try T.expectEqual(ts_checker.Primitive.number_t, segments[1].type);
+    try T.expectEqual(repeated.params[0], segments[2].type);
+    const list = c.checked_types.type_names.get(c.interner.lookup("List").?).?;
+    try T.expect(c.checked_types.array_origin_types.contains(list));
+    const generator = c.type_interner.signatureReturn(try testCheckedValueType(c, "stream")).?;
+    const slots = c.checked_types.generator_type_info.get(generator).?;
+    try T.expectEqual(ts_checker.Primitive.string_t, slots.yield_type);
+    try T.expectEqual(ts_checker.Primitive.number_t, slots.return_type);
+    try T.expectEqual(ts_checker.Primitive.boolean_t, slots.next_type);
+}
+
+test "driver: checked nominal origins and nested class metadata outlive the checker" {
+    const c = try compileSource(T.allocator,
+        \\declare abstract class Base {
+        \\  private secret: string;
+        \\  protected data: number;
+        \\  protected static shared: string;
+        \\  abstract read(): string;
+        \\  get value(): string;
+        \\  set value(input: string | number);
+        \\  constructor(value: string);
+        \\  constructor(value: number);
+        \\}
+        \\declare class Derived extends Base { read(): string; }
+        \\enum State { Ready = 3, Done = 5 }
+        \\declare const state: State;
+    , .{ .strict = true, .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    try T.expect(!c.has_errors);
+    const base_name = c.interner.lookup("Base").?;
+    const derived_name = c.interner.lookup("Derived").?;
+    const base = c.checked_types.class_instance_types.get(base_name).?;
+    const derived = c.checked_types.class_instance_types.get(derived_name).?;
+    const declaration = c.checked_types.class_decl_by_instance.get(base).?;
+    try T.expectEqual(hir_mod.NodeKind.class_decl, c.hir.kindOf(declaration));
+    try T.expectEqual(base_name, c.checked_types.class_name_by_instance.get(base).?);
+    try T.expectEqual(base_name, c.checked_types.class_parent.get(derived_name).?);
+    try T.expectEqual(base, c.checked_types.decl_single_base.get(derived).?);
+    try T.expect(c.checked_types.abstract_classes.contains(base_name));
+    try T.expect(c.checked_types.class_private_members.get(base_name).?.contains(c.interner.lookup("secret").?));
+    try T.expect(c.checked_types.class_protected_members.get(base_name).?.contains(c.interner.lookup("data").?));
+    try T.expect(c.checked_types.class_static_protected_members.get(base_name).?.contains(c.interner.lookup("shared").?));
+    try T.expect(c.checked_types.class_abstract_members.get(base_name).?.contains(c.interner.lookup("read").?));
+    try T.expectEqualStrings("read", c.interner.get(c.checked_types.class_abstract_members_order.get(base_name).?.items[0]));
+    try T.expect(c.checked_types.class_getter_members.get(base_name).?.contains(c.interner.lookup("value").?));
+    try T.expect(c.checked_types.class_accessor_setter_types.count() > 0);
+    try T.expectEqual(@as(usize, 2), c.checked_types.class_constructor_overload_sigs.get(base_name).?.items.len);
+    const state_name = c.interner.lookup("State").?;
+    const state = try testCheckedValueType(c, "state");
+    try T.expectEqual(state_name, c.checked_types.enum_nominal_names.get(state).?);
+    try T.expectEqual(hir_mod.NodeKind.enum_decl, c.hir.kindOf(c.checked_types.enum_nominal_decls.get(state).?));
+    try T.expectEqual(@as(f64, 3), c.checked_types.enum_member_values.get(.{ .obj_name = state_name, .prop_name = c.interner.lookup("Ready").? }).?);
+}
+
+test "driver: checked alias display and arguments own their borrowed leaves" {
+    const c = blk: {
+        const source = try T.allocator.dupe(u8,
+            \\type Result<T> = { value: T };
+            \\declare const output: Result<string>;
+        );
+        defer T.allocator.free(source);
+        break :blk try compileSource(T.allocator, source, .{ .strict = true, .no_emit = true });
+    };
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    try T.expect(!c.has_errors);
+    // result storage must outlive both the checker arena and caller's source.
+    const output = try testCheckedValueType(c, "output");
+    try T.expectEqualStrings("Result<string>", c.checked_types.alias_display_names.get(output).?);
+    try T.expectEqualSlices(ts_checker.TypeId, &.{ts_checker.Primitive.string_t}, c.checked_types.alias_type_args.get(output).?);
+    try T.expectEqual(ts_checker.Primitive.string_t, c.type_interner.objectMember(output, c.interner.lookup("value").?).?);
+}
+
+test "driver: checked transfer preserves real declarations and distinct callable identities" {
+    const first = try compileSource(T.allocator,
+        \\export interface Box<T> { value: T; }
+        \\export declare function identity<T extends string = 'seed'>(value: T): Box<T>;
+        \\export declare function tuple(...args: [number, string]): number;
+        \\export declare function fixed(n: number, s: string): number;
+        \\export declare function wrong(flag: boolean): number;
+        \\export declare function guard(value: unknown): value is string;
+        \\export declare function choose<T>(first: T, second: NoInfer<T>): T;
+        \\export interface Attributes { readonly [key: `data-${string}`]: string; }
+        \\export type Repeated<T extends unknown[]> = [...T, number, ...T];
+        \\export declare abstract class Secret { private key: string; abstract read(): string; }
+        \\export enum State { Ready = 3, Done = 5 }
+        \\export declare const state: State;
+    , .{ .strict = true, .no_emit = true, .importer_path = "/first.ts" });
+    defer {
+        first.deinit();
+        T.allocator.destroy(first);
+    }
+    const second = try compileSource(T.allocator,
+        \\export interface Box<T> { value: T; }
+        \\export declare function identity<T extends number = 42>(value: T): Box<T>;
+        \\export declare function guard(value: unknown): value is number;
+        \\export declare abstract class Secret { private key: number; abstract read(): number; }
+        \\export enum State { Ready = 3, Done = 5 }
+        \\export declare const state: State;
+    , .{ .strict = true, .no_emit = true, .importer_path = "/second.ts" });
+    defer {
+        second.deinit();
+        T.allocator.destroy(second);
+    }
+    try T.expect(!first.has_errors and !second.has_errors);
+    var destination = try ts_checker.Interner.init(T.allocator);
+    defer destination.deinit();
+    var strings = try string_interner.Interner.init(T.allocator);
+    defer strings.deinit();
+    // An identical erased shape must not absorb either imported predicate.
+    const plain_signature = try destination.internSignature(&.{ts_checker.Primitive.unknown}, ts_checker.Primitive.boolean_t, false);
+    var origins = source_owners.Registry.init(T.allocator);
+    defer origins.deinit();
+    const first_owner = try origins.register(try first.sourceOwner("/first.ts"));
+    const second_owner = try origins.register(try second.sourceOwner("/second.ts"));
+    var first_import = try origins.importOwner(&destination, &strings, first_owner);
+    defer first_import.deinit();
+    var second_import = try origins.importOwner(&destination, &strings, second_owner);
+    defer second_import.deinit();
+    const first_ids = first_import.types.ids;
+    const second_ids = second_import.types.ids;
+    const first_checked = &first_import.types.checked;
+    const second_checked = &second_import.types.checked;
+
+    const first_guard = try first_ids.typeId(try testCheckedValueType(first, "guard"));
+    const second_guard = try second_ids.typeId(try testCheckedValueType(second, "guard"));
+    try T.expect(plain_signature != first_guard and plain_signature != second_guard and first_guard != second_guard);
+    try T.expectEqual(ts_checker.Primitive.string_t, first_checked.signature_predicates.get(first_guard).?.target_type);
+    try T.expectEqual(ts_checker.Primitive.number_t, second_checked.signature_predicates.get(second_guard).?.target_type);
+    const first_handle = first_checked.signature_decl_nodes.get(first_guard).?;
+    const first_origin = try origins.declaration(first_handle);
+    const second_origin = try origins.declaration(second_checked.signature_decl_nodes.get(second_guard).?);
+    try T.expect(first_origin.owner == first_owner and second_origin.owner == second_owner);
+    try T.expectEqualStrings("/first.ts", first_origin.source.path);
+    try T.expectEqualStrings("/second.ts", second_origin.source.path);
+    for ([_]source_owners.Declaration{ first_origin, second_origin }) |origin| {
+        try T.expectEqual(hir_mod.NodeKind.fn_decl, origin.source.hir.kindOf(origin.node));
+        try T.expect(std.mem.indexOf(u8, origin.text(), "function guard") != null);
+    }
+
+    const first_identity = try first_ids.typeId(try testCheckedValueType(first, "identity"));
+    const second_identity = try second_ids.typeId(try testCheckedValueType(second, "identity"));
+    const first_param = first_checked.generic_signature_params.get(first_identity).?[0];
+    const second_param = second_checked.generic_signature_params.get(second_identity).?[0];
+    try T.expect(first_param != second_param);
+    try T.expectEqual(ts_checker.Primitive.string_t, destination.pool.type_parameter_payloads.items[destination.pool.payloadOf(first_param)].constraint);
+    try T.expectEqual(ts_checker.Primitive.number_t, destination.pool.type_parameter_payloads.items[destination.pool.payloadOf(second_param)].constraint);
+    try T.expectEqual(first_param, destination.objectMember(destination.signatureReturn(first_identity).?, strings.lookup("value").?).?);
+    try T.expectEqual(second_param, destination.objectMember(destination.signatureReturn(second_identity).?, strings.lookup("value").?).?);
+    const secret = strings.lookup("Secret").?;
+    const first_class = first_checked.class_instance_types.get(secret).?;
+    const second_class = second_checked.class_instance_types.get(secret).?;
+    try T.expect(first_class != second_class);
+    try T.expect(first_checked.class_private_members.get(secret).?.contains(strings.lookup("key").?));
+    try T.expect(second_checked.class_private_members.get(secret).?.contains(strings.lookup("key").?));
+    try T.expectEqual(first_owner, (try origins.declaration(first_checked.class_decl_by_instance.get(first_class).?)).owner);
+    try T.expectEqual(second_owner, (try origins.declaration(second_checked.class_decl_by_instance.get(second_class).?)).owner);
+    const first_state = try first_ids.typeId(try testCheckedValueType(first, "state"));
+    const second_state = try second_ids.typeId(try testCheckedValueType(second, "state"));
+    try T.expect(first_state != second_state);
+    try T.expectEqual(first_owner, (try origins.declaration(first_checked.enum_nominal_decls.get(first_state).?)).owner);
+    try T.expectEqual(second_owner, (try origins.declaration(second_checked.enum_nominal_decls.get(second_state).?)).owner);
+
+    const choose = try first_ids.typeId(try testCheckedValueType(first, "choose"));
+    const choose_params = destination.signatureParams(choose);
+    try T.expectEqual(choose_params[0], first_checked.no_infer_types.get(choose_params[1]).?);
+    const attributes = first_checked.type_names.get(strings.lookup("Attributes").?).?;
+    try T.expect(first_checked.readonly_index_types.contains(attributes));
+    const pattern_index = first_checked.pattern_index_signatures.get(attributes).?[0];
+    try T.expectEqual(ts_checker.Primitive.string_t, pattern_index.value_type);
+    try T.expectEqual(first_owner, (try origins.declaration(pattern_index.decl_node)).owner);
+    const repeated = first_checked.generic_aliases.get(strings.lookup("Repeated").?).?;
+    const segments = first_checked.symbolic_tuple_layouts.get(repeated.body).?;
+    try T.expectEqual(@as(usize, 3), segments.len);
+    try T.expectEqual(repeated.params[0], segments[0].type);
+    try T.expectEqual(repeated.params[0], segments[2].type);
+    try T.expectEqual(ts_checker.Primitive.number_t, segments[1].type);
+    try T.expect(segments[0].is_variadic and !segments[1].is_variadic and segments[2].is_variadic);
+
+    const tuple = try first_ids.typeId(try testCheckedValueType(first, "tuple"));
+    const fixed = try first_ids.typeId(try testCheckedValueType(first, "fixed"));
+    const wrong = try first_ids.typeId(try testCheckedValueType(first, "wrong"));
+    // Invalidate source ownership before mutating its storage. Structural
+    // relations can still use the independent payload/metadata copies, but
+    // source-dependent semantic lookup must now reject the stale handles.
+    try origins.unregister(first_owner);
+    try origins.unregister(second_owner);
+    try T.expectError(error.InvalidOwner, origins.declaration(first_handle));
+    first.checked_types.deinit(T.allocator);
+    second.checked_types.deinit(T.allocator);
+    var engine = try ts_checker.Engine.init(T.allocator, &destination);
+    defer engine.deinit();
+    engine.setStringInterner(&strings);
+    engine.setRestSignatures(&first_checked.rest_signatures);
+    try T.expect(try engine.isAssignableTo(tuple, fixed));
+    try T.expect(try engine.isAssignableTo(fixed, tuple));
+    try T.expect(!try engine.isAssignableTo(wrong, tuple));
+    try T.expect(!try engine.isAssignableTo(tuple, wrong));
+    try T.expectEqualStrings("value", strings.get(first_checked.signature_param_names.get(first_identity).?[0]));
+    try T.expectEqual(ts_checker.Primitive.string_t, first_checked.signature_predicates.get(first_guard).?.target_type);
+    try T.expectEqual(ts_checker.Primitive.number_t, second_checked.signature_predicates.get(second_guard).?.target_type);
+    try T.expect(!first_checked.signature_predicates.contains(plain_signature));
+    try T.expect(!second_checked.signature_predicates.contains(plain_signature));
+}
+
 test "driver: arrow function" {
     var c = try compileSource(T.allocator, "let inc = (n: number) => n + 1;", .{});
     defer {
@@ -4954,6 +5597,30 @@ test "driver: call expression returns its function's return type" {
     try T.expectEqual(hir_mod.NodeKind.call_expr, c.hir.kindOf(init_node));
     // r should be string (the return type of id).
     try T.expectEqual(@as(u32, ts_checker.Primitive.string_t), c.hir.typeOf(init_node));
+}
+
+test "driver: inferred tuple keys instantiate mapped generic returns" {
+    var c = try compileSource(T.allocator,
+        \\interface Entity<N extends number> {
+        \\  readonly id: N;
+        \\  readonly label: `entity-${N}`;
+        \\  readonly active: boolean;
+        \\}
+        \\type PickFields<T, K extends keyof T> = { readonly [P in K]: T[P] };
+        \\declare function project<T, K extends readonly (keyof T)[]>(value: T, keys: K): PickFields<T, K[number]>;
+        \\declare function field<T, K extends keyof T>(value: T, key: K): T[K];
+        \\const entity: Entity<1> = { id: 1, label: "entity-1", active: true };
+        \\const selected = project(entity, ["id", "label"] as const);
+        \\const label: "entity-1" = field(selected, "label");
+    , .{ .strict = true, .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    for (c.diagnostics.items) |d| {
+        try T.expect(d.code != 2322);
+        try T.expect(d.code != 2345);
+    }
 }
 
 test "driver: emitWithCache hits on repeat compile" {
@@ -6594,6 +7261,43 @@ test "driver: optionsFromConfig with no jsx leaves is_tsx false" {
     );
     const opts = optionsFromConfig(&cfg);
     try T.expect(!opts.is_tsx);
+}
+
+test "driver: optionsFromConfig checks JavaScript and honors noEmit" {
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    const cfg = try tsconfig_mod.parseString(
+        T.allocator,
+        arena.allocator(),
+        \\{ "compilerOptions": { "allowJs": true, "checkJs": true, "noEmit": true } }
+        ,
+    );
+    const opts = optionsFromConfig(&cfg);
+    try T.expect(opts.allow_js);
+    try T.expect(opts.check_js);
+    try T.expect(opts.no_emit);
+
+    var c = try compileSource(
+        T.allocator,
+        \\/** @type {number} */
+        \\const value = "wrong";
+    ,
+        blk: {
+            var checked_js_opts = opts;
+            checked_js_opts.importer_path = "/src/checked.js";
+            break :blk checked_js_opts;
+        },
+    );
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    var found = false;
+    for (c.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == ts_checker.check.TsCodes.type_not_assignable) found = true;
+    }
+    try T.expect(found);
 }
 
 test "driver: noEmit suppresses downlevel private-name WeakMap collisions" {

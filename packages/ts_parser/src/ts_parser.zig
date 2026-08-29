@@ -95,15 +95,90 @@ pub const Diagnostic = struct {
 pub fn diagnosticIsSyntacticParseError(diagnostic: Diagnostic) bool {
     if (!diagnostic.is_parse_error) return false;
     return switch (diagnostic.code) {
-        1013, 1014, 1015, 1016, 1029, 1030, 1031, 1036, 1042, 1044, 1048, 1049,
-        1053, 1054, 1089, 1090, 1091, 1097, 1100, 1101, 1104, 1105, 1106,
-        1107, 1113, 1114, 1115, 1116, 1123, 1155, 1156, 1162, 1163,
-        1171, 1172, 1174, 1182, 1184, 1186, 1188, 1189, 1190, 1191,
-        1193, 1197, 1200, 1210, 1211, 1212, 1213, 1214, 1215, 1248,
-        1255, 1258, 1263, 1264, 1308, 1312, 1325,
-        1341, 1358, 1368, 1450, 1451, 1473, 1474, 17012, 18006, 18013,
-        18016, 18028, 18038, 18041, 2410, 2462, 2480, 2492, 2501, 2566,
-        2803, 5076, 8009, 8012,
+        1013,
+        1014,
+        1015,
+        1016,
+        1029,
+        1030,
+        1031,
+        1036,
+        1042,
+        1044,
+        1048,
+        1049,
+        1053,
+        1054,
+        1089,
+        1090,
+        1091,
+        1097,
+        1100,
+        1101,
+        1104,
+        1105,
+        1106,
+        1107,
+        1113,
+        1114,
+        1115,
+        1116,
+        1123,
+        1155,
+        1156,
+        1162,
+        1163,
+        1171,
+        1172,
+        1174,
+        1182,
+        1184,
+        1186,
+        1188,
+        1189,
+        1190,
+        1191,
+        1193,
+        1197,
+        1200,
+        1210,
+        1211,
+        1212,
+        1213,
+        1214,
+        1215,
+        1248,
+        1255,
+        1258,
+        1263,
+        1264,
+        1308,
+        1312,
+        1325,
+        1341,
+        1358,
+        1368,
+        1450,
+        1451,
+        1473,
+        1474,
+        17012,
+        18006,
+        18013,
+        18016,
+        18028,
+        18038,
+        18041,
+        2410,
+        2462,
+        2480,
+        2492,
+        2501,
+        2566,
+        2803,
+        5076,
+        8009,
+        8012,
         => false,
         else => true,
     };
@@ -144,6 +219,10 @@ pub const Parser = struct {
     builder: hir_mod.Builder,
     interner: *string_interner.Interner,
     source: []const u8,
+    /// Conformance fixtures may concatenate virtual files behind
+    /// `@filename:` comments. Cache marker presence once so ordinary source
+    /// files do not rescan their entire contents for every grammar check.
+    has_virtual_sections: bool,
     diagnostics: std.ArrayListUnmanaged(Diagnostic),
     pending_statements: std.ArrayListUnmanaged(NodeId),
     /// Extra for-init declarators (`for (var i = 0, j = 10; ...)`)
@@ -358,6 +437,8 @@ pub const Parser = struct {
             .builder = hir_mod.Builder.init(hir),
             .interner = interner,
             .source = source,
+            .has_virtual_sections = std.mem.indexOf(u8, source, "@filename:") != null or
+                std.mem.indexOf(u8, source, "@Filename:") != null,
             .diagnostics = .empty,
             .pending_statements = .empty,
             .for_init_extras = .empty,
@@ -1442,19 +1523,81 @@ pub const Parser = struct {
             const body_start = i + 3;
             const close_rel = std.mem.indexOf(u8, self.source[body_start..], "*/") orelse return;
             const body_end = body_start + close_rel;
-            try self.scanJSDocParamTypeDiagnostics(body_start, body_end);
-            try self.scanJSDocParamParentDiagnostics(body_start, body_end);
-            try self.scanJSDocCommentTypeExpressions(body_start, body_end);
-            try self.scanJSDocTypedefModuleQualifierDiagnostics(body_start, body_end);
-            try self.scanJSDocImportTagDiagnostics(body_start, body_end);
-            try self.scanJSDocTypedefDuplicateTypeTags(body_start, body_end);
-            try self.scanJSDocDuplicateUniqueTags(body_start, body_end);
-            try self.scanJSDocTemplateAfterTypeAliasLikeTags(body_start, body_end);
-            try self.scanJSDocTemplateModifierDiagnostics(body_start, body_end);
-            try self.scanJSDocPropertyNameDiagnostics(body_start, body_end);
-            try self.scanJSDocHeritageTypeDiagnostics(body_start, body_end);
+            const facts = self.jsDocDiagnosticScanFacts(body_start, body_end);
+            if (facts.has_param) {
+                try self.scanJSDocParamTypeDiagnostics(body_start, body_end);
+                try self.scanJSDocParamParentDiagnostics(body_start, body_end);
+            }
+            if (std.mem.indexOfScalar(u8, self.source[body_start..body_end], '{') != null) {
+                try self.scanJSDocCommentTypeExpressions(body_start, body_end);
+            }
+            if (facts.has_typedef) {
+                try self.scanJSDocTypedefModuleQualifierDiagnostics(body_start, body_end);
+            }
+            if (facts.has_import) try self.scanJSDocImportTagDiagnostics(body_start, body_end);
+            if (facts.has_typedef and facts.type_count >= 2) {
+                try self.scanJSDocTypedefDuplicateTypeTags(body_start, body_end);
+            }
+            if (facts.return_count >= 2 or facts.type_count >= 2) {
+                try self.scanJSDocDuplicateUniqueTags(body_start, body_end);
+            }
+            if (facts.has_template and facts.has_type_alias_like) {
+                try self.scanJSDocTemplateAfterTypeAliasLikeTags(body_start, body_end);
+            }
+            if (facts.has_template) try self.scanJSDocTemplateModifierDiagnostics(body_start, body_end);
+            if (facts.has_property) try self.scanJSDocPropertyNameDiagnostics(body_start, body_end);
+            if (facts.has_heritage) try self.scanJSDocHeritageTypeDiagnostics(body_start, body_end);
             i = body_end + 2;
         }
+    }
+
+    const JSDocDiagnosticScanFacts = struct {
+        has_param: bool = false,
+        has_typedef: bool = false,
+        has_import: bool = false,
+        has_template: bool = false,
+        has_type_alias_like: bool = false,
+        has_property: bool = false,
+        has_heritage: bool = false,
+        type_count: u32 = 0,
+        return_count: u32 = 0,
+    };
+
+    fn jsDocDiagnosticScanFacts(self: *const Parser, start: usize, end: usize) JSDocDiagnosticScanFacts {
+        var facts: JSDocDiagnosticScanFacts = .{};
+        var i = start;
+        while (i < end) {
+            const tag_pos = self.nextJSDocTagStart(i, end) orelse break;
+            const tag_name_start = tag_pos + 1;
+            var tag_name_end = tag_name_start;
+            while (tag_name_end < end and isJSDocTagNameChar(self.source[tag_name_end])) : (tag_name_end += 1) {}
+            const name = self.source[tag_name_start..tag_name_end];
+            if (std.mem.eql(u8, name, "param")) facts.has_param = true;
+            if (std.mem.eql(u8, name, "typedef")) facts.has_typedef = true;
+            if (std.mem.eql(u8, name, "import")) facts.has_import = true;
+            if (std.mem.eql(u8, name, "template")) facts.has_template = true;
+            if (std.mem.eql(u8, name, "typedef") or
+                std.mem.eql(u8, name, "callback") or
+                std.mem.eql(u8, name, "overload"))
+            {
+                facts.has_type_alias_like = true;
+            }
+            if (std.mem.eql(u8, name, "property") or std.mem.eql(u8, name, "prop")) {
+                facts.has_property = true;
+            }
+            if (std.mem.eql(u8, name, "implements") or
+                std.mem.eql(u8, name, "augments") or
+                std.mem.eql(u8, name, "extends"))
+            {
+                facts.has_heritage = true;
+            }
+            if (std.mem.eql(u8, name, "type")) facts.type_count += 1;
+            if (std.mem.eql(u8, name, "return") or std.mem.eql(u8, name, "returns")) {
+                facts.return_count += 1;
+            }
+            i = tag_name_end;
+        }
+        return facts;
     }
 
     fn scanJSDocParamTypeDiagnostics(self: *Parser, start: usize, end: usize) ParseError!void {
@@ -2260,9 +2403,7 @@ pub const Parser = struct {
     /// one section must not make a *script* section a module. When no markers
     /// exist, falls back to the whole-source indicator.
     fn sectionHasTopLevelModuleSyntaxAt(self: *const Parser, pos: u32) bool {
-        if (std.mem.indexOf(u8, self.source, "@filename:") == null and
-            std.mem.indexOf(u8, self.source, "@Filename:") == null)
-        {
+        if (!self.has_virtual_sections) {
             return self.top_level_module_syntax_indicator;
         }
         var sec_start: u32 = 0;
@@ -2313,9 +2454,7 @@ pub const Parser = struct {
     fn hasNonNamespaceExportModuleIndicator(self: *const Parser, pos: u32) bool {
         var sec_start: u32 = 0;
         var sec_end: u32 = @intCast(self.source.len);
-        if (std.mem.indexOf(u8, self.source, "@filename:") != null or
-            std.mem.indexOf(u8, self.source, "@Filename:") != null)
-        {
+        if (self.has_virtual_sections) {
             var line_start: usize = 0;
             while (line_start < self.source.len) {
                 const line_end = std.mem.indexOfScalarPos(u8, self.source, line_start, '\n') orelse self.source.len;
@@ -7034,6 +7173,7 @@ pub const Parser = struct {
                     mods.is_override,
                     mods.is_accessor,
                 );
+                self.builder.setClassFieldModifiers(prop, is_optional_member, mods.is_readonly);
                 try members.append(self.gpa, prop);
                 continue;
             }
@@ -8035,11 +8175,7 @@ pub const Parser = struct {
     }
 
     fn virtualSectionFilenameAt(self: *const Parser, pos: u32) ?[]const u8 {
-        if (std.mem.indexOf(u8, self.source, "@filename:") == null and
-            std.mem.indexOf(u8, self.source, "@Filename:") == null)
-        {
-            return null;
-        }
+        if (!self.has_virtual_sections) return null;
         const limit: usize = @min(@as(usize, pos), self.source.len);
         var last: ?usize = null;
         var line_start: usize = 0;
@@ -8063,11 +8199,7 @@ pub const Parser = struct {
     }
 
     fn nextVirtualSectionBoundaryAfter(self: *const Parser, pos: u32) ?u32 {
-        if (std.mem.indexOf(u8, self.source, "@filename:") == null and
-            std.mem.indexOf(u8, self.source, "@Filename:") == null)
-        {
-            return null;
-        }
+        if (!self.has_virtual_sections) return null;
         var line_start: usize = @min(@as(usize, pos), self.source.len);
         while (line_start > 0 and self.source[line_start - 1] != '\n') line_start -= 1;
         while (line_start < self.source.len) {
@@ -8258,6 +8390,7 @@ pub const Parser = struct {
         var value: NodeId = hir_mod.none_node_id;
         var type_anno: NodeId = hir_mod.none_node_id;
         var is_method = false;
+        var is_optional_field = false;
         if (is_generator or self.peek().kind == .open_paren or self.peek().kind == .less_than) {
             var type_params: []NodeId = &.{};
             var owns_tps = false;
@@ -8308,6 +8441,7 @@ pub const Parser = struct {
             try self.reportAccessorModifierOnlyOnProperty(mods);
         } else {
             const optional_member_token: ?Token = if (self.peek().kind == .question) self.advance() else null;
+            is_optional_field = optional_member_token != null;
             const definite_assignment_token: ?Token = if (self.peek().kind == .bang) self.advance() else null;
             if (self.match(.colon)) {
                 type_anno = try self.parseTypeAnnotation();
@@ -8325,7 +8459,7 @@ pub const Parser = struct {
             };
         }
 
-        return try self.builder.addObjectPropertyFull(
+        const property = try self.builder.addObjectPropertyFull(
             .{ .start = member_start.span.start, .end = self.tokens[self.cursor - 1].span.end },
             key,
             value,
@@ -8337,6 +8471,8 @@ pub const Parser = struct {
             mods.visibility,
             mods.is_override,
         );
+        self.builder.setClassFieldModifiers(property, is_optional_field, mods.is_readonly);
+        return property;
     }
 
     fn skipMalformedClassFieldTail(self: *Parser) void {
@@ -8860,10 +8996,12 @@ pub const Parser = struct {
             try self.consumeStatementTerminator();
             const name_id_b = try self.internStringLiteral(name_tok);
             const name_node_b = try self.builder.addIdentifier(.{ .start = name_tok.span.start, .end = name_end }, name_id_b);
-            return try self.builder.addNamespace(
+            return try self.builder.addNamespaceWithContext(
                 .{ .start = start.span.start, .end = self.tokens[self.cursor - 1].span.end },
                 name_node_b,
                 &.{},
+                true,
+                true,
             );
         }
         const ns_body_open = try self.expect(.open_brace, "'{' to open namespace body");
@@ -8914,10 +9052,12 @@ pub const Parser = struct {
         else
             self.interner.intern(self.source[name_tok.span.start..name_end]) catch return error.OutOfMemory;
         const name_node = try self.builder.addIdentifier(.{ .start = name_tok.span.start, .end = name_end }, name_id);
-        return try self.builder.addNamespace(
+        return try self.builder.addNamespaceWithContext(
             .{ .start = start.span.start, .end = close_end },
             name_node,
             body.items,
+            self.ambient_depth > 0 or self.isAmbientContextAt(start.span.start) or name_tok.kind == .string_literal,
+            name_tok.kind == .string_literal,
         );
     }
 
@@ -10147,7 +10287,19 @@ pub const Parser = struct {
         const old_in_export_declaration = self.in_export_declaration;
         self.in_export_declaration = true;
         defer self.in_export_declaration = old_in_export_declaration;
+        const pending_start = self.pending_statements.items.len;
         const decl = try self.parseStatement();
+        const decl_kind = self.hir.kindOf(decl);
+        if (decl_kind == .var_decl or decl_kind == .let_decl or decl_kind == .const_decl) {
+            // A variable list is represented as sibling declarations. Every
+            // declarator belongs to this export, not only the first one.
+            // Preserve that ownership in HIR so binding and export queries
+            // need no source-text recovery to discover trailing declarations.
+            for (self.pending_statements.items[pending_start..]) |*extra| {
+                if (self.hir.kindOf(extra.*) != decl_kind) continue;
+                extra.* = try self.builder.addExport(self.hir.spanOf(extra.*), extra.*, &.{}, empty_string, is_type_only, false);
+            }
+        }
         if (self.hir.kindOf(decl) == .class_decl and
             hir_mod.classOf(self.hir, decl).name == hir_mod.none_node_id)
         {
@@ -20910,15 +21062,15 @@ pub const Parser = struct {
                                 );
                             } else {
                                 const expr = if (self.peek().kind == .dot_dot_dot) recover: {
-                                const spread = self.advance();
-                                try self.reportCodeAt(spread.span.start, spread.line, 1109, "Expression expected.");
-                                while (self.peek().kind != .close_brace and self.peek().kind != .eof) _ = self.advance();
-                                const close = self.peek();
-                                try self.reportCodeAt(close.span.start, close.line, 1003, "Identifier expected.");
-                                break :recover try self.builder.addLiteralNumber(
-                                    .{ .start = spread.span.start, .end = spread.span.start },
-                                    0,
-                                );
+                                    const spread = self.advance();
+                                    try self.reportCodeAt(spread.span.start, spread.line, 1109, "Expression expected.");
+                                    while (self.peek().kind != .close_brace and self.peek().kind != .eof) _ = self.advance();
+                                    const close = self.peek();
+                                    try self.reportCodeAt(close.span.start, close.line, 1003, "Identifier expected.");
+                                    break :recover try self.builder.addLiteralNumber(
+                                        .{ .start = spread.span.start, .end = spread.span.start },
+                                        0,
+                                    );
                                 } else try self.parseExpression();
                                 try self.reportJsxCommaExpressionIfNeeded(expr);
                                 var value_end = self.hir.spanOf(expr).end;
@@ -27993,6 +28145,28 @@ test "parser: export decl" {
     try T.expectEqual(hir_mod.NodeKind.fn_decl, s.hir.kindOf(ex.decl));
 }
 
+test "parser: every exported variable declarator retains export ownership" {
+    for ([_][]const u8{
+        "export const first = 1, second = 2; const hidden = 3;",
+        "export let first: number, second: string; const hidden = 3;",
+        "export declare var first: number, second: string; const hidden = 3;",
+        "export const first = 1, { second } = { second: 2 }; const hidden = 3;",
+    }) |source| {
+        var s = try newTestSetup(source);
+        defer destroyTestSetup(s);
+        const root = try s.parser.parseSourceFile();
+        try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+        const statements = hir_mod.blockStmts(&s.hir, root);
+        try T.expectEqual(@as(usize, 3), statements.len);
+        for (statements[0..2]) |statement| {
+            try T.expectEqual(hir_mod.NodeKind.export_decl, s.hir.kindOf(statement));
+            const declaration = hir_mod.exportOf(&s.hir, statement).decl;
+            try T.expectEqual(statement, s.hir.parentOf(declaration));
+        }
+        try T.expectEqual(hir_mod.NodeKind.const_decl, s.hir.kindOf(statements[2]));
+    }
+}
+
 test "parser: array literal" {
     var s = try newTestSetup("let a = [1, 2, 3];");
     defer destroyTestSetup(s);
@@ -28829,15 +29003,20 @@ test "parser: TSX generic arrows require an unambiguous type parameter list" {
 }
 
 test "parser: TSX less-than comparison preserves a following JSX return" {
-    var s = try newTsxTestSetup(
-        "\xEF\xBB\xBF" ++
-            \\declare namespace JSX { interface Element { div: string; } }
-        ++ \\declare namespace React { class Component<P, S> { props: P; } }
-        ++ \\export class ShortDetails extends React.Component<{ id: number }, {}> {
-        ++ \\  public render(): JSX.Element {
-        ++ \\    if (this.props.id < 1) { return (<div></div>); }
-        ++ \\  }
-        ++ \\}
+    var s = try newTsxTestSetup("\xEF\xBB\xBF" ++
+        \\declare namespace JSX { interface Element { div: string; } }
+    ++
+        \\declare namespace React { class Component<P, S> { props: P; } }
+    ++
+        \\export class ShortDetails extends React.Component<{ id: number }, {}> {
+    ++
+        \\  public render(): JSX.Element {
+    ++
+        \\    if (this.props.id < 1) { return (<div></div>); }
+    ++
+        \\  }
+    ++
+        \\}
     );
     defer destroyTestSetup(s);
     const root = try s.parser.parseSourceFile();
@@ -36382,4 +36561,29 @@ test "parser: identical well-known symbol interface properties merge" {
 
     _ = try s.parser.parseSourceFile();
     try T.expectEqual(@as(u32, 0), countDiag(s, 2300));
+}
+
+test "parser: class field optional and readonly modifiers survive in HIR" {
+    var s = try newTestSetup(
+        \\declare class Box<T> {
+        \\  readonly value /* before optional */ ? /* before colon */ : T;
+        \\  readonly ['computed']?: T;
+        \\  optional?: T;
+        \\  readonly: T;
+        \\  plain: T;
+        \\}
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+    const class_node = hir_mod.blockStmts(&s.hir, root)[0];
+    const members = hir_mod.classMembers(&s.hir, class_node);
+    try T.expectEqual(@as(usize, 5), members.len);
+    const expected_optional = [_]bool{ true, true, true, false, false };
+    const expected_readonly = [_]bool{ true, true, false, false, false };
+    for (members, expected_optional, expected_readonly) |node, optional, readonly| {
+        const field = hir_mod.objectPropertyOf(&s.hir, node);
+        try T.expectEqual(optional, field.is_optional);
+        try T.expectEqual(readonly, field.is_readonly);
+    }
 }

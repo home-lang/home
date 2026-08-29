@@ -5,6 +5,24 @@
 [generated]
 many_files_count = 256
 deep_types_repetitions = 240
+import_graph_modules = 128
+reexport_graph_leaves = 64
+reexport_graph_barrel_size = 8
+tsx_components = 256
+generic_calls = 256
+control_flow_functions = 256
+type_predicate_families = 256
+type_predicate_large_families = 2048
+null_safe_access_families = 256
+destructuring_families = 128
+overload_call_groups = 128
+class_hierarchy_families = 128
+structural_object_families = 128
+interface_composition_families = 128
+variadic_tuple_families = 256
+checkjs_jsdoc_families = 128
+commonjs_graph_families = 128
+recursive_generic_families = 256
 
 [workloads.startup]
 description = "One small, valid file; isolates cold CLI and frontend startup."
@@ -15,11 +33,62 @@ description = "256 independent files using generics, unions, callbacks, and infe
 [workloads.deep_types]
 description = "One large file stressing conditional, mapped, indexed, and template literal types."
 
+[workloads.import_graph]
+description = "128 modules in a relative-import chain with cross-file generic types and values."
+
+[workloads.reexport_graph]
+description = "64 leaf modules projected through eight export-star barrel modules."
+
+[workloads.tsx_components]
+description = "One TSX module with 256 typed generic component declarations and JSX trees."
+
+[workloads.generic_calls]
+description = "One module with 256 constrained generic projections, indexed accesses, and contextual callbacks."
+
+[workloads.control_flow]
+description = "One module with 256 exhaustive discriminated-union functions and definite-assignment joins."
+
+[workloads.type_predicates]
+description = "One module with 256 user-defined type-predicate families covering predicate signatures, assertion functions, call-driven narrowing, and typed consumption."
+
+[workloads.type_predicates_large]
+description = "The identical type-predicate generator at 2048 families, exposing scaling costs without changing feature coverage or compiler options."
+
+[workloads.null_safe_access]
+description = "One module with 256 nullable object families covering optional property, element, and call chains, nullish coalescing, non-null assertions, and typed consumption."
+
+[workloads.destructuring]
+description = "One module with 128 object families covering nested object and tuple bindings, defaults, object rest, spread reconstruction, and typed consumption."
+
+[workloads.overload_resolution]
+description = "One module with 128 call groups selecting among eight generic overloads with contextual arguments."
+
+[workloads.class_hierarchy]
+description = "One module with 128 generic class families covering inheritance, overrides, constructors, and structural use."
+
+[workloads.structural_objects]
+description = "One module with 128 plain-object families covering nested structural compatibility, tuples, intersections, and generic function properties."
+
+[workloads.interface_composition]
+description = "One module with 128 generic interface families covering multi-base inheritance, declaration merging, namespace merging, and structural consumption."
+
+[workloads.variadic_tuples]
+description = "One module with 256 readonly variadic-tuple families covering inference, concat, conditional head/tail extraction, rest, spread, indexing, and typed consumption."
+
+[workloads.checkjs_jsdoc]
+description = "One checked JavaScript module with 128 JSDoc families covering typedefs, constrained templates, callbacks, classes, property reads, and typed consumption."
+
+[workloads.commonjs_graph]
+description = "128 checked JavaScript CommonJS owners consumed from one explicit-root app, preserving inferred fields and reassignment unions across real require edges."
+
+[workloads.recursive_generics]
+description = "256 distinct payload types consumed through an imported generic class and four growing recursive array levels, with concrete container and leaf checks."
+
 [compilers.tsc]
-version = "7.0.2"
+version = "6.0.3"
 
 [compilers.tsgo]
-version = "7.0.0-dev.20260707.2"
+version = "7.0.2"
 
 [compilers.home]
 binary = "zig-out/bin/home-tsc"

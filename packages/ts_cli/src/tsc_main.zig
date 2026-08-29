@@ -11,6 +11,7 @@
 //! the bulk of the logic remains testable.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const ts_cli = @import("ts_cli");
 const ts_program = @import("ts_program");
 const ts_resolver = @import("ts_resolver");
@@ -27,7 +28,10 @@ const RealFs = struct {
     fn read(gpa: std.mem.Allocator, path: []const u8) ![]const u8 {
         var threaded = std.Io.Threaded.init(gpa, .{});
         defer threaded.deinit();
-        const io = threaded.io();
+        return readWithIo(gpa, threaded.io(), path);
+    }
+
+    fn readWithIo(gpa: std.mem.Allocator, io: std.Io, path: []const u8) ![]const u8 {
         const cwd = std.Io.Dir.cwd();
         var file = try cwd.openFile(io, path, .{});
         defer file.close(io);
@@ -203,7 +207,15 @@ fn projectConfigHasInputFiles(gpa: std.mem.Allocator, arena: std.mem.Allocator, 
         try excludes.append(gpa, try std.fmt.allocPrint(arena, "{s}/**", .{d}));
     }
     try excludes.append(gpa, "**/node_modules/**");
-    try expandProjectGlobs(gpa, project_dir, effectiveIncludePatterns(cfg), excludes.items, &input_files, &owned);
+    try expandProjectGlobs(
+        gpa,
+        project_dir,
+        effectiveIncludePatterns(cfg),
+        excludes.items,
+        cfg.compiler_options.allow_js orelse false,
+        &input_files,
+        &owned,
+    );
     return input_files.items.len > 0;
 }
 
@@ -395,11 +407,7 @@ fn buildOneProject(
         owned.deinit(gpa);
     }
     if (cfg.files) |fs_list| {
-        for (fs_list) |f| {
-            const p = std.fs.path.join(gpa, &.{ project_dir, f }) catch return .errors;
-            owned.append(gpa, p) catch return .errors;
-            input_files.append(gpa, p) catch return .errors;
-        }
+        ts_cli.appendProjectFilePaths(gpa, project_dir, fs_list, &input_files, &owned) catch return .errors;
     } else {
         // Exclude the project's own output dir (so emitted .js/.d.ts aren't
         // re-ingested as inputs on rebuild) and node_modules, in addition
@@ -417,7 +425,15 @@ fn buildOneProject(
             excludes.append(gpa, std.fmt.allocPrint(arena, "{s}/**", .{d}) catch return .errors) catch return .errors;
         }
         excludes.append(gpa, "**/node_modules/**") catch return .errors;
-        expandProjectGlobs(gpa, project_dir, effectiveIncludePatterns(cfg), excludes.items, &input_files, &owned) catch return .errors;
+        expandProjectGlobs(
+            gpa,
+            project_dir,
+            effectiveIncludePatterns(cfg),
+            excludes.items,
+            cfg.compiler_options.allow_js orelse false,
+            &input_files,
+            &owned,
+        ) catch return .errors;
     }
     if (input_files.items.len == 0) {
         if (verbose) std.debug.print("  (no input files)\n", .{});
@@ -480,7 +496,8 @@ fn buildOneProject(
 
     const resolver_config = resolverConfigFromConfig(arena, cfg, null);
 
-    var resolver_fs = ResolverRealFs{};
+    var resolver_fs = ResolverRealFs.init(gpa);
+    defer resolver_fs.deinit();
     var resolver = ts_resolver.Resolver.init(gpa, resolver_fs.fs(), resolver_config);
     defer resolver.deinit();
     var program = ts_program.Program.init(gpa, &resolver);
@@ -495,9 +512,10 @@ fn buildOneProject(
     }
 
     var compile_opts = ts_driver.optionsFromConfig(&cfg);
-    var resolver_adapter = CheckerResolverAdapter{ .resolver = &resolver };
+    var resolver_adapter = CheckerResolverAdapter.init(gpa, &resolver);
+    defer resolver_adapter.deinit();
     compile_opts.external_resolver = .{ .ptr = &resolver_adapter, .vtable = &CheckerResolverAdapter.vtable };
-    _ = program.loadImportClosure(compile_opts) catch {};
+    _ = program.loadImportClosureParallel(compile_opts, null) catch {};
 
     var had_errors = false;
     var stream_ctx: StreamCtx = .{
@@ -567,11 +585,7 @@ fn projectDryStatus(gpa: std.mem.Allocator, arena: std.mem.Allocator, config_pat
         owned.deinit(gpa);
     }
     if (cfg.files) |fs_list| {
-        for (fs_list) |f| {
-            const p = std.fs.path.join(gpa, &.{ project_dir, f }) catch return .build;
-            owned.append(gpa, p) catch return .build;
-            input_files.append(gpa, p) catch return .build;
-        }
+        ts_cli.appendProjectFilePaths(gpa, project_dir, fs_list, &input_files, &owned) catch return .build;
     } else {
         var excludes: std.ArrayListUnmanaged([]const u8) = .empty;
         defer excludes.deinit(gpa);
@@ -586,7 +600,15 @@ fn projectDryStatus(gpa: std.mem.Allocator, arena: std.mem.Allocator, config_pat
             excludes.append(gpa, std.fmt.allocPrint(arena, "{s}/**", .{d}) catch return .build) catch return .build;
         }
         excludes.append(gpa, "**/node_modules/**") catch return .build;
-        expandProjectGlobs(gpa, project_dir, effectiveIncludePatterns(cfg), excludes.items, &input_files, &owned) catch return .build;
+        expandProjectGlobs(
+            gpa,
+            project_dir,
+            effectiveIncludePatterns(cfg),
+            excludes.items,
+            cfg.compiler_options.allow_js orelse false,
+            &input_files,
+            &owned,
+        ) catch return .build;
     }
     if (input_files.items.len == 0) return .up_to_date;
 
@@ -1106,11 +1128,7 @@ fn appendProjectCleanOutputs(
         owned.deinit(gpa);
     }
     if (cfg.files) |fs_list| {
-        for (fs_list) |f| {
-            const p = try std.fs.path.join(gpa, &.{ project_dir, f });
-            try owned.append(gpa, p);
-            try input_files.append(gpa, p);
-        }
+        try ts_cli.appendProjectFilePaths(gpa, project_dir, fs_list, &input_files, &owned);
     } else {
         var excludes: std.ArrayListUnmanaged([]const u8) = .empty;
         defer excludes.deinit(gpa);
@@ -1125,7 +1143,15 @@ fn appendProjectCleanOutputs(
             try excludes.append(gpa, try std.fmt.allocPrint(arena, "{s}/**", .{d}));
         }
         try excludes.append(gpa, "**/node_modules/**");
-        try expandProjectGlobs(gpa, project_dir, effectiveIncludePatterns(cfg), excludes.items, &input_files, &owned);
+        try expandProjectGlobs(
+            gpa,
+            project_dir,
+            effectiveIncludePatterns(cfg),
+            excludes.items,
+            cfg.compiler_options.allow_js orelse false,
+            &input_files,
+            &owned,
+        );
     }
 
     const out_dir: ?[]const u8 = if (cfg.compiler_options.out_dir) |d|
@@ -1938,6 +1964,16 @@ fn writeOrDie(gpa: std.mem.Allocator, path: []const u8, bytes: []const u8) void 
 }
 
 const ResolverRealFs = struct {
+    threaded: std.Io.Threaded,
+
+    fn init(gpa: std.mem.Allocator) ResolverRealFs {
+        return .{ .threaded = std.Io.Threaded.init(gpa, .{}) };
+    }
+
+    fn deinit(self: *ResolverRealFs) void {
+        self.threaded.deinit();
+    }
+
     pub fn fs(self: *ResolverRealFs) ts_resolver.FileSystem {
         return .{ .ptr = self, .vtable = &vt };
     }
@@ -1950,35 +1986,33 @@ const ResolverRealFs = struct {
         .realpath = realpath,
     };
 
-    fn fileExists(_: *anyopaque, path: []const u8) bool {
-        var threaded = std.Io.Threaded.init(std.heap.page_allocator, .{});
-        defer threaded.deinit();
-        const io = threaded.io();
+    fn fileExists(ptr: *anyopaque, path: []const u8) bool {
+        const self: *ResolverRealFs = @ptrCast(@alignCast(ptr));
+        const io = self.threaded.io();
         const cwd = std.Io.Dir.cwd();
         var file = cwd.openFile(io, path, .{}) catch return false;
         defer file.close(io);
         return true;
     }
 
-    fn directoryExists(_: *anyopaque, path: []const u8) bool {
-        var threaded = std.Io.Threaded.init(std.heap.page_allocator, .{});
-        defer threaded.deinit();
-        const io = threaded.io();
+    fn directoryExists(ptr: *anyopaque, path: []const u8) bool {
+        const self: *ResolverRealFs = @ptrCast(@alignCast(ptr));
+        const io = self.threaded.io();
         const cwd = std.Io.Dir.cwd();
         var dir = cwd.openDir(io, path, .{}) catch return false;
         defer dir.close(io);
         return true;
     }
 
-    fn readFile(_: *anyopaque, gpa: std.mem.Allocator, path: []const u8) anyerror![]u8 {
-        const bytes = try RealFs.read(gpa, path);
+    fn readFile(ptr: *anyopaque, gpa: std.mem.Allocator, path: []const u8) anyerror![]u8 {
+        const self: *ResolverRealFs = @ptrCast(@alignCast(ptr));
+        const bytes = try RealFs.readWithIo(gpa, self.threaded.io(), path);
         return @constCast(bytes);
     }
 
-    fn readDir(_: *anyopaque, gpa: std.mem.Allocator, path: []const u8) anyerror![]ts_resolver.FileSystem.DirEntry {
-        var threaded = std.Io.Threaded.init(gpa, .{});
-        defer threaded.deinit();
-        const io = threaded.io();
+    fn readDir(ptr: *anyopaque, gpa: std.mem.Allocator, path: []const u8) anyerror![]ts_resolver.FileSystem.DirEntry {
+        const self: *ResolverRealFs = @ptrCast(@alignCast(ptr));
+        const io = self.threaded.io();
         const cwd = std.Io.Dir.cwd();
         var dir = try cwd.openDir(io, path, .{ .iterate = true });
         defer dir.close(io);
@@ -1999,10 +2033,9 @@ const ResolverRealFs = struct {
         return out.toOwnedSlice(gpa);
     }
 
-    fn realpath(_: *anyopaque, gpa: std.mem.Allocator, path: []const u8) anyerror![]u8 {
-        var threaded = std.Io.Threaded.init(gpa, .{});
-        defer threaded.deinit();
-        const io = threaded.io();
+    fn realpath(ptr: *anyopaque, gpa: std.mem.Allocator, path: []const u8) anyerror![]u8 {
+        const self: *ResolverRealFs = @ptrCast(@alignCast(ptr));
+        const io = self.threaded.io();
         const cwd = std.Io.Dir.cwd();
         return cwd.realPathFileAlloc(io, path, gpa);
     }
@@ -2031,22 +2064,263 @@ fn directoryExistsOnDisk(gpa: std.mem.Allocator, path: []const u8) bool {
     return true;
 }
 
+const ResolverMutex = struct {
+    state: std.atomic.Value(u32) = .init(0),
+
+    fn lock(self: *ResolverMutex) void {
+        while (true) {
+            if (self.state.cmpxchgWeak(0, 1, .acquire, .monotonic) == null) return;
+            while (self.state.load(.monotonic) != 0) std.atomic.spinLoopHint();
+        }
+    }
+
+    fn unlock(self: *ResolverMutex) void {
+        self.state.store(0, .release);
+    }
+};
+
+const ModuleExportCacheKey = struct {
+    path: []const u8,
+    name: []const u8,
+    mode: enum(u8) { normal, import, require },
+};
+
+const ModuleExportCacheContext = struct {
+    pub fn hash(_: ModuleExportCacheContext, key: ModuleExportCacheKey) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        hasher.update(&.{@backingInt(key.mode)});
+        hasher.update(key.path);
+        hasher.update(&.{0});
+        hasher.update(key.name);
+        return hasher.final();
+    }
+
+    pub fn eql(_: ModuleExportCacheContext, a: ModuleExportCacheKey, b: ModuleExportCacheKey) bool {
+        return a.mode == b.mode and
+            std.mem.eql(u8, a.path, b.path) and
+            std.mem.eql(u8, a.name, b.name);
+    }
+};
+
+const ModuleExportCache = std.HashMapUnmanaged(
+    ModuleExportCacheKey,
+    ts_driver.ExternalResolver.ModuleExport,
+    ModuleExportCacheContext,
+    80,
+);
+
 const CheckerResolverAdapter = struct {
     resolver: *ts_resolver.Resolver,
+    resolver_mutex: ResolverMutex = .{},
+    cache_mutex: ResolverMutex = .{},
+    cache_arena: std.heap.ArenaAllocator,
+    module_export_cache: ModuleExportCache = .empty,
+    module_compilation_cache: std.StringHashMapUnmanaged(*ts_driver.Compilation) = .empty,
+    module_export_names_cache: std.StringHashMapUnmanaged([]const []const u8) = .empty,
+    // Immutable source views for declaration-origin queries. Guarded by
+    // resolver_mutex; shared across names so wide barrels are parsed once.
+    export_origin_query: ts_program.export_origins.Query,
+
+    fn init(gpa: std.mem.Allocator, resolver: *ts_resolver.Resolver) CheckerResolverAdapter {
+        return .{
+            .resolver = resolver,
+            .cache_arena = std.heap.ArenaAllocator.init(gpa),
+            .export_origin_query = ts_program.export_origins.Query.init(gpa, resolver),
+        };
+    }
+
+    fn deinit(self: *CheckerResolverAdapter) void {
+        self.export_origin_query.deinit();
+        var compilations = self.module_compilation_cache.valueIterator();
+        while (compilations.next()) |compilation| {
+            const source = compilation.*.source;
+            compilation.*.deinit();
+            self.resolver.gpa.destroy(compilation.*);
+            self.resolver.gpa.free(source);
+        }
+        self.module_compilation_cache.deinit(self.resolver.gpa);
+        var export_names = self.module_export_names_cache.valueIterator();
+        while (export_names.next()) |names| {
+            for (names.*) |name| self.resolver.gpa.free(name);
+            self.resolver.gpa.free(names.*);
+        }
+        self.module_export_names_cache.deinit(self.resolver.gpa);
+        self.module_export_cache.deinit(self.resolver.gpa);
+        self.cache_arena.deinit();
+    }
+
+    fn moduleCompilation(
+        self: *CheckerResolverAdapter,
+        path: []const u8,
+    ) ?*ts_driver.Compilation {
+        self.cache_mutex.lock();
+        if (self.module_compilation_cache.get(path)) |cached| {
+            self.cache_mutex.unlock();
+            return cached;
+        }
+        self.cache_mutex.unlock();
+
+        const source = self.resolver.fs.readFile(self.resolver.gpa, path) catch return null;
+        const compilation = ts_program.compileModuleForExportFacts(self.resolver.gpa, path, source) catch {
+            self.resolver.gpa.free(source);
+            return null;
+        };
+
+        self.cache_mutex.lock();
+        defer self.cache_mutex.unlock();
+        if (self.module_compilation_cache.get(path)) |cached| {
+            compilation.deinit();
+            self.resolver.gpa.destroy(compilation);
+            self.resolver.gpa.free(source);
+            return cached;
+        }
+        const stored_path = self.cache_arena.allocator().dupe(u8, path) catch {
+            compilation.deinit();
+            self.resolver.gpa.destroy(compilation);
+            self.resolver.gpa.free(source);
+            return null;
+        };
+        self.module_compilation_cache.put(self.resolver.gpa, stored_path, compilation) catch {
+            compilation.deinit();
+            self.resolver.gpa.destroy(compilation);
+            self.resolver.gpa.free(source);
+            return null;
+        };
+        return compilation;
+    }
+
+    fn cachedModuleExport(
+        self: *CheckerResolverAdapter,
+        key: ModuleExportCacheKey,
+    ) ?ts_driver.ExternalResolver.ModuleExport {
+        self.cache_mutex.lock();
+        defer self.cache_mutex.unlock();
+        return self.module_export_cache.get(key);
+    }
+
+    fn cacheModuleExport(
+        self: *CheckerResolverAdapter,
+        key: ModuleExportCacheKey,
+        result: ts_driver.ExternalResolver.ModuleExport,
+    ) void {
+        self.cache_mutex.lock();
+        defer self.cache_mutex.unlock();
+        if (self.module_export_cache.contains(key)) return;
+        const arena = self.cache_arena.allocator();
+        const stored_path = arena.dupe(u8, key.path) catch return;
+        const stored_name = arena.dupe(u8, key.name) catch return;
+        self.module_export_cache.put(self.resolver.gpa, .{
+            .path = stored_path,
+            .name = stored_name,
+            .mode = key.mode,
+        }, result) catch {};
+    }
+
+    fn resolveModule(
+        self: *CheckerResolverAdapter,
+        specifier: []const u8,
+        containing_file: []const u8,
+    ) ?ts_resolver.Resolution {
+        self.resolver_mutex.lock();
+        defer self.resolver_mutex.unlock();
+        return self.resolver.resolve(specifier, containing_file) catch null;
+    }
+
+    fn resolveTypeReference(
+        self: *CheckerResolverAdapter,
+        specifier: []const u8,
+        containing_file: []const u8,
+        mode: ts_resolver.TypeReferenceResolutionMode,
+    ) ?ts_resolver.Resolution {
+        self.resolver_mutex.lock();
+        defer self.resolver_mutex.unlock();
+        return self.resolver.resolveTypeReferenceDirectiveWithMode(specifier, containing_file, mode) catch null;
+    }
 
     pub const vtable = ts_driver.ExternalResolver.VTable{
         .resolve = resolveImpl,
         .moduleExport = moduleExportImpl,
         .moduleExportWithMode = moduleExportWithModeImpl,
+        .moduleExportNames = moduleExportNamesImpl,
+        .sameModuleExport = sameModuleExportImpl,
         .commonJsExportPrivateName = commonJsExportPrivateNameImpl,
         .ambiguousProjectRoot = ambiguousProjectRootImpl,
     };
+
+    fn sameModuleExportImpl(
+        self_ptr: *anyopaque,
+        left_specifier: []const u8,
+        right_specifier: []const u8,
+        containing_file: []const u8,
+        name: []const u8,
+    ) ?bool {
+        const self: *CheckerResolverAdapter = @ptrCast(@alignCast(self_ptr));
+        const left = self.resolveModule(left_specifier, containing_file) orelse return null;
+        const right = self.resolveModule(right_specifier, containing_file) orelse return null;
+        const left_compilation = self.moduleCompilation(left.path) orelse return null;
+        const right_compilation = self.moduleCompilation(right.path) orelse return null;
+        self.resolver_mutex.lock();
+        defer self.resolver_mutex.unlock();
+        const query = &self.export_origin_query;
+        if (!query.files.contains(left.path)) query.borrow(left.path, left_compilation) catch return null;
+        if (!query.files.contains(right.path)) query.borrow(right.path, right_compilation) catch return null;
+        const a = query.resolve(left.path, name) catch return null;
+        const b = query.resolve(right.path, name) catch return null;
+        return a.sameDeclaration(b);
+    }
+
+    fn moduleExportNamesImpl(
+        self_ptr: *anyopaque,
+        specifier: []const u8,
+        containing_file: []const u8,
+    ) ?[]const []const u8 {
+        const self: *CheckerResolverAdapter = @ptrCast(@alignCast(self_ptr));
+        const resolved = self.resolveModule(specifier, containing_file) orelse return null;
+
+        self.cache_mutex.lock();
+        if (self.module_export_names_cache.get(resolved.path)) |cached| {
+            self.cache_mutex.unlock();
+            return cached;
+        }
+        self.cache_mutex.unlock();
+
+        const names = blk: {
+            self.resolver_mutex.lock();
+            defer self.resolver_mutex.unlock();
+            break :blk ts_program.moduleExportNamesFromResolvedModule(
+                self.resolver.gpa,
+                self.resolver,
+                resolved.path,
+            ) catch return null;
+        };
+
+        self.cache_mutex.lock();
+        defer self.cache_mutex.unlock();
+        if (self.module_export_names_cache.get(resolved.path)) |cached| {
+            for (names) |name| self.resolver.gpa.free(name);
+            self.resolver.gpa.free(names);
+            return cached;
+        }
+        const stored_path = self.cache_arena.allocator().dupe(u8, resolved.path) catch {
+            for (names) |name| self.resolver.gpa.free(name);
+            self.resolver.gpa.free(names);
+            return null;
+        };
+        self.module_export_names_cache.put(self.resolver.gpa, stored_path, names) catch {
+            for (names) |name| self.resolver.gpa.free(name);
+            self.resolver.gpa.free(names);
+            return null;
+        };
+        return names;
+    }
 
     /// TS2209/TS2210 — read the project-root-ambiguous record the resolver
     /// stashed during the most recent (failed) resolve, so the production
     /// CLI reports it too (not just the conformance harness).
     fn ambiguousProjectRootImpl(self_ptr: *anyopaque) ?ts_driver.ExternalResolver.AmbiguousProjectRoot {
         const self: *CheckerResolverAdapter = @ptrCast(@alignCast(self_ptr));
+        self.resolver_mutex.lock();
+        defer self.resolver_mutex.unlock();
         const amb = self.resolver.ambiguous_root orelse return null;
         return .{ .entry = amb.entry, .file = amb.file, .is_imports = amb.is_imports };
     }
@@ -2057,7 +2331,7 @@ const CheckerResolverAdapter = struct {
         containing_file: []const u8,
     ) ?ts_driver.ExternalResolver.Resolution {
         const self: *CheckerResolverAdapter = @ptrCast(@alignCast(self_ptr));
-        const r = self.resolver.resolve(specifier, containing_file) catch return null;
+        const r = self.resolveModule(specifier, containing_file) orelse return null;
         return .{
             .path = r.path,
             .is_declaration = r.is_declaration,
@@ -2083,44 +2357,61 @@ const CheckerResolverAdapter = struct {
         name: []const u8,
     ) ?ts_driver.ExternalResolver.ModuleExport {
         const self: *CheckerResolverAdapter = @ptrCast(@alignCast(self_ptr));
-        const r = self.resolver.resolve(specifier, containing_file) catch return null;
-        // The resolver's arena outlives the checker calls, so the rendered
-        // module name borrowed by the checker stays valid.
-        const arena = self.resolver.arena.allocator();
-        const src = self.resolver.fs.readFile(self.resolver.gpa, r.path) catch return null;
-        defer self.resolver.gpa.free(src);
-        const is_tsx = std.mem.endsWith(u8, r.path, ".tsx") or std.mem.endsWith(u8, r.path, ".jsx");
+        const r = self.resolveModule(specifier, containing_file) orelse return null;
+        const cache_key: ModuleExportCacheKey = .{ .path = r.path, .name = name, .mode = .normal };
+        if (self.cachedModuleExport(cache_key)) |cached| return cached;
+        const compilation = self.moduleCompilation(r.path) orelse return null;
         const export_assignment_class_name = if (name.len == 0)
-            ts_program.moduleCommonJsExportAssignmentClassName(self.resolver.gpa, src, is_tsx)
+            ts_program.moduleCommonJsExportAssignmentClassNameFromCompilation(compilation)
         else
             null;
-        defer if (export_assignment_class_name) |class_name| self.resolver.gpa.free(class_name);
-        const facts = ts_program.moduleExportFactsFromResolvedModule(self.resolver.gpa, self.resolver, r.path, name);
-        const exported = facts.exported_type;
-        const cannot_be_named = !exported and
-            ts_program.moduleExportNestedTypeSpaceName(self.resolver.gpa, src, name, is_tsx);
-        const type_only_pos = ts_program.moduleExportIsTypeOnly(self.resolver.gpa, src, name, is_tsx);
-        const module_name = ts_program.renderModuleDisplayName(arena, r.path) catch return null;
-        const export_path = if (type_only_pos != null) (arena.dupe(u8, r.path) catch return null) else "";
-        return .{
-            .module_name = module_name,
-            .exported_type = exported,
-            .exported_value = facts.exported_value,
-            .exported_value_readonly = facts.exported_value_readonly,
-            .ambient_const_enum = facts.ambient_const_enum,
-            .cannot_be_named = cannot_be_named,
-            .type_only_export = type_only_pos != null,
-            .export_path = export_path,
-            .export_pos = type_only_pos orelse 0,
-            .export_assignment_type_only = facts.export_assignment_type_only,
-            .export_assignment_class_name = if (export_assignment_class_name) |class_name|
-                arena.dupe(u8, class_name) catch return null
-            else
-                "",
-            .default_export_member_readonly = facts.default_export_member_readonly,
-            .call_only_function = facts.call_only_function,
-            .module_is_external = facts.module_is_external,
+        const facts = blk: {
+            self.resolver_mutex.lock();
+            defer self.resolver_mutex.unlock();
+            break :blk ts_program.moduleExportFactsFromCompilation(
+                self.resolver.gpa,
+                self.resolver,
+                r.path,
+                compilation,
+                name,
+            );
         };
+        const exported = facts.exported_type;
+        const cannot_be_named = facts.cannot_be_named;
+        const type_only_pos = facts.type_only_pos;
+        const result: ts_driver.ExternalResolver.ModuleExport = blk: {
+            self.resolver_mutex.lock();
+            defer self.resolver_mutex.unlock();
+            // The resolver's arena outlives every checker call.
+            const arena = self.resolver.arena.allocator();
+            const module_name = ts_program.renderModuleDisplayName(arena, r.path) catch return null;
+            const export_path = if (type_only_pos != null) (arena.dupe(u8, if (facts.type_only_path.len != 0) facts.type_only_path else r.path) catch return null) else "";
+            const origins = self.boundExportOrigins(r.path, compilation, name);
+            break :blk .{
+                .module_name = module_name,
+                .exported_type = exported,
+                .exported_value = facts.exported_value,
+                .namespace_module_path = namespaceExportOwner(origins) orelse "",
+                .runtime_value = if (origins) |known| known.value != null else null,
+                .exported_value_readonly = facts.exported_value_readonly,
+                .ambient_const_enum = facts.ambient_const_enum,
+                .cannot_be_named = cannot_be_named,
+                .type_only_export = type_only_pos != null,
+                .type_only_import = facts.type_only_import,
+                .export_path = export_path,
+                .export_pos = type_only_pos orelse 0,
+                .export_assignment_type_only = facts.export_assignment_type_only,
+                .export_assignment_class_name = if (export_assignment_class_name) |class_name|
+                    arena.dupe(u8, class_name) catch return null
+                else
+                    "",
+                .default_export_member_readonly = facts.default_export_member_readonly,
+                .call_only_function = facts.call_only_function,
+                .module_is_external = facts.module_is_external,
+            };
+        };
+        self.cacheModuleExport(cache_key, result);
+        return result;
     }
 
     fn moduleExportWithModeImpl(
@@ -2135,23 +2426,66 @@ const CheckerResolverAdapter = struct {
             .require
         else
             .import;
-        const resolved = self.resolver.resolveTypeReferenceDirectiveWithMode(specifier, containing_file, mode) catch return null;
-        const src = self.resolver.fs.readFile(self.resolver.gpa, resolved.path) catch return null;
-        defer self.resolver.gpa.free(src);
-        const is_tsx = std.mem.endsWith(u8, resolved.path, ".tsx") or std.mem.endsWith(u8, resolved.path, ".jsx");
-        const facts = ts_program.moduleExportFactsFromResolvedModule(self.resolver.gpa, self.resolver, resolved.path, name);
-        const type_only_pos = ts_program.moduleExportIsTypeOnly(self.resolver.gpa, src, name, is_tsx);
-        const arena = self.resolver.arena.allocator();
-        return .{
-            .module_name = ts_program.renderModuleDisplayName(arena, resolved.path) catch return null,
-            .exported_type = facts.exported_type,
-            .exported_value = facts.exported_value,
-            .ambient_const_enum = facts.ambient_const_enum,
-            .type_only_export = type_only_pos != null,
-            .export_path = if (type_only_pos != null) (arena.dupe(u8, resolved.path) catch return null) else "",
-            .export_pos = type_only_pos orelse 0,
-            .module_is_external = facts.module_is_external,
+        const resolved = self.resolveTypeReference(specifier, containing_file, mode) orelse return null;
+        const cache_key: ModuleExportCacheKey = .{
+            .path = resolved.path,
+            .name = name,
+            .mode = if (mode == .require) .require else .import,
         };
+        if (self.cachedModuleExport(cache_key)) |cached| return cached;
+        const compilation = self.moduleCompilation(resolved.path) orelse return null;
+        const facts = blk: {
+            self.resolver_mutex.lock();
+            defer self.resolver_mutex.unlock();
+            break :blk ts_program.moduleExportFactsFromCompilation(
+                self.resolver.gpa,
+                self.resolver,
+                resolved.path,
+                compilation,
+                name,
+            );
+        };
+        const type_only_pos = facts.type_only_pos;
+        const result: ts_driver.ExternalResolver.ModuleExport = blk: {
+            self.resolver_mutex.lock();
+            defer self.resolver_mutex.unlock();
+            const arena = self.resolver.arena.allocator();
+            const origins = self.boundExportOrigins(resolved.path, compilation, name);
+            break :blk .{
+                .module_name = ts_program.renderModuleDisplayName(arena, resolved.path) catch return null,
+                .exported_type = facts.exported_type,
+                .exported_value = facts.exported_value,
+                .namespace_module_path = namespaceExportOwner(origins) orelse "",
+                .runtime_value = if (origins) |known| known.value != null else null,
+                .ambient_const_enum = facts.ambient_const_enum,
+                .type_only_export = type_only_pos != null,
+                .type_only_import = facts.type_only_import,
+                .export_path = if (type_only_pos != null) (arena.dupe(u8, if (facts.type_only_path.len != 0) facts.type_only_path else resolved.path) catch return null) else "",
+                .export_pos = type_only_pos orelse 0,
+                .module_is_external = facts.module_is_external,
+            };
+        };
+        self.cacheModuleExport(cache_key, result);
+        return result;
+    }
+
+    /// Called while holding resolver_mutex. Origins distinguish a module
+    /// namespace alias from an ordinary same-named namespace declaration.
+    fn boundExportOrigins(self: *CheckerResolverAdapter, path: []const u8, compilation: *ts_driver.Compilation, name: []const u8) ?ts_program.export_origins.Origins {
+        // The bound ESM query does not model CommonJS assignment exports.
+        // Leave those shapes unknown rather than claiming an empty module.
+        if (std.mem.endsWith(u8, path, ".js") or std.mem.endsWith(u8, path, ".jsx") or
+            std.mem.endsWith(u8, path, ".cjs") or std.mem.endsWith(u8, path, ".mjs")) return null;
+        const query = &self.export_origin_query;
+        if (!query.files.contains(path)) query.borrow(path, compilation) catch return null;
+        const origins = query.resolve(path, name) catch return null;
+        if (!origins.complete or origins.ambiguous) return null;
+        return origins;
+    }
+
+    fn namespaceExportOwner(origins: ?ts_program.export_origins.Origins) ?[]const u8 {
+        const origin = (origins orelse return null).value orelse return null;
+        return if (origin.kind == .namespace) origin.path else null;
     }
 
     fn commonJsExportPrivateNameImpl(
@@ -2160,6 +2494,8 @@ const CheckerResolverAdapter = struct {
         containing_file: []const u8,
     ) ?ts_driver.ExternalResolver.CommonJsExportPrivateName {
         const self: *CheckerResolverAdapter = @ptrCast(@alignCast(self_ptr));
+        self.resolver_mutex.lock();
+        defer self.resolver_mutex.unlock();
         const resolved = self.resolver.resolve(specifier, containing_file) catch return null;
         const source = self.resolver.fs.readFile(self.resolver.gpa, resolved.path) catch return null;
         defer self.resolver.gpa.free(source);
@@ -2176,8 +2512,10 @@ const CheckerResolverAdapter = struct {
 
 pub fn main(init: std.process.Init) !void {
     var gpa_state: std.heap.DebugAllocator(.{}) = .init;
-    defer _ = gpa_state.deinit();
-    const gpa = gpa_state.allocator();
+    defer {
+        if (builtin.mode == .Debug) _ = gpa_state.deinit();
+    }
+    const gpa = if (builtin.mode == .Debug) gpa_state.allocator() else std.heap.smp_allocator;
 
     var args_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer args_arena.deinit();
@@ -2203,14 +2541,14 @@ pub fn main(init: std.process.Init) !void {
         // compile flow (full topological/incremental orchestration is a
         // follow-up). Non-dry `--clean` is not yet implemented.
         var bp = ts_cli.parseBuildArgs(gpa, argv.items[1..]) catch
-            std.process.exit(@intFromEnum(ts_cli.ExitCode.internal_error));
+            std.process.exit(@backingInt(ts_cli.ExitCode.internal_error));
         defer bp.deinit(gpa);
         var had_build_err = false;
         for (bp.diagnostics) |d| {
             std.debug.print("{s}\n", .{d});
             had_build_err = true;
         }
-        if (had_build_err) std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+        if (had_build_err) std.process.exit(@backingInt(ts_cli.ExitCode.config_error));
         if (bp.options.clean and !bp.options.dry) {
             std.debug.print("home tsc --build: '--clean' is not yet implemented.\n", .{});
             return;
@@ -2222,21 +2560,21 @@ pub fn main(init: std.process.Init) !void {
         const root_cfg = resolveConfigPath(args_arena.allocator(), ".", root_ref) catch root_ref;
         const graph = loadBuildGraph(gpa, args_arena.allocator(), root_cfg) catch {
             std.debug.print("error: cannot load project '{s}'\n", .{root_cfg});
-            std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+            std.process.exit(@backingInt(ts_cli.ExitCode.config_error));
         };
         if (graph.diagnostics.len > 0) {
             for (graph.diagnostics) |d| std.debug.print("{s}\n", .{d});
-            std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+            std.process.exit(@backingInt(ts_cli.ExitCode.config_error));
         }
         var ord = ts_cli.topoSortProjects(gpa, graph.nodes) catch
             ts_cli.BuildOrder{ .order = &.{}, .cycle = null };
         defer ord.deinit(gpa);
         if (ord.cycle) |cyc| {
             const msg = ts_cli.projectReferenceCycleDiagnostic(gpa, cyc) catch
-                std.process.exit(@intFromEnum(ts_cli.ExitCode.internal_error));
+                std.process.exit(@backingInt(ts_cli.ExitCode.internal_error));
             defer gpa.free(msg);
             std.debug.print("{s}\n", .{msg});
-            std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+            std.process.exit(@backingInt(ts_cli.ExitCode.config_error));
         }
         if (bp.options.verbose and graph.paths.len > 1) {
             // TS6355 — `Projects in this build: {0}` (the project list).
@@ -2323,7 +2661,7 @@ pub fn main(init: std.process.Init) !void {
                 },
             }
         }
-        if (build_had_errors) std.process.exit(@intFromEnum(ts_cli.ExitCode.type_errors));
+        if (build_had_errors) std.process.exit(@backingInt(ts_cli.ExitCode.type_errors));
         return;
     } else {
         var parse_ctx: ts_cli.ParseContext = .{};
@@ -2334,7 +2672,7 @@ pub fn main(init: std.process.Init) !void {
                 error.MissingValue => {
                     if (parse_ctx.missing_value_option.len > 0) {
                         const msg = ts_cli.compilerOptionExpectsArgumentDiagnostic(gpa, parse_ctx.missing_value_option) catch {
-                            std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+                            std.process.exit(@backingInt(ts_cli.ExitCode.config_error));
                         };
                         defer gpa.free(msg);
                         std.debug.print("{s}\n", .{msg});
@@ -2345,7 +2683,7 @@ pub fn main(init: std.process.Init) !void {
                 error.ConfigOnlyOption => {
                     if (parse_ctx.config_only_option.len > 0) {
                         const msg = ts_cli.optionCanOnlyBeSpecifiedInTsconfigOrNullDiagnostic(gpa, parse_ctx.config_only_option) catch {
-                            std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+                            std.process.exit(@backingInt(ts_cli.ExitCode.config_error));
                         };
                         defer gpa.free(msg);
                         std.debug.print("{s}\n", .{msg});
@@ -2356,7 +2694,7 @@ pub fn main(init: std.process.Init) !void {
                 error.ConfigOnlyBooleanOption => {
                     if (parse_ctx.config_only_option.len > 0) {
                         const msg = ts_cli.optionCanOnlyBeSpecifiedInTsconfigOrFalseOrNullDiagnostic(gpa, parse_ctx.config_only_option) catch {
-                            std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+                            std.process.exit(@backingInt(ts_cli.ExitCode.config_error));
                         };
                         defer gpa.free(msg);
                         std.debug.print("{s}\n", .{msg});
@@ -2367,7 +2705,7 @@ pub fn main(init: std.process.Init) !void {
                 error.InvalidEnumOption => {
                     if (parse_ctx.enum_option.len > 0 and parse_ctx.enum_allowed_values.len > 0) {
                         const msg = ts_cli.argumentForOptionMustBeDiagnostic(gpa, parse_ctx.enum_option, parse_ctx.enum_allowed_values) catch {
-                            std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+                            std.process.exit(@backingInt(ts_cli.ExitCode.config_error));
                         };
                         defer gpa.free(msg);
                         std.debug.print("{s}\n", .{msg});
@@ -2378,7 +2716,7 @@ pub fn main(init: std.process.Init) !void {
                 error.WatchOptionTypeMismatch => {
                     if (parse_ctx.watch_option.len > 0 and parse_ctx.watch_option_type.len > 0) {
                         const msg = ts_cli.watchOptionRequiresValueDiagnostic(gpa, parse_ctx.watch_option, parse_ctx.watch_option_type) catch {
-                            std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+                            std.process.exit(@backingInt(ts_cli.ExitCode.config_error));
                         };
                         defer gpa.free(msg);
                         std.debug.print("{s}\n", .{msg});
@@ -2388,7 +2726,7 @@ pub fn main(init: std.process.Init) !void {
                 },
                 else => std.debug.print("error parsing args: {s}\n", .{@errorName(err)}),
             }
-            std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+            std.process.exit(@backingInt(ts_cli.ExitCode.config_error));
         };
         opts_files_owned = true;
 
@@ -2398,15 +2736,15 @@ pub fn main(init: std.process.Init) !void {
             if (ts_cli.buildOnlyOptionInNormalMode(a)) |bn| {
                 const code: u32 = 5093;
                 const msg = std.fmt.allocPrint(gpa, "error TS{d}: Compiler option '--{s}' may only be used with '--build'.", .{ code, bn }) catch
-                    std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+                    std.process.exit(@backingInt(ts_cli.ExitCode.config_error));
                 defer gpa.free(msg);
                 std.debug.print("{s}\n", .{msg});
-                std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+                std.process.exit(@backingInt(ts_cli.ExitCode.config_error));
             }
             if (std.mem.eql(u8, a, "--build") or std.mem.eql(u8, a, "-b")) {
                 const code: u32 = 6369;
                 std.debug.print("error TS{d}: Option '--build' must be the first command line argument.\n", .{code});
-                std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+                std.process.exit(@backingInt(ts_cli.ExitCode.config_error));
             }
         }
     }
@@ -2416,11 +2754,11 @@ pub fn main(init: std.process.Init) !void {
     // source files. Mirrors upstream `internal/execute/tsc.go`.
     if (opts.project != null and opts.files.len > 0) {
         const msg = projectMixedWithSourceFilesDiagnostic(gpa) catch {
-            std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+            std.process.exit(@backingInt(ts_cli.ExitCode.config_error));
         };
         defer gpa.free(msg);
         std.debug.print("{s}\n", .{msg});
-        std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+        std.process.exit(@backingInt(ts_cli.ExitCode.config_error));
     }
 
     // Resolve tsconfig BEFORE dispatch so a discovered tsconfig
@@ -2448,13 +2786,13 @@ pub fn main(init: std.process.Init) !void {
                 const msg = try cannotFindTsConfigAtCurrentDirectoryDiagnostic(gpa, candidate);
                 defer gpa.free(msg);
                 std.debug.print("{s}\n", .{msg});
-                std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+                std.process.exit(@backingInt(ts_cli.ExitCode.config_error));
             }
         } else if (!fileExistsOnDisk(gpa, proj)) {
             const msg = try specifiedPathDoesNotExistDiagnostic(gpa, proj);
             defer gpa.free(msg);
             std.debug.print("{s}\n", .{msg});
-            std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+            std.process.exit(@backingInt(ts_cli.ExitCode.config_error));
         }
     }
 
@@ -2503,7 +2841,7 @@ pub fn main(init: std.process.Init) !void {
     if (dec.stderr_text.len > 0) {
         std.debug.print("{s}\n", .{dec.stderr_text});
     }
-    if (dec.code != .success) std.process.exit(@intFromEnum(dec.code));
+    if (dec.code != .success) std.process.exit(@backingInt(dec.code));
 
     if (opts.show_version or opts.show_help) return;
 
@@ -2529,7 +2867,7 @@ pub fn main(init: std.process.Init) !void {
 
     if (loaded_cfg) |c| {
         if (try printConfigValidationDiagnostics(gpa, c)) {
-            std.process.exit(@intFromEnum(ts_cli.ExitCode.config_error));
+            std.process.exit(@backingInt(ts_cli.ExitCode.config_error));
         }
     }
 
@@ -2549,7 +2887,10 @@ pub fn main(init: std.process.Init) !void {
     for (opts.files) |f| try input_files.append(gpa, f);
     if (input_files.items.len == 0) {
         if (loaded_cfg) |c| {
-            if (c.files) |fs_list| for (fs_list) |f| try input_files.append(gpa, f);
+            if (c.files) |fs_list| {
+                const project_dir = std.fs.path.dirname(c.file_path) orelse ".";
+                try ts_cli.appendProjectFilePaths(gpa, project_dir, fs_list, &input_files, &owned_paths);
+            }
         }
     }
     if (input_files.items.len == 0) {
@@ -2562,6 +2903,7 @@ pub fn main(init: std.process.Init) !void {
                 project_dir,
                 include_patterns,
                 exclude_patterns,
+                c.compiler_options.allow_js orelse false,
                 &input_files,
                 &owned_paths,
             );
@@ -2640,7 +2982,8 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    var resolver_fs = ResolverRealFs{};
+    var resolver_fs = ResolverRealFs.init(gpa);
+    defer resolver_fs.deinit();
     const resolver_config: ts_resolver.Config = if (loaded_cfg) |c|
         resolverConfigFromConfig(cfg_arena.allocator(), c, opts.out_dir)
     else
@@ -2723,8 +3066,11 @@ pub fn main(init: std.process.Init) !void {
     }
     if (extension_errors) std.process.exit(1);
 
+    var source_io_threaded = std.Io.Threaded.init(gpa, .{});
+    defer source_io_threaded.deinit();
+    const source_io = source_io_threaded.io();
     for (input_files.items) |path| {
-        const src = RealFs.read(gpa, path) catch |err| {
+        const src = RealFs.readWithIo(gpa, source_io, path) catch |err| {
             std.debug.print("error reading {s}: {s}\n", .{ path, @errorName(err) });
             std.process.exit(1);
         };
@@ -2740,8 +3086,9 @@ pub fn main(init: std.process.Init) !void {
     else
         .{};
     compile_opts.strict = opts.strict;
-    compile_opts.no_emit = opts.no_emit;
-    var resolver_adapter = CheckerResolverAdapter{ .resolver = &resolver };
+    compile_opts.no_emit = compile_opts.no_emit or opts.no_emit;
+    var resolver_adapter = CheckerResolverAdapter.init(gpa, &resolver);
+    defer resolver_adapter.deinit();
     compile_opts.external_resolver = .{
         .ptr = &resolver_adapter,
         .vtable = &CheckerResolverAdapter.vtable,
@@ -2752,7 +3099,7 @@ pub fn main(init: std.process.Init) !void {
     // lets `--explainFiles` report imported files with their TS1393
     // "Imported via … from file …" reason. Best-effort: resolution gaps
     // simply leave the program partial, as they did before.
-    _ = program.loadImportClosure(compile_opts) catch {};
+    _ = program.loadImportClosureParallel(compile_opts, null) catch {};
     if (trace_sink) |*sink| printTraceEntries(sink, &printed_trace_entries);
 
     // §2.1 — `--listFiles` / `--listFilesOnly`. Print every input
@@ -2946,7 +3293,7 @@ pub fn main(init: std.process.Init) !void {
         for (blocked_outputs.items) |b| gpa.free(b);
         blocked_outputs.deinit(gpa);
     }
-    if (!opts.no_emit) {
+    if (!compile_opts.no_emit) {
         var inputs: std.ArrayListUnmanaged([]const u8) = .empty;
         defer inputs.deinit(gpa);
         var outputs: std.ArrayListUnmanaged([]const u8) = .empty;
@@ -2973,7 +3320,7 @@ pub fn main(init: std.process.Init) !void {
 
     for (program.files.items) |f| {
         const c = f.compilation orelse continue;
-        if (opts.no_emit) continue;
+        if (compile_opts.no_emit) continue;
         const out_path = try computeOutPath(gpa, f.path, out_dir, ".js");
         defer gpa.free(out_path);
         // Skip files whose output was blocked by the TS5055/5056 check.
@@ -3203,7 +3550,7 @@ pub fn main(init: std.process.Init) !void {
                 const file_id = program.lookupPath(path) orelse continue;
                 const f = program.fileById(file_id);
                 const c = f.compilation orelse continue;
-                if (opts.no_emit) continue;
+                if (compile_opts.no_emit) continue;
                 const out_path = computeOutPath(gpa, path, out_dir, ".js") catch continue;
                 defer gpa.free(out_path);
                 writeOrDie(gpa, out_path, c.js);
@@ -3421,13 +3768,14 @@ fn mapDriverRelated(
 /// `include` glob and no `exclude` glob. Owned paths are stored in
 /// `owned` so the caller can free them after compilation; borrowed
 /// `[]const u8` slices into those owned bytes are appended to
-/// `out`. Mirrors the file shapes tsc accepts by default (no
-/// `allowJs` yet).
+/// `out`. Mirrors the file shapes tsc accepts by default;
+/// JavaScript-family inputs participate only when `allowJs` is enabled.
 fn expandProjectGlobs(
     gpa: std.mem.Allocator,
     project_dir: []const u8,
     include: []const []const u8,
     exclude: []const []const u8,
+    allow_js: bool,
     out: *std.ArrayListUnmanaged([]const u8),
     owned: *std.ArrayListUnmanaged([]u8),
 ) !void {
@@ -3482,7 +3830,7 @@ fn expandProjectGlobs(
                 },
                 .file => {
                     defer gpa.free(child_rel);
-                    if (!isTsLikeExtension(child_rel)) continue;
+                    if (!isProjectInputExtension(child_rel, allow_js)) continue;
                     if (anyMatches(exclude, child_rel)) continue;
                     if (!anyMatches(include, child_rel)) continue;
                     const full = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ project_dir, child_rel });
@@ -3513,6 +3861,15 @@ fn isTsLikeExtension(path: []const u8) bool {
     if (std.mem.endsWith(u8, path, ".hm")) return true;
     if (std.mem.endsWith(u8, path, ".home")) return true;
     return false;
+}
+
+fn isProjectInputExtension(path: []const u8, allow_js: bool) bool {
+    if (isTsLikeExtension(path)) return true;
+    if (!allow_js) return false;
+    return std.mem.endsWith(u8, path, ".js") or
+        std.mem.endsWith(u8, path, ".jsx") or
+        std.mem.endsWith(u8, path, ".mjs") or
+        std.mem.endsWith(u8, path, ".cjs");
 }
 
 fn effectiveIncludePatterns(cfg: tsconfig_mod.TsConfig) []const []const u8 {
@@ -3907,6 +4264,20 @@ test "tsc_main: classifyExtension recognizes TS, Home, JS and unsupported shapes
     // No extension -> left alone (matches tsc's HasExtension gate).
     try std.testing.expectEqual(ExtensionClass.supported, classifyExtension("Makefile"));
     try std.testing.expectEqual(ExtensionClass.supported, classifyExtension("src/noext"));
+}
+
+test "tsc_main: project discovery admits JavaScript only with allowJs" {
+    try std.testing.expect(isProjectInputExtension("src/app.ts", false));
+    try std.testing.expect(!isProjectInputExtension("src/app.js", false));
+    try std.testing.expect(!isProjectInputExtension("src/app.jsx", false));
+    try std.testing.expect(!isProjectInputExtension("src/app.mjs", false));
+    try std.testing.expect(!isProjectInputExtension("src/app.cjs", false));
+
+    try std.testing.expect(isProjectInputExtension("src/app.js", true));
+    try std.testing.expect(isProjectInputExtension("src/app.jsx", true));
+    try std.testing.expect(isProjectInputExtension("src/app.mjs", true));
+    try std.testing.expect(isProjectInputExtension("src/app.cjs", true));
+    try std.testing.expect(!isProjectInputExtension("src/app.json", true));
 }
 
 test "tsc_main: TS18003 diagnostic JSON-escapes control characters" {

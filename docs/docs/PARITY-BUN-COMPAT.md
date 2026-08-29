@@ -4,13 +4,13 @@ Detailed per-symbol status for the `bun` compatibility shim that
 lets vendored Bun source compile against Home's stdlib without
 modification. This is the drill-down view; the at-a-glance row is
 in the
-[README parity status](../README.md#bun-compatibility-shim-packagescompat)
+[README parity status](/docs/PARITY-STATUS#bun-compatibility-shim-packagescompat)
 section.
 
 > **Why this exists:** the [Bun bundler](https://github.com/oven-sh/bun)
-> is vendored verbatim into [`packages/bundler/src/`](../packages/bundler/src/)
+> is vendored verbatim into [`packages/bundler/src/`](https://github.com/home-lang/home/blob/main/packages/bundler/src/)
 > under MIT, and the [Bun runtime port](./PARITY-BUN.md) does the
-> same for [`packages/runtime/src/`](../packages/runtime/src/).
+> same for [`packages/runtime/src/`](https://github.com/home-lang/home/blob/main/packages/runtime/src/).
 > Both code bases pervasively write `@import("bun")` and reach for
 > `bun.X` helpers. To compile that source without rewriting every
 > file, Home ships a `bun` shim — `packages/compat/src/compat.zig` —
@@ -231,7 +231,7 @@ Known categories the shim will likely need to grow into:
 Two test surfaces exercise the shim:
 
 1. **In-line tests** in
-   [`packages/compat/src/compat.zig`](../packages/compat/src/compat.zig)
+   [`packages/compat/src/compat.zig`](https://github.com/home-lang/home/blob/main/packages/compat/src/compat.zig)
    — unit tests pinning each symbol's shape (the `OOM` / `JSError` /
    `assert` / `debugAssert` / `Environment` / `env_var` /
    `ast.Index.Int` / `fs.Path` / `default_allocator` /
@@ -239,7 +239,7 @@ Two test surfaces exercise the shim:
    `String` / `handleOom` / `create` / `strings` checks).
 
 2. **Integration tests** in
-   [`packages/bundler/src/compat_tests.zig`](../packages/bundler/src/compat_tests.zig)
+   [`packages/bundler/src/compat_tests.zig`](https://github.com/home-lang/home/blob/main/packages/bundler/src/compat_tests.zig)
    — tests that build the actual vendored `IndexStringMap.zig` and
    `PathToSourceIndexMap.zig` files against the shim (round-trip
    `put` / `get`, `getOrPut`, `removePath`, `getPath` / `putPath`
@@ -259,8 +259,8 @@ bundler test suite would not link without the shim.
 ## Build wiring
 
 The shim is wired into the build at
-[`build.zig:208`](../build.zig) (`compat_pkg`) and the
-[`build.zig:349-350`](../build.zig) line installs it as the
+[`build.zig:208`](https://github.com/home-lang/home/blob/main/build.zig) (`compat_pkg`) and the
+[`build.zig:349-350`](https://github.com/home-lang/home/blob/main/build.zig) line installs it as the
 `"bun"` import on the bundler's compat-test module:
 
 ```zig
@@ -284,5 +284,5 @@ Each new tier follows the same pattern: a vendor file lands, the
 shim grows just enough to make it compile, inline + integration
 tests pin the surface, then the file becomes buildable from
 `./pantry/.bin/zig build`. See
-[`packages/runtime/PORT_AUDIT_2026-05-20.md`](../packages/runtime/PORT_AUDIT_2026-05-20.md)
+[`packages/runtime/PORT_AUDIT_2026-05-20.md`](https://github.com/home-lang/home/blob/main/packages/runtime/PORT_AUDIT_2026-05-20.md)
 for the next-to-port queue.

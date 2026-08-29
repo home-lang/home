@@ -324,6 +324,7 @@ pub const Binder = struct {
 
     fn newSymbol(
         self: *Binder,
+        scope: *Scope,
         name: StringId,
         flags: SymbolFlags,
         decl: NodeId,
@@ -335,7 +336,7 @@ pub const Binder = struct {
             .flags = flags,
             .decls = .empty,
             .members = null,
-            .parent_scope = self.currentScope(),
+            .parent_scope = scope,
         };
         try s.decls.append(ar, decl);
         try self.module.symbols.append(ar, s);
@@ -354,17 +355,24 @@ pub const Binder = struct {
         flags: SymbolFlags,
         decl: NodeId,
     ) !*Symbol {
+        var scope = self.currentScope();
+        // A var binding belongs to its nearest variable environment, not
+        // the block containing its syntax. Stop at function, namespace,
+        // class/static-block boundary or source scope; never cross owners.
+        if (flags.is_var) {
+            while (scope.kind == .block) scope = scope.parent orelse break;
+        }
         const map: *SymbolMap = switch (space) {
-            .value => &self.currentScope().values,
-            .type => &self.currentScope().types,
-            .namespace => &self.currentScope().namespaces,
+            .value => &scope.values,
+            .type => &scope.types,
+            .namespace => &scope.namespaces,
         };
         if (map.get(name)) |existing| {
             const ar = self.module.arena.allocator();
             try existing.addDecl(ar, decl, flags);
             return existing;
         }
-        const s = try self.newSymbol(name, flags, decl);
+        const s = try self.newSymbol(scope, name, flags, decl);
         try map.put(self.module.arena.allocator(), name, s);
         return s;
     }
@@ -402,6 +410,8 @@ pub const Binder = struct {
             .do_while_stmt => try self.bindStatement(hir_mod.doWhileOf(self.hir, node).body),
             .for_stmt => {
                 const p = hir_mod.forStmtOf(self.hir, node);
+                _ = try self.openScope(.block, node);
+                defer self.closeScope();
                 if (p.init != hir_mod.none_node_id) {
                     const init_kind = self.hir.kindOf(p.init);
                     if (init_kind == .var_decl or init_kind == .let_decl or init_kind == .const_decl) {
@@ -425,6 +435,13 @@ pub const Binder = struct {
             },
             .for_in_stmt, .for_of_stmt => {
                 const p = hir_mod.forInOf(self.hir, node);
+                _ = try self.openScope(.block, node);
+                defer self.closeScope();
+                if (p.target != hir_mod.none_node_id) {
+                    const kind_init = self.hir.kindOf(p.target);
+                    if (kind_init == .var_decl or kind_init == .let_decl or kind_init == .const_decl)
+                        try self.bindVarDecl(p.target);
+                }
                 try self.bindStatement(p.body);
             },
             .try_stmt => {
@@ -866,6 +883,40 @@ test "binder: empty source — module scope opened, no bindings" {
     try T.expectEqual(@as(usize, 0), s.binder.module.root.values.count());
     try T.expectEqual(@as(usize, 0), s.binder.module.root.types.count());
     try T.expectEqual(ScopeKind.module, s.binder.module.root.kind);
+}
+
+test "binder: block vars hoist without leaking lexical function or namespace bindings" {
+    var s = try newTestSetup(
+        \\{ var visible = 1; let hidden = 2; }
+        \\var visible = 3;
+        \\function f() { { var local = 1; } }
+        \\namespace N { { var inner = 1; } }
+        \\for (let index = 0; index < 1; index++) { var fromLoop = 1; }
+        \\for (var key in {}) {}
+        \\for (const item of []) {}
+    );
+    defer destroyTestSetup(s);
+    const root = s.binder.module.root;
+    const visible = root.values.get(s.interner.lookup("visible").?).?;
+    try T.expect(visible.parent_scope == root);
+    try T.expectEqual(@as(usize, 2), visible.decls.items.len);
+    inline for (.{ "hidden", "local", "inner", "index", "item" }) |name|
+        try T.expect(root.values.get(s.interner.lookup(name).?) == null);
+    inline for (.{ "fromLoop", "key" }) |name|
+        try T.expect(root.values.get(s.interner.lookup(name).?) != null);
+    var found_local = false;
+    var found_inner = false;
+    for (s.binder.module.symbols.items) |symbol| {
+        if (symbol.name == s.interner.lookup("local").?) {
+            try T.expectEqual(.function, symbol.parent_scope.?.kind);
+            found_local = true;
+        }
+        if (symbol.name == s.interner.lookup("inner").?) {
+            try T.expectEqual(.namespace, symbol.parent_scope.?.kind);
+            found_inner = true;
+        }
+    }
+    try T.expect(found_local and found_inner);
 }
 
 test "binder: function declaration binds in value space" {

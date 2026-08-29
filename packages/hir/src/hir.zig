@@ -228,9 +228,9 @@ pub const NodeKind = enum(u8) {
 
     /// Returns true if the kind is in the "expression" category.
     pub fn isExpression(self: NodeKind) bool {
-        const v = @intFromEnum(self);
-        if (v >= @intFromEnum(NodeKind.identifier) and
-            v <= @intFromEnum(NodeKind.import_call)) return true;
+        const v = @backingInt(self);
+        if (v >= @backingInt(NodeKind.identifier) and
+            v <= @backingInt(NodeKind.import_call)) return true;
         return self == .jsx_element or
             self == .jsx_self_closing or
             self == .jsx_fragment or
@@ -240,24 +240,24 @@ pub const NodeKind = enum(u8) {
 
     /// Returns true if the kind is in the "type" category.
     pub fn isType(self: NodeKind) bool {
-        const v = @intFromEnum(self);
-        return v >= @intFromEnum(NodeKind.type_ref) and
-            v <= @intFromEnum(NodeKind.object_type);
+        const v = @backingInt(self);
+        return v >= @backingInt(NodeKind.type_ref) and
+            v <= @backingInt(NodeKind.object_type);
     }
 
     /// Returns true if the kind is in the "statement" category (excludes
     /// declarations, which are conventionally separate).
     pub fn isStatement(self: NodeKind) bool {
-        const v = @intFromEnum(self);
-        return v >= @intFromEnum(NodeKind.block_stmt) and
-            v <= @intFromEnum(NodeKind.labeled_stmt);
+        const v = @backingInt(self);
+        return v >= @backingInt(NodeKind.block_stmt) and
+            v <= @backingInt(NodeKind.labeled_stmt);
     }
 
     /// Returns true if the kind is in the "declaration" category.
     pub fn isDeclaration(self: NodeKind) bool {
-        const v = @intFromEnum(self);
-        return v >= @intFromEnum(NodeKind.fn_decl) and
-            v <= @intFromEnum(NodeKind.export_decl);
+        const v = @backingInt(self);
+        return v >= @backingInt(NodeKind.fn_decl) and
+            v <= @backingInt(NodeKind.export_decl);
     }
 };
 
@@ -657,6 +657,10 @@ pub const NamespacePayload = struct {
     /// Children pool slice: statements / nested decls.
     body_start: u32,
     body_len: u32,
+    /// Preserve the parser's declaration context instead of rediscovering
+    /// `declare` and string-literal module names from source text.
+    is_ambient: bool = false,
+    is_string_named: bool = false,
 };
 
 pub const ImportPayload = struct {
@@ -782,6 +786,9 @@ pub const ObjectPropertyPayload = struct {
     /// by a private storage slot; Stage 3 decorators receive
     /// `kind: "accessor"` in their context object.
     is_accessor: bool = false,
+    /// Class field modifiers retained for source-owned type metadata.
+    is_optional: bool = false,
+    is_readonly: bool = false,
 };
 
 // ============================================================================
@@ -2192,6 +2199,10 @@ pub const Builder = struct {
     }
 
     pub fn addNamespace(self: *Builder, span: Span, name: NodeId, body: []const NodeId) !NodeId {
+        return self.addNamespaceWithContext(span, name, body, false, false);
+    }
+
+    pub fn addNamespaceWithContext(self: *Builder, span: Span, name: NodeId, body: []const NodeId, is_ambient: bool, is_string_named: bool) !NodeId {
         const body_start: u32 = @intCast(self.hir.child_pool.items.len);
         try self.hir.child_pool.appendSlice(self.hir.gpa, body);
         const payload_idx: u32 = @intCast(self.hir.namespace_payloads.items.len);
@@ -2199,6 +2210,8 @@ pub const Builder = struct {
             .name = name,
             .body_start = body_start,
             .body_len = @intCast(body.len),
+            .is_ambient = is_ambient,
+            .is_string_named = is_string_named,
         });
         const id = try self.newNode(.namespace_decl, span, payload_idx);
         self.hir.setParent(name, id);
@@ -2448,6 +2461,13 @@ pub const Builder = struct {
         if (value != none_node_id) self.hir.setParent(value, id);
         if (type_annotation != none_node_id) self.hir.setParent(type_annotation, id);
         return id;
+    }
+
+    pub fn setClassFieldModifiers(self: *Builder, node: NodeId, optional: bool, readonly: bool) void {
+        std.debug.assert(self.hir.kindOf(node) == .object_property);
+        const property = &self.hir.object_property_payloads.items[self.hir.payloads.items[node]];
+        property.is_optional = optional;
+        property.is_readonly = readonly;
     }
 
     /// Add a variable declaration. `kind` must be one of

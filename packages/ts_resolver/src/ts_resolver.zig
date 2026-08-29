@@ -302,6 +302,12 @@ pub const Resolver = struct {
     /// DIRECTORY (relative joins + the package-scope walk both start from
     /// `dirname(containing_file)`), so a per-dir key is sound.
     cache: std.StringHashMapUnmanaged(?Resolution) = .empty,
+    /// Directory snapshots for extensionless relative imports. A single
+    /// listing preserves the configured candidate order while avoiding one
+    /// failing open per extension for every sibling import in a large graph.
+    relative_file_directories: std.StringHashMapUnmanaged(void) = .empty,
+    relative_files: std.StringHashMapUnmanaged(void) = .empty,
+    package_type_module_by_directory: std.StringHashMapUnmanaged(bool) = .empty,
     /// Per-file existence memo used by traced candidate probes. This
     /// mirrors tsc's lower-level lookup cache so repeated candidates can
     /// report TS6239/TS6240 instead of hitting the filesystem again.
@@ -341,21 +347,35 @@ pub const Resolver = struct {
     }
 
     pub fn deinit(self: *Resolver) void {
+        self.package_type_module_by_directory.deinit(self.gpa);
+        self.relative_files.deinit(self.gpa);
+        self.relative_file_directories.deinit(self.gpa);
         self.file_exists_cache.deinit(self.gpa);
         self.cache.deinit(self.gpa);
         self.arena.deinit();
     }
 
     pub fn containingPackageIsTypeModule(self: *Resolver, containing_file: []const u8) bool {
-        const scope = self.getPackageScope(containing_file) catch return false;
-        const package = scope orelse return false;
-        const bytes = self.fs.readFile(self.gpa, package.pkg_json) catch return false;
-        defer self.gpa.free(bytes);
-        var parsed = std.json.parseFromSlice(std.json.Value, self.gpa, bytes, .{}) catch return false;
-        defer parsed.deinit();
-        if (parsed.value != .object) return false;
-        const type_value = parsed.value.object.get("type") orelse return false;
-        return type_value == .string and std.mem.eql(u8, type_value.string, "module");
+        const directory = dirname(containing_file);
+        if (self.trace == null) {
+            if (self.package_type_module_by_directory.get(directory)) |cached| return cached;
+        }
+        const is_type_module = blk: {
+            const scope = self.getPackageScope(containing_file) catch break :blk false;
+            const package = scope orelse break :blk false;
+            const bytes = self.fs.readFile(self.gpa, package.pkg_json) catch break :blk false;
+            defer self.gpa.free(bytes);
+            var parsed = std.json.parseFromSlice(std.json.Value, self.gpa, bytes, .{}) catch break :blk false;
+            defer parsed.deinit();
+            if (parsed.value != .object) break :blk false;
+            const type_value = parsed.value.object.get("type") orelse break :blk false;
+            break :blk type_value == .string and std.mem.eql(u8, type_value.string, "module");
+        };
+        if (self.trace == null) {
+            const key = self.ar().dupe(u8, directory) catch return is_type_module;
+            self.package_type_module_by_directory.put(self.gpa, key, is_type_module) catch {};
+        }
+        return is_type_module;
     }
 
     /// Best-effort rendering of the probe extension set for the
@@ -811,6 +831,9 @@ pub const Resolver = struct {
             else
                 specifier;
             const joined = try self.joinPath(dir, normalized);
+            if (knownExtension(joined) == null and self.config.module_suffixes.len == 0) {
+                self.primeRelativeFileDirectory(joined);
+            }
             if (try self.tryFileWithExtensions(joined)) |r| return r;
             if (try self.tryDirectoryIndex(joined)) |r| return r;
             if (try self.tryRootDirs(normalized, joined)) |r| return r;
@@ -1189,15 +1212,28 @@ pub const Resolver = struct {
     /// TS6096 "File 'X' does not exist."). Repeated probes use the
     /// lookup cache traces TS6239/TS6240. No-op tracing when no sink.
     fn fileExistsTraced(self: *Resolver, path: []const u8) bool {
-        if (self.trace == null) return self.fs.fileExists(path);
-        if (self.file_exists_cache.get(path)) |exists| {
-            if (exists) {
-                self.traceMsg(6239, "File '{s}' exists according to earlier cached lookups.", .{path});
-            } else {
-                self.traceMsg(6240, "File '{s}' does not exist according to earlier cached lookups.", .{path});
+        if (self.trace != null) {
+            if (self.file_exists_cache.get(path)) |exists| {
+                if (exists) {
+                    self.traceMsg(6239, "File '{s}' exists according to earlier cached lookups.", .{path});
+                } else {
+                    self.traceMsg(6240, "File '{s}' does not exist according to earlier cached lookups.", .{path});
+                }
+                return exists;
             }
+        }
+        if (self.relativeDirectoryFileExists(path)) |exists| {
+            if (self.trace != null) {
+                const key = self.ar().dupe(u8, path) catch {
+                    self.traceFileExists(path, exists);
+                    return exists;
+                };
+                self.file_exists_cache.put(self.gpa, key, exists) catch {};
+            }
+            self.traceFileExists(path, exists);
             return exists;
         }
+        if (self.trace == null) return self.fs.fileExists(path);
         const exists = self.fs.fileExists(path);
         const key = self.ar().dupe(u8, path) catch {
             self.traceFileExists(path, exists);
@@ -1206,6 +1242,26 @@ pub const Resolver = struct {
         self.file_exists_cache.put(self.gpa, key, exists) catch {};
         self.traceFileExists(path, exists);
         return exists;
+    }
+
+    fn primeRelativeFileDirectory(self: *Resolver, base: []const u8) void {
+        const directory = dirname(base);
+        if (self.relative_file_directories.contains(directory)) return;
+        const entries = self.fs.readDir(self.gpa, directory) catch return;
+        defer FileSystem.freeDirEntries(self.gpa, entries);
+
+        const stored_directory = self.ar().dupe(u8, directory) catch return;
+        self.relative_file_directories.put(self.gpa, stored_directory, {}) catch return;
+        for (entries) |entry| {
+            if (entry.is_dir) continue;
+            const path = self.joinPath(directory, entry.name) catch continue;
+            self.relative_files.put(self.gpa, path, {}) catch return;
+        }
+    }
+
+    fn relativeDirectoryFileExists(self: *const Resolver, path: []const u8) ?bool {
+        if (!self.relative_file_directories.contains(dirname(path))) return null;
+        return self.relative_files.contains(path);
     }
 
     fn traceFileExists(self: *Resolver, path: []const u8, exists: bool) void {

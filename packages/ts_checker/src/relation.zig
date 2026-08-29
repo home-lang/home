@@ -58,7 +58,7 @@ pub const Result = enum(u2) {
 /// Pack `(relation, source, target)` into a u64 for cache keys.
 /// Layout: `rel:8 | source:28 | target:28`.
 pub fn packKey(rel: Relation, src: TypeId, tgt: TypeId) u64 {
-    return (@as(u64, @intFromEnum(rel)) << 56) |
+    return (@as(u64, @backingInt(rel)) << 56) |
         (@as(u64, src) << 28) |
         @as(u64, tgt);
 }
@@ -66,7 +66,7 @@ pub fn packKey(rel: Relation, src: TypeId, tgt: TypeId) u64 {
 /// L1 capacity — per-worker, lockless, sized to fit the hot working
 /// set of a typical file's relation queries. When the table reaches
 /// this size we evict the oldest half (FIFO via insertion-order ring).
-pub const L1_CAPACITY: u32 = 256;
+pub const L1_CAPACITY: u32 = 4096;
 
 /// L2 capacity — shared across workers, locked, sized to retain
 /// cross-cutting type-pair results (e.g. interfaces consulted by
@@ -135,11 +135,12 @@ pub const L1Cache = struct {
 
     /// Insert/overwrite; evicts the oldest half on overflow.
     pub fn insert(self: *L1Cache, key: u64, r: Result) !void {
+        // Resolve the slot once. `getPtr` followed by `put` hashes every new
+        // relation twice on this hot path.
+        const entry = try self.table.getOrPut(self.gpa, key);
+        entry.value_ptr.* = r;
         // Updating an existing key keeps insertion order — no eviction.
-        if (self.table.getPtr(key)) |slot| {
-            slot.* = r;
-            return;
-        }
+        if (entry.found_existing) return;
         if (self.ring_len >= self.cap) {
             // Evict the oldest half of the ring in FIFO order.
             const drop = self.cap / 2;
@@ -150,8 +151,11 @@ pub const L1Cache = struct {
                 self.ring_head = (self.ring_head + 1) % self.cap;
                 self.ring_len -= 1;
             }
+            // FIFO churn otherwise fills the open-addressed table with
+            // tombstones, making misses probe the entire backing capacity.
+            // Rehash in place after the batch; no entry pointers escape here.
+            self.table.rehash(std.hash_map.AutoContext(u64){});
         }
-        try self.table.put(self.gpa, key, r);
         const tail = (self.ring_head + self.ring_len) % self.cap;
         self.ring[tail] = key;
         self.ring_len += 1;
@@ -202,10 +206,9 @@ pub const L2Cache = struct {
     pub fn insert(self: *L2Cache, key: u64, r: Result) !void {
         self.mu.lock();
         defer self.mu.unlock();
-        if (self.table.getPtr(key)) |slot| {
-            slot.* = r;
-            return;
-        }
+        const entry = try self.table.getOrPut(self.gpa, key);
+        entry.value_ptr.* = r;
+        if (entry.found_existing) return;
         if (self.ring_len >= self.cap) {
             const drop = self.cap / 2;
             var i: u32 = 0;
@@ -215,8 +218,10 @@ pub const L2Cache = struct {
                 self.ring_head = (self.ring_head + 1) % self.cap;
                 self.ring_len -= 1;
             }
+            // Reclaim deletion tombstones while retaining the same entries
+            // and ring order. The existing lock also covers this rehash.
+            self.table.rehash(std.hash_map.AutoContext(u64){});
         }
-        try self.table.put(self.gpa, key, r);
         const tail = (self.ring_head + self.ring_len) % self.cap;
         self.ring[tail] = key;
         self.ring_len += 1;
@@ -302,6 +307,14 @@ pub const Engine = struct {
     gpa: std.mem.Allocator,
     interner: *Interner,
     cache: RelationCache,
+    /// Type expansion belongs to the checker, which also owns callable and
+    /// declaration metadata. Relations request the same cached surface used by
+    /// property/indexed-access consumers rather than an erased second copy.
+    type_resolver: ?struct {
+        context: *anyopaque,
+        resolve: *const fn (*anyopaque, TypeId) anyerror!TypeId,
+    } = null,
+    generic_instance_origins: ?*const std.AutoHashMapUnmanaged(TypeId, TypeId) = null,
     /// When true, function-type parameters are checked
     /// contravariantly (sound — matches `strictFunctionTypes`).
     /// When false (TS default for method declarations), parameters
@@ -530,6 +543,11 @@ pub const Engine = struct {
     /// True if `a` and `b` are structurally identical.
     pub fn isIdenticalTo(self: *Engine, a: TypeId, b: TypeId) anyerror!bool {
         if (a == b) return true; // interner identity short-circuit
+        if (self.type_resolver) |resolver| {
+            const left = try resolver.resolve(resolver.context, a);
+            const right = try resolver.resolve(resolver.context, b);
+            if (left != a or right != b) return self.isIdenticalTo(left, right);
+        }
         switch (self.cache.lookup(.identity, a, b)) {
             .yes => return true,
             .no => return false,
@@ -576,6 +594,7 @@ pub const Engine = struct {
                     if (x.name != y.name) continue;
                     if (x.is_optional != y.is_optional) return false;
                     if (x.is_readonly != y.is_readonly) return false;
+                    if (!memberOriginsCompatible(x, y)) return false;
                     if (!try self.isIdenticalTo(x.type, y.type)) return false;
                     matched = true;
                     break;
@@ -595,6 +614,11 @@ pub const Engine = struct {
     /// the *fundamental* rules; conformance hardening lands in Phase 6.
     pub fn isAssignableTo(self: *Engine, source: TypeId, target: TypeId) anyerror!bool {
         if (source == target) return true;
+        if (self.type_resolver) |resolver| {
+            const left = try resolver.resolve(resolver.context, source);
+            const right = try resolver.resolve(resolver.context, target);
+            if (left != source or right != target) return self.isAssignableTo(left, right);
+        }
 
         // `any` is assignable to any type and any type is assignable
         // to `any` (per tsc; this is the source of most "TS doesn't
@@ -810,10 +834,13 @@ pub const Engine = struct {
         return false;
     }
 
-    const RecursionIdentity = u32;
+    const RecursionIdentity = u64;
 
     fn recursionIdentity(self: *Engine, t: TypeId) ?RecursionIdentity {
         if (t < Primitive.first_dynamic or t >= self.pool().typeCount()) return null;
+        if (self.generic_instance_origins) |origins| {
+            if (origins.get(t)) |origin| return (@as(u64, origin) << 1) | 1;
+        }
         const flags = self.pool().flagsOf(t);
         if (flags.is_union) {
             for (self.interner.unionMembers(t)) |member| {
@@ -829,7 +856,7 @@ pub const Engine = struct {
         }
         if (!flags.is_object_type) return null;
         const symbol = self.interner.typeSymbol(t);
-        if (symbol != 0) return symbol;
+        if (symbol != 0) return @as(u64, symbol) << 1;
         return null;
     }
 
@@ -1695,13 +1722,9 @@ pub const Engine = struct {
             defer members.deinit(self.interner.gpa);
             for (snapshot) |m| {
                 const member_t = try self.substituteTpDeepLimit(m.type, map, depth + 1);
-                try members.append(self.interner.gpa, .{
-                    .name = m.name,
-                    .type = self.validOrUnknown(member_t),
-                    .is_optional = m.is_optional,
-                    .is_readonly = m.is_readonly,
-                    .is_method = m.is_method,
-                });
+                var mapped = m;
+                mapped.type = self.validOrUnknown(member_t);
+                try members.append(self.interner.gpa, mapped);
             }
             const str_idx = self.interner.objectStringIndex(t);
             const num_idx = self.interner.objectNumberIndex(t);
@@ -2736,6 +2759,7 @@ pub const Engine = struct {
         const effective_target = try self.effectiveOptionalMemberType(target_member);
         for (source_members) |sm| {
             if (sm.name != target_member.name) continue;
+            if (!memberOriginsCompatible(sm, target_member)) return false;
             if (!target_member.is_optional and sm.is_optional) return false;
             // readonly on target is fine even if source is mutable
             // (covariant). Mutable on target with readonly source is
@@ -2751,6 +2775,14 @@ pub const Engine = struct {
             if (try self.isAssignableTo(sm.type, effective_target)) return true;
         }
         return false;
+    }
+
+    fn memberOriginsCompatible(left: types.ObjectMember, right: types.ObjectMember) bool {
+        // Local declarations retain their checker-owned HIR/heritage checks.
+        // Imported origins must survive nested relations and substitutions,
+        // where the outer object need not itself be a named class instance.
+        if (left.declaration_origin == 0 and right.declaration_origin == 0) return true;
+        return left.declaration_origin == right.declaration_origin and left.visibility == right.visibility;
     }
 
     /// Effective type of a (possibly optional) object property for
@@ -3050,6 +3082,82 @@ test "Engine: structural object assignability — exact match" {
     });
     try T.expect(try e.isAssignableTo(a, b));
     try T.expect(try e.isIdenticalTo(a, b));
+}
+
+test "Engine: imported nominal origins survive nested structural relations" {
+    var ti = try Interner.init(T.allocator);
+    defer ti.deinit();
+    var e = try Engine.init(T.allocator, &ti);
+    defer e.deinit();
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+    e.string_interner = &sint;
+    const key = try sint.intern("key");
+    const value = try sint.intern("value");
+    const first_origin = try sint.intern("first:Secret");
+    const second_origin = try sint.intern("second:Secret");
+    for ([_]types.MemberVisibility{ .private, .protected }) |visibility| {
+        var member = mkMember(key, Primitive.string_t, false);
+        member.visibility = visibility;
+        member.declaration_origin = first_origin;
+        const first = try ti.internObjectType(&.{ member, mkMember(value, Primitive.string_t, false) });
+        const alias = try ti.internObjectType(&.{ member, mkMember(value, Primitive.string_t, false) });
+        member.declaration_origin = second_origin;
+        const second = try ti.internObjectType(&.{ member, mkMember(value, Primitive.string_t, false) });
+        try T.expect(try e.isIdenticalTo(first, alias));
+        try T.expect(try e.isAssignableTo(first, alias));
+        try T.expect(!try e.isIdenticalTo(first, second));
+        try T.expect(!try e.isAssignableTo(first, second));
+        try T.expect(!try e.isAssignableTo(second, first));
+        const surface = try ti.internObjectType(&.{mkMember(value, Primitive.string_t, false)});
+        const structural = try ti.internObjectType(&.{ mkMember(key, Primitive.string_t, false), mkMember(value, Primitive.string_t, false) });
+        try T.expect(try e.isAssignableTo(first, surface));
+        try T.expect(!try e.isAssignableTo(structural, first));
+        try T.expect(!try e.isAssignableTo(first, structural));
+        const wrapped_first = try ti.internObjectType(&.{mkMember(value, first, false)});
+        const wrapped_alias = try ti.internObjectType(&.{mkMember(value, alias, false)});
+        const wrapped_second = try ti.internObjectType(&.{mkMember(value, second, false)});
+        try T.expect(try e.isAssignableTo(wrapped_first, wrapped_alias));
+        try T.expect(!try e.isAssignableTo(wrapped_first, wrapped_second));
+        const first_array = try ti.internArrayType(&sint, first);
+        const alias_array = try ti.internArrayType(&sint, alias);
+        const second_array = try ti.internArrayType(&sint, second);
+        try T.expect(try e.isAssignableTo(first_array, alias_array));
+        try T.expect(!try e.isAssignableTo(first_array, second_array));
+        const make_first = try ti.internSignature(&.{}, first, false);
+        const make_alias = try ti.internSignature(&.{}, alias, false);
+        const make_second = try ti.internSignature(&.{}, second, false);
+        try T.expect(try e.isAssignableTo(make_first, make_alias));
+        try T.expect(!try e.isAssignableTo(make_first, make_second));
+        const use_first = try ti.internSignature(&.{first}, Primitive.void_t, false);
+        const use_alias = try ti.internSignature(&.{alias}, Primitive.void_t, false);
+        const use_second = try ti.internSignature(&.{second}, Primitive.void_t, false);
+        try T.expect(try e.isAssignableTo(use_first, use_alias));
+        try T.expect(!try e.isAssignableTo(use_first, use_second));
+        const intersection = try ti.internIntersection(&.{ second, surface });
+        try T.expect(!try e.isAssignableTo(intersection, first));
+    }
+}
+
+test "Engine: imported nominal origins survive type parameter substitution" {
+    var ti = try Interner.init(T.allocator);
+    defer ti.deinit();
+    var e = try Engine.init(T.allocator, &ti);
+    defer e.deinit();
+    const parameter = try ti.internFreshTypeParameterWithFlags(1, Primitive.unknown, Primitive.none, .invariant, false);
+    var member = mkMember(2, parameter, false);
+    member.visibility = .private;
+    member.decl_node = 17;
+    member.declaration_origin = 3;
+    const original = try ti.internObjectType(&.{member});
+    const mapped = try e.substituteTpDeep(original, &.{.{ .from = parameter, .to = Primitive.string_t }});
+    member.type = Primitive.string_t;
+    try T.expectEqualDeep(member, ti.objectMembers(mapped)[0]);
+    const alias = try ti.internObjectType(&.{member});
+    try T.expect(try e.isAssignableTo(mapped, alias));
+    member.declaration_origin = 4;
+    const other = try ti.internObjectType(&.{member});
+    try T.expect(!try e.isAssignableTo(mapped, other));
 }
 
 test "Engine: object primitive accepts object-like sources only" {
@@ -3470,6 +3578,47 @@ test "L2Cache: insert + lookup under lock" {
     try l2.insert(42, .yes);
     try T.expectEqual(Result.yes, l2.lookup(42));
     try T.expectEqual(Result.miss, l2.lookup(43));
+}
+
+test "relation cache churn preserves FIFO results and clears deletion tombstones" {
+    inline for (.{ L1Cache, L2Cache }) |Cache| {
+        const cap = 8;
+        var cache = try Cache.initWithCapacity(T.allocator, cap);
+        defer cache.deinit();
+        try cache.table.ensureTotalCapacity(T.allocator, cap + 1);
+        var failing = std.testing.FailingAllocator.init(T.allocator, .{ .fail_index = 0 });
+        {
+            cache.gpa = failing.allocator();
+            defer cache.gpa = T.allocator;
+            var first_live: u32 = 0;
+            for (0..512) |i| {
+                const key = packKey(.assignable, @intCast(i), @intCast(i + 1));
+                const evicts = cache.count() == cap;
+                try cache.insert(key, .pending);
+                if (evicts) {
+                    first_live += cap / 2;
+                    // Maintenance must reclaim deleted slots, not merely
+                    // bound the number of live entries in a fragmented map.
+                    for (cache.table.metadata.?[0..cache.table.capacity()]) |slot| {
+                        try T.expect(!slot.isTombstone());
+                    }
+                }
+                try T.expectEqual(Result.pending, cache.lookup(key));
+                const count = cache.count();
+                const head = cache.ring_head;
+                const result: Result = @fromBackingInt(@intCast(1 + i % 3));
+                try cache.insert(key, result);
+                try T.expectEqual(count, cache.count());
+                try T.expectEqual(head, cache.ring_head);
+                for (0..i + 1) |j| {
+                    const expected: Result = if (j < first_live) .miss else @fromBackingInt(@intCast(1 + j % 3));
+                    try T.expectEqual(expected, cache.lookup(packKey(.assignable, @intCast(j), @intCast(j + 1))));
+                }
+            }
+            // Once capacity is reserved, churn maintenance needs no allocation.
+            try T.expect(!failing.has_induced_failure);
+        }
+    }
 }
 
 test "TwoLevelCache: L1 hit avoids L2 entirely" {

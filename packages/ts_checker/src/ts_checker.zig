@@ -23,8 +23,11 @@ pub const relation = @import("relation.zig");
 pub const lower = @import("lower.zig");
 pub const check = @import("check.zig");
 pub const render = @import("render.zig");
+pub const type_transfer = @import("type_transfer.zig");
+pub const checked_transfer = @import("checked_transfer.zig");
 
 pub const TypeId = types.TypeId;
+pub const CheckedTypes = check.CheckedTypes;
 pub const Primitive = types.Primitive;
 pub const TypeFlags = types.TypeFlags;
 pub const Pool = types.Pool;
@@ -35,18 +38,22 @@ pub const Relation = relation.Relation;
 pub const RelationCache = relation.RelationCache;
 pub const Lowerer = lower.Lowerer;
 pub const Checker = check.Checker;
+pub const SourceMarkerMatcher = @import("source_markers.zig").Matcher;
 pub const Diagnostic = check.Diagnostic;
 pub const DiagnosticChainEntry = check.DiagnosticChainEntry;
 pub const RelatedInfo = check.RelatedInfo;
 pub const StrictFlags = check.StrictFlags;
 pub const ExternalResolver = check.ExternalResolver;
 pub const ScriptObjectExpando = check.ScriptObjectExpando;
+pub const ProgramGlobalBinding = check.ProgramGlobalBinding;
 pub const ModuleInterfaceAugmentation = check.ModuleInterfaceAugmentation;
 pub const ProgramExportedClass = check.ProgramExportedClass;
+pub const ProgramClassSchema = check.ProgramClassSchema;
 pub const ProgramExportedClassMember = check.ProgramExportedClassMember;
 pub const ProgramMemberVisibility = check.ProgramMemberVisibility;
 pub const ProgramTypeReference = check.ProgramTypeReference;
 pub const ProgramExportedValue = check.ProgramExportedValue;
+pub const ProgramExportedType = check.ProgramExportedType;
 pub const ProgramExportedValueKind = check.ProgramExportedValueKind;
 pub const ProgramAmbientModuleInterfaceExport = check.ProgramAmbientModuleInterfaceExport;
 pub const ProgramAmbientInterfaceMember = check.ProgramAmbientInterfaceMember;
@@ -64,7 +71,10 @@ test {
     _ = lower;
     _ = check;
     _ = render;
+    _ = type_transfer;
+    _ = checked_transfer;
     _ = @import("lib.zig");
+    _ = @import("source_markers.zig");
 }
 
 test "ts_checker: end-to-end smoke" {

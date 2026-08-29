@@ -1627,6 +1627,7 @@ pub const Parser = struct {
         fn_decl.requires_clauses = try requires_clauses.toOwnedSlice(self.allocator);
         fn_decl.ensures_clauses = try ensures_clauses.toOwnedSlice(self.allocator);
         fn_decl.is_forward_decl = is_forward_decl;
+        fn_decl.is_extern = is_extern;
 
         return ast.Stmt{ .FnDecl = fn_decl };
     }
@@ -6716,6 +6717,45 @@ pub const Parser = struct {
         return block;
     }
 
+    /// Parse one `:`-section of asm operands: `[name] "constraint" (expr)`,
+    /// comma-separated. The name is optional; the template may refer to
+    /// operands positionally instead.
+    fn parseAsmOperands(self: *Parser, list: *std.ArrayList(ast.AsmOperand)) !void {
+        while (self.check(.LeftBracket) or self.check(.String)) {
+            var name: ?[]const u8 = null;
+            if (self.match(&.{.LeftBracket})) {
+                const name_token = try self.expect(.Identifier, "Expected operand name after '['");
+                name = name_token.lexeme;
+                _ = try self.expect(.RightBracket, "Expected ']' after operand name");
+            }
+
+            const constraint_token = try self.expect(.String, "Expected constraint string in asm operand");
+            const constraint = constraint_token.lexeme[1 .. constraint_token.lexeme.len - 1];
+
+            _ = try self.expect(.LeftParen, "Expected '(' after asm constraint");
+            // `-> u8` names a result type rather than a destination. Accept
+            // and skip it: the type is already known from the binding.
+            if (self.match(&.{.Arrow})) {
+                _ = try self.parseTypeAnnotation();
+                _ = try self.expect(.RightParen, "Expected ')' after asm result type");
+                try list.append(self.allocator, .{ .name = name, .constraint = constraint, .expr = try self.makeVoidExpr() });
+            } else {
+                const value = try self.expression();
+                _ = try self.expect(.RightParen, "Expected ')' after asm operand");
+                try list.append(self.allocator, .{ .name = name, .constraint = constraint, .expr = value });
+            }
+
+            if (!self.match(&.{.Comma})) break;
+        }
+    }
+
+    /// A placeholder expression for an asm operand that names only a type.
+    fn makeVoidExpr(self: *Parser) !*ast.Expr {
+        const e = try self.allocator.create(ast.Expr);
+        e.* = ast.Expr{ .NullLiteral = ast.NullLiteral.init(ast.SourceLocation{ .line = 0, .column = 0 }) };
+        return e;
+    }
+
     fn ifExpr(self: *Parser) !*ast.Expr {
         const if_token = self.previous();
         // Parse condition - let expression() handle all grouping naturally.
@@ -7499,23 +7539,101 @@ pub const Parser = struct {
 
             _ = try self.expect(.LeftParen, "Expected '(' after 'asm'");
 
-            // If the body is a simple string literal followed by `)`, keep
-            // the old behavior (captures just the instruction string).
+            // `asm("instr")`, and `asm("instr" : outs : ins : clobbers)`.
+            //
+            // The operand form used to be raw-captured into an InlineAsm with
+            // an *empty* instruction, so codegen emitted nothing — every port
+            // read and write in a kernel silently did nothing. It is parsed
+            // properly now.
             if (self.check(.String)) {
-                const save_pos = self.current;
                 const str_token = self.advance();
-                if (self.check(.RightParen)) {
-                    _ = self.advance();
-                    const instruction = str_token.lexeme[1 .. str_token.lexeme.len - 1];
-                    const expr = try self.allocator.create(ast.Expr);
-                    expr.* = ast.Expr{ .InlineAsm = ast.InlineAsm.init(instruction, ast.SourceLocation.fromToken(asm_token)) };
-                    return expr;
+                var instruction = str_token.lexeme[1 .. str_token.lexeme.len - 1];
+
+                // Adjacent string literals concatenate, so a multi-instruction
+                // block can be written a line at a time:
+                //
+                //     asm volatile ("pushfq\n"
+                //                   "popq %0\n"
+                //                   "cli" : "=r" (flags))
+                //
+                // Only the template does this — clobbers and constraints are
+                // always introduced by a colon, so no string in those
+                // positions can be reached from here.
+                while (self.check(.String)) {
+                    const cont = self.advance();
+                    const piece = cont.lexeme[1 .. cont.lexeme.len - 1];
+                    const joined = try self.allocator.alloc(u8, instruction.len + piece.len);
+                    @memcpy(joined[0..instruction.len], instruction);
+                    @memcpy(joined[instruction.len..], piece);
+                    instruction = joined;
                 }
-                // Not a simple form — rewind and fall through to raw capture.
-                self.current = save_pos;
+
+                var outputs = std.ArrayList(ast.AsmOperand).empty;
+                defer outputs.deinit(self.allocator);
+                var inputs = std.ArrayList(ast.AsmOperand).empty;
+                defer inputs.deinit(self.allocator);
+                var clobbers = std.ArrayList([]const u8).empty;
+                defer clobbers.deinit(self.allocator);
+
+                // Up to three `:`-introduced sections — outputs, inputs,
+                // clobbers — any of which may be empty. `asm("x" ::: "mem")`
+                // is three colons and only clobbers.
+                //
+                // The colons do not arrive one per token: the lexer folds `::`
+                // into a single ColonColon (it doubles as the path operator),
+                // so `:::` is ColonColon followed by Colon. Count colons rather
+                // than tokens, and treat a section as empty when another colon
+                // follows immediately — otherwise the clobber string in
+                // `::: "mem"` gets read as an input operand and the parse
+                // fails on it.
+                var section: usize = 0;
+                var pending_colons: usize = 0;
+                while (section < 3) {
+                    if (pending_colons == 0) {
+                        if (self.check(.ColonColon)) {
+                            _ = self.advance();
+                            pending_colons = 2;
+                        } else if (self.check(.Colon)) {
+                            _ = self.advance();
+                            pending_colons = 1;
+                        } else break;
+                    }
+                    pending_colons -= 1;
+                    section += 1;
+
+                    const next_opens_section = pending_colons > 0 or
+                        self.check(.Colon) or self.check(.ColonColon);
+                    if (next_opens_section) continue; // this section is empty
+
+                    if (section == 1) {
+                        try self.parseAsmOperands(&outputs);
+                    } else if (section == 2) {
+                        try self.parseAsmOperands(&inputs);
+                    } else {
+                        // Clobbers are bare strings.
+                        while (self.check(.String)) {
+                            const c = self.advance();
+                            try clobbers.append(self.allocator, c.lexeme[1 .. c.lexeme.len - 1]);
+                            if (!self.match(&.{.Comma})) break;
+                        }
+                    }
+                }
+
+                _ = try self.expect(.RightParen, "Expected ')' after asm block");
+
+                const expr = try self.allocator.create(ast.Expr);
+                expr.* = ast.Expr{ .InlineAsm = ast.InlineAsm.initWithOperands(
+                    instruction,
+                    try outputs.toOwnedSlice(self.allocator),
+                    try inputs.toOwnedSlice(self.allocator),
+                    try clobbers.toOwnedSlice(self.allocator),
+                    ast.SourceLocation.fromToken(asm_token),
+                ) };
+                return expr;
             }
 
-            // Raw-capture mode for the paren form.
+            // Not a string at all — capture and produce an empty block rather
+            // than failing the parse.
             self.consumeBalancedRaw(.RightParen);
             const expr = try self.allocator.create(ast.Expr);
             expr.* = ast.Expr{ .InlineAsm = ast.InlineAsm.init("", ast.SourceLocation.fromToken(asm_token)) };
