@@ -39414,8 +39414,21 @@ const harness_prelude =
     \\  if (client && client.__home_server_session) { client.__home_server_session.socket = socket; return client.__home_server_session; }
     \\  const session = Object.assign(__home_http_event_target(), { socket, closed: false, destroyed: false });
     \\  Object.setPrototypeOf(session, __home_http2_ServerHttp2Session.prototype);
-    \\  session.close = function() { if (!this.closed) { this.closed = true; this.emit("close"); } return this; };
-    \\  session.destroy = function() { this.destroyed = true; return this.close(); };
+    \\  session.close = function(callback) {
+    \\    if (typeof callback === "function") this.once("close", callback);
+    \\    if (this.closed || this.destroyed || this.__home_close_scheduled) return this;
+    \\    this.closed = true;
+    \\    this.__home_close_scheduled = true;
+    \\    Promise.resolve().then(() => { this.destroyed = true; if (!this.__home_close_emitted) { this.__home_close_emitted = true; this.emit("close"); } });
+    \\    return this;
+    \\  };
+    \\  session.destroy = function(error) {
+    \\    if (this.destroyed || this.__home_close_scheduled) return this;
+    \\    this.destroyed = true;
+    \\    this.__home_close_scheduled = true;
+    \\    Promise.resolve().then(() => { if (error) this.emit("error", error); if (!this.__home_close_emitted) { this.__home_close_emitted = true; this.emit("close"); } });
+    \\    return this;
+    \\  };
     \\  return session;
     \\}
     \\function __home_http2_decode_raw_request_headers(payload) {
@@ -39509,7 +39522,14 @@ const harness_prelude =
     \\      closeEmitted = true;
     \\      socket.destroyed = true;
     \\      if (activeSession === session) {
-    \\        session.closed = true;
+    \\        for (const id of Object.keys(session.__home_streams)) {
+    \\          const stream = session.__home_streams[id];
+    \\          if (!stream || stream.__home_raw_terminal) continue;
+    \\          stream.__home_raw_terminal = true; stream.closed = true; stream.destroyed = true; stream.emit("close");
+    \\          delete session.__home_streams[id];
+    \\        }
+    \\        if (session.__home_terminal_kind === "close") session.destroyed = true;
+    \\        else if (!session.closed) session.destroyed = true;
     \\        if (!session.__home_close_emitted) { session.__home_close_emitted = true; session.emit("close"); }
     \\        if (session.__home_server_registered && server && server.__home_sessions) { session.__home_server_registered = false; server.__home_sessions.delete(session); server.__home_finish_close(); }
     \\      }
@@ -39536,7 +39556,7 @@ const harness_prelude =
     \\    stream.resume = function() { this.__home_paused = false; return this; };
     \\    stream.respond = function(headers) { this.sentHeaders = __home_http2_validate_header_context(headers, "response"); return this; };
     \\    stream.write = function() { return true; };
-    \\    stream.end = function() { if (this.__home_raw_end_scheduled) return this; this.__home_raw_end_scheduled = true; const target = this; Promise.resolve().then(() => { if (target.__home_raw_terminal) return; target.__home_raw_terminal = true; target.closed = true; target.destroyed = true; target.emit("close"); }); return this; };
+    \\    stream.end = function() { if (this.__home_raw_end_scheduled) return this; this.__home_raw_end_scheduled = true; const target = this; Promise.resolve().then(() => { if (target.__home_raw_terminal) return; target.__home_raw_terminal = true; target.closed = true; target.destroyed = true; target.emit("close"); delete session.__home_streams[target.id]; if (session.__home_waiting_close && Object.keys(session.__home_streams).length === 0) close(false); }); return this; };
     \\    stream.close = function() { return this.end(); };
     \\    stream.destroy = function(error) { if (error) this.emit("error", error); return this.end(); };
     \\    session.__home_streams[streamId] = stream;
@@ -39623,8 +39643,8 @@ const harness_prelude =
     \\  };
     \\  socket.end = function(chunk) { if (chunk !== undefined) this.write(chunk); close(false); return this; };
     \\  socket.destroy = function(error) { if (error) this.emit("error", error); close(!!error); return this; };
-    \\  session.close = function() { this.closed = true; close(false); return this; };
-    \\  session.destroy = function(error) { this.destroyed = true; if (error) this.emit("error", error); return this.close(); };
+    \\  session.close = function(callback) { if (typeof callback === "function") this.once("close", callback); if (this.closed || this.destroyed) return this; this.__home_terminal_kind = "close"; this.closed = true; if (Object.keys(this.__home_streams).length === 0) close(false); else this.__home_waiting_close = true; return this; };
+    \\  session.destroy = function(error) { if (this.destroyed || this.closed) return this; this.__home_terminal_kind = "destroy"; this.destroyed = true; if (error) this.emit("error", error); close(!!error); return this; };
     \\  Promise.resolve().then(() => {
     \\    if (server) { server.emit("connection", socket); if (server.__home_secure) server.emit("secureConnection", socket); }
     \\    connectionEmitted = true;
@@ -40859,7 +40879,10 @@ const harness_prelude =
     \\  }
     \\  client.emit("close");
     \\  Promise.resolve().then(() => __home_http2_unbind_session_socket(client));
-    \\  if (client.__home_server_session && typeof client.__home_server_session.close === "function") client.__home_server_session.close();
+    \\  if (client.__home_server_session) {
+    \\    if (typeof client.__home_server_session.__home_finish_terminal === "function" && client.__home_server_session.__home_terminal_kind) client.__home_server_session.__home_finish_terminal(false);
+    \\    else if (typeof client.__home_server_session.close === "function") client.__home_server_session.close();
+    \\  }
     \\}
     \\function __home_http2_acknowledge_local_settings(client) {
     \\  const acknowledged = client.__home_pending_local_settings.shift();
@@ -40934,8 +40957,26 @@ const harness_prelude =
     \\    void headers;
     \\    return stream;
     \\  };
-    \\  client.close = function(callback) { if (!this.closed) { this.closed = true; socket.end(); this.emit("close"); } if (typeof callback === "function") callback(); return this; };
-    \\  client.destroy = function(error) { this.destroyed = true; if (error) this.emit("error", error); socket.destroy(); return this.close(); };
+    \\  function terminateRawClient(kind, error) {
+    \\    if (client.__home_terminal_kind) return client;
+    \\    client.__home_terminal_kind = kind;
+    \\    if (kind === "close") client.closed = true;
+    \\    else client.destroyed = true;
+    \\    Promise.resolve().then(() => {
+    \\      if (error) client.emit("error", error);
+    \\      for (const id of Object.keys(client.__home_streams)) {
+    \\        const stream = client.__home_streams[id];
+    \\        if (!stream || stream.__home_close_emitted) continue;
+    \\        stream.closed = true; stream.destroyed = true; stream.__home_close_emitted = true; stream.emit("close");
+    \\      }
+    \\      if (kind === "close") client.destroyed = true;
+    \\      if (!client.__home_close_emitted) { client.__home_close_emitted = true; client.emit("close"); }
+    \\      if (kind === "close") socket.end(); else socket.destroy(error);
+    \\    });
+    \\    return client;
+    \\  }
+    \\  client.close = function(callback) { if (typeof callback === "function") this.once("close", callback); return terminateRawClient("close", null); };
+    \\  client.destroy = function(error) { return terminateRawClient("destroy", error || null); };
     \\  socket.on("connect", () => client.emit("connect"));
     \\  socket.on("error", error => client.emit("error", error));
     \\  const inboundState = { role: "client", streams: client.__home_streams, promised: client.__home_promised, expectingContinuation: 0, maxFrameSize: 16384, connectionReceiveWindow: 65535, isIdleStream(streamId) { return !this.streams[streamId] && !this.promised[streamId] && (streamId % 2 === 0 || streamId >= client.__home_next_stream_id); } };
@@ -41276,10 +41317,29 @@ const harness_prelude =
     \\    });
     \\    return undefined;
     \\  };
-    \\  client.__home_server_session.close = function() { if (!this.__home_close_emitted) { this.closed = true; this.__home_close_emitted = true; __home_http2_clear_session_timeout(this); if (!client.__home_goaway_received) { client.__home_goaway_received = true; Promise.resolve().then(() => client.emit("goaway", 0, Number(client.state.lastProcStreamID) || 0, Buffer.alloc(0))); } Promise.resolve().then(() => { __home_http2_unbind_session_socket(this); this.emit("close"); if (Number(client.__home_active_streams || 0) === 0 && !client.destroyed) { client.closed = true; __home_http2_maybe_close_client(client); } unregisterServerSession(this); }); } return this; };
+    \\  client.__home_server_session.__home_finish_terminal = function(force) {
+    \\    if (this.__home_close_emitted || !this.__home_terminal_kind) return;
+    \\    if (!force && this.__home_terminal_kind === "close" && Number(client.__home_active_streams || 0) > 0) return;
+    \\    if (this.__home_terminal_kind === "close") this.destroyed = true;
+    \\    this.__home_close_emitted = true;
+    \\    __home_http2_unbind_session_socket(this);
+    \\    this.emit("close");
+    \\    unregisterServerSession(this);
+    \\  };
+    \\  client.__home_server_session.close = function(callback) {
+    \\    if (typeof callback === "function") this.once("close", callback);
+    \\    if (this.__home_terminal_kind || this.destroyed) return this;
+    \\    this.__home_terminal_kind = "close";
+    \\    this.closed = true;
+    \\    __home_http2_clear_session_timeout(this);
+    \\    if (!client.__home_goaway_received) { client.__home_goaway_received = true; Promise.resolve().then(() => client.emit("goaway", 0, Number(client.state.lastProcStreamID) || 0, Buffer.alloc(0))); }
+    \\    Promise.resolve().then(() => { if (Number(client.__home_active_streams || 0) === 0 && !client.destroyed) { client.closed = true; __home_http2_maybe_close_client(client); } this.__home_finish_terminal(false); });
+    \\    return this;
+    \\  };
     \\  client.__home_server_session.destroy = function(codeOrError) {
-    \\    if (typeof codeOrError !== "number") { this.destroyed = true; for (const id of Object.keys(client.__home_streams)) { const pending = client.__home_streams[id]; if (!pending) continue; const peer = pending.__home_server_stream; if (peer) { peer.session = undefined; peer.destroyed = true; peer.closed = true; peer.pushAllowed = false; peer.state = {}; } pending.__home_response_ended = true; Promise.resolve().then(() => { pending.__home_receive("end"); if (!pending.closed) { pending.closed = true; pending.destroyed = true; pending.emit("close"); } }); delete client.__home_streams[id]; } client.__home_active_streams = 0; if (codeOrError) Promise.resolve().then(() => this.emit("error", codeOrError)); return this.close(); }
-    \\    if (this.destroyed) return this;
+    \\    if (this.__home_terminal_kind || this.destroyed) return this;
+    \\    this.__home_terminal_kind = "destroy";
+    \\    if (typeof codeOrError !== "number") { this.destroyed = true; for (const id of Object.keys(client.__home_streams)) { const pending = client.__home_streams[id]; if (!pending) continue; const peer = pending.__home_server_stream; if (peer) { peer.session = undefined; peer.destroyed = true; peer.closed = true; peer.pushAllowed = false; peer.state = {}; } pending.__home_response_ended = true; Promise.resolve().then(() => { pending.__home_receive("end"); if (!pending.closed) { pending.closed = true; pending.destroyed = true; pending.emit("close"); } }); delete client.__home_streams[id]; } client.__home_active_streams = 0; Promise.resolve().then(() => { if (codeOrError) this.emit("error", codeOrError); this.__home_finish_terminal(true); }); return this; }
     \\    const code = Number(codeOrError) >>> 0;
     \\    this.destroyed = true;
     \\    client.destroyed = true;
@@ -41298,7 +41358,7 @@ const harness_prelude =
     \\      }
     \\      this.emit("error", sessionError);
     \\      client.emit("error", sessionError);
-    \\      if (!this.__home_close_emitted) { this.__home_close_emitted = true; this.emit("close"); }
+    \\      this.__home_finish_terminal(true);
     \\      if (!client.__home_close_emitted) { client.__home_close_emitted = true; client.emit("close"); }
     \\      unregisterServerSession(this);
     \\    });
@@ -41355,10 +41415,7 @@ const harness_prelude =
     \\    if (!fromSocket && !transportSocket.destroyed && typeof transportSocket.destroy === "function") { transportSocket.__home_suppress_h2_session_error = true; transportSocket.destroy(cause || undefined); }
     \\    Promise.resolve().then(() => {
     \\      if (cause) this.emit("error", cause);
-    \\      if (kind === "close") this.destroyed = true;
-    \\      if (!this.__home_close_emitted) { this.__home_close_emitted = true; this.emit("close"); }
     \\      __home_http2_clear_session_timeout(this);
-    \\      Promise.resolve().then(() => __home_http2_unbind_session_socket(this));
     \\      for (const id of Object.keys(this.__home_streams)) {
     \\        const stream = this.__home_streams[id];
     \\        if (!stream || stream.closed) continue;
@@ -41389,6 +41446,9 @@ const harness_prelude =
     \\        delete this.__home_streams[id];
     \\      }
     \\      this.__home_active_streams = 0;
+    \\      if (kind === "close") this.destroyed = true;
+    \\      if (!this.__home_close_emitted) { this.__home_close_emitted = true; this.emit("close"); }
+    \\      Promise.resolve().then(() => __home_http2_unbind_session_socket(this));
     \\      if (this.__home_server_session && !this.__home_server_session.__home_close_emitted) this.__home_server_session.close();
     \\      if (!transportSocket.__home_close_emitted) { transportSocket.__home_close_emitted = true; transportSocket.emit("close", !!cause); }
     \\    });
@@ -41399,21 +41459,6 @@ const harness_prelude =
     \\    if (typeof callback === "function") this.once("close", callback);
     \\    if (this.destroyed || this.__home_close_emitted) return this;
     \\    if (this.connecting) return this.__home_terminate("close", null, false);
-    \\    if (server && !server.__home_handler && server.listenerCount("stream") === 0) {
-    \\      this.closed = true;
-    \\      Promise.resolve().then(() => {
-    \\        for (const id of Object.keys(this.__home_streams)) {
-    \\          const pending = this.__home_streams[id];
-    \\          if (!pending || pending.closed) continue;
-    \\          pending.closed = true; pending.destroyed = true;
-    \\          pending.emit("error", __home_http2_error_with_code("ERR_HTTP2_GOAWAY_SESSION", "New streams cannot be created after receiving a GOAWAY"));
-    \\          pending.emit("close");
-    \\          delete this.__home_streams[id];
-    \\        }
-    \\        __home_http2_maybe_close_client(this);
-    \\      });
-    \\      return this;
-    \\    }
     \\    this.closed = true;
     \\    __home_http2_maybe_close_client(this);
     \\    return this;
@@ -41927,6 +41972,7 @@ const harness_prelude =
     \\      stream.close = function(code, closeCallback) {
     \\        const resetCode = __home_http2_validate_stream_close(code, closeCallback);
     \\        if (this.closed) return this;
+    \\        if (typeof closeCallback === "function") this.once("close", closeCallback);
     \\        const shouldAbort = !this.writableFinished;
     \\        this.closed = true; this.destroyed = true; this.rstCode = resetCode; this.__home_suppress_dispatch = true; this.__home_cleanup_abort(); this.__home_release_active();
     \\        const target = this;
@@ -41937,7 +41983,6 @@ const harness_prelude =
     \\          if (error) target.emit("error", error);
     \\          __home_http2_terminalize_peer(handlerServerStream, resetCode);
     \\          target.emit("end");
-    \\          if (typeof closeCallback === "function") closeCallback();
     \\          target.emit("close");
     \\          __home_http2_maybe_close_client(client);
     \\        });
@@ -42425,7 +42470,6 @@ const harness_prelude =
     \\    });
     \\    stream.__home_outbound_queue = [];
     \\    stream.__home_end_callbacks = [];
-    \\    stream.__home_close_after_flush_callbacks = [];
     \\    function completeRequestInput() {
     \\      if (stream.__home_end_completion_done) return;
     \\      stream.__home_end_completion_done = true;
@@ -42434,8 +42478,7 @@ const harness_prelude =
     \\      for (const endCallback of endCallbacks) endCallback();
     \\      if (stream.__home_close_after_flush) {
     \\        stream.__home_close_after_flush = false;
-    \\        const closeCallbacks = stream.__home_close_after_flush_callbacks.splice(0);
-    \\        stream.close(0, () => { for (const closeCallback of closeCallbacks) closeCallback(); });
+    \\        stream.close(0);
     \\      }
     \\    }
     \\    function finishRequestInput() {
@@ -42506,7 +42549,8 @@ const harness_prelude =
     \\    stream.close = function(code, callback) {
     \\      code = __home_http2_validate_stream_close(code, callback);
     \\      if (this.closed) return this;
-    \\      if (code === 0 && this.__home_end_requested && !this.__home_end_flushed) { this.__home_close_after_flush = true; if (typeof callback === "function") this.__home_close_after_flush_callbacks.push(callback); scheduleOutboundFlush(); return this; }
+    \\      if (typeof callback === "function") this.once("close", callback);
+    \\      if (code === 0 && this.__home_end_requested && !this.__home_end_flushed) { this.__home_close_after_flush = true; scheduleOutboundFlush(); return this; }
     \\      const shouldAbort = !this.writableFinished;
     \\      this.closed = true;
     \\      this.destroyed = true;
@@ -42524,7 +42568,6 @@ const harness_prelude =
     \\        if (error) target.emit("error", error);
     \\        __home_http2_terminalize_peer(target.__home_server_stream, code);
     \\        target.emit("end");
-    \\        if (typeof callback === "function") callback();
     \\        target.emit("close");
     \\        __home_http2_maybe_close_client(client);
     \\      });
@@ -130104,6 +130147,28 @@ test "bootstrap runner mirrors complete node HTTP/2 invalid padding corpus" {
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
+test "bootstrap runner mirrors complete node HTTP/2 compatibility corpus" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/node/http2/node-http2.test.js";
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 287 or summary.todo != 0) {
+        std.debug.print(
+            "node HTTP/2 compatibility mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
+            .{ summary.passed, @as(usize, 287), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 287), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+}
+
 test "bootstrap runner activates node HTTP/2 compatibility module imports" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
@@ -158571,6 +158636,33 @@ test "bootstrap HTTP2 client SETTINGS FIFO logical contracts" {
     if (file_run.result.status() != .passed) std.debug.print("HTTP2 client SETTINGS FIFO logical contract failure: {s}\n", .{file_run.result.first_failure_message});
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
+}
+
+test "bootstrap HTTP2 teardown ordering and terminal identity logical contracts" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\const { test } = require("bun:test"); const assert = require("assert"); const http2 = require("http2");
+        \\const listen = server => new Promise(resolve => server.listen(0, resolve));
+        \\const closeServer = server => new Promise(resolve => server.close(resolve));
+        \\test("client destroy tears streams down before the session close callback", async () => { const server = http2.createServer(); server.on("stream", stream => { stream.on("error", () => {}); stream.respond(); }); await listen(server); const client = http2.connect("http://localhost:" + server.address().port); client.on("error", () => {}); const order = []; const request = client.request(); request.on("error", () => {}); request.on("close", () => order.push("stream")); request.resume(); request.end(); await new Promise(resolve => request.once("response", resolve)); const closed = new Promise(resolve => client.once("close", () => { order.push("session"); resolve(); })); client.destroy(); assert.strictEqual(client.destroyed, true); assert.strictEqual(client.closed, false); await closed; assert.deepStrictEqual(order, ["stream", "session"]); assert.strictEqual(client.closed, false); await closeServer(server); });
+        \\test("stream close registers its callback in listener order and preserves the first reset", async () => { const server = http2.createServer(); server.on("stream", stream => stream.on("error", () => {})); await listen(server); const client = http2.connect("http://localhost:" + server.address().port); client.on("error", () => {}); const request = client.request(); const order = []; let destroys = 0; let errors = 0; let ends = 0; request.on("close", () => order.push("before")); request.on("error", () => errors++); request.on("end", () => ends++); request.close(http2.constants.NGHTTP2_PROTOCOL_ERROR, () => order.push("callback")); const originalDestroy = request._destroy; request._destroy = function(error, callback) { destroys++; return originalDestroy.call(this, error, callback); }; const closed = new Promise(resolve => request.on("close", () => { order.push("after"); resolve(); })); request.close(http2.constants.NGHTTP2_INTERNAL_ERROR); request.destroy(new Error("ignored")); request.resume(); request.end(); await closed; assert.deepStrictEqual(order, ["before", "callback", "after"]); assert.strictEqual(request.rstCode, http2.constants.NGHTTP2_PROTOCOL_ERROR); assert.strictEqual(destroys, 1); assert.strictEqual(errors, 1); assert.strictEqual(ends, 1); client.close(); await closeServer(server); });
+        \\test("stream destroy preserves error identity and never emits readable end", async () => { const server = http2.createServer(); server.on("stream", stream => stream.on("error", () => {})); await listen(server); const client = http2.connect("http://localhost:" + server.address().port); client.on("error", () => {}); const request = client.request(); const expected = new Error("test"); let destroys = 0; let errors = 0; let ends = 0; const originalDestroy = request._destroy; request._destroy = function(error, callback) { destroys++; assert.strictEqual(error, expected); return originalDestroy.call(this, error, callback); }; request.on("error", error => { errors++; assert.strictEqual(error, expected); }); request.on("end", () => ends++); const closed = new Promise(resolve => request.once("close", resolve)); request.destroy(expected); request.destroy(new Error("ignored")); request.close(http2.constants.NGHTTP2_PROTOCOL_ERROR); request.resume(); await closed; assert.strictEqual(request.rstCode, http2.constants.NGHTTP2_INTERNAL_ERROR); assert.strictEqual(destroys, 1); assert.strictEqual(errors, 1); assert.strictEqual(ends, 0); client.close(); await closeServer(server); });
+        \\test("graceful client close does not cancel a stream on a server without handlers", async () => { const server = http2.createServer(); await listen(server); const client = http2.connect("http://localhost:" + server.address().port); client.on("error", () => {}); const request = client.request(); let errors = 0; let closes = 0; request.on("error", () => errors++); request.on("close", () => closes++); request.end(); await new Promise(resolve => client.once("connect", resolve)); client.close(); assert.strictEqual(client.closed, true); assert.strictEqual(client.destroyed, false); await Promise.resolve(); await Promise.resolve(); assert.strictEqual(request.closed, false); assert.strictEqual(request.destroyed, false); assert.strictEqual(errors, 0); assert.strictEqual(closes, 0); const clientClosed = new Promise(resolve => client.once("close", resolve)); client.destroy(); await clientClosed; assert.strictEqual(errors, 1); assert.strictEqual(closes, 1); await closeServer(server); });
+        \\test("raw and handshake sessions preserve close and destroy flag identity", async () => { const socket = () => { const value = Object.assign(__home_http_event_target(), { destroyed: false }); value.write = () => true; value.end = function() { this.destroyed = true; return this; }; value.destroy = value.end; return value; }; const gracefulRaw = __home_http2_raw_connect("http://localhost:1", {}, socket()); const gracefulRawClosed = new Promise(resolve => gracefulRaw.once("close", resolve)); gracefulRaw.close(); assert.strictEqual(gracefulRaw.closed, true); assert.strictEqual(gracefulRaw.destroyed, false); await gracefulRawClosed; assert.strictEqual(gracefulRaw.destroyed, true); const destroyedRaw = __home_http2_raw_connect("http://localhost:1", {}, socket()); const destroyedRawClosed = new Promise(resolve => destroyedRaw.once("close", resolve)); destroyedRaw.destroy(); assert.strictEqual(destroyedRaw.destroyed, true); assert.strictEqual(destroyedRaw.closed, false); await destroyedRawClosed; assert.strictEqual(destroyedRaw.closed, false); const gracefulHandshake = __home_http2_perform_server_handshake(socket()); const gracefulHandshakeClosed = new Promise(resolve => gracefulHandshake.once("close", resolve)); gracefulHandshake.close(); assert.strictEqual(gracefulHandshake.closed, true); assert.strictEqual(gracefulHandshake.destroyed, false); await gracefulHandshakeClosed; assert.strictEqual(gracefulHandshake.destroyed, true); const destroyedHandshake = __home_http2_perform_server_handshake(socket()); const destroyedHandshakeClosed = new Promise(resolve => destroyedHandshake.once("close", resolve)); destroyedHandshake.destroy(); assert.strictEqual(destroyedHandshake.destroyed, true); assert.strictEqual(destroyedHandshake.closed, false); await destroyedHandshakeClosed; assert.strictEqual(destroyedHandshake.closed, false); const rawServerSession = async () => { const server = http2.createServer(); const transport = __home_net_connect_http2_server(server, 1, "localhost"); transport.write(Buffer.concat([Buffer.from("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"), __home_http2_frame(4, 0, 0, Buffer.alloc(0))])); await Promise.resolve(); await Promise.resolve(); return { server, transport, session: transport.__home_http2_session }; }; const gracefulServer = await rawServerSession(); const gracefulServerClosed = new Promise(resolve => gracefulServer.session.once("close", resolve)); gracefulServer.session.close(); assert.strictEqual(gracefulServer.session.closed, true); assert.strictEqual(gracefulServer.session.destroyed, false); await gracefulServerClosed; assert.strictEqual(gracefulServer.session.destroyed, true); const destroyedServer = await rawServerSession(); const destroyedServerClosed = new Promise(resolve => destroyedServer.session.once("close", resolve)); destroyedServer.session.destroy(); assert.strictEqual(destroyedServer.session.destroyed, true); assert.strictEqual(destroyedServer.session.closed, false); await destroyedServerClosed; assert.strictEqual(destroyedServer.session.closed, false); });
+        \\test("SETTINGS overflow fails closed once and never acknowledges queued submissions", async () => { const server = http2.createServer(); await listen(server); const client = http2.connect("http://localhost:" + server.address().port, { maxOutstandingSettings: 2 }); let errors = 0; let callbacks = 0; client.on("error", error => { errors++; assert.strictEqual(error.code, "ERR_HTTP2_MAX_PENDING_SETTINGS_ACK"); }); const closed = new Promise(resolve => client.once("close", resolve)); client.settings({ maxConcurrentStreams: 1 }, () => callbacks++); client.settings({ maxConcurrentStreams: 2 }, () => callbacks++); await closed; await Promise.resolve(); assert.strictEqual(errors, 1); assert.strictEqual(callbacks, 0); assert.strictEqual(client.destroyed, true); assert.strictEqual(client.closed, false); await closeServer(server); });
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/http2/home-http2-teardown-ordering-terminal-identity-logical-contracts.test.js");
+    defer prepared.deinit(std.testing.allocator);
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+    if (file_run.result.status() != .passed) std.debug.print("HTTP2 teardown ordering/terminal identity logical contract failure: {s}\n", .{file_run.result.first_failure_message});
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 6), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
 }
