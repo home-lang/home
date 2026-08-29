@@ -2074,6 +2074,19 @@ pub fn build(b: *std.Build) void {
     const debug_step = b.step("debug", "Build Home compiler in Debug mode (with safety checks)");
     debug_step.dependOn(&install_debug.step);
 
+    if (enable_jsc) {
+        const run_bake_production_test = b.addSystemCommand(&.{"bash"});
+        run_bake_production_test.addFileArg(b.path("packages/runtime/test/bake-production/run.sh"));
+        run_bake_production_test.addArtifactArg(debug_exe);
+
+        const bake_production_test_step = b.step(
+            "test-bake-production",
+            "Run the Bake production build integration test",
+        );
+        bake_production_test_step.dependOn(&run_bake_production_test.step);
+        dependOnTest(test_step, &run_bake_production_test.step, test_filter, "bake-production");
+    }
+
     // Release-safe build (optimized but with runtime safety)
     const release_safe_exe = b.addExecutable(.{
         .name = "home-release-safe",

@@ -319,7 +319,10 @@ pub const ThreadPool = struct {
                 const other_transpiler = if (this.data.other_transpiler) |*other|
                     other
                 else blk: {
-                    this.data.other_transpiler = undefined;
+                    // Set both the optional tag and payload before taking a
+                    // pointer to it. Assigning `undefined` leaves the tag
+                    // undefined and traps when the optional is unwrapped.
+                    this.data.other_transpiler = this.ctx.client_transpiler.?.*;
                     const other = &this.data.other_transpiler.?;
                     this.initializeTranspiler(other, this.ctx.client_transpiler.?, this.allocator);
                     break :blk other;

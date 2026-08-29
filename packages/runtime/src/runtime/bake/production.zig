@@ -136,6 +136,36 @@ pub fn writeSourcemapToDisk(
     );
 }
 
+fn writeClientOutputToDisk(file: *const OutputFile, root_dir: std.Io.Dir, cwd: []const u8) !void {
+    var normalized = file.*;
+    var relative_path = if (std.fs.path.isAbsolute(file.dest_path))
+        bun.path.relative(cwd, file.dest_path)
+    else
+        file.dest_path;
+    if (bun.strings.hasPrefixComptime(relative_path, "./") or
+        (Environment.isWindows and bun.strings.hasPrefixComptime(relative_path, ".\\")))
+    {
+        relative_path = relative_path[2..];
+    }
+    if (std.mem.eql(u8, relative_path, "..") or
+        bun.strings.hasPrefixComptime(relative_path, "../") or
+        (Environment.isWindows and bun.strings.hasPrefixComptime(relative_path, "..\\")))
+    {
+        return error.InvalidOutputPath;
+    }
+
+    if (std.fs.path.dirname(relative_path)) |parent| {
+        if (parent.len > 0) {
+            try root_dir.createDirPath(std.Io.Threaded.global_single_threaded.io(), parent);
+        }
+    }
+
+    normalized.dest_path = relative_path;
+    // Passing the normalized path as the root path prevents OutputFile from
+    // relativizing an already-relative Bake destination a second time.
+    try normalized.writeToDisk(root_dir, relative_path);
+}
+
 pub fn buildWithVm(ctx: bun.cli.Command.Context, cwd: []const u8, vm: *VirtualMachine, pt: *PerThread) !void {
     // Load and evaluate the configuration module
     const global = vm.global;
@@ -331,8 +361,9 @@ pub fn buildWithVm(ctx: bun.cli.Command.Context, cwd: []const u8, vm: *VirtualMa
     Output.prettyErrorln("Rendering routes", .{});
     Output.flush();
 
-    var root_dir = try std.fs.cwd().makeOpenPath("dist", .{});
-    defer root_dir.close();
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var root_dir = try std.Io.Dir.cwd().createDirPathOpen(io, "dist", .{});
+    defer root_dir.close(io);
 
     var maybe_runtime_file_index: ?u32 = null;
 
@@ -385,14 +416,14 @@ pub fn buildWithVm(ctx: bun.cli.Command.Context, cwd: []const u8, vm: *VirtualMa
         switch (file.side orelse continue) {
             .client => {
                 // Client-side resources will be written to disk for usage in on the client side
-                _ = file.writeToDisk(root_dir, ".") catch |err| {
+                writeClientOutputToDisk(&file, root_dir, cwd) catch |err| {
                     bun.handleErrorReturnTrace(err, @errorReturnTrace());
                     Output.err(err, "Failed to write {f} to output directory", .{bun.fmt.quote(file.dest_path)});
                 };
             },
             .server => {
                 if (ctx.bundler_options.bake_debug_dump_server) {
-                    _ = file.writeToDisk(root_dir, ".") catch |err| {
+                    writeClientOutputToDisk(&file, root_dir, cwd) catch |err| {
                         bun.handleErrorReturnTrace(err, @errorReturnTrace());
                         Output.err(err, "Failed to write {f} to output directory", .{bun.fmt.quote(file.dest_path)});
                     };
@@ -444,10 +475,7 @@ pub fn buildWithVm(ctx: bun.cli.Command.Context, cwd: []const u8, vm: *VirtualMa
         }
     }
     // Write the runtime file to disk if there are any client chunks
-    {
-        const runtime_file_index = maybe_runtime_file_index orelse {
-            bun.Output.panic("Runtime file not found. This is an unexpected bug in Bun. Please file a bug report on GitHub.", .{});
-        };
+    if (maybe_runtime_file_index) |runtime_file_index| {
         const any_client_chunks = any_client_chunks: {
             for (bundled_outputs) |file| {
                 if (file.side) |s| {
@@ -460,7 +488,7 @@ pub fn buildWithVm(ctx: bun.cli.Command.Context, cwd: []const u8, vm: *VirtualMa
         };
         if (any_client_chunks) {
             const runtime_file: *const OutputFile = &bundled_outputs[runtime_file_index];
-            _ = runtime_file.writeToDisk(root_dir, ".") catch |err| {
+            writeClientOutputToDisk(runtime_file, root_dir, cwd) catch |err| {
                 bun.handleErrorReturnTrace(err, @errorReturnTrace());
                 Output.err(err, "Failed to write {f} to output directory", .{bun.fmt.quote(runtime_file.dest_path)});
             };

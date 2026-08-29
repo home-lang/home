@@ -1290,68 +1290,16 @@ pub fn transpileTypeScriptForEval(allocator: std.mem.Allocator, source_text: []c
     return buffer_printer.ctx.buffer.toOwnedSlice();
 }
 pub const bake = struct {
-    pub const FrameworkRouter = @import("runtime/bake/FrameworkRouter.zig");
+    const Config = @import("runtime/bake/config.zig");
 
-    /// Faithful copy of upstream `bake.StringRefList` (self-contained) — used by
-    /// `AnyRoute.ServerInitContext.js_string_allocations` in the Bun.serve config.
-    pub const StringRefList = struct {
-        strings: std.ArrayListUnmanaged(@import("jsc/ZigString.zig").ZigString.Slice),
-
-        pub const empty: StringRefList = .{ .strings = .empty };
-
-        pub fn track(al: *StringRefList, str: @import("jsc/ZigString.zig").ZigString.Slice) []const u8 {
-            handleOom(al.strings.append(default_allocator, str));
-            return str.slice();
-        }
-
-        pub fn free(al: *StringRefList) void {
-            for (al.strings.items) |item| item.deinit();
-            al.strings.clearAndFree(default_allocator);
-        }
-    };
-
-    /// Compile-only stubs for the dev-server/bundler serve config. The full
-    /// versions pull in the bundler (not ported). Both code paths that would
-    /// construct a UserOptions are gated and throw "not implemented" in Home
-    /// (the HMR branch and `UserOptions.fromJS` for `app:`), so these only need
-    /// to type-check — they are never instantiated at runtime.
-    pub const SplitBundlerOptions = struct {};
-
-    pub const UserOptions = struct {
-        arena: std.heap.ArenaAllocator,
-        allocations: StringRefList,
-        root: [:0]const u8,
-        framework: Framework,
-        bundler_options: SplitBundlerOptions,
-
-        pub fn deinit(_: *UserOptions) void {}
-
-        pub fn fromJS(_: anytype, global: anytype) JSError!UserOptions {
-            return global.throwInvalidArguments("Bun.serve({{ app }}) / FrameworkRouter serve is not yet implemented in the native Home runtime", .{});
-        }
-    };
-
-    pub const production = struct {
-        pub const PerThread = opaque {};
-
-        pub fn buildCommand(_: anytype) !void {
-            Output.errGeneric("--app production builds are not yet implemented in Home", .{});
-            return error.BakeProductionBuildNotImplemented;
-        }
-    };
-    pub const Graph = enum {
-        client,
-        server,
-        ssr,
-    };
-    pub var server_virtual_source: logger.Source = .{
-        .path = fs.Path.init("<bun bake server>"),
-        .contents = "",
-    };
-    pub var client_virtual_source: logger.Source = .{
-        .path = fs.Path.init("<bun bake client>"),
-        .contents = "",
-    };
+    pub const FrameworkRouter = Config.FrameworkRouter;
+    pub const StringRefList = Config.StringRefList;
+    pub const SplitBundlerOptions = Config.SplitBundlerOptions;
+    pub const UserOptions = Config.UserOptions;
+    pub const production = @import("runtime/bake/production.zig");
+    pub const Graph = Config.Graph;
+    pub const server_virtual_source = Config.server_virtual_source;
+    pub const client_virtual_source = Config.client_virtual_source;
     pub const DevServer = struct {
         pub const asset_prefix = "/_bun";
 
@@ -1525,67 +1473,13 @@ pub const bake = struct {
     pub fn getHmrRuntime(_: Side) struct { code: []const u8 } {
         return .{ .code = "" };
     }
-    // Faithful to upstream `bun.bake.Side` (`src/bake/bake.zig`): the
-    // client/server render-side enum used by OutputFile + the production
-    // bundler. Sourced from the full ported bake.zig.
-    pub const Side = @import("runtime/bake/bake.zig").Side;
-    pub const Mode = @import("runtime/bake/bake.zig").Mode;
+    pub const Side = Config.Side;
+    pub const Mode = Config.Mode;
+    pub const PatternBuffer = Config.PatternBuffer;
+    pub const Framework = Config.Framework;
 
-    pub fn addImportMetaDefines(
-        allocator: std.mem.Allocator,
-        define: *options.Define,
-        mode: @This().Mode,
-        side: @This().Side,
-    ) !void {
-        const Define = options.Define;
-        try define.insert(allocator, "import.meta.env.DEV", Define.Data.initBoolean(mode == .development));
-        try define.insert(allocator, "import.meta.env.PROD", Define.Data.initBoolean(mode != .development));
-        try define.insert(allocator, "import.meta.env.MODE", Define.Data.initStaticString(switch (mode) {
-            .development => &.{ .data = "development" },
-            .production_dynamic, .production_static => &.{ .data = "production" },
-        }));
-        try define.insert(allocator, "import.meta.env.SSR", Define.Data.initBoolean(side == .server));
-        try define.insert(allocator, "import.meta.env.STATIC", Define.Data.initBoolean(mode == .production_static));
-    }
-
-    pub const Framework = struct {
-        is_built_in_react: bool = false,
-        file_system_router_types: []FileSystemRouterType = &.{},
-        server_components: ?ServerComponents = null,
-        react_fast_refresh: ?ReactFastRefresh = null,
-        built_in_modules: StringArrayHashMapUnmanaged(BuiltInModule) = .empty,
-
-        pub const none: Framework = .{};
-
-        pub const FileSystemRouterType = struct {
-            root: []const u8 = "",
-            prefix: []const u8 = "",
-            entry_server: []const u8 = "",
-            entry_client: ?[]const u8 = null,
-            ignore_underscores: bool = false,
-            ignore_dirs: []const []const u8 = &.{},
-            extensions: []const []const u8 = &.{},
-            style: void = {},
-            allow_layouts: bool = false,
-        };
-
-        pub const BuiltInModule = union(enum) {
-            import: []const u8,
-            code: []const u8,
-        };
-
-        pub const ServerComponents = struct {
-            separate_ssr_graph: bool = false,
-            server_runtime_import: []const u8 = "",
-            server_register_client_reference: []const u8 = "registerClientReference",
-            server_register_server_reference: []const u8 = "registerServerReference",
-            client_register_server_reference: []const u8 = "registerServerReference",
-        };
-
-        pub const ReactFastRefresh = struct {
-            import_source: []const u8 = "react-refresh/runtime",
-        };
-    };
+    pub const addImportMetaDefines = Config.addImportMetaDefines;
+    pub const printWarning = Config.printWarning;
 };
 pub const fs = @import("resolver/fs.zig");
 
@@ -4328,6 +4222,15 @@ pub const bun_js = struct {
     pub fn applyStandaloneRuntimeFlags(b: *Transpiler, graph: *const StandaloneModuleGraph) void {
         _ = b;
         _ = graph;
+    }
+
+    pub noinline fn failWithBuildError(vm: *jsc.VirtualMachine) noreturn {
+        @branchHint(.cold);
+        Output.flush();
+        const writer = Output.errorWriterBuffered();
+        defer Output.flush();
+        vm.log.print(writer) catch {};
+        Global.exit(1);
     }
 };
 // ---- src/string/ -------------------------------------------------------

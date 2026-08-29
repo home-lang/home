@@ -57,6 +57,7 @@ fn BoolEnv(comptime name: []const u8, comptime default: bool) type {
 
 pub const PATH = StringEnv("PATH");
 pub const BUN_OPTIONS = StringEnv("BUN_OPTIONS");
+pub const BUN_DEV_SERVER_TEST_RUNNER = StringEnv("BUN_DEV_SERVER_TEST_RUNNER");
 pub const BUN_INSPECT_PRELOAD = StringEnv("BUN_INSPECT_PRELOAD");
 pub const BUN_CONFIG_HTTP_IDLE_TIMEOUT = IntEnv("BUN_CONFIG_HTTP_IDLE_TIMEOUT", 0);
 pub const BUN_WATCHER_TRACE = StringEnv("BUN_WATCHER_TRACE");

@@ -9,6 +9,9 @@
 
 const std = @import("std");
 
+pub const internal_prefix = "/_bun";
+pub const client_prefix = internal_prefix ++ "/client";
+
 pub const HmrSocket = @import("DevServer/HmrSocket.zig").HmrSocket;
 pub const RouteBundle = @import("DevServer/RouteBundle.zig").RouteBundle;
 pub const SourceMapStore = @import("DevServer/SourceMapStore.zig").SourceMapStore;
