@@ -46,6 +46,7 @@ pub const startsWithUUID = @import("string/immutable.zig").startsWithUUID;
 pub const startsWithNpmSecret = @import("string/immutable.zig").startsWithNpmSecret;
 pub const leftHasAnyInRight = @import("string/immutable.zig").leftHasAnyInRight;
 pub const utf8ByteSequenceLengthUnsafe = @import("string/immutable.zig").utf8ByteSequenceLengthUnsafe;
+pub const withoutLeadingSlash = @import("paths/string_paths.zig").withoutLeadingSlash;
 pub fn withoutSuffixComptime(input: []const u8, comptime suffix: []const u8) []const u8 {
     return if (hasSuffixComptime(input, suffix)) input[0 .. input.len - suffix.len] else input;
 }

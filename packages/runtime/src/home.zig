@@ -1333,6 +1333,11 @@ pub const bake = struct {
 
     pub const production = struct {
         pub const PerThread = opaque {};
+
+        pub fn buildCommand(_: anytype) !void {
+            Output.errGeneric("--app production builds are not yet implemented in Home", .{});
+            return error.BakeProductionBuildNotImplemented;
+        }
     };
     pub const Graph = enum {
         client,
@@ -1524,6 +1529,24 @@ pub const bake = struct {
     // client/server render-side enum used by OutputFile + the production
     // bundler. Sourced from the full ported bake.zig.
     pub const Side = @import("runtime/bake/bake.zig").Side;
+    pub const Mode = @import("runtime/bake/bake.zig").Mode;
+
+    pub fn addImportMetaDefines(
+        allocator: std.mem.Allocator,
+        define: *options.Define,
+        mode: @This().Mode,
+        side: @This().Side,
+    ) !void {
+        const Define = options.Define;
+        try define.insert(allocator, "import.meta.env.DEV", Define.Data.initBoolean(mode == .development));
+        try define.insert(allocator, "import.meta.env.PROD", Define.Data.initBoolean(mode != .development));
+        try define.insert(allocator, "import.meta.env.MODE", Define.Data.initStaticString(switch (mode) {
+            .development => &.{ .data = "development" },
+            .production_dynamic, .production_static => &.{ .data = "production" },
+        }));
+        try define.insert(allocator, "import.meta.env.SSR", Define.Data.initBoolean(side == .server));
+        try define.insert(allocator, "import.meta.env.STATIC", Define.Data.initBoolean(mode == .production_static));
+    }
 
     pub const Framework = struct {
         is_built_in_react: bool = false,

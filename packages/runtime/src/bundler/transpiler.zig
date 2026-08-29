@@ -1223,7 +1223,7 @@ pub const Transpiler = struct {
         var paths = [_]string{_entry};
         var entry = transpiler.fs.abs(&paths);
 
-        std.fs.accessAbsolute(entry, .{}) catch
+        std.Io.Dir.accessAbsolute(std.Io.Threaded.global_single_threaded.io(), entry, .{}) catch
             return _entry;
 
         entry = transpiler.fs.relativeTo(entry);
@@ -1300,7 +1300,7 @@ pub const Transpiler = struct {
         const did_start = false;
 
         if (transpiler.options.output_dir_handle == null) {
-            const outstream = bun.sys.File.from(std.fs.File.stdout());
+            const outstream = bun.sys.File.from(std.Io.File.stdout());
 
             if (!did_start) {
                 try switch (transpiler.options.import_path_format) {
@@ -1318,10 +1318,10 @@ pub const Transpiler = struct {
 
             if (!did_start) {
                 try switch (transpiler.options.import_path_format) {
-                    .relative => transpiler.processResolveQueue(.relative, false, std.fs.Dir, output_dir),
-                    .absolute_url => transpiler.processResolveQueue(.absolute_url, false, std.fs.Dir, output_dir),
-                    .absolute_path => transpiler.processResolveQueue(.absolute_path, false, std.fs.Dir, output_dir),
-                    .package_path => transpiler.processResolveQueue(.package_path, false, std.fs.Dir, output_dir),
+                    .relative => transpiler.processResolveQueue(.relative, false, std.Io.Dir, output_dir),
+                    .absolute_url => transpiler.processResolveQueue(.absolute_url, false, std.Io.Dir, output_dir),
+                    .absolute_path => transpiler.processResolveQueue(.absolute_path, false, std.Io.Dir, output_dir),
+                    .package_path => transpiler.processResolveQueue(.package_path, false, std.Io.Dir, output_dir),
                 };
             }
         }

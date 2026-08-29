@@ -2582,6 +2582,24 @@ fn nativePackageCommandContext(args: []const [:0]const u8, comptime tag: home_rt
     return home_rt.cli.Cli.initContext(allocator, tag);
 }
 
+fn buildForcesHomeCompiler(args: []const [:0]const u8) bool {
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "--kernel")) return true;
+        if (!build_options.enable_jsc and isHomeSourceFile(arg)) return true;
+    }
+    return false;
+}
+
+fn runNativeBuildCommand(args: []const [:0]const u8) !bool {
+    if (comptime !build_options.enable_jsc) return error.JavaScriptCoreDisabled;
+    const ctx = try nativePackageCommandContext(args, .BuildCommand);
+    for (ctx.args.entry_points) |entry_point| {
+        if (isHomeSourceFile(entry_point)) return false;
+    }
+    try home_rt.cli.BuildCommand.exec(ctx, null);
+    return true;
+}
+
 fn runNativeInstallCommand(args: []const [:0]const u8, force_add: bool) !void {
     var add = force_add;
     for (args) |arg| {
@@ -5729,6 +5747,14 @@ pub fn main(init: std.process.Init) !void {
     if (std.mem.eql(u8, command, "run")) return runCliCommand(allocator, args);
 
     if (std.mem.eql(u8, command, "build")) {
+        if (!buildForcesHomeCompiler(args[2..])) {
+            const ran_native = runNativeBuildCommand(args) catch |err| {
+                std.debug.print("error: native build failed: {s}\n", .{@errorName(err)});
+                std.process.exit(1);
+            };
+            if (ran_native) return;
+        }
+
         const build_options_cli = switch (parseBuildCliOptions(args[2..])) {
             .ok => |options| options,
             .err => |parse_error| failBuildCliParse(parse_error),

@@ -842,10 +842,9 @@ pub const FileSystem = struct {
             Unusable,
         };
         pub const ModKey = struct {
-            inode: std.fs.File.INode = 0,
+            inode: std.Io.File.INode = 0,
             size: u64 = 0,
             mtime: i128 = 0,
-            mode: std.fs.File.Mode = 0,
 
             threadlocal var hash_name_buf: [1024]u8 = undefined;
 
@@ -884,10 +883,11 @@ pub const FileSystem = struct {
                 return bun.hash(&hash_bytes);
             }
 
-            pub fn generate(_: *RealFS, _: string, file: std.fs.File) anyerror!ModKey {
-                const stat = try file.stat();
+            pub fn generate(_: *RealFS, _: string, file: std.Io.File) anyerror!ModKey {
+                const stat = try file.stat(std.Io.Threaded.global_single_threaded.io());
+                const mtime: i128 = stat.mtime.nanoseconds;
 
-                const seconds = @divTrunc(stat.mtime, @as(@TypeOf(stat.mtime), std.time.ns_per_s));
+                const seconds = @divTrunc(mtime, std.time.ns_per_s);
 
                 // We can't detect changes if the file system zeros out the modification time
                 if (seconds == 0 and std.time.ns_per_s == 0) {
@@ -895,18 +895,16 @@ pub const FileSystem = struct {
                 }
 
                 // Don't generate a modification key if the file is too new
-                const now = std.time.nanoTimestamp();
+                const now = bun.nanoTimestamp();
                 const now_seconds = @divTrunc(now, std.time.ns_per_s);
-                if (seconds > seconds or (seconds == now_seconds and stat.mtime > now)) {
+                if (seconds > now_seconds or (seconds == now_seconds and mtime > now)) {
                     return error.Unusable;
                 }
 
                 return ModKey{
                     .inode = stat.inode,
                     .size = stat.size,
-                    .mtime = stat.mtime,
-                    .mode = stat.mode,
-                    // .uid = stat.
+                    .mtime = mtime,
                 };
             }
             pub const SafetyGap = 3;
@@ -917,10 +915,11 @@ pub const FileSystem = struct {
         }
 
         pub fn modKey(fs: *RealFS, path: string) anyerror!ModKey {
-            var file = try std.fs.cwd().openFile(path, std.fs.File.OpenFlags{ .mode = .read_only });
+            const io = std.Io.Threaded.global_single_threaded.io();
+            var file = try std.Io.Dir.cwd().openFile(io, path, .{ .mode = .read_only });
             defer {
                 if (fs.needToCloseFiles()) {
-                    file.close();
+                    file.close(io);
                 }
             }
             return try fs.modKeyWithFile(path, file);

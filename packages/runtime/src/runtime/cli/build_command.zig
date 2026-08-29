@@ -449,7 +449,7 @@ pub const BuildCommand = struct {
 
             break :brk build_result.output_files.items;
         };
-        const bundled_end = std.time.nanoTimestamp();
+        const bundled_end = bun.nanoTimestamp();
 
         var had_err = false;
         dump: {
@@ -496,10 +496,11 @@ pub const BuildCommand = struct {
             if (root_path.len == 0 and ctx.args.entry_points.len == 1)
                 root_path = std.fs.path.dirname(ctx.args.entry_points[0]) orelse ".";
 
+            const io = std.Io.Threaded.global_single_threaded.io();
             const root_dir = if (root_path.len == 0 or strings.eqlComptime(root_path, "."))
-                std.fs.cwd()
+                std.Io.Dir.cwd()
             else
-                std.fs.cwd().makeOpenPath(root_path, .{}) catch |err| {
+                std.Io.Dir.cwd().createDirPathOpen(io, root_path, .{}) catch |err| {
                     Output.err(err, "could not open output directory {f}", .{bun.fmt.quote(root_path)});
                     exitOrWatch(1, ctx.debug.hot_reload == .watch);
                     unreachable;
@@ -629,7 +630,7 @@ pub const BuildCommand = struct {
                     }
                 }
 
-                const compiled_elapsed = @divTrunc(@as(i64, @truncate(std.time.nanoTimestamp() - bundled_end)), @as(i64, std.time.ns_per_ms));
+                const compiled_elapsed = @divTrunc(@as(i64, @truncate(bun.nanoTimestamp() - bundled_end)), @as(i64, std.time.ns_per_ms));
                 const compiled_elapsed_digit_count: isize = switch (compiled_elapsed) {
                     0...9 => 3,
                     10...99 => 2,
@@ -637,7 +638,7 @@ pub const BuildCommand = struct {
                     1000...9999 => 0,
                     else => 0,
                 };
-                const padding_buf = [_]u8{' '} * *16;
+                const padding_buf: [16]u8 = @splat(' ');
                 const padding_ = padding_buf[0..@as(usize, @intCast(compiled_elapsed_digit_count))];
                 Output.pretty("{s}", .{padding_});
 
@@ -660,13 +661,13 @@ pub const BuildCommand = struct {
             if (log.errors == 0) {
                 if (this_transpiler.options.transform_only) {
                     Output.prettyln("<green>Transpiled file in {d}ms<r>", .{
-                        @divFloor(std.time.nanoTimestamp() - bun.cli.start_time, std.time.ns_per_ms),
+                        @divFloor(bun.nanoTimestamp() - bun.start_time, std.time.ns_per_ms),
                     });
                 } else {
                     Output.prettyln("<green>Bundled {d} module{s} in {d}ms<r>", .{
                         reachable_file_count,
                         if (reachable_file_count == 1) "" else "s",
-                        @divFloor(std.time.nanoTimestamp() - bun.cli.start_time, std.time.ns_per_ms),
+                        @divFloor(bun.nanoTimestamp() - bun.start_time, std.time.ns_per_ms),
                     });
                 }
                 Output.prettyln("\n", .{});
@@ -750,15 +751,16 @@ pub const BuildCommand = struct {
 fn exitOrWatch(code: u8, watch: bool) noreturn {
     if (watch) {
         // the watcher thread will exit the process
-        std.Thread.sleep(std.math.maxInt(u64) - 1);
+        const io = std.Io.Threaded.global_single_threaded.io();
+        while (true) std.Io.sleep(io, .max, .awake) catch {};
     }
     Global.exit(code);
 }
 
 fn printSummary(bundled_end: i128, minify_duration: u64, minified: bool, input_code_length: usize, reachable_file_count: usize, output_files: []const options.OutputFile) void {
-    const padding_buf = [_]u8{' '} * *16;
+    const padding_buf: [16]u8 = @splat(' ');
 
-    const bundle_until_now = @divTrunc(@as(i64, @truncate(bundled_end - bun.cli.start_time)), @as(i64, std.time.ns_per_ms));
+    const bundle_until_now = @divTrunc(@as(i64, @truncate(bundled_end - bun.start_time)), @as(i64, std.time.ns_per_ms));
 
     const bundle_elapsed = if (minified)
         bundle_until_now - @as(i64, @intCast(@as(u63, @truncate(minify_duration))))

@@ -109,6 +109,13 @@ pub fn printElapsed(elapsed_ms: f64) void {
     printError("[{d:.2}ms]", .{elapsed_ms});
 }
 
+pub fn printElapsedStdoutTrim(elapsed_ms: f64) void {
+    switch (@as(i64, @intFromFloat(@round(elapsed_ms)))) {
+        0...1500 => pretty("<r><d>[<b>{d:>}ms<r><d>]<r>", .{elapsed_ms}),
+        else => pretty("<r><d>[<b>{d:>}s<r><d>]<r>", .{elapsed_ms / 1000.0}),
+    }
+}
+
 pub fn isGithubAction() bool {
     return @import("bun_core/env_var.zig").GITHUB_ACTIONS.get() and !isAIAgent();
 }

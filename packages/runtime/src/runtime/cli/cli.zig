@@ -11,6 +11,7 @@ pub const Cli = struct {
     pub fn initContext(allocator: std.mem.Allocator, comptime command: Command.Tag) !Command.Context {
         is_main_thread = true;
         start_time = bun.nanoTimestamp();
+        bun.start_time = start_time;
         log_ = logger.Log.init(allocator);
         return Command.createContextData(allocator, &log_, command);
     }
@@ -19,6 +20,7 @@ pub const Cli = struct {
     pub fn initStandaloneContext(allocator: std.mem.Allocator) Command.Context {
         is_main_thread = true;
         start_time = bun.nanoTimestamp();
+        bun.start_time = start_time;
         log_ = logger.Log.init(allocator);
         return Command.initDefaultContext(allocator, &log_);
     }
@@ -27,6 +29,7 @@ pub const Cli = struct {
     pub fn start(allocator: std.mem.Allocator) void {
         is_main_thread = true;
         start_time = bun.nanoTimestamp();
+        bun.start_time = start_time;
         log_ = logger.Log.init(allocator);
 
         var log = &log_;
