@@ -9039,7 +9039,7 @@ test "Program: namespace imports preserve defaulted indexed generic callbacks" {
     defer p.deinit();
 
     const owner =
-        \\type Trait = { _zod: { def: unknown } };
+        \\type Trait = { _zod: { def: unknown; [key: string]: unknown } };
         \\export function $constructor<T extends Trait, D = T["_zod"]["def"]>(
         \\  name: string,
         \\  initializer: (inst: T, def: D) => void

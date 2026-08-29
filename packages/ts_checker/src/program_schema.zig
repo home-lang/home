@@ -25,6 +25,8 @@ pub const Element = struct { type: *const Expression, optional: bool = false, re
 pub const Function = struct { parameters: []const Element, result: *const Expression, this_type: ?*const Expression = null };
 pub const Reference = struct { declaration: *const Declaration, arguments: []const *const Expression };
 pub const IndexedAccess = struct { object: *const Expression, index: *const Expression };
+pub const IndexSignature = struct { key: *const Expression, value: *const Expression };
+pub const IndexedObject = struct { members: []const Member, indices: []const IndexSignature };
 pub const Expression = union(enum) {
     primitive: types.TypeId,
     parameter: *const Parameter,
@@ -34,6 +36,7 @@ pub const Expression = union(enum) {
     array: *const Expression,
     readonly_array: *const Expression,
     object: []const Member,
+    indexed_object: IndexedObject,
     tuple: []const Element,
     union_type: []const *const Expression,
     intersection: []const *const Expression,
@@ -86,6 +89,13 @@ pub const Schema = struct {
                 .array, .readonly_array => |element| try pending.append(gpa, element),
                 .object => |members| for (members) |member| {
                     try pending.append(gpa, member.type);
+                },
+                .indexed_object => |object| {
+                    for (object.members) |member| try pending.append(gpa, member.type);
+                    for (object.indices) |index| {
+                        try pending.append(gpa, index.key);
+                        try pending.append(gpa, index.value);
+                    }
                 },
                 .tuple => |elements| for (elements) |element| {
                     try pending.append(gpa, element.type);

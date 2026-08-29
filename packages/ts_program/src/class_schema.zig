@@ -160,13 +160,30 @@ pub const Builder = struct {
     fn object(self: *Builder, context: Context, nodes: []const hir.NodeId) !*const schema.Expression {
         const c = self.sources[context.source].compilation;
         var members: std.ArrayListUnmanaged(schema.Member) = .empty;
+        var indices: std.ArrayListUnmanaged(schema.IndexSignature) = .empty;
         for (nodes) |node| {
-            if (c.hir.kindOf(node) != .interface_member) return self.expression(.unsupported);
-            const member = hir.interfaceMemberOf(&c.hir, node);
-            if (member.name == 0) return self.expression(.unsupported);
-            try members.append(self.arena, .{ .name = c.interner.get(member.name), .type = try self.lower(context, member.type_node), .optional = member.is_optional, .readonly = member.is_readonly, .method = member.is_method });
+            switch (c.hir.kindOf(node)) {
+                .interface_member => {
+                    const member = hir.interfaceMemberOf(&c.hir, node);
+                    if (member.name == 0) return self.expression(.unsupported);
+                    try members.append(self.arena, .{ .name = c.interner.get(member.name), .type = try self.lower(context, member.type_node), .optional = member.is_optional, .readonly = member.is_readonly, .method = member.is_method });
+                },
+                .index_signature => {
+                    const index = hir.indexSignatureOf(&c.hir, node);
+                    try indices.append(self.arena, .{
+                        .key = try self.lower(context, index.key_type),
+                        .value = try self.lower(context, index.value_type),
+                    });
+                },
+                else => return self.expression(.unsupported),
+            }
         }
-        return self.expression(.{ .object = try members.toOwnedSlice(self.arena) });
+        const owned_members = try members.toOwnedSlice(self.arena);
+        if (indices.items.len == 0) return self.expression(.{ .object = owned_members });
+        return self.expression(.{ .indexed_object = .{
+            .members = owned_members,
+            .indices = try indices.toOwnedSlice(self.arena),
+        } });
     }
 
     fn functionType(self: *Builder, context: Context, nodes: []const hir.NodeId, result: hir.NodeId) !*const schema.Expression {

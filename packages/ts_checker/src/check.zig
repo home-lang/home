@@ -106670,6 +106670,24 @@ pub const Checker = struct {
                 defer self.gpa.free(result);
                 return self.interner.internObjectType(result);
             },
+            .indexed_object => |object| {
+                const members = try self.programExpressionMembers(object.members, declaration, args);
+                defer self.gpa.free(members);
+                var string_index = types.Primitive.none;
+                var number_index = types.Primitive.none;
+                for (object.indices) |index| {
+                    const key = try self.lowerProgramExpression(index.key, declaration, args);
+                    const value = try self.lowerProgramExpression(index.value, declaration, args);
+                    if (key == types.Primitive.string_t) {
+                        string_index = value;
+                    } else if (key == types.Primitive.number_t) {
+                        number_index = value;
+                    } else {
+                        return error.UnsupportedProgramType;
+                    }
+                }
+                return self.interner.internObjectTypeWithIndex(members, string_index, number_index);
+            },
             .tuple => |elements| {
                 const result = try self.gpa.alloc(types.TupleElement, elements.len);
                 defer self.gpa.free(result);
