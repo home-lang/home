@@ -60457,6 +60457,12 @@ pub const Checker = struct {
     }
 
     fn virtualRelativeModuleNamedExportRuntimeStatus(self: *Checker, node: NodeId, spec: []const u8, name: hir_mod.StringId) CheckError!ModuleExportRuntimeStatus {
+        // Ordinary multi-file programs resolve exports through the Program
+        // owner graph. Their per-file HIR cannot contain a sibling module,
+        // so scanning it as a virtual @filename bundle can only return
+        // unknown. Keep true self-imports on the local-source path.
+        if (!self.sourceHasVirtualFilenameSections() and
+            !(try self.relativeSpecifierTargetsCurrentSource(node, spec))) return .unknown;
         if (try self.virtualCommonJsModuleExportObjectType(node, spec)) |commonjs_t| {
             if ((try self.lookupObjectMember(commonjs_t, name)) != null) return .value;
         }
@@ -64126,7 +64132,9 @@ pub const Checker = struct {
 
     fn virtualSectionMatchesResolvedModule(self: *Checker, node: NodeId, resolved: []const u8, spec: []const u8) bool {
         const filename = self.relativeModuleFilenameForNode(node) orelse return false;
-        if (self.virtualPreferredResolvedModuleCandidateMatches(filename, resolved, spec)) |matches| return matches;
+        if (self.sourceHasVirtualFilenameSections()) {
+            if (self.virtualPreferredResolvedModuleCandidateMatches(filename, resolved, spec)) |matches| return matches;
+        }
         if (virtualRelativeSpecifierPrefersIndex(spec)) {
             const index_exts = [_][]const u8{ ".d.ts", ".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs" };
             for (index_exts) |ext| {
