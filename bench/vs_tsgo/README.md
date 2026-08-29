@@ -119,9 +119,11 @@ reassignment, nested/shadowed assignments and comment/string decoys are covered.
 Both pinned TypeScript compilers pass all cases. Home passes only the 22
 positives in the frozen baseline and passes all 66 cases after checked owner
 types are transferred under [#541](https://github.com/home-lang/home/issues/541).
-This remains an untimed correctness result. Query reuse under
-[#536](https://github.com/home-lang/home/issues/536) does not itself establish
-cross-file CommonJS typing.
+This audit remains an untimed correctness result. The separate `commonjs_graph`
+timing under [#546](https://github.com/home-lang/home/issues/546) is admitted
+only after this audit and its workload-specific negative controls pass. Query
+reuse under [#536](https://github.com/home-lang/home/issues/536) does not itself
+establish cross-file CommonJS typing.
 
 ## Methodology
 
@@ -132,7 +134,8 @@ cross-file CommonJS typing.
   availability from advantaging any compiler.
 - Positive validation requires every compiler to exit successfully and silently.
   That alone does not establish equivalent semantic checking: untimed negative
-  controls additionally cover destructuring, predicates, and both module graphs.
+  controls additionally cover destructuring, predicates, variadic tuples, both
+  ES-module graphs, and the checked CommonJS graph.
   The entire selected suite must pass admission before any timing or result
   directory is created. Other features need broader rejection-control coverage.
 - Hyperfine runs three warmups followed by ten measured processes by default.
@@ -180,9 +183,14 @@ reading an excluded union member must produce two TS2322 diagnostics and two
 TS2339 diagnostics in every compiler. These also use an untimed temporary copy.
 Both module graphs additionally require TS2322 for assigning an imported
 generic property to the wrong type and TS2339 for reading a missing member.
+The checked CommonJS graph appends wrong-label and missing-member uses for the
+first, middle, and last owner in an untimed copy; every compiler must emit
+exactly three TS2322 and three TS2339 diagnostics. The result directory is not
+created until all selected positive and negative controls pass.
 Home `de8fe28f1` passes these unchanged controls after source-owned factory typing
-([#534](https://github.com/home-lang/home/issues/534)); all 19 workloads now pass
-admission. Earlier binaries failed and were not eligible for graph timings.
+([#534](https://github.com/home-lang/home/issues/534)); the final candidate also
+passes the CommonJS controls, so all 20 workloads now pass admission. Earlier
+binaries failed and were not eligible for graph timings.
 The graphs remain in the suite; they are not silently omitted. Historical graph timings remain available, but
 the reporter marks results without schema-2 admission as ineligible speed claims.
 

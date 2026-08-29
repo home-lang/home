@@ -74,42 +74,42 @@ upstream `.errors.txt` baselines** in exact mode (`HOME_TS_CONFORMANCE_EXACT=1`)
 coarse mode (`HOME_TS_CONFORMANCE_FULL=1` alone) only asserts that we emit
 the same *families* of diagnostics.
 
-**Frontend performance snapshot** (`1cfc33c1a`, Apple M3 Pro, shared workstation;
+**Frontend performance snapshot** (`3e1d2bca1`, Apple M3 Pro, shared workstation;
 30 interleaved runs after three warmups; lower is better):
 
 | Workload | tsc 6.0.3 | native TS 7.0.2 | Home 0.1.0 | Home vs fastest competitor |
 |---|---:|---:|---:|---:|
-| Startup | 65.7 ms | 40.0 ms | **3.6 ms** | **11.26× faster** |
-| 256 files | 214.6 ms | 57.2 ms | **34.8 ms** | **1.65× faster** |
-| Deep types | 132.6 ms | 53.1 ms | **27.1 ms** | **1.96× faster** |
-| 128-module import graph | 131.0 ms | 47.0 ms | **28.1 ms** | **1.67× faster** |
-| 64-leaf barrel graph | 102.7 ms | 42.7 ms | **25.6 ms** | **1.67× faster** |
-| 256 typed TSX components | 167.9 ms | 48.0 ms | **23.3 ms** | **2.06× faster** |
-| 256 generic call groups | 182.8 ms | 56.3 ms | **23.2 ms** | **2.42× faster** |
-| 256 exhaustive control-flow functions | 288.2 ms | 86.9 ms | **46.7 ms** | **1.86× faster** |
-| 256 type-predicate/assertion families | 434.7 ms | 142.9 ms | **67.7 ms** | **2.11× faster** |
-| 2,048 type-predicate/assertion families | 1023.2 ms | 362.2 ms | 340.5 ms | 1.06× lower mean; narrow |
-| 256 null-safe-access families | 187.3 ms | 57.0 ms | **39.6 ms** | **1.44× faster** |
-| 128 destructuring/rest/spread families | 137.7 ms | 47.6 ms | **35.3 ms** | **1.35× faster** |
-| 128 × 8 overload calls | 196.8 ms | 63.7 ms | **29.5 ms** | **2.16× faster** |
-| 128 generic class families | 233.5 ms | 62.6 ms | **34.2 ms** | **1.83× faster** |
-| 128 structural object families | 186.2 ms | 59.1 ms | **30.6 ms** | **1.93× faster** |
-| 128 interface/namespace families | 200.3 ms | 63.9 ms | **44.8 ms** | **1.43× faster** |
-| 256 variadic tuple families | 240.3 ms | 74.8 ms | **43.1 ms** | **1.74× faster** |
-| 128 checked-JavaScript/JSDoc families | 200.8 ms | 53.6 ms | **37.1 ms** | **1.45× faster** |
-| 256 recursive generic payloads | 150.7 ms | 71.1 ms | **29.1 ms** | **2.44× faster** |
+| Startup | 59.1 ms | 35.4 ms | **3.0 ms** | **11.90× faster** |
+| 256 files | 204.0 ms | 52.3 ms | **32.9 ms** | **1.59× faster** |
+| Deep types | 126.9 ms | 52.2 ms | **26.4 ms** | **1.98× faster** |
+| 128-module import graph | 126.9 ms | 45.0 ms | **26.7 ms** | **1.68× faster** |
+| 64-leaf barrel graph | 93.1 ms | 40.1 ms | **22.5 ms** | **1.79× faster** |
+| 256 typed TSX components | 158.1 ms | 46.5 ms | **22.5 ms** | **2.06× faster** |
+| 256 generic call groups | 182.5 ms | 56.5 ms | **28.6 ms** | **1.97× faster** |
+| 256 exhaustive control-flow functions | 182.6 ms | 57.0 ms | **34.4 ms** | **1.66× faster** |
+| 256 type-predicate/assertion families | 224.1 ms | 68.9 ms | **41.9 ms** | **1.64× faster** |
+| 2,048 type-predicate/assertion families | 938.0 ms | 322.6 ms | 318.6 ms | 1.01× lower mean; narrow |
+| 256 null-safe-access families | 180.4 ms | 54.6 ms | **38.8 ms** | **1.41× faster** |
+| 128 destructuring/rest/spread families | 131.1 ms | 45.0 ms | **33.7 ms** | **1.34× faster** |
+| 128 × 8 overload calls | 193.6 ms | 62.7 ms | **31.3 ms** | **2.00× faster** |
+| 128 generic class families | 174.7 ms | 49.8 ms | **27.6 ms** | **1.81× faster** |
+| 128 structural object families | 173.6 ms | 55.5 ms | **28.7 ms** | **1.93× faster** |
+| 128 interface/namespace families | 189.2 ms | 61.2 ms | **43.3 ms** | **1.41× faster** |
+| 256 variadic tuple families | 235.5 ms | 75.9 ms | **42.3 ms** | **1.79× faster** |
+| 128 checked-JavaScript/JSDoc families | 201.3 ms | 55.1 ms | **37.6 ms** | **1.46× faster** |
+| 128 checked-CommonJS owners + app | 148.9 ms | 48.3 ms | **42.1 ms** | **1.15× faster** |
+| 256 recursive generic payloads | 147.3 ms | 69.7 ms | **28.8 ms** | **2.42× faster** |
 
-Home has lower means on **19/19 timed workloads**. Large predicates have only a
-**1.06× mean lead**, with 29/30 paired wins over native TS 7. The controlled
-same-correctness import-graph comparison improves by **12.4%**, with 30/30
-paired wins; the small barrel difference is inconclusive. A separate 30-round
-large-predicate confirmation records **358.6 vs 388.5 ms (1.08×)** and 30/30
-paired wins; it does not replace the full-run row. All 19 workloads
-pass unchanged admission controls before timing. Shared-host load adds
-substantial variance to several rows;
-this is not universal benchmark leadership. Broader rejection coverage,
-real-project validation and cross-platform measurements remain incomplete.
-See [full results, variance and reproduction](./docs/docs/TS_PERFORMANCE.md#prepared-query-checkpoint-performance).
+Home has lower means on **20/20 admitted timed workloads**. The new checked
+CommonJS graph passes identical positive and negative controls in all three
+compilers and is **1.15× faster** than native TS 7; the implementation is
+**31.1% faster** than the prior correct Home build in a separate 30-round A/B.
+Large predicates have only a **1.01× mean lead** and 24/30 paired wins, so the
+row is explicitly narrow. All 20 workloads pass admission before timing; all
+600 round files and 1,800 successful samples are retained. This local synthetic
+snapshot is not universal benchmark leadership. Real-project validation and
+cross-platform measurements remain incomplete. See the
+[full results, controls, variance and reproduction](./docs/docs/TS_PERFORMANCE.md#checked-commonjs-graph-performance).
 Earlier snapshots are retained separately, not averaged into this table.
 Async/await coverage is still undergoing validation and is not timed.
 The [untimed program-discovery checks](./docs/docs/TS_PERFORMANCE.md#prepared-program-discovery-and-expanded-global-audit-untimed)
@@ -156,8 +156,9 @@ controls from 118/120 to 120/120. Requested type surfaces expand from cached,
 source-owned definitions while nested references remain symbolic. Eight nominal
 inheritance controls still fail. The newer [exported-factory checkpoint](./docs/docs/TS_PERFORMANCE.md#source-owned-exported-factory-contracts-untimed)
 improves factory controls from 130/240 to 240/240 and passes both unchanged graph
-gates, bringing Release workload admission to **19/19**. These counts are
-correctness results, separate from the timing table above.
+gates. The checked CommonJS checkpoint adds its own six-error admission control,
+bringing Release workload admission to **20/20**. These counts are correctness
+results, separate from the timing table above.
 
 See the [TypeScript performance methodology and full results](./docs/docs/TS_PERFORMANCE.md)
 for workload definitions, uncertainty, environment details, caveats, and exact

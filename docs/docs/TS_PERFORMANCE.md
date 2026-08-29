@@ -10,82 +10,45 @@ Ongoing coverage and optimization work is tracked in
 
 ## Current snapshot
 
-**Admission correction:** the `import_graph` and `reexport_graph` speed claims
-are withdrawn throughout this document, including historical snapshots.
-Home accepts invalid imported-property assignments and missing-member reads
-that TS 6.0.3 and native TS 7.0.2 reject. The measurements are retained, but they
-do not establish equivalent semantic work; see [#487](https://github.com/home-lang/home/issues/487)
-and the [untimed admission audit](#global-declaration-and-graph-admission-audit-untimed).
-The previous all-18 leadership statement is therefore not a fair benchmark-win
-claim. Other rows remain provisional pending broader rejection-control
-coverage; the existing predicate/destructuring controls do not establish parity
-for every other feature.
-
-Measured 2026-08-27 at commit `9e45e105d` on an Apple M3 Pro MacBook Pro
+Measured 2026-08-29 at commit `3e1d2bca1` on an Apple M3 Pro MacBook Pro
 (11 cores, 18 GB RAM, arm64, macOS 27.0). Each value is the mean and sample
 standard deviation of 30 new compiler processes after three warmup rounds.
-The local raw-result identifier is `20260827T202656Z`. Home records a lower
-mean than the faster competitor on all 18 workloads. Large predicates have a
-1.08× mean lead, independently confirmed at 1.08× in the additional 30-round
-run `20260827T203044Z`. The original smaller workload has a 1.56× mean lead.
-The round-robin compiler order and complete, unfiltered samples from both runs
-are retained. Several workloads have substantial variance; these local results
-do not establish universal superiority.
+The complete raw-result identifier is `20260829T013535Z`. The runner first
+admitted all 20 selected workloads against version-checked TS **6.0.3**, native
+TS **7.0.2**, and Home. Native TS 7 and `tsgo` are one competitor. All **600
+round files / 1,800 successful finite samples** are retained without filtering.
 
 | Workload | tsc 6.0.3 | native TS 7.0.2 | Home 0.1.0 | Home vs fastest competitor |
 |---|---:|---:|---:|---:|
-| `startup` | 64.4 ± 1.8 ms | 42.2 ± 11.3 ms | **3.9 ± 2.7 ms** | **10.82× faster** |
-| `many_files` | 213.2 ± 14.8 ms | 53.5 ± 3.1 ms | **30.0 ± 1.5 ms** | **1.78× faster** |
-| `deep_types` | 127.9 ± 2.2 ms | 52.6 ± 1.5 ms | **12.9 ± 0.3 ms** | **4.09× faster** |
-| `import_graph` | 129.2 ± 1.9 ms | 45.0 ± 0.9 ms | 25.8 ± 1.1 ms | Ineligible: #487 |
-| `reexport_graph` | 94.7 ± 3.0 ms | 40.7 ± 0.9 ms | 26.8 ± 0.6 ms | Ineligible: #487 |
-| `tsx_components` | 159.1 ± 1.2 ms | 46.3 ± 0.9 ms | **21.3 ± 0.3 ms** | **2.17× faster** |
-| `generic_calls` | 177.5 ± 4.4 ms | 55.4 ± 11.2 ms | **22.0 ± 1.8 ms** | **2.52× faster** |
-| `control_flow` | 212.2 ± 127.9 ms | 63.1 ± 22.3 ms | **32.9 ± 3.8 ms** | **1.92× faster** |
-| `type_predicates` | 237.3 ± 14.0 ms | 72.4 ± 10.8 ms | **46.5 ± 19.5 ms** | **1.56× faster** |
-| `type_predicates_large` | 1027.8 ± 117.6 ms | 348.8 ± 15.7 ms | **322.1 ± 13.3 ms** | **1.08× faster** |
-| `null_safe_access` | 206.3 ± 12.4 ms | 60.3 ± 2.4 ms | **40.6 ± 1.8 ms** | **1.49× faster** |
-| `destructuring` | 144.3 ± 11.1 ms | 48.5 ± 1.1 ms | **35.3 ± 0.8 ms** | **1.38× faster** |
-| `overload_resolution` | 222.7 ± 20.6 ms | 71.6 ± 10.7 ms | **30.9 ± 2.9 ms** | **2.32× faster** |
-| `class_hierarchy` | 200.0 ± 17.6 ms | 55.8 ± 4.5 ms | **29.8 ± 1.1 ms** | **1.87× faster** |
-| `structural_objects` | 197.7 ± 9.7 ms | 60.7 ± 2.8 ms | **31.5 ± 1.1 ms** | **1.93× faster** |
-| `interface_composition` | 233.3 ± 43.6 ms | 76.2 ± 30.3 ms | **46.5 ± 3.4 ms** | **1.64× faster** |
-| `variadic_tuples` | 268.4 ± 33.0 ms | 81.0 ± 8.5 ms | 46.2 ± 8.3 ms | Provisional: older admission schema |
-| `checkjs_jsdoc` | 246.4 ± 48.7 ms | 63.0 ± 16.6 ms | **41.2 ± 6.8 ms** | **1.53× faster** |
+| `checkjs_jsdoc` | 201.3 ± 3.4 ms | 55.1 ± 1.5 ms | **37.6 ± 0.8 ms** | **1.46× faster** |
+| `class_hierarchy` | 174.7 ± 3.1 ms | 49.8 ± 1.3 ms | **27.6 ± 0.6 ms** | **1.81× faster** |
+| `commonjs_graph` | 148.9 ± 2.5 ms | 48.3 ± 1.4 ms | **42.1 ± 0.7 ms** | **1.15× faster** |
+| `control_flow` | 182.6 ± 10.8 ms | 57.0 ± 0.9 ms | **34.4 ± 0.8 ms** | **1.66× faster** |
+| `deep_types` | 126.9 ± 2.2 ms | 52.2 ± 1.2 ms | **26.4 ± 0.4 ms** | **1.98× faster** |
+| `destructuring` | 131.1 ± 1.2 ms | 45.0 ± 1.0 ms | **33.7 ± 0.2 ms** | **1.34× faster** |
+| `generic_calls` | 182.5 ± 38.8 ms | 56.5 ± 13.2 ms | **28.6 ± 26.7 ms** | **1.97× faster** |
+| `import_graph` | 126.9 ± 1.8 ms | 45.0 ± 1.4 ms | **26.7 ± 0.7 ms** | **1.68× faster** |
+| `interface_composition` | 189.2 ± 4.7 ms | 61.2 ± 6.8 ms | **43.3 ± 2.4 ms** | **1.41× faster** |
+| `many_files` | 204.0 ± 4.4 ms | 52.3 ± 1.5 ms | **32.9 ± 1.1 ms** | **1.59× faster** |
+| `null_safe_access` | 180.4 ± 1.9 ms | 54.6 ± 1.1 ms | **38.8 ± 0.8 ms** | **1.41× faster** |
+| `overload_resolution` | 193.6 ± 9.3 ms | 62.7 ± 1.8 ms | **31.3 ± 8.0 ms** | **2.00× faster** |
+| `recursive_generics` | 147.3 ± 1.5 ms | 69.7 ± 1.1 ms | **28.8 ± 0.3 ms** | **2.42× faster** |
+| `reexport_graph` | 93.1 ± 1.1 ms | 40.1 ± 1.0 ms | **22.5 ± 1.1 ms** | **1.79× faster** |
+| `startup` | 59.1 ± 1.0 ms | 35.4 ± 0.6 ms | **3.0 ± 0.1 ms** | **11.90× faster** |
+| `structural_objects` | 173.6 ± 1.6 ms | 55.5 ± 0.9 ms | **28.7 ± 0.5 ms** | **1.93× faster** |
+| `tsx_components` | 158.1 ± 2.8 ms | 46.5 ± 0.9 ms | **22.5 ± 0.3 ms** | **2.06× faster** |
+| `type_predicates` | 224.1 ± 2.6 ms | 68.9 ± 1.3 ms | **41.9 ± 0.4 ms** | **1.64× faster** |
+| `type_predicates_large` | 938.0 ± 7.9 ms | 322.6 ± 4.7 ms | **318.6 ± 3.8 ms** | **1.01× faster; narrow** |
+| `variadic_tuples` | 235.5 ± 7.9 ms | 75.9 ± 8.7 ms | **42.3 ± 1.3 ms** | **1.79× faster** |
 
-The earlier snapshot `20260827T154256Z` recorded a checked-JavaScript loss:
-Home 58.4 ± 33.3 ms versus native TypeScript 7 at 56.5 ± 2.7 ms, including one
-234.3 ms Home sample (52.1 ms median). That unfiltered result remains part of
-the record. [Issue #452](https://github.com/home-lang/home/issues/452) addressed
-the narrow margin with the general function-containment index described below;
-snapshot `20260827T155812Z` then recorded 16/16 mean wins. The current
-18-workload snapshot additionally includes destructuring, negative
-named-shape caching, function-declaration indexing, necessary member-fact
-filtering, local value-declaration indexing, registered-TypeId filtering,
-relation-cache tombstone maintenance, named-shape candidate indexing, static
-builtin-name lookup, shared exact source-marker searches, candidate directive-line
-iteration, shared builtin Function member construction, exact conditional-assignment
-absence filters, shared program collection markers, stronger primitive-return
-validation, and the large predicate scaling case; no samples were discarded.
-The first 18-workload snapshot
-`20260827T165255Z` recorded Home at 855.8 ± 42.1 ms against native TypeScript 7
-at 382.3 ± 25.1 ms on large predicates (2.24× slower); it remains part of the
-record. Snapshot `20260827T172600Z` recorded 592.0 ± 14.6 versus
-377.6 ± 18.3 ms (1.57× slower). Snapshot `20260827T174752Z` recorded
-557.5 ± 157.8 versus 380.1 ± 23.4 ms (1.47× slower). Snapshot
-`20260827T181303Z` recorded 549.4 ± 87.3 versus 460.4 ± 126.6 ms
-(1.19× slower). Snapshot `20260827T183613Z` recorded 491.0 ± 54.1 versus
-430.2 ± 40.9 ms (1.14× slower). Snapshot `20260827T185149Z` recorded
-399.7 ± 25.6 versus 338.0 ± 16.1 ms (1.18× slower). Snapshot `20260827T191750Z`
-recorded 379.3 ± 15.8 versus 356.0 ± 20.1 ms (1.07× slower). Snapshot
-`20260827T193257Z` recorded 326.0 ± 10.0 versus 326.6 ± 8.3 ms (near tie).
-Snapshot `20260827T195539Z` recorded 323.8 ± 10.2 versus 351.4 ± 15.2 ms
-(1.09× faster), independently confirmed at 1.10×. The current large row is
-322.1 ± 13.3 versus 348.8 ± 15.7 ms (1.08× faster).
-Unrelated concurrent workstation jobs were observed during earlier measurement
-sessions; several current rows are also noisy, and no samples were filtered
-or replaced. The different sessions
-do not by themselves isolate the effect of each optimization.
+Home records lower means on **20/20 admitted workloads**. It has the lower
+paired time in 30/30 rounds for 17 rows, 29/30 for `generic_calls` and
+`overload_resolution`, and 24/30 for `type_predicates_large`. That last 1.01×
+mean margin is narrow and is not evidence of universal leadership. The generic
+call and overload rows also have visible variance. These are local synthetic
+results; real projects, other platforms, and broader rejection coverage remain
+separate validation work. Historical snapshots, including losses, remain in
+the checkpoint sections below and are not averaged into this table.
 
 The comparison column always uses the faster of `tsc` and `tsgo`. Ratios
 rounding to `1.00×` are labeled near ties in either direction, not directional
@@ -117,6 +80,13 @@ the same speedup.
   after the assertion call. Invalid narrowed-property assignments and reads
   of excluded union members must produce two `TS2322` and two `TS2339`
   diagnostics in every compiler, using an untimed temporary project copy.
+- Both ES-module graphs must reject a wrong imported-property assignment and a
+  missing-member read. Variadic tuples have equivalent tuple-element controls.
+- `commonjs_graph` uses a temporary copy and requires exactly three `TS2322`
+  and three `TS2339` diagnostics, distributed across the first, middle, and
+  last checked owner. Timing cannot begin, or create its result directory,
+  unless every selected workload passes every applicable control in all three
+  compilers.
 - Measurements are process-cold and filesystem-cache-warm. Each timed sample
   launches a new compiler process after explicit warmups.
 - A measured round contains all three compilers. Their order rotates each round
@@ -3282,16 +3252,79 @@ control, and an otherwise identical TS2339 control:
 
 The audit performs **198/198** compiler/case checks with zero failures. The
 static-`require` discovery audit also remains **132/132** checks with zero
-failures. The immutable ReleaseFast candidate is
-`commonjs-linkage.gyKMKg/release-v2/bin/home-tsc`, SHA-256
-`3cab7afcaf38cb5bef789081bc228ab0a970166c0bbd1f2bd24cd61359e823a5`.
+failures. The final immutable ReleaseFast candidate is
+`commonjs-linkage.gyKMKg/release-v6/bin/home-tsc`, SHA-256
+`3820830f2cd4c4f680164dc7cd1c87ac3294ef803c37e9c44cab7a76559c2c14`.
 Raw audit and harness logs are retained locally under
 `bench/vs_tsgo/results/commonjs-linkage.gyKMKg/`.
 
-Program **145/145**, the 78-test Python harness, checker, driver and CLI suites
+Program **145/145**, the 82-test Python harness, checker, driver and CLI suites
 pass. The conformance target reports smoke **16/16**, named categories
 **86/86**, and baseline-aware categories **586/586**. This is a correctness
 benchmark only; no CommonJS timing is admitted by this result.
+
+### Checked CommonJS graph performance
+
+Issue [#546](https://github.com/home-lang/home/issues/546) adds the first timed
+CommonJS graph only after the checked-owner transfer above reached full audit
+parity. The deterministic project has 128 checked-JavaScript owners and one
+consumer. Each owner exports an inferred service object, then reassigns
+`module.exports` to an alternate shape so the consumer must use the real
+cross-file union. The admission copy injects wrong-label and missing-member
+uses into the first, middle, and last owner. TS 6.0.3, native TS 7.0.2, and Home
+must each emit exactly three `TS2322` and three `TS2339` diagnostics before any
+timing directory can be created.
+
+The first admitted result, `20260829T010034Z`, retained the loss: Home took
+62.8 ± 1.2 ms versus native TS 7 at 51.1 ± 2.1 ms, or 1.23× longer. The
+general fixes resolve dependency edges once, schedule dependency-ready files in
+parallel batches, avoid redundant graph resolution and irrelevant schema scans,
+index actual HIR `var` declarations instead of repeatedly scanning source text,
+and cache the immutable Node reference-directive fact. These changes preserve
+the checked schema and do not add recovery, source-spelling inference, or a
+benchmark-specific fast path.
+
+The exact same-correctness Home A/B compares the original correct release-v2
+binary with release-v6. It uses three warmups and 30 alternating-order rounds;
+all 30 round files and 60 finite samples are retained, with none removed:
+
+| `commonjs_graph` Home A/B | Correct release-v2 | Optimized release-v6 | After / before | Lower after time |
+|---|---:|---:|---:|---:|
+| 128 owners + consumer | 62.33 ± 1.49 ms | **42.96 ± 0.92 ms** | **0.689 (31.1% less time)** | **30/30 rounds** |
+
+The complete admitted result is **`20260829T013535Z`**. It uses the same Apple
+M3 Pro arm64/macOS 27.0 host, three warmups, 30 rotating-order rounds, and the
+exact pins TS **6.0.3** and native TS **7.0.2**. TS 7 and `tsgo` are one
+competitor. The full 20-row table is the [current snapshot](#current-snapshot).
+Home records the lower mean on **20/20** rows. On `commonjs_graph`, TS 6 takes
+148.9 ± 2.5 ms, native TS 7 takes 48.3 ± 1.4 ms, and Home takes
+**42.1 ± 0.7 ms**, a **1.15×** lead with 30/30 paired wins. Integrity
+validation retains **600 round files / 1,800 successful finite samples** with
+no omitted row or discarded sample.
+
+The 1.01× `type_predicates_large` mean margin has only 24/30 paired wins and
+must be treated as narrow. `generic_calls` and `overload_resolution` each have
+29/30 paired wins and visible variance. The other 17 rows have 30/30 paired
+wins. This checkpoint establishes the local admitted synthetic result, not
+universal leadership; real-project, cross-platform, and broader semantic
+coverage remain open.
+
+The final candidate is
+`bench/vs_tsgo/results/commonjs-linkage.gyKMKg/release-v6/bin/home-tsc`, SHA-256
+`3820830f2cd4c4f680164dc7cd1c87ac3294ef803c37e9c44cab7a76559c2c14`.
+Evidence is retained in `bench/vs_tsgo/results/commonjs-linkage.gyKMKg/` and
+`bench/vs_tsgo/results/20260829T013535Z/`, including the release-v2/release-v6
+A/B, the initial loss, complete report, commands, audits, and harness logs.
+
+```sh
+HOME_TSC="$PWD/bench/vs_tsgo/results/commonjs-linkage.gyKMKg/release-v6/bin/home-tsc" python3 bench/vs_tsgo/run.py cold --runs 30 --warmup 3
+python3 bench/vs_tsgo/compare.py bench/vs_tsgo/results/20260829T013535Z
+```
+
+Verification for the final source and candidate: CommonJS transfer **198/198**
+checks, static CommonJS discovery **132/132** checks, Python harness **82/82**,
+Program **145/145**, checker, driver, and CLI suites green; conformance smoke
+**16/16**, named categories **86/86**, and baseline-aware categories **586/586**.
 
 ### Prepared-query checkpoint performance
 
