@@ -6897,6 +6897,54 @@ fn expectCompilationHasDiagnosticCode(c: *const ts_driver.Compilation, code: u32
     try T.expect(compilationHasDiagnosticCode(c, code));
 }
 
+const NamespaceImportTestResolver = struct {
+    resolver: *ts_resolver.Resolver,
+
+    const export_names = [_][]const u8{"initialize"};
+
+    const vtable = ts_driver.ExternalResolver.VTable{
+        .resolve = resolve,
+        .moduleExport = moduleExport,
+        .moduleExportNames = moduleExportNames,
+    };
+
+    fn resolve(
+        self_ptr: *anyopaque,
+        specifier: []const u8,
+        containing_file: []const u8,
+    ) ?ts_driver.ExternalResolver.Resolution {
+        const self: *NamespaceImportTestResolver = @ptrCast(@alignCast(self_ptr));
+        const result = self.resolver.resolve(specifier, containing_file) catch return null;
+        return .{ .path = result.path, .is_declaration = result.is_declaration };
+    }
+
+    fn moduleExport(
+        _: *anyopaque,
+        _: []const u8,
+        _: []const u8,
+        name: []const u8,
+    ) ?ts_driver.ExternalResolver.ModuleExport {
+        if (!std.mem.eql(u8, name, "initialize")) return null;
+        return .{
+            .module_name = "\"barrel\"",
+            .exported_type = false,
+            .exported_value = true,
+            .runtime_value = true,
+            .generic_function = true,
+            .call_only_function = true,
+            .module_is_external = true,
+        };
+    }
+
+    fn moduleExportNames(
+        _: *anyopaque,
+        _: []const u8,
+        _: []const u8,
+    ) ?[]const []const u8 {
+        return &export_names;
+    }
+};
+
 test "module export assignment private type query follows object signatures" {
     const source =
         \\interface Private {}
@@ -8926,6 +8974,59 @@ test "Program: declare global namespace roots are visible across files" {
     for (c.diagnostics.items) |d| {
         try T.expect(d.code != 2503);
     }
+}
+
+test "Program: namespace imports preserve generic callbacks without a default export" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver };
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+
+    const owner =
+        \\export function initialize<T>(value: T, callback: (value: T) => void): T {
+        \\  callback(value);
+        \\  return value;
+        \\}
+    ;
+    const barrel = "export * from './owner';";
+    const consumer =
+        \\import * as api from "./barrel";
+        \\api.initialize(1, value => {
+        \\  const exact: number = value;
+        \\  void exact;
+        \\});
+    ;
+    const named_consumer =
+        \\import { initialize } from "./barrel";
+        \\initialize(1, value => {
+        \\  const exact: number = value;
+        \\  void exact;
+        \\});
+    ;
+    try vfs.addFile("/proj/owner.ts", owner);
+    try vfs.addFile("/proj/barrel.ts", barrel);
+    try vfs.addFile("/proj/consumer.ts", consumer);
+    try vfs.addFile("/proj/named-consumer.ts", named_consumer);
+    _ = try p.add("/proj/owner.ts", owner);
+    _ = try p.add("/proj/barrel.ts", barrel);
+    const consumer_id = try p.add("/proj/consumer.ts", consumer);
+    const named_consumer_id = try p.add("/proj/named-consumer.ts", named_consumer);
+
+    try p.compileAll(.{
+        .no_emit = true,
+        .strict_flags = .{ .no_implicit_any = true, .strict_null_checks = true },
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    });
+    const compilation = p.fileById(consumer_id).compilation.?;
+    const named_compilation = p.fileById(named_consumer_id).compilation.?;
+    try expectCompilationLacksDiagnosticCode(named_compilation, 7006);
+    try expectCompilationLacksDiagnosticCode(named_compilation, 2322);
+    try expectCompilationLacksDiagnosticCode(compilation, 2339);
+    try expectCompilationLacksDiagnosticCode(compilation, 7006);
+    try expectCompilationLacksDiagnosticCode(compilation, 2322);
 }
 
 test "Program: relative module augmentation summary adds methods to imported class" {

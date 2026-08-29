@@ -106348,8 +106348,6 @@ pub const Checker = struct {
         const resolved = resolver.resolve(spec, self.importer_path) orelse return null;
         const root_path = self.string_interner.intern(resolved.path) catch return error.OutOfMemory;
         if (self.program_module_namespace_types.get(root_path)) |cached| return if (cached == types.Primitive.none) null else cached;
-        const root_info = resolver.moduleExport(resolved.path, self.importer_path, "default") orelse return null;
-        if (root_info.runtime_value == null) return self.unavailableProgramModuleNamespace(root_path);
         const Pending = struct { path: hir_mod.StringId, type: TypeId };
         var pending: std.ArrayListUnmanaged(Pending) = .empty;
         defer pending.deinit(self.gpa);
@@ -106368,8 +106366,12 @@ pub const Checker = struct {
             var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
             defer members.deinit(self.gpa);
             for (0..names.len + 1) |index| {
-                const name = if (index < names.len) names[index] else "default";
-                const info = resolver.moduleExport(path, self.importer_path, name) orelse return self.unavailableProgramModuleNamespace(root_path);
+                const is_optional_default = index == names.len;
+                const name = if (is_optional_default) "default" else names[index];
+                const info = resolver.moduleExport(path, self.importer_path, name) orelse {
+                    if (is_optional_default) continue;
+                    return self.unavailableProgramModuleNamespace(root_path);
+                };
                 if (!(info.runtime_value orelse return self.unavailableProgramModuleNamespace(root_path))) continue;
                 const member_name = self.string_interner.intern(name) catch return error.OutOfMemory;
                 var member_type: TypeId = types.Primitive.any;
