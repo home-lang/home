@@ -88097,6 +88097,7 @@ pub const Checker = struct {
             } else if (nk == .object_pattern and
                 self.objectBindingPatternHasRest(v.name) and
                 !self.typeIsAnyLike(init_type) and
+                (self.typeIncludesNull(init_type) or self.typeIncludesUndefined(init_type)) and
                 self.initializerIdentifierNullishAnnotationText(node, v.init) != null)
             {
                 const target_text = self.initializerIdentifierNullishAnnotationText(node, v.init).?;
@@ -88584,6 +88585,8 @@ pub const Checker = struct {
             if (nk == .object_pattern and
                 v.init != hir_mod.none_node_id and
                 !object_rest_nullish_union_binding_diag_fired and
+                self.strict_flags.strict_null_checks and
+                (self.typeIncludesNull(final_type) or self.typeIncludesUndefined(final_type)) and
                 self.objectBindingPatternHasRest(v.name))
             {
                 if (self.initializerIdentifierNullishAnnotationText(node, v.init)) |target_text| {
