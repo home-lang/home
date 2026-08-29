@@ -35,7 +35,8 @@ export fn zig__ModuleInfoDeserialized__toJSModuleRecord(
         const raw = @backingInt(value);
         if (raw >= identifier_count and raw < @backingInt(analyze.ModuleInfo.FetchParameters.json)) return null;
     }
-    if (res.requested_modules_keys.len != res.requested_modules_values.len) return null;
+    if (res.requested_modules_keys.len != res.requested_modules_values.len or
+        res.requested_modules_keys.len != res.requested_modules_phases.len) return null;
 
     var identifiers = IdentifierArray.create(res.strings_lens.len);
     defer identifiers.destroy();
@@ -54,7 +55,7 @@ export fn zig__ModuleInfoDeserialized__toJSModuleRecord(
             switch (k) {
                 .declared_variable => declared_variables.add(vm, identifiers, res.buffer[i]),
                 .lexical_variable => lexical_variables.add(vm, identifiers, res.buffer[i]),
-                .import_info_single, .import_info_single_type_script, .import_info_namespace, .export_info_indirect, .export_info_local, .export_info_namespace, .export_info_star => {},
+                .import_info_single, .import_info_single_type_script, .import_info_namespace, .import_info_namespace_defer, .export_info_indirect, .export_info_local, .export_info_namespace, .export_info_star => {},
                 else => return null,
             }
             i += k.len() catch unreachable; // handled above
@@ -63,17 +64,18 @@ export fn zig__ModuleInfoDeserialized__toJSModuleRecord(
 
     const module_record = JSModuleRecord.create(globalObject, vm, module_key, source_code, declared_variables, lexical_variables, res.flags.contains_import_meta, res.flags.is_typescript, res.flags.has_tla);
 
-    // Home's current ModuleInfo producer represents evaluation-phase imports.
-    // Pass that phase explicitly: the current C++ ABI has an extra bool that
-    // is absent from Bun's historical Zig declarations. Deferred-import syntax
-    // and its serialized phase model remain a separate parser/printer feature.
-    for (res.requested_modules_keys, res.requested_modules_values) |reqk, reqv| {
+    for (res.requested_modules_keys, res.requested_modules_values, res.requested_modules_phases) |reqk, reqv, reqp| {
+        const phase_defer = switch (reqp) {
+            @intFromEnum(analyze.ModulePhase.evaluation) => false,
+            @intFromEnum(analyze.ModulePhase.deferred) => true,
+            else => return null,
+        };
         switch (reqv) {
-            .none => module_record.addRequestedModuleNullAttributesPtr(identifiers, reqk, false),
-            .javascript => module_record.addRequestedModuleJavaScript(identifiers, reqk, false),
-            .webassembly => module_record.addRequestedModuleWebAssembly(identifiers, reqk, false),
-            .json => module_record.addRequestedModuleJSON(identifiers, reqk, false),
-            else => |uv| module_record.addRequestedModuleHostDefined(identifiers, reqk, @fromBackingInt(@intCast(@backingInt(uv))), false),
+            .none => module_record.addRequestedModuleNullAttributesPtr(identifiers, reqk, phase_defer),
+            .javascript => module_record.addRequestedModuleJavaScript(identifiers, reqk, phase_defer),
+            .webassembly => module_record.addRequestedModuleWebAssembly(identifiers, reqk, phase_defer),
+            .json => module_record.addRequestedModuleJSON(identifiers, reqk, phase_defer),
+            else => |uv| module_record.addRequestedModuleHostDefined(identifiers, reqk, @fromBackingInt(@intCast(@backingInt(uv))), phase_defer),
         }
     }
 
@@ -86,6 +88,7 @@ export fn zig__ModuleInfoDeserialized__toJSModuleRecord(
                 .import_info_single => module_record.addImportEntrySingle(identifiers, res.buffer[i + 1], res.buffer[i + 2], res.buffer[i]),
                 .import_info_single_type_script => module_record.addImportEntrySingleTypeScript(identifiers, res.buffer[i + 1], res.buffer[i + 2], res.buffer[i]),
                 .import_info_namespace => module_record.addImportEntryNamespace(identifiers, res.buffer[i + 1], res.buffer[i + 2], res.buffer[i]),
+                .import_info_namespace_defer => module_record.addImportEntryNamespaceDefer(identifiers, res.buffer[i + 1], res.buffer[i + 2], res.buffer[i]),
                 .export_info_indirect => if (res.buffer[i + 1] == .star_namespace)
                     module_record.addNamespaceExport(identifiers, res.buffer[i + 0], res.buffer[i + 2])
                 else
@@ -159,6 +162,8 @@ const JSModuleRecord = opaque {
     pub const addImportEntrySingleTypeScript = JSC_JSModuleRecord__addImportEntrySingleTypeScript;
     extern fn JSC_JSModuleRecord__addImportEntryNamespace(module_record: *JSModuleRecord, identifier_array: *IdentifierArray, import_name: StringID, local_name: StringID, module_name: StringID) void;
     pub const addImportEntryNamespace = JSC_JSModuleRecord__addImportEntryNamespace;
+    extern fn JSC_JSModuleRecord__addImportEntryNamespaceDefer(module_record: *JSModuleRecord, identifier_array: *IdentifierArray, import_name: StringID, local_name: StringID, module_name: StringID) void;
+    pub const addImportEntryNamespaceDefer = JSC_JSModuleRecord__addImportEntryNamespaceDefer;
 };
 
 const bun = @import("home");

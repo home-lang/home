@@ -120,8 +120,10 @@ pub fn scan(
                             is_unused_in_typescript = false;
                         }
 
-                        // Remove the symbol if it's never used outside a dead code region
-                        if (symbol.use_count_estimate == 0) {
+                        // A deferred import must keep its namespace binding.
+                        // Turning it into a bare import would eagerly evaluate
+                        // the module and change the program's semantics.
+                        if (symbol.use_count_estimate == 0 and !st.phase_defer) {
                             // Make sure we don't remove this if it was used for a property
                             // access while bundling
                             var has_any = false;
@@ -198,7 +200,9 @@ pub fn scan(
                 }
 
                 const namespace_ref = st.namespace_ref;
-                const convert_star_to_clause = !p.options.bundle and (p.symbols.items[namespace_ref.innerIndex()].use_count_estimate == 0);
+                const convert_star_to_clause = !p.options.bundle and
+                    !st.phase_defer and
+                    (p.symbols.items[namespace_ref.innerIndex()].use_count_estimate == 0);
 
                 if (convert_star_to_clause and !keep_unused_imports) {
                     st.star_name_loc = null;

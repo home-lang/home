@@ -4613,6 +4613,14 @@ fn NewPrinter(
 
                     p.print("import");
 
+                    // Deferred imports are only valid for namespace bindings.
+                    // scan_imports preserves the star binding, while this guard
+                    // keeps later transformations from emitting invalid syntax.
+                    const phase_defer = record.flags.phase_defer and record.flags.contains_import_star;
+                    if (phase_defer) {
+                        p.print(" defer");
+                    }
+
                     var item_count: usize = 0;
 
                     if (s.default_name) |name| {
@@ -4735,7 +4743,11 @@ fn NewPrinter(
                                 .json5 => analyze_transpiled_module.ModuleInfo.FetchParameters.hostDefined(bun.handleOom(mi.str("json5"))),
                                 .md => analyze_transpiled_module.ModuleInfo.FetchParameters.hostDefined(bun.handleOom(mi.str("md"))),
                             } else .none) else .none;
-                            bun.handleOom(mi.requestModule(irp_id, fetch_parameters));
+                            bun.handleOom(mi.requestModuleWithPhase(
+                                irp_id,
+                                fetch_parameters,
+                                if (phase_defer) .deferred else .evaluation,
+                            ));
 
                             if (s.default_name) |name| {
                                 const local_name = p.renamer.nameForSymbol(name.ref.?);
@@ -4756,8 +4768,13 @@ fn NewPrinter(
 
                             if (record.flags.contains_import_star) {
                                 const local_name = p.renamer.nameForSymbol(s.namespace_ref);
-                                bun.handleOom(mi.addVar(bun.handleOom(mi.str(local_name)), .lexical));
-                                bun.handleOom(mi.addImportInfoNamespace(irp_id, bun.handleOom(mi.str(local_name))));
+                                const local_name_id = bun.handleOom(mi.str(local_name));
+                                bun.handleOom(mi.addVar(local_name_id, .lexical));
+                                if (phase_defer) {
+                                    bun.handleOom(mi.addImportInfoNamespaceDefer(irp_id, local_name_id));
+                                } else {
+                                    bun.handleOom(mi.addImportInfoNamespace(irp_id, local_name_id));
+                                }
                             }
                         }
                     }

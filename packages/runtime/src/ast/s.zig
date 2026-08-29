@@ -147,6 +147,7 @@ pub const Switch = struct {
 //    import * as ns from 'path'
 //    import defaultItem, {item1, item2} from 'path'
 //    import defaultItem, * as ns from 'path'
+//    import defer * as ns from 'path'
 //
 // Many parts are optional and can be combined in different ways. The only
 // restriction is that you cannot have both a clause and a star namespace.
@@ -163,6 +164,8 @@ pub const Import = struct {
     star_name_loc: ?logger.Loc = null,
     import_record_index: u32,
     is_single_line: bool = false,
+    /// "import defer * as ns from 'path'". Only valid with a namespace import.
+    phase_defer: bool = false,
 };
 
 pub const Return = struct { value: ?ExprNodeIndex = null };

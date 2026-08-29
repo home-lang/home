@@ -17,6 +17,8 @@ pub const RecordKind = enum(u8) {
     export_info_namespace,
     /// module_name
     export_info_star,
+    /// module_name, import_name = '*', local_name (deferred phase)
+    import_info_namespace_defer,
     _,
 
     pub fn len(record: RecordKind) !usize {
@@ -25,6 +27,7 @@ pub const RecordKind = enum(u8) {
             .import_info_single => 3,
             .import_info_single_type_script => 3,
             .import_info_namespace => 3,
+            .import_info_namespace_defer => 3,
             .export_info_indirect => 3,
             .export_info_local => 3,
             .export_info_namespace => 2,
@@ -32,6 +35,13 @@ pub const RecordKind = enum(u8) {
             else => return error.InvalidRecordKind,
         };
     }
+};
+
+/// JSC's module-request phase. The serialized representation is one byte per
+/// requested module, parallel to the request keys and fetch parameters.
+pub const ModulePhase = enum(u8) {
+    evaluation = 0,
+    deferred = 1,
 };
 
 pub const Flags = packed struct(u8) {
@@ -46,6 +56,7 @@ pub const ModuleInfoDeserialized = struct {
     strings_lens: []align(1) const u32,
     requested_modules_keys: []align(1) const StringID,
     requested_modules_values: []align(1) const ModuleInfo.FetchParameters,
+    requested_modules_phases: []const u8,
     buffer: []align(1) const StringID,
     record_kinds: []align(1) const RecordKind,
     flags: Flags,
@@ -98,6 +109,11 @@ pub const ModuleInfoDeserialized = struct {
         const requested_modules_len = std.mem.readInt(u32, try eatC(&rem, 4), .little);
         const requested_modules_keys = std.mem.bytesAsSlice(StringID, try eat(&rem, requested_modules_len * @sizeOf(StringID)));
         const requested_modules_values = std.mem.bytesAsSlice(ModuleInfo.FetchParameters, try eat(&rem, requested_modules_len * @sizeOf(ModuleInfo.FetchParameters)));
+        const requested_modules_phases = try eat(&rem, requested_modules_len);
+        for (requested_modules_phases) |phase| {
+            if (phase > @intFromEnum(ModulePhase.deferred)) return error.BadModuleInfo;
+        }
+        _ = try eat(&rem, (4 - (requested_modules_len % 4)) % 4); // alignment padding
 
         const flags: Flags = @bitCast((try eatC(&rem, 1))[0]);
         _ = try eat(&rem, 3); // alignment padding
@@ -111,6 +127,7 @@ pub const ModuleInfoDeserialized = struct {
             .strings_lens = strings_lens,
             .requested_modules_keys = requested_modules_keys,
             .requested_modules_values = requested_modules_values,
+            .requested_modules_phases = requested_modules_phases,
             .buffer = buffer,
             .record_kinds = record_kinds,
             .flags = flags,
@@ -142,6 +159,9 @@ pub const ModuleInfoDeserialized = struct {
         try writer.writeInt(u32, @truncate(self.requested_modules_keys.len), .little);
         try writer.writeAll(std.mem.sliceAsBytes(self.requested_modules_keys));
         try writer.writeAll(std.mem.sliceAsBytes(self.requested_modules_values));
+        bun.assert(self.requested_modules_phases.len == self.requested_modules_keys.len);
+        try writer.writeAll(self.requested_modules_phases);
+        try writeZeroes(writer, (4 - (self.requested_modules_phases.len % 4)) % 4); // alignment padding
 
         try writer.writeByte(@bitCast(self.flags));
         try writeZeroes(writer, 3); // alignment padding
@@ -175,12 +195,21 @@ pub const StringContext = struct {
 };
 
 pub const ModuleInfo = struct {
+    const RequestedModuleKey = struct {
+        path: StringID,
+        phase: ModulePhase,
+    };
+
     /// all strings in wtf-8. index in hashmap = StringID
     gpa: std.mem.Allocator,
     strings_map: std.ArrayHashMapUnmanaged(StringMapKey, void, void, true),
     strings_buf: std.ArrayListUnmanaged(u8),
     strings_lens: std.ArrayListUnmanaged(u32),
-    requested_modules: std.ArrayHashMapUnmanaged(StringID, FetchParameters, std.array_hash_map.AutoContext(StringID), true),
+    /// JSC deduplicates requests by `(specifier, phase)`, so eager and deferred
+    /// requests for the same specifier must remain distinct.
+    requested_modules: std.ArrayHashMapUnmanaged(RequestedModuleKey, FetchParameters, std.array_hash_map.AutoContext(RequestedModuleKey), true),
+    requested_module_paths: std.ArrayListUnmanaged(StringID),
+    requested_module_phases: std.ArrayListUnmanaged(u8),
     buffer: std.ArrayListUnmanaged(StringID),
     record_kinds: std.ArrayListUnmanaged(RecordKind),
     flags: Flags,
@@ -232,6 +261,9 @@ pub const ModuleInfo = struct {
     pub fn addImportInfoNamespace(self: *ModuleInfo, module_name: StringID, local_name: StringID) !void {
         try self._addRecord(.import_info_namespace, &.{ module_name, .star_namespace, local_name });
     }
+    pub fn addImportInfoNamespaceDefer(self: *ModuleInfo, module_name: StringID, local_name: StringID) !void {
+        try self._addRecord(.import_info_namespace_defer, &.{ module_name, .star_namespace, local_name });
+    }
     pub fn addExportInfoIndirect(self: *ModuleInfo, export_name: StringID, import_name: StringID, module_name: StringID) !void {
         if (try self._hasOrAddExportedName(export_name)) return; // a syntax error will be emitted later in this case
         try self._addRecord(.export_info_indirect, &.{ export_name, import_name, module_name });
@@ -266,6 +298,8 @@ pub const ModuleInfo = struct {
             .strings_lens = .empty,
             .exported_names = .empty,
             .requested_modules = .empty,
+            .requested_module_paths = .empty,
+            .requested_module_phases = .empty,
             .buffer = .empty,
             .record_kinds = .empty,
             .flags = .{ .contains_import_meta = false, .is_typescript = is_typescript },
@@ -278,6 +312,8 @@ pub const ModuleInfo = struct {
         self.strings_lens.deinit(self.gpa);
         self.exported_names.deinit(self.gpa);
         self.requested_modules.deinit(self.gpa);
+        self.requested_module_paths.deinit(self.gpa);
+        self.requested_module_phases.deinit(self.gpa);
         self.buffer.deinit(self.gpa);
         self.record_kinds.deinit(self.gpa);
     }
@@ -302,8 +338,12 @@ pub const ModuleInfo = struct {
         return @enumFromInt(@as(u32, @intCast(gpres.index)));
     }
     pub fn requestModule(self: *ModuleInfo, import_record_path: StringID, fetch_parameters: FetchParameters) !void {
-        // jsc only records the attributes of the first import with the given import_record_path. so only put if not exists.
-        const gpres = try self.requested_modules.getOrPut(self.gpa, import_record_path);
+        return self.requestModuleWithPhase(import_record_path, fetch_parameters, .evaluation);
+    }
+    pub fn requestModuleWithPhase(self: *ModuleInfo, import_record_path: StringID, fetch_parameters: FetchParameters, phase: ModulePhase) !void {
+        // JSC records the attributes of the first request for each
+        // `(specifier, phase)` pair.
+        const gpres = try self.requested_modules.getOrPut(self.gpa, .{ .path = import_record_path, .phase = phase });
         if (!gpres.found_existing) gpres.value_ptr.* = fetch_parameters;
     }
 
@@ -316,8 +356,14 @@ pub const ModuleInfo = struct {
             if (item.* == old_id) item.* = new_id;
         }
         // Replace in requested_modules keys (preserving insertion order)
-        if (self.requested_modules.getIndex(old_id)) |idx| {
-            self.requested_modules.keys()[idx] = new_id;
+        var changed = false;
+        for (self.requested_modules.keys()) |*key| {
+            if (key.path == old_id) {
+                key.path = new_id;
+                changed = true;
+            }
+        }
+        if (changed) {
             self.requested_modules.reIndex(self.gpa) catch {};
         }
     }
@@ -325,6 +371,14 @@ pub const ModuleInfo = struct {
     /// find any exports marked as 'local' that are actually 'indirect' and fix them
     pub fn finalize(self: *ModuleInfo) !void {
         bun.assert(!self.finalized);
+
+        try self.requested_module_paths.ensureTotalCapacity(self.gpa, self.requested_modules.count());
+        try self.requested_module_phases.ensureTotalCapacity(self.gpa, self.requested_modules.count());
+        for (self.requested_modules.keys()) |key| {
+            self.requested_module_paths.appendAssumeCapacity(key.path);
+            self.requested_module_phases.appendAssumeCapacity(@intFromEnum(key.phase));
+        }
+
         var local_name_to_module_name: std.array_hash_map.Auto(StringID, struct { module_name: StringID, import_name: StringID, record_kinds_idx: usize, is_namespace: bool }) = .empty;
         defer local_name_to_module_name.deinit(bun.default_allocator);
         {
@@ -366,8 +420,9 @@ pub const ModuleInfo = struct {
         self._deserialized = .{
             .strings_buf = self.strings_buf.items,
             .strings_lens = self.strings_lens.items,
-            .requested_modules_keys = self.requested_modules.keys(),
+            .requested_modules_keys = self.requested_module_paths.items,
             .requested_modules_values = self.requested_modules.values(),
+            .requested_modules_phases = self.requested_module_phases.items,
             .buffer = self.buffer.items,
             .record_kinds = self.record_kinds.items,
             .flags = self.flags,
@@ -404,6 +459,54 @@ export fn zig__ModuleInfoDeserialized__deinit(info: *ModuleInfoDeserialized) voi
 
 export fn zig_log(msg: [*:0]const u8) void {
     bun.Output.errorWriter().print("{s}\n", .{std.mem.span(msg)}) catch {};
+}
+
+test "ModuleInfo preserves deferred module phases through serialization" {
+    const allocator = std.testing.allocator;
+    const mi = try ModuleInfo.create(allocator, false);
+    defer mi.destroy();
+
+    const path = try mi.str("./dep.js");
+    const local_name = try mi.str("ns");
+    try mi.requestModuleWithPhase(path, .javascript, .evaluation);
+    try mi.requestModuleWithPhase(path, .json, .evaluation); // first attributes win per phase
+    try mi.requestModuleWithPhase(path, .json, .deferred);
+    try mi.addImportInfoNamespaceDefer(path, local_name);
+    try mi.addExportInfoLocal(local_name, local_name);
+    try mi.finalize();
+
+    const view = mi.asDeserialized();
+    try std.testing.expectEqual(@as(usize, 2), view.requested_modules_keys.len);
+    try std.testing.expectEqual(path, view.requested_modules_keys[0]);
+    try std.testing.expectEqual(path, view.requested_modules_keys[1]);
+    try std.testing.expectEqual(ModuleInfo.FetchParameters.javascript, view.requested_modules_values[0]);
+    try std.testing.expectEqual(ModuleInfo.FetchParameters.json, view.requested_modules_values[1]);
+    try std.testing.expectEqualSlices(u8, &.{ 0, 1 }, view.requested_modules_phases);
+    try std.testing.expectEqual(@as(usize, 2), view.record_kinds.len);
+    try std.testing.expectEqual(RecordKind.import_info_namespace_defer, view.record_kinds[0]);
+    try std.testing.expectEqual(RecordKind.export_info_local, view.record_kinds[1]);
+
+    var writer = std.Io.Writer.Allocating.init(allocator);
+    defer writer.deinit();
+    try view.serialize(&writer.writer);
+    const bytes = try writer.toOwnedSlice();
+    defer allocator.free(bytes);
+
+    const restored = try ModuleInfoDeserialized.create(bytes, allocator);
+    defer restored.deinit();
+    try std.testing.expectEqualSlices(u8, &.{ 0, 1 }, restored.requested_modules_phases);
+    try std.testing.expectEqual(view.record_kinds.len, restored.record_kinds.len);
+    for (view.record_kinds, restored.record_kinds) |expected, actual| {
+        try std.testing.expectEqual(expected, actual);
+    }
+
+    const record_padding = (4 - (view.record_kinds.len % 4)) % 4;
+    const phase_offset = 4 + view.record_kinds.len + record_padding +
+        4 + view.buffer.len * @sizeOf(StringID) +
+        4 + view.requested_modules_keys.len * @sizeOf(StringID) +
+        view.requested_modules_values.len * @sizeOf(ModuleInfo.FetchParameters);
+    bytes[phase_offset + 1] = 2;
+    try std.testing.expect(ModuleInfoDeserialized.createFromCachedRecord(bytes, allocator) == null);
 }
 
 const bun = @import("bun");

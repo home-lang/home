@@ -176,7 +176,9 @@ pub const ImportRecord = struct {
         wrap_with_to_esm: bool = false,
         wrap_with_to_commonjs: bool = false,
 
-        _padding: u1 = 0,
+        /// Defer evaluation until the namespace object's properties are accessed.
+        /// This is only valid together with `contains_import_star`.
+        phase_defer: bool = false,
     };
 
     pub const List = bun.BabyList(ImportRecord);

@@ -2792,8 +2792,12 @@ pub fn NewParser_(
             else
                 null;
 
+            bun.assert(!stmt.phase_defer or
+                (stmt.star_name_loc != null and stmt.default_name == null and stmt.items.len == 0));
+
             stmt.import_record_index = p.addImportRecord(.stmt, path.loc, path.text);
             p.import_records.items[stmt.import_record_index].flags.was_originally_bare_import = was_originally_bare_import;
+            p.import_records.items[stmt.import_record_index].flags.phase_defer = stmt.phase_defer;
 
             if (stmt.star_name_loc) |star| {
                 const name = p.loadNameFromRef(stmt.namespace_ref);

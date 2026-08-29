@@ -1031,12 +1031,38 @@ pub fn ParseStmt(
                         return error.SyntaxError;
                     }
 
+                    const default_name_raw = p.lexer.raw();
                     var default_name = p.lexer.identifier;
                     stmt = S.Import{ .namespace_ref = Ref.None, .import_record_index = std.math.maxInt(u32), .default_name = LocRef{
                         .loc = p.lexer.loc(),
                         .ref = try p.storeNameInRef(default_name),
                     } };
                     try p.lexer.next();
+
+                    // `defer` is a contextual phase keyword only when it is
+                    // followed by `*`. Escaped spellings and all other uses
+                    // remain ordinary default bindings named `defer`.
+                    if (strings.eqlComptime(default_name_raw, "defer") and p.lexer.token == .t_asterisk and !opts.is_export) {
+                        if (!opts.is_module_scope and (!opts.is_namespace_scope or !opts.is_typescript_declare)) {
+                            try p.lexer.unexpected();
+                            return error.SyntaxError;
+                        }
+
+                        try p.lexer.next();
+                        try p.lexer.expectContextualKeyword("as");
+                        stmt = S.Import{
+                            .namespace_ref = try p.storeNameInRef(p.lexer.identifier),
+                            .star_name_loc = p.lexer.loc(),
+                            .import_record_index = std.math.maxInt(u32),
+                            .phase_defer = true,
+                        };
+                        try p.lexer.expect(.t_identifier);
+                        try p.lexer.expectContextualKeyword("from");
+
+                        const path = try p.parsePath();
+                        try p.lexer.expectOrInsertSemicolon();
+                        return try p.processImportStatement(stmt, path, loc, false);
+                    }
 
                     if (comptime is_typescript_enabled) {
                         // Skip over type-only imports
