@@ -580,6 +580,36 @@ pub const Engine = struct {
             const bm = self.interner.intersectionMembers(b);
             return std.mem.eql(TypeId, am, bm);
         }
+        // Signatures are declaration-scoped and therefore receive distinct
+        // TypeIds even when their call surfaces are identical. Conditional
+        // types compare their `extends` patterns by identity, so separately
+        // instantiated function patterns such as
+        // `(...args: infer P) => infer R` must compare structurally.
+        if (fa.is_signature and self.interner.isSignature(a) and self.interner.isSignature(b)) {
+            const a_payload = self.pool().signature_payloads.items[self.pool().payloadOf(a)];
+            const b_payload = self.pool().signature_payloads.items[self.pool().payloadOf(b)];
+            if (a_payload.is_construct != b_payload.is_construct or
+                a_payload.is_abstract_construct != b_payload.is_abstract_construct or
+                a_payload.has_this_type != b_payload.has_this_type)
+            {
+                return false;
+            }
+            const a_rest = self.rest_signatures != null and self.rest_signatures.?.contains(a);
+            const b_rest = self.rest_signatures != null and self.rest_signatures.?.contains(b);
+            if (a_rest != b_rest) return false;
+
+            const a_params = try self.gpa.dupe(TypeId, self.interner.signatureParams(a));
+            defer self.gpa.free(a_params);
+            const b_params = try self.gpa.dupe(TypeId, self.interner.signatureParams(b));
+            defer self.gpa.free(b_params);
+            if (a_params.len != b_params.len) return false;
+            for (a_params, b_params) |a_param, b_param| {
+                if (!try self.isIdenticalTo(a_param, b_param)) return false;
+            }
+            if (!try self.isIdenticalTo(a_payload.return_type, b_payload.return_type)) return false;
+            if (a_payload.has_this_type and !try self.isIdenticalTo(a_payload.this_type, b_payload.this_type)) return false;
+            return true;
+        }
         // Object types: structurally identical iff they have the
         // same members with the same names + types. Members are
         // stored in source declaration order (not sorted), so we
@@ -3122,6 +3152,55 @@ test "Engine: equivalent deferred conditionals relate through their branches" {
         Primitive.string_t,
         Primitive.boolean_t,
         true,
+    );
+    try T.expect(!try e.isAssignableTo(source, incompatible));
+}
+
+test "Engine: deferred conditional function patterns have structural identity" {
+    var ti = try Interner.init(T.allocator);
+    defer ti.deinit();
+    var e = try Engine.init(T.allocator, &ti);
+    defer e.deinit();
+    e.setStrictNullChecks(true);
+
+    const source_pattern = try ti.internSignature(&.{Primitive.unknown}, Primitive.unknown, false);
+    const target_pattern = try ti.internSignature(&.{Primitive.unknown}, Primitive.unknown, false);
+    const fixed_pattern = try ti.internSignature(&.{Primitive.unknown}, Primitive.unknown, false);
+    const incompatible_pattern = try ti.internSignature(&.{Primitive.unknown}, Primitive.string_t, false);
+    var rest: std.AutoHashMapUnmanaged(TypeId, void) = .empty;
+    defer rest.deinit(T.allocator);
+    try rest.put(T.allocator, source_pattern, {});
+    try rest.put(T.allocator, target_pattern, {});
+    try rest.put(T.allocator, incompatible_pattern, {});
+    e.setRestSignatures(&rest);
+
+    try T.expect(try e.isIdenticalTo(source_pattern, target_pattern));
+    try T.expect(!try e.isIdenticalTo(source_pattern, fixed_pattern));
+    try T.expect(!try e.isIdenticalTo(source_pattern, incompatible_pattern));
+
+    const source = try ti.internConditionalWithDistribution(
+        Primitive.unknown,
+        source_pattern,
+        Primitive.string_t,
+        Primitive.number_t,
+        false,
+    );
+    const target = try ti.internConditionalWithDistribution(
+        Primitive.unknown,
+        target_pattern,
+        Primitive.string_t,
+        Primitive.number_t,
+        false,
+    );
+    try T.expect(try e.isAssignableTo(source, target));
+    try T.expect(try e.isAssignableTo(target, source));
+
+    const incompatible = try ti.internConditionalWithDistribution(
+        Primitive.unknown,
+        target_pattern,
+        Primitive.string_t,
+        Primitive.boolean_t,
+        false,
     );
     try T.expect(!try e.isAssignableTo(source, incompatible));
 }
