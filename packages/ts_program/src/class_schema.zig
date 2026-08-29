@@ -107,10 +107,21 @@ pub const Builder = struct {
         else if (kind == .var_decl or kind == .let_decl or kind == .const_decl)
             try self.lower(context, hir.varDeclOf(&c.hir, key.node).type_annotation)
         else if (kind == .interface_decl)
-            if (hir.interfaceOf(&c.hir, key.node).extends_len != 0) try self.expression(.unsupported) else try self.object(context, hir.interfaceMembers(&c.hir, key.node))
+            try self.interfaceBody(context, key.node)
         else
             try self.classBody(context, key.node);
         return def;
+    }
+
+    fn interfaceBody(self: *Builder, context: Context, node: hir.NodeId) !*const schema.Expression {
+        const c = self.sources[context.source].compilation;
+        const own = try self.object(context, hir.interfaceMembers(&c.hir, node));
+        const bases = hir.interfaceExtends(&c.hir, node);
+        if (bases.len == 0) return own;
+        const members = try self.arena.alloc(*const schema.Expression, bases.len + 1);
+        for (bases, members[0..bases.len]) |base, *result| result.* = try self.lower(context, base);
+        members[bases.len] = own;
+        return self.expression(.{ .intersection = members });
     }
 
     fn classBody(self: *Builder, context: Context, node: hir.NodeId) !*const schema.Expression {

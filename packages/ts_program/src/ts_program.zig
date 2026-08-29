@@ -6900,7 +6900,7 @@ fn expectCompilationHasDiagnosticCode(c: *const ts_driver.Compilation, code: u32
 const NamespaceImportTestResolver = struct {
     resolver: *ts_resolver.Resolver,
 
-    const export_names = [_][]const u8{ "initialize", "$constructor" };
+    const export_names = [_][]const u8{ "initialize", "$constructor", "consume" };
 
     const vtable = ts_driver.ExternalResolver.VTable{
         .resolve = resolve,
@@ -6924,7 +6924,9 @@ const NamespaceImportTestResolver = struct {
         _: []const u8,
         name: []const u8,
     ) ?ts_driver.ExternalResolver.ModuleExport {
-        if (!std.mem.eql(u8, name, "initialize") and !std.mem.eql(u8, name, "$constructor")) return null;
+        if (!std.mem.eql(u8, name, "initialize") and
+            !std.mem.eql(u8, name, "$constructor") and
+            !std.mem.eql(u8, name, "consume")) return null;
         return .{
             .module_name = "\"barrel\"",
             .exported_type = false,
@@ -9089,6 +9091,45 @@ test "Program: namespace imports preserve defaulted indexed generic callbacks" {
     const named_compilation = p.fileById(named_consumer_id).compilation.?;
     try expectCompilationLacksDiagnosticCode(named_compilation, 7006);
     try expectCompilationLacksDiagnosticCode(named_compilation, 2322);
+    try expectCompilationLacksDiagnosticCode(compilation, 7006);
+    try expectCompilationLacksDiagnosticCode(compilation, 2322);
+}
+
+test "Program: namespace imports preserve callbacks through inherited interfaces" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver };
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+
+    const owner =
+        \\export interface Base<T> { value: T }
+        \\export interface Derived<T> extends Base<T> { enabled: boolean }
+        \\export function consume<T>(value: Derived<T>, callback: (item: T) => void): void {
+        \\  callback(value.value);
+        \\}
+    ;
+    const consumer =
+        \\import * as api from "./owner";
+        \\api.consume<number>({ value: 1, enabled: true }, item => {
+        \\  const exact: number = item;
+        \\  void exact;
+        \\});
+    ;
+    try vfs.addFile("/proj/owner.ts", owner);
+    try vfs.addFile("/proj/consumer.ts", consumer);
+    _ = try p.add("/proj/owner.ts", owner);
+    const consumer_id = try p.add("/proj/consumer.ts", consumer);
+
+    try p.compileAll(.{
+        .no_emit = true,
+        .strict_flags = .{ .no_implicit_any = true, .strict_null_checks = true },
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    });
+    const compilation = p.fileById(consumer_id).compilation.?;
+    try expectCompilationLacksDiagnosticCode(compilation, 2339);
     try expectCompilationLacksDiagnosticCode(compilation, 7006);
     try expectCompilationLacksDiagnosticCode(compilation, 2322);
 }
