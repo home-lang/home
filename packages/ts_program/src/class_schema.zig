@@ -254,6 +254,13 @@ pub const Builder = struct {
                 if (value.type_params_len != 0 or value.is_constructor) return self.expression(.unsupported);
                 return self.functionType(context, c.hir.child_pool.items[value.params_start..][0..value.params_len], value.return_type);
             },
+            .indexed_access_type => {
+                const indexed = hir.indexedAccessTypeOf(&c.hir, node);
+                return self.expression(.{ .indexed_access = .{
+                    .object = try self.lower(context, indexed.object),
+                    .index = try self.lower(context, indexed.index),
+                } });
+            },
             else => return self.expression(.unsupported),
         }
     }

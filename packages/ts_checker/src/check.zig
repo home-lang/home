@@ -106710,6 +106710,11 @@ pub const Checker = struct {
                 for (ref.arguments, values) |arg, *out| out.* = try self.lowerProgramExpression(arg, declaration, args);
                 return self.programDeclarationReference(ref.declaration, values, &.{});
             },
+            .indexed_access => |indexed| {
+                const object_t = try self.lowerProgramExpression(indexed.object, declaration, args);
+                const index_t = try self.lowerProgramExpression(indexed.index, declaration, args);
+                return self.interner.internIndexedAccess(object_t, index_t) catch return error.OutOfMemory;
+            },
         }
     }
 

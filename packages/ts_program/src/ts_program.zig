@@ -6900,7 +6900,7 @@ fn expectCompilationHasDiagnosticCode(c: *const ts_driver.Compilation, code: u32
 const NamespaceImportTestResolver = struct {
     resolver: *ts_resolver.Resolver,
 
-    const export_names = [_][]const u8{"initialize"};
+    const export_names = [_][]const u8{ "initialize", "$constructor" };
 
     const vtable = ts_driver.ExternalResolver.VTable{
         .resolve = resolve,
@@ -6924,7 +6924,7 @@ const NamespaceImportTestResolver = struct {
         _: []const u8,
         name: []const u8,
     ) ?ts_driver.ExternalResolver.ModuleExport {
-        if (!std.mem.eql(u8, name, "initialize")) return null;
+        if (!std.mem.eql(u8, name, "initialize") and !std.mem.eql(u8, name, "$constructor")) return null;
         return .{
             .module_name = "\"barrel\"",
             .exported_type = false,
@@ -9025,6 +9025,65 @@ test "Program: namespace imports preserve generic callbacks without a default ex
     try expectCompilationLacksDiagnosticCode(named_compilation, 7006);
     try expectCompilationLacksDiagnosticCode(named_compilation, 2322);
     try expectCompilationLacksDiagnosticCode(compilation, 2339);
+    try expectCompilationLacksDiagnosticCode(compilation, 7006);
+    try expectCompilationLacksDiagnosticCode(compilation, 2322);
+}
+
+test "Program: namespace imports preserve defaulted indexed generic callbacks" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver };
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+
+    const owner =
+        \\type Trait = { _zod: { def: unknown } };
+        \\export function $constructor<T extends Trait, D = T["_zod"]["def"]>(
+        \\  name: string,
+        \\  initializer: (inst: T, def: D) => void
+        \\): void {
+        \\  void name;
+        \\  void initializer;
+        \\}
+    ;
+    const consumer =
+        \\import * as core from "./owner";
+        \\interface Schema { _zod: { def: { kind: "schema" } } }
+        \\core.$constructor<Schema>("Schema", (inst, def) => {
+        \\  const exactInst: Schema = inst;
+        \\  const exactDef: { kind: "schema" } = def;
+        \\  void exactInst;
+        \\  void exactDef;
+        \\});
+    ;
+    const named_consumer =
+        \\import { $constructor } from "./owner";
+        \\interface Schema { _zod: { def: { kind: "schema" } } }
+        \\$constructor<Schema>("Schema", (inst, def) => {
+        \\  const exactInst: Schema = inst;
+        \\  const exactDef: { kind: "schema" } = def;
+        \\  void exactInst;
+        \\  void exactDef;
+        \\});
+    ;
+    try vfs.addFile("/proj/owner.ts", owner);
+    try vfs.addFile("/proj/consumer.ts", consumer);
+    try vfs.addFile("/proj/named-consumer.ts", named_consumer);
+    _ = try p.add("/proj/owner.ts", owner);
+    const consumer_id = try p.add("/proj/consumer.ts", consumer);
+    const named_consumer_id = try p.add("/proj/named-consumer.ts", named_consumer);
+
+    try p.compileAll(.{
+        .no_emit = true,
+        .strict_flags = .{ .no_implicit_any = true, .strict_null_checks = true },
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    });
+    const compilation = p.fileById(consumer_id).compilation.?;
+    const named_compilation = p.fileById(named_consumer_id).compilation.?;
+    try expectCompilationLacksDiagnosticCode(named_compilation, 7006);
+    try expectCompilationLacksDiagnosticCode(named_compilation, 2322);
     try expectCompilationLacksDiagnosticCode(compilation, 7006);
     try expectCompilationLacksDiagnosticCode(compilation, 2322);
 }

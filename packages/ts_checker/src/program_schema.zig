@@ -24,6 +24,7 @@ pub const Member = struct {
 pub const Element = struct { type: *const Expression, optional: bool = false, rest: bool = false };
 pub const Function = struct { parameters: []const Element, result: *const Expression, this_type: ?*const Expression = null };
 pub const Reference = struct { declaration: *const Declaration, arguments: []const *const Expression };
+pub const IndexedAccess = struct { object: *const Expression, index: *const Expression };
 pub const Expression = union(enum) {
     primitive: types.TypeId,
     parameter: *const Parameter,
@@ -38,6 +39,7 @@ pub const Expression = union(enum) {
     intersection: []const *const Expression,
     function: Function,
     reference: Reference,
+    indexed_access: IndexedAccess,
     unsupported,
 };
 
@@ -97,6 +99,10 @@ pub const Schema = struct {
                 .reference => |ref| {
                     try appendDeclaration(gpa, &pending, ref.declaration);
                     try pending.appendSlice(gpa, ref.arguments);
+                },
+                .indexed_access => |indexed| {
+                    try pending.append(gpa, indexed.object);
+                    try pending.append(gpa, indexed.index);
                 },
             }
         }
