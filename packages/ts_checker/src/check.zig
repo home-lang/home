@@ -109876,7 +109876,7 @@ pub const Checker = struct {
                     const callee_name = hir_mod.identifierOf(self.hir, c.callee).name;
                     if (self.generic_fns.get(callee_name)) |type_params| {
                         callee_had_generic_record = true;
-                        if (type_arg_nodes.len != type_params.len) {
+                        if (!self.typeArgumentCountMatches(type_params, type_arg_nodes.len)) {
                             explicit_type_arg_resolution_failed = true;
                             const msg = try std.fmt.allocPrint(
                                 self.diag_arena.allocator(),
@@ -109911,6 +109911,7 @@ pub const Checker = struct {
                             }
                             try subs.put(self.gpa, type_params[i], explicit_t);
                         }
+                        try self.applyGenericSignatureDefaults(callee_t, &subs);
                         if (subs.count() > 0) {
                             effective_callee_t = self.substituteType(callee_t, &subs) catch callee_t;
                             used_explicit_type_args = true;
@@ -109920,7 +109921,7 @@ pub const Checker = struct {
                 if (type_arg_nodes.len > 0 and !callee_had_generic_record and self.interner.isSignature(effective_callee_t)) {
                     if (self.generic_signature_params.get(effective_callee_t)) |type_params| {
                         callee_had_generic_record = true;
-                        if (type_arg_nodes.len != type_params.len) {
+                        if (!self.typeArgumentCountMatches(type_params, type_arg_nodes.len)) {
                             explicit_type_arg_resolution_failed = true;
                             const msg = try std.fmt.allocPrint(
                                 self.diag_arena.allocator(),
@@ -109950,6 +109951,7 @@ pub const Checker = struct {
                             }
                             try subs.put(self.gpa, type_params[i], explicit_t);
                         }
+                        try self.applyGenericSignatureDefaults(effective_callee_t, &subs);
                         if (subs.count() > 0) {
                             effective_callee_t = self.substituteType(effective_callee_t, &subs) catch effective_callee_t;
                             used_explicit_type_args = true;
@@ -125621,7 +125623,7 @@ pub const Checker = struct {
         used_explicit_type_args.* = false;
         if (type_arg_nodes.len == 0) return sig;
         const type_params = self.generic_signature_params.get(sig) orelse return sig;
-        if (type_arg_nodes.len != type_params.len) {
+        if (!self.typeArgumentCountMatches(type_params, type_arg_nodes.len)) {
             const msg = try std.fmt.allocPrint(
                 self.diag_arena.allocator(),
                 "Expected {d} type arguments, but got {d}.",
@@ -125656,6 +125658,7 @@ pub const Checker = struct {
             try subs.put(self.gpa, type_params[i], explicit_t);
             try explicit_types.append(self.gpa, explicit_t);
         }
+        try self.applyGenericSignatureDefaults(sig, &subs);
         if (explicit_types.items.len > 0) {
             try self.addExplicitTypeArgNameSubstitutions(
                 sig,
@@ -158558,8 +158561,34 @@ pub const Checker = struct {
         return type_params.len;
     }
 
+    fn typeParameterHasDefault(self: *Checker, parameter: TypeId) bool {
+        if (parameter < self.interner.pool.typeCount() and
+            self.interner.pool.flagsOf(parameter).is_type_parameter)
+        {
+            const payload = self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(parameter)];
+            if (payload.default != types.Primitive.none) return true;
+        }
+        const declaration = self.type_parameter_decl_nodes.get(parameter) orelse
+            self.type_parameter_decl_nodes.get(self.resolvedTypeParameterPlaceholder(parameter)) orelse return false;
+        return self.hir.kindOf(declaration) == .type_parameter and
+            hir_mod.typeParameterOf(self.hir, declaration).default != hir_mod.none_node_id;
+    }
+
+    fn minimumTypeArgumentCount(self: *Checker, type_params: []const TypeId) usize {
+        var minimum: usize = 0;
+        for (type_params, 0..) |parameter, index| {
+            if (!self.typeParameterHasDefault(parameter)) minimum = index + 1;
+        }
+        return minimum;
+    }
+
+    fn typeArgumentCountMatches(self: *Checker, type_params: []const TypeId, arg_count: usize) bool {
+        return arg_count >= self.minimumTypeArgumentCount(type_params) and arg_count <= type_params.len;
+    }
+
     fn signatureTypeArgCountMatches(self: *Checker, sig: TypeId, arg_count: usize) bool {
-        return self.signatureTypeArgCount(sig) == arg_count;
+        const type_params = self.generic_signature_params.get(sig) orelse return arg_count == 0;
+        return self.typeArgumentCountMatches(type_params, arg_count);
     }
 
     fn overloadTypeArgCountMatchesAny(self: *Checker, overloads: []const TypeId, arg_count: usize) bool {
@@ -215861,6 +215890,22 @@ test "checker: explicit type args override call-site inference" {
     const s_decl = stmts[2];
     try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(n_decl));
     try T.expectEqual(types.Primitive.string_t, s.hir.typeOf(s_decl));
+}
+
+test "checker: explicit type args fill trailing generic defaults" {
+    const s = try newSetup(
+        \\function factory<T, D = T>(value: T, callback: (definition: D) => void): D {
+        \\  return null as any;
+        \\}
+        \\const result = factory<string>("value", (definition) => {
+        \\  const exact: string = definition;
+        \\});
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.expected_n_type_arguments));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.parameter_implicitly_any));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: explicit type args take precedence over inference" {
