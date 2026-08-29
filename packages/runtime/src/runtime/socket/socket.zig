@@ -777,6 +777,46 @@ pub fn NewSocket(comptime ssl: bool) type {
             }
         }
 
+        /// A resumable session parked by the native TLS callback is delivered
+        /// only after SSL_read/SSL_do_handshake has unwound, so the JS handler
+        /// may close this socket safely.
+        pub fn onSession(this: *This, session: []const u8) bun.JSError!void {
+            return this.onTLSBufferEvent(session, "onSession");
+        }
+
+        /// Deliver one NSS key-log line after the native TLS stack unwinds.
+        pub fn onKeylog(this: *This, line: []const u8) bun.JSError!void {
+            return this.onTLSBufferEvent(line, "onKeylog");
+        }
+
+        fn onTLSBufferEvent(this: *This, bytes: []const u8, comptime field: []const u8) bun.JSError!void {
+            jsc.markBinding(@src());
+            if (this.socket.isDetached() or this.handlers == null) return;
+
+            const handlers = this.getHandlers();
+            if (handlers.vm.isShuttingDown()) return;
+            const callback = @field(handlers, field);
+            if (callback == .zero) return;
+
+            var scope = handlers.enter();
+            const globalObject = handlers.globalObject;
+            const this_value = this.getThisValue(globalObject);
+            const buffer = JSValue.createBufferFromLength(globalObject, bytes.len) catch |err| {
+                if (scope.exit()) this.handlers = null;
+                return err;
+            };
+            if (buffer.asArrayBuffer(globalObject)) |array_buffer| {
+                @memcpy(array_buffer.byteSlice(), bytes);
+            }
+
+            const result = callback.call(globalObject, this_value, &.{ this_value, buffer }) catch |err|
+                globalObject.takeException(err);
+            if (result.toError()) |err_value| {
+                _ = handlers.callErrorHandler(this_value, &.{ this_value, err_value });
+            }
+            if (scope.exit()) this.handlers = null;
+        }
+
         pub fn onClose(this: *This, socket: Socket, err: c_int, reason: ?*anyopaque) bun.JSError!void {
             jsc.markBinding(@src());
             const handlers = this.getHandlers();
@@ -1971,6 +2011,14 @@ pub const DuplexUpgradeContext = struct {
         }
     }
 
+    fn onSession(this: *DuplexUpgradeContext, session: []const u8) void {
+        if (this.tls) |tls| tls.onSession(session) catch {};
+    }
+
+    fn onKeylog(this: *DuplexUpgradeContext, line: []const u8) void {
+        if (this.tls) |tls| tls.onKeylog(line) catch {};
+    }
+
     fn onHandshake(this: *DuplexUpgradeContext, success: bool, ssl_error: uws.us_bun_verify_error_t) void {
         const socket = TLSSocket.Socket.fromDuplex(&this.upgrade);
 
@@ -2267,6 +2315,8 @@ pub fn jsUpgradeDuplexToTLS(globalObject: *jsc.JSGlobalObject, callframe: *jsc.C
         .onWritable = @ptrCast(&DuplexUpgradeContext.onWritable),
         .onError = @ptrCast(&DuplexUpgradeContext.onError),
         .onTimeout = @ptrCast(&DuplexUpgradeContext.onTimeout),
+        .onSession = @ptrCast(&DuplexUpgradeContext.onSession),
+        .onKeylog = @ptrCast(&DuplexUpgradeContext.onKeylog),
         .ctx = @ptrCast(duplexContext),
     });
 

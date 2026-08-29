@@ -671,3 +671,60 @@ Native build **17/17**; runtime units **1,828 pass / 19 skip / 0 fail**, **19/19
 Evidence: `zig-out/tls532-build5-binary.json`, `tls532-unit2.{json,log}`, `tls532-candidate5.json`, `tls532-expanded5.json`, `tls532-expanded-release1.json`, `tls532-broader-parent2.json`, `tls532-native-{parent1,control6,destruction5}.json`, `tls532-regression5s.json`, `tls532-final5-results.json`, `tls532-corpus-integrity1.json`, `tls532-implementation-integrity1.json` and `tls532-source-snapshot5.json`. All **249 measured TLS test/harness/fixture sources**, **48 HTTP/regression sources** and **13 consulted TLS implementations** match the pin. Earlier build failures, the incomplete disk-exhausted parent1 attempt and the incorrect initial control assertion remain recorded; parent2 is the complete replay. Only owned reproducible objects were removed; older executable controls were losslessly archived and decompressed hashes checked. Required control executables stayed available. Final executable SHA-256: `d9649de0fa31c3b0fa935b909cf09e028a088be76bc407e29d66a8927b889e9e`.
 
 Verification used a shared Darwin checkout; unrelated compiler changes are excluded from this checkpoint. Pinned C/C++/JSC dependencies remain, with no Rust archive. #532 retains platform/integration scope; #542/#543, HTTP/3 reliability [#539](https://github.com/home-lang/home/issues/539), skipped/TODO behavior, full source ownership and **100% logical Bun-suite compatibility under #66 remain unfinished**.
+
+## Native TLS session and keylog delivery (#543)
+
+Native TLS sockets now retain serialized session and NSS keylog payloads until the
+Zig/JavaScript dispatch boundary can safely deliver them. The uSockets layer owns
+FIFO copies on the `SSL`, releases them with the connection, and flushes session
+events before keylog and application data. The socket layer copies each payload
+into the exact JavaScript `Buffer` visible to listeners. Callback dispatch checks
+for socket destruction between events, so a `session` listener or a same-read data
+listener may close the socket without a later use-after-free. The same handlers and
+ordering apply to direct TCP TLS, upgraded Duplex TLS and the named-pipe wrapper
+surface.
+
+`net.ts` retains TLS 1.2 sessions until `secureConnect`, forwards client session and
+keylog callbacks through both direct and upgraded socket tables, and propagates
+server keylog events. The generated socket descriptor and its checked-in Zig
+fallback now include both handlers. The former strong no-op exports are removed;
+the real dispatch functions reject non-TLS, null and negative-length inputs before
+entering JavaScript.
+
+The unchanged `test/js/node/tls/node-tls-connect.test.ts` advances from the
+published parent's **26 pass / 4 fail / 1 skip / 102 assertions** to **28 pass / 2
+fail / 1 skip / 106 assertions**, exactly matching the pinned Bun release. The two
+remaining failures inspect live `bun.sh` OCSP metadata and reproduce in pinned Bun;
+they are not counted as repaired. The original Duplex session/keylog case and the
+session-before-destructive-data-callback case both pass with their original
+five-second deadlines.
+
+The new native lifetime regression covers Buffer shapes, newline-terminated NSS
+keylog format, server TLSSocket propagation, session-before-data ordering,
+destruction inside a session callback, Duplex wrapper teardown and forced GC. It
+passes **20/20 independent process repetitions**. The adjacent unchanged TLS files
+are **47 pass / 2 skip / 7 fail / 424 assertions**; all seven failures remain the
+SNI/ALPN callback work tracked in [#542](https://github.com/home-lang/home/issues/542).
+
+Final verification: native build **17/17 steps**, runtime units **1,828 pass / 19
+skips / 0 failures** with **19/19 build steps**, and **62/62 sequential runtime
+regression commands**. Scoped Pickier, Zig formatting and whitespace checks pass.
+The candidate executable SHA-256 is
+`ad1800ecef37c99a21f912ed45e56653f994cfaddc340f2435f6b90b9451b757`.
+
+The debug build currently links the pinned Bun release object
+`build/release/obj/packages/bun-usockets/src/crypto/openssl.c.o`; that object already
+contains the pending-event ABI used here. Home's checked-in `openssl.c` now carries
+the corresponding logical source implementation and compiles cleanly with the
+release object's exact compile-command flags and Home's headers, but this checkpoint
+does not claim that Home rebuilt or owns the linked native dependency. Verification
+used the shared Darwin checkout; Windows/Linux execution, branch integration,
+[#542](https://github.com/home-lang/home/issues/542), skipped/TODO behavior, full
+native source ownership and **100% logical Bun-suite compatibility under
+[#66](https://github.com/home-lang/home/issues/66) remain unfinished**.
+
+Evidence: `zig-out/tls543-unit-final.log`, `tls543-regressions.json`,
+`tls543-repeat.json`, focused complete-file and adjacent TLS run records, and the
+successful transformed release compile command for Home's `openssl.c`. The initial
+unrelated `Bun.ArrayBufferSink` unit trap passed on direct replay and the complete
+cached rerun; it is not counted as a successful run.

@@ -77,6 +77,7 @@ const ksocket = Symbol("ksocket");
 const khandlers = Symbol("khandlers");
 const kclosed = Symbol("closed");
 const kended = Symbol("ended");
+const kpendingSession = Symbol("pendingSession");
 const kwriteCallback = Symbol("writeCallback");
 const kSocketClass = Symbol("kSocketClass");
 
@@ -186,6 +187,21 @@ const SocketHandlers: SocketHandler = {
     // we just reuse the same code but we can push null or enqueue right away
     SocketEmitEndNT(self);
   },
+  session(socket, session) {
+    const self = socket.data;
+    if (!self) return;
+    if (self._secureEstablished) {
+      self.emit("session", session);
+    } else {
+      self[kpendingSession] = session;
+    }
+  },
+  keylog(socket, line) {
+    const self = socket.data;
+    if (!self) return;
+    self.emit("keylog", line);
+    self.server?.emit?.("keylog", line, self);
+  },
   error(socket, error) {
     const self = socket.data;
     if (!self) return;
@@ -275,6 +291,11 @@ const SocketHandlers: SocketHandler = {
     }
     self.emit("secureConnect", verifyError);
     self.removeListener("end", onConnectEnd);
+    const pendingSession = self[kpendingSession];
+    if (pendingSession) {
+      self[kpendingSession] = null;
+      self.emit("session", pendingSession);
+    }
   },
   timeout(socket) {
     const self = socket.data;
@@ -309,6 +330,12 @@ const ServerHandlers: SocketHandler<NetSocket> = {
     if (!self.push(buffer)) {
       socket.pause();
     }
+  },
+  keylog(socket, line) {
+    const { data: self } = socket;
+    if (!self) return;
+    self.emit("keylog", line);
+    self.server?.emit?.("keylog", line, self);
   },
   close(socket, err) {
     $debug("Bun.Server close");
@@ -540,6 +567,20 @@ const SocketHandlers2: SocketHandler<NonNullable<import("node:net").Socket["_han
     self.push(null);
     self.read(0);
   },
+  session(socket, session) {
+    const { self } = socket.data;
+    if (!self) return;
+    if (self._secureEstablished) {
+      self.emit("session", session);
+    } else {
+      self[kpendingSession] = session;
+    }
+  },
+  keylog(socket, line) {
+    const { self } = socket.data;
+    if (!self) return;
+    self.emit("keylog", line);
+  },
   close(socket, err) {
     $debug("Bun.Socket close");
     let { self } = socket.data;
@@ -590,6 +631,11 @@ const SocketHandlers2: SocketHandler<NonNullable<import("node:net").Socket["_han
     }
     self.emit("secureConnect", verifyError);
     self.removeListener("end", onConnectEnd);
+    const pendingSession = self[kpendingSession];
+    if (pendingSession) {
+      self[kpendingSession] = null;
+      self.emit("session", pendingSession);
+    }
   },
   error(socket, error) {
     $debug("Bun.Socket error");

@@ -3236,6 +3236,8 @@ pub const jsc = struct {
             onEnd: JSValue = .zero,
             onError: JSValue = .zero,
             onHandshake: JSValue = .zero,
+            onSession: JSValue = .zero,
+            onKeylog: JSValue = .zero,
 
             pub fn fromJS(globalObject: *JSGlobalObject, value: JSValue) JSError!SocketConfigHandlers {
                 // Read the socket handler callbacks from the `socket` options
@@ -3251,7 +3253,8 @@ pub const jsc = struct {
                     .{ "data", "onData" },           .{ "drain", "onWritable" },
                     .{ "timeout", "onTimeout" },     .{ "connectError", "onConnectError" },
                     .{ "end", "onEnd" },             .{ "error", "onError" },
-                    .{ "handshake", "onHandshake" },
+                    .{ "handshake", "onHandshake" }, .{ "session", "onSession" },
+                    .{ "keylog", "onKeylog" },
                 };
                 inline for (pairs) |pair| {
                     if (try value.get(globalObject, pair[0])) |v| {

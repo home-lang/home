@@ -62,6 +62,8 @@ pub const Handlers = struct {
     onWritable: *const fn (*anyopaque) void,
     onError: *const fn (*anyopaque, bun.sys.Error) void,
     onTimeout: *const fn (*anyopaque) void,
+    onSession: ?*const fn (*anyopaque, []const u8) void = null,
+    onKeylog: ?*const fn (*anyopaque, []const u8) void = null,
 };
 
 fn onWritable(
@@ -72,6 +74,14 @@ fn onWritable(
     this.flush();
     // call onWritable (will flush on demand)
     this.handlers.onWritable(this.handlers.ctx);
+}
+
+fn onSession(this: *WindowsNamedPipe, session: []const u8) void {
+    if (this.handlers.onSession) |callback| callback(this.handlers.ctx, session);
+}
+
+fn onKeylog(this: *WindowsNamedPipe, line: []const u8) void {
+    if (this.handlers.onKeylog) |callback| callback(this.handlers.ctx, line);
 }
 
 fn onPipeClose(this: *WindowsNamedPipe) void {
@@ -368,6 +378,8 @@ pub fn getAcceptedBy(this: *WindowsNamedPipe, server: *uv.Pipe, ssl_ctx: ?*Borin
             .onData = WindowsNamedPipe.onData,
             .onClose = WindowsNamedPipe.onClose,
             .write = WindowsNamedPipe.internalWrite,
+            .onSession = if (this.handlers.onSession != null) WindowsNamedPipe.onSession else null,
+            .onKeylog = if (this.handlers.onKeylog != null) WindowsNamedPipe.onKeylog else null,
         }) catch {
             return .{
                 .err = .{
@@ -463,6 +475,8 @@ fn initTLSWrapper(this: *WindowsNamedPipe, ssl_options: ?jsc.API.ServerConfig.SS
         .onData = WindowsNamedPipe.onData,
         .onClose = WindowsNamedPipe.onClose,
         .write = WindowsNamedPipe.internalWrite,
+        .onSession = if (this.handlers.onSession != null) WindowsNamedPipe.onSession else null,
+        .onKeylog = if (this.handlers.onKeylog != null) WindowsNamedPipe.onKeylog else null,
     };
     if (owned_ctx) |ctx| {
         this.flags.is_ssl = true;
@@ -492,6 +506,8 @@ pub fn startTLS(this: *WindowsNamedPipe, ssl_options: jsc.API.ServerConfig.SSLCo
             .onData = WindowsNamedPipe.onData,
             .onClose = WindowsNamedPipe.onClose,
             .write = WindowsNamedPipe.internalWrite,
+            .onSession = if (this.handlers.onSession != null) WindowsNamedPipe.onSession else null,
+            .onKeylog = if (this.handlers.onKeylog != null) WindowsNamedPipe.onKeylog else null,
         });
 
         this.wrapper.?.start();

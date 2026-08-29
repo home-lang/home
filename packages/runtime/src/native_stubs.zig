@@ -27,7 +27,6 @@ test "unsupported encoded callbacks return JavaScript undefined, never the empty
     try @import("std").testing.expectEqual(@as(usize, 0xa), unsupportedEncoded());
 }
 fn noopDetached(_: ?*anyopaque, _: usize) callconv(.c) void {}
-fn noopDispatch(_: ?*anyopaque, _: ?*const u8, _: c_int) callconv(.c) void {}
 extern fn u_hasBinaryProperty(c: c_int, which: c_int) callconv(.c) u8;
 fn icuHasBinaryProperty(c: u32, which: c_uint) callconv(.c) bool {
     return u_hasBinaryProperty(@intCast(c), @intCast(which)) != 0;
@@ -55,13 +54,6 @@ comptime {
         "NetworkSink__controllerDetached",
     }) |name| {
         @export(&noopDetached, .{ .name = name });
-    }
-
-    for ([_][]const u8{
-        "us_dispatch_keylog",
-        "us_dispatch_session",
-    }) |name| {
-        @export(&noopDispatch, .{ .name = name });
     }
 
     for ([_][]const u8{

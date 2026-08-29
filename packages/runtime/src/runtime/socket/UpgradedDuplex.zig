@@ -57,6 +57,8 @@ pub const Handlers = struct {
     onWritable: *const fn (*anyopaque) void,
     onError: *const fn (*anyopaque, jsc.JSValue) void,
     onTimeout: *const fn (*anyopaque) void,
+    onSession: ?*const fn (*anyopaque, []const u8) void = null,
+    onKeylog: ?*const fn (*anyopaque, []const u8) void = null,
 };
 
 fn onOpen(this: *UpgradedDuplex) void {
@@ -67,6 +69,14 @@ fn onOpen(this: *UpgradedDuplex) void {
 fn onData(this: *UpgradedDuplex, decoded_data: []const u8) void {
     log("onData ({})", .{decoded_data.len});
     this.handlers.onData(this.handlers.ctx, decoded_data);
+}
+
+fn onSession(this: *UpgradedDuplex, session: []const u8) void {
+    if (this.handlers.onSession) |callback| callback(this.handlers.ctx, session);
+}
+
+fn onKeylog(this: *UpgradedDuplex, line: []const u8) void {
+    if (this.handlers.onKeylog) |callback| callback(this.handlers.ctx, line);
 }
 
 fn onHandshake(this: *UpgradedDuplex, handshake_success: bool, ssl_error: uws.us_bun_verify_error_t) void {
@@ -349,6 +359,8 @@ pub fn startTLS(this: *UpgradedDuplex, ssl_options: jsc.API.ServerConfig.SSLConf
         .onData = UpgradedDuplex.onData,
         .onClose = UpgradedDuplex.onClose,
         .write = UpgradedDuplex.internalWrite,
+        .onSession = if (this.handlers.onSession != null) UpgradedDuplex.onSession else null,
+        .onKeylog = if (this.handlers.onKeylog != null) UpgradedDuplex.onKeylog else null,
     });
 
     this.wrapper.?.start();
@@ -367,6 +379,8 @@ pub fn startTLSWithCTX(this: *UpgradedDuplex, ctx: *bun.BoringSSL.c.SSL_CTX, is_
         .onData = UpgradedDuplex.onData,
         .onClose = UpgradedDuplex.onClose,
         .write = UpgradedDuplex.internalWrite,
+        .onSession = if (this.handlers.onSession != null) UpgradedDuplex.onSession else null,
+        .onKeylog = if (this.handlers.onKeylog != null) UpgradedDuplex.onKeylog else null,
     });
 
     this.wrapper.?.start();

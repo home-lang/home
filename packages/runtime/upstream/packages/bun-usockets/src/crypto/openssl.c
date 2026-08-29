@@ -118,6 +118,12 @@ static int us_sni_ex_idx = -1;
 static int us_ctx_cache_ex_idx = -1;
 static int us_ssl_reneg_state_idx = -1;
 static int us_ssl_listener_ex_idx = -1;
+/* Only SSLs owned by Bun's node:tls sockets or an opted-in SSLWrapper park
+ * session/keylog events. Other TLS consumers avoid the serialization cost. */
+static int us_ssl_pending_events_ex_idx = -1;
+static int us_ssl_pending_session_idx = -1;
+static int us_ssl_pending_keylog_idx = -1;
+extern const unsigned char BUN_SOCKET_KIND_BUN_SOCKET_TLS;
 #ifdef _WIN32
 static INIT_ONCE us_ex_idx_once = INIT_ONCE_STATIC_INIT;
 #else
@@ -145,6 +151,71 @@ static void us_ssl_reneg_state_free(void *parent, void *ptr, CRYPTO_EX_DATA *ad,
   us_free(ptr);
 }
 
+#define US_SSL_PENDING_SESSION_MAX 65536
+#define US_SSL_PENDING_KEYLOG_LINE_MAX 4096
+
+struct us_ssl_pending_event_t {
+  struct us_ssl_pending_event_t *next;
+  uint32_t length;
+  unsigned char data[];
+};
+
+static void us_ssl_pending_event_free(void *parent, void *ptr, CRYPTO_EX_DATA *ad,
+                                      int index, long argl, void *argp) {
+  (void)parent; (void)ad; (void)index; (void)argl; (void)argp;
+  struct us_ssl_pending_event_t *pending = ptr;
+  while (pending) {
+    struct us_ssl_pending_event_t *next = pending->next;
+    us_free(pending);
+    pending = next;
+  }
+}
+
+static void us_ssl_pending_append(SSL *ssl, int index,
+                                  struct us_ssl_pending_event_t *pending) {
+  struct us_ssl_pending_event_t *head = SSL_get_ex_data(ssl, index);
+  if (!head) {
+    SSL_set_ex_data(ssl, index, pending);
+    return;
+  }
+  while (head->next) head = head->next;
+  head->next = pending;
+}
+
+/* BoringSSL invokes both callbacks from inside handshake/read frames. Never
+ * run JS there: copy each payload to an SSL-owned FIFO and drain it only after
+ * the TLS stack unwinds. */
+static int us_ssl_new_session_cb(SSL *ssl, SSL_SESSION *session) {
+  if (!SSL_get_ex_data(ssl, us_ssl_pending_events_ex_idx)) return 0;
+  int length = i2d_SSL_SESSION(session, NULL);
+  if (length <= 0 || length > US_SSL_PENDING_SESSION_MAX) return 0;
+
+  struct us_ssl_pending_event_t *pending =
+      us_malloc(sizeof(struct us_ssl_pending_event_t) + (size_t)length);
+  if (!pending) return 0;
+  unsigned char *out = pending->data;
+  pending->length = (uint32_t)i2d_SSL_SESSION(session, &out);
+  pending->next = NULL;
+  us_ssl_pending_append(ssl, us_ssl_pending_session_idx, pending);
+  return 0;
+}
+
+static void us_ssl_keylog_cb(const SSL *const_ssl, const char *line) {
+  SSL *ssl = (SSL *)const_ssl;
+  if (!SSL_get_ex_data(ssl, us_ssl_pending_events_ex_idx)) return;
+  size_t line_length = strlen(line);
+  if (!line_length || line_length > US_SSL_PENDING_KEYLOG_LINE_MAX) return;
+
+  struct us_ssl_pending_event_t *pending =
+      us_malloc(sizeof(struct us_ssl_pending_event_t) + line_length + 1);
+  if (!pending) return;
+  memcpy(pending->data, line, line_length);
+  pending->data[line_length] = '\n';
+  pending->length = (uint32_t)(line_length + 1);
+  pending->next = NULL;
+  us_ssl_pending_append(ssl, us_ssl_pending_keylog_idx, pending);
+}
+
 /* Defined in Zig (`SSLContextCache.zig`): tombstones the cache entry on
  * SSL_CTX refcount→0 so the per-VM weak SSL_CTX cache learns the pointer is
  * dead without holding a ref of its own. */
@@ -157,6 +228,9 @@ static void us_ex_idx_init(void) {
   us_ctx_cache_ex_idx = SSL_CTX_get_ex_new_index(0, NULL, NULL, NULL, bun_ssl_ctx_cache_on_free);
   us_ssl_reneg_state_idx = SSL_get_ex_new_index(0, NULL, NULL, NULL, us_ssl_reneg_state_free);
   us_ssl_listener_ex_idx = SSL_get_ex_new_index(0, NULL, NULL, NULL, NULL);
+  us_ssl_pending_events_ex_idx = SSL_get_ex_new_index(0, NULL, NULL, NULL, NULL);
+  us_ssl_pending_session_idx = SSL_get_ex_new_index(0, NULL, NULL, NULL, us_ssl_pending_event_free);
+  us_ssl_pending_keylog_idx = SSL_get_ex_new_index(0, NULL, NULL, NULL, us_ssl_pending_event_free);
 }
 
 #ifdef _WIN32
@@ -178,6 +252,63 @@ static inline void us_ex_idx_ensure(void) {
 static inline int us_ssl_ctx_ex_idx(void) {
   us_ex_idx_ensure();
   return us_ctx_ex_idx;
+}
+
+void us_ssl_enable_pending_events(SSL *ssl) {
+  us_ex_idx_ensure();
+  SSL_set_ex_data(ssl, us_ssl_pending_events_ex_idx, (void *)1);
+}
+
+static int us_ssl_pop_pending(SSL *ssl, int index,
+                              unsigned char *out, int out_cap) {
+  if (!ssl || !out || out_cap <= 0 || index < 0) return 0;
+  struct us_ssl_pending_event_t *pending = SSL_get_ex_data(ssl, index);
+  if (!pending) return 0;
+  SSL_set_ex_data(ssl, index, pending->next);
+  int length = pending->length <= (uint32_t)out_cap ? (int)pending->length : 0;
+  if (length) memcpy(out, pending->data, (size_t)length);
+  us_free(pending);
+  return length;
+}
+
+int us_ssl_pop_pending_session(SSL *ssl, unsigned char *out, int out_cap) {
+  return us_ssl_pop_pending(ssl, us_ssl_pending_session_idx, out, out_cap);
+}
+
+int us_ssl_pop_pending_keylog(SSL *ssl, unsigned char *out, int out_cap) {
+  return us_ssl_pop_pending(ssl, us_ssl_pending_keylog_idx, out, out_cap);
+}
+
+static void ssl_flush_pending_session(struct us_socket_t *s) {
+  if (!s->ssl || us_socket_is_closed(s)) return;
+  struct us_ssl_pending_event_t *pending =
+      SSL_get_ex_data(s_ssl(s), us_ssl_pending_session_idx);
+  if (!pending) return;
+  SSL_set_ex_data(s_ssl(s), us_ssl_pending_session_idx, NULL);
+  while (pending) {
+    struct us_ssl_pending_event_t *next = pending->next;
+    if (s->ssl && !us_socket_is_closed(s)) {
+      us_dispatch_session(s, pending->data, (int)pending->length);
+    }
+    us_free(pending);
+    pending = next;
+  }
+}
+
+static void ssl_flush_pending_keylog(struct us_socket_t *s) {
+  if (!s->ssl || us_socket_is_closed(s)) return;
+  struct us_ssl_pending_event_t *pending =
+      SSL_get_ex_data(s_ssl(s), us_ssl_pending_keylog_idx);
+  if (!pending) return;
+  SSL_set_ex_data(s_ssl(s), us_ssl_pending_keylog_idx, NULL);
+  while (pending) {
+    struct us_ssl_pending_event_t *next = pending->next;
+    if (s->ssl && !us_socket_is_closed(s)) {
+      us_dispatch_keylog(s, pending->data, (int)pending->length);
+    }
+    us_free(pending);
+    pending = next;
+  }
 }
 
 int us_ssl_ctx_cache_ex_idx(void) {
@@ -603,6 +734,12 @@ SSL_CTX *us_ssl_ctx_build_raw(struct us_bun_socket_context_options_t options,
     SSL_CTX_set_options(ssl_context, options.secure_options);
   }
 
+  SSL_CTX_set_session_cache_mode(ssl_context, SSL_SESS_CACHE_CLIENT |
+      SSL_SESS_CACHE_SERVER | SSL_SESS_CACHE_NO_INTERNAL |
+      SSL_SESS_CACHE_NO_AUTO_CLEAR);
+  SSL_CTX_sess_set_new_cb(ssl_context, us_ssl_new_session_cb);
+  SSL_CTX_set_keylog_callback(ssl_context, us_ssl_keylog_cb);
+
   return ssl_context;
 }
 
@@ -650,6 +787,10 @@ void us_internal_ssl_attach(struct us_socket_t *s, SSL_CTX *ctx,
   struct loop_ssl_data *loop_ssl_data = (struct loop_ssl_data *)s->group->loop->data.ssl_data;
 
   SSL *ssl = SSL_new(ctx);
+  if (ssl && (us_socket_kind(s) == BUN_SOCKET_KIND_BUN_SOCKET_TLS ||
+              (listener && listener->accept_kind == BUN_SOCKET_KIND_BUN_SOCKET_TLS))) {
+    us_ssl_enable_pending_events(ssl);
+  }
   SSL_set_bio(ssl, loop_ssl_data->shared_rbio, loop_ssl_data->shared_wbio);
   BIO_up_ref(loop_ssl_data->shared_rbio);
   BIO_up_ref(loop_ssl_data->shared_wbio);
@@ -1023,7 +1164,11 @@ restart:
           if (ssl_gone(s)) return NULL;
           err = SSL_ERROR_SSL;
         } else if (err == SSL_ERROR_ZERO_RETURN) {
-          /* Remote close_notify. Flush what we decrypted, then close. */
+          /* Tickets/keylog lines precede any decrypted bytes from this read.
+           * Deliver them first; the callback may close the socket. */
+          ssl_flush_pending_session(s);
+          ssl_flush_pending_keylog(s);
+          if (ssl_gone(s)) return NULL;
           if (read) {
             s = us_dispatch_data(s, loop_ssl_data->ssl_read_output + LIBUS_RECV_BUFFER_PADDING, read);
             if (!s || ssl_gone(s)) return NULL;
@@ -1060,6 +1205,9 @@ restart:
         }
         if (!read) break;
 
+        ssl_flush_pending_session(s);
+        ssl_flush_pending_keylog(s);
+        if (ssl_gone(s)) return NULL;
         s = us_dispatch_data(s, loop_ssl_data->ssl_read_output + LIBUS_RECV_BUFFER_PADDING, read);
         if (!s || ssl_gone(s)) return NULL;
         break;
@@ -1087,12 +1235,28 @@ restart:
     read += just_read;
 
     if (read == LIBUS_RECV_BUFFER_LENGTH) {
+      char *saved_input = loop_ssl_data->ssl_read_input;
+      unsigned int saved_length = loop_ssl_data->ssl_read_input_length;
+      unsigned int saved_offset = loop_ssl_data->ssl_read_input_offset;
+      ssl_flush_pending_session(s);
+      ssl_flush_pending_keylog(s);
+      if (ssl_gone(s)) return NULL;
       s = us_dispatch_data(s, loop_ssl_data->ssl_read_output + LIBUS_RECV_BUFFER_PADDING, read);
       if (!s || ssl_gone(s)) return NULL;
+      loop_ssl_data->ssl_read_input = saved_input;
+      loop_ssl_data->ssl_read_input_length = saved_length;
+      loop_ssl_data->ssl_read_input_offset = saved_offset;
+      loop_ssl_data->ssl_socket = s;
       read = 0;
       goto restart;
     }
   }
+
+  /* The read stack is fully unwound. Session callbacks run before the data
+   * consumer can destroy the socket, matching Node's NewSessionCallback order. */
+  ssl_flush_pending_session(s);
+  ssl_flush_pending_keylog(s);
+  if (ssl_gone(s)) return NULL;
 
   /* If the last SSL_write failed with WANT_READ and we've now read, give the
    * application a writable callback — but not if SSL_read just told us it

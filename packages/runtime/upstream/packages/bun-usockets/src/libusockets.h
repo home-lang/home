@@ -519,6 +519,11 @@ unsigned char us_socket_kind(us_socket_r s) nonnull_fn_decl;
 void us_socket_set_kind(us_socket_r s, unsigned char kind) nonnull_fn_decl;
 void us_socket_set_ssl_raw_tap(us_socket_r s, int enabled) nonnull_fn_decl;
 
+/* Parked TLS events for SSLWrapper owners without a us_socket_t. */
+void us_ssl_enable_pending_events(struct ssl_st *ssl);
+int us_ssl_pop_pending_session(struct ssl_st *ssl, unsigned char *out, int out_cap);
+int us_ssl_pop_pending_keylog(struct ssl_st *ssl, unsigned char *out, int out_cap);
+
 void us_socket_flush(us_socket_r s) nonnull_fn_decl;
 void us_socket_shutdown(us_socket_r s) nonnull_fn_decl;
 void us_socket_shutdown_read(us_socket_r s) nonnull_fn_decl;

@@ -62,6 +62,14 @@ fn onData(this: *WindowsNamedPipeContext, decoded_data: []const u8) void {
     }
 }
 
+fn onSession(this: *WindowsNamedPipeContext, session: []const u8) void {
+    if (this.socket == .tls) this.socket.tls.onSession(session) catch {};
+}
+
+fn onKeylog(this: *WindowsNamedPipeContext, line: []const u8) void {
+    if (this.socket == .tls) this.socket.tls.onKeylog(line) catch {};
+}
+
 fn onHandshake(this: *WindowsNamedPipeContext, success: bool, ssl_error: uws.us_bun_verify_error_t) void {
     switch (this.socket) {
         .tls => |tls| {
@@ -244,6 +252,8 @@ pub fn create(globalThis: *jsc.JSGlobalObject, socket: SocketType) *WindowsNamed
         .onError = @ptrCast(&WindowsNamedPipeContext.onError),
         .onTimeout = @ptrCast(&WindowsNamedPipeContext.onTimeout),
         .onClose = @ptrCast(&WindowsNamedPipeContext.onClose),
+        .onSession = @ptrCast(&WindowsNamedPipeContext.onSession),
+        .onKeylog = @ptrCast(&WindowsNamedPipeContext.onKeylog),
     }, vm);
     this.task = jsc.AnyTask.New(WindowsNamedPipeContext, WindowsNamedPipeContext.runEvent).init(this);
 

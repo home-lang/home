@@ -9,6 +9,8 @@ onConnectError: jsc.JSValue = .zero,
 onEnd: jsc.JSValue = .zero,
 onError: jsc.JSValue = .zero,
 onHandshake: jsc.JSValue = .zero,
+onSession: jsc.JSValue = .zero,
+onKeylog: jsc.JSValue = .zero,
 
 binary_type: BinaryType = .Buffer,
 
@@ -30,6 +32,8 @@ const callback_fields = .{
     "onEnd",
     "onError",
     "onHandshake",
+    "onSession",
+    "onKeylog",
 };
 
 pub fn markActive(this: *Handlers) void {
@@ -198,6 +202,8 @@ fn unprotect(this: *Handlers) void {
     this.onEnd.unprotect();
     this.onError.unprotect();
     this.onHandshake.unprotect();
+    this.onSession.unprotect();
+    this.onKeylog.unprotect();
 }
 
 fn withAsyncContextIfNeeded(this: *Handlers, globalObject: *jsc.JSGlobalObject) void {
@@ -222,6 +228,8 @@ fn protect(this: *Handlers) void {
     this.onEnd.protect();
     this.onError.protect();
     this.onHandshake.protect();
+    this.onSession.protect();
+    this.onKeylog.protect();
 }
 
 /// `handlers` is always `protect`ed in this struct.
