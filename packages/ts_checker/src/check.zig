@@ -67290,6 +67290,7 @@ pub const Checker = struct {
         source: TypeId,
         target: TypeId,
     ) CheckError!bool {
+        if (target == types.Primitive.any or target == types.Primitive.unknown) return true;
         const target_has_no_index = target < self.interner.pool.typeCount() and
             self.interner.objectStringIndex(target) == types.Primitive.none and
             self.interner.objectNumberIndex(target) == types.Primitive.none and
@@ -68262,7 +68263,10 @@ pub const Checker = struct {
         string_idx: TypeId,
         number_idx: TypeId,
     ) CheckError!void {
-        if (string_idx != types.Primitive.none and string_idx != types.Primitive.any) {
+        if (string_idx != types.Primitive.none and
+            string_idx != types.Primitive.any and
+            string_idx != types.Primitive.unknown)
+        {
             for (members) |m| {
                 if (m.type == types.Primitive.any) continue;
                 if (self.syntheticSignatureMemberName(m.name)) continue;
@@ -68278,7 +68282,10 @@ pub const Checker = struct {
                 });
             }
         }
-        if (number_idx != types.Primitive.none and number_idx != types.Primitive.any) {
+        if (number_idx != types.Primitive.none and
+            number_idx != types.Primitive.any and
+            number_idx != types.Primitive.unknown)
+        {
             for (members) |m| {
                 if (m.type == types.Primitive.any) continue;
                 if (self.syntheticSignatureMemberName(m.name)) continue;
@@ -247908,6 +247915,27 @@ test "checker: TS2411 fires for inline object-type literal index constraints" {
     try T.expect(a_ok); // `a: string` is assignable → no TS2411
     // Exactly the two offenders (b, c), reported once each (no double-emit).
     try T.expectEqual(@as(usize, 2), count);
+}
+
+test "checker: unknown index signatures accept every property type" {
+    const s = try newSetup(
+        \\type Json = {
+        \\  [key: string]: unknown;
+        \\  recursive?: boolean | Json;
+        \\  nested?: { value: string };
+        \\  callback?: () => number;
+        \\};
+        \\interface Metadata {
+        \\  [key: string]: unknown;
+        \\  payload: string | number[];
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(
+        @as(usize, 0),
+        checkerCountCode(s, TsCodes.property_not_assignable_to_index_type),
+    );
 }
 
 // ÃÂÃÂ§6.A wave-2 ÃÂ¢ÃÂÃÂ TS2698 must fire when spreading an intersection
