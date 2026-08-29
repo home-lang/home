@@ -44519,7 +44519,7 @@ pub const Checker = struct {
         }
         const key_t = self.checkExpression(key) catch types.Primitive.any;
         if (key_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(key_t).is_literal) {
-            return switch (self.interner.literalOf(key_t)) {
+            return switch (self.interner.literalOfOrNull(key_t) orelse return null) {
                 .string_lit => |sid| sid,
                 else => null,
             };
@@ -49450,7 +49450,7 @@ pub const Checker = struct {
                 else
                     self.visibleAnnotatedIdentifierType(key) orelse types.Primitive.any;
                 if (key_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(key_t).is_literal) {
-                    switch (self.interner.literalOf(key_t)) {
+                    switch (self.interner.literalOfOrNull(key_t) orelse break :blk null) {
                         .string_lit => |sid| break :blk sid,
                         else => {},
                     }
@@ -49483,7 +49483,7 @@ pub const Checker = struct {
                     else
                         self.checkExpression(key) catch types.Primitive.any;
                     if (key_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(key_t).is_literal) {
-                        switch (self.interner.literalOf(key_t)) {
+                        switch (self.interner.literalOfOrNull(key_t) orelse break :blk null) {
                             .string_lit => |sid| break :blk sid,
                             else => {},
                         }
@@ -53007,9 +53007,16 @@ pub const Checker = struct {
                     return false;
                 }
             }
-            for (self.interner.objectMembers(target)) |target_member| {
+            // Recursive assignability can intern substituted object types and
+            // grow the shared member pool. Snapshot both shapes so subsequent
+            // iterations never read slices invalidated by that growth.
+            const target_members = try self.gpa.dupe(types.ObjectMember, self.interner.objectMembers(target));
+            defer self.gpa.free(target_members);
+            const source_members = try self.gpa.dupe(types.ObjectMember, self.interner.objectMembers(source));
+            defer self.gpa.free(source_members);
+            for (target_members) |target_member| {
                 var source_member: ?types.ObjectMember = null;
-                for (self.interner.objectMembers(source)) |candidate| {
+                for (source_members) |candidate| {
                     if (candidate.name == target_member.name) {
                         source_member = candidate;
                         break;
@@ -66283,11 +66290,16 @@ pub const Checker = struct {
         child_number_idx: TypeId,
         child_symbol_idx: TypeId,
     ) CheckError!void {
+        // Compatibility checks can intern substituted types. Keep the
+        // derived shape independent from object-member pool relocation for
+        // the duration of all base comparisons.
+        const stable_child_members = try self.gpa.dupe(types.ObjectMember, child_members);
+        defer self.gpa.free(stable_child_members);
         // Upstream relates own members to class bases from right to left.
         var visibility_index = extends.len;
         while (visibility_index > 0) {
             visibility_index -= 1;
-            try self.checkInterfaceClassPrivateHeritage(node, extends[visibility_index], child_members);
+            try self.checkInterfaceClassPrivateHeritage(node, extends[visibility_index], stable_child_members);
         }
         for (extends) |ext_node| {
             var parent_t = self.lowererLowerWithTypeParams(ext_node) catch continue;
@@ -66353,7 +66365,9 @@ pub const Checker = struct {
                 if (ext_index >= other_index) continue;
                 try self.checkInterfaceInheritedBasePair(node, ext_node, other_ext_node, false);
             }
-            for (self.interner.objectMembers(parent_t)) |pm| {
+            const stable_parent_members = try self.gpa.dupe(types.ObjectMember, self.interner.objectMembers(parent_t));
+            defer self.gpa.free(stable_parent_members);
+            for (stable_parent_members) |pm| {
                 // `__call` / `__construct` are the internal property
                 // names tsc uses for call/construct signatures. tsc
                 // checks signature compatibility via the
@@ -66364,7 +66378,7 @@ pub const Checker = struct {
                 // where the derived interface's narrower `()` return
                 // is intentional and tsc emits nothing.
                 if (self.syntheticSignatureMemberName(pm.name)) continue;
-                for (child_members) |cm| {
+                for (stable_child_members) |cm| {
                     if (cm.name != pm.name) continue;
                     const cm_flags = self.interner.pool.flagsOf(cm.type);
                     const pm_flags = self.interner.pool.flagsOf(pm.type);
