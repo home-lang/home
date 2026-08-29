@@ -585,8 +585,10 @@ pub const Engine = struct {
         // stored in source declaration order (not sorted), so we
         // compare order-independently via name lookup.
         if (fa.is_object_type) {
-            const am = self.interner.objectMembers(a);
-            const bm = self.interner.objectMembers(b);
+            const am = try self.gpa.dupe(types.ObjectMember, self.interner.objectMembers(a));
+            defer self.gpa.free(am);
+            const bm = try self.gpa.dupe(types.ObjectMember, self.interner.objectMembers(b));
+            defer self.gpa.free(bm);
             if (am.len != bm.len) return false;
             for (am) |x| {
                 var matched = false;
@@ -600,6 +602,16 @@ pub const Engine = struct {
                     break;
                 }
                 if (!matched) return false;
+            }
+            const index_pairs = [_]struct { left: TypeId, right: TypeId }{
+                .{ .left = self.interner.objectStringIndex(a), .right = self.interner.objectStringIndex(b) },
+                .{ .left = self.interner.objectNumberIndex(a), .right = self.interner.objectNumberIndex(b) },
+                .{ .left = self.interner.objectSymbolIndex(a), .right = self.interner.objectSymbolIndex(b) },
+            };
+            for (index_pairs) |pair| {
+                if (pair.left == pair.right) continue;
+                if (pair.left == Primitive.none or pair.right == Primitive.none) return false;
+                if (!try self.isIdenticalTo(pair.left, pair.right)) return false;
             }
             return true;
         }
@@ -912,6 +924,27 @@ pub const Engine = struct {
             }
             return false;
         }
+        if (sf.is_conditional and tf.is_conditional) {
+            const source_conditional = self.interner.conditionalPayload(source);
+            const target_conditional = self.interner.conditionalPayload(target);
+            if (source_conditional.is_distributive == target_conditional.is_distributive and
+                try self.conditionalCheckTypesRelated(source_conditional.check_type, target_conditional.check_type) and
+                try self.isIdenticalTo(source_conditional.extends_type, target_conditional.extends_type))
+            {
+                if (!try self.isAssignableTo(source_conditional.true_branch, target_conditional.true_branch)) return false;
+                return self.isAssignableTo(source_conditional.false_branch, target_conditional.false_branch);
+            }
+        }
+        if (tf.is_conditional) {
+            const conditional = self.interner.conditionalPayload(target);
+            if (!try self.isAssignableTo(source, conditional.true_branch)) return false;
+            return self.isAssignableTo(source, conditional.false_branch);
+        }
+        if (sf.is_conditional) {
+            const conditional = self.interner.conditionalPayload(source);
+            if (!try self.isAssignableTo(conditional.true_branch, target)) return false;
+            return self.isAssignableTo(conditional.false_branch, target);
+        }
         if (self.upper_object_targets.contains(target)) {
             return try self.computeUpperObjectAssignable(source, target);
         }
@@ -1170,6 +1203,12 @@ pub const Engine = struct {
 
         // Primitive-vs-primitive: only identity matches at this layer.
         return false;
+    }
+
+    fn conditionalCheckTypesRelated(self: *Engine, source: TypeId, target: TypeId) anyerror!bool {
+        if (source == target) return true;
+        if (try self.isAssignableTo(source, target)) return true;
+        return self.isAssignableTo(target, source);
     }
 
     fn unionCoversUnknown(self: *Engine, t: TypeId) !bool {
@@ -2466,8 +2505,10 @@ pub const Engine = struct {
     }
 
     fn computeIntersectionObjectAssignable(self: *Engine, source: TypeId, target: TypeId) anyerror!bool {
-        const source_members = self.interner.intersectionMembers(source);
-        const target_members = self.interner.objectMembers(target);
+        const source_members = try self.gpa.dupe(TypeId, self.interner.intersectionMembers(source));
+        defer self.gpa.free(source_members);
+        const target_members = try self.gpa.dupe(types.ObjectMember, self.interner.objectMembers(target));
+        defer self.gpa.free(target_members);
         if (self.strict_null_checks) {
             const target_str_idx = self.interner.objectStringIndex(target);
             const target_has_any_string_index = target_str_idx == Primitive.any;
@@ -2493,7 +2534,8 @@ pub const Engine = struct {
         }
         for (target_members) |tm| {
             var found = false;
-            for (source_members) |member_t| {
+            for (source_members) |raw_member_t| {
+                const member_t = try self.resolveRelationSurface(raw_member_t);
                 if (member_t >= self.interner.pool.typeCount()) continue;
                 const mf = self.pool().flagsOf(member_t);
                 if (mf.is_intersection) {
@@ -2515,6 +2557,11 @@ pub const Engine = struct {
             }
         }
         return true;
+    }
+
+    fn resolveRelationSurface(self: *Engine, t: TypeId) anyerror!TypeId {
+        const resolver = self.type_resolver orelse return t;
+        return resolver.resolve(resolver.context, t);
     }
 
     fn intersectionObjectAssignableToStringIndex(
@@ -2553,7 +2600,10 @@ pub const Engine = struct {
         flat_members: *std.ArrayListUnmanaged(types.ObjectMember),
     ) anyerror!bool {
         var saw_contributing_member = false;
-        for (self.interner.intersectionMembers(source)) |member_t| {
+        const members = try self.gpa.dupe(TypeId, self.interner.intersectionMembers(source));
+        defer self.gpa.free(members);
+        for (members) |raw_member_t| {
+            const member_t = try self.resolveRelationSurface(raw_member_t);
             if (member_t >= self.interner.pool.typeCount()) continue;
             const mf = self.pool().flagsOf(member_t);
             if (mf.is_intersection) {
@@ -2581,7 +2631,10 @@ pub const Engine = struct {
         source: TypeId,
         target_idx: TypeId,
     ) anyerror!bool {
-        for (self.interner.intersectionMembers(source)) |member_t| {
+        const members = try self.gpa.dupe(TypeId, self.interner.intersectionMembers(source));
+        defer self.gpa.free(members);
+        for (members) |raw_member_t| {
+            const member_t = try self.resolveRelationSurface(raw_member_t);
             if (member_t >= self.interner.pool.typeCount()) continue;
             const mf = self.pool().flagsOf(member_t);
             if (mf.is_intersection) {
@@ -2613,7 +2666,10 @@ pub const Engine = struct {
         target_idx: TypeId,
     ) anyerror!bool {
         var saw_symbol_index = false;
-        for (self.interner.intersectionMembers(source)) |member_t| {
+        const members = try self.gpa.dupe(TypeId, self.interner.intersectionMembers(source));
+        defer self.gpa.free(members);
+        for (members) |raw_member_t| {
+            const member_t = try self.resolveRelationSurface(raw_member_t);
             if (member_t >= self.interner.pool.typeCount()) continue;
             const mf = self.pool().flagsOf(member_t);
             if (mf.is_intersection) {
@@ -2630,7 +2686,10 @@ pub const Engine = struct {
     }
 
     fn intersectionObjectHasMemberNamed(self: *Engine, source: TypeId, name: types.StringId) anyerror!bool {
-        for (self.interner.intersectionMembers(source)) |member_t| {
+        const members = try self.gpa.dupe(TypeId, self.interner.intersectionMembers(source));
+        defer self.gpa.free(members);
+        for (members) |raw_member_t| {
+            const member_t = try self.resolveRelationSurface(raw_member_t);
             if (member_t >= self.interner.pool.typeCount()) continue;
             const mf = self.pool().flagsOf(member_t);
             if (mf.is_intersection) {
@@ -2648,7 +2707,10 @@ pub const Engine = struct {
         source: TypeId,
         target_member: types.ObjectMember,
     ) anyerror!bool {
-        for (self.interner.intersectionMembers(source)) |member_t| {
+        const members = try self.gpa.dupe(TypeId, self.interner.intersectionMembers(source));
+        defer self.gpa.free(members);
+        for (members) |raw_member_t| {
+            const member_t = try self.resolveRelationSurface(raw_member_t);
             if (member_t >= self.interner.pool.typeCount()) continue;
             const mf = self.pool().flagsOf(member_t);
             if (mf.is_intersection) {
@@ -2984,6 +3046,95 @@ test "Engine: intersection of object types — accepts object with all required 
         .{ .name = y, .type = Primitive.string_t, .is_optional = false, .is_readonly = false, .is_method = false },
     });
     try T.expect(try e.isAssignableTo(src_full, inter));
+}
+
+test "Engine: intersections with a shared instantiation ignore distinct empty objects" {
+    var ti = try Interner.init(T.allocator);
+    defer ti.deinit();
+    var e = try Engine.init(T.allocator, &ti);
+    defer e.deinit();
+    e.setStrictNullChecks(true);
+    var sint = try string_interner.Interner.init(T.allocator);
+    defer sint.deinit();
+
+    const origin = try ti.internObjectType(&.{});
+    const shared = try ti.internInstantiation(origin, &.{});
+    const concrete = try ti.internObjectTypeWithIndex(&.{}, Primitive.unknown, Primitive.none);
+    const Resolver = struct {
+        symbolic: TypeId,
+        concrete: TypeId,
+
+        fn resolve(context: *anyopaque, t: TypeId) anyerror!TypeId {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            return if (t == self.symbolic) self.concrete else t;
+        }
+    };
+    var resolver = Resolver{ .symbolic = shared, .concrete = concrete };
+    e.type_resolver = .{ .context = &resolver, .resolve = Resolver.resolve };
+    const source_empty = try ti.internObjectType(&.{});
+    const target_empty = try ti.internObjectType(&.{});
+    const source = try ti.internIntersection(&.{ shared, source_empty });
+    const target = try ti.internIntersection(&.{ shared, target_empty });
+    try T.expect(try e.isAssignableTo(source, target));
+    try T.expect(try e.isAssignableTo(target, source));
+
+    const required_name = try sint.intern("required");
+    const required = try ti.internObjectType(&.{.{
+        .name = required_name,
+        .type = Primitive.string_t,
+        .is_optional = false,
+        .is_readonly = false,
+        .is_method = false,
+    }});
+    const stricter = try ti.internIntersection(&.{ shared, required });
+    try T.expect(!try e.isAssignableTo(source, stricter));
+}
+
+test "Engine: equivalent deferred conditionals relate through their branches" {
+    var ti = try Interner.init(T.allocator);
+    defer ti.deinit();
+    var e = try Engine.init(T.allocator, &ti);
+    defer e.deinit();
+    e.setStrictNullChecks(true);
+
+    const source_check = try ti.internObjectTypeWithIndex(&.{}, Primitive.unknown, Primitive.none);
+    const target_check = try ti.internObjectTypeWithIndex(&.{}, Primitive.unknown, Primitive.none);
+    const source = try ti.internConditionalWithDistribution(
+        source_check,
+        Primitive.object_t,
+        Primitive.string_t,
+        Primitive.number_t,
+        true,
+    );
+    const target = try ti.internConditionalWithDistribution(
+        target_check,
+        Primitive.object_t,
+        Primitive.string_t,
+        Primitive.number_t,
+        true,
+    );
+    try T.expect(try e.isAssignableTo(source, target));
+    try T.expect(try e.isAssignableTo(target, source));
+
+    const incompatible = try ti.internConditionalWithDistribution(
+        target_check,
+        Primitive.object_t,
+        Primitive.string_t,
+        Primitive.boolean_t,
+        true,
+    );
+    try T.expect(!try e.isAssignableTo(source, incompatible));
+}
+
+test "Engine: object identity includes index signatures" {
+    var ti = try Interner.init(T.allocator);
+    defer ti.deinit();
+    var e = try Engine.init(T.allocator, &ti);
+    defer e.deinit();
+
+    const strings = try ti.internObjectTypeWithIndex(&.{}, Primitive.none, Primitive.string_t);
+    const numbers = try ti.internObjectTypeWithIndex(&.{}, Primitive.none, Primitive.number_t);
+    try T.expect(!try e.isIdenticalTo(strings, numbers));
 }
 
 test "Engine: intersection of object types — rejects source missing a member's prop" {
