@@ -49,6 +49,18 @@ before building and running the container. The runner records and verifies
 compiler payload and tool hashes before admission and after measurement; the
 report refuses results whose provenance changed.
 
+## Qualified checkpoints
+
+| Platform | Result ID | Home lower means | Detailed report |
+|---|---|---:|---|
+| Apple M3 Pro / macOS arm64 | `20260829T013535Z` | 20/20 | [macOS snapshot](../../docs/docs/TS_PERFORMANCE.md#current-snapshot) |
+| Linux arm64 / pinned Bookworm container | `20260829T035150Z` | 20/20 | [Linux checkpoint](../../docs/docs/TS_PERFORMANCE.md#linux-arm64-container-checkpoint) |
+
+Both checkpoints compare TS 6.0.3 with the single native TS 7.0.2 (`tsgo`)
+competitor. They retain every measured sample and document narrow rows and
+host-specific variance; they do not replace real-project benchmarking or
+measure unlisted platforms.
+
 The separate global-declaration admission audit is **untimed**:
 
 ```sh
