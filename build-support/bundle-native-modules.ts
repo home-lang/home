@@ -156,7 +156,7 @@ async function main() {
     throw new Error('Expected one generated exposedInternals declaration')
   }
   const streamModule = requireTransformer('node:stream', 'internal-for-testing.ts').replaceAll('__intrinsic__', '@')
-  const adapterTemplate = read(path.join(import.meta.dir, 'internal-stream-wrap.js'))
+  const adapterTemplate = read(path.resolve(import.meta.dir, '../packages/runtime/src/jsc/internal-stream-wrap.js'))
   if (adapterTemplate.split('__HOME_NODE_STREAM__').length !== 2) {
     throw new Error('Expected one node:stream placeholder in internal stream adapter')
   }

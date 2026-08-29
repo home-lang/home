@@ -117,6 +117,7 @@ pub const runtime_params_ = [_]ParamType{
     clap.parseParam("--max-http-header-size <INT>      Set the maximum size of HTTP headers in bytes. Default is 16KiB") catch unreachable,
     clap.parseParam("--dns-result-order <STR>          Set the default order of DNS lookup results. Valid orders: verbatim (default), ipv4first, ipv6first") catch unreachable,
     clap.parseParam("--expose-gc                       Expose gc() on the global object. Has no effect on Bun.gc().") catch unreachable,
+    clap.parseParam("--expose-internals                Expose Node.js internal modules for compatibility testing") catch unreachable,
     clap.parseParam("--no-deprecation                  Suppress all reporting of the custom deprecation.") catch unreachable,
     clap.parseParam("--throw-deprecation               Determine whether or not deprecation warnings result in errors.") catch unreachable,
     clap.parseParam("--title <STR>                     Set the process title") catch unreachable,
@@ -902,6 +903,9 @@ pub fn parse(allocator: std.mem.Allocator, ctx: Command.Context, comptime cmd: C
             bun.jsc.ModuleLoader.HardcodedModule.setStreamIterEnabled(true);
         }
         ctx.runtime_options.expose_gc = args.flag("--expose-gc");
+        if (args.flag("--expose-internals")) {
+            bun.allowInternalForTestingAPIs();
+        }
 
         if (args.option("--console-depth")) |depth_str| {
             const depth = std.fmt.parseInt(u16, depth_str, 10) catch {

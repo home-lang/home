@@ -71,6 +71,8 @@ nativeTest('generates owned builtins and the stream adapter while preserving oth
     }
     const internalForTesting = read(path.join(output, 'InternalForTesting.js'))
     expect(internalForTesting).toContain('class HomeJSStreamSocket extends HomeDuplex')
+    expect(internalForTesting).toContain('class HomeWriteWrap extends HomeStreamRequest')
+    expect(internalForTesting).toContain('streamBaseState: new Int32Array(4)')
     expect(internalForTesting).toContain('"internal/js_stream_socket": HomeJSStreamSocket')
     expect(internalForTesting).toContain('"internal/test/binding": { internalBinding: homeInternalTestBinding }')
     expect(internalForTesting).toContain('@lazy(99)')

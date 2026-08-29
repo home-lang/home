@@ -92,6 +92,11 @@ pub const HardcodedModule = enum {
     @"node:_http_incoming",
     @"node:_http_outgoing",
     @"node:_http_server",
+    @"internal/async_context_frame",
+    @"internal/async_hooks",
+    @"internal/js_stream_socket",
+    @"internal/streams/add-abort-signal",
+    @"internal/test/binding",
     /// This is gated behind '--expose-internals'
     @"bun:internal-for-testing",
 
@@ -109,6 +114,11 @@ pub const HardcodedModule = enum {
         .{ "bun:sqlite", .@"bun:sqlite" },
         .{ "bun:wrap", .@"bun:wrap" },
         .{ "bun:internal-for-testing", .@"bun:internal-for-testing" },
+        .{ "internal/async_context_frame", .@"internal/async_context_frame" },
+        .{ "internal/async_hooks", .@"internal/async_hooks" },
+        .{ "internal/js_stream_socket", .@"internal/js_stream_socket" },
+        .{ "internal/streams/add-abort-signal", .@"internal/streams/add-abort-signal" },
+        .{ "internal/test/binding", .@"internal/test/binding" },
         // Node.js
         .{ "node:assert", .@"node:assert" },
         .{ "node:assert/strict", .@"node:assert/strict" },
@@ -384,6 +394,11 @@ pub const HardcodedModule = enum {
             .{ "bun:sqlite", .{ .path = "bun:sqlite" } },
             .{ "bun:wrap", .{ .path = "bun:wrap" } },
             .{ "bun:internal-for-testing", .{ .path = "bun:internal-for-testing" } },
+            .{ "internal/async_context_frame", .{ .path = "internal/async_context_frame" } },
+            .{ "internal/async_hooks", .{ .path = "internal/async_hooks" } },
+            .{ "internal/js_stream_socket", .{ .path = "internal/js_stream_socket" } },
+            .{ "internal/streams/add-abort-signal", .{ .path = "internal/streams/add-abort-signal" } },
+            .{ "internal/test/binding", .{ .path = "internal/test/binding" } },
             .{ "ffi", .{ .path = "bun:ffi" } },
 
             // Thirdparty packages we override
@@ -459,6 +474,14 @@ pub const HardcodedModule = enum {
     pub fn streamIterAliasGated(name: []const u8) bool {
         return streamIterAliasGatedWithEnabled(name, streamIterEnabled());
     }
+
+    pub fn isInternalTestingSpecifier(name: []const u8) bool {
+        return std.mem.eql(u8, name, "internal/async_context_frame") or
+            std.mem.eql(u8, name, "internal/async_hooks") or
+            std.mem.eql(u8, name, "internal/js_stream_socket") or
+            std.mem.eql(u8, name, "internal/streams/add-abort-signal") or
+            std.mem.eql(u8, name, "internal/test/binding");
+    }
 };
 
 var stream_iter_enabled = std.atomic.Value(bool).init(false);
@@ -515,7 +538,21 @@ test "HardcodedModule.map resolves Bun and Node builtins" {
     try std.testing.expectEqual(HardcodedModule.bun, HardcodedModule.map.get("bun").?);
     try std.testing.expectEqual(HardcodedModule.@"node:fs", HardcodedModule.map.get("node:fs").?);
     try std.testing.expectEqual(HardcodedModule.ws, HardcodedModule.map.get("ws").?);
+    try std.testing.expectEqual(HardcodedModule.@"internal/async_context_frame", HardcodedModule.map.get("internal/async_context_frame").?);
+    try std.testing.expectEqual(HardcodedModule.@"internal/async_hooks", HardcodedModule.map.get("internal/async_hooks").?);
+    try std.testing.expectEqual(HardcodedModule.@"internal/js_stream_socket", HardcodedModule.map.get("internal/js_stream_socket").?);
+    try std.testing.expectEqual(HardcodedModule.@"internal/streams/add-abort-signal", HardcodedModule.map.get("internal/streams/add-abort-signal").?);
+    try std.testing.expectEqual(HardcodedModule.@"internal/test/binding", HardcodedModule.map.get("internal/test/binding").?);
     try std.testing.expect(HardcodedModule.map.get("not-a-builtin") == null);
+}
+
+test "internal testing specifiers are explicit" {
+    try std.testing.expect(HardcodedModule.isInternalTestingSpecifier("internal/async_context_frame"));
+    try std.testing.expect(HardcodedModule.isInternalTestingSpecifier("internal/async_hooks"));
+    try std.testing.expect(HardcodedModule.isInternalTestingSpecifier("internal/js_stream_socket"));
+    try std.testing.expect(HardcodedModule.isInternalTestingSpecifier("internal/streams/add-abort-signal"));
+    try std.testing.expect(HardcodedModule.isInternalTestingSpecifier("internal/test/binding"));
+    try std.testing.expect(!HardcodedModule.isInternalTestingSpecifier("internal/streams/readable"));
 }
 
 test "HardcodedModule.Alias rewrites common Node aliases" {

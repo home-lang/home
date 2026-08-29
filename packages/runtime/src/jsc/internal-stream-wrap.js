@@ -1,7 +1,19 @@
 const { Duplex: HomeDuplex } = __HOME_NODE_STREAM__;
 const HOME_UV_ECANCELED = -125;
 
-class HomeShutdownWrap {}
+// Logical port of Node v26.3.0's stream_wrap request surface. The pinned Bun
+// source leaves this binding unimplemented, so Home owns these compatibility
+// objects together with the JSStreamSocket adapter below.
+class HomeStreamRequest {
+  constructor() {
+    this.oncomplete = null;
+    this.callback = null;
+    this.handle = null;
+  }
+}
+
+class HomeShutdownWrap extends HomeStreamRequest {}
+class HomeWriteWrap extends HomeStreamRequest {}
 
 function homeStreamWrapError() {
   const error = new Error('Stream has StringDecoder set or is in objectMode');
@@ -98,7 +110,15 @@ class HomeJSStreamSocket extends HomeDuplex {
   }
 }
 
-const homeStreamWrapBinding = { ShutdownWrap: HomeShutdownWrap };
+const homeStreamWrapBinding = {
+  ShutdownWrap: HomeShutdownWrap,
+  WriteWrap: HomeWriteWrap,
+  kReadBytesOrError: 0,
+  kArrayBufferOffset: 1,
+  kBytesWritten: 2,
+  kLastWriteWasAsync: 3,
+  streamBaseState: new Int32Array(4),
+};
 function homeInternalTestBinding(name) {
   if (name === 'stream_wrap') return homeStreamWrapBinding;
   return process.binding(name);
