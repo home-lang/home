@@ -169430,8 +169430,14 @@ pub const Checker = struct {
         const af = self.interner.pool.flagsOf(arg_t);
         const pf = self.interner.pool.flagsOf(param_t);
         if (!af.is_object_type or !pf.is_object_type) return false;
+        // The assignability checks below can recursively intern object types,
+        // growing object_member_pool and invalidating its borrowed slice.
+        // Keep the target requirements stable for the duration of the walk.
+        var target_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer target_members.deinit(self.gpa);
+        try target_members.appendSlice(self.gpa, self.interner.objectMembers(param_t));
         var saw_symbol_requirement = false;
-        for (self.interner.objectMembers(param_t)) |tm| {
+        for (target_members.items) |tm| {
             if (!self.isSymbolNamedMember(tm.name)) continue;
             saw_symbol_requirement = true;
             const sm_t = self.interner.objectMember(arg_t, tm.name) orelse {
