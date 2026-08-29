@@ -15,6 +15,7 @@ var cached_worker_object: ?std.Build.LazyPath = null;
 var cached_worker_scope_object: ?std.Build.LazyPath = null;
 var cached_js_message_port_object: ?std.Build.LazyPath = null;
 var cached_js_abort_signal_object: ?std.Build.LazyPath = null;
+var cached_uws_object: ?std.Build.LazyPath = null;
 var cached_native_modules: ?std.Build.LazyPath = null;
 
 /// Rebuild the Home-owned process binding with the headers and ABI flags that
@@ -91,6 +92,17 @@ pub fn jsAbortSignalObject(b: *std.Build, object_root: []const u8) std.Build.Laz
     const output = nativeModules(b, object_root);
     const object = compileObject(b, object_root, "UnifiedSource-src_jsc_bindings_webcore-1.cpp", output.path(b, "HomeJSAbortSignalCustom.cpp"));
     cached_js_abort_signal_object = object;
+    return object;
+}
+
+/// Compile the uWebSockets C ABI from Home's pinned source so parser fixes in
+/// the mirrored bun-uws headers are part of the executable rather than dead
+/// reference code beside Bun's external object.
+pub fn uwsObject(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
+    if (cached_uws_object) |object| return object;
+    const source = b.path("packages/runtime/upstream/src/uws_sys/HomeUws.cpp");
+    const object = compileObject(b, object_root, "UnifiedSource-src_uws_sys-0.cpp", source);
+    cached_uws_object = object;
     return object;
 }
 
