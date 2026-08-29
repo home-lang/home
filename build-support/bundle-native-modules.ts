@@ -139,6 +139,49 @@ async function main() {
     constants = replaceModuleLiteral(constants, name, declareASCIILiteral(`${name}Code`, captured))
     writeFileSync(path.join(output, `${name}.js`), captured)
   }
+
+  // `internal-for-testing` uses every kind of Bun native dispatch intrinsic,
+  // while the incremental builtin pipeline intentionally owns only verified
+  // C++ calls. Preserve Bun's ABI-matched generated function and insert the
+  // Home test adapter at a stable declaration boundary instead of rebundling
+  // the module and renumbering its @lazy dispatch slots.
+  const internalForTestingName = moduleEnum('internal-for-testing.ts')
+  requiredId(abi, internalForTestingName)
+  const externalInternalForTesting = read(path.join(externalBuild, 'js/internal-for-testing.js'))
+  if (!externalInternalForTesting.startsWith('(function (){"use strict";') || !externalInternalForTesting.endsWith('})\n')) {
+    throw new Error('Unexpected generated internal-for-testing wrapper')
+  }
+  const declarationAnchor = ', exposedInternals = {'
+  if (externalInternalForTesting.split(declarationAnchor).length !== 2) {
+    throw new Error('Expected one generated exposedInternals declaration')
+  }
+  const streamModule = requireTransformer('node:stream', 'internal-for-testing.ts').replaceAll('__intrinsic__', '@')
+  const adapterTemplate = read(path.join(import.meta.dir, 'internal-stream-wrap.js'))
+  if (adapterTemplate.split('__HOME_NODE_STREAM__').length !== 2) {
+    throw new Error('Expected one node:stream placeholder in internal stream adapter')
+  }
+  const adapter = adapterTemplate.replace('__HOME_NODE_STREAM__', streamModule).trim()
+  let capturedInternalForTesting = externalInternalForTesting.replace(
+    declarationAnchor,
+    `;\n${adapter}\nvar exposedInternals = {`,
+  )
+  const exposedAnchor = 'var exposedInternals = {\n'
+  if (capturedInternalForTesting.split(exposedAnchor).length !== 2) {
+    throw new Error('Expected one patched exposedInternals declaration')
+  }
+  capturedInternalForTesting = capturedInternalForTesting.replace(
+    exposedAnchor,
+    exposedAnchor
+      + '  "internal/js_stream_socket": HomeJSStreamSocket,\n'
+      + '  "internal/test/binding": { internalBinding: homeInternalTestBinding },\n',
+  )
+  capturedInternalForTesting = checkAscii(capturedInternalForTesting)
+  constants = replaceModuleLiteral(
+    constants,
+    internalForTestingName,
+    declareASCIILiteral(`${internalForTestingName}Code`, capturedInternalForTesting),
+  )
+  writeFileSync(path.join(output, `${internalForTestingName}.js`), capturedInternalForTesting)
   writeFileSync(path.join(output, 'InternalModuleRegistryConstants.h'), constants)
 
   // Own only the selected implementations; keep every other source of their
@@ -152,7 +195,7 @@ async function main() {
     }
     writeFileSync(path.join(output, outputName), unified)
   }
-  console.log(`Generated ${ownedModules.join(', ')} from Home with verified linked ABI mappings`)
+  console.log(`Generated ${ownedModules.join(', ')} and the internal stream test adapter with verified linked ABI mappings`)
 }
 
 await main().catch(error => {

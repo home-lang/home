@@ -14,11 +14,16 @@ function createNativeFixture(temporary: string) {
   const codegen = path.join(temporary, 'codegen')
   const webcore = path.join(temporary, 'webcore')
   mkdirSync(codegen)
+  mkdirSync(path.join(temporary, 'js'))
   mkdirSync(webcore)
   mkdirSync(path.join(temporary, 'unified'))
   for (const file of ['InternalModuleRegistry+enum.h', 'GeneratedJS2Native.h', 'ErrorCode+List.h', 'InternalModuleRegistryConstants.h']) {
     writeFileSync(path.join(codegen, file), read(path.join(nativeBuild, 'codegen', file)))
   }
+  writeFileSync(
+    path.join(temporary, 'js/internal-for-testing.js'),
+    read(path.join(nativeBuild, 'js/internal-for-testing.js')),
+  )
   for (const name of units) {
     const unifiedPath = path.join(nativeBuild, 'unified', name)
     // Relative includes belong to the original unified directory, not this
@@ -46,7 +51,7 @@ function generate(nativeRoot: string, output: string) {
   })
 }
 
-nativeTest('generates script-only Home URL and workers and preserves other literals', () => {
+nativeTest('generates owned builtins and the stream adapter while preserving other literals', () => {
   const cache = path.join(root, '.zig-cache/tmp')
   mkdirSync(cache, { recursive: true })
   const output = mkdtempSync(path.join(cache, 'home-builtin-test-'))
@@ -64,10 +69,19 @@ nativeTest('generates script-only Home URL and workers and preserves other liter
       // Check complete function grammar without executing native intrinsics.
       expect(() => new Function(`return ${source.replace(/@([A-Za-z_])/g, '__intrinsic__$1')}`)).not.toThrow()
     }
+    const internalForTesting = read(path.join(output, 'InternalForTesting.js'))
+    expect(internalForTesting).toContain('class HomeJSStreamSocket extends HomeDuplex')
+    expect(internalForTesting).toContain('"internal/js_stream_socket": HomeJSStreamSocket')
+    expect(internalForTesting).toContain('"internal/test/binding": { internalBinding: homeInternalTestBinding }')
+    expect(internalForTesting).toContain('@lazy(99)')
     const external = read(path.join(nativeBuild, 'codegen/InternalModuleRegistryConstants.h'))
     const generated = read(path.join(output, 'InternalModuleRegistryConstants.h'))
     expect(generated).not.toBe(external)
-    const stripOwned = (header: string) => replaceModuleLiteral(replaceModuleLiteral(header, 'NodeUrl', 'OWNED_URL'), 'NodeWorkerThreads', 'OWNED_WORKERS')
+    const stripOwned = (header: string) => replaceModuleLiteral(
+      replaceModuleLiteral(replaceModuleLiteral(header, 'NodeUrl', 'OWNED_URL'), 'NodeWorkerThreads', 'OWNED_WORKERS'),
+      'InternalForTesting',
+      'OWNED_INTERNAL_FOR_TESTING',
+    )
     expect(stripOwned(generated)).toBe(stripOwned(external))
     expect(read(path.join(output, 'HomeInternalModuleRegistry.cpp')))
       .toContain('#include "InternalModuleRegistry.cpp"')

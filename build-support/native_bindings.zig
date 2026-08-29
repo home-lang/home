@@ -106,6 +106,7 @@ fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
     const output = generate.addOutputDirectoryArg2("native-modules", .{ .make_absolute = true });
     for ([_][]const u8{
         "build-support/native_module_abi.ts",
+        "build-support/internal-stream-wrap.js",
         "packages/runtime/upstream/src/codegen/builtin-parser.ts",
         "packages/runtime/upstream/src/codegen/client-js.ts",
         "packages/runtime/upstream/src/codegen/generate-js2native.ts",
@@ -145,6 +146,7 @@ fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
     for ([_][]const u8{
         "codegen/InternalModuleRegistry+enum.h",
         "codegen/InternalModuleRegistryConstants.h",
+        "js/internal-for-testing.js",
         "codegen/GeneratedJS2Native.h",
         "codegen/ErrorCode+List.h",
         "unified/UnifiedSource-src_jsc_bindings-1.cpp",
