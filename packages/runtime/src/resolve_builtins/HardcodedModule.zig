@@ -568,6 +568,10 @@ test "HardcodedModule.Alias maps Bun extras and test rewrites" {
     const bun_alias = HardcodedModule.Alias.get("ffi", .bun, .{}).?;
     try std.testing.expectEqualStrings("bun:ffi", bun_alias.path);
 
+    const bake_alias = HardcodedModule.Alias.get("bun:app", .bun, .{}).?;
+    try std.testing.expectEqualStrings("bun:app", bake_alias.path);
+    try std.testing.expectEqual(ImportRecord.Tag.builtin, bake_alias.tag);
+
     const vitest = HardcodedModule.Alias.get("vitest", .bun, .{ .rewrite_jest_for_tests = true }).?;
     try std.testing.expectEqualStrings("bun:test", vitest.path);
 

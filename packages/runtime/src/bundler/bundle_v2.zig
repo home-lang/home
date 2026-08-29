@@ -3014,7 +3014,10 @@ pub const BundleV2 = struct {
                         replacement.path[5..]
                     else
                         replacement.path;
-                    import_record.tag = @fromBackingInt(@intCast(@backingInt(replacement.tag)));
+                    import_record.tag = switch (replacement.tag) {
+                        .builtin => .builtin,
+                        .bun => .bun,
+                    };
                     import_record.source_index = Index.invalid;
                     import_record.flags.is_external_without_side_effects = true;
                     continue;

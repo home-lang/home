@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from urllib.error import HTTPError
 from urllib.request import urlopen
 
 
@@ -276,7 +277,31 @@ def main() -> None:
             if slug_body != b'HOME_BAKE_FRAMEWORK_SLUG:alpha':
                 raise AssertionError(f'unexpected framework parameter response: {slug_body!r}')
 
-        print('Bake development HTML, HMR diagnostics/recovery, and framework routing passed')
+            try:
+                urlopen(framework_url + '/invalid', timeout=TIMEOUT)
+            except HTTPError as error:
+                invalid_status = error.code
+                invalid_content_type = error.headers.get_content_type()
+                invalid_body = error.read()
+            else:
+                raise AssertionError('invalid framework return unexpectedly succeeded')
+            if invalid_status != 500 or invalid_content_type != 'text/html':
+                raise AssertionError(
+                    'invalid framework return did not produce an HTML 500 response: '
+                    f'{invalid_status} {invalid_content_type}'
+                )
+            if b'__bunfallback' not in invalid_body:
+                raise AssertionError('invalid framework return did not produce a Bake error page')
+
+        framework_log_text = framework_log_path.read_text(errors='replace')
+        if 'Server-side request handler was expected to return a Response object.' not in framework_log_text:
+            raise AssertionError('invalid framework return did not report the expected message')
+        if 'ERR_SSR_RESPONSE_EXPECTED' not in framework_log_text:
+            raise AssertionError('invalid framework return did not report its generated error code')
+        if 'ReferenceError: $ERR_SSR_RESPONSE_EXPECTED is not defined' in framework_log_text:
+            raise AssertionError('Bake server runtime leaked an unresolved generated error builtin')
+
+        print('Bake development HTML, HMR diagnostics/recovery, framework routing, and response validation passed')
     except Exception:
         for label, path in (
             ('Home development server', log_path),
