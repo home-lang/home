@@ -496,7 +496,8 @@ fn buildOneProject(
 
     const resolver_config = resolverConfigFromConfig(arena, cfg, null);
 
-    var resolver_fs = ResolverRealFs{};
+    var resolver_fs = ResolverRealFs.init(gpa);
+    defer resolver_fs.deinit();
     var resolver = ts_resolver.Resolver.init(gpa, resolver_fs.fs(), resolver_config);
     defer resolver.deinit();
     var program = ts_program.Program.init(gpa, &resolver);
@@ -1963,6 +1964,16 @@ fn writeOrDie(gpa: std.mem.Allocator, path: []const u8, bytes: []const u8) void 
 }
 
 const ResolverRealFs = struct {
+    threaded: std.Io.Threaded,
+
+    fn init(gpa: std.mem.Allocator) ResolverRealFs {
+        return .{ .threaded = std.Io.Threaded.init(gpa, .{}) };
+    }
+
+    fn deinit(self: *ResolverRealFs) void {
+        self.threaded.deinit();
+    }
+
     pub fn fs(self: *ResolverRealFs) ts_resolver.FileSystem {
         return .{ .ptr = self, .vtable = &vt };
     }
@@ -1975,35 +1986,33 @@ const ResolverRealFs = struct {
         .realpath = realpath,
     };
 
-    fn fileExists(_: *anyopaque, path: []const u8) bool {
-        var threaded = std.Io.Threaded.init(std.heap.page_allocator, .{});
-        defer threaded.deinit();
-        const io = threaded.io();
+    fn fileExists(ptr: *anyopaque, path: []const u8) bool {
+        const self: *ResolverRealFs = @ptrCast(@alignCast(ptr));
+        const io = self.threaded.io();
         const cwd = std.Io.Dir.cwd();
         var file = cwd.openFile(io, path, .{}) catch return false;
         defer file.close(io);
         return true;
     }
 
-    fn directoryExists(_: *anyopaque, path: []const u8) bool {
-        var threaded = std.Io.Threaded.init(std.heap.page_allocator, .{});
-        defer threaded.deinit();
-        const io = threaded.io();
+    fn directoryExists(ptr: *anyopaque, path: []const u8) bool {
+        const self: *ResolverRealFs = @ptrCast(@alignCast(ptr));
+        const io = self.threaded.io();
         const cwd = std.Io.Dir.cwd();
         var dir = cwd.openDir(io, path, .{}) catch return false;
         defer dir.close(io);
         return true;
     }
 
-    fn readFile(_: *anyopaque, gpa: std.mem.Allocator, path: []const u8) anyerror![]u8 {
-        const bytes = try RealFs.read(gpa, path);
+    fn readFile(ptr: *anyopaque, gpa: std.mem.Allocator, path: []const u8) anyerror![]u8 {
+        const self: *ResolverRealFs = @ptrCast(@alignCast(ptr));
+        const bytes = try RealFs.readWithIo(gpa, self.threaded.io(), path);
         return @constCast(bytes);
     }
 
-    fn readDir(_: *anyopaque, gpa: std.mem.Allocator, path: []const u8) anyerror![]ts_resolver.FileSystem.DirEntry {
-        var threaded = std.Io.Threaded.init(gpa, .{});
-        defer threaded.deinit();
-        const io = threaded.io();
+    fn readDir(ptr: *anyopaque, gpa: std.mem.Allocator, path: []const u8) anyerror![]ts_resolver.FileSystem.DirEntry {
+        const self: *ResolverRealFs = @ptrCast(@alignCast(ptr));
+        const io = self.threaded.io();
         const cwd = std.Io.Dir.cwd();
         var dir = try cwd.openDir(io, path, .{ .iterate = true });
         defer dir.close(io);
@@ -2024,10 +2033,9 @@ const ResolverRealFs = struct {
         return out.toOwnedSlice(gpa);
     }
 
-    fn realpath(_: *anyopaque, gpa: std.mem.Allocator, path: []const u8) anyerror![]u8 {
-        var threaded = std.Io.Threaded.init(gpa, .{});
-        defer threaded.deinit();
-        const io = threaded.io();
+    fn realpath(ptr: *anyopaque, gpa: std.mem.Allocator, path: []const u8) anyerror![]u8 {
+        const self: *ResolverRealFs = @ptrCast(@alignCast(ptr));
+        const io = self.threaded.io();
         const cwd = std.Io.Dir.cwd();
         return cwd.realPathFileAlloc(io, path, gpa);
     }
@@ -2974,7 +2982,8 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    var resolver_fs = ResolverRealFs{};
+    var resolver_fs = ResolverRealFs.init(gpa);
+    defer resolver_fs.deinit();
     const resolver_config: ts_resolver.Config = if (loaded_cfg) |c|
         resolverConfigFromConfig(cfg_arena.allocator(), c, opts.out_dir)
     else
