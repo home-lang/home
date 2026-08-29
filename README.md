@@ -100,6 +100,14 @@ the same *families* of diagnostics.
 | 128 checked-CommonJS owners + app | 148.9 ms | 48.3 ms | **42.1 ms** | **1.15× faster** |
 | 256 recursive generic payloads | 147.3 ms | 69.7 ms | **28.8 ms** | **2.42× faster** |
 
+**Cross-platform confirmation** (same admitted corpus, TS 6.0.3 versus native
+TS 7.0.2, 30 interleaved runs after three warmups):
+
+| Platform | Raw result | Home lower means | Narrowest mean lead | Full documentation |
+|---|---|---:|---:|---|
+| Apple M3 Pro / macOS arm64 | `20260829T013535Z` | **20/20** | 1.01×, large predicates | [macOS snapshot](./docs/docs/TS_PERFORMANCE.md#current-snapshot) |
+| Linux arm64 / pinned Bookworm container | `20260829T035150Z` | **20/20** | 1.02×, CheckJS/JSDoc | [Linux checkpoint](./docs/docs/TS_PERFORMANCE.md#linux-arm64-container-checkpoint) |
+
 Home has lower means on **20/20 admitted timed workloads**. The new checked
 CommonJS graph passes identical positive and negative controls in all three
 compilers and is **1.15× faster** than native TS 7; the implementation is
@@ -108,7 +116,7 @@ Large predicates have only a **1.01× mean lead** and 24/30 paired wins, so the
 row is explicitly narrow. All 20 workloads pass admission before timing; all
 600 round files and 1,800 successful samples are retained. This local synthetic
 snapshot is not universal benchmark leadership. Real-project validation and
-cross-platform measurements remain incomplete. See the
+additional architectures remain incomplete. See the
 [full results, controls, variance and reproduction](./docs/docs/TS_PERFORMANCE.md#checked-commonjs-graph-performance).
 Earlier snapshots are retained separately, not averaged into this table.
 Async/await coverage is still undergoing validation and is not timed.
