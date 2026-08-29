@@ -509,49 +509,55 @@ pub fn build(b: *std.Build) void {
 
     // Narrow JS/TS repository-tool runtime. It deliberately imports only
     // Home's public-C engine leaves, never the Bun/WebCore runtime aggregator.
-    const tool_build_options = b.addOptions();
-    tool_build_options.addOption(bool, "enable_jsc", true);
-    tool_build_options.addOption(bool, "use_zig_js", tool_use_zig_js);
-    tool_build_options.addOption([]const u8, "js_engine", tool_js_engine);
-    const tool_build_options_module = tool_build_options.createModule();
-    const tool_compat_pkg = createPackage(b, "packages/runtime/src/jsc/tool_compat.zig", target, optimize, zig_test_framework);
-    const tool_runtime_pkg = createPackage(b, "packages/runtime/src/jsc/tool_runtime.zig", target, optimize, zig_test_framework);
-    tool_runtime_pkg.addImport("bun", tool_compat_pkg);
-    tool_runtime_pkg.addImport("build_options", tool_build_options_module);
-    tool_runtime_pkg.addImport("ts_driver", ts_driver_pkg);
-    tool_runtime_pkg.link_libc = true;
-    if (tool_use_zig_js) {
-        linkZigJs(b, tool_runtime_pkg, configured_zig_js_root);
-    } else if (target.result.os.tag == .macos) {
-        tool_runtime_pkg.linkFramework("JavaScriptCore", .{});
-    } else {
-        std.debug.panic("the jsc tool backend currently requires macOS", .{});
-    }
+    // Unsupported tool backends must not prevent independent build targets
+    // such as home-tsc from configuring on Linux or Windows.
+    if (tool_use_zig_js or target.result.os.tag == .macos) {
+        const tool_build_options = b.addOptions();
+        tool_build_options.addOption(bool, "enable_jsc", true);
+        tool_build_options.addOption(bool, "use_zig_js", tool_use_zig_js);
+        tool_build_options.addOption([]const u8, "js_engine", tool_js_engine);
+        const tool_build_options_module = tool_build_options.createModule();
+        const tool_compat_pkg = createPackage(b, "packages/runtime/src/jsc/tool_compat.zig", target, optimize, zig_test_framework);
+        const tool_runtime_pkg = createPackage(b, "packages/runtime/src/jsc/tool_runtime.zig", target, optimize, zig_test_framework);
+        tool_runtime_pkg.addImport("bun", tool_compat_pkg);
+        tool_runtime_pkg.addImport("build_options", tool_build_options_module);
+        tool_runtime_pkg.addImport("ts_driver", ts_driver_pkg);
+        tool_runtime_pkg.link_libc = true;
+        if (tool_use_zig_js) {
+            linkZigJs(b, tool_runtime_pkg, configured_zig_js_root);
+        } else {
+            tool_runtime_pkg.linkFramework("JavaScriptCore", .{});
+        }
 
-    const home_tool_exe = b.addExecutable(.{
-        .name = "home-tool",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("packages/runtime/src/jsc/tool_main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .link_libc = true,
-        }),
-    });
-    home_tool_exe.root_module.addImport("tool_runtime", tool_runtime_pkg);
-    home_tool_exe.root_module.addImport("ts_driver", ts_driver_pkg);
-    home_tool_exe.root_module.addImport("build_options", tool_build_options_module);
-    b.installArtifact(home_tool_exe);
-    const home_tool_step = b.step("home-tool", "Build Home's native JS/TS repository-tool runner");
-    home_tool_step.dependOn(&b.addInstallArtifact(home_tool_exe, .{}).step);
-    const run_home_tool_smoke = b.addRunArtifact(home_tool_exe);
-    run_home_tool_smoke.setCwd(b.path(""));
-    run_home_tool_smoke.addArgs(&.{ "run", "packages/runtime/src/jsc/tool_smoke.ts" });
-    const run_home_tool_package_smoke = b.addRunArtifact(home_tool_exe);
-    run_home_tool_package_smoke.setCwd(b.path("packages/runtime/test/tool_modules"));
-    run_home_tool_package_smoke.addArgs(&.{ "run", "main.ts" });
-    const home_tool_smoke_step = b.step("home-tool-smoke", "Run Home's repository-tool runner smoke test");
-    home_tool_smoke_step.dependOn(&run_home_tool_smoke.step);
-    home_tool_smoke_step.dependOn(&run_home_tool_package_smoke.step);
+        const home_tool_exe = b.addExecutable(.{
+            .name = "home-tool",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("packages/runtime/src/jsc/tool_main.zig"),
+                .target = target,
+                .optimize = optimize,
+                .link_libc = true,
+            }),
+        });
+        home_tool_exe.root_module.addImport("tool_runtime", tool_runtime_pkg);
+        home_tool_exe.root_module.addImport("ts_driver", ts_driver_pkg);
+        home_tool_exe.root_module.addImport("build_options", tool_build_options_module);
+        b.installArtifact(home_tool_exe);
+        const home_tool_step = b.step("home-tool", "Build Home's native JS/TS repository-tool runner");
+        home_tool_step.dependOn(&b.addInstallArtifact(home_tool_exe, .{}).step);
+        const run_home_tool_smoke = b.addRunArtifact(home_tool_exe);
+        run_home_tool_smoke.setCwd(b.path(""));
+        run_home_tool_smoke.addArgs(&.{ "run", "packages/runtime/src/jsc/tool_smoke.ts" });
+        const run_home_tool_package_smoke = b.addRunArtifact(home_tool_exe);
+        run_home_tool_package_smoke.setCwd(b.path("packages/runtime/test/tool_modules"));
+        run_home_tool_package_smoke.addArgs(&.{ "run", "main.ts" });
+        const home_tool_smoke_step = b.step("home-tool-smoke", "Run Home's repository-tool runner smoke test");
+        home_tool_smoke_step.dependOn(&run_home_tool_smoke.step);
+        home_tool_smoke_step.dependOn(&run_home_tool_package_smoke.step);
+    } else {
+        const unsupported = b.addFail("home-tool requires zig-js on this platform; pass -Dtool-js-engine=zig-js -Dzig-js-root=/path/to/zig-js");
+        b.step("home-tool", "Build Home's native JS/TS repository-tool runner").dependOn(&unsupported.step);
+        b.step("home-tool-smoke", "Run Home's repository-tool runner smoke test").dependOn(&unsupported.step);
+    }
 
     // TS-parity Phase 1.E follow-up — module resolver.
     const ts_resolver_pkg = createPackage(b, "packages/ts_resolver/src/ts_resolver.zig", target, optimize, zig_test_framework);
