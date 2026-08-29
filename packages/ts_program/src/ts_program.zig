@@ -31,6 +31,7 @@ pub const FileId = u32;
 pub const export_origins = @import("export_origins.zig");
 const class_declarations = @import("class_declarations.zig");
 const declaration_graph = @import("declaration_graph.zig");
+const checked_schema = @import("checked_schema.zig");
 
 const program_source_markers = &[_][]const u8{
     "namespace", "module", "global", "declare", "interface", "class", "export", "exports", "=",
@@ -568,6 +569,12 @@ pub const Program = struct {
             return;
         }
         try self.prepareFiles(options);
+        // Checked CommonJS owner types must exist before a requiring consumer
+        // is checked. The bound graph is complete at this point, so establish
+        // dependency order without reparsing or a second checker pass.
+        try self.resolveImports();
+        const compilation_order = try self.dependencyOrder();
+        defer self.gpa.free(compilation_order);
         var globals = try self.collectBoundGlobals();
         defer globals.deinit(self.gpa);
         self.prepareSourceMarkers();
@@ -599,7 +606,8 @@ pub const Program = struct {
         defer self.gpa.free(known_reference_paths);
         for (self.files.items, 0..) |f, i| known_reference_paths[i] = f.path;
         for (options.known_reference_paths, 0..) |path, i| known_reference_paths[self.files.items.len + i] = path;
-        for (self.files.items) |f| {
+        for (compilation_order) |file_index| {
+            const f = self.files.items[file_index];
             if (f.redirect_target != null) continue;
             if (!needsCompilation(f, options)) continue;
             var per_file = options;
@@ -638,6 +646,7 @@ pub const Program = struct {
             // compilation.
             if (per_file.importer_path.len == 0) per_file.importer_path = f.path;
             try self.compileFile(f, per_file);
+            try self.populateProgramCommonJsExportSchemas(f, @constCast(program_commonjs_exports));
         }
 
         try self.appendMissingCompilerTypeReferenceDiagnostics(options);
@@ -648,6 +657,32 @@ pub const Program = struct {
         try self.appendMergedAmbientModuleExportDiagnostics();
 
         try self.resolveImports();
+    }
+
+    fn dependencyOrder(self: *const Program) ProgramError![]const usize {
+        const states = try self.gpa.alloc(u2, self.files.items.len);
+        defer self.gpa.free(states);
+        @memset(states, 0);
+        var order: std.ArrayListUnmanaged(usize) = .empty;
+        errdefer order.deinit(self.gpa);
+        for (self.files.items, 0..) |_, index| try self.appendDependencyOrder(index, states, &order);
+        return order.toOwnedSlice(self.gpa);
+    }
+
+    fn appendDependencyOrder(
+        self: *const Program,
+        index: usize,
+        states: []u2,
+        order: *std.ArrayListUnmanaged(usize),
+    ) ProgramError!void {
+        if (states[index] == 2) return;
+        if (states[index] == 1) return;
+        states[index] = 1;
+        for (self.files.items[index].imports.items) |dependency| {
+            if (dependency < self.files.items.len) try self.appendDependencyOrder(dependency, states, order);
+        }
+        states[index] = 2;
+        try order.append(self.gpa, index);
     }
 
     /// Explicitly invalidate and recompile all sources, e.g. after options
@@ -726,6 +761,9 @@ pub const Program = struct {
     ) ProgramError!void {
         try self.prepareNameStore();
         try self.prepareFiles(options);
+        try self.resolveImports();
+        const compilation_order = try self.dependencyOrder();
+        defer self.gpa.free(compilation_order);
         var globals = try self.collectBoundGlobals();
         defer globals.deinit(self.gpa);
         self.prepareSourceMarkers();
@@ -756,7 +794,8 @@ pub const Program = struct {
         defer self.gpa.free(known_reference_paths);
         for (self.files.items, 0..) |f, i| known_reference_paths[i] = f.path;
         for (options.known_reference_paths, 0..) |path, i| known_reference_paths[self.files.items.len + i] = path;
-        for (self.files.items) |f| {
+        for (compilation_order) |file_index| {
+            const f = self.files.items[file_index];
             if (f.redirect_target != null) continue;
             if (!needsCompilation(f, options)) {
                 // Already compiled — replay its diagnostics anyway so
@@ -784,6 +823,7 @@ pub const Program = struct {
             per_file.suppress_import_helper_diagnostics = true;
             if (per_file.importer_path.len == 0) per_file.importer_path = f.path;
             try self.compileFile(f, per_file);
+            try self.populateProgramCommonJsExportSchemas(f, @constCast(program_commonjs_exports));
             callback(ctx, f.path, f.compilation.?.diagnostics.items);
         }
 
@@ -1389,7 +1429,47 @@ pub const Program = struct {
                 });
             }
         }
+        for (self.files.items) |file| try self.populateProgramCommonJsExportSchemas(file, out.items);
         return try out.toOwnedSlice(self.gpa);
+    }
+
+    fn populateProgramCommonJsExportSchemas(
+        self: *Program,
+        file: *File,
+        exports: []ts_driver.ProgramCommonJsExport,
+    ) ProgramError!void {
+        const compilation = file.compilation orelse return;
+        if (!compilation.checked_types_ready or compilation.hir.kindOf(compilation.root) != .block_stmt) return;
+        const whole_types = checked_schema.wholeExportTypes(self.gpa, compilation) catch return error.OutOfMemory;
+        defer self.gpa.free(whole_types);
+        if (whole_types.len == 0) return;
+        var position: ?u32 = null;
+        for (hir_mod_ns.blockStmts(&compilation.hir, compilation.root)) |statement| {
+            if (compilation.hir.kindOf(statement) != .assignment) continue;
+            const assignment = hir_mod_ns.assignmentOf(&compilation.hir, statement);
+            if (assignment.op != null or assignment.value == hir_mod_ns.none_node_id) continue;
+            const name = commonJsExportAssignmentMetadataName(
+                &compilation.hir,
+                &compilation.interner,
+                assignment,
+            ) orelse continue;
+            if (name.len == 0) {
+                position = compilation.hir.spanOf(statement).start;
+                break;
+            }
+        }
+        const export_position = position orelse return;
+        for (exports) |*exported| {
+            if (exported.whole_export_schema != null or exported.name.len != 0 or
+                !std.mem.eql(u8, exported.module_path, file.path)) continue;
+            exported.whole_export_schema = checked_schema.collect(
+                self.gpa,
+                file.path,
+                compilation,
+                whole_types,
+                export_position,
+            ) catch return error.OutOfMemory;
+        }
     }
 
     fn collectProgramUmdGlobals(self: *const Program) ProgramError![]const ts_driver.ProgramUmdGlobal {
@@ -2380,8 +2460,25 @@ pub const Program = struct {
         gpa.free(items);
     }
 
+    fn programCommonJsExportsNeedDependencyChecking(
+        self: *const Program,
+        items: []const ts_driver.ProgramCommonJsExport,
+    ) bool {
+        for (items) |item| {
+            if (item.name.len != 0 or item.whole_export_is_any) continue;
+            for (self.files.items) |consumer| {
+                for (consumer.imports.items) |dependency| {
+                    if (dependency < self.files.items.len and
+                        std.mem.eql(u8, self.files.items[dependency].path, item.module_path)) return true;
+                }
+            }
+        }
+        return false;
+    }
+
     fn freeProgramCommonJsExports(gpa: std.mem.Allocator, items: []const ts_driver.ProgramCommonJsExport) void {
         for (items) |item| {
+            if (item.whole_export_schema) |owner_schema| @constCast(owner_schema).deinit(gpa);
             gpa.free(item.module_path);
             gpa.free(item.name);
             if (item.private_type_name.len > 0) gpa.free(item.private_type_name);
@@ -2545,6 +2642,7 @@ pub const Program = struct {
         var bind_options = options;
         bind_options.bind_only = true;
         try self.compileFilesParallel(bind_options, workers);
+        try self.resolveImports();
         var globals = try self.collectBoundGlobals();
         defer globals.deinit(self.gpa);
         self.prepareSourceMarkers();
@@ -2589,7 +2687,18 @@ pub const Program = struct {
         shared_options.program_commonjs_exports = program_commonjs_exports;
         shared_options.program_umd_globals = merged_program_umd_globals;
         shared_options.known_reference_paths = known_reference_paths;
-        try self.compileFilesParallel(shared_options, workers);
+        if (self.programCommonJsExportsNeedDependencyChecking(program_commonjs_exports)) {
+            const compilation_order = try self.dependencyOrder();
+            defer self.gpa.free(compilation_order);
+            for (compilation_order) |file_index| {
+                const file = self.files.items[file_index];
+                if (file.redirect_target != null or !needsCompilation(file, shared_options)) continue;
+                try self.compileFile(file, shared_options);
+                try self.populateProgramCommonJsExportSchemas(file, @constCast(program_commonjs_exports));
+            }
+        } else {
+            try self.compileFilesParallel(shared_options, workers);
+        }
 
         try self.appendMissingCompilerTypeReferenceDiagnostics(options);
         try self.appendMissingImportedHelperDiagnostics(options);
@@ -8413,6 +8522,56 @@ test "Program: static require cycles keep unique current edges after updates" {
     try T.expectEqual(@as(usize, 0), p.files.items[left].imports.items.len);
     try T.expect(!p.reaches(left, leaf));
     try T.expect(p.reaches(entry, leaf));
+}
+
+test "Program: checked CommonJS whole exports type requiring consumers in dependency order" {
+    const Mode = enum { serial, parallel, streaming };
+    const owner_source =
+        \\class Service { value = 'text'; }
+        \\module.exports = new Service();
+    ;
+    const app_source =
+        \\const instance = require('./owner');
+        \\/** @type {boolean} */ const bad = instance.value;
+        \\instance.missing;
+    ;
+    inline for (.{ Mode.serial, Mode.parallel, Mode.streaming }) |mode| {
+        for ([_]bool{ false, true }) |owner_first| {
+            var vfs = ts_resolver.VirtualFs.init(T.allocator);
+            defer vfs.deinit();
+            try vfs.addFile("/owner.js", owner_source);
+            try vfs.addFile("/app.js", app_source);
+            var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+            defer resolver.deinit();
+            var program = Program.init(T.allocator, &resolver);
+            defer program.deinit();
+            const app = if (owner_first) blk: {
+                _ = try program.add("/owner.js", owner_source);
+                break :blk try program.add("/app.js", app_source);
+            } else blk: {
+                const id = try program.add("/app.js", app_source);
+                _ = try program.add("/owner.js", owner_source);
+                break :blk id;
+            };
+            const options: ts_driver.CompileOptions = .{
+                .allow_js = true,
+                .check_js = true,
+                .strict = true,
+                .no_emit = true,
+            };
+            const Sink = struct {
+                fn callback(_: void, _: []const u8, _: []const ts_driver.Diagnostic) void {}
+            };
+            switch (mode) {
+                .serial => try program.compileAll(options),
+                .parallel => try program.compileAllParallel(options, 2),
+                .streaming => try program.compileAllStreaming(options, {}, Sink.callback),
+            }
+            const compilation = program.fileById(app).compilation.?;
+            try expectCompilationHasDiagnosticCode(compilation, 2322);
+            try expectCompilationHasDiagnosticCode(compilation, 2339);
+        }
+    }
 }
 
 test "Program: re-export cycles and diamonds retain unique current dependency edges" {

@@ -613,6 +613,10 @@ pub const ProgramAmbientModuleInterfaceExport = struct {
 pub const ProgramCommonJsExport = struct {
     module_path: []const u8,
     name: []const u8,
+    /// Whole-export type projected from the declaration module's checked
+    /// owner. Null while that owner has not been checked or when its type is
+    /// outside the lossless program-schema subset.
+    whole_export_schema: ?*const ProgramClassSchema.Schema = null,
     private_type_name: []const u8 = "",
     private_module_name: []const u8 = "",
     /// The declaration module's `export =` target is explicitly `any`.
@@ -61609,12 +61613,14 @@ pub const Checker = struct {
     }
 
     fn commonJsWholeExportTypeForRequireVariable(self: *Checker, object: NodeId) CheckError!?TypeId {
-        if (!self.sourceHasVirtualFilenameSections() or object == hir_mod.none_node_id or
-            self.hir.kindOf(object) != .identifier) return null;
+        if (object == hir_mod.none_node_id or self.hir.kindOf(object) != .identifier) return null;
         const name = hir_mod.identifierOf(self.hir, object).name;
         if (self.requireSpecifierForLocal(name, object)) |specifier| {
+            if (try self.programCommonJsWholeExportType(object, specifier)) |whole_t| return whole_t;
+            if (!self.sourceHasVirtualFilenameSections()) return null;
             if (try self.virtualCommonJsModuleExportObjectType(object, specifier)) |module_t| return module_t;
         }
+        if (!self.sourceHasVirtualFilenameSections()) return null;
         const root = self.rootBlockFor(object);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
         const section = self.virtualSectionStartForNode(object);
@@ -62023,8 +62029,14 @@ pub const Checker = struct {
 
     fn programCommonJsWholeExportType(self: *Checker, node: NodeId, spec: []const u8) CheckError!?TypeId {
         for (self.program_commonjs_exports) |exported| {
-            if (exported.name.len != 0 or !exported.whole_export_is_any) continue;
-            if (try self.programImportTargetsPath(node, spec, exported.module_path)) return types.Primitive.any;
+            if (exported.name.len != 0 or !try self.programImportTargetsPath(node, spec, exported.module_path)) continue;
+            if (exported.whole_export_is_any) return types.Primitive.any;
+            const owner_schema = exported.whole_export_schema orelse continue;
+            if (!try self.programSchemaSupported(owner_schema)) continue;
+            return self.instantiateProgramDeclaration(owner_schema.declaration, &.{}, &.{}) catch |err| switch (err) {
+                error.UnsupportedProgramType => continue,
+                error.OutOfMemory => return error.OutOfMemory,
+            };
         }
         return null;
     }
@@ -87909,6 +87921,12 @@ pub const Checker = struct {
                 }
             } else {
                 init_type = try self.checkExpression(v.init);
+                if (self.requireCallSpecifier(v.init)) |specifier| {
+                    if (try self.programCommonJsWholeExportType(v.init, specifier)) |whole_t| {
+                        init_type = whole_t;
+                        self.hir.setType(v.init, whole_t);
+                    }
+                }
                 init_type = try self.narrowWhileConditionedDestructuringSource(node, v, init_type);
             }
             if (declared_type == types.Primitive.none and
