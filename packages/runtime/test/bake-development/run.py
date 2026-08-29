@@ -219,7 +219,30 @@ def main() -> None:
 
             if process.poll() is not None:
                 raise AssertionError(f'Home crashed after the hot update (status {process.returncode})')
+
+            client_path.write_text('export const broken = ;\n')
+            while True:
+                _, diagnostic = websocket.receive()
+                message_id = diagnostic[:1]
+                if message_id == b'u':
+                    raise AssertionError('invalid source unexpectedly produced a hot-update frame')
+                if message_id == b'e':
+                    if b'Unexpected' not in diagnostic or b'client.ts' not in diagnostic:
+                        raise AssertionError(
+                            f'build-error frame did not identify the syntax failure: {diagnostic!r}'
+                        )
+                    break
+
             client_path.write_text(original_client)
+            while True:
+                _, recovery = websocket.receive()
+                if recovery[:1] == b'u':
+                    break
+
+            if process.poll() is not None:
+                raise AssertionError(
+                    f'Home crashed after recovering from a build error (status {process.returncode})'
+                )
 
         websocket.close()
         websocket = None
@@ -253,7 +276,7 @@ def main() -> None:
             if slug_body != b'HOME_BAKE_FRAMEWORK_SLUG:alpha':
                 raise AssertionError(f'unexpected framework parameter response: {slug_body!r}')
 
-        print('Bake development HTML, HMR, and framework routing passed')
+        print('Bake development HTML, HMR diagnostics/recovery, and framework routing passed')
     except Exception:
         for label, path in (
             ('Home development server', log_path),
