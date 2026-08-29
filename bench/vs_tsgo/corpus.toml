@@ -21,6 +21,7 @@ structural_object_families = 128
 interface_composition_families = 128
 variadic_tuple_families = 256
 checkjs_jsdoc_families = 128
+commonjs_graph_families = 128
 recursive_generic_families = 256
 
 [workloads.startup]
@@ -76,6 +77,9 @@ description = "One module with 256 readonly variadic-tuple families covering inf
 
 [workloads.checkjs_jsdoc]
 description = "One checked JavaScript module with 128 JSDoc families covering typedefs, constrained templates, callbacks, classes, property reads, and typed consumption."
+
+[workloads.commonjs_graph]
+description = "128 checked JavaScript CommonJS owners consumed from one explicit-root app, preserving inferred fields and reassignment unions across real require edges."
 
 [workloads.recursive_generics]
 description = "256 distinct payload types consumed through an imported generic class and four growing recursive array levels, with concrete container and leaf checks."

@@ -144,6 +144,63 @@ class RecursiveGenericWorkloadTests(unittest.TestCase):
             run.validate(commands, "recursive_generics")
             negatives.assert_called_once_with(commands)
 
+class CommonJsGraphWorkloadTests(unittest.TestCase):
+    def setUp(self):
+        config = {"generated": {"commonjs_graph_families": 128}}
+        patcher = mock.patch.object(run, "manifest", return_value=config)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_generator_retains_real_edges_unions_and_typed_consumption(self):
+        with mock.patch.object(run, "write") as write:
+            run.generate_commonjs_graph(run.Path("project"), 3)
+        sources = {str(call.args[0]): call.args[1] for call in write.call_args_list}
+        app = sources["project/src/index.js"]
+        for index in range(3):
+            owner = sources[f"project/src/owner-{index:04d}.js"]
+            self.assertIn(f"module.exports = new Service{index}()", owner)
+            self.assertIn(f"module.exports = new Alternate{index}()", owner)
+            self.assertIn(f'require("./owner-{index:04d}")', app)
+            self.assertIn(f"service{index}.meta.active", app)
+            self.assertIn(f"string | number}} */ const label{index}", app)
+        with self.assertRaises(ValueError):
+            run.generate_commonjs_graph(run.Path("project"), 0)
+
+    def test_negative_controls_append_to_copy_and_cover_first_middle_last(self):
+        complete = "error TS2322: wrong\n" * 3 + "error TS2339: missing\n" * 3
+        with mock.patch.object(run.shutil, "copytree") as copy, mock.patch.object(
+            run.Path, "read_text", return_value="original source\n"
+        ), mock.patch.object(run, "write") as write, mock.patch.object(
+            run.subprocess, "run", return_value=subprocess.CompletedProcess([], 2, complete, "")
+        ):
+            run.validate_commonjs_graph_negatives({"home": ["home"]})
+            self.assertEqual(run.CORPUS / "commonjs_graph", copy.call_args.args[0])
+            self.assertNotEqual(run.CORPUS / "commonjs_graph/src/index.js", write.call_args.args[0])
+            self.assertTrue(write.call_args.args[1].startswith("original source\n"))
+            for index in (0, 64, 127):
+                self.assertIn(f"service{index}.label", write.call_args.args[1])
+                self.assertIn(f"service{index}.missing", write.call_args.args[1])
+
+    def test_negative_controls_reject_partial_errors_acceptance_and_crashes(self):
+        complete = "error TS2322: wrong\n" * 3 + "error TS2339: missing\n" * 3
+        for code, output in ((0, ""), (0, complete), (1, "error TS2322: wrong\n"), (-11, complete), (3, complete)):
+            with mock.patch.object(run.shutil, "copytree"), mock.patch.object(
+                run.Path, "read_text", return_value="source\n"
+            ), mock.patch.object(run, "write"), mock.patch.object(
+                run.subprocess, "run", return_value=subprocess.CompletedProcess([], code, output, "")
+            ):
+                with self.assertRaisesRegex(SystemExit, "failed commonjs_graph negative controls"):
+                    run.validate_commonjs_graph_negatives({"home": ["home"]})
+
+    def test_positive_workload_requires_negative_admission(self):
+        commands = {"home": ["home"]}
+        with mock.patch.object(
+            run.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "", "")
+        ), mock.patch.object(run, "validate_commonjs_graph_negatives") as negatives:
+            run.validate(commands, "commonjs_graph")
+            negatives.assert_called_once_with(commands)
+
+
 class AdmissionTests(unittest.TestCase):
     def test_legacy_graph_report_does_not_claim_an_unvalidated_win(self):
         import compare

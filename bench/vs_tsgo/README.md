@@ -166,6 +166,8 @@ The workloads cover distinct costs rather than repeating one favorable shape:
 | `interface_composition` | 128 merged interface families | Multi-base generic inheritance, repeated interface declarations, namespace/type merging, inherited member aggregation, and structural consumption |
 | `variadic_tuples` | 256 readonly tuple families | Variadic tuple concat, readonly inference, conditional head/tail extraction, generic rest and spread, indexed reads, and typed consumption |
 | `checkjs_jsdoc` | 128 checked-JavaScript families | JSDoc typedefs, constrained templates, callbacks, classes, property reads, and typed result consumption |
+| `commonjs_graph` | 128 checked-JavaScript owners + one app | Static `require` discovery, inferred whole-export fields, reassignment unions, and typed cross-file consumption |
+| `recursive_generics` | 256 recursive generic consumers | Imported generic declaration ownership, four recursive array levels, and concrete container/leaf checking |
 
 These synthetic workloads are intentionally deterministic and dependency-free.
 The destructuring workload also runs five automatic negative controls before

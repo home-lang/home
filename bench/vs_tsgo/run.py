@@ -797,6 +797,40 @@ def generate_checkjs_jsdoc(directory: Path, families: int) -> None:
     write(directory / "src/checkjs-jsdoc.js", "".join(blocks).rstrip() + "\n")
 
 
+def generate_commonjs_graph(directory: Path, families: int) -> None:
+    if families < 1:
+        raise ValueError("CommonJS graph workloads require at least one family")
+    write(directory / "tsconfig.json", shared_config(check_js=True))
+    generate_minimal_lib(directory)
+    app: list[str] = []
+    for index in range(families):
+        suffix = f"{index:04d}"
+        active = "true" if index % 2 == 0 else "false"
+        write(
+            directory / f"src/owner-{suffix}.js",
+            f"class Service{index} {{\n"
+            f"  id = {index};\n"
+            f'  label = "service-{index}";\n'
+            f'  meta = {{ active: {active}, score: {index} }};\n'
+            "}\n"
+            f"class Alternate{index} {{\n"
+            f"  id = {index};\n"
+            f"  label = {index};\n"
+            f'  meta = {{ active: {active}, score: {index} }};\n'
+            "}\n"
+            f"module.exports = new Service{index}();\n"
+            f"module.exports = new Alternate{index}();\n",
+        )
+        app.append(
+            f'const service{index} = require("./owner-{suffix}");\n'
+            f"/** @type {{number}} */ const id{index} = service{index}.id;\n"
+            f"/** @type {{string | number}} */ const label{index} = service{index}.label;\n"
+            f"/** @type {{boolean}} */ const active{index} = service{index}.meta.active;\n"
+            f"/** @type {{number}} */ const score{index} = service{index}.meta.score;\n"
+        )
+    write(directory / "src/index.js", "".join(app))
+
+
 def generate_recursive_generics(directory: Path, families: int) -> None:
     if families < 1:
         raise ValueError("recursive generic workloads require at least one family")
@@ -859,6 +893,10 @@ def cmd_corpus() -> None:
     generate_checkjs_jsdoc(
         CORPUS / "checkjs_jsdoc",
         cfg["checkjs_jsdoc_families"],
+    )
+    generate_commonjs_graph(
+        CORPUS / "commonjs_graph",
+        cfg["commonjs_graph_families"],
     )
     generate_recursive_generics(CORPUS / "recursive_generics", cfg["recursive_generic_families"])
     print(f"Generated deterministic corpus in {CORPUS}")
@@ -940,8 +978,36 @@ def validate(commands: dict[str, list[str]], workload: str) -> None:
         validate_graph_negatives(commands, workload)
     elif workload == "variadic_tuples":
         validate_variadic_tuple_negatives(commands)
+    elif workload == "commonjs_graph":
+        validate_commonjs_graph_negatives(commands)
     elif workload == "recursive_generics":
         validate_recursive_generic_negatives(commands)
+
+
+def validate_commonjs_graph_negatives(commands: dict[str, list[str]]) -> None:
+    families = manifest()["generated"]["commonjs_graph_families"]
+    indices = sorted({0, families // 2, families - 1})
+    invalid = "".join(
+        f"/** @type {{boolean}} */ const wrongLabel{index} = service{index}.label;\n"
+        f"const missing{index} = service{index}.missing;\n"
+        for index in indices
+    )
+    with tempfile.TemporaryDirectory(prefix="home-bench-commonjs-") as temporary:
+        project = Path(temporary) / "project"
+        shutil.copytree(CORPUS / "commonjs_graph", project)
+        source_path = project / "src/index.js"
+        write(source_path, source_path.read_text(encoding="utf-8") + invalid)
+        for name, command in commands.items():
+            result = subprocess.run(
+                command + ["--noEmit", "-p", str(project / "tsconfig.json")],
+                capture_output=True,
+                text=True,
+            )
+            details = result.stdout + result.stderr
+            codes = sorted(re.findall(r"\berror TS(\d+):", details))
+            expected = ["2322"] * len(indices) + ["2339"] * len(indices)
+            if result.returncode not in (1, 2) or codes != expected:
+                raise SystemExit(f"{name} failed commonjs_graph negative controls:\n{details}")
 
 
 def validate_recursive_generic_negatives(commands: dict[str, list[str]]) -> None:
