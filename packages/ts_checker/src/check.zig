@@ -106716,9 +106716,23 @@ pub const Checker = struct {
                     rest = rest or param.rest;
                 }
                 const this_type = if (function.this_type) |receiver| try self.lowerProgramExpression(receiver, declaration, args) else types.Primitive.none;
-                const sig = try self.interner.internSignatureWithThisType(params, try self.lowerProgramExpression(function.result, declaration, args), false, false, this_type);
+                const sig = try self.interner.internSignatureWithThisType(
+                    params,
+                    try self.lowerProgramExpression(function.result, declaration, args),
+                    function.is_construct,
+                    false,
+                    this_type,
+                );
                 try self.recordSignatureMinArgs(sig, optional);
                 if (this_type != types.Primitive.none) try self.signature_this_params.put(self.gpa, sig, this_type);
+                if (function.predicate) |predicate| {
+                    try self.signature_predicates.put(self.gpa, sig, .{
+                        .param_index = predicate.param_index,
+                        .target_type = try self.lowerProgramExpression(predicate.target, declaration, args),
+                        .target_node = hir_mod.none_node_id,
+                        .is_asserts = predicate.is_asserts,
+                    });
+                }
                 if (rest) try self.rest_signatures.put(self.gpa, sig, {});
                 return sig;
             },

@@ -9040,12 +9040,17 @@ test "Program: namespace imports preserve defaulted indexed generic callbacks" {
 
     const owner =
         \\type Trait = { _zod: { def: unknown; [key: string]: unknown } };
+        \\export interface Constructor<T extends Trait, D = T["_zod"]["def"]> {
+        \\  new (def: D): T;
+        \\  init(inst: T, def: D): asserts inst is T;
+        \\}
         \\export function $constructor<T extends Trait, D = T["_zod"]["def"]>(
         \\  name: string,
         \\  initializer: (inst: T, def: D) => void
-        \\): void {
+        \\): Constructor<T, D> {
         \\  void name;
         \\  void initializer;
+        \\  return null as never;
         \\}
     ;
     const consumer =

@@ -103,7 +103,7 @@ pub const Builder = struct {
         def.body = if (kind == .type_alias_decl)
             try self.lower(context, hir.typeAliasOf(&c.hir, key.node).aliased)
         else if (kind == .fn_decl)
-            try self.functionType(context, hir.fnParams(&c.hir, key.node), hir.fnDeclOf(&c.hir, key.node).return_type)
+            try self.functionType(context, hir.fnParams(&c.hir, key.node), hir.fnDeclOf(&c.hir, key.node).return_type, false)
         else if (kind == .var_decl or kind == .let_decl or kind == .const_decl)
             try self.lower(context, hir.varDeclOf(&c.hir, key.node).type_annotation)
         else if (kind == .interface_decl)
@@ -148,7 +148,7 @@ pub const Builder = struct {
                     if (function.name == 0) return self.expression(.unsupported);
                     if (function.type_params_len != 0 or function.flags.is_getter or function.flags.is_setter) return self.expression(.unsupported);
                     if (c.hir.kindOf(function.name) != .identifier) return self.expression(.unsupported);
-                    try members.append(self.arena, .{ .name = c.interner.get(hir.identifierOf(&c.hir, function.name).name), .type = try self.functionType(context, params, function.return_type), .method = true, .optional = function.flags.is_optional, .visibility = if (function.flags.is_private) .private else if (function.flags.is_protected) .protected else .public });
+                    try members.append(self.arena, .{ .name = c.interner.get(hir.identifierOf(&c.hir, function.name).name), .type = try self.functionType(context, params, function.return_type, false), .method = true, .optional = function.flags.is_optional, .visibility = if (function.flags.is_private) .private else if (function.flags.is_protected) .protected else .public });
                 },
                 .index_signature => return self.expression(.unsupported),
                 else => {},
@@ -186,7 +186,7 @@ pub const Builder = struct {
         } });
     }
 
-    fn functionType(self: *Builder, context: Context, nodes: []const hir.NodeId, result: hir.NodeId) !*const schema.Expression {
+    fn functionType(self: *Builder, context: Context, nodes: []const hir.NodeId, result: hir.NodeId, is_construct: bool) !*const schema.Expression {
         const c = self.sources[context.source].compilation;
         var params: std.ArrayListUnmanaged(schema.Element) = .empty;
         var this_type: ?*const schema.Expression = null;
@@ -198,7 +198,25 @@ pub const Builder = struct {
             }
             try params.append(self.arena, .{ .type = try self.lower(context, value.type_annotation), .optional = value.flags.is_optional or value.default_value != 0, .rest = value.flags.is_rest });
         }
-        return self.expression(.{ .function = .{ .parameters = try params.toOwnedSlice(self.arena), .result = try self.lower(context, result), .this_type = this_type } });
+        const predicate = if (result != 0 and c.hir.kindOf(result) == .type_predicate_type) blk: {
+            const value = hir.typePredicateOf(&c.hir, result);
+            break :blk schema.TypePredicate{
+                .param_index = value.param_index,
+                .target = try self.lower(context, value.target_type),
+                .is_asserts = value.is_asserts,
+            };
+        } else null;
+        const result_type = if (predicate) |value|
+            try self.expression(.{ .primitive = if (value.is_asserts) Primitive.void_t else Primitive.boolean_t })
+        else
+            try self.lower(context, result);
+        return self.expression(.{ .function = .{
+            .parameters = try params.toOwnedSlice(self.arena),
+            .result = result_type,
+            .this_type = this_type,
+            .predicate = predicate,
+            .is_construct = is_construct,
+        } });
     }
 
     fn lower(self: *Builder, context: Context, node: hir.NodeId) error{OutOfMemory}!*const schema.Expression {
@@ -266,10 +284,15 @@ pub const Builder = struct {
                 for (nodes, values) |item, *value| value.* = try self.lower(context, item);
                 return self.expression(if (union_type) .{ .union_type = values } else .{ .intersection = values });
             },
-            .fn_type => {
+            .fn_type, .constructor_type => {
                 const value = hir.fnTypeOf(&c.hir, node);
-                if (value.type_params_len != 0 or value.is_constructor) return self.expression(.unsupported);
-                return self.functionType(context, c.hir.child_pool.items[value.params_start..][0..value.params_len], value.return_type);
+                if (value.type_params_len != 0) return self.expression(.unsupported);
+                return self.functionType(
+                    context,
+                    c.hir.child_pool.items[value.params_start..][0..value.params_len],
+                    value.return_type,
+                    c.hir.kindOf(node) == .constructor_type,
+                );
             },
             .indexed_access_type => {
                 const indexed = hir.indexedAccessTypeOf(&c.hir, node);

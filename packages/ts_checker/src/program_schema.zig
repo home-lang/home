@@ -22,7 +22,14 @@ pub const Member = struct {
 };
 
 pub const Element = struct { type: *const Expression, optional: bool = false, rest: bool = false };
-pub const Function = struct { parameters: []const Element, result: *const Expression, this_type: ?*const Expression = null };
+pub const TypePredicate = struct { param_index: u16, target: *const Expression, is_asserts: bool };
+pub const Function = struct {
+    parameters: []const Element,
+    result: *const Expression,
+    this_type: ?*const Expression = null,
+    predicate: ?TypePredicate = null,
+    is_construct: bool = false,
+};
 pub const Reference = struct { declaration: *const Declaration, arguments: []const *const Expression };
 pub const IndexedAccess = struct { object: *const Expression, index: *const Expression };
 pub const IndexSignature = struct { key: *const Expression, value: *const Expression };
@@ -105,6 +112,7 @@ pub const Schema = struct {
                     if (function.this_type) |receiver| try pending.append(gpa, receiver);
                     for (function.parameters) |param| try pending.append(gpa, param.type);
                     try pending.append(gpa, function.result);
+                    if (function.predicate) |predicate| try pending.append(gpa, predicate.target);
                 },
                 .reference => |ref| {
                     try appendDeclaration(gpa, &pending, ref.declaration);
