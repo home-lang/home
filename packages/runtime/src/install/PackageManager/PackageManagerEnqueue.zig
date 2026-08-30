@@ -764,8 +764,12 @@ pub fn enqueueDependencyWithMainAndSuccessFn(
 
                                         // If it's an exact package version already living in the cache
                                         // We can skip the network request, even if it's beyond the caching period
+                                        const cached_exact_result = if (version.tag == .npm and version.value.npm.version.isExact())
+                                            loaded_manifest.?.findByVersion(version.value.npm.version.head.head.range.left.version)
+                                        else
+                                            null;
                                         if (version.tag == .npm and version.value.npm.version.isExact()) {
-                                            if (loaded_manifest.?.findByVersion(version.value.npm.version.head.head.range.left.version)) |find_result| {
+                                            if (cached_exact_result) |find_result| {
                                                 if (this.options.minimum_release_age_ms) |min_age_ms| {
                                                     if (!loaded_manifest.?.shouldExcludeFromAgeFilter(this.options.minimum_release_age_excludes) and Npm.PackageManifest.isPackageVersionTooRecent(find_result.package, min_age_ms)) {
                                                         const package_name = this.lockfile.str(&name);
@@ -794,11 +798,29 @@ pub fn enqueueDependencyWithMainAndSuccessFn(
                                             }
                                         }
 
-                                        // Was it recent enough to just load it without the network call?
-                                        if (this.options.enable.manifest_cache_control and !expired) {
+                                        const cached_manifest_has_match = if (version.tag == .npm and version.value.npm.version.isExact())
+                                            cached_exact_result != null
+                                        else switch (version.tag) {
+                                            .dist_tag => loaded_manifest.?.findByDistTag(this.lockfile.str(&version.value.dist_tag.tag)) != null,
+                                            .npm => loaded_manifest.?.findBestVersion(version.value.npm.version, this.lockfile.buffers.string_bytes.items) != null,
+                                            else => unreachable,
+                                        };
+
+                                        // A fresh manifest can only answer selectors it contains. If no
+                                        // cached version matches, refresh it before reporting not found.
+                                        if (canSkipManifestDownload(
+                                            this.options.enable.manifest_cache_control,
+                                            expired,
+                                            cached_manifest_has_match,
+                                        )) {
                                             _ = this.network_dedupe_map.remove(task_id);
                                             continue :retry_from_manifests_ptr;
                                         }
+
+                                        // Do not conditionally validate a manifest which cannot
+                                        // satisfy the selector. A stale validator may yield 304 and
+                                        // repeat the same false not-found result.
+                                        if (!cached_manifest_has_match) loaded_manifest = null;
                                     }
                                 }
 
@@ -1199,6 +1221,17 @@ pub fn enqueueDependencyWithMainAndSuccessFn(
         },
         else => {},
     }
+}
+
+fn canSkipManifestDownload(cache_control_enabled: bool, expired: bool, manifest_has_match: bool) bool {
+    return cache_control_enabled and !expired and manifest_has_match;
+}
+
+test "fresh cached manifests refresh selectors with no match" {
+    try std.testing.expect(canSkipManifestDownload(true, false, true));
+    try std.testing.expect(!canSkipManifestDownload(true, false, false));
+    try std.testing.expect(!canSkipManifestDownload(true, true, true));
+    try std.testing.expect(!canSkipManifestDownload(false, false, true));
 }
 
 /// Allocate and initialise an `.extract` Task for an npm tarball.
