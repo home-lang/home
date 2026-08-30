@@ -243,7 +243,13 @@ pub const PosixSpawn = struct {
             .err => |err| return .{ .err = err.withPath(std.mem.span(path)) },
         };
         defer native_attr.deinit();
-        if (native_attr.set(attr.flags).asErr()) |err| return .{ .err = err.withPath(std.mem.span(path)) };
+        var native_flags = attr.flags;
+        if (attr.new_process_group) {
+            if (comptime spawnFlagFieldBits("SETPGROUP")) |setpgroup| {
+                native_flags |= setpgroup;
+            }
+        }
+        if (native_attr.set(native_flags).asErr()) |err| return .{ .err = err.withPath(std.mem.span(path)) };
         if (attr.reset_signals) {
             if (native_attr.resetSignals().asErr()) |err| return .{ .err = err.withPath(std.mem.span(path)) };
         }

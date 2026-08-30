@@ -350,6 +350,32 @@ try {
   const serial = invoke([basic])
   passed(serial, 1)
   assert.match(serial.stderr, /basic\.test\.js:\n\(pass\) basic/)
+
+  // Native parallel workers must be distinct Home subprocesses rather than a
+  // serial fallback with fabricated worker identifiers.
+  const parallelIds = join(directory, 'parallel-worker-ids.txt')
+  const parallelBody = `
+    import assert from 'node:assert/strict';
+    import { appendFileSync } from 'node:fs';
+    test('parallel worker', async () => {
+      assert.match(process.execPath, /home(?:-debug)?(?:\\.exe)?$/);
+      appendFileSync(${JSON.stringify(parallelIds)}, process.env.JEST_WORKER_ID + ':' + process.pid + '\\n');
+      await Bun.sleep(150);
+    });
+  `
+  const parallelA = makeFixture('parallel-a.test.js', parallelBody)
+  const parallelB = makeFixture('parallel-b.test.js', parallelBody)
+  const parallel = invoke(['--parallel=2', parallelA, parallelB], {
+    env: { ...env, BUN_TEST_PARALLEL_SCALE_MS: '0' },
+  })
+  assert.equal(parallel.status, 0, parallel.stderr)
+  assert.ok((parallel.stdout + parallel.stderr).includes('EXEC:' + process.execPath), 'parallel test ran outside the invoking runtime')
+  assert.match(parallel.stdout + parallel.stderr, /\b2 pass\b/)
+  const workerIds = readFileSync(parallelIds, 'utf8').trim().split('\n')
+  assert.equal(workerIds.length, 2)
+  assert.equal(new Set(workerIds.map(line => line.split(':')[0])).size, 2)
+  assert.equal(new Set(workerIds.map(line => line.split(':')[1])).size, 2)
+
   for (const value of ['false', '0']) {
     const noGroups = invoke([basic], { env: { ...env, GITHUB_ACTIONS: value } })
     passed(noGroups, 1)

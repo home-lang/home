@@ -18,8 +18,8 @@ fn attrValue(head: []const u8, comptime name: []const u8) u32 {
 }
 
 pub fn mergeJUnitFragments(coord: *Coordinator, outfile: []const u8, summary: *const TestRunner.Summary) void {
-    var body: std.ArrayListUnmanaged(u8) = .empty;
-    defer body.deinit(home_rt.default_allocator);
+    var body = std.Io.Writer.Allocating.init(home_rt.default_allocator);
+    defer body.deinit();
     // Crashed workers never reach workerFlushAggregates, so any files they ran
     // (including earlier passing ones) have no fragment. Compute the outer
     // <testsuites> totals from what we actually emit so they always equal the
@@ -27,7 +27,9 @@ pub fn mergeJUnitFragments(coord: *Coordinator, outfile: []const u8, summary: *c
     var totals: struct { tests: u32 = 0, failures: u32 = 0, skipped: u32 = 0 } = .{};
 
     for (coord.junit_fragments.items) |path| {
-        const file = switch (home_rt.sys.File.readFrom(home_rt.FD.cwd(), path, home_rt.default_allocator)) {
+        const path_z = home_rt.handleOom(home_rt.dupeZ(home_rt.default_allocator, u8, path));
+        defer home_rt.default_allocator.free(path_z);
+        const file = switch (home_rt.sys.File.readFrom(home_rt.FD.cwd(), path_z, home_rt.default_allocator)) {
             .result => |r| r,
             .err => continue,
         };
@@ -45,13 +47,13 @@ pub fn mergeJUnitFragments(coord: *Coordinator, outfile: []const u8, summary: *c
         if (body_start >= body_end) continue;
         const inner = std.mem.trim(u8, file[body_start..body_end], "\n");
         if (inner.len == 0) continue;
-        home_rt.handleOom(body.appendSlice(home_rt.default_allocator, inner));
-        home_rt.handleOom(body.append(home_rt.default_allocator, '\n'));
+        home_rt.handleOom(body.writer.writeAll(inner));
+        home_rt.handleOom(body.writer.writeByte('\n'));
     }
 
     for (coord.crashed_files.items) |idx| {
         const rel = coord.relPath(idx);
-        const w = body.writer(home_rt.default_allocator);
+        const w = &body.writer;
         home_rt.handleOom(w.writeAll("  <testsuite name=\""));
         home_rt.handleOom(test_command.escapeXml(rel, w));
         home_rt.handleOom(w.writeAll("\" tests=\"1\" assertions=\"0\" failures=\"1\" skipped=\"0\" time=\"0\">\n    <testcase name=\"(worker crashed)\" classname=\""));
@@ -67,16 +69,16 @@ pub fn mergeJUnitFragments(coord: *Coordinator, outfile: []const u8, summary: *c
         totals.failures += 1;
     }
 
-    var contents: std.ArrayListUnmanaged(u8) = .empty;
-    defer contents.deinit(home_rt.default_allocator);
-    const elapsed_time = @as(f64, @floatFromInt(std.time.nanoTimestamp() - home_rt.start_time)) / std.time.ns_per_s;
-    home_rt.handleOom(contents.writer(home_rt.default_allocator).print(
+    var contents = std.Io.Writer.Allocating.init(home_rt.default_allocator);
+    defer contents.deinit();
+    const elapsed_time = @as(f64, @floatFromInt(home_rt.nanoTimestamp() - home_rt.start_time)) / std.time.ns_per_s;
+    home_rt.handleOom(contents.writer.print(
         \\<?xml version="1.0" encoding="UTF-8"?>
         \\<testsuites name="bun test" tests="{d}" assertions="{d}" failures="{d}" skipped="{d}" time="{d}">
         \\
     , .{ totals.tests, summary.expectations, totals.failures, totals.skipped, elapsed_time }));
-    home_rt.handleOom(contents.appendSlice(home_rt.default_allocator, body.items));
-    home_rt.handleOom(contents.appendSlice(home_rt.default_allocator, "</testsuites>\n"));
+    home_rt.handleOom(contents.writer.writeAll(body.written()));
+    home_rt.handleOom(contents.writer.writeAll("</testsuites>\n"));
 
     const out_z = home_rt.handleOom(bun.dupeZ(home_rt.default_allocator, u8, outfile));
     defer home_rt.default_allocator.free(out_z);
@@ -84,7 +86,7 @@ pub fn mergeJUnitFragments(coord: *Coordinator, outfile: []const u8, summary: *c
         .err => |err| Output.err(error.JUnitReportFailed, "Failed to write JUnit report to {s}\n{f}", .{ outfile, err }),
         .result => |fd| {
             defer _ = fd.close();
-            switch (home_rt.sys.File.writeAll(fd, contents.items)) {
+            switch (home_rt.sys.File.writeAll(fd, contents.written())) {
                 .err => |err| Output.err(error.JUnitReportFailed, "Failed to write JUnit report to {s}\n{f}", .{ outfile, err }),
                 .result => {},
             }
@@ -119,7 +121,8 @@ pub fn mergeCoverageFragments(paths: []const []const u8, opts: *TestCommand.Code
     var by_file: home_rt.StringArrayHashMapUnmanaged(FileCoverage) = .empty;
 
     for (paths) |path| {
-        const data = switch (home_rt.sys.File.readFrom(home_rt.FD.cwd(), path, arena)) {
+        const path_z = home_rt.handleOom(home_rt.dupeZ(arena, u8, path));
+        const data = switch (home_rt.sys.File.readFrom(home_rt.FD.cwd(), path_z, arena)) {
             .result => |r| r,
             .err => continue,
         };
@@ -191,7 +194,12 @@ pub fn mergeCoverageFragments(paths: []const []const u8, opts: *TestCommand.Code
         }
     }
 
-    const base = opts.fractions;
+    const base = CoverageFraction{
+        .functions = opts.fractions.functions,
+        .lines = opts.fractions.lines,
+        .stmts = opts.fractions.stmts,
+        .failing = opts.fractions.failing,
+    };
     var failing = false;
     var avg = CoverageFraction{ .functions = 0, .lines = 0, .stmts = 0 };
     var avg_n: f64 = 0;

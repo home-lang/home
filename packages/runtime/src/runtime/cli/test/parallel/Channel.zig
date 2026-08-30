@@ -31,6 +31,10 @@ pub fn Channel(comptime Owner: type, comptime owner_field: []const u8) type {
         in: std.ArrayListUnmanaged(u8) = .empty,
         /// Outgoing bytes the kernel didn't accept yet.
         out: std.ArrayListUnmanaged(u8) = .empty,
+        /// First unsent byte in `out`. Advancing an offset keeps a large
+        /// backpressured frame linear instead of shifting its remaining bytes
+        /// after every socket write.
+        out_head: usize = 0,
         done: bool = false,
 
         backend: Backend = .{},
@@ -151,10 +155,12 @@ pub fn Channel(comptime Owner: type, comptime owner_field: []const u8) type {
         pub fn send(self: *Self, frame_bytes: []const u8) void {
             if (self.done) return;
             if (Environment.isWindows) return self.sendWindows(frame_bytes);
-            if (self.out.items.len > 0) {
+            if (self.out_head < self.out.items.len) {
                 home_rt.handleOom(self.out.appendSlice(home_rt.default_allocator, frame_bytes));
                 return;
             }
+            self.out.clearRetainingCapacity();
+            self.out_head = 0;
             const wrote = self.backend.socket.write(frame_bytes);
             const w: usize = if (wrote > 0) @intCast(wrote) else 0;
             if (w < frame_bytes.len) {
@@ -210,7 +216,7 @@ pub fn Channel(comptime Owner: type, comptime owner_field: []const u8) type {
 
         /// True while any encoded bytes are still queued or in flight.
         pub fn hasPendingWrites(self: *const Self) bool {
-            if (self.out.items.len > 0) return true;
+            if (self.out_head < self.out.items.len) return true;
             if (Environment.isWindows) return self.backend.inflight.items.len > 0;
             return false;
         }
@@ -218,12 +224,14 @@ pub fn Channel(comptime Owner: type, comptime owner_field: []const u8) type {
         /// Best-effort drain of any buffered writes.
         pub fn flush(self: *Self) void {
             if (Environment.isWindows) return self.submitWindowsWrite();
-            while (self.out.items.len > 0 and !self.done) {
-                const wrote = self.backend.socket.write(self.out.items);
+            while (self.out_head < self.out.items.len and !self.done) {
+                const wrote = self.backend.socket.write(self.out.items[self.out_head..]);
                 if (wrote <= 0) return;
-                const w: usize = @intCast(wrote);
-                std.mem.copyForwards(u8, self.out.items[0 .. self.out.items.len - w], self.out.items[w..]);
-                self.out.items.len -= w;
+                self.out_head += @intCast(wrote);
+            }
+            if (self.out_head == self.out.items.len) {
+                self.out.clearRetainingCapacity();
+                self.out_head = 0;
             }
         }
 
@@ -258,6 +266,7 @@ pub fn Channel(comptime Owner: type, comptime owner_field: []const u8) type {
             self.in = .empty;
             self.out.deinit(home_rt.default_allocator);
             self.out = .empty;
+            self.out_head = 0;
         }
 
         // -- frame decode (shared) -----------------------------------------
@@ -447,7 +456,7 @@ test "Channel.ingest marks done on oversized payload" {
 
     var header: [5]u8 = undefined;
     std.mem.writeInt(u32, header[0..4], Frame.max_payload + 1, .little);
-    header[4] = @intFromEnum(Frame.Kind.run);
+    header[4] = @backingInt(Frame.Kind.run);
 
     owner.channel.ingest(&header);
     try std.testing.expect(owner.channel.done);

@@ -385,7 +385,7 @@ pub const Coordinator = struct {
             // SignalCode is non-exhaustive (`_`); @tagName on an unnamed value
             // (e.g. Linux RT signals 32–64) is safety-checked illegal behavior.
             .signaled => |sig| sig.name() orelse
-                std.fmt.bufPrint(buf, "signal {d}", .{@intFromEnum(sig)}) catch unreachable,
+                std.fmt.bufPrint(buf, "signal {d}", .{@backingInt(sig)}) catch unreachable,
             .err => |e| @tagName(e.getErrno()),
             .running => "running",
         };
@@ -457,11 +457,16 @@ pub const Coordinator = struct {
     /// this (SIGKILL).
     pub const AbortHandler = struct {
         var should_abort: std.atomic.Value(bool) = .init(false);
+        var wakeup_loop: std.atomic.Value(?*home_rt.uws.Loop) = .init(null);
         var prev_int: if (Environment.isPosix) home_rt.sys.Sigaction else void = undefined;
         var prev_term: if (Environment.isPosix) home_rt.sys.Sigaction else void = undefined;
 
-        fn posixHandler(_: i32, _: *const std.posix.siginfo_t, _: ?*const anyopaque) callconv(.c) void {
+        fn posixHandler(_: if (Environment.isAndroid) i32 else std.posix.SIG, _: *const std.posix.siginfo_t, _: ?*anyopaque) callconv(.c) void {
+            const errno = std.c._errno();
+            const saved_errno = errno.*;
+            defer errno.* = saved_errno;
             should_abort.store(true, .release);
+            if (wakeup_loop.load(.acquire)) |loop| loop.wakeup();
         }
 
         fn windowsCtrlHandler(ctrl: std.os.windows.DWORD) callconv(.winapi) std.os.windows.BOOL {
@@ -474,24 +479,27 @@ pub const Coordinator = struct {
             }
         }
 
-        pub fn install() void {
+        pub fn install(vm: *jsc.VirtualMachine) void {
+            should_abort.store(false, .release);
+            wakeup_loop.store(vm.eventLoop().usocketsLoop(), .release);
             if (Environment.isPosix) {
                 const act = home_rt.sys.Sigaction{
                     .handler = .{ .sigaction = posixHandler },
                     .mask = home_rt.sys.sigemptyset(),
                     .flags = std.posix.SA.SIGINFO,
                 };
-                home_rt.sys.sigaction(std.posix.SIG.INT, &act, &prev_int);
-                home_rt.sys.sigaction(std.posix.SIG.TERM, &act, &prev_term);
+                home_rt.sys.sigaction(@intCast(@backingInt(std.posix.SIG.INT)), &act, &prev_int);
+                home_rt.sys.sigaction(@intCast(@backingInt(std.posix.SIG.TERM)), &act, &prev_term);
             } else {
                 _ = home_rt.c.SetConsoleCtrlHandler(windowsCtrlHandler, std.os.windows.TRUE);
             }
         }
 
         pub fn uninstall() void {
+            wakeup_loop.store(null, .release);
             if (Environment.isPosix) {
-                home_rt.sys.sigaction(std.posix.SIG.INT, &prev_int, null);
-                home_rt.sys.sigaction(std.posix.SIG.TERM, &prev_term, null);
+                home_rt.sys.sigaction(@intCast(@backingInt(std.posix.SIG.INT)), &prev_int, null);
+                home_rt.sys.sigaction(@intCast(@backingInt(std.posix.SIG.TERM)), &prev_term, null);
             } else {
                 _ = home_rt.c.SetConsoleCtrlHandler(windowsCtrlHandler, std.os.windows.FALSE);
             }

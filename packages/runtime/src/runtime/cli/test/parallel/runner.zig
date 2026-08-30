@@ -117,7 +117,7 @@ pub fn runAsCoordinator(
         .windows_job = if (Environment.isWindows) Coordinator.createWindowsKillOnCloseJob() else {},
     };
 
-    Coordinator.AbortHandler.install();
+    Coordinator.AbortHandler.install(vm);
     defer Coordinator.AbortHandler.uninstall();
 
     for (workers, 0..) |*w, i| {
