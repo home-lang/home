@@ -4841,7 +4841,7 @@ pub const allocators = struct {
 
     pub fn BSSMap(
         comptime ValueType: type,
-        comptime _: anytype,
+        comptime count: anytype,
         comptime _: bool,
         comptime _: usize,
         comptime remove_trailing_slashes: bool,
@@ -4851,22 +4851,27 @@ pub const allocators = struct {
 
             allocator: std.mem.Allocator,
             index: std.HashMapUnmanaged(u64, IndexType, BSSIndexMapContext, 80) = .{},
-            values: std.ArrayListUnmanaged(ValueType) = .empty,
+            backing_buf: [count]ValueType = undefined,
+            backing_buf_used: usize = 0,
+            overflow: std.ArrayListUnmanaged(*ValueType) = .empty,
+            mutex: Mutex = .{},
 
             pub var instance: *Self = undefined;
             pub var loaded = false;
 
             pub fn init(allocator: std.mem.Allocator) *Self {
-                const self = allocator.create(Self) catch outOfMemory();
-                self.* = .{ .allocator = allocator };
-                instance = self;
-                loaded = true;
-                return self;
+                if (!loaded) {
+                    instance = allocator.create(Self) catch outOfMemory();
+                    instance.* = .{ .allocator = allocator };
+                    loaded = true;
+                }
+                return instance;
             }
 
             pub fn deinit(self: *Self) void {
                 self.index.deinit(self.allocator);
-                self.values.deinit(self.allocator);
+                for (self.overflow.items) |value| self.allocator.destroy(value);
+                self.overflow.deinit(self.allocator);
                 self.allocator.destroy(self);
                 loaded = false;
             }
@@ -4879,6 +4884,9 @@ pub const allocators = struct {
             }
 
             pub fn getOrPut(self: *Self, denormalized_key: []const u8) !BSSResult {
+                self.mutex.lock();
+                defer self.mutex.unlock();
+
                 const h = hash(keyFor(denormalized_key));
                 const entry = try self.index.getOrPut(self.allocator, h);
                 if (entry.found_existing) {
@@ -4897,33 +4905,65 @@ pub const allocators = struct {
             }
 
             pub fn get(self: *Self, denormalized_key: []const u8) ?*ValueType {
+                self.mutex.lock();
+                defer self.mutex.unlock();
+
                 const index = self.index.get(hash(keyFor(denormalized_key))) orelse return null;
                 return self.atIndex(index);
             }
 
             pub fn remove(self: *Self, denormalized_key: []const u8) bool {
+                self.mutex.lock();
+                defer self.mutex.unlock();
                 return self.index.remove(hash(keyFor(denormalized_key)));
             }
 
             pub fn markNotFound(self: *Self, result: BSSResult) void {
+                self.mutex.lock();
+                defer self.mutex.unlock();
                 self.index.put(self.allocator, result.hash, NotFound) catch outOfMemory();
             }
 
             pub fn atIndex(self: *Self, index: IndexType) ?*ValueType {
                 if (index.index == NotFound.index or index.index == Unassigned.index) return null;
-                if (index.index >= self.values.items.len) return null;
-                return &self.values.items[index.index];
+                if (index.is_overflow) {
+                    if (index.index >= self.overflow.items.len) return null;
+                    return self.overflow.items[index.index];
+                }
+                if (index.index >= self.backing_buf_used) return null;
+                return &self.backing_buf[index.index];
             }
 
             pub fn put(self: *Self, result: *BSSResult, value: ValueType) !*ValueType {
+                self.mutex.lock();
+                defer self.mutex.unlock();
+
                 if (result.index.index == NotFound.index or result.index.index == Unassigned.index) {
-                    result.index = .{ .index = @intCast(self.values.items.len) };
-                    try self.values.append(self.allocator, value);
-                } else {
-                    self.values.items[result.index.index] = value;
+                    if (self.backing_buf_used < count) {
+                        result.index = .{ .index = @intCast(self.backing_buf_used) };
+                        self.backing_buf_used += 1;
+                    } else {
+                        const stored = try self.allocator.create(ValueType);
+                        errdefer self.allocator.destroy(stored);
+                        stored.* = value;
+                        result.index = .{ .index = @intCast(self.overflow.items.len), .is_overflow = true };
+                        try self.overflow.append(self.allocator, stored);
+                    }
                 }
+
                 try self.index.put(self.allocator, result.hash, result.index);
-                return &self.values.items[result.index.index];
+                if (result.index.is_overflow) {
+                    const stored = self.overflow.items[result.index.index];
+                    stored.* = value;
+                    return stored;
+                } else {
+                    self.backing_buf[result.index.index] = value;
+                    return &self.backing_buf[result.index.index];
+                }
+            }
+
+            pub fn values(self: *Self) []ValueType {
+                return self.backing_buf[0..self.backing_buf_used];
             }
         };
     }
@@ -6790,6 +6830,25 @@ test "home_rt: substrate compiles" {
         "fd0b6f1a271fca0b8124b69f230b100f4d636af6",
         upstream_sha,
     );
+}
+
+test "home_rt: BSSMap is shared and keeps returned pointers stable" {
+    const Map = allocators.BSSMap(u64, 2, false, 8, true);
+    const map = Map.init(std.testing.allocator);
+    defer map.deinit();
+
+    var first_result = try map.getOrPut("/first/");
+    const first = try map.put(&first_result, 1);
+    var second_result = try map.getOrPut("/second");
+    _ = try map.put(&second_result, 2);
+    var overflow_result = try map.getOrPut("/overflow");
+    _ = try map.put(&overflow_result, 3);
+
+    try std.testing.expect(Map.init(std.testing.allocator) == map);
+    try std.testing.expect(first == map.atIndex(first_result.index).?);
+    try std.testing.expectEqual(@as(u64, 1), first.*);
+    try std.testing.expectEqual(@as(u64, 1), map.get("/first").?.*);
+    try std.testing.expectEqual(@as(u64, 3), map.atIndex(overflow_result.index).?.*);
 }
 
 test "home_rt: BSSStringList keeps fixed and overflow strings stable" {
