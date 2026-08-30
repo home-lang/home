@@ -12,6 +12,7 @@ const AnyTask = @This();
 
 ctx: ?*anyopaque,
 callback: *const (fn (*anyopaque) JSError!void),
+shutdown_callback: ?*const fn (*anyopaque) void = null,
 
 pub fn task(this: *AnyTask) home_rt.jsc.Task {
     return home_rt.jsc.Task.init(this);
@@ -22,6 +23,14 @@ pub fn run(this: *AnyTask) JSError!void {
     const callback = this.callback;
     const ctx = this.ctx;
     try callback(ctx.?);
+}
+
+pub fn cancelForShutdown(this: *AnyTask) bool {
+    const callback = this.shutdown_callback orelse return false;
+    const ctx = this.ctx.?;
+    _ = shutdown_cancellation_count.fetchAdd(1, .seq_cst);
+    callback(ctx);
+    return true;
 }
 
 pub fn New(comptime Type: type, comptime Callback: anytype) type {
@@ -37,6 +46,32 @@ pub fn New(comptime Type: type, comptime Callback: anytype) type {
             return @call(callmod_inline, Callback, .{@as(*Type, @ptrCast(@alignCast(this.?)))});
         }
     };
+}
+
+pub fn NewWithShutdown(comptime Type: type, comptime Callback: anytype, comptime ShutdownCallback: anytype) type {
+    return struct {
+        pub fn init(ctx: *Type) AnyTask {
+            return AnyTask{
+                .callback = wrap,
+                .shutdown_callback = shutdown,
+                .ctx = ctx,
+            };
+        }
+
+        pub fn wrap(this: ?*anyopaque) JSError!void {
+            return @call(callmod_inline, Callback, .{@as(*Type, @ptrCast(@alignCast(this.?)))});
+        }
+
+        pub fn shutdown(this: *anyopaque) void {
+            return @call(callmod_inline, ShutdownCallback, .{@as(*Type, @ptrCast(@alignCast(this)))});
+        }
+    };
+}
+
+var shutdown_cancellation_count = std.atomic.Value(u64).init(0);
+
+pub fn shutdownCancellationCount() u64 {
+    return shutdown_cancellation_count.load(.seq_cst);
 }
 
 // ---- Local stubs ------------------------------------------------------
@@ -84,4 +119,27 @@ test "AnyTask: task() returns a non-null Task wrapper" {
     var any = Wrapped.init(&counter);
     const t = any.task();
     try testing.expect(!t.isNull());
+}
+
+test "AnyTask: shutdown callback is opt-in" {
+    const ShutdownCounter = struct {
+        calls: u32 = 0,
+
+        fn run(_: *@This()) JSError!void {}
+
+        fn shutdown(self: *@This()) void {
+            self.calls += 1;
+        }
+    };
+
+    var plain_context = ShutdownCounter{};
+    var plain = New(ShutdownCounter, ShutdownCounter.run).init(&plain_context);
+    try testing.expect(!plain.cancelForShutdown());
+
+    const before = shutdownCancellationCount();
+    var cancellable_context = ShutdownCounter{};
+    var cancellable = NewWithShutdown(ShutdownCounter, ShutdownCounter.run, ShutdownCounter.shutdown).init(&cancellable_context);
+    try testing.expect(cancellable.cancelForShutdown());
+    try testing.expectEqual(@as(u32, 1), cancellable_context.calls);
+    try testing.expectEqual(before + 1, shutdownCancellationCount());
 }

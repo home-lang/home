@@ -701,7 +701,7 @@ pub fn getActiveTasks(globalObject: *jsc.JSGlobalObject, call_frame: *jsc.CallFr
     const cancellation_counts = cpp_tasks.shutdownCancellationCounts();
     const concurrent_probe_counts = cpp_tasks.concurrentShutdownProbeCounts();
 
-    const result = jsc.JSValue.createEmptyObject(globalObject, 11);
+    const result = jsc.JSValue.createEmptyObject(globalObject, 12);
     result.put(globalObject, jsc.ZigString.static("activeTasks"), jsc.JSValue.jsNumber(vm.active_tasks));
     result.put(globalObject, jsc.ZigString.static("concurrentRef"), jsc.JSValue.jsNumber(event_loop.concurrent_ref.load(.seq_cst)));
     result.put(globalObject, jsc.ZigString.static("cancelledCppTasks"), jsc.JSValue.jsNumber(@as(f64, @floatFromInt(cancellation_counts.cancelled))));
@@ -712,6 +712,7 @@ pub fn getActiveTasks(globalObject: *jsc.JSGlobalObject, call_frame: *jsc.CallFr
     result.put(globalObject, jsc.ZigString.static("startedNativeWorkPoolProbeTasks"), jsc.JSValue.jsNumber(@as(f64, @floatFromInt(concurrent_probe_counts.started))));
     result.put(globalObject, jsc.ZigString.static("completedNativeWorkPoolProbeTasks"), jsc.JSValue.jsNumber(@as(f64, @floatFromInt(concurrent_probe_counts.completed))));
     result.put(globalObject, jsc.ZigString.static("cancelledConcurrentPromiseTasks"), jsc.JSValue.jsNumber(@as(f64, @floatFromInt(@import("./ConcurrentPromiseTask.zig").shutdownCancellationCount()))));
+    result.put(globalObject, jsc.ZigString.static("cancelledAnyTasks"), jsc.JSValue.jsNumber(@as(f64, @floatFromInt(AnyTask.shutdownCancellationCount()))));
 
     // Get num_polls from uws loop (POSIX) or active_handles from libuv (Windows)
     const num_polls: i32 = if (Environment.isWindows)

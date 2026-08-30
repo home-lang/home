@@ -437,7 +437,9 @@ fn pbkdf2(globalThis: *jsc.JSGlobalObject, callFrame: *jsc.CallFrame) bun.JSErro
     const data = try PBKDF2.fromJS(globalThis, callFrame, true);
 
     const job = PBKDF2.Job.create(jsc.VirtualMachine.get(), globalThis, &data);
-    return job.promise.value();
+    const promise = job.promise.value();
+    if (!job.schedule()) job.cancelForShutdown();
+    return promise;
 }
 
 fn pbkdf2Sync(globalThis: *jsc.JSGlobalObject, callFrame: *jsc.CallFrame) bun.JSError!jsc.JSValue {

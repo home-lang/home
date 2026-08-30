@@ -53,6 +53,7 @@ pub const Job = struct {
 
     pub fn runTask(task: *jsc.WorkPoolTask) void {
         const job: *PBKDF2.Job = @fieldParentPtr("task", task);
+        defer job.vm.native_work_pool_jobs.complete();
         defer job.vm.enqueueTaskConcurrent(jsc.ConcurrentTask.create(job.any_task.task()));
         job.output = bun.default_allocator.alloc(u8, @as(usize, @intCast(job.pbkdf2.length))) catch {
             job.err = BoringSSL.EVP_R_MEMORY_LIMIT_EXCEEDED;
@@ -95,6 +96,10 @@ pub const Job = struct {
         bun.destroy(this);
     }
 
+    pub fn cancelForShutdown(this: *Job) void {
+        this.deinit();
+    }
+
     pub fn create(vm: *jsc.VirtualMachine, globalThis: *jsc.JSGlobalObject, data: *const PBKDF2) *Job {
         var job = Job.new(.{
             .pbkdf2 = data.*,
@@ -103,11 +108,16 @@ pub const Job = struct {
         });
 
         job.promise = jsc.JSPromise.Strong.init(globalThis);
-        job.any_task = jsc.AnyTask.New(@This(), &runFromJS).init(job);
-        job.poll.ref(vm);
-        jsc.WorkPool.schedule(&job.task);
+        job.any_task = jsc.AnyTask.NewWithShutdown(@This(), &runFromJS, &cancelForShutdown).init(job);
 
         return job;
+    }
+
+    pub fn schedule(this: *Job) bool {
+        if (!this.vm.native_work_pool_jobs.tryAdd()) return false;
+        this.poll.ref(this.vm);
+        jsc.WorkPool.schedule(&this.task);
+        return true;
     }
 };
 
