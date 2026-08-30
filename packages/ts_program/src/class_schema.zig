@@ -275,7 +275,14 @@ pub const Builder = struct {
                 switch (try self.resolve(context.source, node, ref.name)) {
                     .declaration => |key| return self.expression(.{ .reference = .{ .declaration = try self.declaration(key), .arguments = args } }),
                     .unsupported => return self.expression(.unsupported),
-                    .missing, .external => {},
+                    .missing => {
+                        // Built-in object shapes live in each checker's local
+                        // type pool. Transfer their stable spelling and let the
+                        // consumer materialize the same canonical shape.
+                        if (args.len == 0 and std.mem.eql(u8, name, "Error"))
+                            return self.expression(.{ .builtin_object = name });
+                    },
+                    .external => {},
                 }
                 if (args.len == 1 and (std.mem.eql(u8, name, "Array") or std.mem.eql(u8, name, "ReadonlyArray")))
                     return self.expression(if (std.mem.eql(u8, name, "Array")) .{ .array = args[0] } else .{ .readonly_array = args[0] });
@@ -667,6 +674,19 @@ test "class schema: imported aliases use the defining file through reexports" {
     try T.expectEqualStrings("item", ref.declaration.body.?.object[0].name);
     try T.expect(ref.arguments[0].parameter == &result.declaration.parameters[0]);
     try T.expect(ref.declaration.body.?.object[0].type.parameter == &ref.declaration.parameters[0]);
+}
+
+test "class schema: built-in Error heritage retains its checker-owned shape" {
+    const graph = try TestGraph.init(&.{.{ .path = "/owner.ts", .text =
+        \\export interface TypedError<T> extends Error { value: T; }
+    }});
+    defer graph.deinit();
+    const result = try graph.class(0, "TypedError");
+    defer result.deinit(T.allocator);
+    const body = result.declaration.body.?.intersection;
+    try T.expectEqual(@as(usize, 2), body.len);
+    try T.expectEqualStrings("Error", body[0].builtin_object);
+    try T.expect(body[1].object[0].type.parameter == &result.declaration.parameters[0]);
 }
 
 test "class schema: local Array aliases are not replaced by builtin array shapes" {

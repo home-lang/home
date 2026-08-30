@@ -9176,6 +9176,58 @@ test "Program: namespace imports preserve callbacks through inherited interfaces
     try expectCompilationLacksDiagnosticCode(compilation, 2322);
 }
 
+test "Program: named imports preserve generic interfaces with built-in Error heritage" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver };
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+
+    const owner =
+        \\export interface BaseError<T = unknown> extends Error {
+        \\  type: T;
+        \\  issues: string[];
+        \\}
+    ;
+    const consumer =
+        \\import type { BaseError } from "./owner.js";
+        \\interface DerivedError<T = unknown> extends BaseError<T> { format(): string; }
+        \\declare const error: DerivedError<number>;
+        \\const issue: string = error.issues[0];
+        \\const message: string = error.name + error.message;
+        \\const value: string = error.type.toFixed() + error.format();
+        \\void issue; void message; void value;
+    ;
+    const invalid =
+        \\import type { BaseError } from "./owner.js";
+        \\interface DerivedError<T = unknown> extends BaseError<T> { format(): string; }
+        \\declare const error: DerivedError<number>;
+        \\const wrong: string = error.type;
+        \\error.missing;
+        \\void wrong;
+    ;
+    try vfs.addFile("/proj/owner.ts", owner);
+    try vfs.addFile("/proj/consumer.ts", consumer);
+    try vfs.addFile("/proj/invalid.ts", invalid);
+    _ = try p.add("/proj/owner.ts", owner);
+    const consumer_id = try p.add("/proj/consumer.ts", consumer);
+    const invalid_id = try p.add("/proj/invalid.ts", invalid);
+
+    try p.compileAll(.{
+        .no_emit = true,
+        .strict_flags = .{ .no_implicit_any = true, .strict_null_checks = true },
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    });
+    const compilation = p.fileById(consumer_id).compilation.?;
+    const invalid_compilation = p.fileById(invalid_id).compilation.?;
+    try expectCompilationLacksDiagnosticCode(compilation, 2304);
+    try expectCompilationLacksDiagnosticCode(compilation, 2339);
+    try expectCompilationHasDiagnosticCode(invalid_compilation, 2322);
+    try expectCompilationHasDiagnosticCode(invalid_compilation, 2339);
+}
+
 test "Program: relative module augmentation summary adds methods to imported class" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();

@@ -74552,6 +74552,11 @@ pub const Checker = struct {
         if (self.visibleTypeDeclarationExistsAt(anchor, name)) return true;
         if (self.numeric_enums.contains(name)) return true;
         if (self.enumDeclForNameAt(name, anchor) != null) return true;
+        // Imported program declarations are materialized from their shared
+        // source-owned schema rather than registered in this file's lexical
+        // type tables. Heritage resolution must consult that same graph or it
+        // reports TS2304 even though lowering successfully inherits members.
+        if (try self.programExportedTypeForLocal(name, anchor)) |_| return true;
         if (try self.resolveUnqualifiedNamespaceTypeRef(anchor, name)) |_| return true;
         if (try self.resolveForwardClassInstanceType(anchor, name)) |_| return true;
         if (self.lowerBuiltinObjectType(raw) != null) return true;
@@ -106744,6 +106749,7 @@ pub const Checker = struct {
         switch (expression.*) {
             .unsupported => return error.UnsupportedProgramType,
             .primitive => |type_id| return type_id,
+            .builtin_object => |name| return self.lowerBuiltinObjectType(name) orelse error.UnsupportedProgramType,
             .parameter => |parameter| {
                 for (declaration.parameters, args) |*param, arg| if (param == parameter) return arg;
                 return self.programExpressionParameter(parameter);

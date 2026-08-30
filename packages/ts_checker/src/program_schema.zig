@@ -49,6 +49,10 @@ pub const IndexSignature = struct { key: *const Expression, value: *const Expres
 pub const IndexedObject = struct { members: []const Member, indices: []const IndexSignature };
 pub const Expression = union(enum) {
     primitive: types.TypeId,
+    /// A standard-library object type whose concrete shape is owned by the
+    /// consuming checker. Keeping the symbolic name avoids copying checker
+    /// TypeIds across source-file type pools.
+    builtin_object: []const u8,
     parameter: *const Parameter,
     string: []const u8,
     number: f64,
@@ -111,7 +115,7 @@ pub const Schema = struct {
             if (entry.found_existing) continue;
             switch (expr.*) {
                 .unsupported => return false,
-                .primitive, .parameter, .string, .number, .boolean => {},
+                .primitive, .builtin_object, .parameter, .string, .number, .boolean => {},
                 .array, .readonly_array, .keyof, .this_type => |element| try pending.append(gpa, element),
                 .object => |members| for (members) |member| {
                     try pending.append(gpa, member.type);
