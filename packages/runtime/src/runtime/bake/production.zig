@@ -104,6 +104,7 @@ pub fn buildCommand(ctx: bun.cli.Command.Context) !void {
             }
             vm.onExit();
             vm.globalExit();
+            return e;
         },
         else => |e| return e,
     };
@@ -711,6 +712,7 @@ pub fn buildWithVm(ctx: bun.cli.Command.Context, cwd: []const u8, vm: *VirtualMa
         try route_style_references.putIndex(global, @intCast(nav_index), styles);
     }
 
+    const unhandled_errors_before_render = vm.unhandled_error_counter;
     const render_promise = BakeRenderRoutesForProdStatic(
         global,
         bun.String.init(root_dir_path),
@@ -727,9 +729,19 @@ pub fn buildWithVm(ctx: bun.cli.Command.Context, cwd: []const u8, vm: *VirtualMa
         route_style_references,
     );
     render_promise.setHandled();
-    vm.waitForPromise(.{ .normal = render_promise });
+    while (render_promise.status() == .pending and vm.unhandled_error_counter == unhandled_errors_before_render) {
+        if (vm.jsc_vm.executionForbidden()) break;
+        vm.tick();
+        if (render_promise.status() == .pending and vm.unhandled_error_counter == unhandled_errors_before_render) {
+            if (!vm.isEventLoopAlive()) break;
+            vm.eventLoop().autoTick();
+        }
+    }
     switch (render_promise.unwrap(vm.jsc_vm, .mark_handled)) {
-        .pending => unreachable,
+        // A render dependency can report a fatal error while the aggregate
+        // async function remains pending. Once the event loop has no work left,
+        // that promise cannot settle; fail the build instead of spinning.
+        .pending => return error.BuildFailed,
         .fulfilled => {
             Output.prettyln("done", .{});
             Output.flush();

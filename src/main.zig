@@ -2613,7 +2613,13 @@ fn runNativeBuildCommand(args: []const [:0]const u8) !bool {
     for (ctx.args.entry_points) |entry_point| {
         if (isHomeSourceFile(entry_point)) return false;
     }
-    try home_rt.cli.BuildCommand.exec(ctx, null);
+    home_rt.cli.BuildCommand.exec(ctx, null) catch |err| {
+        if (ctx.log.hasErrors()) {
+            ctx.log.print(home_rt.Output.errorWriter()) catch {};
+            home_rt.Output.flush();
+        }
+        return err;
+    };
     return true;
 }
 
