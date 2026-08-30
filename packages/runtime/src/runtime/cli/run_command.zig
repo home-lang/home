@@ -1741,7 +1741,13 @@ pub const RunCommand = struct {
         // must reach the VM, where auto-install failures remain catchable.
         const direct_file = blk: {
             if (target_name.len == 0) break :blk false;
-            if (!bin_dirs_only and target_name[0] != '.' and !std.fs.path.isAbsolute(target_name)) break :blk false;
+            // The Home dispatcher only selects a hyphen-leading target after
+            // an explicit `--`, so it is an entry file rather than another CLI
+            // option or a package-script candidate. Let the VM open it directly
+            // just like relative/absolute paths. Running the package probe first
+            // would cache this directory with tsconfig loading disabled, hiding
+            // tsconfig semantics and debug diagnostics from the VM that follows.
+            if (!bin_dirs_only and target_name[0] != '.' and target_name[0] != '-' and !std.fs.path.isAbsolute(target_name)) break :blk false;
             // Custom loaders still need the full entrypoint preflight below.
             if (ctx.args.loaders != null) break :blk false;
             const loader = options.defaultLoaders.get(std.fs.path.extension(target_name)) orelse break :blk false;
