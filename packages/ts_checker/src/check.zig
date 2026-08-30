@@ -151890,6 +151890,11 @@ pub const Checker = struct {
             }
             return true;
         }
+        if (f.is_type_parameter) {
+            const constraint = self.typeParameterConstraint(t) orelse return false;
+            if (constraint == t) return false;
+            return self.isInstanceofRightAllowed(constraint);
+        }
         if (f.is_signature) return true;
         if (self.objectHasCallOrConstructSignature(t)) return true;
         if ((self.instanceofHasInstanceSignature(t) catch null) != null) return true;
@@ -245220,6 +245225,25 @@ test "checker: seeded Promise constructor supports instanceof narrowing" {
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.parameter_implicitly_any));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: constructor-constrained type parameter supports instanceof" {
+    const s = try newSetup(
+        \\abstract class Base { value = 1; }
+        \\function isInstance<T extends typeof Base>(cls: T, value: unknown): boolean {
+        \\  return value instanceof cls;
+        \\}
+        \\function callable<T extends () => void>(fn: T, value: unknown): boolean {
+        \\  return value instanceof fn;
+        \\}
+        \\function invalid<T extends number>(rhs: T, value: unknown): boolean {
+        \\  return value instanceof rhs;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true, .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.instanceof_right_type));
 }
 
 test "checker: Symbol value under lib ES5 emits TS2585" {
