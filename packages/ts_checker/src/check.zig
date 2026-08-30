@@ -5313,6 +5313,7 @@ pub const Checker = struct {
     /// files. Borrowed from the driver/program while checking this file.
     program_exported_classes: []const ProgramExportedClass = &.{},
     program_generic_definitions: std.HashMapUnmanaged(*const ProgramClassSchema.Declaration, TypeId, ProgramDeclarationContext, 80) = .empty,
+    program_expression_parameters: std.AutoHashMapUnmanaged(*const ProgramClassSchema.Parameter, TypeId) = .empty,
     program_definition_classes: std.AutoHashMapUnmanaged(TypeId, struct { name: hir_mod.StringId, origin: hir_mod.StringId }) = .empty,
     program_local_class_names: std.StringHashMapUnmanaged(void) = .empty,
     program_local_class_names_built: bool = false,
@@ -5851,6 +5852,7 @@ pub const Checker = struct {
         self.program_module_namespace_types.deinit(self.gpa);
         self.clearProgramGenericInstances();
         self.program_generic_definitions.deinit(self.gpa);
+        self.program_expression_parameters.deinit(self.gpa);
         self.program_definition_classes.deinit(self.gpa);
         self.program_local_class_names.deinit(self.gpa);
         self.generic_instances.deinit(self.gpa);
@@ -30702,7 +30704,7 @@ pub const Checker = struct {
                 if (self.generic_signature_params.get(sig)) |type_params| {
                     // Context uses supplied arguments immediately. The call
                     // itself owns arity and constraint diagnostics.
-                    if (type_args.len != 0 and type_args.len == type_params.len) {
+                    if (type_args.len != 0 and self.typeArgumentCountMatches(type_params, type_args.len)) {
                         var used_explicit = false;
                         break :blk try self.instantiateSignatureWithExplicitTypeArgsUnchecked(call_node, sig, type_args, &used_explicit);
                     }
@@ -106381,31 +106383,67 @@ pub const Checker = struct {
         while (cursor < pending.items.len) : (cursor += 1) {
             const item = pending.items[cursor];
             const path = self.string_interner.get(item.path);
-            // Enumeration must be complete. If facts are unavailable, do not
-            // publish a partial closed shape that invents missing properties.
-            const names = resolver.moduleExportNames(path, self.importer_path) orelse return self.unavailableProgramModuleNamespace(root_path);
+            // Enumeration must be complete. Individual unresolved exports
+            // remain `any` without erasing exact sibling members.
+            const names = resolver.moduleExportNames(path, self.importer_path) orelse {
+                var known_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+                defer known_members.deinit(self.gpa);
+                for (self.program_exported_classes) |class| {
+                    if (class.local_only or class.ambient_module_name.len != 0 or !std.mem.eql(u8, class.target_path, path)) continue;
+                    const name = class.exportedName();
+                    const class_name = self.string_interner.intern(class.class_name) catch return error.OutOfMemory;
+                    try self.appendOrReplaceObjectMember(&known_members, .{
+                        .name = self.string_interner.intern(name) catch return error.OutOfMemory,
+                        .type = try self.syntheticProgramClassStaticType(class, class_name, null, anchor),
+                        .is_optional = false,
+                        .is_readonly = true,
+                        .is_method = false,
+                    });
+                }
+                for (self.program_exported_values) |value| {
+                    if (!std.mem.eql(u8, value.target_path, path)) continue;
+                    try self.appendOrReplaceObjectMember(&known_members, .{
+                        .name = self.string_interner.intern(value.export_name) catch return error.OutOfMemory,
+                        .type = (try self.programExportedValueType(value)) orelse types.Primitive.any,
+                        .is_optional = false,
+                        .is_readonly = true,
+                        .is_method = false,
+                    });
+                }
+                try self.interner.completeFreshObjectTypeWithIndex(
+                    item.type,
+                    known_members.items,
+                    types.Primitive.any,
+                    types.Primitive.none,
+                    types.Primitive.none,
+                );
+                continue;
+            };
             var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
             defer members.deinit(self.gpa);
             for (0..names.len + 1) |index| {
                 const is_optional_default = index == names.len;
                 const name = if (is_optional_default) "default" else names[index];
+                const member_name = self.string_interner.intern(name) catch return error.OutOfMemory;
                 const info = resolver.moduleExport(path, self.importer_path, name) orelse {
                     if (is_optional_default) continue;
-                    return self.unavailableProgramModuleNamespace(root_path);
+                    try members.append(self.gpa, .{ .name = member_name, .type = types.Primitive.any, .is_optional = false, .is_readonly = true, .is_method = false });
+                    continue;
                 };
-                if (!(info.runtime_value orelse return self.unavailableProgramModuleNamespace(root_path))) continue;
-                const member_name = self.string_interner.intern(name) catch return error.OutOfMemory;
+                const runtime_value = info.runtime_value orelse info.exported_value;
+                if (!runtime_value) continue;
                 var member_type: TypeId = types.Primitive.any;
                 if (info.namespace_module_path.len != 0) {
                     const namespace_path = self.string_interner.intern(info.namespace_module_path) catch return error.OutOfMemory;
                     const cached = self.program_module_namespace_types.get(namespace_path);
-                    if (cached == types.Primitive.none) return self.unavailableProgramModuleNamespace(root_path);
-                    member_type = cached orelse reserved.get(namespace_path) orelse blk: {
-                        const fresh = self.interner.internObjectType(&.{}) catch return error.OutOfMemory;
-                        try reserved.put(self.gpa, namespace_path, fresh);
-                        try pending.append(self.gpa, .{ .path = namespace_path, .type = fresh });
-                        break :blk fresh;
-                    };
+                    if (cached != types.Primitive.none) {
+                        member_type = cached orelse reserved.get(namespace_path) orelse blk: {
+                            const fresh = self.interner.internObjectType(&.{}) catch return error.OutOfMemory;
+                            try reserved.put(self.gpa, namespace_path, fresh);
+                            try pending.append(self.gpa, .{ .path = namespace_path, .type = fresh });
+                            break :blk fresh;
+                        };
+                    }
                 } else {
                     for (self.program_exported_classes) |class| {
                         if (class.local_only) continue;
@@ -106417,7 +106455,7 @@ pub const Checker = struct {
                     } else {
                         for (self.program_exported_values) |value| {
                             if (!std.mem.eql(u8, value.target_path, path) or !std.mem.eql(u8, value.export_name, name)) continue;
-                            member_type = (try self.programExportedValueType(value)) orelse return self.unavailableProgramModuleNamespace(root_path);
+                            member_type = (try self.programExportedValueType(value)) orelse types.Primitive.any;
                             break;
                         }
                     }
@@ -106459,6 +106497,7 @@ pub const Checker = struct {
 
     fn clearProgramGenericInstances(self: *Checker) void {
         self.program_generic_definitions.clearRetainingCapacity();
+        self.program_expression_parameters.clearRetainingCapacity();
         self.program_definition_classes.clearRetainingCapacity();
         self.program_local_class_names.clearRetainingCapacity();
         self.program_local_class_names_built = false;
@@ -106676,7 +106715,7 @@ pub const Checker = struct {
             .primitive => |type_id| return type_id,
             .parameter => |parameter| {
                 for (declaration.parameters, args) |*param, arg| if (param == parameter) return arg;
-                return error.UnsupportedProgramType;
+                return self.programExpressionParameter(parameter);
             },
             .string => |value| return self.interner.internStringLiteral(self.string_interner.intern(value) catch return error.OutOfMemory),
             .number => |value| return self.interner.internNumberLiteral(value),
@@ -106768,7 +106807,78 @@ pub const Checker = struct {
                 const index_t = try self.lowerProgramExpression(indexed.index, declaration, args);
                 return self.interner.internIndexedAccess(object_t, index_t) catch return error.OutOfMemory;
             },
+            .keyof => |operand| return self.interner.internKeyof(try self.lowerProgramExpression(operand, declaration, args)) catch return error.OutOfMemory,
+            .conditional => |conditional| {
+                const check_t = try self.lowerProgramExpression(conditional.check, declaration, args);
+                return self.interner.internConditionalWithDistribution(
+                    check_t,
+                    try self.lowerProgramExpression(conditional.extends_type, declaration, args),
+                    try self.lowerProgramExpression(conditional.true_branch, declaration, args),
+                    try self.lowerProgramExpression(conditional.false_branch, declaration, args),
+                    check_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(check_t).is_type_parameter,
+                ) catch return error.OutOfMemory;
+            },
+            .mapped => |mapped| {
+                const parameter_t = try self.programExpressionParameter(mapped.parameter);
+                const constraint_t = try self.lowerProgramExpression(mapped.constraint, declaration, args);
+                if (parameter_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(parameter_t).is_type_parameter) {
+                    self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(parameter_t)].constraint = constraint_t;
+                }
+                return self.interner.internMapped(
+                    constraint_t,
+                    try self.lowerProgramExpression(mapped.template, declaration, args),
+                    @fromBackingInt(@intCast(mapped.readonly)),
+                    @fromBackingInt(@intCast(mapped.optional)),
+                ) catch return error.OutOfMemory;
+            },
+            .infer => |parameter| {
+                const parameter_t = try self.programExpressionParameter(parameter);
+                try self.infer_type_parameters.put(self.gpa, parameter_t, {});
+                if (parameter.constraint) |constraint| {
+                    const constraint_t = try self.lowerProgramExpression(constraint, declaration, args);
+                    self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(parameter_t)].constraint = constraint_t;
+                }
+                return parameter_t;
+            },
+            .this_type => |operand| {
+                const constraint = try self.lowerProgramExpression(operand, declaration, args);
+                const marker_name = self.string_interner.intern("__home_this_type") catch return error.OutOfMemory;
+                const marker_t = self.interner.internObjectType(&.{.{
+                    .name = marker_name,
+                    .type = constraint,
+                    .is_optional = true,
+                    .is_readonly = true,
+                    .is_method = false,
+                }}) catch return error.OutOfMemory;
+                try self.this_type_markers.put(self.gpa, marker_t, constraint);
+                return marker_t;
+            },
+            .typeof_class => |class_declaration| {
+                for (self.program_exported_classes) |exported_class| {
+                    if (!std.mem.eql(u8, exported_class.declaration_path, class_declaration.path) or
+                        !std.mem.eql(u8, exported_class.class_name, class_declaration.name)) continue;
+                    if (exported_class.declaration_pos) |position| {
+                        if (position != class_declaration.position) continue;
+                    }
+                    const class_name = self.string_interner.intern(class_declaration.name) catch return error.OutOfMemory;
+                    return self.syntheticProgramClassStaticType(exported_class, class_name, null, hir_mod.none_node_id);
+                }
+                return error.UnsupportedProgramType;
+            },
         }
+    }
+
+    fn programExpressionParameter(self: *Checker, parameter: *const ProgramClassSchema.Parameter) ProgramTypeError!TypeId {
+        if (self.program_expression_parameters.get(parameter)) |existing| return existing;
+        const type_id = self.interner.internFreshTypeParameterWithFlags(
+            self.string_interner.intern(parameter.name) catch return error.OutOfMemory,
+            types.Primitive.unknown,
+            types.Primitive.none,
+            types.Variance.fromHirBits(parameter.variance),
+            parameter.is_const,
+        ) catch return error.OutOfMemory;
+        try self.program_expression_parameters.put(self.gpa, parameter, type_id);
+        return type_id;
     }
 
     fn programExportedClassForImportBinding(

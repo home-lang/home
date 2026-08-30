@@ -2392,7 +2392,7 @@ const CheckerResolverAdapter = struct {
                 .exported_type = exported,
                 .exported_value = facts.exported_value,
                 .namespace_module_path = namespaceExportOwner(origins) orelse "",
-                .runtime_value = if (origins) |known| known.value != null else null,
+                .runtime_value = runtimeValueFromExportFacts(origins, facts.exported_value),
                 .exported_value_readonly = facts.exported_value_readonly,
                 .ambient_const_enum = facts.ambient_const_enum,
                 .cannot_be_named = cannot_be_named,
@@ -2456,7 +2456,7 @@ const CheckerResolverAdapter = struct {
                 .exported_type = facts.exported_type,
                 .exported_value = facts.exported_value,
                 .namespace_module_path = namespaceExportOwner(origins) orelse "",
-                .runtime_value = if (origins) |known| known.value != null else null,
+                .runtime_value = runtimeValueFromExportFacts(origins, facts.exported_value),
                 .ambient_const_enum = facts.ambient_const_enum,
                 .type_only_export = type_only_pos != null,
                 .type_only_import = facts.type_only_import,
@@ -2486,6 +2486,11 @@ const CheckerResolverAdapter = struct {
     fn namespaceExportOwner(origins: ?ts_program.export_origins.Origins) ?[]const u8 {
         const origin = (origins orelse return null).value orelse return null;
         return if (origin.kind == .namespace) origin.path else null;
+    }
+
+    fn runtimeValueFromExportFacts(origins: ?ts_program.export_origins.Origins, exported_value: bool) ?bool {
+        if (origins) |known| return known.value != null;
+        return if (exported_value) true else null;
     }
 
     fn commonJsExportPrivateNameImpl(
@@ -4243,6 +4248,14 @@ test "tsc_main: TS6054 unsupported-extension diagnostic text" {
         "error TS6054: File 'data/notes.txt' has an unsupported extension. The only supported extensions are '.ts', '.tsx', '.d.ts', '.cts', '.d.cts', '.mts', '.d.mts'.",
         msg,
     );
+}
+
+test "tsc_main: direct exported values remain runtime values when aggregate origins are incomplete" {
+    const origin: ts_program.export_origins.Origin = .{ .path = "/owner.ts", .position = 1, .kind = .declaration };
+    try std.testing.expectEqual(@as(?bool, true), CheckerResolverAdapter.runtimeValueFromExportFacts(null, true));
+    try std.testing.expectEqual(@as(?bool, null), CheckerResolverAdapter.runtimeValueFromExportFacts(null, false));
+    try std.testing.expectEqual(@as(?bool, true), CheckerResolverAdapter.runtimeValueFromExportFacts(.{ .value = origin }, false));
+    try std.testing.expectEqual(@as(?bool, false), CheckerResolverAdapter.runtimeValueFromExportFacts(.{}, true));
 }
 
 test "tsc_main: classifyExtension recognizes TS, Home, JS and unsupported shapes" {

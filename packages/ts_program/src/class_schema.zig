@@ -10,8 +10,12 @@ const Primitive = schema.Primitive;
 
 pub const Source = struct { path: []const u8, compilation: *driver.Compilation };
 pub const Key = struct { source: usize, node: hir.NodeId };
-const Resolution = union(enum) { declaration: Key, missing, unsupported };
-const Context = struct { source: usize, declaration: *schema.Declaration };
+const Resolution = union(enum) { declaration: Key, missing, external, unsupported };
+const Context = struct {
+    source: usize,
+    declaration: *schema.Declaration,
+    locals: []const *const schema.Parameter = &.{},
+};
 
 pub fn collect(gpa: std.mem.Allocator, resolver: *resolver_mod.Resolver, sources: []const Source, source: Source, node: hir.NodeId) !*const schema.Schema {
     const result = try gpa.create(schema.Schema);
@@ -46,6 +50,23 @@ pub const Builder = struct {
         const node = try self.arena.create(schema.Expression);
         node.* = value;
         return node;
+    }
+
+    fn extendContext(self: *Builder, context: Context, parameters: []const *const schema.Parameter) !Context {
+        const locals = try self.arena.alloc(*const schema.Parameter, context.locals.len + parameters.len);
+        @memcpy(locals[0..context.locals.len], context.locals);
+        @memcpy(locals[context.locals.len..], parameters);
+        return .{ .source = context.source, .declaration = context.declaration, .locals = locals };
+    }
+
+    fn localParameter(context: Context, name: []const u8) ?*const schema.Parameter {
+        var index = context.locals.len;
+        while (index > 0) {
+            index -= 1;
+            const parameter = context.locals[index];
+            if (std.mem.eql(u8, parameter.name, name)) return parameter;
+        }
+        return null;
     }
 
     pub fn declaration(self: *Builder, key: Key) error{OutOfMemory}!*schema.Declaration {
@@ -238,6 +259,7 @@ pub const Builder = struct {
                 const ref = hir.typeRefOf(&c.hir, node);
                 const name = c.interner.get(ref.name);
                 if (ref.qualifier_len != 0) return self.expression(.unsupported);
+                if (localParameter(context, name)) |parameter| return self.expression(.{ .parameter = parameter });
                 for (context.declaration.parameters) |*param| {
                     if (std.mem.eql(u8, param.name, name)) return self.expression(.{ .parameter = param });
                 }
@@ -253,10 +275,11 @@ pub const Builder = struct {
                 switch (try self.resolve(context.source, node, ref.name)) {
                     .declaration => |key| return self.expression(.{ .reference = .{ .declaration = try self.declaration(key), .arguments = args } }),
                     .unsupported => return self.expression(.unsupported),
-                    .missing => {},
+                    .missing, .external => {},
                 }
                 if (args.len == 1 and (std.mem.eql(u8, name, "Array") or std.mem.eql(u8, name, "ReadonlyArray")))
                     return self.expression(if (std.mem.eql(u8, name, "Array")) .{ .array = args[0] } else .{ .readonly_array = args[0] });
+                if (args.len == 1 and std.mem.eql(u8, name, "ThisType")) return self.expression(.{ .this_type = args[0] });
                 return self.expression(.unsupported);
             },
             .type_literal => {
@@ -312,8 +335,118 @@ pub const Builder = struct {
                     .index = try self.lower(context, indexed.index),
                 } });
             },
+            .keyof_type => return self.expression(.{ .keyof = try self.lower(context, hir.keyofTypeOf(&c.hir, node).operand) }),
+            .mapped_type => {
+                const mapped = hir.mappedTypeOf(&c.hir, node);
+                if (mapped.remap != 0) return self.expression(.unsupported);
+                const parameter_node = mapped.type_param;
+                if (parameter_node == 0 or c.hir.kindOf(parameter_node) != .type_parameter) return self.expression(.unsupported);
+                const payload = hir.typeParameterOf(&c.hir, parameter_node);
+                const parameter = try self.arena.create(schema.Parameter);
+                parameter.* = .{ .name = c.interner.get(payload.name) };
+                const local_context = try self.extendContext(context, &.{parameter});
+                return self.expression(.{ .mapped = .{
+                    .parameter = parameter,
+                    .constraint = try self.lower(context, mapped.constraint),
+                    .template = try self.lower(local_context, mapped.value),
+                    .readonly = mapped.readonly,
+                    .optional = mapped.optional,
+                } });
+            },
+            .conditional_type => return self.lowerConditional(context, node),
+            .infer_type => {
+                const payload = hir.inferTypeOf(&c.hir, node);
+                const parameter = localParameter(context, c.interner.get(payload.name)) orelse return self.expression(.unsupported);
+                return self.expression(.{ .infer = parameter });
+            },
+            .typeof_type => {
+                const operand = hir.typeofTypeOf(&c.hir, node).operand;
+                if (c.hir.kindOf(operand) != .identifier) return self.expression(.unsupported);
+                const identifier = hir.identifierOf(&c.hir, operand);
+                return switch (try self.resolve(context.source, operand, identifier.name)) {
+                    .declaration => |key| blk: {
+                        const target = try self.declaration(key);
+                        break :blk self.expression(if (target.is_class) .{ .typeof_class = target } else .unsupported);
+                    },
+                    .missing, .external, .unsupported => self.expression(.unsupported),
+                };
+            },
             else => return self.expression(.unsupported),
         }
+    }
+
+    fn collectInferNodes(c: *const driver.Compilation, node: hir.NodeId, result: *std.ArrayListUnmanaged(hir.NodeId), arena: std.mem.Allocator) !void {
+        if (node == 0) return;
+        switch (c.hir.kindOf(node)) {
+            .infer_type => {
+                const name = hir.inferTypeOf(&c.hir, node).name;
+                for (result.items) |existing| {
+                    if (hir.inferTypeOf(&c.hir, existing).name == name) return;
+                }
+                try result.append(arena, node);
+            },
+            .array_type => try collectInferNodes(c, hir.arrayTypeOf(&c.hir, node).element, result, arena),
+            .readonly_type => try collectInferNodes(c, hir.readonlyTypeOf(&c.hir, node).operand, result, arena),
+            .optional_type => try collectInferNodes(c, hir.optionalTypeOf(&c.hir, node).operand, result, arena),
+            .rest_type => try collectInferNodes(c, hir.restTypeOf(&c.hir, node).operand, result, arena),
+            .union_type, .intersection_type => {
+                const members = if (c.hir.kindOf(node) == .union_type)
+                    hir.unionTypeMembers(&c.hir, node)
+                else
+                    hir.intersectionTypeMembers(&c.hir, node);
+                for (members) |member| try collectInferNodes(c, member, result, arena);
+            },
+            .tuple_type => for (hir.tupleTypeElements(&c.hir, node)) |element| try collectInferNodes(c, element, result, arena),
+            .type_ref => for (hir.typeRefArgs(&c.hir, node)) |argument| try collectInferNodes(c, argument, result, arena),
+            .indexed_access_type => {
+                const indexed = hir.indexedAccessTypeOf(&c.hir, node);
+                try collectInferNodes(c, indexed.object, result, arena);
+                try collectInferNodes(c, indexed.index, result, arena);
+            },
+            .keyof_type => try collectInferNodes(c, hir.keyofTypeOf(&c.hir, node).operand, result, arena),
+            .conditional_type => {
+                const conditional = hir.conditionalTypeOf(&c.hir, node);
+                try collectInferNodes(c, conditional.check, result, arena);
+                try collectInferNodes(c, conditional.extends, result, arena);
+                try collectInferNodes(c, conditional.true_branch, result, arena);
+                try collectInferNodes(c, conditional.false_branch, result, arena);
+            },
+            .fn_type, .constructor_type => {
+                const function = hir.fnTypeOf(&c.hir, node);
+                for (c.hir.child_pool.items[function.params_start..][0..function.params_len]) |parameter_node| {
+                    try collectInferNodes(c, hir.parameterOf(&c.hir, parameter_node).type_annotation, result, arena);
+                }
+                try collectInferNodes(c, function.return_type, result, arena);
+            },
+            else => {},
+        }
+    }
+
+    fn lowerConditional(self: *Builder, context: Context, node: hir.NodeId) !*const schema.Expression {
+        const c = self.sources[context.source].compilation;
+        const conditional = hir.conditionalTypeOf(&c.hir, node);
+        var infer_nodes: std.ArrayListUnmanaged(hir.NodeId) = .empty;
+        try collectInferNodes(c, conditional.extends, &infer_nodes, self.arena);
+        const parameters = try self.arena.alloc(*const schema.Parameter, infer_nodes.items.len);
+        for (infer_nodes.items, parameters) |infer_node, *out| {
+            const payload = hir.inferTypeOf(&c.hir, infer_node);
+            const parameter = try self.arena.create(schema.Parameter);
+            parameter.* = .{ .name = c.interner.get(payload.name) };
+            out.* = parameter;
+        }
+        const infer_context = try self.extendContext(context, parameters);
+        for (infer_nodes.items, parameters) |infer_node, parameter_const| {
+            const constraint_node = hir.inferTypeOf(&c.hir, infer_node).constraint;
+            if (constraint_node == 0) continue;
+            const parameter: *schema.Parameter = @constCast(parameter_const);
+            parameter.constraint = try self.lower(infer_context, constraint_node);
+        }
+        return self.expression(.{ .conditional = .{
+            .check = try self.lower(context, conditional.check),
+            .extends_type = try self.lower(infer_context, conditional.extends),
+            .true_branch = try self.lower(infer_context, conditional.true_branch),
+            .false_branch = try self.lower(context, conditional.false_branch),
+        } });
     }
 
     fn resolve(self: *Builder, source: usize, node: hir.NodeId, name: hir.StringId) error{OutOfMemory}!Resolution {
@@ -343,8 +476,16 @@ pub const Builder = struct {
         }
         const bound = symbol orelse return .missing;
         if (!bound.flags.is_import) {
-            if (bound.decls.items.len != 1) return .unsupported;
-            return .{ .declaration = .{ .source = source, .node = bound.decls.items[0] } };
+            var local_declaration: ?hir.NodeId = null;
+            for (bound.decls.items) |declaration_node| {
+                if (!declarationHasName(c, declaration_node, name)) continue;
+                if (local_declaration != null) return .unsupported;
+                local_declaration = declaration_node;
+            }
+            return if (local_declaration) |declaration_node|
+                .{ .declaration = .{ .source = source, .node = declaration_node } }
+            else
+                .external;
         }
         for (hir.blockStmts(&c.hir, c.root)) |statement| {
             if (c.hir.kindOf(statement) != .import_decl) continue;
@@ -361,11 +502,23 @@ pub const Builder = struct {
         return .unsupported;
     }
 
+    fn declarationHasName(c: *const driver.Compilation, node: hir.NodeId, name: hir.StringId) bool {
+        if (node == 0 or node >= c.hir.nodeCount()) return false;
+        const name_node = switch (c.hir.kindOf(node)) {
+            .type_alias_decl => hir.typeAliasOf(&c.hir, node).name,
+            .interface_decl => hir.interfaceOf(&c.hir, node).name,
+            .class_decl, .class_expr => hir.classOf(&c.hir, node).name,
+            else => return false,
+        };
+        return name_node != 0 and c.hir.kindOf(name_node) == .identifier and hir.identifierOf(&c.hir, name_node).name == name;
+    }
+
     fn resolveImported(self: *Builder, source: usize, specifier: []const u8, name: []const u8) error{OutOfMemory}!Resolution {
         const target = self.resolver.resolve(specifier, self.sources[source].path) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => return .unsupported,
         };
+        if (self.resolveDirectExport(target.path, name)) |direct| return direct;
         const resolved = self.query.resolve(target.path, name) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => return .unsupported,
@@ -383,6 +536,24 @@ pub const Builder = struct {
             }
         }
         return .unsupported;
+    }
+
+    /// A direct local export remains authoritative even when an unrelated
+    /// star export makes the module's aggregate origin query incomplete.
+    fn resolveDirectExport(self: *Builder, path: []const u8, name: []const u8) ?Resolution {
+        for (self.sources, 0..) |owner, index| {
+            if (!std.mem.eql(u8, owner.path, path)) continue;
+            const symbol = owner.compilation.lookupTopLevel(name) orelse return null;
+            if (!symbol.flags.is_export or symbol.flags.is_import) return null;
+            var result: ?hir.NodeId = null;
+            for (symbol.decls.items) |node| {
+                if (!declarationHasName(owner.compilation, node, symbol.name)) continue;
+                if (result != null) return .unsupported;
+                result = node;
+            }
+            return if (result) |node| .{ .declaration = .{ .source = index, .node = node } } else null;
+        }
+        return null;
     }
 };
 
@@ -576,4 +747,39 @@ test "class schema: explicit this is a receiver rather than a positional paramet
     try T.expectEqualStrings("value", function.this_type.?.object[0].name);
     try T.expect(function.this_type.?.object[0].type.parameter == &result.declaration.parameters[0]);
     try T.expect(try result.isSupported(T.allocator));
+}
+
+test "class schema: mapped conditional aliases retain exported function signatures" {
+    const graph = try TestGraph.init(&.{
+        .{ .path = "/owner.ts", .text =
+        \\import type { Class, ProtoOf } from "./util.js";
+        \\type Trait = { value: unknown };
+        \\interface FactoryParams { Parent?: typeof Class }
+        \\export function factory<T extends Trait, D = T["value"]>(name: string, initializer: (instance: T, definition: D) => void, prototype?: ProtoOf<T>, params?: FactoryParams): void {
+        \\  void name;
+        \\  void initializer;
+        \\  void prototype;
+        \\  void params;
+        \\}
+        },
+        .{ .path = "/util.ts", .text =
+        \\export * from "./missing.js";
+        \\export abstract class Class { constructor(...args: any[]) { void args; } }
+        \\export type ProtoOf<T> = {
+        \\  [K in keyof T]?: (T[K] extends (...args: infer A) => infer R ? (...args: A) => R : T[K]) | undefined;
+        \\} & ThisType<T>;
+        },
+    });
+    defer graph.deinit();
+    const result = try graph.class(0, "factory");
+    defer result.deinit(T.allocator);
+    try T.expect(try result.isSupported(T.allocator));
+    const function = result.declaration.body.?.function;
+    try T.expectEqual(@as(usize, 4), function.parameters.len);
+    const proto_reference = function.parameters[2].type.reference;
+    const proto = proto_reference.declaration.body.?.intersection;
+    try T.expect(proto_reference.arguments[0].parameter == &result.declaration.parameters[0]);
+    try T.expect(proto[0].mapped.constraint.keyof.parameter == &proto_reference.declaration.parameters[0]);
+    try T.expect(proto[1].this_type.parameter == &proto_reference.declaration.parameters[0]);
+    try T.expect(function.parameters[3].type.reference.declaration.body.?.object[0].type.* == .typeof_class);
 }

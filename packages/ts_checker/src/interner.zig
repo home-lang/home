@@ -962,6 +962,26 @@ pub const Interner = struct {
     /// before filling their members permits cyclic module namespace graphs.
     /// The caller must own the object exclusively until the graph is complete.
     pub fn completeFreshObjectType(self: *Interner, id: TypeId, members: []const types.ObjectMember) !void {
+        return self.completeFreshObjectTypeWithIndex(
+            id,
+            members,
+            types.Primitive.none,
+            types.Primitive.none,
+            types.Primitive.none,
+        );
+    }
+
+    /// Complete a reserved object while retaining open index signatures.
+    /// This lets partially known cyclic namespace graphs preserve exact known
+    /// exports without claiming that enumeration was exhaustive.
+    pub fn completeFreshObjectTypeWithIndex(
+        self: *Interner,
+        id: TypeId,
+        members: []const types.ObjectMember,
+        string_index_type: TypeId,
+        number_index_type: TypeId,
+        symbol_index_type: TypeId,
+    ) !void {
         self.pool_mu.lock();
         defer self.pool_mu.unlock();
         std.debug.assert(self.pool.flagsOf(id).is_object_type);
@@ -971,6 +991,9 @@ pub const Interner = struct {
         try self.pool.object_member_pool.appendSlice(self.gpa, members);
         self.pool.object_type_payloads.items[index].members_start = start;
         self.pool.object_type_payloads.items[index].members_len = @intCast(members.len);
+        self.pool.object_type_payloads.items[index].string_index_type = string_index_type;
+        self.pool.object_type_payloads.items[index].number_index_type = number_index_type;
+        self.pool.object_type_payloads.items[index].symbol_index_type = symbol_index_type;
     }
 
     /// Like `internObjectType` but also wires `string`-key and
@@ -1777,6 +1800,21 @@ test "Interner: fresh recursive objects retain reserved identities" {
     try i.completeFreshObjectType(b, &.{.{ .name = 2, .type = a, .is_optional = false, .is_readonly = true, .is_method = false }});
     try T.expectEqual(b, i.objectMember(a, 1).?);
     try T.expectEqual(a, i.objectMember(b, 2).?);
+}
+
+test "Interner: fresh objects retain open index signatures when completed" {
+    var i = try Interner.init(T.allocator);
+    defer i.deinit();
+    const object = try i.internObjectType(&.{});
+    try i.completeFreshObjectTypeWithIndex(
+        object,
+        &.{.{ .name = 1, .type = types.Primitive.string_t, .is_optional = false, .is_readonly = true, .is_method = false }},
+        types.Primitive.any,
+        types.Primitive.none,
+        types.Primitive.none,
+    );
+    try T.expectEqual(types.Primitive.string_t, i.objectMember(object, 1).?);
+    try T.expectEqual(types.Primitive.any, i.objectStringIndex(object));
 }
 
 test "Interner: fresh type parameters preserve declaration identity" {

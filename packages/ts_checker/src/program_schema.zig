@@ -32,6 +32,19 @@ pub const Function = struct {
 };
 pub const Reference = struct { declaration: *const Declaration, arguments: []const *const Expression };
 pub const IndexedAccess = struct { object: *const Expression, index: *const Expression };
+pub const Conditional = struct {
+    check: *const Expression,
+    extends_type: *const Expression,
+    true_branch: *const Expression,
+    false_branch: *const Expression,
+};
+pub const Mapped = struct {
+    parameter: *const Parameter,
+    constraint: *const Expression,
+    template: *const Expression,
+    readonly: u8,
+    optional: u8,
+};
 pub const IndexSignature = struct { key: *const Expression, value: *const Expression };
 pub const IndexedObject = struct { members: []const Member, indices: []const IndexSignature };
 pub const Expression = union(enum) {
@@ -50,6 +63,12 @@ pub const Expression = union(enum) {
     function: Function,
     reference: Reference,
     indexed_access: IndexedAccess,
+    keyof: *const Expression,
+    conditional: Conditional,
+    mapped: Mapped,
+    infer: *const Parameter,
+    this_type: *const Expression,
+    typeof_class: *const Declaration,
     unsupported,
 };
 
@@ -93,7 +112,7 @@ pub const Schema = struct {
             switch (expr.*) {
                 .unsupported => return false,
                 .primitive, .parameter, .string, .number, .boolean => {},
-                .array, .readonly_array => |element| try pending.append(gpa, element),
+                .array, .readonly_array, .keyof, .this_type => |element| try pending.append(gpa, element),
                 .object => |members| for (members) |member| {
                     try pending.append(gpa, member.type);
                 },
@@ -122,6 +141,20 @@ pub const Schema = struct {
                     try pending.append(gpa, indexed.object);
                     try pending.append(gpa, indexed.index);
                 },
+                .conditional => |conditional| {
+                    try pending.append(gpa, conditional.check);
+                    try pending.append(gpa, conditional.extends_type);
+                    try pending.append(gpa, conditional.true_branch);
+                    try pending.append(gpa, conditional.false_branch);
+                },
+                .mapped => |mapped| {
+                    try pending.append(gpa, mapped.constraint);
+                    try pending.append(gpa, mapped.template);
+                },
+                .infer => |parameter| {
+                    if (parameter.constraint) |constraint| try pending.append(gpa, constraint);
+                },
+                .typeof_class => |class_declaration| try appendDeclaration(gpa, &pending, class_declaration),
             }
         }
         return true;

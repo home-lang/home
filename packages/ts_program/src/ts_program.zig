@@ -6899,8 +6899,9 @@ fn expectCompilationHasDiagnosticCode(c: *const ts_driver.Compilation, code: u32
 
 const NamespaceImportTestResolver = struct {
     resolver: *ts_resolver.Resolver,
+    names_available: bool = true,
 
-    const export_names = [_][]const u8{ "initialize", "$constructor", "consume" };
+    const export_names = [_][]const u8{ "initialize", "$constructor", "consume", "TypeOnly", "Opaque" };
 
     const vtable = ts_driver.ExternalResolver.VTable{
         .resolve = resolve,
@@ -6924,6 +6925,13 @@ const NamespaceImportTestResolver = struct {
         _: []const u8,
         name: []const u8,
     ) ?ts_driver.ExternalResolver.ModuleExport {
+        if (std.mem.eql(u8, name, "TypeOnly")) return .{
+            .module_name = "\"barrel\"",
+            .exported_type = true,
+            .exported_value = false,
+            .runtime_value = null,
+            .module_is_external = true,
+        };
         if (!std.mem.eql(u8, name, "initialize") and
             !std.mem.eql(u8, name, "$constructor") and
             !std.mem.eql(u8, name, "consume")) return null;
@@ -6939,10 +6947,12 @@ const NamespaceImportTestResolver = struct {
     }
 
     fn moduleExportNames(
-        _: *anyopaque,
+        self_ptr: *anyopaque,
         _: []const u8,
         _: []const u8,
     ) ?[]const []const u8 {
+        const self: *NamespaceImportTestResolver = @ptrCast(@alignCast(self_ptr));
+        if (!self.names_available) return null;
         return &export_names;
     }
 };
@@ -9036,22 +9046,34 @@ test "Program: namespace imports preserve defaulted indexed generic callbacks" {
     defer vfs.deinit();
     var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
     defer resolver.deinit();
-    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver };
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver, .names_available = false };
     var p = Program.init(T.allocator, &resolver);
     defer p.deinit();
 
+    const util =
+        \\export abstract class Class { constructor(...args: any[]) { void args; } }
+        \\export type ProtoOf<T> = {
+        \\  [K in keyof T]?: (T[K] extends (...args: infer A) => infer R ? (...args: A) => R : T[K]) | undefined;
+        \\} & ThisType<T>;
+    ;
     const owner =
+        \\import type { Class, ProtoOf } from "./util.js";
         \\type Trait = { _zod: { def: unknown; [key: string]: unknown } };
-        \\export interface Constructor<T extends Trait, D = T["_zod"]["def"]> {
+        \\interface ConstructorParams { Parent?: typeof Class }
+        \\export interface $constructor<T extends Trait, D = T["_zod"]["def"]> {
         \\  new (def: D): T;
         \\  init(inst: T, def: D): asserts inst is T;
         \\}
         \\export function $constructor<T extends Trait, D = T["_zod"]["def"]>(
         \\  name: string,
-        \\  initializer: (inst: T, def: D) => void
-        \\): Constructor<T, D> {
+        \\  initializer: (inst: T, def: D) => void,
+        \\  proto?: ProtoOf<T>,
+        \\  params?: ConstructorParams
+        \\): $constructor<T, D> {
         \\  void name;
         \\  void initializer;
+        \\  void proto;
+        \\  void params;
         \\  return null as never;
         \\}
     ;
@@ -9075,12 +9097,26 @@ test "Program: namespace imports preserve defaulted indexed generic callbacks" {
         \\  void exactDef;
         \\});
     ;
+    const invalid_consumer =
+        \\import * as core from "./owner";
+        \\interface Schema { _zod: { def: { kind: "schema" } } }
+        \\core.$constructor<Schema>("Schema", (inst, def) => {
+        \\  const wrong: number = inst;
+        \\  inst.missing;
+        \\  void def;
+        \\  void wrong;
+        \\});
+    ;
+    try vfs.addFile("/proj/util.ts", util);
     try vfs.addFile("/proj/owner.ts", owner);
     try vfs.addFile("/proj/consumer.ts", consumer);
     try vfs.addFile("/proj/named-consumer.ts", named_consumer);
+    try vfs.addFile("/proj/invalid-consumer.ts", invalid_consumer);
+    _ = try p.add("/proj/util.ts", util);
     _ = try p.add("/proj/owner.ts", owner);
     const consumer_id = try p.add("/proj/consumer.ts", consumer);
     const named_consumer_id = try p.add("/proj/named-consumer.ts", named_consumer);
+    const invalid_consumer_id = try p.add("/proj/invalid-consumer.ts", invalid_consumer);
 
     try p.compileAll(.{
         .no_emit = true,
@@ -9089,10 +9125,16 @@ test "Program: namespace imports preserve defaulted indexed generic callbacks" {
     });
     const compilation = p.fileById(consumer_id).compilation.?;
     const named_compilation = p.fileById(named_consumer_id).compilation.?;
+    const invalid_compilation = p.fileById(invalid_consumer_id).compilation.?;
     try expectCompilationLacksDiagnosticCode(named_compilation, 7006);
     try expectCompilationLacksDiagnosticCode(named_compilation, 2322);
+    try expectCompilationLacksDiagnosticCode(named_compilation, 2347);
     try expectCompilationLacksDiagnosticCode(compilation, 7006);
     try expectCompilationLacksDiagnosticCode(compilation, 2322);
+    try expectCompilationLacksDiagnosticCode(compilation, 2347);
+    try expectCompilationLacksDiagnosticCode(invalid_compilation, 7006);
+    try expectCompilationHasDiagnosticCode(invalid_compilation, 2322);
+    try expectCompilationHasDiagnosticCode(invalid_compilation, 2339);
 }
 
 test "Program: namespace imports preserve callbacks through inherited interfaces" {
