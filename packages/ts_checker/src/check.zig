@@ -22548,26 +22548,42 @@ pub const Checker = struct {
     ) CheckError!void {
         if (i.else_branch == hir_mod.none_node_id or pending.count() == 0) return;
 
-        var then_assigned: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
-        defer then_assigned.deinit(self.gpa);
-        var else_assigned: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
-        defer else_assigned.deinit(self.gpa);
-        try self.collectSimpleDefiniteAssignments(i.then_branch, &then_assigned);
-        try self.collectSimpleDefiniteAssignments(i.else_branch, &else_assigned);
-
-        const then_exits = self.statementDefinitelyExits(i.then_branch);
-        const else_exits = self.statementDefinitelyExits(i.else_branch);
-
         var to_remove: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
         defer to_remove.deinit(self.gpa);
         var it = pending.keyIterator();
         while (it.next()) |name_ptr| {
             const name = name_ptr.*;
-            const then_ok = then_exits or then_assigned.contains(name);
-            const else_ok = else_exits or else_assigned.contains(name);
+            const then_ok = self.statementDefinitelyAssignsOrExits(i.then_branch, name);
+            const else_ok = self.statementDefinitelyAssignsOrExits(i.else_branch, name);
             if (then_ok and else_ok) try to_remove.append(self.gpa, name);
         }
         for (to_remove.items) |name| _ = pending.remove(name);
+    }
+
+    fn statementDefinitelyAssignsOrExits(
+        self: *Checker,
+        node: NodeId,
+        name: hir_mod.StringId,
+    ) bool {
+        if (node == hir_mod.none_node_id) return false;
+        if (self.statementDefinitelyExits(node)) return true;
+        return switch (self.hir.kindOf(node)) {
+            .assignment => self.statementDirectlyAssignsIdentifier(node, name),
+            .let_decl, .var_decl, .const_decl => self.statementDirectlyAssignsIdentifier(node, name),
+            .block_stmt => blk: {
+                for (hir_mod.blockStmts(self.hir, node)) |stmt| {
+                    if (self.statementDefinitelyAssignsOrExits(stmt, name)) break :blk true;
+                }
+                break :blk false;
+            },
+            .if_stmt => blk: {
+                const conditional = hir_mod.ifOf(self.hir, node);
+                if (conditional.else_branch == hir_mod.none_node_id) break :blk false;
+                break :blk self.statementDefinitelyAssignsOrExits(conditional.then_branch, name) and
+                    self.statementDefinitelyAssignsOrExits(conditional.else_branch, name);
+            },
+            else => false,
+        };
     }
 
     fn removeDefinitelyAssignedAfterConditional(
@@ -196029,6 +196045,35 @@ test "checker: exiting catch preserves definite assignment from successful try" 
         \\} catch {}
         \\maybeAssigned.toFixed();
         \\declare function mightThrow(): number;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.used_before_assignment));
+}
+
+test "checker: nested conditional assignment accepts exiting final branch" {
+    const s = try newSetup(
+        \\function check(): void {
+        \\    let assigned: number;
+        \\    if (first()) {
+        \\        assigned = 1;
+        \\    } else if (second()) {
+        \\        assigned = 2;
+        \\    } else {
+        \\        return;
+        \\    }
+        \\    assigned.toFixed();
+        \\    let maybeAssigned: number;
+        \\    if (first()) {
+        \\        maybeAssigned = 1;
+        \\    } else if (second()) {
+        \\        maybeAssigned = 2;
+        \\    }
+        \\    maybeAssigned.toFixed();
+        \\}
+        \\declare function first(): boolean;
+        \\declare function second(): boolean;
     );
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .strict_null_checks = true });
