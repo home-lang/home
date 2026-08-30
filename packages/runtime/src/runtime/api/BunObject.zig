@@ -1963,6 +1963,7 @@ pub const JSZstd = struct {
 
         pub fn runTask(task: *jsc.WorkPoolTask) void {
             const job: *ZstdJob = @fieldParentPtr("task", task);
+            defer job.vm.native_work_pool_jobs.complete();
             defer job.vm.enqueueTaskConcurrent(jsc.ConcurrentTask.create(job.any_task.task()));
 
             const input = job.buffer.slice();
@@ -2034,6 +2035,10 @@ pub const JSZstd = struct {
             bun.destroy(this);
         }
 
+        pub fn cancelForShutdown(this: *ZstdJob) void {
+            this.deinit();
+        }
+
         pub fn create(vm: *jsc.VirtualMachine, globalThis: *jsc.JSGlobalObject, buffer: jsc.Node.StringOrBuffer, is_compress: bool, level: i32) *ZstdJob {
             var job = ZstdJob.new(.{
                 .buffer = buffer,
@@ -2044,11 +2049,16 @@ pub const JSZstd = struct {
             });
 
             job.promise = jsc.JSPromise.Strong.init(globalThis);
-            job.any_task = jsc.AnyTask.New(@This(), &runFromJS).init(job);
-            job.poll.ref(vm);
-            jsc.WorkPool.schedule(&job.task);
+            job.any_task = jsc.AnyTask.NewWithShutdown(@This(), &runFromJS, &cancelForShutdown).init(job);
 
             return job;
+        }
+
+        pub fn schedule(this: *ZstdJob) bool {
+            if (!this.vm.native_work_pool_jobs.tryAdd()) return false;
+            this.poll.ref(this.vm);
+            jsc.WorkPool.schedule(&this.task);
+            return true;
         }
     };
 
@@ -2057,7 +2067,9 @@ pub const JSZstd = struct {
 
         const vm = globalThis.bunVM();
         var job = ZstdJob.create(vm, globalThis, buffer, true, level);
-        return job.promise.value();
+        const promise = job.promise.value();
+        if (!job.schedule()) job.cancelForShutdown();
+        return promise;
     }
 
     pub fn decompress(globalThis: *JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!JSValue {
@@ -2065,7 +2077,9 @@ pub const JSZstd = struct {
 
         const vm = globalThis.bunVM();
         var job = ZstdJob.create(vm, globalThis, buffer, false, 0); // level is ignored for decompression
-        return job.promise.value();
+        const promise = job.promise.value();
+        if (!job.schedule()) job.cancelForShutdown();
+        return promise;
     }
 };
 
