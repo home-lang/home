@@ -77008,7 +77008,10 @@ pub const Checker = struct {
                         }
                     }
                     if (self.lookupNarrow(name)) |narrow_t| {
-                        if (narrow_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(narrow_t).is_type_parameter) {
+                        if (narrow_t < self.interner.pool.typeCount() and
+                            self.interner.pool.flagsOf(narrow_t).is_type_parameter and
+                            !self.identifierHasNarrowableValueBinding(tt.operand))
+                        {
                             const msg = try std.fmt.allocPrint(
                                 self.diag_arena.allocator(),
                                 "'{s}' only refers to a type, but is being used as a value here.",
@@ -88505,6 +88508,14 @@ pub const Checker = struct {
                 )) break :blk true;
                 break :blk try self.checkerAssignableTo(init_type, declared_type);
             };
+            if (ok and
+                (self.hir.kindOf(v.init) == .arrow_fn or
+                    self.hir.kindOf(v.init) == .fn_expr or
+                    self.hir.kindOf(v.init) == .fn_decl))
+            {
+                self.removePriorDiagnosticForNode(node, TsCodes.type_not_assignable);
+                self.removePriorDiagnosticForNode(v.name, TsCodes.type_not_assignable);
+            }
             const asserted_object_property_diag_emitted = if (!ok)
                 if (self.asConstObjectLiteral(v.init)) |object_literal|
                     try self.tryReportObjectLiteralPropertyMismatch(object_literal, declared_type)
@@ -118088,8 +118099,15 @@ pub const Checker = struct {
                     1 => return_types.items[0],
                     else => self.interner.internUnion(return_types.items) catch return error.OutOfMemory,
                 };
-                const inferred_sig = self.interner.internSignature(effective_param_ts, return_t, false) catch return error.OutOfMemory;
+                const inferred_return_t = if (f.flags.is_async and !f.flags.is_generator)
+                    try self.buildStructuralPromise(self.evalAwaited(return_t))
+                else
+                    return_t;
+                const inferred_sig = self.interner.internSignature(effective_param_ts, inferred_return_t, false) catch return error.OutOfMemory;
                 try self.recordSignatureParamNames(inferred_sig, params[0..n]);
+                if (inferred_sig != sig) if (self.generic_signature_params.get(sig)) |type_params| {
+                    try self.recordGenericSignatureParams(inferred_sig, type_params);
+                };
                 self.hir.setType(fn_node, inferred_sig);
                 out.* = inferred_sig;
             }
@@ -118097,8 +118115,15 @@ pub const Checker = struct {
             const body_t = (try self.contextualFunctionBodyExpressionType(f.body, params[0..n], effective_param_ts)) orelse
                 try self.checkExpression(f.body);
             if (inferred_signature_out) |out| {
-                const inferred_sig = self.interner.internSignature(effective_param_ts, body_t, false) catch return error.OutOfMemory;
+                const inferred_return_t = if (f.flags.is_async and !f.flags.is_generator)
+                    try self.buildStructuralPromise(self.evalAwaited(body_t))
+                else
+                    body_t;
+                const inferred_sig = self.interner.internSignature(effective_param_ts, inferred_return_t, false) catch return error.OutOfMemory;
                 try self.recordSignatureParamNames(inferred_sig, params[0..n]);
+                if (inferred_sig != sig) if (self.generic_signature_params.get(sig)) |type_params| {
+                    try self.recordGenericSignatureParams(inferred_sig, type_params);
+                };
                 self.hir.setType(fn_node, inferred_sig);
                 out.* = inferred_sig;
             }
@@ -169798,12 +169823,20 @@ pub const Checker = struct {
         }
         const conditional_returns = self.typeIsDeferredConditional(source_ret) and
             self.typeIsDeferredConditional(target_ret);
-        if (!conditional_returns and
+        const source_promise_payload = self.promisePayloadType(source_ret);
+        const target_promise_payload = self.promisePayloadType(target_ret);
+        const conditional_promise_returns = source_promise_payload != null and
+            target_promise_payload != null and
+            self.typeIsDeferredConditional(source_promise_payload.?) and
+            self.typeIsDeferredConditional(target_promise_payload.?);
+        if (!conditional_returns and !conditional_promise_returns and
             try self.genericObjectTypeParameterMismatch(source_ret, target_ret, 0)) return false;
         const ret_ok = self.engine.isAssignableTo(source_ret, target_ret) catch false;
         const indexed_ok = try self.genericIndexedAccessReturnsMatch(source_ret, target_ret);
         const narrowed_union_ok = try self.genericNarrowedReturnUnionMatches(source_ret, target_ret);
-        return ret_ok or indexed_ok or narrowed_union_ok;
+        const conditional_promise_ok = conditional_promise_returns and
+            try self.checkerAssignableTo(source_promise_payload.?, target_promise_payload.?);
+        return ret_ok or indexed_ok or narrowed_union_ok or conditional_promise_ok;
     }
 
     fn genericSignaturesAlphaRelation(self: *Checker, source_t: TypeId, target_t: TypeId) CheckError!?bool {
@@ -170885,6 +170918,7 @@ pub const Checker = struct {
     fn contextualFunctionSignatureAssignable(self: *Checker, source_t: TypeId, target_t: TypeId) CheckError!bool {
         if (source_t >= self.interner.pool.typeCount() or target_t >= self.interner.pool.typeCount()) return false;
         if (!self.interner.pool.flagsOf(source_t).is_signature or !self.interner.pool.flagsOf(target_t).is_signature) return false;
+        if (try self.genericSignaturesAlphaRelation(source_t, target_t)) |ok| return ok;
         const source_params = self.interner.signatureParams(source_t);
         const target_params = self.interner.signatureParams(target_t);
         if (self.rest_signatures.contains(source_t) or self.rest_signatures.contains(target_t)) {
@@ -173852,9 +173886,13 @@ pub const Checker = struct {
         }
         const contextual_source_t = self.hir.typeOf(fn_node);
         if (self.generic_signature_params.get(target_t) != null and
-            self.generic_signature_params.get(contextual_source_t) == null and
             self.functionExpressionHasContextSensitiveParameters(fn_node))
         {
+            if (self.generic_signature_params.get(contextual_source_t) != null and
+                try self.contextualFunctionSignatureAssignable(contextual_source_t, target_t))
+            {
+                return .assignable;
+            }
             var inferred_source = contextual_source_t;
             try self.checkFunctionWithContextualSignatureMode(fn_node, target_t, false, &inferred_source);
             if (try self.contextualFunctionSignatureAssignable(inferred_source, target_t)) return .assignable;
@@ -208523,6 +208561,46 @@ test "checker: typeof type query resolves an identifier's static type" {
     const alias_t = s.hir.typeOf(stmts[1]);
     // `typeof add` reuses the function's signature TypeId.
     try T.expectEqual(fn_t, alias_t);
+}
+
+test "checker: typeof contextual generic parameter resolves its value binding" {
+    const s = try newSetup(
+        \\interface Schema {}
+        \\type Parse = <T extends Schema>(schema: T, value: unknown) => T;
+        \\const makeParse: () => Parse = () => {
+        \\  const parse: Parse = (schema, value) => {
+        \\    void value;
+        \\    return schema as typeof schema;
+        \\  };
+        \\  return parse;
+        \\};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_only_used_as_value));
+}
+
+test "checker: contextual generic Promise conditional returns are alpha-equivalent" {
+    const s = try newSetup(
+        \\type MaybeAsync<T> = T | Promise<T>;
+        \\interface ZodInternals<O = unknown> { output: O; run(): MaybeAsync<unknown>; }
+        \\interface Schema<O = unknown, Internals extends ZodInternals<O> = ZodInternals<O>> {
+        \\  _zod: Internals;
+        \\}
+        \\type Output<T> = T extends { _zod: { output: any } } ? T["_zod"]["output"] : unknown;
+        \\type ParseAsync = <T extends Schema>(schema: T) => Promise<Output<T>>;
+        \\const makeParse: () => ParseAsync = () => {
+        \\  const parse: ParseAsync = async (schema) => {
+        \\    schema._zod.run();
+        \\    return undefined as unknown as Output<typeof schema>;
+        \\  };
+        \\  return parse;
+        \\};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_only_used_as_value));
 }
 
 test "checker: contextual function union rejects incompatible return" {
