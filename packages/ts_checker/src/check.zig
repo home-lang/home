@@ -67355,6 +67355,10 @@ pub const Checker = struct {
         const sf = self.interner.pool.flagsOf(source);
         const tf = self.interner.pool.flagsOf(target);
         if (!sf.is_object_type or !tf.is_object_type) return true;
+        // Union and intersection compatibility is already resolved by the
+        // relation engine. Their object-like flags do not make their
+        // composite TypeIds valid inputs to objectMembers().
+        if (sf.is_union or sf.is_intersection or tf.is_union or tf.is_intersection) return true;
         // Snapshot target members before the inner `heritageAssignable()` /
         // recursive `presentObjectMembersAssignable()` calls can grow
         // object_member_pool and invalidate the borrowed slice (HIGH-RISK
@@ -260666,6 +260670,82 @@ test "checker: buildAssignabilityElaborationChain emits no TS2328 when method pa
     const b_t = try s.ti.internObjectType(&members);
     const chain = try s.checker.buildAssignabilityElaborationChain(a_t, b_t);
     for (chain) |entry| try T.expect(entry.code != 2328);
+}
+
+test "checker: equivalent optional object method parameters do not emit TS2328" {
+    const s = try newSetup("const x = 1;");
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .strict_function_types = true });
+
+    const parent_id = try s.sint.intern("parent");
+    const clone_id = try s.sint.intern("clone");
+    const left_object = try s.ti.internObjectType(&.{.{
+        .name = parent_id,
+        .type = types.Primitive.boolean_t,
+        .is_optional = false,
+        .is_readonly = false,
+        .is_method = false,
+    }});
+    const right_object = try s.ti.internObjectType(&.{.{
+        .name = parent_id,
+        .type = types.Primitive.boolean_t,
+        .is_optional = false,
+        .is_readonly = false,
+        .is_method = false,
+    }});
+    const left_optional = try s.ti.internUnion(&.{ left_object, types.Primitive.undefined_t });
+    const right_optional = try s.ti.internUnion(&.{ right_object, types.Primitive.undefined_t });
+    const left_signature = try s.ti.internSignature(
+        &.{ types.Primitive.any, left_optional },
+        types.Primitive.void_t,
+        false,
+    );
+    const right_signature = try s.ti.internSignature(
+        &.{ types.Primitive.any, right_optional },
+        types.Primitive.void_t,
+        false,
+    );
+    const source = try s.ti.internObjectType(&.{.{
+        .name = clone_id,
+        .type = left_signature,
+        .is_optional = false,
+        .is_readonly = false,
+        .is_method = true,
+    }});
+    const target = try s.ti.internObjectType(&.{.{
+        .name = clone_id,
+        .type = right_signature,
+        .is_optional = false,
+        .is_readonly = false,
+        .is_method = true,
+    }});
+
+    const chain = try s.checker.buildAssignabilityElaborationChain(source, target);
+    for (chain) |entry| try T.expect(entry.code != TsCodes.types_of_parameters_incompatible);
+
+    const incompatible_object = try s.ti.internObjectType(&.{.{
+        .name = parent_id,
+        .type = types.Primitive.string_t,
+        .is_optional = false,
+        .is_readonly = false,
+        .is_method = false,
+    }});
+    const incompatible_optional = try s.ti.internUnion(&.{ incompatible_object, types.Primitive.undefined_t });
+    const incompatible_signature = try s.ti.internSignature(
+        &.{ types.Primitive.any, incompatible_optional },
+        types.Primitive.void_t,
+        false,
+    );
+    const incompatible_target = try s.ti.internObjectType(&.{.{
+        .name = clone_id,
+        .type = incompatible_signature,
+        .is_optional = false,
+        .is_readonly = false,
+        .is_method = true,
+    }});
+    const incompatible_chain = try s.checker.buildAssignabilityElaborationChain(source, incompatible_target);
+    try T.expectEqual(@as(usize, 1), incompatible_chain.len);
+    try T.expectEqual(TsCodes.types_of_parameters_incompatible, incompatible_chain[0].code);
 }
 
 test "checker: TS2685 reports incompatible this types in function signatures" {
