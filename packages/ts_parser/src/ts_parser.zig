@@ -13986,7 +13986,16 @@ pub const Parser = struct {
             }
             var is_readonly = false;
             var is_override = false;
-            if (t.kind == .kw_readonly and self.peekAt(1).kind != .colon) {
+            const readonly_next = self.peekAt(1).kind;
+            const readonly_is_member_name = readonly_next == .colon or
+                readonly_next == .question or
+                readonly_next == .open_paren or
+                readonly_next == .less_than or
+                readonly_next == .equal or
+                readonly_next == .semicolon or
+                readonly_next == .comma or
+                readonly_next == .close_brace;
+            if (t.kind == .kw_readonly and !readonly_is_member_name) {
                 _ = self.advance();
                 is_readonly = true;
             }
@@ -28897,6 +28906,20 @@ test "parser: interface generic method shorthand" {
     try T.expect(m.is_method);
     const ft = hir_mod.fnTypeOf(&s.hir, m.type_node);
     try T.expectEqual(@as(u16, 1), ft.type_params_len);
+}
+
+test "parser: readonly keyword remains an interface method name" {
+    var s = try newTestSetup("interface Schema { readonly(): this; }");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    const top = hir_mod.blockStmts(&s.hir, root)[0];
+    const members = hir_mod.interfaceMembers(&s.hir, top);
+    try T.expectEqual(@as(usize, 1), members.len);
+    const member = hir_mod.interfaceMemberOf(&s.hir, members[0]);
+    try T.expectEqualStrings("readonly", s.interner.get(member.name));
+    try T.expect(member.is_method);
+    try T.expect(!member.is_readonly);
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
 }
 
 test "parser: object type call and construct signatures" {
