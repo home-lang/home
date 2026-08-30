@@ -13999,7 +13999,16 @@ pub const Parser = struct {
                 _ = self.advance();
                 is_readonly = true;
             }
-            if (self.peek().kind == .kw_override and self.peekAt(1).kind != .colon) {
+            const override_next = self.peekAt(1).kind;
+            const override_is_member_name = override_next == .colon or
+                override_next == .question or
+                override_next == .open_paren or
+                override_next == .less_than or
+                override_next == .equal or
+                override_next == .semicolon or
+                override_next == .comma or
+                override_next == .close_brace;
+            if (self.peek().kind == .kw_override and !override_is_member_name) {
                 // `override` is not a valid modifier on interface / type
                 // members. tsc reports TS1070 anchored at the keyword.
                 // Matches override9.ts baseline.
@@ -28942,6 +28951,19 @@ test "parser: readonly keyword remains an interface method name" {
     try T.expect(member.is_method);
     try T.expect(!member.is_readonly);
     try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+}
+
+test "parser: override keyword remains an optional interface property name" {
+    var s = try newTestSetup("interface Options { override?: (value: string) => void; }");
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+    const decl = hir_mod.blockStmts(&s.hir, root)[0];
+    const members = hir_mod.interfaceMembers(&s.hir, decl);
+    try T.expectEqual(@as(usize, 1), members.len);
+    const member = hir_mod.interfaceMemberOf(&s.hir, members[0]);
+    try T.expectEqualStrings("override", s.interner.get(member.name));
+    try T.expect(member.is_optional);
 }
 
 test "parser: object type call and construct signatures" {
