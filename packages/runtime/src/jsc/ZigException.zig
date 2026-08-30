@@ -5,10 +5,9 @@
 // C++ side keeps populating `ZigException` and `ZigException.Holder` through
 // the existing `ZigException__collectSourceLines` / `__fromException` path.
 //
-// `addToErrorList` projects into `bun.schema.api.JsException`, the bindgen
-// IPC payload type which is not yet on the `home_rt` allow-list. The method
-// is omitted and re-lands together with `api.JsException` + the
-// `ZigStackTrace.toAPI` path (see `ZigStackTrace.zig`).
+// Re-attached 2026-08-29: `addToErrorList` projects exceptions into the
+// Pechy/API fallback payload now that the schema and stack conversion path
+// are available in home_rt.
 //
 // `Holder.deinit` calls `vm.module_loader.resetArena`. With the
 // `VirtualMachine` JSC bridge stubbed (Phase 12.2), the call is dropped;
@@ -33,6 +32,8 @@ const JSRuntimeType = home_rt.jsc.JSRuntimeType;
 const JSErrorCode = @import("JSErrorCode.zig").JSErrorCode;
 const ZigStackFrame = @import("ZigStackFrame.zig").ZigStackFrame;
 const ZigStackTrace = @import("ZigStackTrace.zig").ZigStackTrace;
+const ZigURL = @import("../url/url.zig").URL;
+const api = home_rt.schema.api;
 
 /// Represents a JavaScript exception with additional information
 pub const ZigException = extern struct {
@@ -66,7 +67,45 @@ pub const ZigException = extern struct {
         ZigException__collectSourceLines(value, global, this);
     }
 
-    pub fn addToErrorList(_: *const ZigException, _: anytype, _: anytype, _: anytype) !void {}
+    pub fn addToErrorList(
+        this: *ZigException,
+        error_list: *std.array_list.Managed(api.JsException),
+        root_path: []const u8,
+        origin: ?*const ZigURL,
+    ) !void {
+        const name_slice = this.name.toUTF8(home_rt.default_allocator);
+        const message_slice = this.message.toUTF8(home_rt.default_allocator);
+
+        const name = name_slice.slice();
+        defer name_slice.deinit();
+        const message = message_slice.slice();
+        defer message_slice.deinit();
+
+        var is_empty = true;
+        var api_exception = api.JsException{
+            .runtime_type = @intFromEnum(this.runtime_type),
+            .code = @intFromEnum(this.type),
+        };
+
+        if (name.len > 0) {
+            api_exception.name = try error_list.allocator.dupe(u8, name);
+            is_empty = false;
+        }
+
+        if (message.len > 0) {
+            api_exception.message = try error_list.allocator.dupe(u8, message);
+            is_empty = false;
+        }
+
+        if (this.stack.frames_len > 0) {
+            api_exception.stack = try this.stack.toAPI(error_list.allocator, root_path, origin);
+            is_empty = false;
+        }
+
+        if (!is_empty) {
+            try error_list.append(api_exception);
+        }
+    }
 
     pub fn deinit(this: *ZigException) void {
         this.syscall.deref();
@@ -202,4 +241,33 @@ test "ZigException.Holder.zigException seeds an empty trace and flips loaded" {
     try std.testing.expectEqual(JSRuntimeType.Nothing, exc.runtime_type);
     try std.testing.expect(exc.name.isEmpty());
     try std.testing.expect(exc.message.isEmpty());
+}
+
+test "home_rt: ZigException projects messages into fallback exception lists" {
+    var frames: [0]ZigStackFrame = .{};
+    var exception = ZigException{
+        .type = .TypeError,
+        .runtime_type = .Object,
+        .name = String.fromBytes("TypeError"),
+        .message = String.fromBytes("streamed failure"),
+        .stack = ZigStackTrace.fromFrames(&frames),
+        .exception = null,
+    };
+
+    var list = std.array_list.Managed(api.JsException).init(std.testing.allocator);
+    defer {
+        for (list.items) |item| {
+            if (item.name) |name| std.testing.allocator.free(name);
+            if (item.message) |message| std.testing.allocator.free(message);
+        }
+        list.deinit();
+    }
+
+    try exception.addToErrorList(&list, "/", null);
+    try std.testing.expectEqual(@as(usize, 1), list.items.len);
+    try std.testing.expectEqualStrings("TypeError", list.items[0].name.?);
+    try std.testing.expectEqualStrings("streamed failure", list.items[0].message.?);
+    try std.testing.expectEqual(@as(?u16, @intFromEnum(JSRuntimeType.Object)), list.items[0].runtime_type);
+    try std.testing.expectEqual(@as(?u8, @intFromEnum(JSErrorCode.TypeError)), list.items[0].code);
+    try std.testing.expect(list.items[0].stack == null);
 }

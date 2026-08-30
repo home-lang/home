@@ -4,23 +4,18 @@
 // Structural port. The extern struct layout matches upstream so the C++
 // side can keep populating it through the existing exception-collection path.
 //
-// `toAPI` flattens the trace into `bun.schema.api.StackTrace`, which lives
-// in the bindgen schema layer not yet ported. The method is omitted and
-// re-lands together with `ZigStackFrame.toAPI` once `api.StackFrame` /
-// `api.SourceLine` are on the `home_rt` allow-list.
-//
-// `SourceLineIterator` calls `bun.String.toUTF8` which routes through the
-// WTFStringImpl path. With the `bun.String` C ABI stub there is no live
-// payload to iterate, so the iterator is omitted; the iterator surface is
-// re-established alongside the real `bun.String`.
+// Re-attached 2026-08-29: `toAPI` and the complete source-line iterator now
+// flatten native traces into the Pechy/API development-server payload.
 
 const std = @import("std");
 const bun = @import("home");
 
 const ZigStackFrame = @import("ZigStackFrame.zig").ZigStackFrame;
 const ZigString = @import("./ZigString.zig").ZigString;
+const ZigURL = @import("../url/url.zig").URL;
 
 const String = @import("home").String;
+const api = bun.schema.api;
 
 const SourceProvider = @import("SourceProvider.zig").SourceProvider;
 
@@ -54,6 +49,51 @@ pub const ZigStackTrace = extern struct {
         };
     }
 
+    pub fn toAPI(
+        this: *const ZigStackTrace,
+        allocator: std.mem.Allocator,
+        root_path: []const u8,
+        origin: ?*const ZigURL,
+    ) !api.StackTrace {
+        var stack_trace: api.StackTrace = comptime std.mem.zeroes(api.StackTrace);
+        {
+            var source_lines_iter = this.sourceLineIterator();
+            const source_line_len = source_lines_iter.getLength();
+
+            if (source_line_len > 0) {
+                const source_count: usize = @intCast(@max(source_lines_iter.i + 1, 0));
+                const source_lines = try allocator.alloc(api.SourceLine, source_count);
+                const source_line_buf = try allocator.alloc(u8, source_line_len);
+                source_lines_iter = this.sourceLineIterator();
+                var remain_buf = source_line_buf;
+                var i: usize = 0;
+                while (source_lines_iter.next()) |source| {
+                    const text = source.text.slice();
+                    defer source.text.deinit();
+                    @memcpy(remain_buf[0..text.len], text);
+                    const copied_line = remain_buf[0..text.len];
+                    remain_buf = remain_buf[text.len..];
+                    source_lines[i] = .{ .text = copied_line, .line = source.line };
+                    i += 1;
+                }
+                stack_trace.source_lines = source_lines;
+            }
+        }
+        {
+            const native_frames = this.frames();
+            if (native_frames.len > 0) {
+                const stack_frames = try allocator.alloc(api.StackFrame, native_frames.len);
+                stack_trace.frames = stack_frames;
+
+                for (native_frames, 0..) |frame, i| {
+                    stack_frames[i] = try frame.toAPI(root_path, origin, allocator);
+                }
+            }
+        }
+
+        return stack_trace;
+    }
+
     pub fn frames(this: *const ZigStackTrace) []const ZigStackFrame {
         return this.frames_ptr[0..this.frames_len];
     }
@@ -75,6 +115,15 @@ pub const ZigStackTrace = extern struct {
         // therefore yields lines in ascending display order, with the error line
         // (index 0) emitted last by `next()` for the divot — matching upstream.
         i: i32,
+
+        pub fn getLength(this: *SourceLineIterator) usize {
+            var count: usize = 0;
+            for (this.trace.source_lines_ptr[0..@as(usize, @intCast(this.i + 1))]) |*line| {
+                count += line.length();
+            }
+
+            return count;
+        }
 
         pub fn untilLast(this: *SourceLineIterator) ?SourceLine {
             if (this.i < 1) return null;

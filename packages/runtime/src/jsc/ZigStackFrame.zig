@@ -11,8 +11,8 @@
 // async / new / eval name decoration, so stack traces printed "at fn (file)"
 // instead of upstream's "at fn (file:line:col)".
 //
-// `toAPI` (projects into bun.schema.api.StackFrame) is still omitted; it
-// re-lands with the bindgen IPC payload type.
+// Re-attached 2026-08-29: `toAPI` now projects frames into the Pechy/API
+// payload used by development-server fallbacks.
 
 const std = @import("std");
 const ZigURL = @import("../url/url.zig").URL;
@@ -25,6 +25,7 @@ const string = []const u8;
 
 const ZigStackFrameCode = @import("ZigStackFrameCode.zig").ZigStackFrameCode;
 const ZigStackFramePosition = @import("ZigStackFramePosition.zig").ZigStackFramePosition;
+const api = bun.schema.api;
 
 /// Represents a single frame in a stack trace
 pub const ZigStackFrame = extern struct {
@@ -43,6 +44,23 @@ pub const ZigStackFrame = extern struct {
     pub fn deinit(this: *ZigStackFrame) void {
         this.function_name.deref();
         this.source_url.deref();
+    }
+
+    pub fn toAPI(this: *const ZigStackFrame, root_path: string, origin: ?*const ZigURL, allocator: std.mem.Allocator) !api.StackFrame {
+        var frame: api.StackFrame = comptime std.mem.zeroes(api.StackFrame);
+        if (!this.function_name.isEmpty()) {
+            var slicer = this.function_name.toUTF8(allocator);
+            frame.function_name = (try slicer.cloneIfBorrowed(allocator)).slice();
+        }
+
+        if (!this.source_url.isEmpty()) {
+            frame.file = try std.fmt.allocPrint(allocator, "{f}", .{this.sourceURLFormatter(root_path, origin, true, false)});
+        }
+
+        frame.position = this.position;
+        frame.scope = @as(api.StackFrameScope, @enumFromInt(@intFromEnum(this.code_type)));
+
+        return frame;
     }
 
     pub const Zero: ZigStackFrame = .{
