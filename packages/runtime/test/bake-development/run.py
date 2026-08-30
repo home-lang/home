@@ -121,6 +121,16 @@ def wire_string(value: str) -> bytes:
     return struct.pack('<I', len(encoded)) + encoded
 
 
+def wait_for_log(path: Path, marker: bytes) -> bytes:
+    deadline = time.monotonic() + TIMEOUT
+    while time.monotonic() < deadline:
+        contents = path.read_bytes()
+        if marker in contents:
+            return contents
+        time.sleep(0.05)
+    raise AssertionError(f'timed out waiting for {marker!r} in {path}')
+
+
 def wait_for_server(
     process: subprocess.Popen[bytes], url: str, expected_content_type: str
 ) -> bytes:
@@ -272,6 +282,42 @@ def main() -> None:
                 report_response = response.read()
             if b'client.ts' not in report_response:
                 raise AssertionError('error-report reply did not retain the legitimate stack frame')
+
+            normalized_origin_report = b''.join(
+                (
+                    wire_string('ReportName'),
+                    wire_string('normalized-origin-probe'),
+                    wire_string('http:h'),
+                    struct.pack('<I', 0),
+                )
+            )
+            origin_request = Request(
+                base_url + '/_bun/report_error',
+                data=normalized_origin_report,
+                method='POST',
+            )
+            with urlopen(origin_request, timeout=TIMEOUT) as response:
+                response.read()
+
+            console_marker = b'HOME_BAKE_TERMINAL_FILTER'
+            websocket.send_text('ll' + '\x1b]52;c;aGVsbG8=\x07' + console_marker.decode())
+            server_log = wait_for_log(log_path, console_marker)
+            if b'\x1b]52' in server_log or b'\x07' in server_log:
+                raise AssertionError('browser console forwarding retained terminal control bytes')
+
+            rebound_request = Request(
+                base_url + '/', headers={'Host': 'rebound-host.example'}
+            )
+            try:
+                urlopen(rebound_request, timeout=TIMEOUT)
+            except HTTPError as error:
+                rebound_status = error.code
+                rebound_body = error.read()
+            else:
+                raise AssertionError('foreign Host header unexpectedly received the HTML route')
+            if rebound_status != 403 or b'/_bun/client/' in rebound_body:
+                raise AssertionError('foreign Host rejection exposed the generated client URL')
+
             html = wait_for_server(process, base_url + '/', 'text/html')
             if b'Home Bake development' not in html:
                 raise AssertionError('development server stopped serving after the error report')
@@ -334,7 +380,7 @@ def main() -> None:
 
         print(
             'Bake development serve-plugin resolution, HTML, HMR diagnostics/recovery, '
-            'oversized error reports, framework routing, and response validation passed'
+            'browser-input hardening, framework routing, and response validation passed'
         )
     except Exception:
         for label, path in (

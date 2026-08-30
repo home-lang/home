@@ -983,9 +983,104 @@ inline fn wrapGenericRequestHandler(
     return struct {
         fn handle(dev: *DevServer, req: *Request, resp: *uws.NewApp(is_ssl).Response) void {
             assert(dev.magic == .valid);
+            if (!isAllowedDevHost(dev, req)) {
+                hostForbidden(AnyResponse.init(resp));
+                return;
+            }
             handler(dev, req, if (uses_any_response) AnyResponse.init(resp) else resp);
         }
     }.handle;
+}
+
+fn isAllowedDevHost(dev: *const DevServer, req: *Request) bool {
+    const header = req.header("host") orelse return false;
+    const host = hostWithoutPort(header);
+    if (bun.strings.eqlCaseInsensitiveASCII(host, "localhost", true)) return true;
+
+    const dot_localhost = ".localhost";
+    if (host.len > dot_localhost.len and
+        bun.strings.eqlCaseInsensitiveASCII(host[host.len - dot_localhost.len ..], dot_localhost, true))
+    {
+        return true;
+    }
+
+    const ip = if (host.len >= 2 and host[0] == '[' and host[host.len - 1] == ']')
+        host[1 .. host.len - 1]
+    else
+        host;
+    if (bun.strings.isIPAddress(ip)) return true;
+
+    if (dev.server) |server| {
+        switch (server.config().address) {
+            .tcp => |tcp| if (tcp.hostname) |configured| {
+                if (bun.strings.eqlCaseInsensitiveASCII(host, bun.span(configured), true)) return true;
+            },
+            .unix => {},
+        }
+    }
+    return false;
+}
+
+fn hostWithoutPort(header: []const u8) []const u8 {
+    const parsed = if (header.len > 0 and header[0] == '[') brk: {
+        const end = std.mem.indexOfScalar(u8, header, ']') orelse return "";
+        break :brk .{ header[0 .. end + 1], header[end + 1 ..] };
+    } else if (std.mem.lastIndexOfScalar(u8, header, ':')) |colon|
+        .{ header[0..colon], header[colon..] }
+    else
+        .{ header, header[header.len..] };
+
+    const host = parsed[0];
+    const rest = parsed[1];
+    if (rest.len == 0) return host;
+    if (rest.len < 2 or rest[0] != ':') return "";
+    for (rest[1..]) |byte| {
+        if (!std.ascii.isDigit(byte)) return "";
+    }
+    return host;
+}
+
+fn isAllowedDevOrigin(req: *Request) bool {
+    const origin = req.header("origin") orelse return true;
+    const scheme_end = std.mem.indexOf(u8, origin, "://") orelse return false;
+    const origin_host = hostWithoutPort(origin[scheme_end + 3 ..]);
+    if (bun.strings.eqlCaseInsensitiveASCII(origin_host, "localhost", true)) return true;
+
+    const dot_localhost = ".localhost";
+    if (origin_host.len > dot_localhost.len and
+        bun.strings.eqlCaseInsensitiveASCII(origin_host[origin_host.len - dot_localhost.len ..], dot_localhost, true))
+    {
+        return true;
+    }
+
+    const request_host = hostWithoutPort(req.header("host") orelse return false);
+    return bun.strings.eqlCaseInsensitiveASCII(origin_host, request_host, true);
+}
+
+fn hostForbidden(resp: AnyResponse) void {
+    resp.corked(hostForbiddenCorked, .{resp});
+}
+
+fn hostForbiddenCorked(resp: AnyResponse) void {
+    resp.writeStatus("403 Forbidden");
+    resp.end("Blocked: Host header does not match the dev server", false);
+}
+
+fn originForbidden(resp: AnyResponse) void {
+    resp.corked(originForbiddenCorked, .{resp});
+}
+
+fn originForbiddenCorked(resp: AnyResponse) void {
+    resp.writeStatus("403 Forbidden");
+    resp.end("Blocked: Origin header does not match the dev server", false);
+}
+
+test "Bake development Host authority parsing fails closed" {
+    try std.testing.expectEqualStrings("localhost", hostWithoutPort("localhost:3000"));
+    try std.testing.expectEqualStrings("[::1]", hostWithoutPort("[::1]:3000"));
+    try std.testing.expectEqualStrings("", hostWithoutPort("localhost:"));
+    try std.testing.expectEqualStrings("", hostWithoutPort("localhost:http"));
+    try std.testing.expectEqualStrings("", hostWithoutPort("[::1"));
 }
 
 inline fn redirectHandler(comptime path: []const u8, comptime is_ssl: bool) fn (
@@ -3253,6 +3348,11 @@ pub fn handleRenderRedirect(
 }
 
 pub fn respondForHTMLBundle(dev: *DevServer, html: *HTMLBundle.HTMLBundleRoute, req: *uws.Request, resp: AnyResponse) bun.OOM!void {
+    if (!isAllowedDevHost(dev, req)) {
+        hostForbidden(resp);
+        return;
+    }
+
     var ctx = RequestEnsureRouteBundledCtx{
         .dev = dev,
         .req = .{ .req = req },
@@ -3835,6 +3935,10 @@ pub fn onWebSocketUpgrade(
     id: usize,
 ) void {
     assert(id == 0);
+
+    const response = AnyResponse.init(res);
+    if (!isAllowedDevHost(dev, req)) return hostForbidden(response);
+    if (!isAllowedDevOrigin(req)) return originForbidden(response);
 
     const dw = HmrSocket.new(dev, res);
     bun.handleOom(dev.active_websocket_connections.put(dev.allocator(), dw, {}));

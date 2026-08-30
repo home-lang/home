@@ -2,7 +2,9 @@ import page from './index.html';
 
 export default {
   port: __HOME_BAKE_TEST_PORT__,
-  development: true,
+  development: {
+    console: true,
+  },
   static: {
     '/*': page,
   },

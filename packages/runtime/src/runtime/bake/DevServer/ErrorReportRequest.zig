@@ -49,12 +49,15 @@ pub fn runWithBody(ctx: *ErrorReportRequest, body: []const u8, r: AnyResponse) !
     defer source_map_arena.deinit();
 
     // Read payload, assemble ZigException
-    const name = try readString32(&reader, temp_alloc);
-    defer temp_alloc.free(name);
-    const message = try readString32(&reader, temp_alloc);
-    defer temp_alloc.free(message);
-    const browser_url = try readString32(&reader, temp_alloc);
-    defer temp_alloc.free(browser_url);
+    const name_raw = try readString32(&reader, temp_alloc);
+    defer temp_alloc.free(name_raw);
+    const name = try sanitizeForTerminal(name_raw, arena.allocator());
+    const message_raw = try readString32(&reader, temp_alloc);
+    defer temp_alloc.free(message_raw);
+    const message = try sanitizeForTerminal(message_raw, arena.allocator());
+    const browser_url_raw = try readString32(&reader, temp_alloc);
+    defer temp_alloc.free(browser_url_raw);
+    const browser_url = try sanitizeForTerminal(browser_url_raw, arena.allocator());
     var frames: ArrayListUnmanaged(jsc.ZigStackFrame) = .empty;
     defer frames.deinit(temp_alloc);
     const stack_count = @min(try reader.takeInt(u32, .little), 255); // does not support more than 255
@@ -62,8 +65,14 @@ pub fn runWithBody(ctx: *ErrorReportRequest, body: []const u8, r: AnyResponse) !
     for (0..stack_count) |_| {
         const line = try reader.takeInt(i32, .little);
         const column = try reader.takeInt(i32, .little);
-        const function_name = try readString32(&reader, temp_alloc);
-        const file_name = try readString32(&reader, temp_alloc);
+        const function_name = try sanitizeForTerminal(
+            try readString32(&reader, temp_alloc),
+            arena.allocator(),
+        );
+        const file_name = try sanitizeForTerminal(
+            try readString32(&reader, temp_alloc),
+            arena.allocator(),
+        );
         frames.appendAssumeCapacity(.{
             .function_name = .init(function_name),
             .source_url = .init(file_name),
@@ -314,6 +323,48 @@ pub fn parseId(source_url: []const u8, browser_url: []const u8) ?SourceMapStore.
         return null;
     return .init(DevServer.parseHexToInt(u64, hex) orelse
         return null);
+}
+
+/// Error reports and forwarded browser console messages are attacker-controlled
+/// and are printed to the developer's terminal. Replace C0 control bytes except
+/// tab/newline, DEL, and UTF-8-encoded C1 controls so they cannot inject terminal
+/// escape sequences such as cursor movement, hyperlinks, or OSC 52 clipboard writes.
+pub fn sanitizeForTerminal(input: []const u8, allocator: Allocator) ![]const u8 {
+    const isDisallowed = struct {
+        fn check(previous: u8, byte: u8) bool {
+            return (byte < 0x20 and byte != '\t' and byte != '\n') or
+                byte == 0x7f or
+                (previous == 0xc2 and byte >= 0x80 and byte <= 0x9f);
+        }
+    }.check;
+
+    var previous: u8 = 0;
+    for (input) |byte| {
+        defer previous = byte;
+        if (isDisallowed(previous, byte)) break;
+    } else return input;
+
+    const copy = try allocator.dupe(u8, input);
+    previous = 0;
+    for (copy, 0..) |*byte, index| {
+        const current = byte.*;
+        if (isDisallowed(previous, current)) {
+            byte.* = ' ';
+            if (previous == 0xc2 and index > 0) copy[index - 1] = ' ';
+        }
+        previous = current;
+    }
+    return copy;
+}
+
+test "sanitizeForTerminal strips terminal control sequences" {
+    const clean = "plain\ttext\n";
+    try std.testing.expectEqualStrings(clean, try sanitizeForTerminal(clean, std.testing.allocator));
+
+    const dangerous = "osc:\x1b]52;c;data\x07 del:\x7f c1:\xc2\x9b";
+    const sanitized = try sanitizeForTerminal(dangerous, std.testing.allocator);
+    defer std.testing.allocator.free(sanitized);
+    try std.testing.expectEqualStrings("osc: ]52;c;data  del:  c1:  ", sanitized);
 }
 
 /// Instead of decoding the entire file, just decode the desired section.

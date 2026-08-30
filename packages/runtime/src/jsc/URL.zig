@@ -164,7 +164,7 @@ pub const URL = opaque {
         // the native parser to the ASCII prefix, matching pinned Bun.
         const first_non_ascii = home_rt.strings.firstNonASCII(slice) orelse slice.len;
         const len = URL__originLength(slice[0..first_non_ascii].ptr, first_non_ascii);
-        if (len == 0) return null;
+        if (len == 0 or len > first_non_ascii) return null;
         return slice[0..len];
     }
 };
@@ -195,6 +195,10 @@ test "URL exposes the expected entrypoints" {
     try std.testing.expect(@hasDecl(URL, "pathname"));
     try std.testing.expect(@hasDecl(URL, "hash"));
     try std.testing.expect(@hasDecl(URL, "fragmentIdentifier"));
+}
+
+test "URL originFromSlice rejects normalized origins longer than the input" {
+    try std.testing.expect(URL.originFromSlice("http:h") == null);
 }
 
 test "URL String aliases the real home_rt.String (BunString)" {

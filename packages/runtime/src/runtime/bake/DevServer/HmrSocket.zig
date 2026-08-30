@@ -198,12 +198,17 @@ pub fn onMessage(s: *HmrSocket, ws: AnyWebSocket, msg: []const u8, opcode: uws.O
             }
 
             if (s.dev.broadcast_console_log_from_browser_to_server) {
+                var sfa = bun.stackFallback(4096, s.dev.allocator());
+                const temp_alloc = sfa.get();
+                const terminal_data = ErrorReportRequest.sanitizeForTerminal(data, temp_alloc) catch
+                    bun.outOfMemory();
+                defer if (terminal_data.ptr != data.ptr) temp_alloc.free(terminal_data);
                 switch (kind) {
                     .log => {
-                        bun.Output.pretty("<r><d>[browser]<r> {s}<r>\n", .{data});
+                        bun.Output.pretty("<r><d>[browser]<r> {s}<r>\n", .{terminal_data});
                     },
                     .err => {
-                        bun.Output.prettyError("<r><d>[browser]<r> {s}<r>\n", .{data});
+                        bun.Output.prettyError("<r><d>[browser]<r> {s}<r>\n", .{terminal_data});
                     },
                 }
                 bun.Output.flush();
@@ -288,6 +293,7 @@ const assert = bun.assert;
 const bake = bun.bake;
 
 const DevServer = bake.DevServer;
+const ErrorReportRequest = DevServer.ErrorReportRequest;
 const ConsoleLogKind = DevServer.ConsoleLogKind;
 const HmrTopic = DevServer.HmrTopic;
 const IncomingMessageId = DevServer.IncomingMessageId;
