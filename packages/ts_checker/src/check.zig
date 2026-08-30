@@ -186633,6 +186633,10 @@ pub const Checker = struct {
         if (kind != .fn_expr and kind != .arrow_fn) return;
         const function = hir_mod.fnDeclOf(self.hir, initializer);
         if (function.return_type != hir_mod.none_node_id or function.body == hir_mod.none_node_id) return;
+        // Current TypeScript infers block-bodied direct recursion (including
+        // void recursion) without TS7023. Expression-bodied arrows still
+        // participate directly in the variable initializer's return cycle.
+        if (self.hir.kindOf(function.body) == .block_stmt) return;
         if (self.firstIdentifierReferenceNoNested(function.body, name) == null) return;
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
@@ -186802,6 +186806,24 @@ pub const Checker = struct {
             .fn_decl, .fn_expr, .arrow_fn, .class_decl, .class_expr, .interface_decl, .type_alias_decl, .enum_decl, .namespace_decl => null,
             else => null,
         };
+    }
+
+    fn functionReturnExpressionsReferenceName(
+        self: *Checker,
+        body: NodeId,
+        name: hir_mod.StringId,
+    ) CheckError!bool {
+        if (body == hir_mod.none_node_id) return false;
+        if (self.hir.kindOf(body) != .block_stmt) {
+            return self.firstIdentifierReferenceNoNested(body, name) != null;
+        }
+        var returns: std.ArrayListUnmanaged(NodeId) = .empty;
+        defer returns.deinit(self.gpa);
+        try self.collectReturnExpressions(body, &returns);
+        for (returns.items) |expression| {
+            if (self.firstIdentifierReferenceNoNested(expression, name) != null) return true;
+        }
+        return false;
     }
 
     fn findTopLevelClassDecl(self: *Checker, from_node: NodeId, class_name: hir_mod.StringId) ?NodeId {
@@ -187064,7 +187086,7 @@ pub const Checker = struct {
                     if (f.name == hir_mod.none_node_id and
                         f.return_type == hir_mod.none_node_id and
                         !self.functionParametersDeclareName(node, name) and
-                        self.firstIdentifierReferenceNoNested(f.body, name) != null)
+                        try self.functionReturnExpressionsReferenceName(f.body, name))
                     {
                         const contextual_ret = self.contextualReturnTypeForFunction(node);
                         if (contextual_ret == null or !self.typeIsAnyLike(contextual_ret.?)) {
@@ -209486,6 +209508,32 @@ test "checker: anonymous self-referential callback return emits TS7024" {
         }
     }
     try T.expect(saw);
+}
+
+test "checker: self-reference diagnostics require a return dependency" {
+    const s = try newSetup(
+        \\const expressionCycle = () => expressionCycle();
+        \\const blockCycle = () => {
+        \\  return blockCycle();
+        \\};
+        \\declare function infer<T>(callback: () => T): string;
+        \\const inferred = infer(() => {
+        \\  return inferred;
+        \\});
+        \\declare function make<T>(config: T): T;
+        \\declare function consume(value: unknown): void;
+        \\const holder = make({
+        \\  run: () => {
+        \\    consume(holder);
+        \\    return true;
+        \\  },
+        \\});
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.function_return_self_reference_implicitly_any));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.anonymous_function_return_self_reference_implicitly_any));
 }
 
 test "checker: arrow parameter shadowing an initializer name skips TS7024" {
