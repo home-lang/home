@@ -71556,7 +71556,9 @@ pub const Checker = struct {
                 return;
             }
         }
-        if (self.visibleTypeOnlyDeclarationExistsAt(key, id.name)) {
+        if (self.visibleTypeOnlyDeclarationExistsAt(key, id.name) and
+            !self.visibleValueOnlyDeclarationExistsAt(key, id.name))
+        {
             try self.reportTypeOnlyUsedAsValueWithMappedTypeHintIfNeeded(key, id.name);
         }
     }
@@ -228585,6 +228587,18 @@ test "checker: computed type-literal key for primitive alias remains TS2693" {
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_only_used_as_value_mapped_type_hint));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_only_used_as_value));
+}
+
+test "checker: computed type key resolves a same-name value declaration" {
+    const s = try newSetup(
+        \\export const brand: unique symbol = Symbol("brand");
+        \\export type brand<T extends string = string> = { [brand]: { [K in T]: true } };
+        \\export type marker<T extends string = string> = { [marker]: { [K in T]: true } };
+        \\export const marker: unique symbol = Symbol("marker");
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_only_used_as_value));
 }
 
 test "checker: value-only names used as types emit TS2749" {
