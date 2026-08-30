@@ -32,7 +32,7 @@ fn ExternCryptoJob(comptime name: []const u8) type {
                 .ctx = ctx,
                 .callback = .create(callback, global),
             });
-            job.any_task = jsc.AnyTask.New(@This(), &runFromJS).init(job);
+            job.any_task = jsc.AnyTask.NewWithShutdown(@This(), &runFromJS, &cancelForShutdown).init(job);
             return job;
         }
 
@@ -44,6 +44,7 @@ fn ExternCryptoJob(comptime name: []const u8) type {
         pub fn runTask(task: *jsc.WorkPoolTask) void {
             const job: *@This() = @fieldParentPtr("task", task);
             var vm = job.vm;
+            defer vm.native_work_pool_jobs.complete();
             defer vm.enqueueTaskConcurrent(jsc.ConcurrentTask.create(job.any_task.task()));
 
             job.ctx.runTask(vm.global);
@@ -73,7 +74,15 @@ fn ExternCryptoJob(comptime name: []const u8) type {
             bun.destroy(this);
         }
 
+        fn cancelForShutdown(this: *@This()) void {
+            this.deinit();
+        }
+
         pub fn schedule(this: *@This()) callconv(.c) void {
+            if (!this.vm.native_work_pool_jobs.tryAdd()) {
+                this.cancelForShutdown();
+                return;
+            }
             this.poll.ref(this.vm);
             jsc.WorkPool.schedule(&this.task);
         }
@@ -140,7 +149,7 @@ fn CryptoJob(comptime Ctx: type) type {
             // `fromJS`). `deinit` handles all of that; `poll.unref` is a no-op while inactive.
             errdefer job.deinit();
             try job.ctx.init(global);
-            job.any_task = jsc.AnyTask.New(@This(), &runFromJS).init(job);
+            job.any_task = jsc.AnyTask.NewWithShutdown(@This(), &runFromJS, &cancelForShutdown).init(job);
             return job;
         }
 
@@ -152,6 +161,7 @@ fn CryptoJob(comptime Ctx: type) type {
         pub fn runTask(task: *jsc.WorkPoolTask) void {
             const job: *@This() = @fieldParentPtr("task", task);
             var vm = job.vm;
+            defer vm.native_work_pool_jobs.complete();
             defer vm.enqueueTaskConcurrent(jsc.ConcurrentTask.create(job.any_task.task()));
 
             job.ctx.runTask(job.ctx.result);
@@ -179,7 +189,15 @@ fn CryptoJob(comptime Ctx: type) type {
             bun.destroy(this);
         }
 
+        fn cancelForShutdown(this: *@This()) void {
+            this.deinit();
+        }
+
         pub fn schedule(this: *@This()) callconv(.c) void {
+            if (!this.vm.native_work_pool_jobs.tryAdd()) {
+                this.cancelForShutdown();
+                return;
+            }
             this.poll.ref(this.vm);
             jsc.WorkPool.schedule(&this.task);
         }
