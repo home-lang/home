@@ -9151,12 +9151,17 @@ test "Program: namespace imports preserve defaulted indexed generic callbacks" {
     ;
     const consumer =
         \\import * as core from "./owner";
-        \\interface Schema { _zod: { def: { kind: "schema" } } }
+        \\interface Schema { _zod: { def: { kind: "schema" } }; format(value: string): string; }
         \\core.$constructor<Schema>("Schema", (inst, def) => {
         \\  const exactInst: Schema = inst;
         \\  const exactDef: { kind: "schema" } = def;
         \\  void exactInst;
         \\  void exactDef;
+        \\}, {
+        \\  format(value) {
+        \\    const exact: string = value;
+        \\    return exact;
+        \\  },
         \\});
     ;
     const named_consumer =
@@ -9188,6 +9193,16 @@ test "Program: namespace imports preserve defaulted indexed generic callbacks" {
         \\  void wrong;
         \\});
     ;
+    const invalid_proto_consumer =
+        \\import * as core from "./owner";
+        \\interface Schema { _zod: { def: { kind: "schema" } }; format(value: string): string; }
+        \\core.$constructor<Schema>("Schema", () => {}, {
+        \\  format(value) {
+        \\    const wrong: number = value;
+        \\    return value;
+        \\  },
+        \\});
+    ;
     const invalid_consumer =
         \\import * as core from "./owner";
         \\interface Schema { _zod: { def: { kind: "schema" } } }
@@ -9204,6 +9219,7 @@ test "Program: namespace imports preserve defaulted indexed generic callbacks" {
     try vfs.addFile("/proj/named-consumer.ts", named_consumer);
     try vfs.addFile("/proj/contextual-consumer.ts", contextual_consumer);
     try vfs.addFile("/proj/invalid-contextual-consumer.ts", invalid_contextual_consumer);
+    try vfs.addFile("/proj/invalid-proto-consumer.ts", invalid_proto_consumer);
     try vfs.addFile("/proj/invalid-consumer.ts", invalid_consumer);
     _ = try p.add("/proj/util.ts", util);
     _ = try p.add("/proj/owner.ts", owner);
@@ -9211,6 +9227,7 @@ test "Program: namespace imports preserve defaulted indexed generic callbacks" {
     const named_consumer_id = try p.add("/proj/named-consumer.ts", named_consumer);
     const contextual_consumer_id = try p.add("/proj/contextual-consumer.ts", contextual_consumer);
     const invalid_contextual_consumer_id = try p.add("/proj/invalid-contextual-consumer.ts", invalid_contextual_consumer);
+    const invalid_proto_consumer_id = try p.add("/proj/invalid-proto-consumer.ts", invalid_proto_consumer);
     const invalid_consumer_id = try p.add("/proj/invalid-consumer.ts", invalid_consumer);
 
     try p.compileAll(.{
@@ -9222,6 +9239,7 @@ test "Program: namespace imports preserve defaulted indexed generic callbacks" {
     const named_compilation = p.fileById(named_consumer_id).compilation.?;
     const contextual_compilation = p.fileById(contextual_consumer_id).compilation.?;
     const invalid_contextual_compilation = p.fileById(invalid_contextual_consumer_id).compilation.?;
+    const invalid_proto_compilation = p.fileById(invalid_proto_consumer_id).compilation.?;
     const invalid_compilation = p.fileById(invalid_consumer_id).compilation.?;
     try expectCompilationLacksDiagnosticCode(named_compilation, 7006);
     try expectCompilationLacksDiagnosticCode(named_compilation, 2322);
@@ -9234,6 +9252,8 @@ test "Program: namespace imports preserve defaulted indexed generic callbacks" {
     try expectCompilationLacksDiagnosticCode(contextual_compilation, 2347);
     try expectCompilationHasDiagnosticCode(invalid_contextual_compilation, 2322);
     try expectCompilationHasDiagnosticCode(invalid_contextual_compilation, 2339);
+    try expectCompilationLacksDiagnosticCode(invalid_proto_compilation, 7006);
+    try expectCompilationHasDiagnosticCode(invalid_proto_compilation, 2322);
     try expectCompilationLacksDiagnosticCode(invalid_compilation, 7006);
     try expectCompilationHasDiagnosticCode(invalid_compilation, 2322);
     try expectCompilationHasDiagnosticCode(invalid_compilation, 2339);

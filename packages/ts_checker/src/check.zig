@@ -81449,13 +81449,31 @@ pub const Checker = struct {
             return self.matchTemplateLiteralInfer(sid, ext, subs);
         }
         if (ef.is_signature and cf.is_signature) {
-            // For the common ReturnType pattern `(...args: any[]) =>
-            // infer R`, the ext side may have a different parameter
-            // count than the check side. We don't enforce parameter
-            // matching here ÃÂ¢ÃÂÃÂ only the return-type unification. This
-            // is the high-frequency `infer R` use case (ReturnType,
-            // Awaited, Parameters, etc.); structural param matching
-            // is a Phase 6 follow-up.
+            const ext_params = self.interner.signatureParams(ext);
+            var params_contain_infer = false;
+            for (ext_params) |param| {
+                if (self.containsInferTypeParameter(param)) {
+                    params_contain_infer = true;
+                    break;
+                }
+            }
+            if (params_contain_infer) {
+                const check_params = self.interner.signatureParams(check);
+                try self.inferRestTupleFromSignatureParams(ext, ext_params, check, check_params, subs);
+                const fixed_count = if (self.rest_signatures.contains(ext) and ext_params.len > 0)
+                    ext_params.len - 1
+                else
+                    ext_params.len;
+                if (check_params.len < fixed_count) return false;
+                for (ext_params[0..fixed_count], check_params[0..fixed_count]) |ext_param, check_param| {
+                    if (!try self.matchInfer(check_param, ext_param, subs)) return false;
+                }
+                if (!self.rest_signatures.contains(ext) and check_params.len != ext_params.len) return false;
+            }
+            // ReturnType-style patterns whose parameters carry no infer
+            // placeholders intentionally ignore arity and infer only the
+            // return. Parameter/tuple inference above handles Parameters and
+            // callable-preserving mapped types such as ProtoOf<T>.
             const er = self.interner.signatureReturn(ext) orelse return true;
             const cr = self.interner.signatureReturn(check) orelse return true;
             return self.matchInfer(cr, er, subs);
@@ -159636,6 +159654,11 @@ pub const Checker = struct {
                     };
                     constrained_type_parameter_target = param_t;
                 }
+            }
+            if (hir_mod.callTypeArgs(self.hir, call_node).len > 0 and
+                self.hir.kindOf(args[i]) == .object_literal)
+            {
+                try self.checkObjectLiteralMethodsWithContextualType(args[i], param_t);
             }
             var arg_t = arg_types[i];
             var augmentation_contextual_callback = false;
