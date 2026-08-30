@@ -262,7 +262,8 @@ pub const PosixSpawn = struct {
     pub fn wait4(pid: pid_t, options: c_int, usage: anytype) @import("bun").sys.Maybe(WaitPidResult) {
         const M = @import("bun").sys.Maybe(WaitPidResult);
         var status: c_int = 0;
-        const rc = std.c.wait4(pid, &status, options, @ptrCast(usage));
+        const usage_ptr: ?*std.c.rusage = if (@TypeOf(usage) == @TypeOf(null)) null else @ptrCast(usage);
+        const rc = std.c.wait4(pid, &status, options, usage_ptr);
         if (M.errnoSys(rc, .waitpid)) |err| return err;
         return .{ .result = .{ .pid = @intCast(rc), .status = @bitCast(status) } };
     }

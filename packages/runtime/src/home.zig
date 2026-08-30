@@ -3708,6 +3708,11 @@ pub const crash_handler = struct {
 
     pub fn suppressReporting() void {}
 
+    // The complete Bun crash dispatcher restores its POSIX signal handlers
+    // after synchronous child-signal forwarding. Home does not install that
+    // dispatcher yet, so there is no crash-handler state to restore.
+    pub fn resetOnPosix() void {}
+
     pub fn dumpStackTrace(trace: std.builtin.StackTrace, limits: anytype) void {
         // The pinned Zig standard library uses a distinct debug.StackTrace
         // representation. Keep this diagnostic-only hook non-fatal until the
@@ -5394,6 +5399,7 @@ pub const sys = struct {
     pub const rmdirat = @import("sys/sys.zig").rmdirat;
     pub const setNonblocking = @import("sys/sys.zig").setNonblocking;
     pub const setCloseOnExec = @import("sys/sys.zig").setCloseOnExec;
+    pub const kevent = @import("sys/sys.zig").kevent;
     pub const mmap = @import("sys/sys.zig").mmap;
     pub const sendNonBlock = @import("sys/sys.zig").sendNonBlock;
     pub const chdir = @import("sys/sys.zig").chdir;

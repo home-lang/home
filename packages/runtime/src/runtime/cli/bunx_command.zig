@@ -846,6 +846,7 @@ pub const BunxCommand = struct {
         };
 
         switch (spawn_result.status) {
+            .running => unreachable,
             .exited => |exit| {
                 if (exit.signal.valid()) {
                     if (bun.feature_flag.BUN_INTERNAL_SUPPRESS_CRASH_IN_BUN_RUN.get()) {

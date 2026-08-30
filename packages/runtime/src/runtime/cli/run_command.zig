@@ -318,6 +318,7 @@ pub const RunCommand = struct {
         };
 
         switch (spawn_result.status) {
+            .running => unreachable,
             .exited => |exit_code| {
                 if (exit_code.code != 0) {
                     if (exit_code.code != 2 and !silent) {
@@ -494,6 +495,7 @@ pub const RunCommand = struct {
             },
             .result => |result| {
                 switch (result.status) {
+                    .running => unreachable,
                     // An error occurred after the process was spawned.
                     .err => |err| {
                         runBinaryGenericError(executable, silent, err);

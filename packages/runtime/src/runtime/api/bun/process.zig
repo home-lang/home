@@ -1949,7 +1949,7 @@ pub const sync = struct {
 
         argv: []const []const u8,
         /// null = inherit parent env
-        envp: ?[*:null]?[*:0]const u8,
+        envp: ?[*:null]?[*:0]const u8 = null,
 
         use_execve_on_macos: bool = false,
         argv0: ?[*:0]const u8 = null,
@@ -2385,9 +2385,10 @@ pub const sync = struct {
         // scan root after spawn.
         var no_orphans_kq: bun.FD = bun.invalid_fd;
         if (comptime Environment.isMac) if (no_orphans) {
-            if (std.posix.kqueue()) |kq| {
+            const kq = std.c.kqueue();
+            if (kq >= 0) {
                 no_orphans_kq = bun.FD.fromNative(kq);
-            } else |_| {}
+            }
         };
         // LIFO: this runs LAST — after killSyncScriptTree() (which scans via
         // m_kq) and releaseKq().
@@ -2464,7 +2465,7 @@ pub const sync = struct {
                 for (&out) |*array_list| {
                     array_list.clearAndFree();
                 }
-                _ = std.c.kill(process.pid, 1);
+                _ = std.c.kill(process.pid, std.c.SIG.HUP);
             }
 
             for (out_fds) |fd| {
@@ -2639,7 +2640,7 @@ pub const sync = struct {
         // disposition; only direct children raise SIGCHLD, so this fires for
         // `child` alone.
         if (jc.isActive())
-            add(&changes, std.posix.SIG.CHLD, std.c.EVFILT.SIGNAL, 0, 0);
+            add(&changes, @backingInt(std.posix.SIG.CHLD), std.c.EVFILT.SIGNAL, 0, 0);
         for (out_fds_to_wait_for, 0..) |fd, i| {
             if (fd != bun.invalid_fd) add(&changes, @intCast(fd.cast()), std.c.EVFILT.READ, 0, i);
         }
