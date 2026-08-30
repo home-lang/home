@@ -159658,6 +159658,7 @@ pub const Checker = struct {
                         if (self.strict_flags.strict_null_checks and
                             !self.typeIsNullishOnly(arg_types[i]) and
                             !self.signatureOwnsTypeParameter(sig, param_t) and
+                            !self.sameTypeParameterName(arg_types[i], param_t) and
                             !try self.sameEnclosingTypeParameterDisplay(args[i], arg_types[i], param_t) and
                             arg_types[i] != types.Primitive.any and
                             arg_types[i] != types.Primitive.unknown and
@@ -243283,6 +243284,27 @@ test "checker: same type parameter is self-assignable" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.type_not_assignable);
     }
+}
+
+test "checker: contextual generic wrappers pass their inferred type parameter to generic calls" {
+    const s = try newSetup(
+        \\type Parse = <T>(schema: T, value: unknown) => T;
+        \\declare const makeParse: () => Parse;
+        \\type Encode = <T>(schema: T, value: T) => T;
+        \\const encode: Encode = (schema, value) => makeParse()(schema, value);
+        \\declare const takesString: (value: string) => string;
+        \\const invalid: Encode = (schema, value) => takesString(schema);
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .strict_function_types = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.argument_type_mismatch,
+        "Argument of type 'T' is not assignable to parameter of type 'string'.",
+    ));
 }
 
 test "checker: variable initializers reject unrelated type parameters" {
