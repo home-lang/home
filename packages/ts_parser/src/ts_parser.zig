@@ -13790,8 +13790,13 @@ pub const Parser = struct {
                     try self.reportCodeAt(anchor.span.start, anchor.line, 7061, "A mapped type may not declare properties or methods.");
                     reported_mapped_member = true;
                 }
+                var computed_readonly = false;
+                if (t.kind == .kw_readonly) {
+                    _ = self.advance();
+                    computed_readonly = true;
+                }
                 const before_len = out.items.len;
-                if (try self.tryParseComputedTypeMember(out, false)) {
+                if (try self.tryParseComputedTypeMember(out, computed_readonly)) {
                     if (out.items.len > before_len) {
                         const member_node = out.items[out.items.len - 1];
                         const member = hir_mod.interfaceMemberOf(self.hir, member_node);
@@ -36604,6 +36609,24 @@ test "parser: identical well-known symbol interface properties merge" {
 
     _ = try s.parser.parseSourceFile();
     try T.expectEqual(@as(u32, 0), countDiag(s, 2300));
+}
+
+test "parser: readonly well-known symbol type properties parse as computed members" {
+    var s = try newTestSetup(
+        \\type BuiltIn =
+        \\  | { readonly [Symbol.toStringTag]: string }
+        \\  | Date;
+    );
+    defer destroyTestSetup(s);
+
+    const root = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+    const alias = hir_mod.blockStmts(&s.hir, root)[0];
+    const union_members = hir_mod.unionTypeMembers(&s.hir, hir_mod.typeAliasOf(&s.hir, alias).aliased);
+    const property = hir_mod.objectTypeMembers(&s.hir, union_members[0])[0];
+    const member = hir_mod.interfaceMemberOf(&s.hir, property);
+    try T.expect(member.is_readonly);
+    try T.expectEqualStrings("Symbol.toStringTag", s.interner.get(member.name));
 }
 
 test "parser: class field optional and readonly modifiers survive in HIR" {
