@@ -102273,7 +102273,8 @@ pub const Checker = struct {
         if (std.mem.eql(u8, text, "hasOwnProperty") or
             std.mem.eql(u8, text, "propertyIsEnumerable"))
         {
-            return self.interner.internSignature(&.{types.Primitive.string_t}, types.Primitive.boolean_t, false) catch return error.OutOfMemory;
+            const property_key_t = self.interner.internUnion(&.{ types.Primitive.string_t, types.Primitive.number_t, types.Primitive.symbol_t }) catch return error.OutOfMemory;
+            return self.interner.internSignature(&.{property_key_t}, types.Primitive.boolean_t, false) catch return error.OutOfMemory;
         }
         return null;
     }
@@ -137967,16 +137968,26 @@ pub const Checker = struct {
     fn reflectGlobalType(self: *Checker) CheckError!TypeId {
         const any_t = types.Primitive.any;
         const boolean_t = types.Primitive.boolean_t;
-        const string_arr = self.interner.internArrayType(self.string_interner, types.Primitive.string_t) catch return error.OutOfMemory;
-        const sig_get = try self.seedAnySig2(any_t);
-        const sig_set = try self.seedAnySig3(boolean_t);
-        const sig_has = try self.seedAnySig2(boolean_t);
-        const sig_delete = try self.seedAnySig2(boolean_t);
+        const object_t = types.Primitive.object_t;
+        const property_key_t = self.interner.internUnion(&.{ types.Primitive.string_t, types.Primitive.number_t, types.Primitive.symbol_t }) catch return error.OutOfMemory;
+        const own_key_t = self.interner.internUnion(&.{ types.Primitive.string_t, types.Primitive.symbol_t }) catch return error.OutOfMemory;
+        const own_key_arr = self.interner.internArrayType(self.string_interner, own_key_t) catch return error.OutOfMemory;
+        const object_or_null_t = self.interner.internUnion(&.{ object_t, types.Primitive.null_t }) catch return error.OutOfMemory;
+        const sig_get = self.interner.internSignature(&.{ object_t, property_key_t, any_t }, any_t, false) catch return error.OutOfMemory;
+        try self.recordSignatureMinArgs(sig_get, &.{ false, false, true });
+        const sig_set = self.interner.internSignature(&.{ object_t, property_key_t, any_t, any_t }, boolean_t, false) catch return error.OutOfMemory;
+        try self.recordSignatureMinArgs(sig_set, &.{ false, false, false, true });
+        const sig_has = self.interner.internSignature(&.{ object_t, property_key_t }, boolean_t, false) catch return error.OutOfMemory;
+        const sig_delete = self.interner.internSignature(&.{ object_t, property_key_t }, boolean_t, false) catch return error.OutOfMemory;
         const sig_apply = try self.seedAnySig3(any_t);
-        const sig_construct = try self.seedAnySig2(any_t);
-        const sig_own_keys = self.interner.internSignature(&[_]TypeId{any_t}, string_arr, false) catch return error.OutOfMemory;
-        const sig_define_property = try self.seedAnySig3(boolean_t);
-        const sig_get_proto = try self.seedAnySig1(any_t);
+        const sig_construct = self.interner.internSignature(&.{ any_t, any_t, any_t }, any_t, false) catch return error.OutOfMemory;
+        try self.recordSignatureMinArgs(sig_construct, &.{ false, false, true });
+        const sig_own_keys = self.interner.internSignature(&.{object_t}, own_key_arr, false) catch return error.OutOfMemory;
+        const sig_define_property = self.interner.internSignature(&.{ object_t, property_key_t, object_t }, boolean_t, false) catch return error.OutOfMemory;
+        const sig_get_own_descriptor = self.interner.internSignature(&.{ object_t, property_key_t }, any_t, false) catch return error.OutOfMemory;
+        const sig_get_proto = self.interner.internSignature(&.{object_t}, object_or_null_t, false) catch return error.OutOfMemory;
+        const sig_set_proto = self.interner.internSignature(&.{ object_t, object_or_null_t }, boolean_t, false) catch return error.OutOfMemory;
+        const sig_object_bool = self.interner.internSignature(&.{object_t}, boolean_t, false) catch return error.OutOfMemory;
         const m = [_]types.ObjectMember{
             .{ .name = self.string_interner.intern("get") catch return error.OutOfMemory, .type = sig_get, .is_optional = false, .is_readonly = false, .is_method = true },
             .{ .name = self.string_interner.intern("set") catch return error.OutOfMemory, .type = sig_set, .is_optional = false, .is_readonly = false, .is_method = true },
@@ -137987,18 +137998,65 @@ pub const Checker = struct {
             .{ .name = self.string_interner.intern("ownKeys") catch return error.OutOfMemory, .type = sig_own_keys, .is_optional = false, .is_readonly = false, .is_method = true },
             .{ .name = self.string_interner.intern("defineProperty") catch return error.OutOfMemory, .type = sig_define_property, .is_optional = false, .is_readonly = false, .is_method = true },
             .{ .name = self.string_interner.intern("getPrototypeOf") catch return error.OutOfMemory, .type = sig_get_proto, .is_optional = false, .is_readonly = false, .is_method = true },
-            .{ .name = self.string_interner.intern("setPrototypeOf") catch return error.OutOfMemory, .type = sig_has, .is_optional = false, .is_readonly = false, .is_method = true },
-            .{ .name = self.string_interner.intern("getOwnPropertyDescriptor") catch return error.OutOfMemory, .type = sig_get, .is_optional = false, .is_readonly = false, .is_method = true },
-            .{ .name = self.string_interner.intern("isExtensible") catch return error.OutOfMemory, .type = sig_get_proto, .is_optional = false, .is_readonly = false, .is_method = true },
-            .{ .name = self.string_interner.intern("preventExtensions") catch return error.OutOfMemory, .type = sig_get_proto, .is_optional = false, .is_readonly = false, .is_method = true },
+            .{ .name = self.string_interner.intern("setPrototypeOf") catch return error.OutOfMemory, .type = sig_set_proto, .is_optional = false, .is_readonly = false, .is_method = true },
+            .{ .name = self.string_interner.intern("getOwnPropertyDescriptor") catch return error.OutOfMemory, .type = sig_get_own_descriptor, .is_optional = false, .is_readonly = false, .is_method = true },
+            .{ .name = self.string_interner.intern("isExtensible") catch return error.OutOfMemory, .type = sig_object_bool, .is_optional = false, .is_readonly = false, .is_method = true },
+            .{ .name = self.string_interner.intern("preventExtensions") catch return error.OutOfMemory, .type = sig_object_bool, .is_optional = false, .is_readonly = false, .is_method = true },
         };
         return self.interner.internObjectType(&m) catch return error.OutOfMemory;
     }
 
-    fn proxyGlobalType(self: *Checker) CheckError!TypeId {
+    fn proxyHandlerType(self: *Checker, target_t: TypeId) CheckError!TypeId {
         const any_t = types.Primitive.any;
-        const sig_revocable = try self.seedAnySig2(any_t);
+        const boolean_t = types.Primitive.boolean_t;
+        const object_t = types.Primitive.object_t;
+        const property_key_t = self.interner.internUnion(&.{ types.Primitive.string_t, types.Primitive.symbol_t }) catch return error.OutOfMemory;
+        const object_or_null_t = self.interner.internUnion(&.{ object_t, types.Primitive.null_t }) catch return error.OutOfMemory;
+        const any_arr = self.interner.internArrayType(self.string_interner, any_t) catch return error.OutOfMemory;
+        const property_key_arr = self.interner.internArrayType(self.string_interner, property_key_t) catch return error.OutOfMemory;
+        const traps = [_]types.ObjectMember{
+            .{ .name = self.string_interner.intern("apply") catch return error.OutOfMemory, .type = self.interner.internSignature(&.{ target_t, any_t, any_arr }, any_t, false) catch return error.OutOfMemory, .is_optional = true, .is_readonly = false, .is_method = true },
+            .{ .name = self.string_interner.intern("construct") catch return error.OutOfMemory, .type = self.interner.internSignature(&.{ target_t, any_arr, any_t }, object_t, false) catch return error.OutOfMemory, .is_optional = true, .is_readonly = false, .is_method = true },
+            .{ .name = self.string_interner.intern("defineProperty") catch return error.OutOfMemory, .type = self.interner.internSignature(&.{ target_t, property_key_t, object_t }, boolean_t, false) catch return error.OutOfMemory, .is_optional = true, .is_readonly = false, .is_method = true },
+            .{ .name = self.string_interner.intern("deleteProperty") catch return error.OutOfMemory, .type = self.interner.internSignature(&.{ target_t, property_key_t }, boolean_t, false) catch return error.OutOfMemory, .is_optional = true, .is_readonly = false, .is_method = true },
+            .{ .name = self.string_interner.intern("get") catch return error.OutOfMemory, .type = self.interner.internSignature(&.{ target_t, property_key_t, any_t }, any_t, false) catch return error.OutOfMemory, .is_optional = true, .is_readonly = false, .is_method = true },
+            .{ .name = self.string_interner.intern("getOwnPropertyDescriptor") catch return error.OutOfMemory, .type = self.interner.internSignature(&.{ target_t, property_key_t }, any_t, false) catch return error.OutOfMemory, .is_optional = true, .is_readonly = false, .is_method = true },
+            .{ .name = self.string_interner.intern("getPrototypeOf") catch return error.OutOfMemory, .type = self.interner.internSignature(&.{target_t}, object_or_null_t, false) catch return error.OutOfMemory, .is_optional = true, .is_readonly = false, .is_method = true },
+            .{ .name = self.string_interner.intern("has") catch return error.OutOfMemory, .type = self.interner.internSignature(&.{ target_t, property_key_t }, boolean_t, false) catch return error.OutOfMemory, .is_optional = true, .is_readonly = false, .is_method = true },
+            .{ .name = self.string_interner.intern("isExtensible") catch return error.OutOfMemory, .type = self.interner.internSignature(&.{target_t}, boolean_t, false) catch return error.OutOfMemory, .is_optional = true, .is_readonly = false, .is_method = true },
+            .{ .name = self.string_interner.intern("ownKeys") catch return error.OutOfMemory, .type = self.interner.internSignature(&.{target_t}, property_key_arr, false) catch return error.OutOfMemory, .is_optional = true, .is_readonly = false, .is_method = true },
+            .{ .name = self.string_interner.intern("preventExtensions") catch return error.OutOfMemory, .type = self.interner.internSignature(&.{target_t}, boolean_t, false) catch return error.OutOfMemory, .is_optional = true, .is_readonly = false, .is_method = true },
+            .{ .name = self.string_interner.intern("set") catch return error.OutOfMemory, .type = self.interner.internSignature(&.{ target_t, property_key_t, any_t, any_t }, boolean_t, false) catch return error.OutOfMemory, .is_optional = true, .is_readonly = false, .is_method = true },
+            .{ .name = self.string_interner.intern("setPrototypeOf") catch return error.OutOfMemory, .type = self.interner.internSignature(&.{ target_t, object_or_null_t }, boolean_t, false) catch return error.OutOfMemory, .is_optional = true, .is_readonly = false, .is_method = true },
+        };
+        return self.interner.internObjectType(&traps) catch return error.OutOfMemory;
+    }
+
+    fn proxyGlobalType(self: *Checker) CheckError!TypeId {
+        const ctor_param = self.interner.internTypeParameter(
+            self.string_interner.intern("T") catch return error.OutOfMemory,
+            types.Primitive.object_t,
+            types.Primitive.none,
+        ) catch return error.OutOfMemory;
+        const ctor_handler_t = try self.proxyHandlerType(ctor_param);
+        const construct_sig = self.interner.internSignature(&.{ ctor_param, ctor_handler_t }, ctor_param, true) catch return error.OutOfMemory;
+        try self.recordGenericSignatureParams(construct_sig, &.{ctor_param});
+
+        const revocable_param = self.interner.internTypeParameter(
+            self.string_interner.intern("T") catch return error.OutOfMemory,
+            types.Primitive.object_t,
+            types.Primitive.none,
+        ) catch return error.OutOfMemory;
+        const revocable_handler_t = try self.proxyHandlerType(revocable_param);
+        const revoke_sig = self.interner.internSignature(&.{}, types.Primitive.void_t, false) catch return error.OutOfMemory;
+        const revocable_t = self.interner.internObjectType(&.{
+            .{ .name = self.string_interner.intern("proxy") catch return error.OutOfMemory, .type = revocable_param, .is_optional = false, .is_readonly = false, .is_method = false },
+            .{ .name = self.string_interner.intern("revoke") catch return error.OutOfMemory, .type = revoke_sig, .is_optional = false, .is_readonly = false, .is_method = true },
+        }) catch return error.OutOfMemory;
+        const sig_revocable = self.interner.internSignature(&.{ revocable_param, revocable_handler_t }, revocable_t, false) catch return error.OutOfMemory;
+        try self.recordGenericSignatureParams(sig_revocable, &.{revocable_param});
         const m = [_]types.ObjectMember{
+            .{ .name = self.string_interner.intern("__construct") catch return error.OutOfMemory, .type = construct_sig, .is_optional = false, .is_readonly = true, .is_method = true },
             .{ .name = self.string_interner.intern("revocable") catch return error.OutOfMemory, .type = sig_revocable, .is_optional = false, .is_readonly = false, .is_method = true },
         };
         return self.interner.internObjectType(&m) catch return error.OutOfMemory;
@@ -246181,6 +246239,42 @@ test "checker: seeded Proxy global exposes revocable" {
         try T.expect(d.code != TsCodes.cannot_find_name);
         try T.expect(d.code != TsCodes.property_does_not_exist);
     }
+}
+
+test "checker: seeded Proxy constructor contextually types handler traps" {
+    const s = try newSetup(
+        \\const proxy = new Proxy({}, {
+        \\  get(target, property, receiver) {
+        \\    return Reflect.get(target, property, receiver);
+        \\  },
+        \\  set(target, property, value, receiver) {
+        \\    return Reflect.set(target, property, value, receiver);
+        \\  },
+        \\  ownKeys(target) {
+        \\    return Reflect.ownKeys(target);
+        \\  },
+        \\});
+        \\for (const key of Reflect.ownKeys(proxy)) {
+        \\  Object.prototype.propertyIsEnumerable.call(proxy, key);
+        \\}
+        \\const extensible: boolean = Reflect.isExtensible(proxy);
+        \\const prevented: boolean = Reflect.preventExtensions(proxy);
+        \\const proto: object | null = Reflect.getPrototypeOf(proxy);
+        \\Reflect.setPrototypeOf(proxy, proto);
+        \\Reflect.getOwnPropertyDescriptor(proxy, "value");
+        \\Reflect.defineProperty(proxy, "value", {});
+        \\Reflect.construct(function () {}, [], function () {});
+        \\declare function loose(value: object): void;
+        \\loose({ get(target) { return target; } });
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.parameter_implicitly_any));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.expected_n_arguments));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, 2351));
 }
 
 test "checker: TS2300 fires on duplicate class field names" {

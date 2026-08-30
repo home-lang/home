@@ -679,6 +679,7 @@ pub fn objectGlobal(
     const string_t = types.Primitive.string_t;
     const any_t = types.Primitive.any;
     const boolean_t = types.Primitive.boolean_t;
+    const property_key_t = try ti.internUnion(&.{ string_t, types.Primitive.number_t, types.Primitive.symbol_t });
 
     const string_arr = try ti.internArrayType(sint, string_t);
     const any_arr = try ti.internArrayType(sint, any_t);
@@ -708,7 +709,7 @@ pub fn objectGlobal(
     const sig_define_property = try ti.internSignature(&[_]TypeId{ any_t, any_t, any_t }, any_t, false);
     // `Object.create(o): any`.
     const sig_create = try ti.internSignature(&[_]TypeId{any_t}, any_t, false);
-    const sig_has_own_property = try ti.internSignature(&[_]TypeId{any_t}, boolean_t, false);
+    const sig_has_own_property = try ti.internSignature(&[_]TypeId{property_key_t}, boolean_t, false);
     const sig_to_string = try ti.internSignature(&[_]TypeId{}, string_t, false);
     // `Object.getOwnPropertyNames(o): string[]`.
     const sig_own_names = try ti.internSignature(&[_]TypeId{any_t}, string_arr, false);
@@ -748,6 +749,7 @@ pub fn objectGlobal(
     const sig_group_by = try ti.internSignature(&[_]TypeId{ any_t, any_t }, any_t, false);
     const prototype_members = [_]types.ObjectMember{
         .{ .name = try sint.intern("hasOwnProperty"), .type = sig_has_own_property, .is_optional = false, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("propertyIsEnumerable"), .type = sig_has_own_property, .is_optional = false, .is_readonly = false, .is_method = true },
         .{ .name = try sint.intern("toString"), .type = sig_to_string, .is_optional = false, .is_readonly = false, .is_method = true },
     };
     const prototype_t = try ti.internObjectType(&prototype_members);
