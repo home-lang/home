@@ -125,9 +125,16 @@ pub const Builder = struct {
             try self.lower(context, hir.typeAliasOf(&c.hir, key.node).aliased)
         else if (kind == .fn_decl)
             try self.functionType(context, hir.fnParams(&c.hir, key.node), hir.fnDeclOf(&c.hir, key.node).return_type, false)
-        else if (kind == .var_decl or kind == .let_decl or kind == .const_decl)
-            try self.lower(context, hir.varDeclOf(&c.hir, key.node).type_annotation)
-        else if (kind == .interface_decl)
+        else if (kind == .var_decl or kind == .let_decl or kind == .const_decl) blk: {
+            const variable = hir.varDeclOf(&c.hir, key.node);
+            const type_source = if (variable.type_annotation != 0)
+                variable.type_annotation
+            else if (kind == .const_decl)
+                variable.init
+            else
+                hir.none_node_id;
+            break :blk try self.lower(context, type_source);
+        } else if (kind == .interface_decl)
             try self.interfaceBody(context, key.node)
         else
             try self.classBody(context, key.node);
@@ -735,6 +742,14 @@ test "class schema: numeric literals retain their sign" {
     try T.expectEqual(@as(f64, -3), members[1].type.number);
     try T.expect(members[2].type.boolean);
     try T.expectEqualStrings("ok", members[3].type.string);
+}
+
+test "class schema: unannotated const literal remains exact" {
+    const graph = try TestGraph.init(&.{.{ .path = "/owner.ts", .text = "export const KEY = '~tag';" }});
+    defer graph.deinit();
+    const result = try graph.class(0, "KEY");
+    defer result.deinit(T.allocator);
+    try T.expectEqualStrings("~tag", result.declaration.body.?.string);
 }
 
 test "class schema: unresolved imported Array is not a builtin array" {

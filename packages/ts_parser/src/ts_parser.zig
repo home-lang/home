@@ -14370,6 +14370,9 @@ pub const Parser = struct {
                 try self.reportCannotFindNameNode(root, start_tok.line);
                 break :blk @as(hir_mod.StringId, 0);
             }
+            if (self.computedTypeMemberQualifiedRootIsImportedValue(key_expr)) {
+                break :blk @as(hir_mod.StringId, 0);
+            }
             if (self.hir.kindOf(key_expr) != .identifier) {
                 // A computed type-member key whose expression isn't a
                 // literal-resolvable name (binary_op, call_expr, etc.)
@@ -14795,10 +14798,19 @@ pub const Parser = struct {
         return root;
     }
 
+    fn computedTypeMemberQualifiedRootIsImportedValue(self: *Parser, key_expr: NodeId) bool {
+        var root = key_expr;
+        while (self.hir.kindOf(root) == .member_access) {
+            root = hir_mod.memberOf(self.hir, root).object;
+        }
+        return self.hir.kindOf(root) == .identifier and self.identifierNodeIsImportedBinding(root);
+    }
+
     fn identifierNodeIsDeclaredValue(self: *Parser, key_expr: NodeId) bool {
         const id = hir_mod.identifierOf(self.hir, key_expr);
         const raw = self.interner.get(id.name);
         if (std.mem.eql(u8, raw, "Symbol")) return true;
+        if (self.identifierNodeIsImportedBinding(key_expr)) return true;
         const keywords = [_][]const u8{ "var", "let", "const", "function", "class", "enum", "namespace", "module" };
         for (keywords) |kw| {
             var search_start: usize = 0;
@@ -14813,6 +14825,25 @@ pub const Parser = struct {
                 if (!std.mem.startsWith(u8, self.source[p..], raw)) continue;
                 if (p + raw.len < self.source.len and sourceIdentChar(self.source[p + raw.len])) continue;
                 return true;
+            }
+        }
+        return false;
+    }
+
+    fn identifierNodeIsImportedBinding(self: *Parser, key_expr: NodeId) bool {
+        if (self.hir.kindOf(key_expr) != .identifier) return false;
+        const name = hir_mod.identifierOf(self.hir, key_expr).name;
+        var node: NodeId = 1;
+        while (node < self.hir.nodeCount()) : (node += 1) {
+            if (self.hir.kindOf(node) != .import_decl) continue;
+            const import = hir_mod.importOf(self.hir, node);
+            for ([_]NodeId{ import.default_binding, import.namespace_binding }) |binding| {
+                if (binding == hir_mod.none_node_id or self.hir.kindOf(binding) != .identifier) continue;
+                if (hir_mod.identifierOf(self.hir, binding).name == name) return true;
+            }
+            for (hir_mod.importNamed(self.hir, node)) |specifier| {
+                if (self.hir.kindOf(specifier) != .import_specifier) continue;
+                if (hir_mod.importSpecifierOf(self.hir, specifier).local == name) return true;
             }
         }
         return false;
@@ -31740,6 +31771,18 @@ test "parser: unresolved qualified computed type member reports name lookup befo
     _ = try s.parser.parseSourceFile();
     const d = findDiag(s, 2304) orelse return error.MissingDiagnostic;
     try T.expectEqualStrings("Cannot find name 'Enum'.", d.message);
+    try T.expectEqual(@as(u32, 0), countDiag(s, 1170));
+}
+
+test "parser: imported namespace is a declared computed type member root" {
+    var s = try newTestSetup(
+        \\import * as ns from './owner.js';
+        \\type Tagged = { [ns.KEY]?: boolean };
+    );
+    defer destroyTestSetup(s);
+
+    _ = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(u32, 0), countDiag(s, 2304));
     try T.expectEqual(@as(u32, 0), countDiag(s, 1170));
 }
 

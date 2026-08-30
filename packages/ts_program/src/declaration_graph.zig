@@ -103,6 +103,46 @@ pub fn collect(gpa: std.mem.Allocator, resolver: *resolver_mod.Resolver, sources
             }
         }
     }
+    // A self-contained literal `export const` remains trustworthy even when
+    // an unrelated parser diagnostic makes the file's broader export graph
+    // incomplete. Publish only that closed form: no aliases, dependencies,
+    // or partially reconstructed object/function shapes can leak through.
+    for (sources, 0..) |source, index| {
+        const c = source.compilation;
+        if (!c.has_syntactic_parse_diagnostics) continue;
+        var symbols = c.module.root.values.iterator();
+        while (symbols.next()) |entry| {
+            const symbol = entry.value_ptr.*;
+            if (!symbol.flags.is_export or symbol.flags.is_import or symbol.decls.items.len != 1) continue;
+            const node = symbol.decls.items[0];
+            if (c.hir.kindOf(node) != .const_decl) continue;
+            const variable = hir.varDeclOf(&c.hir, node);
+            if (variable.type_annotation != hir.none_node_id or variable.init == hir.none_node_id) continue;
+            switch (c.hir.kindOf(variable.init)) {
+                .literal_string, .literal_number, .literal_bool => {},
+                else => continue,
+            }
+            const export_name = if (symbol.flags.is_default_export) "default" else c.interner.get(entry.key_ptr.*);
+            var present = false;
+            for (values.items) |value| {
+                if (std.mem.eql(u8, value.target_path, source.path) and std.mem.eql(u8, value.export_name, export_name)) {
+                    present = true;
+                    break;
+                }
+            }
+            if (present) continue;
+            const declaration = try builder.declaration(.{ .source = index, .node = node });
+            const supported_entry = try supported.getOrPut(arena, declaration);
+            if (!supported_entry.found_existing) supported_entry.value_ptr.* = try driver.ProgramClassSchema.Schema.declarationSupported(declaration, gpa);
+            if (!supported_entry.value_ptr.*) continue;
+            try values.append(arena, .{
+                .target_path = source.path,
+                .export_name = export_name,
+                .kind = .variable,
+                .declaration = declaration,
+            });
+        }
+    }
     result.values = try values.toOwnedSlice(arena);
     result.types = try types.toOwnedSlice(arena);
     return result;

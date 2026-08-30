@@ -4731,6 +4731,71 @@ test "Program: exported type and factory aliases share a source-owned declaratio
     try T.expect(factory != null);
 }
 
+test "Program: namespace imports preserve inferred const literal keys" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver };
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    const owner = "export const KEY = '~tag';";
+    const consumer =
+        \\import * as ns from './owner.js';
+        \\declare const fn: () => void;
+        \\const tagged = fn as { [ns.KEY]?: boolean };
+        \\const value: boolean | undefined = tagged[ns.KEY];
+        \\const exact: '~tag' = ns.KEY;
+        \\void value; void exact;
+    ;
+    const invalid =
+        \\import * as ns from './owner.js';
+        \\const wrong: 'other' = ns.KEY;
+        \\void wrong;
+    ;
+    try vfs.addFile("/owner.ts", owner);
+    try vfs.addFile("/consumer.ts", consumer);
+    try vfs.addFile("/invalid.ts", invalid);
+    _ = try program.add("/owner.ts", owner);
+    const consumer_id = try program.add("/consumer.ts", consumer);
+    const invalid_id = try program.add("/invalid.ts", invalid);
+    try program.compileAll(.{
+        .no_emit = true,
+        .strict_flags = .{ .no_implicit_any = true, .strict_null_checks = true },
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    });
+    const compilation = program.fileById(consumer_id).compilation.?;
+    const invalid_compilation = program.fileById(invalid_id).compilation.?;
+    var graph = try program.collectProgramDeclarations();
+    defer graph.deinit();
+    try T.expectEqual(@as(usize, 1), graph.values.len);
+    try T.expectEqualStrings("KEY", graph.values[0].export_name);
+    try T.expectEqualStrings("~tag", graph.values[0].declaration.?.body.?.string);
+    try expectCompilationLacksDiagnosticCode(compilation, 2304);
+    try expectCompilationLacksDiagnosticCode(compilation, 7053);
+    try expectCompilationHasDiagnosticCode(invalid_compilation, 2322);
+}
+
+test "Program: literal exports survive unrelated parse diagnostics" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    const owner = "export const BROKEN = ; export const KEY = '~tag';";
+    try vfs.addFile("/owner.ts", owner);
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    _ = try program.add("/owner.ts", owner);
+    try program.prepareNameStore();
+    try program.prepareFiles(.{ .bind_only = true });
+    var graph = try program.collectProgramDeclarations();
+    defer graph.deinit();
+    try T.expectEqual(@as(usize, 1), graph.values.len);
+    try T.expectEqualStrings("KEY", graph.values[0].export_name);
+    try T.expectEqualStrings("~tag", graph.values[0].declaration.?.body.?.string);
+}
+
 test "Program: unsupported overload and merged interface graphs are not published as partial signatures" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();
@@ -6901,7 +6966,7 @@ const NamespaceImportTestResolver = struct {
     resolver: *ts_resolver.Resolver,
     names_available: bool = true,
 
-    const export_names = [_][]const u8{ "initialize", "$constructor", "consume", "TypeOnly", "Opaque" };
+    const export_names = [_][]const u8{ "initialize", "$constructor", "consume", "TypeOnly", "Opaque", "KEY" };
 
     const vtable = ts_driver.ExternalResolver.VTable{
         .resolve = resolve,
@@ -6930,6 +6995,13 @@ const NamespaceImportTestResolver = struct {
             .exported_type = true,
             .exported_value = false,
             .runtime_value = null,
+            .module_is_external = true,
+        };
+        if (std.mem.eql(u8, name, "KEY")) return .{
+            .module_name = "\"barrel\"",
+            .exported_type = false,
+            .exported_value = true,
+            .runtime_value = true,
             .module_is_external = true,
         };
         if (!std.mem.eql(u8, name, "initialize") and

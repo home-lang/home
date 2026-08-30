@@ -49517,6 +49517,10 @@ pub const Checker = struct {
                 defer self.gpa.free(synthetic);
                 break :blk self.string_interner.intern(synthetic) catch return error.OutOfMemory;
             },
+            .type_ref => if (is_computed)
+                self.stringLiteralValueFromType(self.hir.typeOf(key))
+            else
+                null,
             else => null,
         };
     }
@@ -49602,6 +49606,31 @@ pub const Checker = struct {
         }
         _ = im;
         return null;
+    }
+
+    fn importedNamespaceComputedTypeKeyType(self: *Checker, key: NodeId) CheckError!?TypeId {
+        if (key == hir_mod.none_node_id) return null;
+        const names: struct { root: hir_mod.StringId, leaf: hir_mod.StringId } = switch (self.hir.kindOf(key)) {
+            .member_access => blk: {
+                const member = hir_mod.memberOf(self.hir, key);
+                if (self.hir.kindOf(member.object) != .identifier) return null;
+                break :blk .{ .root = hir_mod.identifierOf(self.hir, member.object).name, .leaf = member.name };
+            },
+            .type_ref => blk: {
+                const ref = hir_mod.typeRefOf(self.hir, key);
+                const qualifiers = hir_mod.typeRefQualifier(self.hir, key);
+                if (ref.args_len != 0 or qualifiers.len != 1 or self.hir.kindOf(qualifiers[0]) != .identifier) return null;
+                break :blk .{ .root = hir_mod.identifierOf(self.hir, qualifiers[0]).name, .leaf = ref.name };
+            },
+            else => return null,
+        };
+        const import_info = (try self.localImportModuleInfo(names.root, key)) orelse return null;
+        if (import_info.exported_root != null) return null;
+        return self.programExportedValueTypeForImportPath(
+            import_info.import_node,
+            import_info.specifier,
+            names.leaf,
+        );
     }
 
     /// Compute the effective, allocator-owned property name used for
@@ -75821,17 +75850,25 @@ pub const Checker = struct {
                     }
                     if (self.hir.kindOf(m) != .interface_member) continue;
                     const im = hir_mod.interfaceMemberOf(self.hir, m);
-                    if (im.name == 0) continue;
+                    const key_expr = hir_mod.interfaceMemberKeyExpr(self.hir, m);
+                    if (key_expr != hir_mod.none_node_id) {
+                        if (try self.importedNamespaceComputedTypeKeyType(key_expr)) |key_t| {
+                            self.hir.setType(key_expr, key_t);
+                        } else if (self.hir.typeOf(key_expr) == types.Primitive.none) {
+                            _ = try self.checkExpression(key_expr);
+                        }
+                    }
+                    const member_name = (try self.interfaceMemberNameForObjectType(m, im)) orelse
+                        if (im.name != 0) im.name else continue;
                     if ((self.strict_flags.no_implicit_any or self.emit_implicit_any_suggestions) and
                         im.type_node == hir_mod.none_node_id and !im.is_method)
                     {
-                        try self.reportMemberImplicitAny(m, im.name);
+                        try self.reportMemberImplicitAny(m, member_name);
                     }
                     const t: TypeId = if (im.type_node != hir_mod.none_node_id)
                         try self.lowererLowerWithTypeParams(im.type_node)
                     else
                         types.Primitive.any;
-                    const member_name = (try self.interfaceMemberNameForObjectType(m, im)) orelse im.name;
                     try built.append(self.gpa, .{
                         .name = member_name,
                         .type = t,
@@ -106335,6 +106372,24 @@ pub const Checker = struct {
             }
         }
         return null;
+    }
+
+    fn programExportedValueTypeForImportPath(
+        self: *Checker,
+        import_node: NodeId,
+        specifier: hir_mod.StringId,
+        name: hir_mod.StringId,
+    ) CheckError!?TypeId {
+        const spec = self.string_interner.get(specifier);
+        const export_name = self.string_interner.get(name);
+        var matched: ?ProgramExportedValue = null;
+        for (self.program_exported_values) |value| {
+            if (!std.mem.eql(u8, value.export_name, export_name)) continue;
+            if (!try self.programImportTargetsPath(import_node, spec, value.target_path)) continue;
+            if (matched != null) return types.Primitive.any;
+            matched = value;
+        }
+        return if (matched) |value| try self.programExportedValueType(value) else null;
     }
 
     fn programExportedValueType(self: *Checker, value: ProgramExportedValue) CheckError!?TypeId {
@@ -187658,6 +187713,7 @@ pub const Checker = struct {
             try self.emitConversionMayBeMistakeAt(node, diagnostic_pos, source_t, target_t);
             return;
         }
+        if (self.objectTypeIsWeak(target_t)) return;
         if (self.assertionPrimitiveDomainsOverlap(source_t, target_t)) return;
         if (try self.assertionUnionConstituentHasNoOverlap(source_t, target_t)) {
             try self.emitConversionMayBeMistakeAt(node, diagnostic_pos, source_t, target_t);
@@ -208778,6 +208834,18 @@ test "checker: string literal assertions share the primitive string domain" {
 
 test "checker: assertions across primitive domains still report TS2352" {
     const s = try newSetup("let x = 23 as string;");
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.conversion_may_be_mistake));
+}
+
+test "checker: assertions to weak object targets do not report TS2352" {
+    const s = try newSetup(
+        \\declare const fn: () => void;
+        \\fn as { tag?: boolean };
+        \\23 as { tag?: boolean };
+        \\fn as { tag: boolean };
+    );
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.conversion_may_be_mistake));
