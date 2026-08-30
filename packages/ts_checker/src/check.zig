@@ -88147,7 +88147,11 @@ pub const Checker = struct {
             }
             if (declared_type != types.Primitive.none) {
                 if (try self.contextualGenericCallResult(v.init, init_type, declared_type)) |contextual_t| {
+                    const unconstrained_init_type = init_type;
                     init_type = contextual_t;
+                    if (!try self.checkContextualGenericCallFunctionArgsFromTypeNode(v.init, v.type_annotation)) {
+                        try self.checkContextualGenericCallFunctionArgs(v.init, unconstrained_init_type, declared_type);
+                    }
                 }
                 if (self.hir.kindOf(v.init) == .object_literal) {
                     const contextual_diag_start = self.diagnostics.items.len;
@@ -117943,7 +117947,10 @@ pub const Checker = struct {
         self.clearCachedTypesWithin(fn_node);
         const params = hir_mod.fnParams(self.hir, fn_node);
         const param_ts = self.interner.signatureParams(sig);
+        // The function may already have been checked against an unresolved
+        // generic signature. This pass owns the final contextual diagnostics.
         self.removePriorDiagnosticsInNodeSpan(fn_node, TsCodes.argument_type_mismatch);
+        self.removePriorDiagnosticsInNodeSpan(fn_node, TsCodes.type_not_assignable);
         self.removePriorDiagnosticsInNodeSpan(fn_node, TsCodes.property_does_not_exist);
         self.removeImplicitAnyDiagnosticsWithin(fn_node);
         self.removeUntypedCallsForContextualCallableParameters(fn_node, params, param_ts);
@@ -147611,7 +147618,7 @@ pub const Checker = struct {
         }
         const sig = self.firstCallableSignatureForContextualReturn(callee_t) orelse return null;
         const ret_t = self.interner.signatureReturn(sig) orelse return null;
-        if (!self.containsFreeTypeParameter(ret_t)) return null;
+        if (!self.containsFreeTypeParameter(ret_t) and self.generic_signature_params.get(sig) == null) return null;
         var expected_ret = if (call_is_optional_chain)
             (try self.subtractUndefined(target_t))
         else
@@ -147634,7 +147641,7 @@ pub const Checker = struct {
         }
         const sig = self.firstCallableSignatureForContextualReturn(callee_t) orelse return;
         const ret_t = self.interner.signatureReturn(sig) orelse return;
-        if (!self.containsFreeTypeParameter(ret_t)) return;
+        if (!self.containsFreeTypeParameter(ret_t) and self.generic_signature_params.get(sig) == null) return;
         var expected_ret = if (call_is_optional_chain)
             (try self.subtractUndefined(target_t))
         else
@@ -147644,7 +147651,13 @@ pub const Checker = struct {
 
         var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
         defer subs.deinit(self.gpa);
-        try self.inferFromPair(ret_t, expected_ret, &subs);
+        const resolved_ret_t = try self.resolveGenericType(ret_t);
+        const inference_ret_t = if (resolved_ret_t < self.interner.pool.typeCount() and
+            self.interner.pool.flagsOf(resolved_ret_t).is_generic_definition)
+            if (self.interner.genericDefinition(resolved_ret_t)) |definition| definition.body else resolved_ret_t
+        else
+            resolved_ret_t;
+        try self.inferFromPair(inference_ret_t, expected_ret, &subs);
         if (subs.count() == 0) return;
 
         const effective_sig = self.substituteType(sig, &subs) catch sig;
@@ -147658,6 +147671,58 @@ pub const Checker = struct {
             try self.checkFunctionWithContextualSignature(arg, param_sig);
         }
         self.dedupeExactDiagnostics();
+    }
+
+    /// Contextual result annotations can supply generic call arguments that
+    /// are absent at the call site. Instantiate the callee signature from the
+    /// written result arguments and declaration defaults before rechecking
+    /// callback arguments.
+    fn checkContextualGenericCallFunctionArgsFromTypeNode(self: *Checker, node: NodeId, target_type_node: NodeId) CheckError!bool {
+        if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .call_expr) return false;
+        if (target_type_node == hir_mod.none_node_id or self.hir.kindOf(target_type_node) != .type_ref) return false;
+        const target_arg_nodes = hir_mod.typeRefArgs(self.hir, target_type_node);
+        if (target_arg_nodes.len == 0) return false;
+
+        const call = hir_mod.callOf(self.hir, node);
+        var callee_t = self.hir.typeOf(call.callee);
+        if (callee_t == types.Primitive.none) callee_t = try self.checkExpression(call.callee);
+        if (call.optional or self.expressionIsOptionalChain(call.callee)) {
+            callee_t = self.subtractNullUndefined(callee_t) catch callee_t;
+        }
+        const sig = self.firstCallableSignatureForContextualReturn(callee_t) orelse return false;
+        const generic_params = self.generic_signature_params.get(sig) orelse return false;
+        if (generic_params.len == 0 or target_arg_nodes.len > generic_params.len) return false;
+
+        var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+        defer subs.deinit(self.gpa);
+        for (target_arg_nodes, generic_params[0..target_arg_nodes.len]) |arg_node, parameter| {
+            const argument = try self.lowererLowerWithTypeParams(arg_node);
+            try subs.put(self.gpa, parameter, argument);
+        }
+        for (generic_params[target_arg_nodes.len..]) |parameter| {
+            if (parameter >= self.interner.pool.typeCount()) continue;
+            const flags = self.interner.pool.flagsOf(parameter);
+            if (!flags.is_type_parameter) continue;
+            const payload_index = self.interner.pool.payloadOf(parameter);
+            if (payload_index >= self.interner.pool.type_parameter_payloads.items.len) continue;
+            const default_t = self.interner.pool.type_parameter_payloads.items[payload_index].default;
+            if (default_t == types.Primitive.none) continue;
+            const instantiated_default = self.substituteType(default_t, &subs) catch default_t;
+            try subs.put(self.gpa, parameter, instantiated_default);
+        }
+
+        const effective_sig = self.substituteType(sig, &subs) catch sig;
+        const params = self.interner.signatureParams(effective_sig);
+        const args = hir_mod.callArgs(self.hir, node);
+        const n = @min(args.len, params.len);
+        for (0..n) |i| {
+            const arg = args[i];
+            if (!self.isContextualFunctionExpressionLike(arg)) continue;
+            const param_sig = self.firstSignatureType(params[i]) orelse continue;
+            try self.checkFunctionWithContextualSignature(arg, param_sig);
+        }
+        self.dedupeExactDiagnostics();
+        return true;
     }
 
     fn removeUnknownAssignabilityDiagnosticsForNode(self: *Checker, node: NodeId) void {
