@@ -259,6 +259,20 @@ Details: [TypeScript compiler](https://home-lang.org/docs/features/typescript),
 [editor and CLI tooling](https://home-lang.org/docs/features/tooling),
 [TypeScript migration](https://home-lang.org/docs/use-cases/typescript-migration).
 
+### TypeScript frontend benchmark snapshot
+
+The reproducible frontend suite compares JavaScript TypeScript 6.0.3, native
+TypeScript 7.0.2 (`tsgo`), and Home on the same strict, no-emit projects. The
+current admitted snapshots use 30 fresh processes after three warmups and keep
+every successful finite sample without filtering.
+
+| Platform | Workloads with the lowest Home mean | Strongest Home mean lead | Narrowest Home mean lead |
+|---|---:|---:|---:|
+| Apple M3 Pro, macOS ARM64 | 20 / 20 | `startup`: 11.90× faster | `type_predicates_large`: 1.01× faster |
+| Debian Bookworm, Linux ARM64 | 20 / 20 | `startup`: 21.67× faster | `checkjs_jsdoc`: 1.02× faster |
+
+See [the complete results, raw-result identifiers, fairness rules, and reproduction steps](docs/docs/TS_PERFORMANCE.md).
+
 ## Project status
 
 Conservative on purpose: anything not exercised by an example or a test stays
