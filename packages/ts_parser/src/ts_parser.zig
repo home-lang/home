@@ -19876,7 +19876,7 @@ pub const Parser = struct {
                 const id = try self.internToken(t);
                 return try self.builder.addIdentifier(tokenSpan(t), id);
             },
-            .kw_any, .kw_unknown, .kw_never, .kw_void, .kw_string, .kw_number, .kw_boolean, .kw_bigint, .kw_symbol, .kw_object, .kw_get, .kw_set, .kw_global, .kw_from, .kw_require, .kw_module, .kw_namespace, .kw_interface, .kw_declare, .kw_of, .kw_type, .kw_using, .kw_await, .kw_static, .kw_let => {
+            .kw_any, .kw_unknown, .kw_never, .kw_void, .kw_string, .kw_number, .kw_boolean, .kw_bigint, .kw_symbol, .kw_object, .kw_get, .kw_set, .kw_global, .kw_from, .kw_require, .kw_module, .kw_namespace, .kw_interface, .kw_declare, .kw_of, .kw_out, .kw_type, .kw_using, .kw_await, .kw_static, .kw_let => {
                 _ = self.advance();
                 if (!(t.kind == .kw_let and self.namespace_depth > 0 and !self.strict_mode) and
                     !(t.kind == .kw_static and self.accessibilityKeywordIsMemberRoot(t)))
@@ -23001,6 +23001,7 @@ fn isExpressionIdentifierToken(kind: TokenKind) bool {
         .kw_declare,
         .kw_constructor,
         .kw_of,
+        .kw_out,
         .kw_type,
         .kw_static,
         => true,
@@ -28289,6 +28290,27 @@ test "parser: object literal" {
     const init_node = hir_mod.varDeclOf(&s.hir, top).init;
     try T.expectEqual(hir_mod.NodeKind.object_literal, s.hir.kindOf(init_node));
     try T.expectEqual(@as(usize, 3), hir_mod.objectLiteralProps(&s.hir, init_node).len);
+}
+
+test "parser: out contextual keyword remains an expression identifier" {
+    var s = try newTestSetup(
+        \\const out = 1;
+        \\const result = { out, data: out };
+        \\type Producer<out T> = () => T;
+    );
+    defer destroyTestSetup(s);
+    const root = try s.parser.parseSourceFile();
+    try T.expectEqual(@as(usize, 0), s.parser.diagnostics.items.len);
+
+    const statements = hir_mod.blockStmts(&s.hir, root);
+    const object = hir_mod.varDeclOf(&s.hir, statements[1]).init;
+    const properties = hir_mod.objectLiteralProps(&s.hir, object);
+    try T.expectEqual(@as(usize, 2), properties.len);
+    try T.expect(hir_mod.objectPropertyOf(&s.hir, properties[0]).is_shorthand);
+
+    const alias = hir_mod.typeAliasOf(&s.hir, statements[2]);
+    const type_params = s.hir.childSlice(alias.type_params_start, alias.type_params_len);
+    try T.expectEqual(@as(u8, 2), hir_mod.typeParameterOf(&s.hir, type_params[0]).variance);
 }
 
 test "parser: object literal numeric key may end with dot before colon" {

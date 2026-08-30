@@ -424,6 +424,7 @@ pub const TokenKind = enum(u16) {
             .kw_function,
             .kw_class,
             .kw_async,
+            .kw_out,
             .kw_await,
             .kw_yield,
             .kw_typeof,
