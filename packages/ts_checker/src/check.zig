@@ -82298,6 +82298,32 @@ pub const Checker = struct {
             std.mem.eql(u8, name, "Symbol");
     }
 
+    fn builtinTypedArrayElementType(name: []const u8) ?TypeId {
+        const number_arrays = [_][]const u8{
+            "Uint8Array",  "Uint8ClampedArray", "Int8Array",    "Uint16Array",  "Int16Array",
+            "Uint32Array", "Int32Array",        "Float16Array", "Float32Array", "Float64Array",
+        };
+        for (number_arrays) |candidate| {
+            if (std.mem.eql(u8, name, candidate)) return types.Primitive.number_t;
+        }
+        if (std.mem.eql(u8, name, "BigUint64Array") or std.mem.eql(u8, name, "BigInt64Array")) {
+            return types.Primitive.bigint_t;
+        }
+        return null;
+    }
+
+    fn builtinTypedArrayInstanceType(self: *Checker, name: []const u8) ?TypeId {
+        const element_t = builtinTypedArrayElementType(name) orelse return null;
+        const members = [_]types.ObjectMember{
+            .{ .name = self.string_interner.intern("length") catch return types.Primitive.unknown, .type = types.Primitive.number_t, .is_optional = false, .is_readonly = true, .is_method = false },
+            .{ .name = self.string_interner.intern("byteLength") catch return types.Primitive.unknown, .type = types.Primitive.number_t, .is_optional = false, .is_readonly = true, .is_method = false },
+            .{ .name = self.string_interner.intern("byteOffset") catch return types.Primitive.unknown, .type = types.Primitive.number_t, .is_optional = false, .is_readonly = true, .is_method = false },
+            .{ .name = self.string_interner.intern("buffer") catch return types.Primitive.unknown, .type = types.Primitive.any, .is_optional = false, .is_readonly = true, .is_method = false },
+            .{ .name = self.string_interner.intern("BYTES_PER_ELEMENT") catch return types.Primitive.unknown, .type = types.Primitive.number_t, .is_optional = false, .is_readonly = true, .is_method = false },
+        };
+        return self.interner.internObjectTypeWithIndex(&members, types.Primitive.none, element_t) catch types.Primitive.unknown;
+    }
+
     fn lowerBuiltinObjectTypeRaw(self: *Checker, name: []const u8) ?TypeId {
         if (std.mem.eql(u8, name, "Element") or std.mem.eql(u8, name, "HTMLElement")) {
             if (self.sourceLibDirectiveExcludesDomElement()) return null;
@@ -82672,6 +82698,7 @@ pub const Checker = struct {
             };
             return self.interner.internObjectType(&members) catch types.Primitive.unknown;
         }
+        if (self.builtinTypedArrayInstanceType(name)) |typed_array_t| return typed_array_t;
         const builtins = [_][]const u8{
             "Object",
             "RegExp",
@@ -109255,6 +109282,10 @@ pub const Checker = struct {
                             contextual_payload orelse inferred_payload orelse types.Primitive.any;
                         try self.checkPromiseConstructorResolveCalls(args, payload_t);
                         break :blk try self.buildStructuralPromise(payload_t);
+                    }
+                    const builtin_name = self.string_interner.get(id.name);
+                    if (builtinTypedArrayElementType(builtin_name) != null) {
+                        break :blk self.lowerBuiltinObjectType(builtin_name) orelse types.Primitive.any;
                     }
                     if (self.isBuiltinObjectConstructor(id.name)) {
                         break :blk self.interner.internObjectType(&.{}) catch return error.OutOfMemory;
@@ -262398,6 +262429,24 @@ test "checker: Map and Set core members resolve without TS2339" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.property_does_not_exist);
     }
+}
+
+test "checker: typed arrays expose indexed elements and byte lengths" {
+    const s = try newSetup(
+        \\const bytes = new Uint8Array(4);
+        \\const length: number = bytes.length;
+        \\const value: number = bytes[0];
+        \\const wrong: string = bytes.byteLength;
+        \\bytes.missing;
+        \\declare const big: BigInt64Array;
+        \\const bigintValue: bigint = big[0];
+        \\void length; void value; void wrong; void bigintValue;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
 
 test "checker: WeakSet preserves generic member types" {
