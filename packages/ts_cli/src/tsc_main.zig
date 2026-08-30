@@ -2406,6 +2406,7 @@ const CheckerResolverAdapter = struct {
                 else
                     "",
                 .default_export_member_readonly = facts.default_export_member_readonly,
+                .generic_function = facts.generic_function,
                 .call_only_function = facts.call_only_function,
                 .module_is_external = facts.module_is_external,
             };
@@ -2462,6 +2463,8 @@ const CheckerResolverAdapter = struct {
                 .type_only_import = facts.type_only_import,
                 .export_path = if (type_only_pos != null) (arena.dupe(u8, if (facts.type_only_path.len != 0) facts.type_only_path else resolved.path) catch return null) else "",
                 .export_pos = type_only_pos orelse 0,
+                .generic_function = facts.generic_function,
+                .call_only_function = facts.call_only_function,
                 .module_is_external = facts.module_is_external,
             };
         };
@@ -4256,6 +4259,30 @@ test "tsc_main: direct exported values remain runtime values when aggregate orig
     try std.testing.expectEqual(@as(?bool, null), CheckerResolverAdapter.runtimeValueFromExportFacts(null, false));
     try std.testing.expectEqual(@as(?bool, true), CheckerResolverAdapter.runtimeValueFromExportFacts(.{ .value = origin }, false));
     try std.testing.expectEqual(@as(?bool, false), CheckerResolverAdapter.runtimeValueFromExportFacts(.{}, true));
+}
+
+test "tsc_main: resolver adapter preserves generic functions through js export stars" {
+    var vfs = ts_resolver.VirtualFs.init(std.testing.allocator);
+    defer vfs.deinit();
+    try vfs.addFile(
+        "/owner.ts",
+        "export function $constructor<T>(value: T): T { return value; }",
+    );
+    try vfs.addFile("/barrel.ts", "export * from \"./owner.js\";");
+    var resolver = ts_resolver.Resolver.init(std.testing.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var adapter = CheckerResolverAdapter.init(std.testing.allocator, &resolver);
+    defer adapter.deinit();
+
+    const info = CheckerResolverAdapter.moduleExportImpl(
+        &adapter,
+        "./barrel.js",
+        "/consumer.ts",
+        "$constructor",
+    ) orelse return error.TestUnexpectedResult;
+    try std.testing.expect(info.exported_value);
+    try std.testing.expect(info.generic_function);
+    try std.testing.expect(info.call_only_function);
 }
 
 test "tsc_main: classifyExtension recognizes TS, Home, JS and unsupported shapes" {

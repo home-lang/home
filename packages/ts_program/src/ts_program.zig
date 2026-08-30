@@ -9149,8 +9149,9 @@ test "Program: namespace imports preserve defaulted indexed generic callbacks" {
         \\  return null as never;
         \\}
     ;
+    const barrel = "export * from \"./owner.js\";";
     const consumer =
-        \\import * as core from "./owner";
+        \\import * as core from "./barrel.js";
         \\interface Schema { _zod: { def: { kind: "schema" } }; format(value: string): string; }
         \\core.$constructor<Schema>("Schema", (inst, def) => {
         \\  const exactInst: Schema = inst;
@@ -9215,6 +9216,7 @@ test "Program: namespace imports preserve defaulted indexed generic callbacks" {
     ;
     try vfs.addFile("/proj/util.ts", util);
     try vfs.addFile("/proj/owner.ts", owner);
+    try vfs.addFile("/proj/barrel.ts", barrel);
     try vfs.addFile("/proj/consumer.ts", consumer);
     try vfs.addFile("/proj/named-consumer.ts", named_consumer);
     try vfs.addFile("/proj/contextual-consumer.ts", contextual_consumer);
@@ -9223,6 +9225,7 @@ test "Program: namespace imports preserve defaulted indexed generic callbacks" {
     try vfs.addFile("/proj/invalid-consumer.ts", invalid_consumer);
     _ = try p.add("/proj/util.ts", util);
     _ = try p.add("/proj/owner.ts", owner);
+    _ = try p.add("/proj/barrel.ts", barrel);
     const consumer_id = try p.add("/proj/consumer.ts", consumer);
     const named_consumer_id = try p.add("/proj/named-consumer.ts", named_consumer);
     const contextual_consumer_id = try p.add("/proj/contextual-consumer.ts", contextual_consumer);

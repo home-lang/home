@@ -125390,7 +125390,22 @@ pub const Checker = struct {
     }
 
     fn callCalleeIsImportedGenericFunction(self: *Checker, callee: NodeId) CheckError!bool {
-        if (callee == hir_mod.none_node_id or self.hir.kindOf(callee) != .identifier) return false;
+        if (callee == hir_mod.none_node_id) return false;
+        if (self.hir.kindOf(callee) == .member_access) {
+            const member = hir_mod.memberOf(self.hir, callee);
+            if (member.object == hir_mod.none_node_id or self.hir.kindOf(member.object) != .identifier) return false;
+            const local_name = hir_mod.identifierOf(self.hir, member.object).name;
+            const spec = self.namespaceImportSpecifierForLocal(local_name, callee) orelse
+                self.requireSpecifierForLocal(local_name, callee) orelse return false;
+            const resolver = self.external_resolver orelse return false;
+            const containing = if (self.importer_path.len > 0)
+                self.importer_path
+            else
+                self.virtualSectionFilenameForNode(callee) orelse "/__root__.ts";
+            const info = resolver.moduleExport(spec, containing, self.string_interner.get(member.name)) orelse return false;
+            return info.generic_function;
+        }
+        if (self.hir.kindOf(callee) != .identifier) return false;
         const local_name = hir_mod.identifierOf(self.hir, callee).name;
         const root = self.rootBlockFor(callee);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
@@ -261209,6 +261224,7 @@ const CrossModuleStubResolver = struct {
     unsafe_symbol_name: []const u8 = "",
     unsafe_module_specifier: []const u8 = "",
     commonjs_private_name: []const u8 = "",
+    generic_function: bool = false,
 
     pub const vtable = ExternalResolver.VTable{
         .resolve = resolveImpl,
@@ -261251,6 +261267,7 @@ const CrossModuleStubResolver = struct {
             .export_pos = 0,
             .ambient_module = self.ambient_module,
             .ambient_module_exports_known = self.ambient_module_exports_known,
+            .generic_function = self.generic_function and matches,
         };
     }
 
@@ -261332,6 +261349,26 @@ fn checkerHasAnyCode(s: *TestSetup, code: u32) bool {
         if (d.code == code) return true;
     }
     return false;
+}
+
+test "checker: namespace import members preserve external generic function facts" {
+    const s = try newSetup(
+        \\import * as core from "./barrel.js";
+        \\interface Schema { value: string; }
+        \\core.$constructor<Schema>();
+    );
+    defer destroySetup(s);
+    var stub = CrossModuleStubResolver{
+        .canned_module_name = "\"barrel\"",
+        .exported_name = "$constructor",
+        .exported_type = false,
+        .exported_value = true,
+        .generic_function = true,
+    };
+    s.checker.setImporterPath("/consumer.ts");
+    s.checker.setExternalResolver(.{ .ptr = &stub, .vtable = &CrossModuleStubResolver.vtable });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.untyped_function_type_args));
 }
 
 test "checker: cross-module TS4024 for exported variable using imported private type" {
