@@ -187896,6 +187896,7 @@ pub const Checker = struct {
             return;
         }
         if (self.assertionSourceIncludesTargetTypeParameter(source_t, target_t, 0)) return;
+        if (self.assertionTargetIsDependentIndexedAccess(node)) return;
         if (self.assertionTargetIsFunctionObject(target_t)) return;
         if ((source_t == types.Primitive.null_t or source_t == types.Primitive.undefined_t) and
             self.nullAssertionTargetIsPermissive(target_t)) return;
@@ -188358,6 +188359,29 @@ pub const Checker = struct {
     fn assertionTargetIsFunctionObject(self: *Checker, target_t: TypeId) bool {
         const function_t = self.lowerBuiltinObjectType("Function") orelse return false;
         return target_t == function_t;
+    }
+
+    /// `T[K]` remains deferred while both operands are type parameters, so
+    /// an assertion cannot prove that its source is disjoint from every
+    /// possible instantiation. Concrete keys (`T["value"]`) and generic
+    /// containers (`T[]`) still use the ordinary overlap checks.
+    fn assertionTargetIsDependentIndexedAccess(self: *Checker, node: NodeId) bool {
+        const kind = self.hir.kindOf(node);
+        if (kind != .as_expr and kind != .type_assertion) return false;
+        const type_node = hir_mod.asExpressionOf(self.hir, node).type_node;
+        if (type_node == hir_mod.none_node_id or self.hir.kindOf(type_node) != .indexed_access_type) return false;
+        const indexed = hir_mod.indexedAccessTypeOf(self.hir, type_node);
+        if (self.hir.kindOf(indexed.object) != .type_ref or self.hir.kindOf(indexed.index) != .type_ref) return false;
+        const object_ref = hir_mod.typeRefOf(self.hir, indexed.object);
+        const index_ref = hir_mod.typeRefOf(self.hir, indexed.index);
+        if (object_ref.qualifier_len != 0 or object_ref.args_len != 0 or
+            index_ref.qualifier_len != 0 or index_ref.args_len != 0)
+        {
+            return false;
+        }
+        const object_t = self.lookupNarrow(object_ref.name) orelse return false;
+        const index_t = self.lookupNarrow(index_ref.name) orelse return false;
+        return self.isBareTypeParameter(object_t) and self.isBareTypeParameter(index_t);
     }
 
     /// True when `prim` is a JS primitive (or a literal of one) and
@@ -209074,6 +209098,27 @@ test "checker: null assertion to generic array target reports TS2352" {
     s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.conversion_may_be_mistake));
+}
+
+test "checker: dependent indexed access assertions defer overlap" {
+    const s = try newSetup(
+        \\function undefinedValue<T, K extends keyof T>(): T[K] {
+        \\  return undefined as T[K];
+        \\}
+        \\function numberValue<T, K extends keyof T>(): T[K] {
+        \\  return 1 as T[K];
+        \\}
+        \\function concreteKey<T extends { value: string }>(): T["value"] {
+        \\  return 1 as T["value"];
+        \\}
+        \\function genericArray<T>(): T[] {
+        \\  return undefined as T[];
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.conversion_may_be_mistake));
 }
 
 test "checker: private generic assertions use directional overlap and track definite assignment" {
