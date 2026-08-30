@@ -464,7 +464,7 @@ const PromiseResult = union(enum) {
 /// Context must provide:
 ///   - `fn run(*Context) void` - runs on thread pool
 ///   - `fn runFromJS(*Context, *jsc.JSGlobalObject) PromiseResult` - returns value to resolve/reject
-///   - `fn deinit(*Context) void` - cleanup
+///   - `fn deinit(*Context) void` - cleanup on the JavaScript owner thread
 fn AsyncTask(comptime Context: type) type {
     return struct {
         const Self = @This();
@@ -487,12 +487,15 @@ fn AsyncTask(comptime Context: type) type {
             return self;
         }
 
-        fn schedule(this: *Self) void {
+        fn schedule(this: *Self) bool {
+            if (!this.vm.native_work_pool_jobs.tryAdd()) return false;
             jsc.WorkPool.schedule(&this.task);
+            return true;
         }
 
         fn run(work_task: *jsc.WorkPoolTask) void {
             const this: *Self = @fieldParentPtr("task", work_task);
+            defer this.vm.native_work_pool_jobs.complete();
             const result = Context.run(&this.ctx);
             // Handle both error union and non-error union return types
             this.ctx.result = if (@typeInfo(@TypeOf(result)) == .error_union)
@@ -522,7 +525,21 @@ fn AsyncTask(comptime Context: type) type {
             };
             try result.fulfill(globalThis, promise);
         }
+
+        pub fn cancelForShutdown(this: *Self) void {
+            this.ref.unref(this.vm);
+            Context.deinit(&this.ctx);
+            this.promise.deinit();
+            bun.destroy(this);
+            _ = shutdown_cancellation_count.fetchAdd(1, .seq_cst);
+        }
     };
+}
+
+var shutdown_cancellation_count = std.atomic.Value(u64).init(0);
+
+pub fn shutdownCancellationCount() u64 {
+    return shutdown_cancellation_count.load(.seq_cst);
 }
 
 // ============================================================================
@@ -598,7 +615,7 @@ fn startExtractTask(
     });
 
     const promise_js = task.promise.value();
-    task.schedule();
+    if (!task.schedule()) task.cancelForShutdown();
     return promise_js;
 }
 
@@ -664,7 +681,7 @@ fn startBlobTask(globalThis: *jsc.JSGlobalObject, store: *jsc.WebCore.Blob.Store
     });
 
     const promise_js = task.promise.value();
-    task.schedule();
+    if (!task.schedule()) task.cancelForShutdown();
     return promise_js;
 }
 
@@ -754,7 +771,7 @@ fn startWriteTask(
     });
 
     const promise_js = task.promise.value();
-    task.schedule();
+    if (!task.schedule()) task.cancelForShutdown();
     return promise_js;
 }
 
@@ -894,7 +911,7 @@ fn startFilesTask(globalThis: *jsc.JSGlobalObject, store: *jsc.WebCore.Blob.Stor
     });
 
     const promise_js = task.promise.value();
-    task.schedule();
+    if (!task.schedule()) task.cancelForShutdown();
     return promise_js;
 }
 

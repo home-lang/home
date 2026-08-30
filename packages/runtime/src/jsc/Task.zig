@@ -554,6 +554,10 @@ pub fn reportErrorOrTerminate(global: *jsc.JSGlobalObject, proof: bun.JSError) b
 
 pub fn cancelForShutdown(task: Task, global: *jsc.JSGlobalObject) bool {
     switch (task.tag()) {
+        @field(Task.Tag, @typeName(ArchiveExtractTask)) => task.get(ArchiveExtractTask).?.cancelForShutdown(),
+        @field(Task.Tag, @typeName(ArchiveBlobTask)) => task.get(ArchiveBlobTask).?.cancelForShutdown(),
+        @field(Task.Tag, @typeName(ArchiveWriteTask)) => task.get(ArchiveWriteTask).?.cancelForShutdown(),
+        @field(Task.Tag, @typeName(ArchiveFilesTask)) => task.get(ArchiveFilesTask).?.cancelForShutdown(),
         @field(Task.Tag, @typeName(AnyTask)) => if (!task.get(AnyTask).?.cancelForShutdown()) return false,
         @field(Task.Tag, @typeName(CppTask)) => task.get(CppTask).?.cancel(global),
         @field(Task.Tag, @typeName(AsyncGlobWalkTask)) => task.get(AsyncGlobWalkTask).?.cancelForShutdown(),
