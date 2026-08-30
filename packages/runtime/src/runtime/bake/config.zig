@@ -879,6 +879,7 @@ test "Bake HMR runtimes embed the generated client and server contracts" {
     try std.testing.expect(client.line_count > 0);
     try std.testing.expect(server.line_count > 0);
     try std.testing.expect(std.mem.indexOf(u8, client.code, "WebSocket") != null);
+    try std.testing.expect(std.mem.indexOf(u8, client.code, "uint8ArrayView.slice(0,") != null);
     try std.testing.expect(std.mem.indexOf(u8, server.code, "handleRequest") != null);
     try std.testing.expect(std.mem.indexOf(u8, server.code, "registerUpdate") != null);
     try std.testing.expect(std.mem.indexOf(u8, server.code, "ERR_SSR_RESPONSE_EXPECTED") != null);

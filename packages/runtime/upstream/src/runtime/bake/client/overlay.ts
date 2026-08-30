@@ -265,7 +265,10 @@ export async function onRuntimeError(err: any, fatal = false, async = false) {
     // Request the error to be reported and remapped.
     const response = await fetch("/_bun/report_error", {
       method: "POST",
-      body: writer.view.buffer,
+      // Send only initialized bytes and give fetch an owned view. Passing the
+      // oversized cross-realm backing ArrayBuffer can leave the request body
+      // open indefinitely in fetch implementations used by browser harnesses.
+      body: writer.uint8ArrayView.slice(0, writer.cursor),
     });
     try {
       if (!response.ok) {
