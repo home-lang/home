@@ -10,6 +10,14 @@ target.
 
 ## Status
 
+- The full Bake slice has a reproducible native runner:
+  `./scripts/run-bake-corpus.sh`. It creates an isolated overlay from this
+  vendored corpus, installs its exact locked test dependencies, seeds the
+  unchanged upstream harness's React cache, and executes all 24 Bake test files
+  exclusively through Home. Pass a corpus-relative path such as
+  `dev/vfile.test.ts` to run
+  only selected files. Set `HOME_BIN` or `BUN_DEV_SERVER_CLIENT_EXECUTABLE` to
+  override the Home or Node executables.
 - **Wired into `zig build test` behind `HOME_BUN_CORPUS_FULL=1`.** The normal
   suite keeps focused pins fast, while the opt-in gate walks every discovered
   Bun-style test file from this copied corpus and fails at the first real
