@@ -106884,7 +106884,11 @@ pub const Checker = struct {
                 defer self.gpa.free(optional);
                 var rest = false;
                 for (function.parameters, params, optional) |param, *out, *omittable| {
-                    out.* = try self.lowerProgramExpression(param.type, declaration, args);
+                    const param_t = try self.lowerProgramExpression(param.type, declaration, args);
+                    out.* = if (param.optional and !self.typeIncludesUndefined(param_t))
+                        try self.interner.internUnion(&.{ param_t, types.Primitive.undefined_t })
+                    else
+                        param_t;
                     omittable.* = param.optional or param.rest;
                     rest = rest or param.rest;
                 }
