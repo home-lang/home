@@ -126496,6 +126496,9 @@ pub const Checker = struct {
             self.ensureForwardVisibleTypeDeclChecked(rhs, rhs_id.name) catch {};
             if (self.class_instance_types.get(rhs_id.name)) |inst| return inst;
             const rhs_name = self.string_interner.get(rhs_id.name);
+            if (std.mem.eql(u8, rhs_name, "Promise")) {
+                return try self.buildStructuralPromise(types.Primitive.any);
+            }
             if (std.mem.eql(u8, rhs_name, "RegExp") or
                 std.mem.eql(u8, rhs_name, "Date") or
                 std.mem.eql(u8, rhs_name, "Error"))
@@ -133958,13 +133961,10 @@ pub const Checker = struct {
 
     fn promiseGlobalType(self: *Checker) CheckError!TypeId {
         const any_t = types.Primitive.any;
-        // Mix of instance + static members (single shape until
-        // `Promise<T>` instantiation is wired). `then`/`catch`/
-        // `finally` plus statics `resolve`/`reject`/`all`/`race`/
-        // `allSettled`/`any`. No `__construct` member: the bare
-        // `Promise` identifier appears as a value mostly through
-        // `Promise.resolve(ÃÂ¢ÃÂÃÂ¦)` / `Promise.all(ÃÂ¢ÃÂÃÂ¦)`; `new Promise(...)`
-        // construction uses class typing handled elsewhere.
+        // Mix instance and static members until `Promise<T>` constructor
+        // instantiation is wired. `instanceof Promise` derives its structural
+        // target separately so this value shape does not divert the dedicated
+        // `new Promise(...)` payload-inference path.
         const sig_then = try self.seedAnySig2(any_t);
         const sig_one = try self.seedAnySig1(any_t);
         const sig_zero = try self.seedAnySig0(any_t);
@@ -151903,7 +151903,8 @@ pub const Checker = struct {
         const raw = self.string_interner.get(id.name);
         if (std.mem.eql(u8, raw, "Array") or
             std.mem.eql(u8, raw, "Object") or
-            std.mem.eql(u8, raw, "Function")) return true;
+            std.mem.eql(u8, raw, "Function") or
+            std.mem.eql(u8, raw, "Promise")) return true;
         // Forward-referenced class / function identifiers: when the
         // RHS is an identifier that resolves to a class (or function)
         // declared elsewhere in the module ÃÂ¢ÃÂÃÂ including AFTER the use
@@ -245197,6 +245198,28 @@ test "checker: seeded Promise global resolves then/resolve/reject" {
         try T.expect(d.code != TsCodes.cannot_find_name);
         try T.expect(d.code != TsCodes.property_does_not_exist);
     }
+}
+
+test "checker: seeded Promise constructor supports instanceof narrowing" {
+    const s = try newSetup(
+        \\declare const result: object | Promise<number>;
+        \\if (result instanceof Promise) {
+        \\  result.then(value => {
+        \\    const exact: number = value;
+        \\    const wrong: string = value;
+        \\    value.missing;
+        \\    void exact;
+        \\    void wrong;
+        \\  });
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true, .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.instanceof_right_type));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.parameter_implicitly_any));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: Symbol value under lib ES5 emits TS2585" {
