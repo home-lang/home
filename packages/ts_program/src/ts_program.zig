@@ -9149,7 +9149,8 @@ test "Program: namespace imports preserve defaulted indexed generic callbacks" {
         \\  return null as never;
         \\}
     ;
-    const barrel = "export * from \"./owner.js\";";
+    const barrel = "export * from \"./owner.js\"; export * from \"./broken.js\";";
+    const broken = "export const unrelated = ;";
     const consumer =
         \\import * as core from "./barrel.js";
         \\interface Schema { _zod: { def: { kind: "schema" } }; format(value: string): string; }
@@ -9227,6 +9228,7 @@ test "Program: namespace imports preserve defaulted indexed generic callbacks" {
     try vfs.addFile("/proj/util.ts", util);
     try vfs.addFile("/proj/owner.ts", owner);
     try vfs.addFile("/proj/barrel.ts", barrel);
+    try vfs.addFile("/proj/broken.ts", broken);
     try vfs.addFile("/proj/consumer.ts", consumer);
     try vfs.addFile("/proj/optional-proto-consumer.ts", optional_proto_consumer);
     try vfs.addFile("/proj/invalid-optional-proto-consumer.ts", invalid_optional_proto_consumer);
@@ -9238,6 +9240,7 @@ test "Program: namespace imports preserve defaulted indexed generic callbacks" {
     _ = try p.add("/proj/util.ts", util);
     _ = try p.add("/proj/owner.ts", owner);
     _ = try p.add("/proj/barrel.ts", barrel);
+    _ = try p.add("/proj/broken.ts", broken);
     const consumer_id = try p.add("/proj/consumer.ts", consumer);
     const optional_proto_consumer_id = try p.add("/proj/optional-proto-consumer.ts", optional_proto_consumer);
     const invalid_optional_proto_consumer_id = try p.add("/proj/invalid-optional-proto-consumer.ts", invalid_optional_proto_consumer);

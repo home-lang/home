@@ -294,7 +294,12 @@ pub const Query = struct {
                 self.result.complete = false;
                 continue;
             };
-            if (c.hir.kindOf(c.root) != .block_stmt or c.has_syntactic_parse_diagnostics) {
+            // Syntax diagnostics do not invalidate the recovered export
+            // table. TypeScript still binds declarations around malformed
+            // statements, so traverse the HIR and let real recovered
+            // conflicts mark the query ambiguous. Only a missing root makes
+            // the export graph unknowable.
+            if (c.hir.kindOf(c.root) != .block_stmt) {
                 self.result.complete = false;
                 continue;
             }
@@ -462,6 +467,10 @@ test "export origins: aliases cycles and diamonds keep real declarations distinc
     try vfs.addFile("/other.ts", "export const identity = 1;");
     try vfs.addFile("/ambiguous.ts", "export * from './leaf'; export * from './other';");
     try vfs.addFile("/explicit.ts", "export { identity } from './leaf'; export * from './other';");
+    try vfs.addFile("/broken-unrelated.ts", "export const unrelated = ;");
+    try vfs.addFile("/recovered.ts", "export * from './leaf'; export * from './broken-unrelated';");
+    try vfs.addFile("/broken-conflict.ts", "export const identity = ;");
+    try vfs.addFile("/recovered-ambiguous.ts", "export * from './leaf'; export * from './broken-conflict';");
     var resolver = resolver_mod.Resolver.init(T.allocator, vfs.fs(), .{});
     defer resolver.deinit();
     var query = Query.init(T.allocator, &resolver);
@@ -478,6 +487,8 @@ test "export origins: aliases cycles and diamonds keep real declarations distinc
     try T.expect(shape.type != null and shape.value == null);
     try T.expect((try query.resolve("/ambiguous.ts", "identity")).ambiguous);
     try T.expect((try query.resolve("/explicit.ts", "identity")).sameDeclaration(original));
+    try T.expect((try query.resolve("/recovered.ts", "identity")).sameDeclaration(original));
+    try T.expect((try query.resolve("/recovered-ambiguous.ts", "identity")).ambiguous);
     const missing = try query.resolve("/diamond.ts", "missing");
     try T.expect(missing.complete and missing.value == null and missing.type == null);
     try T.expect(!missing.sameDeclaration(missing));
