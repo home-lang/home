@@ -24620,16 +24620,8 @@ pub const Checker = struct {
 
     fn sourceHasStrictFalseDirective(self: *Checker) bool {
         if (self.source_facts.strict_false_directive) |cached| return cached;
-        const src = self.source orelse return false;
-        const result = blk: {
-            var lines = std.mem.splitScalar(u8, src, '\n');
-            while (lines.next()) |raw_line| {
-                const line = std.mem.trim(u8, raw_line, " \t\r");
-                if (std.mem.indexOf(u8, line, "@strict: false") != null) break :blk true;
-                if (std.mem.indexOf(u8, line, "@strict:false") != null) break :blk true;
-            }
-            break :blk false;
-        };
+        const result = self.sourceMarkerPosition("@strict: false") != null or
+            self.sourceMarkerPosition("@strict:false") != null;
         self.source_facts.strict_false_directive = result;
         return result;
     }
@@ -204033,6 +204025,27 @@ test "checker: source fact cache resets when source changes" {
     try T.expect(!s.checker.sourceHasNoLibTrueDirective());
     try T.expect(!s.checker.sourceContainsImportMeta());
     try T.expect(!s.checker.sourceHasUseDefineForClassFieldsTrueDirective());
+}
+
+test "checker: strict false source markers preserve uncached results" {
+    const s = try newSetup("const value = 1;");
+    defer destroySetup(s);
+    const Case = struct { source: []const u8, expected: bool };
+    for ([_]Case{
+        .{ .source = "", .expected = false },
+        .{ .source = "// @strict: false", .expected = true },
+        .{ .source = "// @strict:false", .expected = true },
+        .{ .source = "// @strict: true", .expected = false },
+        .{ .source = "// @Strict: false", .expected = false },
+        .{ .source = "'@strict: false'", .expected = true },
+        .{ .source = "/* @strict:false */", .expected = true },
+    }) |case| {
+        for ([_]bool{ true, false }) |indexed| {
+            s.checker.setSource(case.source);
+            if (!indexed) s.checker.source_markers = null;
+            try T.expectEqual(case.expected, s.checker.sourceHasStrictFalseDirective());
+        }
+    }
 }
 
 test "checker: source marker feature facts match independent substring searches" {
