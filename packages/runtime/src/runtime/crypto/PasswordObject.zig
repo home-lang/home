@@ -414,6 +414,16 @@ pub const JSPasswordObject = struct {
                     },
                 }
             }
+
+            pub fn cancelForShutdown(this: *Result) void {
+                this.ref.unref(this.global.bunVM());
+                this.promise.deinit();
+                switch (this.value) {
+                    .hash => |value| bun.default_allocator.free(value),
+                    .err => {},
+                }
+                bun.destroy(this);
+            }
         };
 
         pub fn deinit(this: *HashJob) void {
@@ -431,6 +441,8 @@ pub const JSPasswordObject = struct {
 
         pub fn run(task: *bun.ThreadPool.Task) void {
             var this: *HashJob = @fieldParentPtr("task", task);
+            const vm = this.event_loop.virtual_machine;
+            defer vm.native_work_pool_jobs.complete();
 
             var result = Result.new(.{
                 .value = getValue(this.password, this.algorithm),
@@ -441,7 +453,7 @@ pub const JSPasswordObject = struct {
             });
             this.promise = .empty;
 
-            result.task = jsc.AnyTask.New(Result, Result.runFromJS).init(result);
+            result.task = jsc.AnyTask.NewWithShutdown(Result, Result.runFromJS, Result.cancelForShutdown).init(result);
             this.ref = .{};
             this.event_loop.enqueueTaskConcurrent(jsc.ConcurrentTask.createFrom(&result.task));
             this.deinit();
@@ -476,10 +488,16 @@ pub const JSPasswordObject = struct {
             .event_loop = globalObject.bunVM().eventLoop(),
             .global = globalObject,
         });
-        job.ref.ref(globalObject.bunVM());
+        const promise_value = promise.value();
+        const vm = globalObject.bunVM();
+        if (!vm.native_work_pool_jobs.tryAdd()) {
+            job.deinit();
+            return promise_value;
+        }
+        job.ref.ref(vm);
         jsc.WorkPool.schedule(&job.task);
 
-        return promise.value();
+        return promise_value;
     }
 
     pub fn verify(globalObject: *jsc.JSGlobalObject, password: []const u8, prev_hash: []const u8, algorithm: ?PasswordObject.Algorithm, comptime sync: bool) bun.JSError!jsc.JSValue {
@@ -510,10 +528,16 @@ pub const JSPasswordObject = struct {
             .event_loop = globalObject.bunVM().eventLoop(),
             .global = globalObject,
         });
-        job.ref.ref(globalObject.bunVM());
+        const promise_value = promise.value();
+        const vm = globalObject.bunVM();
+        if (!vm.native_work_pool_jobs.tryAdd()) {
+            job.deinit();
+            return promise_value;
+        }
+        job.ref.ref(vm);
         jsc.WorkPool.schedule(&job.task);
 
-        return promise.value();
+        return promise_value;
     }
 
     // Once we have bindings generator, this should be replaced with a generated function
@@ -626,6 +650,12 @@ pub const JSPasswordObject = struct {
                     },
                 }
             }
+
+            pub fn cancelForShutdown(this: *Result) void {
+                this.ref.unref(this.global.bunVM());
+                this.promise.deinit();
+                bun.destroy(this);
+            }
         };
 
         pub fn deinit(this: *VerifyJob) void {
@@ -646,6 +676,8 @@ pub const JSPasswordObject = struct {
 
         pub fn run(task: *bun.ThreadPool.Task) void {
             var this: *VerifyJob = @fieldParentPtr("task", task);
+            const vm = this.event_loop.virtual_machine;
+            defer vm.native_work_pool_jobs.complete();
 
             var result = Result.new(.{
                 .value = getValue(this.password, this.prev_hash, this.algorithm),
@@ -656,7 +688,7 @@ pub const JSPasswordObject = struct {
             });
             this.promise = .empty;
 
-            result.task = jsc.AnyTask.New(Result, Result.runFromJS).init(result);
+            result.task = jsc.AnyTask.NewWithShutdown(Result, Result.runFromJS, Result.cancelForShutdown).init(result);
             this.ref = .{};
             this.event_loop.enqueueTaskConcurrent(jsc.ConcurrentTask.createFrom(&result.task));
             this.deinit();
