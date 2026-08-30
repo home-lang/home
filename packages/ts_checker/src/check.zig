@@ -107180,6 +107180,27 @@ pub const Checker = struct {
             try self.recordNarrow(param_name, param_t);
             try class_params.append(self.gpa, param_t);
         }
+        // An unsupported class body still has independently transferable
+        // type-parameter constraints and defaults. Preserve that metadata so
+        // the synthetic structural fallback keeps the declaration's arity.
+        if (exported_class.schema) |schema| {
+            const declaration = schema.declaration;
+            if (declaration.parameters.len == class_params.items.len) {
+                for (declaration.parameters, class_params.items) |parameter, param_t| {
+                    const constraint = if (parameter.constraint) |expression|
+                        self.lowerProgramExpression(expression, declaration, class_params.items) catch types.Primitive.none
+                    else
+                        types.Primitive.none;
+                    const default = if (parameter.default) |expression|
+                        self.lowerProgramExpression(expression, declaration, class_params.items) catch types.Primitive.unknown
+                    else
+                        types.Primitive.none;
+                    const payload = &self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(param_t)];
+                    payload.constraint = constraint;
+                    payload.default = default;
+                }
+            }
+        }
         var instance_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer instance_members.deinit(self.gpa);
         for (exported_class.members) |member| {
@@ -107513,7 +107534,7 @@ pub const Checker = struct {
     ) CheckError!?TypeId {
         const info = self.generic_aliases.get(class_name) orelse return null;
         if (info.params.len == 0) return null;
-        if (type_arg_nodes.len > 0 and type_arg_nodes.len != info.params.len) {
+        if (type_arg_nodes.len > 0 and !self.typeArgumentCountMatches(info.params, type_arg_nodes.len)) {
             const msg = try std.fmt.allocPrint(
                 self.diag_arena.allocator(),
                 "Expected {d} type arguments, but got {d}.",
@@ -197815,6 +197836,47 @@ test "checker: program ambient export assignment class is a require alias type" 
     s.checker.setProgramExportedClasses(&classes);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.value_used_as_type_did_you_mean_typeof));
+}
+
+test "checker: imported class fallback preserves trailing type parameter defaults" {
+    const s = try newSetup(
+        \\import type { Box } from "pkg";
+        \\let valid: Box<number>;
+        \\let excessive: Box<number, string, boolean>;
+    );
+    defer destroySetup(s);
+
+    const unsupported_default: ProgramClassSchema.Expression = .unsupported;
+    var params = [_]ProgramClassSchema.Parameter{
+        .{ .name = "T" },
+        .{ .name = "U", .default = &unsupported_default },
+    };
+    const unsupported_body: ProgramClassSchema.Expression = .unsupported;
+    const declaration: ProgramClassSchema.Declaration = .{
+        .path = "/pkg.ts",
+        .position = 0,
+        .name = "Box",
+        .parameters = &params,
+        .body = &unsupported_body,
+        .is_class = true,
+    };
+    var schema: ProgramClassSchema.Schema = .{
+        .arena = std.heap.ArenaAllocator.init(T.allocator),
+        .declaration = &declaration,
+    };
+    defer schema.arena.deinit();
+    const classes = [_]ProgramExportedClass{.{
+        .target_path = "/pkg.ts",
+        .declaration_path = "/pkg.ts",
+        .ambient_module_name = "pkg",
+        .class_name = "Box",
+        .type_parameter_names = &.{ "T", "U" },
+        .schema = &schema,
+    }};
+    s.checker.setProgramExportedClasses(&classes);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.expected_n_type_arguments));
 }
 
 test "checker: default exported merged property resolves through type space" {
