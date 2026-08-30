@@ -76262,6 +76262,10 @@ pub const Checker = struct {
                             const args = hir_mod.typeRefArgs(self.hir, type_node);
                             return try self.builtinSetInstanceType(try self.lowererLowerWithTypeParams(args[0]));
                         }
+                        if (std.mem.eql(u8, name_str, "WeakSet") and r.args_len == 1) {
+                            const args = hir_mod.typeRefArgs(self.hir, type_node);
+                            return try self.builtinWeakSetInstanceType(try self.lowererLowerWithTypeParams(args[0]));
+                        }
                         if (r.args_len >= 1) {
                             const args = hir_mod.typeRefArgs(self.hir, type_node);
                             var lowered_args: [3]TypeId = undefined;
@@ -109197,6 +109201,21 @@ pub const Checker = struct {
                     if (std.mem.eql(u8, self.string_interner.get(id.name), "WeakMap")) {
                         break :blk try self.builtinWeakMapInstanceType(types.Primitive.any, types.Primitive.any);
                     }
+                    if (std.mem.eql(u8, self.string_interner.get(id.name), "WeakSet")) {
+                        var value_t: TypeId = types.Primitive.any;
+                        if (type_arg_nodes.len > 0) {
+                            value_t = self.lowererLowerWithTypeParams(type_arg_nodes[0]) catch types.Primitive.any;
+                        } else if (args.len > 0 and self.hir.kindOf(args[0]) == .array_literal) {
+                            var value_types: std.ArrayListUnmanaged(TypeId) = .empty;
+                            defer value_types.deinit(self.gpa);
+                            for (hir_mod.arrayLiteralElements(self.hir, args[0])) |element| {
+                                if (element == hir_mod.none_node_id) continue;
+                                try value_types.append(self.gpa, try self.checkExpression(element));
+                            }
+                            value_t = try self.unionOrAny(value_types.items);
+                        }
+                        break :blk try self.builtinWeakSetInstanceType(value_t);
+                    }
                     if (std.mem.eql(u8, self.string_interner.get(id.name), "Date")) {
                         if (type_arg_nodes.len > 0) {
                             for (type_arg_nodes) |ta| {
@@ -138149,6 +138168,20 @@ pub const Checker = struct {
         try members.append(self.gpa, .{ .name = has_id, .type = bool_sig, .is_optional = false, .is_readonly = false, .is_method = true });
         try members.append(self.gpa, .{ .name = delete_id, .type = bool_sig, .is_optional = false, .is_readonly = false, .is_method = true });
         return self.interner.internObjectType(members.items) catch return error.OutOfMemory;
+    }
+
+    fn builtinWeakSetInstanceType(self: *Checker, value_t: TypeId) CheckError!TypeId {
+        const add_sig = self.interner.internSignature(&[_]TypeId{value_t}, types.Primitive.any, false) catch return error.OutOfMemory;
+        const bool_sig = self.interner.internSignature(&[_]TypeId{value_t}, types.Primitive.boolean_t, false) catch return error.OutOfMemory;
+        const members = [_]types.ObjectMember{
+            .{ .name = self.string_interner.intern("add") catch return error.OutOfMemory, .type = add_sig, .is_optional = false, .is_readonly = false, .is_method = true },
+            .{ .name = self.string_interner.intern("has") catch return error.OutOfMemory, .type = bool_sig, .is_optional = false, .is_readonly = false, .is_method = true },
+            .{ .name = self.string_interner.intern("delete") catch return error.OutOfMemory, .type = bool_sig, .is_optional = false, .is_readonly = false, .is_method = true },
+        };
+        const weak_set_t = self.interner.internObjectType(&members) catch return error.OutOfMemory;
+        const weak_set_name = self.string_interner.intern("WeakSet") catch return weak_set_t;
+        self.registerAliasDisplayName(weak_set_t, weak_set_name, &[_]TypeId{value_t}) catch {};
+        return weak_set_t;
     }
 
     fn domEventGlobalType(self: *Checker) CheckError!TypeId {
@@ -262365,6 +262398,23 @@ test "checker: Map and Set core members resolve without TS2339" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.property_does_not_exist);
     }
+}
+
+test "checker: WeakSet preserves generic member types" {
+    const s = try newSetup(
+        \\const set = new WeakSet<object>([Object.prototype, Error.prototype]);
+        \\set.add({});
+        \\set.add(1);
+        \\set.has({});
+        \\set.has("wrong");
+        \\set.delete({});
+        \\set.missing;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
 
 test "checker: a genuinely-missing array member still reports TS2339" {
