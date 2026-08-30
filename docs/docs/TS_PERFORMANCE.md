@@ -10,44 +10,45 @@ Ongoing coverage and optimization work is tracked in
 
 ## Current snapshot
 
-Measured 2026-08-30 at commit `860a706f0` on an Apple M3 Pro MacBook Pro
+Measured 2026-08-30 at commit `7d5208e53` on an Apple M3 Pro MacBook Pro
 (11 cores, 18 GB RAM, arm64, macOS 27.0). Each value is the mean and sample
 standard deviation of 30 new compiler processes after three warmup rounds.
-The complete raw-result identifier is `20260830T220926Z`. The runner first
+The complete raw-result identifier is `20260830T223857Z`. The runner first
 admitted all 20 selected workloads against version-checked TS **6.0.3**, native
 TS **7.0.2**, and Home. Native TS 7 and `tsgo` are one competitor. All **600
 round files / 1,800 successful finite samples** are retained without filtering.
 
 | Workload | tsc 6.0.3 | native TS 7.0.2 | Home 0.1.0 | Home vs fastest competitor |
 |---|---:|---:|---:|---:|
-| `checkjs_jsdoc` | 216.7 ± 7.7 ms | 55.9 ± 1.5 ms | **38.4 ± 0.9 ms** | **1.46× faster** |
-| `class_hierarchy` | 191.0 ± 8.4 ms | 53.7 ± 1.4 ms | **29.2 ± 0.6 ms** | **1.84× faster** |
-| `commonjs_graph` | 159.5 ± 9.6 ms | 50.1 ± 1.3 ms | **34.4 ± 1.9 ms** | **1.46× faster** |
-| `control_flow` | 195.5 ± 3.7 ms | 60.0 ± 2.2 ms | **36.8 ± 1.2 ms** | **1.63× faster** |
-| `deep_types` | 132.9 ± 2.0 ms | 53.3 ± 1.3 ms | **27.5 ± 0.4 ms** | **1.94× faster** |
-| `destructuring` | 145.3 ± 6.4 ms | 48.7 ± 1.4 ms | **21.4 ± 0.8 ms** | **2.27× faster** |
-| `generic_calls` | 182.7 ± 2.2 ms | 55.7 ± 1.1 ms | **23.0 ± 0.4 ms** | **2.42× faster** |
-| `import_graph` | 136.0 ± 3.0 ms | 48.5 ± 2.8 ms | **21.0 ± 1.4 ms** | **2.31× faster** |
-| `interface_composition` | 208.6 ± 2.8 ms | 65.2 ± 3.3 ms | **46.2 ± 1.6 ms** | **1.41× faster** |
-| `many_files` | 219.2 ± 7.2 ms | 54.4 ± 1.6 ms | **25.0 ± 1.4 ms** | **2.18× faster** |
-| `null_safe_access` | 196.9 ± 2.9 ms | 58.7 ± 1.1 ms | **40.9 ± 0.8 ms** | **1.44× faster** |
-| `overload_resolution` | 210.7 ± 8.4 ms | 66.4 ± 3.4 ms | **30.7 ± 0.9 ms** | **2.16× faster** |
-| `recursive_generics` | 154.6 ± 3.2 ms | 72.7 ± 2.0 ms | **20.0 ± 0.4 ms** | **3.64× faster** |
-| `reexport_graph` | 98.7 ± 1.8 ms | 42.4 ± 1.1 ms | **17.8 ± 0.5 ms** | **2.39× faster** |
-| `startup` | 67.6 ± 10.7 ms | 40.7 ± 4.1 ms | **3.3 ± 0.1 ms** | **12.18× faster** |
-| `structural_objects` | 195.0 ± 17.1 ms | 59.6 ± 1.7 ms | **30.9 ± 1.6 ms** | **1.93× faster** |
-| `tsx_components` | 166.3 ± 1.8 ms | 48.4 ± 2.1 ms | **23.3 ± 0.3 ms** | **2.08× faster** |
-| `type_predicates` | 250.1 ± 11.7 ms | 74.1 ± 5.4 ms | **44.8 ± 1.2 ms** | **1.65× faster** |
-| `type_predicates_large` | 1036.9 ± 21.2 ms | 356.7 ± 4.9 ms | **343.6 ± 12.7 ms** | **1.04× faster; narrow** |
-| `variadic_tuples` | 259.5 ± 7.7 ms | 78.9 ± 2.7 ms | **45.6 ± 6.4 ms** | **1.73× faster** |
+| `checkjs_jsdoc` | 214.0 ± 3.1 ms | 56.0 ± 1.4 ms | **37.9 ± 0.6 ms** | **1.48× faster** |
+| `class_hierarchy` | 192.9 ± 3.8 ms | 54.5 ± 2.1 ms | **29.5 ± 1.1 ms** | **1.85× faster** |
+| `commonjs_graph` | 161.7 ± 7.8 ms | 51.8 ± 6.0 ms | **34.5 ± 1.2 ms** | **1.50× faster** |
+| `control_flow` | 197.7 ± 4.2 ms | 60.7 ± 1.5 ms | **36.6 ± 0.7 ms** | **1.66× faster** |
+| `deep_types` | 137.2 ± 14.3 ms | 55.3 ± 2.7 ms | **26.8 ± 0.6 ms** | **2.06× faster** |
+| `destructuring` | 147.8 ± 13.6 ms | 49.6 ± 2.3 ms | **21.4 ± 0.8 ms** | **2.32× faster** |
+| `generic_calls` | 188.7 ± 5.1 ms | 57.5 ± 1.7 ms | **24.0 ± 1.4 ms** | **2.40× faster** |
+| `import_graph` | 134.9 ± 2.1 ms | 47.5 ± 1.1 ms | **20.7 ± 0.5 ms** | **2.30× faster** |
+| `interface_composition` | 210.3 ± 4.2 ms | 67.3 ± 9.4 ms | **47.0 ± 4.5 ms** | **1.43× faster** |
+| `many_files` | 217.9 ± 3.5 ms | 55.1 ± 1.1 ms | **25.3 ± 0.7 ms** | **2.18× faster** |
+| `null_safe_access` | 200.3 ± 3.4 ms | 61.0 ± 5.3 ms | **42.0 ± 5.2 ms** | **1.45× faster** |
+| `overload_resolution` | 211.8 ± 5.7 ms | 67.1 ± 1.4 ms | **31.1 ± 0.6 ms** | **2.15× faster** |
+| `recursive_generics` | 157.9 ± 4.5 ms | 73.7 ± 2.1 ms | **20.2 ± 0.7 ms** | **3.65× faster** |
+| `reexport_graph` | 99.8 ± 1.9 ms | 42.7 ± 1.0 ms | **18.3 ± 0.8 ms** | **2.34× faster** |
+| `startup` | 68.9 ± 11.5 ms | 39.8 ± 1.0 ms | **3.5 ± 0.2 ms** | **11.49× faster** |
+| `structural_objects` | 192.5 ± 3.5 ms | 59.7 ± 1.4 ms | **30.4 ± 0.5 ms** | **1.96× faster** |
+| `tsx_components` | 167.7 ± 2.7 ms | 48.7 ± 1.4 ms | **23.2 ± 0.4 ms** | **2.10× faster** |
+| `type_predicates` | 248.8 ± 3.5 ms | 73.8 ± 1.8 ms | **45.3 ± 6.1 ms** | **1.63× faster** |
+| `type_predicates_large` | 1047.7 ± 26.4 ms | 360.5 ± 6.8 ms | **337.5 ± 6.4 ms** | **1.07× faster; narrow** |
+| `variadic_tuples` | 258.8 ± 3.9 ms | 78.6 ± 1.7 ms | **44.3 ± 0.9 ms** | **1.78× faster** |
 
 Home records lower means on **20/20 admitted workloads** and lower paired times
-in **597/600 rounds**. Nineteen rows win 30/30 rounds;
-`type_predicates_large` wins 27/30. Its 1.04× mean margin remains narrow and is
-not evidence of universal leadership. These are local synthetic results; real
-projects, other platforms, and broader rejection coverage remain separate
-validation work. Historical snapshots, including losses, remain in the
-checkpoint sections below and are not averaged into this table.
+in **599/600 rounds**. Nineteen rows win 30/30 rounds; `type_predicates` wins
+29/30. The 1.07× `type_predicates_large` mean margin remains narrow despite its
+30/30 paired result and is not evidence of universal leadership. These are
+local synthetic results; real projects, other platforms, and broader rejection
+coverage remain separate validation work. Historical snapshots, including
+losses, remain in the checkpoint sections below and are not averaged into this
+table.
 
 The comparison column always uses the faster of `tsc` and `tsgo`. Ratios
 rounding to `1.00×` are labeled near ties in either direction, not directional
@@ -214,6 +215,8 @@ workload-specific shortcuts:
   leak detection;
 - parser and checker feature probes cache source-level facts instead of
   repeatedly scanning whole files;
+- JSDoc and triple-slash reference presence reuse the existing one-pass source
+  marker index instead of rescanning large files;
 - visible type declarations are indexed per lexical scope while retaining the
   original resolver as an allocation-failure fallback;
 - source loading reuses one I/O runtime per compilation;
