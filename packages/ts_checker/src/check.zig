@@ -153599,23 +153599,13 @@ pub const Checker = struct {
         try self.applyTypeGuard(c.cond, false);
         const ff = try self.checkExpression(c.else_branch);
         self.popNarrowScope();
-        if (self.contextualLiteralUnionReturnTarget(node) != null) {
-            const contextual_tt = try self.valueNodeLiteralType(c.then_branch, tt);
-            const contextual_ff = try self.valueNodeLiteralType(c.else_branch, ff);
-            return self.internConditionalUnion(&.{ contextual_tt, contextual_ff });
-        }
-        return self.internConditionalUnion(&.{ tt, ff });
-    }
-
-    fn contextualLiteralUnionReturnTarget(self: *Checker, node: NodeId) ?TypeId {
-        const parent = self.hir.parentOf(node);
-        if (parent == hir_mod.none_node_id) return null;
-        const kind = self.hir.kindOf(parent);
-        if (kind != .fn_decl and kind != .fn_expr and kind != .arrow_fn) return null;
-        const f = hir_mod.fnDeclOf(self.hir, parent);
-        if (f.body != node) return null;
-        const target = self.contextualReturnTypeForFunctionKind(parent, f.flags.is_async) orelse return null;
-        return if (self.declaredReturnNeedsLiteralAssignabilityCheck(target)) target else null;
+        // Conditional expressions retain fresh literal branches until their
+        // consuming context widens them. This is required even without an
+        // assignment target: a conditional used directly as an element key
+        // has type `"a" | "b"`, not `string`.
+        const literal_tt = try self.valueNodeLiteralType(c.then_branch, tt);
+        const literal_ff = try self.valueNodeLiteralType(c.else_branch, ff);
+        return self.internConditionalUnion(&.{ literal_tt, literal_ff });
     }
 
     fn reportKnownTruthyCallableCondition(
@@ -224485,6 +224475,20 @@ test "checker: const conditional literal initializer keeps literal union for ann
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: inline conditional literal key retains its finite union" {
+    const s = try newSetup(
+        \\declare const flag: boolean;
+        \\const labels = { inclusive: "yes", notInclusive: "no" };
+        \\const value: string = labels[flag ? "inclusive" : "notInclusive"];
+        \\labels[flag ? "inclusive" : "missing"];
+        \\void value;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true, .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, 7053));
 }
 
 test "checker: template literal union diagnostics keep union display" {
