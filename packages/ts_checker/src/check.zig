@@ -110309,6 +110309,8 @@ pub const Checker = struct {
                     const callee_name = hir_mod.identifierOf(self.hir, c.callee).name;
                     if (self.generic_fns.get(callee_name)) |_| {
                         callee_had_generic_record = true;
+                    } else if (self.findFunctionDeclForNameNearNode(c.callee, callee_name)) |fn_node| {
+                        callee_had_generic_record = hir_mod.fnTypeParams(self.hir, fn_node).len > 0;
                     }
                 }
                 if (type_arg_nodes.len > 0 and !callee_had_generic_record and
@@ -216672,6 +216674,20 @@ test "checker: explicit type args distinguish typed non-generic and any callees"
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 5), checkerCountCode(s, TsCodes.expected_n_type_arguments));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.untyped_function_type_args));
+}
+
+test "checker: forward generic function call accepts explicit type arguments" {
+    const s = try newSetup(
+        \\function outer<T>(value: T): T {
+        \\  return inner<T>((input: T) => input)(value);
+        \\}
+        \\function inner<U>(transform: (input: U) => U): (input: U) => U {
+        \\  return transform;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.untyped_function_type_args));
 }
 
 test "checker: instantiation expression with no applicable type arg signature reports TS2635" {
