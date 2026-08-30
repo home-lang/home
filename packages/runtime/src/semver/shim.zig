@@ -2,10 +2,23 @@ const std = @import("std");
 
 pub const fmt = struct {
     pub fn formatJSONStringUTF8(text: []const u8, opts: anytype) @TypeOf(@import("../fmt.zig").formatJSONStringUTF8("", .{})) {
-        _ = opts;
-        return @import("../fmt.zig").formatJSONStringUTF8(text, .{});
+        return @import("../fmt.zig").formatJSONStringUTF8(text, .{
+            .quote = if (@hasField(@TypeOf(opts), "quote")) opts.quote else true,
+        });
     }
 };
+
+test "semver JSON formatting preserves quote options" {
+    var output = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer output.deinit();
+
+    try output.writer.print("{f}", .{fmt.formatJSONStringUTF8("react", .{ .quote = false })});
+    try std.testing.expectEqualStrings("react", output.written());
+
+    output.clearRetainingCapacity();
+    try output.writer.print("{f}", .{fmt.formatJSONStringUTF8("react", .{})});
+    try std.testing.expectEqualStrings("\"react\"", output.written());
+}
 
 pub const Environment = struct {
     pub const isDebug = @import("builtin").mode == .Debug;
