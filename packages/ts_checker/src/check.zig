@@ -5557,6 +5557,7 @@ pub const Checker = struct {
         self.source_facts = .{};
         self.source_markers = source_markers_mod.Index.scan(source);
         const markers = &self.source_markers.?;
+        self.source_facts.may_have_jsdoc = markers.contains("/**");
         self.jsx_intrinsic_attributes_decl_scanned = false;
         self.jsx_intrinsic_attributes_decl = false;
         self.jsx_namespace_decl_scanned = false;
@@ -24677,6 +24678,7 @@ pub const Checker = struct {
 
     fn checkReferenceLibDirectives(self: *Checker, root: NodeId) CheckError!void {
         const src = self.source orelse return;
+        if (self.sourceMarkerPosition("<reference") == null) return;
         var line_start: usize = if (src.len >= 3 and src[0] == 0xEF and src[1] == 0xBB and src[2] == 0xBF) 3 else 0;
         while (line_start < src.len) {
             const line_end = std.mem.indexOfScalarPos(u8, src, line_start, '\n') orelse src.len;
@@ -24736,6 +24738,7 @@ pub const Checker = struct {
 
     fn sourceHasReferenceLibDirective(self: *Checker, wanted: []const u8) bool {
         const src = self.source orelse return false;
+        if (self.sourceMarkerPosition("<reference") == null) return false;
         var line_start: usize = 0;
         while (line_start < src.len) {
             const line_end = std.mem.indexOfScalarPos(u8, src, line_start, '\n') orelse src.len;
@@ -24755,6 +24758,10 @@ pub const Checker = struct {
             if (self.source_facts.reference_types_node) |result| return result;
         }
         const src = self.source orelse return false;
+        if (self.sourceMarkerPosition("<reference") == null) {
+            if (cache_node) self.source_facts.reference_types_node = false;
+            return false;
+        }
         var lines = std.mem.splitScalar(u8, src, '\n');
         while (lines.next()) |raw_line| {
             const line = std.mem.trim(u8, raw_line, " \t\r");
