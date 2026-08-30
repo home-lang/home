@@ -691,15 +691,26 @@ pub fn getActiveTasks(globalObject: *jsc.JSGlobalObject, call_frame: *jsc.CallFr
         @import("./CppTask.zig").enqueueShutdownProbe(globalObject);
     }
 
-    const cancellation_counts = @import("./CppTask.zig").shutdownCancellationCounts();
+    const cpp_tasks = @import("./CppTask.zig");
+    if (call_frame.argument(1).isBoolean() and call_frame.argument(1).toBoolean()) {
+        cpp_tasks.enqueueConcurrentShutdownProbe(globalObject);
+    }
+    if (call_frame.argument(2).isBoolean() and call_frame.argument(2).toBoolean()) {
+        cpp_tasks.releaseConcurrentShutdownProbes();
+    }
+    const cancellation_counts = cpp_tasks.shutdownCancellationCounts();
+    const concurrent_probe_counts = cpp_tasks.concurrentShutdownProbeCounts();
 
-    const result = jsc.JSValue.createEmptyObject(globalObject, 7);
+    const result = jsc.JSValue.createEmptyObject(globalObject, 10);
     result.put(globalObject, jsc.ZigString.static("activeTasks"), jsc.JSValue.jsNumber(vm.active_tasks));
     result.put(globalObject, jsc.ZigString.static("concurrentRef"), jsc.JSValue.jsNumber(event_loop.concurrent_ref.load(.seq_cst)));
     result.put(globalObject, jsc.ZigString.static("cancelledCppTasks"), jsc.JSValue.jsNumber(@as(f64, @floatFromInt(cancellation_counts.cancelled))));
     result.put(globalObject, jsc.ZigString.static("performedCleanupCppTasks"), jsc.JSValue.jsNumber(@as(f64, @floatFromInt(cancellation_counts.cleanup_performed))));
     result.put(globalObject, jsc.ZigString.static("performedShutdownProbeTasks"), jsc.JSValue.jsNumber(@as(f64, @floatFromInt(cancellation_counts.probe_performed))));
     result.put(globalObject, jsc.ZigString.static("performedShutdownProbeCleanupActions"), jsc.JSValue.jsNumber(@as(f64, @floatFromInt(cancellation_counts.probe_cleanup_performed))));
+    result.put(globalObject, jsc.ZigString.static("nativeWorkPoolJobs"), jsc.JSValue.jsNumber(vm.native_work_pool_jobs.count()));
+    result.put(globalObject, jsc.ZigString.static("startedNativeWorkPoolProbeTasks"), jsc.JSValue.jsNumber(@as(f64, @floatFromInt(concurrent_probe_counts.started))));
+    result.put(globalObject, jsc.ZigString.static("completedNativeWorkPoolProbeTasks"), jsc.JSValue.jsNumber(@as(f64, @floatFromInt(concurrent_probe_counts.completed))));
 
     // Get num_polls from uws loop (POSIX) or active_handles from libuv (Windows)
     const num_polls: i32 = if (Environment.isWindows)

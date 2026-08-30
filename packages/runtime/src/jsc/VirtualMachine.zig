@@ -67,6 +67,7 @@ hide_bun_stackframes: bool = true,
 
 is_printing_plugin: bool = false,
 is_shutting_down: bool = false,
+native_work_pool_jobs: NativeWorkPoolJobs = .{},
 plugin_runner: ?PluginRunner = null,
 is_main_thread: bool = false,
 exit_handler: ExitHandler = .{},
@@ -999,6 +1000,42 @@ pub fn onExit(this: *VirtualMachine) void {
     }
 }
 
+pub const NativeWorkPoolJobs = struct {
+    lock: bun.Mutex = .{},
+    condition: bun.threading.Condition = .{},
+    accepting: bool = true,
+    active: usize = 0,
+
+    pub fn tryAdd(this: *NativeWorkPoolJobs) bool {
+        this.lock.lock();
+        defer this.lock.unlock();
+        if (!this.accepting) return false;
+        this.active += 1;
+        return true;
+    }
+
+    pub fn complete(this: *NativeWorkPoolJobs) void {
+        this.lock.lock();
+        defer this.lock.unlock();
+        bun.assert(this.active > 0);
+        this.active -= 1;
+        if (this.active == 0) this.condition.broadcast();
+    }
+
+    pub fn closeAndWait(this: *NativeWorkPoolJobs) void {
+        this.lock.lock();
+        defer this.lock.unlock();
+        this.accepting = false;
+        while (this.active > 0) this.condition.wait(&this.lock);
+    }
+
+    pub fn count(this: *NativeWorkPoolJobs) usize {
+        this.lock.lock();
+        defer this.lock.unlock();
+        return this.active;
+    }
+};
+
 extern fn Zig__GlobalObject__destructOnExit(*JSGlobalObject) void;
 extern fn Home__Worker__cancelSnapshotsForVM(*JSGlobalObject) void;
 
@@ -1022,6 +1059,12 @@ pub fn globalExit(this: *VirtualMachine) noreturn {
             // resources underneath live threads; the OS reclaims them.
             bun.Global.exit(this.exit_handler.exit_code);
         }
+        // EventLoopTaskNoContext jobs retain a raw creating-VM pointer and
+        // unref its event loop after their native callback returns. Close
+        // admission and join them before JSC or the event loop is destroyed.
+        this.native_work_pool_jobs.closeAndWait();
+        @import("./CppTask.zig").beginScriptExecutionContextShutdown(this.global);
+        this.eventLoop().cancelQueuedCppTasks();
         // Embedded per-VM socket groups must drain while JSC is still alive
         // (closeAll() fires on_close → JS). After JSC teardown,
         // RareData.deinit() only deinit()s the groups (asserts empty).

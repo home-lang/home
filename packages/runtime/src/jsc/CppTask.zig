@@ -39,6 +39,10 @@ extern fn Home__EventLoopTask__cancelledCount() u64;
 extern fn Home__EventLoopTask__performedCleanupCount() u64;
 extern fn Home__EventLoopTask__performedShutdownProbeCount() u64;
 extern fn Home__EventLoopTask__performedShutdownProbeCleanupCount() u64;
+extern fn Home__EventLoopTaskNoContext__enqueueShutdownProbe(global: *JSGlobalObject) void;
+extern fn Home__EventLoopTaskNoContext__releaseShutdownProbes() void;
+extern fn Home__EventLoopTaskNoContext__probeStartedCount() u64;
+extern fn Home__EventLoopTaskNoContext__probeCompletedCount() u64;
 
 pub fn beginScriptExecutionContextShutdown(global: *JSGlobalObject) void {
     Home__ScriptExecutionContext__beginShutdown(global);
@@ -59,6 +63,21 @@ pub fn shutdownCancellationCounts() struct {
         .cleanup_performed = Home__EventLoopTask__performedCleanupCount(),
         .probe_performed = Home__EventLoopTask__performedShutdownProbeCount(),
         .probe_cleanup_performed = Home__EventLoopTask__performedShutdownProbeCleanupCount(),
+    };
+}
+
+pub fn enqueueConcurrentShutdownProbe(global: *JSGlobalObject) void {
+    Home__EventLoopTaskNoContext__enqueueShutdownProbe(global);
+}
+
+pub fn releaseConcurrentShutdownProbes() void {
+    Home__EventLoopTaskNoContext__releaseShutdownProbes();
+}
+
+pub fn concurrentShutdownProbeCounts() struct { started: u64, completed: u64 } {
+    return .{
+        .started = Home__EventLoopTaskNoContext__probeStartedCount(),
+        .completed = Home__EventLoopTaskNoContext__probeCompletedCount(),
     };
 }
 
@@ -102,6 +121,7 @@ pub const ConcurrentCppTask = struct {
     const EventLoopTaskNoContext = opaque {
         extern fn Bun__EventLoopTaskNoContext__performTask(task: *EventLoopTaskNoContext) void;
         extern fn Bun__EventLoopTaskNoContext__createdInBunVm(task: *const EventLoopTaskNoContext) ?*VirtualMachine;
+        extern fn Home__EventLoopTaskNoContext__cancel(task: *EventLoopTaskNoContext) void;
 
         /// Deallocates `this`
         pub fn run(this: *EventLoopTaskNoContext) void {
@@ -112,6 +132,10 @@ pub const ConcurrentCppTask = struct {
         pub fn getVM(this: *const EventLoopTaskNoContext) ?*VirtualMachine {
             return Bun__EventLoopTaskNoContext__createdInBunVm(this);
         }
+
+        pub fn cancel(this: *EventLoopTaskNoContext) void {
+            Home__EventLoopTaskNoContext__cancel(this);
+        }
     };
 
     pub fn runFromWorkpool(task: *WorkPoolTask) void {
@@ -121,15 +145,20 @@ pub const ConcurrentCppTask = struct {
         const cpp_task = this.cpp_task;
         const maybe_vm = cpp_task.getVM();
         destroy(this);
-        cpp_task.run();
-        if (maybe_vm) |vm| {
+        defer if (maybe_vm) |vm| {
             vm.event_loop.unrefConcurrently();
-        }
+            vm.native_work_pool_jobs.complete();
+        };
+        cpp_task.run();
     }
 
     pub export fn ConcurrentCppTask__createAndRun(cpp_task: *EventLoopTaskNoContext) void {
         markBinding(@src());
         if (cpp_task.getVM()) |vm| {
+            if (!vm.native_work_pool_jobs.tryAdd()) {
+                cpp_task.cancel();
+                return;
+            }
             vm.event_loop.refConcurrently();
         }
         const cpp = ConcurrentCppTask.new(.{ .cpp_task = cpp_task });
