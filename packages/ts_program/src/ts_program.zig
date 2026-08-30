@@ -979,10 +979,10 @@ pub const Program = struct {
     ) ProgramError!void {
         for (self.files.items) |file| {
             if (file.redirect_target != null) continue;
-            if (std.mem.indexOf(u8, file.source, "export") == null or
-                std.mem.indexOf(u8, file.source, "interface") == null or
-                (std.mem.indexOf(u8, file.source, "namespace") == null and
-                    std.mem.indexOf(u8, file.source, "module") == null)) continue;
+            if (!file.sourceContains("export") or
+                !file.sourceContains("interface") or
+                (!file.sourceContains("namespace") and
+                    !file.sourceContains("module"))) continue;
             try collectExportedNamespaceInterfacesFromSource(self.gpa, file.path, file.source, out);
         }
     }
