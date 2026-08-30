@@ -58,6 +58,16 @@ pub const RuntimeTranspilerStore = struct {
         // immediately after this is called, the microtasks will be drained again.
     }
 
+    pub fn cancelForShutdown(this: *RuntimeTranspilerStore) void {
+        var batch = this.queue.popBatch();
+        var iter = batch.iterator();
+        while (iter.next()) |job| job.cancelForShutdown();
+    }
+
+    pub fn shutdownCancellationCount() u64 {
+        return shutdown_cancellation_count.load(.seq_cst);
+    }
+
     pub fn transpile(
         this: *RuntimeTranspilerStore,
         vm: *VirtualMachine,
@@ -104,7 +114,7 @@ pub const RuntimeTranspilerStore = struct {
         };
         if (comptime Environment.allow_assert)
             debug("transpile({s}, {s}, async)", .{ path.text, @tagName(job.loader) });
-        job.schedule();
+        if (!job.schedule()) job.cancelForShutdown();
         return promise;
     }
 
@@ -150,6 +160,29 @@ pub const RuntimeTranspilerStore = struct {
             this.log.deinit();
             this.promise.deinit();
             this.globalThis = undefined;
+        }
+
+        fn deinitResolvedSource(this: *TranspilerJob) void {
+            var resolved_source = &this.resolved_source;
+            if (resolved_source.source_code_needs_deref) resolved_source.source_code.deref();
+            resolved_source.specifier.deref();
+            resolved_source.source_url.deref();
+            resolved_source.bytecode_origin_path.deref();
+            if (resolved_source.module_info) |ptr| {
+                const module_info: *analyze_transpiled_module.ModuleInfoDeserialized = @ptrCast(@alignCast(ptr));
+                module_info.deinit();
+            }
+            if (resolved_source.bytecode_cache) |ptr| bun.mimalloc.mi_free(ptr);
+            resolved_source.* = .{};
+        }
+
+        pub fn cancelForShutdown(this: *TranspilerJob) void {
+            const vm = this.vm;
+            this.poll_ref.unref(vm);
+            this.deinitResolvedSource();
+            this.deinit();
+            vm.transpiler_store.store.put(this);
+            _ = shutdown_cancellation_count.fetchAdd(1, .seq_cst);
         }
 
         threadlocal var ast_memory_store: ?*js_ast.ASTMemoryAllocator = null;
@@ -199,13 +232,17 @@ pub const RuntimeTranspilerStore = struct {
             try AsyncModule.fulfill(globalThis, promise, &resolved_source, parse_error, specifier, referrer, &log);
         }
 
-        pub fn schedule(this: *TranspilerJob) void {
+        pub fn schedule(this: *TranspilerJob) bool {
             this.poll_ref.ref(this.vm);
+            if (!this.vm.native_work_pool_jobs.tryAdd()) return false;
             jsc.WorkPool.schedule(&this.work_task);
+            return true;
         }
 
         pub fn runFromWorkerThread(work_task: *jsc.WorkPoolTask) void {
-            @as(*TranspilerJob, @fieldParentPtr("work_task", work_task)).run();
+            const this: *TranspilerJob = @fieldParentPtr("work_task", work_task);
+            defer this.vm.native_work_pool_jobs.complete();
+            this.run();
         }
 
         pub fn run(this: *TranspilerJob) void {
@@ -544,6 +581,8 @@ pub const RuntimeTranspilerStore = struct {
         }
     };
 };
+
+var shutdown_cancellation_count = std.atomic.Value(u64).init(0);
 
 const Fs = @import("../resolver/fs.zig");
 const analyze_transpiled_module = @import("../bundler/analyze_transpiled_module.zig");

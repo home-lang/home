@@ -564,6 +564,7 @@ pub fn cancelForShutdown(task: Task, global: *jsc.JSGlobalObject) bool {
         @field(Task.Tag, @typeName(AsyncImageTask)) => task.get(AsyncImageTask).?.cancelForShutdown(),
         @field(Task.Tag, @typeName(AsyncTransformTask)) => task.get(AsyncTransformTask).?.cancelForShutdown(),
         @field(Task.Tag, @typeName(CopyFilePromiseTask)) => task.get(CopyFilePromiseTask).?.cancelForShutdown(),
+        @field(Task.Tag, @typeName(RuntimeTranspilerStore)) => task.get(RuntimeTranspilerStore).?.cancelForShutdown(),
         else => return false,
     }
     return true;
