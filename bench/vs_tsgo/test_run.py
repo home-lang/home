@@ -1,5 +1,6 @@
 """Benchmark preflight regressions; run with unittest discovery in this directory."""
 
+import json
 import unittest
 import subprocess
 import tempfile
@@ -50,6 +51,40 @@ class CompilerVersionTests(unittest.TestCase):
                 run.cmd_cold(30, 3)
             self.assertEqual([], results.mock_calls)
             validate.assert_not_called()
+
+
+class LatestResultsTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.results = Path(temporary.name)
+
+    def write_result(self, name, *, status="verified", rounds=1):
+        directory = self.results / name
+        directory.mkdir()
+        metadata = {
+            "runs": rounds,
+            "workloads": ["example"],
+            "provenance": {"status": status},
+        }
+        (directory / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+        for index in range(rounds):
+            (directory / f"example-round-{index:03d}.json").write_text("{}", encoding="utf-8")
+        return directory
+
+    def test_ignores_newer_non_benchmark_directory(self):
+        expected = self.write_result("20260830T220926Z")
+        (self.results / "type-transfer.FHPXSf").mkdir()
+        with mock.patch.object(run, "RESULTS", self.results):
+            self.assertEqual(expected, run.latest_results())
+
+    def test_ignores_incomplete_or_unverified_result(self):
+        expected = self.write_result("20260830T220926Z")
+        self.write_result("20260831T000000Z", status="incomplete")
+        missing_round = self.write_result("20260901T000000Z", rounds=2)
+        (missing_round / "example-round-001.json").unlink()
+        with mock.patch.object(run, "RESULTS", self.results):
+            self.assertEqual(expected, run.latest_results())
 
 
 class ProvenanceTests(unittest.TestCase):

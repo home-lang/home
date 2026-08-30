@@ -1357,10 +1357,34 @@ def cmd_cold(runs: int, warmup: int, workloads: list[str] | None = None) -> Path
     return output
 
 
+def is_completed_result(path: Path) -> bool:
+    metadata_path = path / "metadata.json"
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+
+    provenance = metadata.get("provenance", {})
+    workloads = metadata.get("workloads")
+    runs = metadata.get("runs")
+    if provenance.get("status") != "verified" or not isinstance(workloads, list) or not workloads:
+        return False
+    if not isinstance(runs, int) or isinstance(runs, bool) or runs <= 0:
+        return False
+
+    return all(
+        (path / f"{workload}-round-{index:03d}.json").is_file()
+        for workload in workloads
+        for index in range(runs)
+    )
+
+
 def latest_results() -> Path:
-    candidates = sorted(path for path in RESULTS.iterdir() if path.is_dir()) if RESULTS.is_dir() else []
+    candidates = []
+    if RESULTS.is_dir():
+        candidates = sorted(path for path in RESULTS.iterdir() if path.is_dir() and is_completed_result(path))
     if not candidates:
-        raise SystemExit("no results found; run './run.sh cold'")
+        raise SystemExit("no completed verified results found; run './run.sh cold'")
     return candidates[-1]
 
 
