@@ -106,6 +106,7 @@ const native_skip_paths = [_][]const u8{
     "src/jsc/bindings/BunProcess.cpp.o", // compiled from Home's implementation below
     "unified/UnifiedSource-src_jsc_bindings-1.cpp.o", // contains the Home-owned builtin registry
     "unified/UnifiedSource-src_jsc_bindings-0.cpp.o", // contains Home-owned WorkerGlobalScope
+    "unified/UnifiedSource-src_jsc_bindings-4.cpp.o", // contains Home-owned ScriptExecutionContext
     "unified/UnifiedSource-src_jsc_bindings_webcore-1.cpp.o", // contains Home-owned AbortSignal GC reachability
     "unified/UnifiedSource-src_jsc_bindings_webcore-2.cpp.o", // contains Home-owned JSMessagePort
     "unified/UnifiedSource-src_jsc_bindings_webcore-3.cpp.o", // contains Home-owned MessagePort and JSWorker
@@ -160,6 +161,7 @@ fn linkBunNative(b: *std.Build, m: *std.Build.Module, target: std.Build.Resolved
 
     m.addObjectFile(native_bindings.processObject(b, bun_obj_root));
     m.addObjectFile(native_bindings.registryObject(b, bun_obj_root));
+    m.addObjectFile(native_bindings.scriptExecutionContextObject(b, bun_obj_root));
     m.addObjectFile(native_bindings.napiObject(b, bun_obj_root));
     m.addObjectFile(native_bindings.messagePortObject(b, bun_obj_root));
     m.addObjectFile(native_bindings.messagePortPipeObject(b, bun_obj_root));

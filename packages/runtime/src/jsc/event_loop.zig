@@ -683,13 +683,23 @@ pub fn unrefConcurrently(this: *EventLoop) void {
 }
 
 /// Testing API to expose event loop state
-pub fn getActiveTasks(globalObject: *jsc.JSGlobalObject, _: *jsc.CallFrame) bun.JSError!jsc.JSValue {
+pub fn getActiveTasks(globalObject: *jsc.JSGlobalObject, call_frame: *jsc.CallFrame) bun.JSError!jsc.JSValue {
     const vm = globalObject.bunVM();
     const event_loop = vm.event_loop;
 
-    const result = jsc.JSValue.createEmptyObject(globalObject, 3);
+    if (call_frame.argument(0).isBoolean() and call_frame.argument(0).toBoolean()) {
+        @import("./CppTask.zig").enqueueShutdownProbe(globalObject);
+    }
+
+    const cancellation_counts = @import("./CppTask.zig").shutdownCancellationCounts();
+
+    const result = jsc.JSValue.createEmptyObject(globalObject, 7);
     result.put(globalObject, jsc.ZigString.static("activeTasks"), jsc.JSValue.jsNumber(vm.active_tasks));
     result.put(globalObject, jsc.ZigString.static("concurrentRef"), jsc.JSValue.jsNumber(event_loop.concurrent_ref.load(.seq_cst)));
+    result.put(globalObject, jsc.ZigString.static("cancelledCppTasks"), jsc.JSValue.jsNumber(@as(f64, @floatFromInt(cancellation_counts.cancelled))));
+    result.put(globalObject, jsc.ZigString.static("performedCleanupCppTasks"), jsc.JSValue.jsNumber(@as(f64, @floatFromInt(cancellation_counts.cleanup_performed))));
+    result.put(globalObject, jsc.ZigString.static("performedShutdownProbeTasks"), jsc.JSValue.jsNumber(@as(f64, @floatFromInt(cancellation_counts.probe_performed))));
+    result.put(globalObject, jsc.ZigString.static("performedShutdownProbeCleanupActions"), jsc.JSValue.jsNumber(@as(f64, @floatFromInt(cancellation_counts.probe_cleanup_performed))));
 
     // Get num_polls from uws loop (POSIX) or active_handles from libuv (Windows)
     const num_polls: i32 = if (Environment.isWindows)
@@ -705,6 +715,43 @@ pub fn deinit(this: *EventLoop) void {
     this.tasks.deinit();
     this.immediate_tasks.clearAndFree(bun.default_allocator);
     this.next_immediate_tasks.clearAndFree(bun.default_allocator);
+}
+
+/// Cancel every queued C++ EventLoopTask after the context's producer registry
+/// has closed. Cleanup tasks execute their native cleanup action on this owner
+/// thread; ordinary tasks are destroyed without running user code. Other task
+/// families stay ordered for their own shutdown protocols.
+pub fn cancelQueuedCppTasks(this: *EventLoop) void {
+    var retained = Queue.init(bun.default_allocator);
+
+    while (true) {
+        var batch = this.concurrent_tasks.popBatch();
+        var iterator = batch.iterator();
+        var previous: ?*ConcurrentTask = null;
+        while (iterator.next()) |task| {
+            if (previous) |node| node.deinit();
+            previous = if (task.autoDelete()) task else null;
+            bun.handleOom(this.tasks.writeItem(task.task));
+        }
+        if (previous) |node| node.deinit();
+
+        if (this.tasks.count == 0)
+            break;
+
+        var pending = this.tasks;
+        this.tasks = Queue.init(bun.default_allocator);
+        while (pending.readItem()) |task| {
+            if (task.get(CppTask)) |cpp_task| {
+                cpp_task.cancel(this.global);
+            } else {
+                bun.handleOom(retained.writeItem(task));
+            }
+        }
+        pending.deinit();
+    }
+
+    this.tasks.deinit();
+    this.tasks = retained;
 }
 
 pub const AnyEventLoop = @import("../event_loop/AnyEventLoop.zig").AnyEventLoop;

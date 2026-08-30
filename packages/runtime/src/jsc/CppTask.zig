@@ -32,6 +32,36 @@ fn Bun__performTask(global: *JSGlobalObject, this: *CppTask) JSError!void {
     return bun_rt.cpp.Bun__performTask(global, this);
 }
 
+extern fn Home__ScriptExecutionContext__beginShutdown(global: *JSGlobalObject) void;
+extern fn Home__EventLoopTask__cancel(global: *JSGlobalObject, task: *CppTask) void;
+extern fn Home__EventLoopTask__enqueueShutdownProbe(global: *JSGlobalObject) void;
+extern fn Home__EventLoopTask__cancelledCount() u64;
+extern fn Home__EventLoopTask__performedCleanupCount() u64;
+extern fn Home__EventLoopTask__performedShutdownProbeCount() u64;
+extern fn Home__EventLoopTask__performedShutdownProbeCleanupCount() u64;
+
+pub fn beginScriptExecutionContextShutdown(global: *JSGlobalObject) void {
+    Home__ScriptExecutionContext__beginShutdown(global);
+}
+
+pub fn enqueueShutdownProbe(global: *JSGlobalObject) void {
+    Home__EventLoopTask__enqueueShutdownProbe(global);
+}
+
+pub fn shutdownCancellationCounts() struct {
+    cancelled: u64,
+    cleanup_performed: u64,
+    probe_performed: u64,
+    probe_cleanup_performed: u64,
+} {
+    return .{
+        .cancelled = Home__EventLoopTask__cancelledCount(),
+        .cleanup_performed = Home__EventLoopTask__performedCleanupCount(),
+        .probe_performed = Home__EventLoopTask__performedShutdownProbeCount(),
+        .probe_cleanup_performed = Home__EventLoopTask__performedShutdownProbeCleanupCount(),
+    };
+}
+
 // JSC bridge bun.destroy stubbed — re-attaches in Phase 12.2.
 fn destroy(ptr: anytype) void {
     std.heap.smp_allocator.destroy(ptr);
@@ -53,6 +83,12 @@ pub const CppTask = opaque {
     pub fn run(this: *CppTask, global: *JSGlobalObject) JSError!void {
         markBinding(@src());
         return Bun__performTask(global, this);
+    }
+
+    /// Dispose without entering arbitrary JavaScript. Cleanup-tagged tasks are
+    /// performed on the owning context thread; ordinary tasks are deleted.
+    pub fn cancel(this: *CppTask, global: *JSGlobalObject) void {
+        Home__EventLoopTask__cancel(global, this);
     }
 };
 

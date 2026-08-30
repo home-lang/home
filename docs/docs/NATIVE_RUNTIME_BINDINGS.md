@@ -8,7 +8,7 @@ Home's JSC-enabled build still links most C++ bindings and vendor libraries from
 
 Run `zig build debug -Denable_jsc=true`. The existing `HOME_BUN_OBJ_ROOT` and `HOME_BUN_WEBKIT_LIB` overrides still select the external native artifacts.
 
-For the Home-owned bindings, the build requires `compile_commands.json` next to the external `obj` directory and entries for `BunProcess.cpp`, `napi.cpp`, the registry's unified translation unit, `UnifiedSource-src_jsc_bindings_webcore-3.cpp` (MessagePort and JSWorker), `UnifiedSource-src_jsc_bindings_webcore-4.cpp` (MessagePortPipe), `UnifiedSource-src_jsc_bindings_webcore-5.cpp` (Worker), `UnifiedSource-src_jsc_bindings-0.cpp` (BunWorkerGlobalScope), and `UnifiedSource-src_jsc_bindings_webcore-2.cpp` (JSMessagePort). It uses each entry's compiler, ABI flags, generated headers, and dependency include paths. Missing metadata is an error, not a fallback to stale external objects.
+For the Home-owned bindings, the build requires `compile_commands.json` next to the external `obj` directory and entries for `BunProcess.cpp`, `napi.cpp`, the registry's unified translation unit, `UnifiedSource-src_jsc_bindings-4.cpp` (ScriptExecutionContext), `UnifiedSource-src_jsc_bindings_webcore-3.cpp` (MessagePort and JSWorker), `UnifiedSource-src_jsc_bindings_webcore-4.cpp` (MessagePortPipe), `UnifiedSource-src_jsc_bindings_webcore-5.cpp` (Worker), `UnifiedSource-src_jsc_bindings-0.cpp` (BunWorkerGlobalScope), and `UnifiedSource-src_jsc_bindings_webcore-2.cpp` (JSMessagePort). It uses each entry's compiler, ABI flags, generated headers, and dependency include paths. Missing metadata is an error, not a fallback to stale external objects.
 
 The source is copied into the build cache so quoted includes use the ABI-matched external headers. Saved precompiled headers are not reused: they may belong to another compiler version. The original `root-pch.h` is parsed instead. Clang's dependency file tracks all included headers, and Home's build cache tracks the implementation and compiler arguments. Source/header changes therefore rebuild the owned binding; unchanged builds reuse it.
 
@@ -147,7 +147,27 @@ The pipe, completed-closure leak, and isolated context-destruction corpus tests 
 
 ### Remaining shutdown work
 
-[#465](https://github.com/home-lang/home/issues/465) remains open for safe admission and cancellation of generic C++ tasks, cleanup-tag behavior, thread-affine captures, and callback-only cleanup such as parent-poll release. [#468](https://github.com/home-lang/home/issues/468) tracks work-pool producer quiescence: an in-flight native job is not the same thing as an event-loop queue entry. [#470](https://github.com/home-lang/home/issues/470) tracks nested-worker termination and ownership.
+The admitted ScriptExecutionContext C++ task tranche is complete in [#565](https://github.com/home-lang/home/issues/565). [#465](https://github.com/home-lang/home/issues/465) remains open for producers that bypass the identifier registry, non-C++ task families, and late admission after broader VM shutdown. [#468](https://github.com/home-lang/home/issues/468) tracks work-pool producer quiescence: an in-flight native job is not the same thing as an event-loop queue entry. [#470](https://github.com/home-lang/home/issues/470) tracks nested-worker termination and ownership.
+
+## Worker ScriptExecutionContext task cancellation (#565)
+
+Worker shutdown now removes its ScriptExecutionContext from the identifier registry while holding the same lock used through `postTaskTo()` lookup and enqueue. This waits for earlier identifier-based producers and rejects later ones before queue cancellation begins. The early removal is recorded outside the class, preserving the pinned native layout; `GlobalObject` destruction consumes that record instead of removing the context twice.
+
+The event loop then drains both its local FIFO and concurrent MPSC queue. Ordinary C++ EventLoopTasks are deleted without executing their callback. Cleanup-tagged tasks perform their native cleanup action on the owning context thread while the context is still alive. Cleanup destructors may enqueue more C++ work, so cancellation repeats to a fixed point. Non-C++ task tags retain their order and remain owned by their separate shutdown protocols. No arbitrary JavaScript is dispatched into the stopped worker.
+
+Home owns `ScriptExecutionContext.cpp` through `HomeScriptExecutionContext.cpp`, which preserves all 31 sibling implementations and their order from Bun's pinned `UnifiedSource-src_jsc_bindings-4.cpp`. Build configuration compares the complete include-basename sequence and rejects source drift before compiling. The implementation itself is copied into the build cache so quoted headers still resolve against the selected Bun build's ABI-matched roots.
+
+`native-worker-cpp-task-shutdown.test.mjs` uses exact process-wide counters. Its natural-drain control executes one ordinary probe callback and one cleanup action. Its terminated worker leaves the ordinary callback unexecuted, deletes that task exactly once, and performs the cleanup-tagged task and its action exactly once. The ordinary probe enters the local FIFO and the cleanup probe enters the concurrent queue.
+
+Verification for this checkpoint:
+
+- Native debug build: **20/20 steps**.
+- Runtime units: **1,815 pass / 19 skip / 0 fail**, with **22/22 build steps**.
+- Native binding build helpers: **5/5**.
+- Aggregate runtime regressions: **37/38 pass**. Every worker, snapshot, NAPI, FFI, and lifecycle file passes. `native-package-run.test.mjs` has one pre-existing config-diagnostic failure that reproduces on the unchanged pre-checkpoint ReleaseFast binary; it is preserved in [#566](https://github.com/home-lang/home/issues/566), not counted as a pass.
+- Focused Pickier, Zig formatting, and diff whitespace checks pass.
+
+This closes admitted identifier-based C++ task ownership for workers. It does not quiesce `EventLoopTaskNoContext` work-pool jobs ([#468](https://github.com/home-lang/home/issues/468)), make every Zig task tag cancellable, cover producers holding raw VM pointers, establish other-platform execution, or complete [#66](https://github.com/home-lang/home/issues/66).
 
 At that checkpoint, `tests/runtime/worker-heap-snapshot-cancellation.pending.mjs` was a bounded Home failure in [#471](https://github.com/home-lang/home/issues/471): the snapshot promise remains unsettled after worker termination, producing a deadline failure and exit status 1. The probe accepts either a resolved readable stream or `ERR_WORKER_NOT_RUNNING`, since snapshot work may finish before cancellation. It checks settlement and the stream interface, not snapshot contents. Node 24.18.0 can resolve the promise, but both consuming the stream and immediately destroying it without consumption produced SIGSEGV during this race, including after printing the settlement message. Therefore no passing Node snapshot control is claimed; a printed success message before a crash is not a successful run. Reproducing that crash is not a compatibility requirement.
 

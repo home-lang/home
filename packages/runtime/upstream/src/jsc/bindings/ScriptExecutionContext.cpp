@@ -7,6 +7,7 @@
 #include "_libusockets.h"
 #include "BunClientData.h"
 #include "EventLoopTask.h"
+#include <wtf/Threading.h>
 extern "C" void Bun__startLoop(us_loop_t* loop);
 
 namespace WebCore {
@@ -37,6 +38,7 @@ ScriptExecutionContext::ScriptExecutionContext(JSC::VM* vm, JSC::JSGlobalObject*
     : m_vm(vm)
     , m_globalObject(globalObject)
     , m_identifier(initialIdentifier())
+    , m_contextThreadUID(Thread::currentSingleton().uid())
 {
     relaxAdoptionRequirement();
     addToContextsMap();
@@ -46,6 +48,7 @@ ScriptExecutionContext::ScriptExecutionContext(JSC::VM* vm, JSC::JSGlobalObject*
     : m_vm(vm)
     , m_globalObject(globalObject)
     , m_identifier(identifier == std::numeric_limits<int32_t>::max() ? ++lastUniqueIdentifier : identifier)
+    , m_contextThreadUID(Thread::currentSingleton().uid())
 {
     relaxAdoptionRequirement();
     addToContextsMap();
@@ -58,6 +61,24 @@ static HashMap<ScriptExecutionContextIdentifier, ScriptExecutionContext*>& allSc
     ASSERT(allScriptExecutionContextsMapLock.isLocked());
     return contexts;
 }
+
+// Worker shutdown removes its context from the public registry before queued
+// EventLoopTasks are cancelled. The registry lock is held through every
+// postTaskTo() enqueue, so removal is the producer barrier for identifier-based
+// posts. GlobalObject::~GlobalObject() later calls removeFromContextsMap(); keep
+// a separate set so that normal class layout and the pinned external ABI stay
+// unchanged while making that second removal a no-op.
+static UncheckedKeyHashSet<ScriptExecutionContextIdentifier>& contextsRemovedForShutdown() WTF_REQUIRES_LOCK(allScriptExecutionContextsMapLock)
+{
+    static NeverDestroyed<UncheckedKeyHashSet<ScriptExecutionContextIdentifier>> contexts;
+    ASSERT(allScriptExecutionContextsMapLock.isLocked());
+    return contexts;
+}
+
+static std::atomic<uint64_t> cancelledEventLoopTasks { 0 };
+static std::atomic<uint64_t> performedCleanupEventLoopTasks { 0 };
+static std::atomic<uint64_t> performedShutdownProbeTasks { 0 };
+static std::atomic<uint64_t> performedShutdownProbeCleanupActions { 0 };
 
 ScriptExecutionContext* ScriptExecutionContext::getScriptExecutionContext(ScriptExecutionContextIdentifier identifier)
 {
@@ -116,6 +137,28 @@ bool ScriptExecutionContext::postTaskTo(ScriptExecutionContextIdentifier identif
     return true;
 }
 
+// Identical to the overload above, except `betweenLookupAndEnqueue()` runs
+// after the target context is found-live but before the task is enqueued (i.e.
+// before the target thread can observe / run / destroy it). The map lock is
+// held across the callback. Used by `Worker::dispatchExit` so the worker
+// thread can release its create-time ref while the lambda's captured `Ref`
+// is still owned by the worker-thread stack — once enqueued, the parent could
+// run and destroy it before the calling frame resumes, making any later
+// `deref()` on the worker thread potentially the last (~Worker on the wrong
+// thread, EventListenerMap thread-UID assert).
+bool ScriptExecutionContext::postTaskTo(ScriptExecutionContextIdentifier identifier, NOESCAPE const WTF::Function<void()>& betweenLookupAndEnqueue, Function<void(ScriptExecutionContext&)>&& task)
+{
+    Locker locker { allScriptExecutionContextsMapLock };
+    auto* context = allScriptExecutionContextsMap().get(identifier);
+
+    if (!context)
+        return false;
+
+    betweenLookupAndEnqueue();
+    context->postTaskConcurrently(WTF::move(task));
+    return true;
+}
+
 void ScriptExecutionContext::didCreateDestructionObserver(ContextDestructionObserver& observer)
 {
 #if ASSERT_ENABLED
@@ -137,12 +180,9 @@ bool ScriptExecutionContext::isJSExecutionForbidden()
     return !m_vm || m_vm->executionForbidden();
 }
 
-extern "C" void* Bun__getVM();
-
 bool ScriptExecutionContext::isContextThread()
 {
-    auto clientData = WebCore::clientData(vm());
-    return clientData && clientData->bunVM == Bun__getVM();
+    return m_contextThreadUID == Thread::currentSingleton().uid();
 }
 
 bool ScriptExecutionContext::ensureOnContextThread(ScriptExecutionContextIdentifier identifier, Function<void(ScriptExecutionContext&)>&& task)
@@ -214,6 +254,8 @@ void ScriptExecutionContext::addToContextsMap()
 void ScriptExecutionContext::removeFromContextsMap()
 {
     Locker locker { allScriptExecutionContextsMapLock };
+    if (contextsRemovedForShutdown().remove(m_identifier))
+        return;
     ASSERT(allScriptExecutionContextsMap().contains(m_identifier));
     allScriptExecutionContextsMap().remove(m_identifier);
 }
@@ -242,7 +284,7 @@ void ScriptExecutionContext::postTask(EventLoopTask* task)
     static_cast<Zig::GlobalObject*>(m_globalObject)->queueTask(task);
 }
 
-// Zig bindings
+// Native bindings
 extern "C" ScriptExecutionContextIdentifier ScriptExecutionContextIdentifier__forGlobalObject(JSC::JSGlobalObject* globalObject)
 {
     return defaultGlobalObject(globalObject)->scriptExecutionContext()->identifier();
@@ -253,6 +295,70 @@ extern "C" JSC::JSGlobalObject* ScriptExecutionContextIdentifier__getGlobalObjec
     auto* context = ScriptExecutionContext::getScriptExecutionContext(id);
     if (!context) return nullptr;
     return context->globalObject();
+}
+
+extern "C" void Home__ScriptExecutionContext__beginShutdown(JSC::JSGlobalObject* globalObject)
+{
+    auto* context = defaultGlobalObject(globalObject)->scriptExecutionContext();
+    RELEASE_ASSERT(context->isContextThread());
+
+    Locker locker { allScriptExecutionContextsMapLock };
+    auto identifier = context->identifier();
+    if (allScriptExecutionContextsMap().get(identifier) != context)
+        return;
+    allScriptExecutionContextsMap().remove(identifier);
+    contextsRemovedForShutdown().add(identifier);
+}
+
+extern "C" void Home__EventLoopTask__cancel(JSC::JSGlobalObject* globalObject, EventLoopTask* task)
+{
+    auto* context = defaultGlobalObject(globalObject)->scriptExecutionContext();
+    RELEASE_ASSERT(context->isContextThread());
+
+    if (task->isCleanupTask()) {
+        performedCleanupEventLoopTasks.fetch_add(1, std::memory_order_relaxed);
+        task->performTask(*context);
+        return;
+    }
+
+    cancelledEventLoopTasks.fetch_add(1, std::memory_order_relaxed);
+    delete task;
+}
+
+// A deterministic testing hook: both tasks are queued on the current context
+// and deliberately do no JavaScript. A worker can block immediately after
+// calling this, allowing terminate() to exercise both cancellation branches.
+extern "C" void Home__EventLoopTask__enqueueShutdownProbe(JSC::JSGlobalObject* globalObject)
+{
+    auto* global = defaultGlobalObject(globalObject);
+    auto* context = global->scriptExecutionContext();
+    RELEASE_ASSERT(context->isContextThread());
+    global->queueTask(new EventLoopTask([](ScriptExecutionContext&) {
+        performedShutdownProbeTasks.fetch_add(1, std::memory_order_relaxed);
+    }));
+    global->queueTaskConcurrently(new EventLoopTask(EventLoopTask::CleanupTask, [](ScriptExecutionContext&) {
+        performedShutdownProbeCleanupActions.fetch_add(1, std::memory_order_relaxed);
+    }));
+}
+
+extern "C" uint64_t Home__EventLoopTask__cancelledCount()
+{
+    return cancelledEventLoopTasks.load(std::memory_order_relaxed);
+}
+
+extern "C" uint64_t Home__EventLoopTask__performedCleanupCount()
+{
+    return performedCleanupEventLoopTasks.load(std::memory_order_relaxed);
+}
+
+extern "C" uint64_t Home__EventLoopTask__performedShutdownProbeCount()
+{
+    return performedShutdownProbeTasks.load(std::memory_order_relaxed);
+}
+
+extern "C" uint64_t Home__EventLoopTask__performedShutdownProbeCleanupCount()
+{
+    return performedShutdownProbeCleanupActions.load(std::memory_order_relaxed);
 }
 
 } // namespace WebCore

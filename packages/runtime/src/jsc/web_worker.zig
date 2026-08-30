@@ -855,6 +855,15 @@ fn shutdown(this: *WebWorker) void {
     if (vm_to_deinit) |vm| drainChildExitTasks(vm);
     Home__Worker__closeParentPort(cpp_worker);
 
+    // Close identifier-based producer admission under ScriptExecutionContext's
+    // registry lock, then dispose every admitted C++ task while its context is
+    // still alive. Cleanup-tagged tasks run only their native cleanup action;
+    // ordinary callbacks are destroyed without entering stopped JavaScript.
+    if (vm_to_deinit) |vm| {
+        @import("./CppTask.zig").beginScriptExecutionContextShutdown(vm.global);
+        vm.eventLoop().cancelQueuedCppTasks();
+    }
+
     // ---- 3. JSC VM teardown ----------------------------------------------
     if (globalObject) |global| {
         WebWorker__teardownJSCVM(global);
