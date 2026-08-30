@@ -167950,6 +167950,13 @@ pub const Checker = struct {
             object_t;
         if (obj >= self.interner.pool.typeCount()) return null;
         const obj_flags = self.interner.pool.flagsOf(obj);
+        // A valid indexed access into `any` produces `any`, regardless of
+        // the property key. Keep the result concrete so transported generic
+        // defaults such as `D = T["def"]` do not survive instantiation as
+        // symbolic `any["def"]` types that spuriously fail relations.
+        if (obj_flags.is_any and self.typeIsPropertyKeyDomain(index_t, 0)) {
+            return types.Primitive.any;
+        }
         if (try self.unionTupleLiteralIndexAccess(obj, index_t)) |access| {
             return access.value_type;
         }
@@ -220065,6 +220072,19 @@ test "checker: type-level indexed access distinguishes invalid keys signatures a
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
     try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.no_matching_index_signature));
     try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.type_cannot_be_used_as_index));
+}
+
+test "checker: indexed access into any resolves to any" {
+    const s = try newSetup(
+        \\type Def = any["def"];
+        \\declare const def: Def;
+        \\const numberValue: number = def;
+        \\const stringValue: string = def;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
 }
 
 test "checker: generic indexed access follows constraint direction" {
