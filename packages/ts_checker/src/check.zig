@@ -5325,6 +5325,8 @@ pub const Checker = struct {
     program_module_namespace_types: std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId) = .empty,
     free_type_parameter_pending: std.ArrayListUnmanaged(TypeId) = .empty,
     free_type_parameter_visited: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
+    this_type_parameter_pending: std.ArrayListUnmanaged(TypeId) = .empty,
+    this_type_parameter_visited: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
     program_exported_values: []const ProgramExportedValue = &.{},
     program_exported_types: []const ProgramExportedType = &.{},
     synthetic_program_class_origins: std.AutoHashMapUnmanaged(TypeId, hir_mod.StringId) = .empty,
@@ -5868,6 +5870,8 @@ pub const Checker = struct {
         self.program_schema_support.deinit(self.gpa);
         self.free_type_parameter_pending.deinit(self.gpa);
         self.free_type_parameter_visited.deinit(self.gpa);
+        self.this_type_parameter_pending.deinit(self.gpa);
+        self.this_type_parameter_visited.deinit(self.gpa);
         for (self.member_narrow_scopes.items) |*scope| {
             var s = scope.*;
             s.deinit(self.gpa);
@@ -82180,58 +82184,53 @@ pub const Checker = struct {
 
     fn containsThisTypeParameter(self: *Checker, t: TypeId) bool {
         if (t >= self.interner.pool.typeCount()) return false;
-        if (self.isThisTypeParameter(t)) return true;
-        const flags = self.interner.pool.flagsOf(t);
-        if (flags.is_union) {
-            for (self.interner.unionMembers(t)) |m| if (self.containsThisTypeParameter(m)) return true;
-            return false;
-        }
-        if (flags.is_intersection) {
-            for (self.interner.intersectionMembers(t)) |m| if (self.containsThisTypeParameter(m)) return true;
-            return false;
-        }
-        if (flags.is_object_type) {
-            for (self.interner.objectMembers(t)) |m| if (self.containsThisTypeParameter(m.type)) return true;
-            const string_idx = self.interner.objectStringIndex(t);
-            if (string_idx != types.Primitive.none and self.containsThisTypeParameter(string_idx)) return true;
-            const number_idx = self.interner.objectNumberIndex(t);
-            if (number_idx != types.Primitive.none and self.containsThisTypeParameter(number_idx)) return true;
-            return false;
-        }
-        if (flags.is_signature) {
-            for (self.interner.signatureParams(t)) |p| if (self.containsThisTypeParameter(p)) return true;
-            if (self.interner.signatureReturn(t)) |r| if (self.containsThisTypeParameter(r)) return true;
-            return false;
-        }
-        if (flags.is_keyof) {
-            const payload_idx = self.interner.pool.payloadOf(t);
-            if (payload_idx >= self.interner.pool.keyof_payloads.items.len) return false;
-            const k = self.interner.pool.keyof_payloads.items[payload_idx];
-            return self.containsThisTypeParameter(k.operand);
-        }
-        if (flags.is_indexed_access) {
-            const payload_idx = self.interner.pool.payloadOf(t);
-            if (payload_idx >= self.interner.pool.indexed_access_payloads.items.len) return false;
-            const ia = self.interner.pool.indexed_access_payloads.items[payload_idx];
-            return self.containsThisTypeParameter(ia.object) or self.containsThisTypeParameter(ia.index);
-        }
-        if (flags.is_conditional) {
-            const c = self.interner.conditionalPayload(t);
-            return self.containsThisTypeParameter(c.check_type) or
-                self.containsThisTypeParameter(c.extends_type) or
-                self.containsThisTypeParameter(c.true_branch) or
-                self.containsThisTypeParameter(c.false_branch);
-        }
-        if (flags.is_mapped) {
-            const m = self.interner.mappedPayload(t);
-            return self.containsThisTypeParameter(m.constraint) or self.containsThisTypeParameter(m.template);
-        }
-        if (flags.is_template_literal) {
-            for (self.interner.templateLiteralTypes(t)) |part| if (self.containsThisTypeParameter(part)) return true;
-            return false;
-        }
-        if (flags.is_string_mapping) {
-            return self.containsThisTypeParameter(self.interner.stringMappingPayload(t).inner);
+        // Recursive aliases and namespace/object graphs can be cyclic. Walk
+        // each identity once so a negative query remains linear instead of
+        // repeatedly expanding the same mapped-type cycle. Allocation
+        // failure is conservative: retaining `this` prevents an unsafe eager
+        // indexed-access reduction.
+        const pending = &self.this_type_parameter_pending;
+        const visited = &self.this_type_parameter_visited;
+        pending.clearRetainingCapacity();
+        visited.clearRetainingCapacity();
+        pending.append(self.gpa, t) catch return true;
+        while (pending.pop()) |current| {
+            if (current >= self.interner.pool.typeCount()) continue;
+            const entry = visited.getOrPut(self.gpa, current) catch return true;
+            if (entry.found_existing) continue;
+            if (self.isThisTypeParameter(current)) return true;
+            const flags = self.interner.pool.flagsOf(current);
+            if (flags.is_union) {
+                pending.appendSlice(self.gpa, self.interner.unionMembers(current)) catch return true;
+            } else if (flags.is_intersection) {
+                pending.appendSlice(self.gpa, self.interner.intersectionMembers(current)) catch return true;
+            } else if (flags.is_object_type) {
+                for (self.interner.objectMembers(current)) |member| pending.append(self.gpa, member.type) catch return true;
+                pending.appendSlice(self.gpa, &.{ self.interner.objectStringIndex(current), self.interner.objectNumberIndex(current) }) catch return true;
+            } else if (flags.is_signature) {
+                pending.appendSlice(self.gpa, self.interner.signatureParams(current)) catch return true;
+                if (self.interner.signatureReturn(current)) |result| pending.append(self.gpa, result) catch return true;
+            } else if (flags.is_keyof) {
+                const index = self.interner.pool.payloadOf(current);
+                if (index < self.interner.pool.keyof_payloads.items.len)
+                    pending.append(self.gpa, self.interner.pool.keyof_payloads.items[index].operand) catch return true;
+            } else if (flags.is_indexed_access) {
+                const index = self.interner.pool.payloadOf(current);
+                if (index < self.interner.pool.indexed_access_payloads.items.len) {
+                    const access = self.interner.pool.indexed_access_payloads.items[index];
+                    pending.appendSlice(self.gpa, &.{ access.object, access.index }) catch return true;
+                }
+            } else if (flags.is_conditional) {
+                const conditional = self.interner.conditionalPayload(current);
+                pending.appendSlice(self.gpa, &.{ conditional.check_type, conditional.extends_type, conditional.true_branch, conditional.false_branch }) catch return true;
+            } else if (flags.is_mapped) {
+                const mapped = self.interner.mappedPayload(current);
+                pending.appendSlice(self.gpa, &.{ mapped.constraint, mapped.template }) catch return true;
+            } else if (flags.is_template_literal) {
+                pending.appendSlice(self.gpa, self.interner.templateLiteralTypes(current)) catch return true;
+            } else if (flags.is_string_mapping) {
+                pending.append(self.gpa, self.interner.stringMappingPayload(current).inner) catch return true;
+            }
         }
         return false;
     }
@@ -209759,6 +209758,25 @@ test "checker: free type parameter queries traverse cycles without losing reacha
         });
         try T.expectEqual(has_parameter, s.checker.containsFreeTypeParameter(a));
         try T.expectEqual(has_parameter, s.checker.containsFreeTypeParameter(b));
+    }
+}
+
+test "checker: this type parameter queries traverse cycles once" {
+    const s = try newSetup("export {};");
+    defer destroySetup(s);
+    const member_name = try s.sint.intern("next");
+    const this_name = try s.sint.intern("this");
+    const this_parameter = try s.ti.internFreshTypeParameterWithFlags(this_name, types.Primitive.unknown, types.Primitive.none, .bivariant, false);
+    inline for (.{ false, true }) |has_this| {
+        const a = try s.ti.internObjectType(&.{});
+        const b = try s.ti.internObjectType(&.{});
+        try s.ti.completeFreshObjectType(a, &.{.{ .name = member_name, .type = b, .is_optional = false, .is_readonly = false, .is_method = false }});
+        try s.ti.completeFreshObjectType(b, &.{
+            .{ .name = member_name, .type = a, .is_optional = false, .is_readonly = false, .is_method = false },
+            .{ .name = this_name, .type = if (has_this) this_parameter else types.Primitive.string_t, .is_optional = false, .is_readonly = false, .is_method = false },
+        });
+        try T.expectEqual(has_this, s.checker.containsThisTypeParameter(a));
+        try T.expectEqual(has_this, s.checker.containsThisTypeParameter(b));
     }
 }
 
