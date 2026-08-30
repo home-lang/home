@@ -108733,6 +108733,28 @@ pub const Checker = struct {
                         value_t,
                     );
                 }
+                if (target_kind == .identifier) {
+                    _ = try self.shadowMemberNarrowsForAssignment(
+                        hir_mod.identifierOf(self.hir, a.target).name,
+                        null,
+                    );
+                } else if (target_kind == .member_access) {
+                    if (self.identifierRootedMemberKey(a.target)) |key| {
+                        const had_exact_narrow = self.lookupMemberNarrow(key) != null;
+                        const had_descendant_narrow = try self.shadowMemberNarrowsForAssignment(key.obj_name, key.prop_name);
+                        if ((had_exact_narrow or had_descendant_narrow) and assignment_result_t != types.Primitive.none) {
+                            try self.recordMemberNarrow(key, assignment_result_t);
+                        }
+                    }
+                } else if (target_kind == .element_access) {
+                    if (try self.elementAccessNarrowKey(a.target)) |key| {
+                        const had_exact_narrow = self.lookupMemberNarrow(key) != null;
+                        const had_descendant_narrow = try self.shadowMemberNarrowsForAssignment(key.obj_name, key.prop_name);
+                        if ((had_exact_narrow or had_descendant_narrow) and assignment_result_t != types.Primitive.none) {
+                            try self.recordMemberNarrow(key, assignment_result_t);
+                        }
+                    }
+                }
                 break :blk assignment_result_t;
             },
             .new_expr => blk: {
@@ -120596,7 +120618,9 @@ pub const Checker = struct {
         const floor = @min(self.narrow_lookup_floor, i);
         while (i > floor) {
             i -= 1;
-            if (self.member_narrow_scopes.items[i].get(key)) |t| return t;
+            if (self.member_narrow_scopes.items[i].get(key)) |t| {
+                return if (t == types.Primitive.none) null else t;
+            }
         }
         return null;
     }
@@ -120605,6 +120629,32 @@ pub const Checker = struct {
         if (self.member_narrow_scopes.items.len == 0) return;
         var top = &self.member_narrow_scopes.items[self.member_narrow_scopes.items.len - 1];
         try top.put(self.gpa, key, t);
+    }
+
+    fn shadowMemberNarrowsForAssignment(self: *Checker, root_name: hir_mod.StringId, parent_path: ?hir_mod.StringId) !bool {
+        if (self.member_narrow_scopes.items.len == 0) return false;
+        var invalidated: std.ArrayListUnmanaged(MemberKey) = .empty;
+        defer invalidated.deinit(self.gpa);
+        for (self.member_narrow_scopes.items) |*scope| {
+            var iterator = scope.iterator();
+            while (iterator.next()) |entry| {
+                const key = entry.key_ptr.*;
+                if (key.obj_name != root_name) continue;
+                if (parent_path) |path_name| {
+                    const path = self.string_interner.get(path_name);
+                    const candidate = self.string_interner.get(key.prop_name);
+                    if (candidate.len <= path.len or
+                        !std.mem.startsWith(u8, candidate, path) or
+                        candidate[path.len] != '.')
+                    {
+                        continue;
+                    }
+                }
+                try invalidated.append(self.gpa, key);
+            }
+        }
+        for (invalidated.items) |key| try self.recordMemberNarrow(key, types.Primitive.none);
+        return invalidated.items.len != 0;
     }
 
     fn lookupCommonJsExportNarrow(self: *Checker, key: MemberKey) ?TypeId {
@@ -127349,6 +127399,31 @@ pub const Checker = struct {
         return fallback;
     }
 
+    fn narrowTypeByTypeofComparison(
+        self: *Checker,
+        current: TypeId,
+        lit_str: []const u8,
+        target: TypeId,
+        positive: bool,
+    ) CheckError!TypeId {
+        if (positive) {
+            if (std.mem.eql(u8, lit_str, "object") and self.typeIsAny(current)) return current;
+            if (std.mem.eql(u8, lit_str, "object") and self.typeIncludesNull(current)) {
+                return self.objectOrNullType();
+            }
+            if (self.typeofObjectLikePositiveBranchIsNever(current, lit_str)) {
+                return types.Primitive.never;
+            }
+            return self.narrowTypeByPredicate(current, target);
+        }
+
+        var narrowed = self.subtractTypeByPredicate(current, target) catch current;
+        if (std.mem.eql(u8, lit_str, "object") and self.typeIncludesNull(narrowed)) {
+            narrowed = self.subtractTypeByPredicate(narrowed, types.Primitive.null_t) catch narrowed;
+        }
+        return narrowed;
+    }
+
     fn applyTypeofExpressionGuard(
         self: *Checker,
         operand: NodeId,
@@ -127378,25 +127453,7 @@ pub const Checker = struct {
             !positive and
             current == declared and
             self.identifierHasPendingUsedBeforeAssignmentDecl(operand)) return true;
-        if (positive) {
-            if (std.mem.eql(u8, lit_str, "object") and self.typeIsAny(current)) {
-                try self.recordNarrow(id.name, current);
-                return true;
-            }
-            const next = if (std.mem.eql(u8, lit_str, "object") and self.typeIncludesNull(current))
-                self.objectOrNullType()
-            else if (self.typeofObjectLikePositiveBranchIsNever(current, lit_str))
-                types.Primitive.never
-            else
-                try self.narrowTypeByPredicate(current, target);
-            try self.recordNarrow(id.name, next);
-        } else {
-            var subbed = self.subtractTypeByPredicate(current, target) catch current;
-            if (std.mem.eql(u8, lit_str, "object") and self.typeIncludesNull(subbed)) {
-                subbed = self.subtractTypeByPredicate(subbed, types.Primitive.null_t) catch subbed;
-            }
-            try self.recordNarrow(id.name, subbed);
-        }
+        try self.recordNarrow(id.name, try self.narrowTypeByTypeofComparison(current, lit_str, target, positive));
         return true;
     }
 
@@ -128733,13 +128790,11 @@ pub const Checker = struct {
         const type_name = (try self.staticStringValue(rhs)) orelse return false;
         const lit_str = self.string_interner.get(type_name);
         const narrowed = typeOfTypeofString(lit_str) orelse return false;
+        const target_type = try self.typeofNarrowType(lit_str, narrowed);
         const target = try self.memberNarrowTargetFromAccess(operand) orelse return false;
         const current = self.lookupMemberNarrow(target.key) orelse target.current;
         if (current == types.Primitive.none) return false;
-        const next = if (positive)
-            narrowed
-        else
-            (self.subtractType(current, narrowed) catch current);
+        const next = try self.narrowTypeByTypeofComparison(current, lit_str, target_type, positive);
         try self.recordMemberNarrow(target.key, next);
         return true;
     }
@@ -224872,6 +224927,38 @@ test "checker: typeof element access guard narrows matching element access" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.property_does_not_exist);
     }
+}
+
+test "checker: typeof object guard partitions stable member unions" {
+    const s = try newSetup(
+        \\type Numeric = number | bigint | Date;
+        \\interface Holder { value: Numeric; }
+        \\function narrowed(holder: Holder) {
+        \\  if (typeof holder.value === "object") {
+        \\    const stamp: number = holder.value.getTime();
+        \\    const wrong: string = holder.value.getTime();
+        \\    holder.value.missing;
+        \\    void stamp; void wrong;
+        \\  }
+        \\}
+        \\function invalidated(holder: Holder) {
+        \\  if (typeof holder.value === "object") {
+        \\    holder.value = 1;
+        \\    holder.value.getTime();
+        \\  }
+        \\}
+        \\function rootInvalidated(holder: Holder) {
+        \\  if (typeof holder.value === "object") {
+        \\    holder = { value: 1 };
+        \\    holder.value.getTime();
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
 
 test "checker: stable computed element access guards retain their narrowed type" {
