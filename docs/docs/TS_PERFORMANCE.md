@@ -10,41 +10,40 @@ Ongoing coverage and optimization work is tracked in
 
 ## Current snapshot
 
-Measured 2026-08-30 at commit `7d5208e53` on an Apple M3 Pro MacBook Pro
+Measured 2026-08-30 at commit `acaa9ad21` on an Apple M3 Pro MacBook Pro
 (11 cores, 18 GB RAM, arm64, macOS 27.0). Each value is the mean and sample
 standard deviation of 30 new compiler processes after three warmup rounds.
-The complete raw-result identifier is `20260830T223857Z`. The runner first
+The complete raw-result identifier is `20260830T225711Z`. The runner first
 admitted all 20 selected workloads against version-checked TS **6.0.3**, native
 TS **7.0.2**, and Home. Native TS 7 and `tsgo` are one competitor. All **600
 round files / 1,800 successful finite samples** are retained without filtering.
 
 | Workload | tsc 6.0.3 | native TS 7.0.2 | Home 0.1.0 | Home vs fastest competitor |
 |---|---:|---:|---:|---:|
-| `checkjs_jsdoc` | 214.0 ± 3.1 ms | 56.0 ± 1.4 ms | **37.9 ± 0.6 ms** | **1.48× faster** |
-| `class_hierarchy` | 192.9 ± 3.8 ms | 54.5 ± 2.1 ms | **29.5 ± 1.1 ms** | **1.85× faster** |
-| `commonjs_graph` | 161.7 ± 7.8 ms | 51.8 ± 6.0 ms | **34.5 ± 1.2 ms** | **1.50× faster** |
-| `control_flow` | 197.7 ± 4.2 ms | 60.7 ± 1.5 ms | **36.6 ± 0.7 ms** | **1.66× faster** |
-| `deep_types` | 137.2 ± 14.3 ms | 55.3 ± 2.7 ms | **26.8 ± 0.6 ms** | **2.06× faster** |
-| `destructuring` | 147.8 ± 13.6 ms | 49.6 ± 2.3 ms | **21.4 ± 0.8 ms** | **2.32× faster** |
-| `generic_calls` | 188.7 ± 5.1 ms | 57.5 ± 1.7 ms | **24.0 ± 1.4 ms** | **2.40× faster** |
-| `import_graph` | 134.9 ± 2.1 ms | 47.5 ± 1.1 ms | **20.7 ± 0.5 ms** | **2.30× faster** |
-| `interface_composition` | 210.3 ± 4.2 ms | 67.3 ± 9.4 ms | **47.0 ± 4.5 ms** | **1.43× faster** |
-| `many_files` | 217.9 ± 3.5 ms | 55.1 ± 1.1 ms | **25.3 ± 0.7 ms** | **2.18× faster** |
-| `null_safe_access` | 200.3 ± 3.4 ms | 61.0 ± 5.3 ms | **42.0 ± 5.2 ms** | **1.45× faster** |
-| `overload_resolution` | 211.8 ± 5.7 ms | 67.1 ± 1.4 ms | **31.1 ± 0.6 ms** | **2.15× faster** |
-| `recursive_generics` | 157.9 ± 4.5 ms | 73.7 ± 2.1 ms | **20.2 ± 0.7 ms** | **3.65× faster** |
-| `reexport_graph` | 99.8 ± 1.9 ms | 42.7 ± 1.0 ms | **18.3 ± 0.8 ms** | **2.34× faster** |
-| `startup` | 68.9 ± 11.5 ms | 39.8 ± 1.0 ms | **3.5 ± 0.2 ms** | **11.49× faster** |
-| `structural_objects` | 192.5 ± 3.5 ms | 59.7 ± 1.4 ms | **30.4 ± 0.5 ms** | **1.96× faster** |
-| `tsx_components` | 167.7 ± 2.7 ms | 48.7 ± 1.4 ms | **23.2 ± 0.4 ms** | **2.10× faster** |
-| `type_predicates` | 248.8 ± 3.5 ms | 73.8 ± 1.8 ms | **45.3 ± 6.1 ms** | **1.63× faster** |
-| `type_predicates_large` | 1047.7 ± 26.4 ms | 360.5 ± 6.8 ms | **337.5 ± 6.4 ms** | **1.07× faster; narrow** |
-| `variadic_tuples` | 258.8 ± 3.9 ms | 78.6 ± 1.7 ms | **44.3 ± 0.9 ms** | **1.78× faster** |
+| `checkjs_jsdoc` | 214.9 ± 3.5 ms | 56.3 ± 1.3 ms | **37.8 ± 0.7 ms** | **1.49× faster** |
+| `class_hierarchy` | 195.2 ± 16.1 ms | 54.2 ± 1.0 ms | **29.0 ± 0.6 ms** | **1.86× faster** |
+| `commonjs_graph` | 164.4 ± 10.1 ms | 51.6 ± 1.6 ms | **35.6 ± 2.0 ms** | **1.45× faster** |
+| `control_flow` | 196.0 ± 4.2 ms | 60.8 ± 0.9 ms | **35.8 ± 0.6 ms** | **1.70× faster** |
+| `deep_types` | 135.3 ± 3.6 ms | 54.2 ± 1.8 ms | **26.9 ± 0.5 ms** | **2.01× faster** |
+| `destructuring` | 144.1 ± 2.5 ms | 48.7 ± 1.2 ms | **20.9 ± 0.5 ms** | **2.33× faster** |
+| `generic_calls` | 184.5 ± 2.9 ms | 56.0 ± 1.0 ms | **22.8 ± 0.5 ms** | **2.46× faster** |
+| `import_graph` | 134.6 ± 1.8 ms | 46.8 ± 1.5 ms | **20.4 ± 0.6 ms** | **2.29× faster** |
+| `interface_composition` | 215.2 ± 15.0 ms | 66.0 ± 2.1 ms | **45.8 ± 0.9 ms** | **1.44× faster** |
+| `many_files` | 218.5 ± 3.3 ms | 55.7 ± 7.3 ms | **24.6 ± 0.5 ms** | **2.26× faster** |
+| `null_safe_access` | 203.5 ± 12.3 ms | 59.9 ± 2.2 ms | **40.5 ± 1.9 ms** | **1.48× faster** |
+| `overload_resolution` | 214.8 ± 5.6 ms | 68.7 ± 4.0 ms | **31.0 ± 1.1 ms** | **2.22× faster** |
+| `recursive_generics` | 156.7 ± 2.2 ms | 73.2 ± 2.1 ms | **20.1 ± 0.6 ms** | **3.64× faster** |
+| `reexport_graph` | 99.3 ± 2.4 ms | 42.5 ± 1.2 ms | **18.2 ± 0.9 ms** | **2.34× faster** |
+| `startup` | 67.2 ± 7.4 ms | 40.8 ± 6.8 ms | **3.5 ± 0.2 ms** | **11.71× faster** |
+| `structural_objects` | 195.1 ± 4.3 ms | 60.2 ± 1.3 ms | **30.1 ± 0.9 ms** | **2.00× faster** |
+| `tsx_components` | 171.2 ± 12.3 ms | 49.0 ± 1.1 ms | **23.2 ± 0.5 ms** | **2.11× faster** |
+| `type_predicates` | 247.3 ± 3.1 ms | 73.5 ± 1.4 ms | **43.1 ± 0.6 ms** | **1.71× faster** |
+| `type_predicates_large` | 1054.8 ± 25.9 ms | 368.0 ± 11.4 ms | **334.8 ± 9.3 ms** | **1.10× faster** |
+| `variadic_tuples` | 260.7 ± 3.6 ms | 78.8 ± 1.7 ms | **43.8 ± 1.1 ms** | **1.80× faster** |
 
 Home records lower means on **20/20 admitted workloads** and lower paired times
-in **599/600 rounds**. Nineteen rows win 30/30 rounds; `type_predicates` wins
-29/30. The 1.07× `type_predicates_large` mean margin remains narrow despite its
-30/30 paired result and is not evidence of universal leadership. These are
+in **600/600 rounds**. The 1.10× `type_predicates_large` mean margin is the
+narrowest row and is not evidence of universal leadership. These are
 local synthetic results; real projects, other platforms, and broader rejection
 coverage remain separate validation work. Historical snapshots, including
 losses, remain in the checkpoint sections below and are not averaged into this

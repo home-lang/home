@@ -53,7 +53,7 @@ report refuses results whose provenance changed.
 
 | Platform | Result ID | Home lower means | Detailed report |
 |---|---|---:|---|
-| Apple M3 Pro / macOS arm64 | `20260830T223857Z` | 20/20 | [macOS snapshot](../../docs/docs/TS_PERFORMANCE.md#current-snapshot) |
+| Apple M3 Pro / macOS arm64 | `20260830T225711Z` | 20/20 | [macOS snapshot](../../docs/docs/TS_PERFORMANCE.md#current-snapshot) |
 | Linux arm64 / pinned Bookworm container | `20260829T035150Z` | 20/20 | [Linux checkpoint](../../docs/docs/TS_PERFORMANCE.md#linux-arm64-container-checkpoint) |
 
 Both checkpoints compare TS 6.0.3 with the single native TS 7.0.2 (`tsgo`)
