@@ -127996,11 +127996,12 @@ pub const Checker = struct {
                         if (args.len >= 1 and self.hir.kindOf(args[0]) == .identifier) {
                             const arg_id = hir_mod.identifierOf(self.hir, args[0]);
                             const current = self.lookupNarrow(arg_id.name) orelse self.typeOfIdentifier(args[0]);
+                            const any_array = self.interner.internArrayType(self.string_interner, types.Primitive.any) catch return error.OutOfMemory;
                             const narrowed = (try self.narrowArrayPredicateType(current, when_true)) orelse
                                 if (when_true)
-                                    types.Primitive.object_t
+                                    any_array
                                 else
-                                    self.subtractType(current, types.Primitive.object_t) catch current;
+                                    current;
                             try self.recordNarrow(arg_id.name, narrowed);
                             return;
                         }
@@ -223251,11 +223252,15 @@ test "checker: Awaited<number> on a non-Promise passes through unchanged" {
     try T.expectEqual(types.Primitive.number_t, s.hir.typeOf(r_decl));
 }
 
-test "checker: Array.isArray(x) narrows x in then-branch" {
+test "checker: Array.isArray narrows unknown to any array" {
     const s = try newSetup(
-        \\function f(x: any) {
+        \\function f(x: unknown) {
         \\  if (Array.isArray(x)) {
         \\    let arr = x;
+        \\    arr.map((item) => item);
+        \\    const wrong: string = arr.length;
+        \\    arr.missing;
+        \\    void wrong;
         \\  }
         \\}
     );
@@ -223270,8 +223275,10 @@ test "checker: Array.isArray(x) narrows x in then-branch" {
     const then_stmts = hir_mod.blockStmts(&s.hir, ifp.then_branch);
     const v_decl = then_stmts[0];
     const v_init = hir_mod.varDeclOf(&s.hir, v_decl).init;
-    // `x` should be narrowed to object_t (array approximation) inside the guard.
-    try T.expectEqual(types.Primitive.object_t, s.hir.typeOf(v_init));
+    try T.expectEqual(types.Primitive.any, s.checker.interner.objectNumberIndex(s.hir.typeOf(v_init)));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.parameter_implicitly_any));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
 
 test "checker: ArrayBuffer.isView narrows to the ArrayBufferView lib type" {
