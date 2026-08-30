@@ -220,6 +220,12 @@ Verification for this snapshot checkpoint:
 
 Snapshot requests explicitly wait for `online` in the regression. A five-run startup-order control shows both Home and Bun can emit a user message before `online` while top-level code is still running; Node emits `online` first. A message handshake alone is therefore insufficient to prove a snapshot request was admitted. The blocked-work tests schedule their work after startup so they exercise cancellation of real queued requests rather than immediate pre-start rejection.
 
+## Worker eval-source optimized admission (#482)
+
+The unchanged `eval-source-leak-fixture.js` creates one warmup worker and five measured workers from 100 MiB source strings, forces collection between runs, and rejects 500 MiB or greater RSS growth. The historical native Debug execution passed that memory contract but took 20.22 seconds, exceeding the parent test's original five-second deadline. Debug and optimized timings remain reported separately.
+
+A supported JSC-enabled ReleaseFast build passes **18/18 build steps**. On that binary, the byte-identical standalone fixture exits successfully in **2.875 seconds** without changing its source size, iteration count, collection loop, memory threshold, or parent deadline. The complete byte-identical `worker_threads.test.ts` passes **34 tests / 153 assertions / 0 failures** in **2.788 seconds**; its `eval does not leak source code` case completes in **2,046.96 ms**. The earlier late cleanup assertion is absent because the subprocess finishes naturally before the unchanged deadline. These results establish optimized Darwin admission for the original workload, not Debug performance parity, Linux/Windows execution, or complete worker/runtime parity under [#66](https://github.com/home-lang/home/issues/66).
+
 ## Native test CLI option integration (#481)
 
 `runTestsViaVM` now initializes `Command.Context` through the existing native `Arguments.parse` implementation. The manual flag-skipping loop and line-based bunfig preload extractor are removed. A normalized parser argv is kept separate from `bun.argv`, so native code still observes the original executable and invocation. Test/runtime/transpiler options and real bunfig parsing share the native parser instead of maintaining a second partial grammar.
