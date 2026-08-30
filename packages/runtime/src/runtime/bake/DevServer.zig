@@ -4248,6 +4248,10 @@ pub fn relativePath(dev: *DevServer, relative_path_buf: *bun.PathBuffer, path: [
         return path[dev.root.len + 1 ..];
     }
 
+    if (path.len + dev.root.len * 2 >= bun.MAX_PATH_BYTES) {
+        return path;
+    }
+
     const rel = bun.path.relativePlatformBuf(relative_path_buf, dev.root, path, .auto, true);
     // @constCast: `rel` is owned by a buffer on `dev`, which is mutable
     bun.path.platformToPosixInPlace(u8, @constCast(rel));

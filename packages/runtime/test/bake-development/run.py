@@ -14,7 +14,7 @@ import sys
 import tempfile
 import time
 from urllib.error import HTTPError
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 
 TIMEOUT = 20
@@ -114,6 +114,11 @@ def reserve_port() -> int:
     with socket.socket() as listener:
         listener.bind(('127.0.0.1', 0))
         return listener.getsockname()[1]
+
+
+def wire_string(value: str) -> bytes:
+    encoded = value.encode()
+    return struct.pack('<I', len(encoded)) + encoded
 
 
 def wait_for_server(
@@ -245,6 +250,32 @@ def main() -> None:
                     f'Home crashed after recovering from a build error (status {process.returncode})'
                 )
 
+            oversized_path = '/' + 'A/' * 8192
+            error_report = b''.join(
+                (
+                    wire_string('Error'),
+                    wire_string('test message'),
+                    wire_string(base_url + '/'),
+                    struct.pack('<I', 2),
+                    struct.pack('<ii', 1, 1),
+                    wire_string('first'),
+                    wire_string(str(client_path)),
+                    struct.pack('<ii', 1, 1),
+                    wire_string('second'),
+                    wire_string(oversized_path),
+                )
+            )
+            report_request = Request(
+                base_url + '/_bun/report_error', data=error_report, method='POST'
+            )
+            with urlopen(report_request, timeout=TIMEOUT) as response:
+                report_response = response.read()
+            if b'client.ts' not in report_response:
+                raise AssertionError('error-report reply did not retain the legitimate stack frame')
+            html = wait_for_server(process, base_url + '/', 'text/html')
+            if b'Home Bake development' not in html:
+                raise AssertionError('development server stopped serving after the error report')
+
         websocket.close()
         websocket = None
         stop_process(process)
@@ -303,7 +334,7 @@ def main() -> None:
 
         print(
             'Bake development serve-plugin resolution, HTML, HMR diagnostics/recovery, '
-            'framework routing, and response validation passed'
+            'oversized error reports, framework routing, and response validation passed'
         )
     except Exception:
         for label, path in (
