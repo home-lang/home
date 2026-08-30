@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-home_exe=$1
+home_exe=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
 fixture_dir=$(cd "$(dirname "$0")/fixture" && pwd)
 tmp_root=$(mktemp -d "${TMPDIR:-/tmp}/home-bake-production.XXXXXX")
 trap 'rm -rf "$tmp_root"' EXIT

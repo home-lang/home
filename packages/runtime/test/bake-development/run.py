@@ -301,7 +301,10 @@ def main() -> None:
         if 'ReferenceError: $ERR_SSR_RESPONSE_EXPECTED is not defined' in framework_log_text:
             raise AssertionError('Bake server runtime leaked an unresolved generated error builtin')
 
-        print('Bake development HTML, HMR diagnostics/recovery, framework routing, and response validation passed')
+        print(
+            'Bake development serve-plugin resolution, HTML, HMR diagnostics/recovery, '
+            'framework routing, and response validation passed'
+        )
     except Exception:
         for label, path in (
             ('Home development server', log_path),

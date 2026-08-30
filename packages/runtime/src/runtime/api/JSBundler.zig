@@ -1600,10 +1600,11 @@ pub const JSBundler = struct {
             bool,
         ) bool;
 
+        // The pinned C++ bridge consumes these strings with BunString::transferToJS.
         extern fn JSBundlerPlugin__matchOnLoad(
             *Plugin,
-            namespaceString: *const String,
-            path: *const String,
+            namespaceString: *String,
+            path: *String,
             context: *anyopaque,
             u8,
             bool,
@@ -1611,9 +1612,9 @@ pub const JSBundler = struct {
 
         extern fn JSBundlerPlugin__matchOnResolve(
             *Plugin,
-            namespaceString: *const String,
-            path: *const String,
-            importer: *const String,
+            namespaceString: *String,
+            path: *String,
+            importer: *String,
             context: *anyopaque,
             u8,
         ) void;
@@ -1653,11 +1654,11 @@ pub const JSBundler = struct {
             const tracer = bun.perf.trace("JSBundler.matchOnLoad");
             defer tracer.end();
             debug("JSBundler.matchOnLoad(0x{x}, {s}, {s})", .{ @intFromPtr(this), namespace, path });
-            const namespace_string = if (namespace.len == 0)
+            var namespace_string = if (namespace.len == 0)
                 bun.String.static("file")
             else
                 bun.String.cloneUTF8(namespace);
-            const path_string = bun.String.cloneUTF8(path);
+            var path_string = bun.String.cloneUTF8(path);
             defer namespace_string.deref();
             defer path_string.deref();
             JSBundlerPlugin__matchOnLoad(this, &namespace_string, &path_string, context, @intFromEnum(default_loader), is_server_side);
@@ -1674,12 +1675,13 @@ pub const JSBundler = struct {
             jsc.markBinding(@src());
             const tracer = bun.perf.trace("JSBundler.matchOnResolve");
             defer tracer.end();
-            const namespace_string = if (strings.eqlComptime(namespace, "file"))
-                bun.String.empty
+            // transferToJS no longer maps an empty namespace to "file" for us.
+            var namespace_string = if (namespace.len == 0 or strings.eqlComptime(namespace, "file"))
+                bun.String.static("file")
             else
                 bun.String.cloneUTF8(namespace);
-            const path_string = bun.String.cloneUTF8(path);
-            const importer_string = bun.String.cloneUTF8(importer);
+            var path_string = bun.String.cloneUTF8(path);
+            var importer_string = bun.String.cloneUTF8(importer);
             defer namespace_string.deref();
             defer path_string.deref();
             defer importer_string.deref();
