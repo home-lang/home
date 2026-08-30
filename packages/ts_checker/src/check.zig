@@ -108934,13 +108934,20 @@ pub const Checker = struct {
             .new_expr => blk: {
                 const c = hir_mod.callOf(self.hir, node);
                 const raw_callee_t = try self.checkExpression(c.callee);
-                var callee_t = raw_callee_t;
+                // `any` absorbs the other members of a union for invocation
+                // purposes. Preserve the ordinary `new any<T>()` checks
+                // below (notably TS2347), while avoiding a spurious TS2351
+                // from treating the `any` branch as non-constructable.
+                var callee_t = if (self.unionContainsAny(raw_callee_t))
+                    types.Primitive.any
+                else
+                    raw_callee_t;
                 if (self.strict_flags.strict_null_checks and
-                    !self.typeIsAnyLike(raw_callee_t) and
-                    self.typeIsPossiblyNullishStrict(raw_callee_t))
+                    !self.typeIsAnyLike(callee_t) and
+                    self.typeIsPossiblyNullishStrict(callee_t))
                 {
-                    try self.reportPossiblyNullishMember(c.callee, raw_callee_t);
-                    callee_t = self.subtractNullUndefined(raw_callee_t) catch raw_callee_t;
+                    try self.reportPossiblyNullishMember(c.callee, callee_t);
+                    callee_t = self.subtractNullUndefined(callee_t) catch callee_t;
                 }
                 var checked_js_cross_virtual_function_class = false;
                 if (self.hir.kindOf(c.callee) == .identifier) {
@@ -196731,6 +196738,23 @@ test "checker: construct union with non-constructable branch reports TS2760 chai
         }
     }
     try T.expect(saw_ts2760_chain);
+}
+
+test "checker: any constituent makes a construct union permissive" {
+    const b = try newBoundSetup(
+        \\interface Ctor { new(): object }
+        \\declare const dynamic: any;
+        \\new (dynamic as any | Ctor)();
+        \\new (dynamic as any | Ctor)<number>();
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+    var untyped_type_args_count: usize = 0;
+    for (b.base.checker.diagnostics.items) |d| {
+        try T.expect(d.code != 2351);
+        if (d.code == TsCodes.untyped_function_type_args) untyped_type_args_count += 1;
+    }
+    try T.expectEqual(@as(usize, 1), untyped_type_args_count);
 }
 
 test "checker: overloaded construct union with no compatible signatures reports TS2762 chain detail" {
