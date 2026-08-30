@@ -168,8 +168,11 @@ const LibC = struct {
 
         var io = GetAddrInfoRequest.Task.createOnJSThread(this.vm.allocator, globalThis, request);
 
-        io.schedule();
-        this.requestSent(globalThis.bunVM());
+        if (io.scheduleWithShutdown()) {
+            this.requestSent(globalThis.bunVM());
+        } else {
+            io.cancelForShutdown();
+        }
 
         return promise_value;
     }
@@ -875,6 +878,38 @@ pub const GetAddrInfoRequest = struct {
         }
     }
 
+    pub fn cancelForShutdown(this: *GetAddrInfoRequest) void {
+        const allocator = this.head.globalThis.allocator();
+        if (this.resolver_for_caching) |resolver| {
+            if (this.cache.pending_cache) {
+                const key = resolver.getKey(this.cache.pos_in_pending, "pending_host_cache_native", GetAddrInfoRequest);
+                bun.assert(key.lookup == this);
+            }
+            resolver.requestCompleted();
+        }
+
+        switch (this.backend) {
+            .libc => |backend| switch (backend) {
+                .success => |result| {
+                    const any = GetAddrInfo.Result.Any{ .list = result };
+                    any.deinit();
+                },
+                .query => |query| bun.default_allocator.free(@constCast(query.name)),
+                .err => {},
+            },
+            else => unreachable,
+        }
+
+        var pending = this.head.next;
+        this.head.next = null;
+        this.head.cancelForShutdown();
+        while (pending) |lookup| {
+            pending = lookup.next;
+            lookup.cancelForShutdown();
+        }
+        allocator.destroy(this);
+    }
+
     pub fn onCaresComplete(this: *GetAddrInfoRequest, err_: ?c_ares.Error, timeout: i32, result: ?*c_ares.AddrInfo) void {
         log("onCaresComplete", .{});
         if (this.resolver_for_caching) |resolver| {
@@ -1174,6 +1209,14 @@ pub const DNSLookup = struct {
         if (this.allocated) {
             this.globalThis.allocator().destroy(this);
         }
+    }
+
+    pub fn cancelForShutdown(this: *DNSLookup) void {
+        const allocator = this.globalThis.allocator();
+        this.promise.deinit();
+        this.poll_ref.unref(this.globalThis.bunVM());
+        if (this.resolver) |resolver| resolver.deref();
+        if (this.allocated) allocator.destroy(this);
     }
 };
 

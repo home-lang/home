@@ -23,6 +23,7 @@ pub fn WorkTask(comptime Context: type) type {
         globalThis: *jsc.JSGlobalObject,
         concurrent_task: ConcurrentTask = .{},
         async_task_tracker: jsc.Debugger.AsyncTaskTracker,
+        native_job_admitted: bool = false,
 
         // This is a poll because we want it to enter the uSockets loop
         ref: Async.KeepAlive = .{},
@@ -71,10 +72,43 @@ pub fn WorkTask(comptime Context: type) type {
             WorkPool.schedule(&this.task);
         }
 
+        pub fn scheduleWithShutdown(this: *This) bool {
+            const vm = this.event_loop.virtual_machine;
+            this.ref.ref(vm);
+            this.async_task_tracker.didSchedule(this.globalThis);
+            if (!vm.native_work_pool_jobs.tryAdd()) return false;
+            this.native_job_admitted = true;
+            WorkPool.schedule(&this.task);
+            return true;
+        }
+
         pub fn onFinish(this: *This) void {
+            const vm = this.event_loop.virtual_machine;
+            const native_job_admitted = this.native_job_admitted;
+            this.native_job_admitted = false;
             this.event_loop.enqueueTaskConcurrent(this.concurrent_task.from(this, .manual_deinit));
+            if (native_job_admitted) vm.native_work_pool_jobs.complete();
+        }
+
+        pub fn cancelForShutdown(this: *This) void {
+            comptime {
+                if (!@hasDecl(Context, "cancelForShutdown"))
+                    @compileError(@typeName(Context) ++ " must implement cancelForShutdown");
+            }
+            bun.assert(!this.native_job_admitted);
+            this.async_task_tracker.didCancel(this.globalThis);
+            this.ref.unref(this.event_loop.virtual_machine);
+            Context.cancelForShutdown(this.ctx);
+            this.deinit();
+            _ = shutdown_cancellation_count.fetchAdd(1, .seq_cst);
         }
     };
+}
+
+var shutdown_cancellation_count = std.atomic.Value(u64).init(0);
+
+pub fn shutdownCancellationCount() u64 {
+    return shutdown_cancellation_count.load(.seq_cst);
 }
 
 const std = @import("std");
