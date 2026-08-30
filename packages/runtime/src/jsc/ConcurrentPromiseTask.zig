@@ -8,6 +8,7 @@
 /// The Context type must implement:
 /// - `run(*Context)` - performs the work on the thread pool
 /// - `then(*Context, jsc.JSPromise)` - resolves the promise with the result on the JS thread
+/// - `cancelForShutdown(*Context)` - releases its result and owner-thread resources without JavaScript
 pub fn ConcurrentPromiseTask(comptime Context: type) type {
     return struct {
         const This = @This();
@@ -39,6 +40,7 @@ pub fn ConcurrentPromiseTask(comptime Context: type) type {
 
         pub fn runFromThreadPool(task: *WorkPoolTask) void {
             var this: *This = @fieldParentPtr("task", task);
+            defer this.event_loop.virtual_machine.native_work_pool_jobs.complete();
             Context.run(this.ctx);
             this.onFinish();
         }
@@ -52,8 +54,10 @@ pub fn ConcurrentPromiseTask(comptime Context: type) type {
             return ctx.then(promise);
         }
 
-        pub fn schedule(this: *This) void {
+        pub fn schedule(this: *This) bool {
+            if (!this.event_loop.virtual_machine.native_work_pool_jobs.tryAdd()) return false;
             WorkPool.schedule(&this.task);
+            return true;
         }
 
         pub fn onFinish(this: *This) void {
@@ -64,7 +68,20 @@ pub fn ConcurrentPromiseTask(comptime Context: type) type {
             this.promise.deinit();
             bun.destroy(this);
         }
+
+        pub fn cancelForShutdown(this: *This) void {
+            this.ref.unref(this.event_loop.virtual_machine);
+            Context.cancelForShutdown(this.ctx);
+            this.deinit();
+            _ = shutdown_cancellation_count.fetchAdd(1, .seq_cst);
+        }
     };
+}
+
+var shutdown_cancellation_count = std.atomic.Value(u64).init(0);
+
+pub fn shutdownCancellationCount() u64 {
+    return shutdown_cancellation_count.load(.seq_cst);
 }
 
 const std = @import("std");

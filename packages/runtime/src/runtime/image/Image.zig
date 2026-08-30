@@ -658,8 +658,9 @@ fn schedule(this: *Image, global: *jsc.JSGlobalObject, this_value: jsc.JSValue, 
     if (this.pending_tasks == 0) this.this_ref.setStrong(this_value, global);
     this.pending_tasks += 1;
     var task = AsyncImageTask.createOnJSThread(bun.default_allocator, global, job);
-    task.schedule();
-    return task.promise.value();
+    const promise = task.promise.value();
+    if (!task.schedule()) task.cancelForShutdown();
+    return promise;
 }
 
 /// Run the full pipeline on the *current* thread. Used when an `Image` is
@@ -1268,12 +1269,19 @@ pub const PipelineTask = struct {
     }
 
     fn deinit(this: *PipelineTask) void {
-        // Always reached from `then()` on the JS thread, so the ref/count
-        // touch is safe without atomics.
+        // Reached from `then()` or shutdown cancellation on the JS owner
+        // thread, so the ref/count touch is safe without atomics.
         this.deliver.deinit();
         this.image.pending_tasks -= 1;
         if (this.image.pending_tasks == 0) this.image.this_ref.downgrade();
         bun.destroy(this);
+    }
+
+    pub fn cancelForShutdown(this: *PipelineTask) void {
+        this.input.release();
+        if (this.result == .encoded) this.result.encoded.out.deinit();
+        if (this.result == .io_err) this.result.io_err.deinit();
+        this.deinit();
     }
 };
 

@@ -1064,7 +1064,7 @@ pub fn globalExit(this: *VirtualMachine) noreturn {
         // admission and join them before JSC or the event loop is destroyed.
         this.native_work_pool_jobs.closeAndWait();
         @import("./CppTask.zig").beginScriptExecutionContextShutdown(this.global);
-        this.eventLoop().cancelQueuedCppTasks();
+        this.eventLoop().cancelQueuedTasksForShutdown();
         // Embedded per-VM socket groups must drain while JSC is still alive
         // (closeAll() fires on_close → JS). After JSC teardown,
         // RareData.deinit() only deinit()s the groups (asserts empty).

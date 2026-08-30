@@ -64,6 +64,12 @@ pub const CopyFile = struct {
         bun.destroy(this);
     }
 
+    pub fn cancelForShutdown(this: *CopyFile) void {
+        this.source_store.?.deref();
+        if (this.system_error) |*err| err.deref();
+        this.deinit();
+    }
+
     pub fn reject(this: *CopyFile, promise: *jsc.JSPromise) bun.JSTerminated!void {
         const globalThis = this.globalThis;
         var system_error: SystemError = this.system_error orelse SystemError{ .message = .empty };
@@ -76,13 +82,11 @@ pub const CopyFile = struct {
         }
 
         const instance = system_error.toErrorInstanceWithAsyncStack(this.globalThis, promise);
-        if (this.store) |store| {
-            store.deref();
-        }
         try promise.reject(globalThis, instance);
     }
 
     pub fn then(this: *CopyFile, promise: *jsc.JSPromise) bun.JSTerminated!void {
+        defer this.deinit();
         this.source_store.?.deref();
 
         if (this.system_error != null) {

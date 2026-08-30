@@ -552,6 +552,18 @@ pub fn reportErrorOrTerminate(global: *jsc.JSGlobalObject, proof: bun.JSError) b
     _ = global.reportUncaughtException(ex);
 }
 
+pub fn cancelForShutdown(task: Task, global: *jsc.JSGlobalObject) bool {
+    switch (task.tag()) {
+        @field(Task.Tag, @typeName(CppTask)) => task.get(CppTask).?.cancel(global),
+        @field(Task.Tag, @typeName(AsyncGlobWalkTask)) => task.get(AsyncGlobWalkTask).?.cancelForShutdown(),
+        @field(Task.Tag, @typeName(AsyncImageTask)) => task.get(AsyncImageTask).?.cancelForShutdown(),
+        @field(Task.Tag, @typeName(AsyncTransformTask)) => task.get(AsyncTransformTask).?.cancelForShutdown(),
+        @field(Task.Tag, @typeName(CopyFilePromiseTask)) => task.get(CopyFilePromiseTask).?.cancelForShutdown(),
+        else => return false,
+    }
+    return true;
+}
+
 // const PromiseTask = JSInternalPromise.Completion.PromiseTask;
 
 // const ShellIOReaderAsyncDeinit = shell.Interpreter.IOReader.AsyncDeinit;

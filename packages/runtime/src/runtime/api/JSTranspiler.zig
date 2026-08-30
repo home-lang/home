@@ -601,6 +601,10 @@ pub const TransformTask = struct {
         this.js_instance.deref();
         bun.destroy(this);
     }
+
+    pub fn cancelForShutdown(this: *TransformTask) void {
+        this.deinit();
+    }
 };
 
 fn exportReplacementValue(value: JSValue, globalThis: *JSGlobalObject, allocator: std.mem.Allocator) bun.JSError!?JSAst.Expr {
@@ -1058,8 +1062,9 @@ pub fn transform(this: *JSTranspiler, globalThis: *jsc.JSGlobalObject, callframe
         globalThis,
         loader orelse this.config.default_loader,
     );
-    task.schedule();
-    return task.promise.value();
+    const promise = task.promise.value();
+    if (!task.schedule()) task.cancelForShutdown();
+    return promise;
 }
 
 pub fn transformSync(

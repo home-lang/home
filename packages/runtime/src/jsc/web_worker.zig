@@ -867,7 +867,7 @@ fn shutdown(this: *WebWorker) void {
     // ordinary callbacks are destroyed without entering stopped JavaScript.
     if (vm_to_deinit) |vm| {
         @import("./CppTask.zig").beginScriptExecutionContextShutdown(vm.global);
-        vm.eventLoop().cancelQueuedCppTasks();
+        vm.eventLoop().cancelQueuedTasksForShutdown();
     }
 
     // ---- 3. JSC VM teardown ----------------------------------------------

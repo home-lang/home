@@ -1302,8 +1302,9 @@ pub fn writeFileWithSourceDestination(ctx: *jsc.JSGlobalObject, source_blob: *Bl
             options.mkdirp_if_not_exists orelse true,
             options.mode,
         );
-        file_copier.schedule();
-        return file_copier.promise.value();
+        const promise = file_copier.promise.value();
+        if (!file_copier.schedule()) file_copier.cancelForShutdown();
+        return promise;
     } else if (destination_type == .file and source_type == .s3) {
         const s3 = &source_store.data.s3;
         if (try jsc.WebCore.ReadableStream.fromJS(try jsc.WebCore.ReadableStream.fromBlobCopyRef(

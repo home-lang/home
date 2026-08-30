@@ -701,7 +701,7 @@ pub fn getActiveTasks(globalObject: *jsc.JSGlobalObject, call_frame: *jsc.CallFr
     const cancellation_counts = cpp_tasks.shutdownCancellationCounts();
     const concurrent_probe_counts = cpp_tasks.concurrentShutdownProbeCounts();
 
-    const result = jsc.JSValue.createEmptyObject(globalObject, 10);
+    const result = jsc.JSValue.createEmptyObject(globalObject, 11);
     result.put(globalObject, jsc.ZigString.static("activeTasks"), jsc.JSValue.jsNumber(vm.active_tasks));
     result.put(globalObject, jsc.ZigString.static("concurrentRef"), jsc.JSValue.jsNumber(event_loop.concurrent_ref.load(.seq_cst)));
     result.put(globalObject, jsc.ZigString.static("cancelledCppTasks"), jsc.JSValue.jsNumber(@as(f64, @floatFromInt(cancellation_counts.cancelled))));
@@ -711,6 +711,7 @@ pub fn getActiveTasks(globalObject: *jsc.JSGlobalObject, call_frame: *jsc.CallFr
     result.put(globalObject, jsc.ZigString.static("nativeWorkPoolJobs"), jsc.JSValue.jsNumber(vm.native_work_pool_jobs.count()));
     result.put(globalObject, jsc.ZigString.static("startedNativeWorkPoolProbeTasks"), jsc.JSValue.jsNumber(@as(f64, @floatFromInt(concurrent_probe_counts.started))));
     result.put(globalObject, jsc.ZigString.static("completedNativeWorkPoolProbeTasks"), jsc.JSValue.jsNumber(@as(f64, @floatFromInt(concurrent_probe_counts.completed))));
+    result.put(globalObject, jsc.ZigString.static("cancelledConcurrentPromiseTasks"), jsc.JSValue.jsNumber(@as(f64, @floatFromInt(@import("./ConcurrentPromiseTask.zig").shutdownCancellationCount()))));
 
     // Get num_polls from uws loop (POSIX) or active_handles from libuv (Windows)
     const num_polls: i32 = if (Environment.isWindows)
@@ -728,11 +729,10 @@ pub fn deinit(this: *EventLoop) void {
     this.next_immediate_tasks.clearAndFree(bun.default_allocator);
 }
 
-/// Cancel every queued C++ EventLoopTask after the context's producer registry
-/// has closed. Cleanup tasks execute their native cleanup action on this owner
-/// thread; ordinary tasks are destroyed without running user code. Other task
-/// families stay ordered for their own shutdown protocols.
-pub fn cancelQueuedCppTasks(this: *EventLoop) void {
+/// Cancel every queued task whose producer has an owner-thread shutdown
+/// protocol. Other task families stay ordered until their producers gain an
+/// explicit quiescence and cancellation contract.
+pub fn cancelQueuedTasksForShutdown(this: *EventLoop) void {
     var retained = Queue.init(bun.default_allocator);
 
     while (true) {
@@ -752,9 +752,7 @@ pub fn cancelQueuedCppTasks(this: *EventLoop) void {
         var pending = this.tasks;
         this.tasks = Queue.init(bun.default_allocator);
         while (pending.readItem()) |task| {
-            if (task.get(CppTask)) |cpp_task| {
-                cpp_task.cancel(this.global);
-            } else {
+            if (!cancelTaskForShutdown(task, this.global)) {
                 bun.handleOom(retained.writeItem(task));
             }
         }
@@ -796,6 +794,7 @@ pub const WorkPoolTask = @import("../threading/work_pool.zig").Task;
 
 const std = @import("std");
 const tickQueueWithCount = @import("./Task.zig").tickQueueWithCount;
+const cancelTaskForShutdown = @import("./Task.zig").cancelForShutdown;
 
 const bun = @import("bun");
 const Environment = bun.Environment;

@@ -194,6 +194,10 @@ pub const WalkTask = struct {
         this.alloc.destroy(this.walker);
         this.alloc.destroy(this);
     }
+
+    pub fn cancelForShutdown(this: *WalkTask) void {
+        this.deinit();
+    }
 };
 
 fn globWalkResultToJS(globWalk: *GlobWalker, globalThis: *JSGlobalObject) bun.JSError!JSValue {
@@ -322,9 +326,9 @@ pub fn __scan(this: *Glob, globalThis: *JSGlobalObject, callframe: *jsc.CallFram
         alloc.destroy(globWalker);
         return globalThis.throwOutOfMemory();
     };
-    task.schedule();
-
-    return task.promise.value();
+    const promise = task.promise.value();
+    if (!task.schedule()) task.cancelForShutdown();
+    return promise;
 }
 
 pub fn __scanSync(this: *Glob, globalThis: *JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
