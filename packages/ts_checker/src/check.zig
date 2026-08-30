@@ -21985,7 +21985,12 @@ pub const Checker = struct {
                     try self.collectTryCatchPendingVarDecls(t.block, &catch_pending);
                     try self.removeAssignedTargetFromPending(t.catch_param, &catch_pending);
                     try self.scanForUsedBeforeAssign(t.catch_block, &catch_pending);
-                    try self.replacePendingWithUnion(pending, &try_pending, &catch_pending);
+                    if (self.statementDefinitelyExits(t.catch_block)) {
+                        pending.clearRetainingCapacity();
+                        try self.clonePendingAssignments(&try_pending, pending);
+                    } else {
+                        try self.replacePendingWithUnion(pending, &try_pending, &catch_pending);
+                    }
                 } else {
                     pending.clearRetainingCapacity();
                     try self.clonePendingAssignments(&try_pending, pending);
@@ -196007,6 +196012,28 @@ test "checker: export equals reads typed var for TS2454" {
         }
     }
     try T.expect(found);
+}
+
+test "checker: exiting catch preserves definite assignment from successful try" {
+    const s = try newSetup(
+        \\let assigned: number;
+        \\try {
+        \\    assigned = mightThrow();
+        \\} catch (err) {
+        \\    throw err;
+        \\}
+        \\assigned.toFixed();
+        \\let maybeAssigned: number;
+        \\try {
+        \\    maybeAssigned = mightThrow();
+        \\} catch {}
+        \\maybeAssigned.toFixed();
+        \\declare function mightThrow(): number;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.used_before_assignment));
 }
 
 test "checker: TS2454 fires for every use of unassigned typed var" {
