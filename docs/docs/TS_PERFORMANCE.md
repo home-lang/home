@@ -800,6 +800,22 @@ deduplication and allocation-failure coverage, the ReleaseFast type-predicate
 checker subset, the ReleaseFast production build, exact output checks at both
 scales, formatting, and diff checks.
 
+One adjacent cleanup was measured and fully reverted. Removing a second
+top-level annotated-variable lookup produced a positive ten-pair screen at
+32,768 families (1.0108× lower wall and 1.0106× lower CPU means, 10/10 lower
+candidate pairs, positive paired intervals), but the independent confirmations
+did not clear the paired-mean acceptance bar. At 32,768 families, wall measured
+4638.4 ± 41.2 ms versus 4611.3 ± 48.4 ms (1.0059×, 15/20 pairs, paired interval
+-7.0–61.1 ms); CPU measured 4631.7 ± 39.5 ms versus 4603.9 ± 45.9 ms (1.0060×,
+15/20 pairs, interval -5.0–60.6 ms). At 65,536 families, wall measured
+9632.2 ± 79.7 ms versus 9582.9 ± 75.1 ms (1.0052×, 13/20 pairs, interval
+-6.9–105.6 ms); CPU measured 9619.1 ± 72.4 ms versus 9568.6 ± 69.9 ms
+(1.0053×, 14/20 pairs, interval -1.5–102.5 ms). Both binaries preserved exact
+output at both scales, and the focused annotation suite passed, but positive
+means with intervals crossing zero are not a retained performance result. All
+raw rounds remain under `annotated-root-lookup.3jRs1g`; the probe is absent
+from the compiler.
+
 The exact committed-binary 30-round standard-workload confirmation is
 `20260831T071216Z`: TS 6.0.3 takes 977.9 ± 10.1 ms, native TS 7.0.2 takes
 343.3 ± 7.9 ms, and Home takes **274.5 ± 8.4 ms**, a **1.25×** lead. The
