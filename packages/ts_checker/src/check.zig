@@ -5108,6 +5108,11 @@ pub const Checker = struct {
     /// Namespace-style `import local = Qualified.Name` lookup otherwise walks
     /// enclosing statement lists for every qualified/member access.
     source_may_have_import_equals: bool = false,
+    /// Exact HIR-level follow-up to the conservative source marker above.
+    /// Ordinary imports plus unrelated assignments commonly satisfy the text
+    /// prefilter; cache one node scan so repeated type references can skip
+    /// statement-list searches when no import-equals declaration exists.
+    source_has_import_equals_declaration: ?bool = null,
     /// Import lookup helpers otherwise walk the source root for every
     /// identifier and type reference, even in import-free programs.
     source_may_have_import_declaration: bool = false,
@@ -5608,6 +5613,7 @@ pub const Checker = struct {
             markers.contains(":") and markers.contains("any");
         self.source_may_have_import_equals =
             markers.contains("import") and markers.contains("=");
+        self.source_has_import_equals_declaration = null;
         self.source_may_have_import_declaration = markers.contains("import");
         self.source_may_have_jsdoc_import_tag = markers.contains("@import");
         self.source_may_have_require_binding = markers.contains("require") and self.sourceSliceMentionsIdentifier(source, "require");
@@ -26801,7 +26807,7 @@ pub const Checker = struct {
         class_names: *const std.AutoHashMapUnmanaged(hir_mod.StringId, NodeId),
         out: *std.ArrayListUnmanaged(NameRef),
     ) CheckError!void {
-        if (self.source != null and !self.source_may_have_import_equals) return;
+        if (!self.sourceHasImportEqualsDeclaration()) return;
         if (node == hir_mod.none_node_id) return;
         switch (self.hir.kindOf(node)) {
             .member_access => {
@@ -57634,6 +57640,28 @@ pub const Checker = struct {
         return std.mem.indexOf(u8, text, " = require") != null;
     }
 
+    fn sourceHasImportEqualsDeclaration(self: *Checker) bool {
+        if (self.source == null) return true;
+        if (self.source_has_import_equals_declaration) |has_declaration| return has_declaration;
+        if (!self.source_may_have_import_equals) {
+            self.source_has_import_equals_declaration = false;
+            return false;
+        }
+        var node: NodeId = 1;
+        while (node < self.hir.nodeCount()) : (node += 1) {
+            if (self.hir.kindOf(node) != .import_decl) continue;
+            const imp = hir_mod.importOf(self.hir, node);
+            if (imp.import_equals != hir_mod.none_node_id or
+                (self.string_interner.get(imp.module).len != 0 and self.importDeclIsRequireAssignment(node)))
+            {
+                self.source_has_import_equals_declaration = true;
+                return true;
+            }
+        }
+        self.source_has_import_equals_declaration = false;
+        return false;
+    }
+
     fn tsExtensionSpecifierResolves(self: *Checker, node: NodeId, spec: []const u8) CheckError!bool {
         if (!std.mem.startsWith(u8, spec, ".")) return false;
         if (self.sourceHasVirtualFilenameSections()) {
@@ -78674,7 +78702,7 @@ pub const Checker = struct {
     }
 
     fn localImportEqualsDecl(self: *Checker, local_name: hir_mod.StringId, anchor: NodeId) ?NodeId {
-        if (self.source != null and !self.source_may_have_import_equals) return null;
+        if (!self.sourceHasImportEqualsDeclaration()) return null;
         var cur = anchor;
         while (cur != hir_mod.none_node_id) {
             const stmts: []const NodeId = blk: {
@@ -79307,7 +79335,7 @@ pub const Checker = struct {
     }
 
     fn resolveUnqualifiedImportEqualsTypeRef(self: *Checker, type_node: NodeId, name: hir_mod.StringId) CheckError!?TypeId {
-        if (self.source != null and !self.source_may_have_import_equals) return null;
+        if (!self.sourceHasImportEqualsDeclaration()) return null;
         var cur = type_node;
         while (cur != hir_mod.none_node_id) {
             const stmts: []const NodeId = blk: {
@@ -204075,6 +204103,27 @@ test "checker: supplied source marker indexes preserve facts and reset" {
     inline for (source_markers_mod.patterns) |marker| {
         try T.expectEqual(std.mem.indexOf(u8, plain_source, marker), s.checker.sourceMarkerPosition(marker));
     }
+}
+
+test "checker: exact import-equals fact rejects ordinary import assignment false positives" {
+    const ordinary = try newSetup(
+        \\import { Box } from "./owner";
+        \\const selected: Box = source.value;
+    );
+    defer destroySetup(ordinary);
+    try T.expect(ordinary.checker.source_may_have_import_equals);
+    try T.expect(!ordinary.checker.sourceHasImportEqualsDeclaration());
+
+    const namespace_alias = try newSetup(
+        \\namespace Owner { export interface Box {} }
+        \\import Box = Owner.Box;
+    );
+    defer destroySetup(namespace_alias);
+    try T.expect(namespace_alias.checker.sourceHasImportEqualsDeclaration());
+
+    const require_alias = try newSetup("import Box = require(\"./owner\");");
+    defer destroySetup(require_alias);
+    try T.expect(require_alias.checker.sourceHasImportEqualsDeclaration());
 }
 
 test "checker: strict false source markers preserve uncached results" {
