@@ -4131,7 +4131,7 @@ pub const Mode = std.posix.mode_t;
 // Faithful to upstream `bun.Stat` (`bun.zig:2005`): the platform stat struct.
 // Home targets posix; `std.c.Stat` matches what `sys.stat`/`sys.fstat` return.
 pub const Stat = std.c.Stat;
-pub const StatFS = @import("node/StatFS.zig").StatFSPayload;
+pub const StatFS = @import("sys/StatFS.zig").StatFS;
 pub const bytecode_extension = ".jsc";
 pub const StringJoiner = @import("string/StringJoiner.zig");
 
@@ -5306,11 +5306,7 @@ pub const c = struct {
     pub const AF_INET = std.c.AF.INET;
     pub const AF_INET6 = std.c.AF.INET6;
 
-    pub fn statfs(file_path: [:0]const u8, out: *StatFS) c_int {
-        _ = file_path;
-        out.* = std.mem.zeroes(StatFS);
-        return 0;
-    }
+    pub const statfs = @import("sys/StatFS.zig").statfs;
 
     // ---- node:os C interop (macOS/POSIX) -------------------------------
     // Mirrors the system-header types Bun's `bun.c` provides via translate-c.

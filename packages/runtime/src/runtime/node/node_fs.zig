@@ -335,8 +335,13 @@ pub const Async = struct {
 
     fn NewAsyncFSTask(comptime ReturnType: type, comptime ArgumentType: type, comptime function: anytype) type {
         // Complex results transfer owned strings/buffers only during JS conversion.
-        // Admit only result shapes whose shutdown path needs no result destructor.
-        const shutdown_safe_result = ReturnType == void or ReturnType == bool or ReturnType == Null;
+        // Admit only value-only result shapes whose shutdown path needs no destructor.
+        const shutdown_safe_result = ReturnType == void or
+            ReturnType == bool or
+            ReturnType == Null or
+            ReturnType == bun.jsc.Node.Stats or
+            ReturnType == StatOrNotFound or
+            ReturnType == bun.jsc.Node.StatFS;
         return struct {
             pub const Task = @This();
 
