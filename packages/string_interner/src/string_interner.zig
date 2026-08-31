@@ -60,6 +60,8 @@ const LOCAL_BITS: u32 = 32 - SHARD_BITS; // 26
 const SHARD_MASK: u32 = N_SHARDS - 1; // 0x3F
 const LOCAL_MASK: u32 = (@as(u32, 1) << @intCast(LOCAL_BITS)) - 1; // 0x03FF_FFFF
 const MAX_LOCAL: u32 = LOCAL_MASK; // largest valid local index
+const HOT_CACHE_LEN: usize = 64;
+const HOT_CACHE_MASK: u64 = HOT_CACHE_LEN - 1;
 
 const PrehashedString = struct {
     bytes: []const u8,
@@ -161,23 +163,50 @@ const Shard = struct {
     table: std.StringHashMapUnmanaged(u32),
     /// Local-index → bytes-of-string. Same lifetime as the keys above.
     strings: std.ArrayListUnmanaged([]const u8),
+    /// Direct-mapped hint for recently resolved hashes. The packed value
+    /// stores a 32-bit hash fingerprint and local-index-plus-one. Every hit
+    /// is verified against the owned bytes under `mu`, so collisions only
+    /// fall through to the canonical table and cannot affect identity.
+    hot_cache: [HOT_CACHE_LEN]std.atomic.Value(u64),
     /// Backing arena for the duped string bytes. Cleared en masse at
     /// interner teardown.
     bytes_arena: std.heap.ArenaAllocator,
 
     fn init(child: std.mem.Allocator) Shard {
-        return .{
+        var shard: Shard = .{
             .mu = RwLock.init(),
             .table = .empty,
             .strings = .empty,
+            .hot_cache = undefined,
             .bytes_arena = std.heap.ArenaAllocator.init(child),
         };
+        for (&shard.hot_cache) |*entry| entry.* = std.atomic.Value(u64).init(0);
+        return shard;
     }
 
     fn deinit(self: *Shard, parent: std.mem.Allocator) void {
         self.table.deinit(parent);
         self.strings.deinit(parent);
         self.bytes_arena.deinit();
+    }
+
+    fn cachedLocal(self: *const Shard, hash: u64) ?u32 {
+        const slot: usize = @intCast((hash >> SHARD_BITS) & HOT_CACHE_MASK);
+        const cache_word = self.hot_cache[slot].load(.monotonic);
+        const encoded_local: u32 = @truncate(cache_word);
+        if (encoded_local == 0) return null;
+        const fingerprint: u32 = @truncate(hash >> 32);
+        if (@as(u32, @truncate(cache_word >> 32)) != fingerprint) return null;
+        const local = encoded_local - 1;
+        if (local >= self.strings.items.len) return null;
+        return local;
+    }
+
+    fn remember(self: *Shard, hash: u64, local: u32) void {
+        const slot: usize = @intCast((hash >> SHARD_BITS) & HOT_CACHE_MASK);
+        const fingerprint: u32 = @truncate(hash >> 32);
+        const cache_word = (@as(u64, fingerprint) << 32) | @as(u64, local + 1);
+        self.hot_cache[slot].store(cache_word, .monotonic);
     }
 };
 
@@ -268,7 +297,14 @@ pub const Interner = struct {
 
         // Read path: optimistic shared-lock lookup.
         shard.mu.lockShared();
+        if (shard.cachedLocal(hash)) |local| {
+            if (std.mem.eql(u8, bytes, shard.strings.items[local])) {
+                shard.mu.unlockShared();
+                return packId(shard_idx, local);
+            }
+        }
         if (shard.table.getAdapted(key, PrehashedStringContext{})) |local| {
+            shard.remember(hash, local);
             shard.mu.unlockShared();
             return packId(shard_idx, local);
         }
@@ -302,6 +338,7 @@ pub const Interner = struct {
         std.debug.assert(!entry.found_existing);
         entry.key_ptr.* = owned;
         entry.value_ptr.* = local;
+        shard.remember(hash, local);
 
         return packId(shard_idx, local);
     }
@@ -352,7 +389,13 @@ pub const Interner = struct {
         var mut_shard: *Shard = @constCast(shard);
         mut_shard.mu.lockShared();
         defer mut_shard.mu.unlockShared();
+        if (shard.cachedLocal(hash)) |local| {
+            if (std.mem.eql(u8, bytes, shard.strings.items[local])) {
+                return packId(shard_idx, local);
+            }
+        }
         if (shard.table.getAdapted(key, PrehashedStringContext{})) |local| {
+            mut_shard.remember(hash, local);
             return packId(shard_idx, local);
         }
         return null;
