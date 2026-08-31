@@ -878,6 +878,18 @@ Validation passes the complete ReleaseFast string-interner suite, the
 ReleaseFast type-predicate checker subset, the ReleaseFast production build,
 exact output checks at both scales, formatting, and diff checks.
 
+One follow-on memoization was measured and fully reverted. Caching
+`containsFreeTypeParameter` results in a checker-local hash map preserved exact
+output and passed the focused ReleaseFast predicate suite, but its ten-pair
+32,768-family screen was slightly slower. Wall clock measured 4497.1 ± 37.4 ms
+for the accepted binary versus 4517.5 ± 79.8 ms for the candidate (0.9955×,
+4/10 lower candidate pairs, paired interval -88.2–47.5 ms). Process CPU
+measured 4486.4 ± 35.9 ms versus 4501.7 ± 64.9 ms (0.9966×, 3/10 pairs,
+interval -71.1–40.4 ms). The map lookup and maintenance cost did not justify
+the avoided graph walks. All raw rounds remain under
+`free-type-param-cache.Npjpjh/preliminary-ab.32768`; the memoization is absent
+from the compiler.
+
 The exact committed-binary 30-round focused confirmation is
 `20260831T081314Z`: TS 6.0.3 takes 985.8 ± 14.9 ms, native TS 7.0.2 takes
 342.1 ± 5.5 ms, and Home takes **257.3 ± 3.1 ms**, a **1.33×** lead. The
