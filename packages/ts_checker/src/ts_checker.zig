@@ -39,6 +39,7 @@ pub const RelationCache = relation.RelationCache;
 pub const Lowerer = lower.Lowerer;
 pub const Checker = check.Checker;
 pub const SourceMarkerMatcher = @import("source_markers.zig").Matcher;
+pub const SourceMarkerIndex = @import("source_markers.zig").Index;
 pub const Diagnostic = check.Diagnostic;
 pub const DiagnosticChainEntry = check.DiagnosticChainEntry;
 pub const RelatedInfo = check.RelatedInfo;

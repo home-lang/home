@@ -5550,12 +5550,22 @@ pub const Checker = struct {
     /// honor `// @ts-ignore` and `// @ts-expect-error` directives.
     /// The slice must outlive the checker; we don't copy it.
     pub fn setSource(self: *Checker, source: []const u8) void {
+        self.setSourceWithMarkers(source, source_markers_mod.Index.scan(source));
+    }
+
+    /// Attach source bytes together with the exact marker index already
+    /// computed by the driver during preparation.
+    pub fn setSourceWithMarkers(
+        self: *Checker,
+        source: []const u8,
+        source_markers: source_markers_mod.Index,
+    ) void {
         self.clearProgramGenericInstances();
         self.program_schema_support.clearRetainingCapacity();
         self.program_module_namespace_types.clearRetainingCapacity();
         self.source = source;
         self.source_facts = .{};
-        self.source_markers = source_markers_mod.Index.scan(source);
+        self.source_markers = source_markers;
         const markers = &self.source_markers.?;
         self.source_facts.may_have_jsdoc = markers.contains("/**");
         self.jsx_intrinsic_attributes_decl_scanned = false;
@@ -204038,6 +204048,33 @@ test "checker: source fact cache resets when source changes" {
     try T.expect(!s.checker.sourceHasNoLibTrueDirective());
     try T.expect(!s.checker.sourceContainsImportMeta());
     try T.expect(!s.checker.sourceHasUseDefineForClassFieldsTrueDirective());
+}
+
+test "checker: supplied source marker indexes preserve facts and reset" {
+    const s = try newSetup("const value = 1;");
+    defer destroySetup(s);
+
+    const indexed_source =
+        \\// @checkJs: true
+        \\// @strict: false
+        \\const meta = import.meta;
+    ;
+    s.checker.setSourceWithMarkers(indexed_source, source_markers_mod.Index.scan(indexed_source));
+    try T.expect(s.checker.sourceHasCheckJsDirective());
+    try T.expect(s.checker.sourceHasStrictFalseDirective());
+    try T.expect(s.checker.sourceContainsImportMeta());
+    inline for (source_markers_mod.patterns) |marker| {
+        try T.expectEqual(std.mem.indexOf(u8, indexed_source, marker), s.checker.sourceMarkerPosition(marker));
+    }
+
+    const plain_source = "const value = 1;";
+    s.checker.setSourceWithMarkers(plain_source, source_markers_mod.Index.scan(plain_source));
+    try T.expect(!s.checker.sourceHasCheckJsDirective());
+    try T.expect(!s.checker.sourceHasStrictFalseDirective());
+    try T.expect(!s.checker.sourceContainsImportMeta());
+    inline for (source_markers_mod.patterns) |marker| {
+        try T.expectEqual(std.mem.indexOf(u8, plain_source, marker), s.checker.sourceMarkerPosition(marker));
+    }
 }
 
 test "checker: strict false source markers preserve uncached results" {

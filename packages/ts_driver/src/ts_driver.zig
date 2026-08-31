@@ -27,6 +27,7 @@ pub const StrictFlags = ts_checker.StrictFlags;
 pub const TypeId = ts_checker.TypeId;
 pub const Primitive = ts_checker.Primitive;
 pub const SourceMarkerMatcher = ts_checker.SourceMarkerMatcher;
+pub const SourceMarkerIndex = ts_checker.SourceMarkerIndex;
 pub const ExternalResolver = ts_checker.ExternalResolver;
 pub const source_owners = @import("source_owners.zig");
 pub const StringInterner = string_interner.Interner;
@@ -232,6 +233,9 @@ pub const Compilation = struct {
     /// span->bytes lookups in tests / diagnostics). NOT freed by
     /// `deinit`.
     source: []const u8,
+    /// Exact source-marker positions computed once during preparation and
+    /// reused by driver feature gates and the checker.
+    source_markers: SourceMarkerIndex,
     interner: string_interner.Interner,
     hir: Hir,
     /// Tokens produced by the scanner — kept so spans can be
@@ -1950,6 +1954,7 @@ pub fn prepareSource(
     c.* = .{
         .gpa = gpa,
         .source = source,
+        .source_markers = SourceMarkerIndex.scan(source),
         .interner = undefined,
         .hir = undefined,
         .tokens = undefined,
@@ -1972,7 +1977,8 @@ pub fn prepareSource(
     c.hir = hir_mod.Hir.init(gpa) catch return error.OutOfMemory;
     errdefer c.hir.deinit();
 
-    if (options.report_deprecated_target_es5 and !ignoresTypeScriptSixDeprecations(source, options)) {
+    const directive_source = if (c.source_markers.contains("@")) source else "";
+    if (options.report_deprecated_target_es5 and !ignoresTypeScriptSixDeprecations(directive_source, options)) {
         try c.diagnostics.append(gpa, .{
             .phase = .parse,
             .pos = 0,
@@ -1984,12 +1990,14 @@ pub fn prepareSource(
         c.has_errors = true;
     }
 
-    try reportDeprecatedOptionDirectives(gpa, c, source, options);
-    try reportJsxFactoryOptionDiagnostics(gpa, c, source, options);
+    try reportDeprecatedOptionDirectives(gpa, c, directive_source, options);
+    try reportJsxFactoryOptionDiagnostics(gpa, c, directive_source, options);
 
-    try reportInvalidReferenceDirectiveSyntaxDiagnostics(gpa, c, source);
-    try reportSelfReferencePathDiagnostics(gpa, c, source, options);
-    try extractReferenceDirectives(gpa, c, source);
+    if (c.source_markers.contains("<reference")) {
+        try reportInvalidReferenceDirectiveSyntaxDiagnostics(gpa, c, source);
+        try reportSelfReferencePathDiagnostics(gpa, c, source, options);
+        try extractReferenceDirectives(gpa, c, source);
+    }
     try appendJsonModuleValidationDiagnostics(gpa, c, source, options.importer_path);
 
     // ------ Lex ------
@@ -2077,9 +2085,12 @@ pub fn prepareSource(
     // ------ Parse ------
     var parser = ts_parser.Parser.init(gpa, &c.hir, &c.interner, source, c.tokens.items);
     parser.setTsx(options.is_tsx);
+    const source_has_virtual_filename = c.source_markers.contains("@filename:") or
+        c.source_markers.contains("@Filename:");
     const is_declaration_file = options.is_declaration_file or
         (pathIsDeclarationLike(options.importer_path) and
-            !sourceHasNonDeclarationVirtualSection(source));
+            (!source_has_virtual_filename or
+                !sourceHasNonDeclarationVirtualSection(source)));
     parser.setDeclarationFile(is_declaration_file);
     parser.setJavaScriptFile(pathIsJsLike(options.importer_path));
     parser.setStrictMode(options.always_strict);
@@ -2244,12 +2255,18 @@ pub fn checkPreparedSource(c: *Compilation, options: CompileOptions) CompileErro
     c.check_state = .checking;
     const gpa = c.gpa;
     const source = c.source;
+    const directive_source = if (c.source_markers.contains("@")) source else "";
+    const source_has_references = c.source_markers.contains("<reference");
+    const source_has_virtual_filename = c.source_markers.contains("@filename:") or
+        c.source_markers.contains("@Filename:");
     const has_syntactic_parse_diagnostics = c.has_syntactic_parse_diagnostics;
-    const effective_import_helpers = options.emit.import_helpers or (directiveBool(source, "importHelpers") orelse false);
-    const effective_experimental_decorators = legacyDecoratorsEnabled(source, options);
+    const effective_import_helpers = options.emit.import_helpers or (directiveBool(directive_source, "importHelpers") orelse false);
+    const effective_experimental_decorators = legacyDecoratorsEnabled(directive_source, options);
     // Missing-reference checks depend on the completed program, not parsing.
-    try reportMissingReferencePathDiagnostics(gpa, c, source, options);
-    try reportMissingReferenceTypesDiagnostics(gpa, c, source, options);
+    if (source_has_references) {
+        try reportMissingReferencePathDiagnostics(gpa, c, source, options);
+        try reportMissingReferenceTypesDiagnostics(gpa, c, source, options);
+    }
     try reportMissingCompilerTypeReferenceDiagnostics(gpa, c, source, options);
     if (!can_check) {
         sortDiagnosticsBySourceOrder(c.diagnostics.items);
@@ -2260,7 +2277,7 @@ pub fn checkPreparedSource(c: *Compilation, options: CompileOptions) CompileErro
     var checker = ts_checker.Checker.init(gpa, &c.hir, &c.type_interner, &c.interner, &c.type_engine);
     defer checker.deinit();
     checker.setModule(c.module);
-    checker.setSource(source);
+    checker.setSourceWithMarkers(source, c.source_markers);
     checker.setTsx(options.is_tsx);
     checker.setIsDeclarationFile(c.is_declaration_file);
     // tsc/tsgo suppress every grammar diagnostic (`grammarErrorOnNode`)
@@ -2272,20 +2289,24 @@ pub fn checkPreparedSource(c: *Compilation, options: CompileOptions) CompileErro
     // SourceFile.parseDiagnostics or suppress sibling checker grammar errors.
     checker.setHasParseDiagnostics(has_syntactic_parse_diagnostics);
     checker.setJsxCommaRecoverySpans(c.jsx_comma_recovery_spans.items);
-    checker.setJsxOptionPresent(jsxOptionPresent(source, options));
+    checker.setJsxOptionPresent(jsxOptionPresent(directive_source, options));
     checker.setJsxPreserveOption(options.jsx_preserve_option);
-    checker.setJsxFactoryName(compilerOptionDirectiveValue(source, "jsxFactory") orelse options.emit.jsx_factory);
-    checker.setJsxNamespaceName(classicJsxScopeName(source, options));
+    checker.setJsxFactoryName(compilerOptionDirectiveValue(directive_source, "jsxFactory") orelse options.emit.jsx_factory);
+    checker.setJsxNamespaceName(classicJsxScopeName(directive_source, options));
     checker.setJsxFragmentFactoryContext(
-        jsxTransformEnabled(source, options),
-        jsxFactoryCompilerOptionPresent(source, options),
-        jsxFragmentFactoryCompilerOptionPresent(source, options),
-        compilerOptionDirectiveValue(source, "jsxFragmentFactory") orelse options.emit.jsx_fragment_factory,
-        jsxFragmentFactoryScopeRequired(source, options),
+        jsxTransformEnabled(directive_source, options),
+        jsxFactoryCompilerOptionPresent(directive_source, options),
+        jsxFragmentFactoryCompilerOptionPresent(directive_source, options),
+        compilerOptionDirectiveValue(directive_source, "jsxFragmentFactory") orelse options.emit.jsx_fragment_factory,
+        jsxFragmentFactoryScopeRequired(directive_source, options),
     );
-    checker.setJsxClassicRuntime(jsxClassicRuntime(source, options));
+    checker.setJsxClassicRuntime(jsxClassicRuntime(directive_source, options));
+    const virtual_filename_is_js = if (source_has_virtual_filename)
+        virtualFilenameIsJs(source)
+    else
+        false;
     checker.setCheckJsEnabled(!options.suppress_js_check_diagnostics and
-        (virtualFilenameIsJs(source) or pathIsJsLike(options.importer_path)));
+        (virtual_filename_is_js or pathIsJsLike(options.importer_path)));
     checker.setAllowJsEnabled(options.allow_js);
     checker.setNoEmitEnabled(options.no_emit);
     checker.setEmitImplicitAnySuggestions(options.include_suggestions);
@@ -2488,7 +2509,7 @@ pub fn checkPreparedSource(c: *Compilation, options: CompileOptions) CompileErro
             c,
             source,
             helperDiagnosticsUseCommonJsModule(source, options),
-            options.emit.es_module_interop or (directiveBool(source, "esModuleInterop") orelse false),
+            options.emit.es_module_interop or (directiveBool(directive_source, "esModuleInterop") orelse false),
             options.emit.es_target != .esnext,
             options.emit.es_target == .es5,
             options.emit.es_target != .esnext or
@@ -4275,6 +4296,26 @@ test "driver: prepared source checks and emits once without replacing bound owne
     try checkPreparedSource(c, options);
     try T.expect(c.js.ptr == output);
     try T.expectEqual(@as(usize, 1), c.diagnostics.items.len);
+}
+
+test "driver: prepared source retains exact markers through checking" {
+    const source =
+        \\// @filename: virtual.ts
+        \\/// <reference path="./dependency.ts" />
+        \\export const value: string = 1;
+    ;
+    const c = try prepareSource(T.allocator, source, .{ .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    inline for (.{ "@filename:", "@", "<reference" }) |marker| {
+        try T.expectEqual(std.mem.indexOf(u8, source, marker), c.source_markers.indexOf(marker));
+    }
+
+    try checkPreparedSource(c, .{ .no_emit = true });
+    try T.expectEqual(.checked, c.check_state);
+    try T.expectEqual(@as(u32, 2322), c.diagnostics.items[c.diagnostics.items.len - 1].code);
 }
 
 test "driver: prepared sources retain shared names independently of the caller" {
