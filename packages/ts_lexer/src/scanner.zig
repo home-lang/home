@@ -661,9 +661,15 @@ pub const Scanner = struct {
         var has_escape = false;
         while (!self.isAtEnd()) {
             const ch = self.source[self.pos];
-            if (self.unicodeWhitespaceLengthAt(self.pos) != 0 or
-                self.unicodeLineTerminatorLengthAt(self.pos) != 0) break;
-            if (isIdentCont(ch)) {
+            if (ch < 0x80) {
+                if (isIdentCont(ch)) {
+                    self.pos += 1;
+                    continue;
+                }
+                if (ch != '\\') break;
+            } else {
+                if (self.unicodeWhitespaceLengthAt(self.pos) != 0 or
+                    self.unicodeLineTerminatorLengthAt(self.pos) != 0) break;
                 self.pos += 1;
                 continue;
             }
@@ -1858,6 +1864,20 @@ test "Scanner: leading UTF-8 BOM is trivia" {
     try t.expectEqual(@as(u32, 3), toks.items[0].span.start);
     try t.expectEqual(TokenKind.identifier, toks.items[1].kind);
     try t.expectEqualStrings("x", toks.items[1].bytes(s.source));
+}
+
+test "Scanner: Unicode whitespace terminates identifiers" {
+    var s = Scanner.init(t.allocator, "alpha\xC2\xA0beta\xE2\x80\xA8gamma");
+    defer s.deinit(t.allocator);
+    var toks = try s.tokenize(t.allocator);
+    defer toks.deinit(t.allocator);
+
+    try t.expectEqual(@as(usize, 4), toks.items.len);
+    try t.expectEqualStrings("alpha", toks.items[0].bytes(s.source));
+    try t.expectEqualStrings("beta", toks.items[1].bytes(s.source));
+    try t.expectEqualStrings("gamma", toks.items[2].bytes(s.source));
+    try t.expect(toks.items[2].flags.preceded_by_newline);
+    try t.expectEqual(TokenKind.eof, toks.items[3].kind);
 }
 
 test "Scanner: not sign is invalid punctuation" {
