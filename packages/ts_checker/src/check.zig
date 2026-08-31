@@ -82391,7 +82391,35 @@ pub const Checker = struct {
         return null;
     }
 
+    const builtin_object_type_name_set = blk: {
+        const names = builtinObjectTypeNames();
+        var entries: [names.len]struct { []const u8 } = undefined;
+        for (names, 0..) |name, i| entries[i] = .{name};
+        break :blk std.StaticStringMap(void).initComptime(entries);
+    };
+
+    fn builtinObjectTypeNames() []const []const u8 {
+        return &.{
+            "Animation",           "ArrayBuffer",           "ArrayBufferView",
+            "AsyncIterable",       "AsyncIterableIterator", "AsyncIterator",
+            "AsyncIteratorObject", "BigInt64Array",         "BigUint64Array",
+            "Boolean",             "Date",                  "Document",
+            "Element",             "Error",                 "Event",
+            "Float16Array",        "Float32Array",          "Float64Array",
+            "Function",            "HTMLElement",           "Int16Array",
+            "Int32Array",          "Int8Array",             "Iterable",
+            "IterableIterator",    "Iterator",              "IteratorObject",
+            "Node",                "Number",                "Object",
+            "PromiseLike",         "RangeError",            "RegExp",
+            "RegExpExecArray",     "RegExpMatchArray",      "SharedArrayBuffer",
+            "SyntaxError",         "TypeError",             "Uint16Array",
+            "Uint32Array",         "Uint8Array",            "Uint8ClampedArray",
+            "Window",              "Worker",
+        };
+    }
+
     fn lowerBuiltinObjectType(self: *Checker, name: []const u8) ?TypeId {
+        if (!builtin_object_type_name_set.has(name)) return null;
         var t = if (std.mem.eql(u8, name, "Object"))
             self.lowerBuiltinObjectInstanceType() orelse return null
         else
@@ -204700,6 +204728,19 @@ test "checker: builtin Function recipe preserves fresh objects and rest signatur
         try T.expect(s.checker.rest_signatures.contains(member.type));
     }
     try T.expect(s.checker.lowerBuiltinObjectTypeRaw("function") == null);
+}
+
+test "checker: builtin object name index preserves every recipe and exact misses" {
+    const s = try newSetup("const value = 1;");
+    defer destroySetup(s);
+    for (Checker.builtinObjectTypeNames()) |name| {
+        try T.expect(s.checker.lowerBuiltinObjectType(name) != null);
+        var buffer: [64]u8 = undefined;
+        const prefix = try std.fmt.bufPrint(&buffer, "!{s}", .{name});
+        try T.expect(s.checker.lowerBuiltinObjectType(prefix) == null);
+        const suffix = try std.fmt.bufPrint(&buffer, "{s}!", .{name});
+        try T.expect(s.checker.lowerBuiltinObjectType(suffix) == null);
+    }
 }
 
 test "checker: builtin Function recipe matches fresh construction structurally" {
