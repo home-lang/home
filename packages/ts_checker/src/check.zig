@@ -122197,17 +122197,28 @@ pub const Checker = struct {
 
     fn buildRecoveredParameterSyntaxIndex(self: *Checker) bool {
         const source = self.source orelse return false;
-        var scan: usize = 0;
-        while (scan < source.len) {
-            if (!std.ascii.isAlphabetic(source[scan]) and source[scan] != '_' and source[scan] != '$') {
-                scan += 1;
+        var parameter_node: NodeId = 1;
+        while (parameter_node < self.hir.nodeCount()) : (parameter_node += 1) {
+            if (self.hir.kindOf(parameter_node) != .parameter) continue;
+            const parameter = hir_mod.parameterOf(self.hir, parameter_node);
+            if (parameter.name == hir_mod.none_node_id or
+                self.hir.kindOf(parameter.name) != .identifier)
+            {
                 continue;
             }
-            const name_start = scan;
-            scan += 1;
-            while (scan < source.len and
-                (std.ascii.isAlphanumeric(source[scan]) or source[scan] == '_' or source[scan] == '$')) scan += 1;
-            const name_end = scan;
+            const name_span = self.hir.spanOf(parameter.name);
+            const name_start = @min(@as(usize, name_span.start), source.len);
+            const name_end = @min(@as(usize, name_span.end), source.len);
+            if (name_start >= name_end) continue;
+            const name_text = source[name_start..name_end];
+            if (!std.ascii.isAlphabetic(name_text[0]) and name_text[0] != '_' and name_text[0] != '$') continue;
+            var valid_name = true;
+            for (name_text[1..]) |byte| {
+                if (std.ascii.isAlphanumeric(byte) or byte == '_' or byte == '$') continue;
+                valid_name = false;
+                break;
+            }
+            if (!valid_name) continue;
             var cursor = name_end;
             while (cursor < source.len and std.ascii.isWhitespace(source[cursor])) cursor += 1;
             const optional = cursor < source.len and source[cursor] == '?';
@@ -122227,10 +122238,7 @@ pub const Checker = struct {
             {
                 continue;
             }
-            const name = self.string_interner.intern(source[name_start..name_end]) catch {
-                self.clearRecoveredParameterSyntaxIndex();
-                return false;
-            };
+            const name = hir_mod.identifierOf(self.hir, parameter.name).name;
             const type_name = self.string_interner.intern(source[type_start..type_end]) catch {
                 self.clearRecoveredParameterSyntaxIndex();
                 return false;
@@ -204138,6 +204146,31 @@ test "checker: parameter annotation index resets with source facts" {
     try T.expect(!s.checker.parameter_annotation_index_built);
     try T.expectEqual(@as(usize, 0), s.checker.parameter_annotation_index.items.len);
     try T.expectEqual(@as(usize, 0), s.checker.recovered_parameter_use_spans.items.len);
+}
+
+test "checker: recovered parameter syntax indexes parameter nodes only" {
+    const s = try newSetup(
+        \\interface Value {}
+        \\declare const fallback: Value;
+        \\declare function consume(input: unknown): void;
+        \\function read(value?: Value, count: Value = fallback) {
+        \\  consume({ value: Value, unrelated: Value });
+        \\  return value || count;
+        \\}
+    );
+    defer destroySetup(s);
+
+    const value_name = try s.checker.string_interner.intern("value");
+    const count_name = try s.checker.string_interner.intern("count");
+    const unrelated_name = try s.checker.string_interner.intern("unrelated");
+    const value_entries = s.checker.recoveredParameterSyntaxForName(value_name) orelse return error.TestUnexpectedResult;
+    const count_entries = s.checker.recoveredParameterSyntaxForName(count_name) orelse return error.TestUnexpectedResult;
+    const unrelated_entries = s.checker.recoveredParameterSyntaxForName(unrelated_name) orelse return error.TestUnexpectedResult;
+    try T.expectEqual(@as(usize, 1), value_entries.len);
+    try T.expect(value_entries[0].optional);
+    try T.expectEqual(@as(usize, 1), count_entries.len);
+    try T.expect(!count_entries[0].optional);
+    try T.expectEqual(@as(usize, 0), unrelated_entries.len);
 }
 
 test "checker: recovered parameter use ranges match source scanning" {
