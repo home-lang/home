@@ -967,6 +967,20 @@ rounds remain under `static-keyword-map.7qVurl/preliminary-ab.32768`; the
 static map is absent from the compiler. The existing lookup documentation now
 correctly records that the largest length bucket contains 16 candidates.
 
+A purpose-built collision-free keyword index was also measured and fully
+reverted. A compile-time-verified 256-byte table used keyword length, the first
+two bytes, and the final byte to select one candidate, followed by an exact
+byte comparison. It preserved the complete keyword and lexer suite plus exact
+compiler output, but its ten-pair 32,768-family screen did not justify the
+runtime arithmetic and table load. Wall clock measured 4701.1 ± 166.1 ms for
+the accepted binary versus 4749.8 ± 303.7 ms for the candidate (0.9897×,
+5/10 lower candidate pairs, paired interval -229.5–132.1 ms). Process CPU
+measured 4666.3 ± 148.6 ms versus 4700.7 ± 253.9 ms (0.9927×, 5/10 pairs,
+interval -180.4–111.6 ms). The host was slower than the earlier static-map
+screen, so only paired within-batch differences are interpreted. All raw
+rounds remain under `perfect-keyword-index.YBAnkb/preliminary-ab.32768`; the
+perfect index is absent from the compiler.
+
 The exact committed-binary 30-round focused confirmation is
 `20260831T091833Z`: TS 6.0.3 takes 980.2 ± 14.7 ms, native TS 7.0.2 takes
 345.0 ± 13.2 ms, and Home takes **256.2 ± 8.2 ms**, a **1.35×** lead. The
