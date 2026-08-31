@@ -996,6 +996,23 @@ decision criterion, and neither metric justified the branch. Raw rounds remain
 under `target-option-gate.shBw7j/preliminary-ab.32768`; the gate is absent from
 the compiler.
 
+Passing the already-indexed virtual-section fact into `Parser.init` was also
+measured and fully reverted. This removed two exact full-source searches for
+`@filename:` and `@Filename:` from the program driver while preserving the
+fallback initializer for direct parser callers. ReleaseFast parser and driver
+suites passed, and fixed binaries produced byte-identical output at both
+scales. A ten-pair 32,768-family screen favored the candidate by 1.0178× wall
+and 1.0153× process CPU, but both paired intervals crossed zero. An independent
+20-pair repeat still showed lower candidate means (5076.6 ± 248.2 ms versus
+4977.2 ± 235.4 ms wall; 4968.7 ± 187.6 ms versus 4895.9 ± 188.4 ms CPU),
+yet its paired intervals remained -17.9–216.8 ms and -19.5–165.1 ms. The
+decisive 65,536-family run did not reproduce the margin: wall measured
+10054.8 ± 378.2 ms versus 10039.3 ± 372.8 ms (1.0015×, 13/20 pairs,
+interval -120.8–151.7 ms), and CPU measured 9911.9 ± 309.1 ms versus
+9908.9 ± 323.3 ms (1.0003×, 10/20 pairs, interval -107.2–113.3 ms). All raw
+rounds remain under `parser-virtual-section-fact.BUr50C`; the API change is
+absent from the compiler.
+
 The exact committed-binary 30-round focused confirmation is
 `20260831T091833Z`: TS 6.0.3 takes 980.2 ± 14.7 ms, native TS 7.0.2 takes
 345.0 ± 13.2 ms, and Home takes **256.2 ± 8.2 ms**, a **1.35×** lead. The
