@@ -74,50 +74,48 @@ upstream `.errors.txt` baselines** in exact mode (`HOME_TS_CONFORMANCE_EXACT=1`)
 coarse mode (`HOME_TS_CONFORMANCE_FULL=1` alone) only asserts that we emit
 the same *families* of diagnostics.
 
-**Frontend performance snapshot** (`3e1d2bca1`, Apple M3 Pro, shared workstation;
+**Frontend performance snapshot** (`5efbd19df`, Apple M3 Pro, shared workstation;
 30 interleaved runs after three warmups; lower is better):
 
 | Workload | tsc 6.0.3 | native TS 7.0.2 | Home 0.1.0 | Home vs fastest competitor |
 |---|---:|---:|---:|---:|
-| Startup | 59.1 ms | 35.4 ms | **3.0 ms** | **11.90× faster** |
-| 256 files | 204.0 ms | 52.3 ms | **32.9 ms** | **1.59× faster** |
-| Deep types | 126.9 ms | 52.2 ms | **26.4 ms** | **1.98× faster** |
-| 128-module import graph | 126.9 ms | 45.0 ms | **26.7 ms** | **1.68× faster** |
-| 64-leaf barrel graph | 93.1 ms | 40.1 ms | **22.5 ms** | **1.79× faster** |
-| 256 typed TSX components | 158.1 ms | 46.5 ms | **22.5 ms** | **2.06× faster** |
-| 256 generic call groups | 182.5 ms | 56.5 ms | **28.6 ms** | **1.97× faster** |
-| 256 exhaustive control-flow functions | 182.6 ms | 57.0 ms | **34.4 ms** | **1.66× faster** |
-| 256 type-predicate/assertion families | 224.1 ms | 68.9 ms | **41.9 ms** | **1.64× faster** |
-| 2,048 type-predicate/assertion families | 938.0 ms | 322.6 ms | 318.6 ms | 1.01× lower mean; narrow |
-| 256 null-safe-access families | 180.4 ms | 54.6 ms | **38.8 ms** | **1.41× faster** |
-| 128 destructuring/rest/spread families | 131.1 ms | 45.0 ms | **33.7 ms** | **1.34× faster** |
-| 128 × 8 overload calls | 193.6 ms | 62.7 ms | **31.3 ms** | **2.00× faster** |
-| 128 generic class families | 174.7 ms | 49.8 ms | **27.6 ms** | **1.81× faster** |
-| 128 structural object families | 173.6 ms | 55.5 ms | **28.7 ms** | **1.93× faster** |
-| 128 interface/namespace families | 189.2 ms | 61.2 ms | **43.3 ms** | **1.41× faster** |
-| 256 variadic tuple families | 235.5 ms | 75.9 ms | **42.3 ms** | **1.79× faster** |
-| 128 checked-JavaScript/JSDoc families | 201.3 ms | 55.1 ms | **37.6 ms** | **1.46× faster** |
-| 128 checked-CommonJS owners + app | 148.9 ms | 48.3 ms | **42.1 ms** | **1.15× faster** |
-| 256 recursive generic payloads | 147.3 ms | 69.7 ms | **28.8 ms** | **2.42× faster** |
+| Startup | 85.4 ms | 45.8 ms | **3.8 ms** | **12.06× faster** |
+| 256 files | 231.1 ms | 58.2 ms | **26.4 ms** | **2.20× faster** |
+| Deep types | 160.5 ms | 63.7 ms | **28.9 ms** | **2.21× faster** |
+| 128-module import graph | 168.9 ms | 58.4 ms | **25.3 ms** | **2.31× faster** |
+| 64-leaf barrel graph | 110.7 ms | 47.4 ms | **22.6 ms** | **2.10× faster** |
+| 256 typed TSX components | 186.2 ms | 53.2 ms | **23.4 ms** | **2.27× faster** |
+| 256 generic call groups | 204.3 ms | 63.7 ms | **22.3 ms** | **2.86× faster** |
+| 256 exhaustive control-flow functions | 215.5 ms | 65.0 ms | **32.2 ms** | **2.02× faster** |
+| 256 type-predicate/assertion families | 269.6 ms | 79.2 ms | **35.7 ms** | **2.22× faster** |
+| 2,048 type-predicate/assertion families | 1136.2 ms | 395.2 ms | **263.7 ms** | **1.50× faster** |
+| 256 null-safe-access families | 235.7 ms | 66.4 ms | **37.8 ms** | **1.76× faster** |
+| 128 destructuring/rest/spread families | 166.2 ms | 55.2 ms | **18.5 ms** | **2.98× faster** |
+| 128 × 8 overload calls | 245.8 ms | 74.1 ms | **30.2 ms** | **2.45× faster** |
+| 128 generic class families | 225.5 ms | 60.2 ms | **28.6 ms** | **2.10× faster** |
+| 128 structural object families | 193.6 ms | 60.0 ms | **25.2 ms** | **2.38× faster** |
+| 128 interface/namespace families | 221.3 ms | 67.6 ms | **43.0 ms** | **1.57× faster** |
+| 256 variadic tuple families | 265.6 ms | 81.0 ms | **36.2 ms** | **2.24× faster** |
+| 128 checked-JavaScript/JSDoc families | 221.7 ms | 56.8 ms | **34.8 ms** | **1.63× faster** |
+| 128 checked-CommonJS owners + app | 161.0 ms | 51.9 ms | **34.6 ms** | **1.50× faster** |
+| 256 recursive generic payloads | 161.8 ms | 77.7 ms | **15.1 ms** | **5.15× faster** |
 
 **Cross-platform confirmation** (same admitted corpus, TS 6.0.3 versus native
 TS 7.0.2, 30 interleaved runs after three warmups):
 
 | Platform | Raw result | Home lower means | Narrowest mean lead | Full documentation |
 |---|---|---:|---:|---|
-| Apple M3 Pro / macOS arm64 | `20260829T013535Z` | **20/20** | 1.01×, large predicates | [macOS snapshot](/docs/TS_PERFORMANCE#current-snapshot) |
+| Apple M3 Pro / macOS arm64 | `20260831T215035Z` | **20/20** | 1.50×, CommonJS / large predicates | [macOS snapshot](/docs/TS_PERFORMANCE#current-snapshot) |
 | Linux arm64 / pinned Bookworm container | `20260829T035150Z` | **20/20** | 1.02×, CheckJS/JSDoc | [Linux checkpoint](/docs/TS_PERFORMANCE#linux-arm64-container-checkpoint) |
 
-Home has lower means on **20/20 admitted timed workloads**. The new checked
-CommonJS graph passes identical positive and negative controls in all three
-compilers and is **1.15× faster** than native TS 7; the implementation is
-**31.1% faster** than the prior correct Home build in a separate 30-round A/B.
-Large predicates have only a **1.01× mean lead** and 24/30 paired wins, so the
-row is explicitly narrow. All 20 workloads pass admission before timing; all
-600 round files and 1,800 successful samples are retained. This local synthetic
+Home has lower means on **20/20 admitted timed workloads** and wins every one
+of the **600/600 paired rounds**. The checked CommonJS graph and large-predicate
+rows share the narrowest mean lead at **1.50×**. All 20 workloads pass admission
+before timing; all 600 round files and 1,800 successful samples are retained,
+and every row's paired 95% interval is above zero. This local synthetic
 snapshot is not universal benchmark leadership. Real-project validation and
 additional architectures remain incomplete. See the
-[full results, controls, variance and reproduction](/docs/TS_PERFORMANCE#checked-commonjs-graph-performance).
+[full results, controls, variance and reproduction](/docs/TS_PERFORMANCE#current-snapshot).
 Earlier snapshots are retained separately, not averaged into this table.
 Async/await coverage is still undergoing validation and is not timed.
 The [untimed program-discovery checks](/docs/TS_PERFORMANCE#prepared-program-discovery-and-expanded-global-audit-untimed)

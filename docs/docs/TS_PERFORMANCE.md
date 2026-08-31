@@ -10,42 +10,42 @@ Ongoing coverage and optimization work is tracked in
 
 ## Current snapshot
 
-Measured 2026-08-31 at commit `efdf8b574` on an Apple M3 Pro MacBook Pro
+Measured 2026-08-31 at commit `5efbd19df` on an Apple M3 Pro MacBook Pro
 (11 cores, 18 GB RAM, arm64, macOS 27.0). Each value is the mean and sample
 standard deviation of 30 new compiler processes after three warmup rounds.
-The complete raw-result identifier is `20260831T091953Z`. The runner first
+The complete raw-result identifier is `20260831T215035Z`. The runner first
 admitted all 20 selected workloads against version-checked TS **6.0.3**, native
 TS **7.0.2**, and Home. Native TS 7 and `tsgo` are one competitor. All **600
 round files / 1,800 successful finite samples** are retained without filtering.
 
 | Workload | tsc 6.0.3 | native TS 7.0.2 | Home 0.1.0 | Home vs fastest competitor |
 |---|---:|---:|---:|---:|
-| `checkjs_jsdoc` | 200.4 ± 1.5 ms | 54.4 ± 5.4 ms | **33.9 ± 0.4 ms** | **1.60× faster** |
-| `class_hierarchy` | 182.3 ± 7.3 ms | 51.7 ± 0.9 ms | **25.4 ± 0.4 ms** | **2.04× faster** |
-| `commonjs_graph` | 151.7 ± 4.9 ms | 48.6 ± 0.9 ms | **33.7 ± 5.8 ms** | **1.44× faster** |
-| `control_flow` | 186.2 ± 7.0 ms | 57.9 ± 1.0 ms | **30.5 ± 0.9 ms** | **1.90× faster** |
-| `deep_types` | 126.7 ± 3.4 ms | 51.9 ± 1.6 ms | **24.4 ± 0.2 ms** | **2.13× faster** |
-| `destructuring` | 139.6 ± 8.2 ms | 46.7 ± 0.7 ms | **16.8 ± 0.4 ms** | **2.77× faster** |
-| `generic_calls` | 174.4 ± 2.2 ms | 53.7 ± 1.2 ms | **20.1 ± 0.3 ms** | **2.68× faster** |
-| `import_graph` | 127.4 ± 1.3 ms | 45.0 ± 1.0 ms | **19.6 ± 0.7 ms** | **2.30× faster** |
-| `interface_composition` | 199.1 ± 6.5 ms | 62.4 ± 1.7 ms | **40.4 ± 0.4 ms** | **1.54× faster** |
-| `many_files` | 205.6 ± 9.0 ms | 53.5 ± 6.6 ms | **22.8 ± 0.5 ms** | **2.35× faster** |
-| `null_safe_access` | 187.2 ± 2.9 ms | 58.3 ± 6.6 ms | **33.8 ± 0.4 ms** | **1.72× faster** |
-| `overload_resolution` | 198.9 ± 8.0 ms | 63.7 ± 1.0 ms | **26.4 ± 0.3 ms** | **2.42× faster** |
-| `recursive_generics` | 148.9 ± 5.0 ms | 69.9 ± 0.9 ms | **14.6 ± 0.2 ms** | **4.80× faster** |
-| `reexport_graph` | 95.9 ± 7.9 ms | 41.0 ± 0.8 ms | **18.8 ± 1.1 ms** | **2.17× faster** |
-| `startup` | 72.1 ± 40.6 ms | 41.9 ± 13.6 ms | **3.4 ± 1.1 ms** | **12.20× faster** |
-| `structural_objects` | 183.0 ± 5.6 ms | 57.6 ± 1.2 ms | **25.1 ± 0.3 ms** | **2.29× faster** |
-| `tsx_components` | 157.6 ± 1.5 ms | 47.5 ± 5.8 ms | **21.3 ± 0.2 ms** | **2.23× faster** |
-| `type_predicates` | 238.7 ± 10.5 ms | 72.7 ± 6.5 ms | **34.3 ± 0.8 ms** | **2.12× faster** |
-| `type_predicates_large` | 984.6 ± 17.9 ms | 339.7 ± 4.6 ms | **257.1 ± 11.4 ms** | **1.32× faster** |
-| `variadic_tuples` | 245.3 ± 7.4 ms | 76.4 ± 2.2 ms | **36.2 ± 6.0 ms** | **2.11× faster** |
+| `checkjs_jsdoc` | 221.7 ± 13.6 ms | 56.8 ± 2.5 ms | **34.8 ± 1.2 ms** | **1.63× faster** |
+| `class_hierarchy` | 225.5 ± 34.4 ms | 60.2 ± 8.6 ms | **28.6 ± 2.0 ms** | **2.10× faster** |
+| `commonjs_graph` | 161.0 ± 6.7 ms | 51.9 ± 4.2 ms | **34.6 ± 1.7 ms** | **1.50× faster** |
+| `control_flow` | 215.5 ± 10.5 ms | 65.0 ± 1.1 ms | **32.2 ± 0.7 ms** | **2.02× faster** |
+| `deep_types` | 160.5 ± 10.1 ms | 63.7 ± 5.0 ms | **28.9 ± 2.0 ms** | **2.21× faster** |
+| `destructuring` | 166.2 ± 7.4 ms | 55.2 ± 2.1 ms | **18.5 ± 0.5 ms** | **2.98× faster** |
+| `generic_calls` | 204.3 ± 7.6 ms | 63.7 ± 9.3 ms | **22.3 ± 0.7 ms** | **2.86× faster** |
+| `import_graph` | 168.9 ± 37.8 ms | 58.4 ± 10.2 ms | **25.3 ± 4.2 ms** | **2.31× faster** |
+| `interface_composition` | 221.3 ± 27.3 ms | 67.6 ± 4.6 ms | **43.0 ± 3.0 ms** | **1.57× faster** |
+| `many_files` | 231.1 ± 13.1 ms | 58.2 ± 2.6 ms | **26.4 ± 6.1 ms** | **2.20× faster** |
+| `null_safe_access` | 235.7 ± 22.4 ms | 66.4 ± 4.0 ms | **37.8 ± 2.9 ms** | **1.76× faster** |
+| `overload_resolution` | 245.8 ± 10.9 ms | 74.1 ± 2.7 ms | **30.2 ± 1.3 ms** | **2.45× faster** |
+| `recursive_generics` | 161.8 ± 12.3 ms | 77.7 ± 9.9 ms | **15.1 ± 0.6 ms** | **5.15× faster** |
+| `reexport_graph` | 110.7 ± 4.6 ms | 47.4 ± 2.9 ms | **22.6 ± 1.6 ms** | **2.10× faster** |
+| `startup` | 85.4 ± 46.6 ms | 45.8 ± 15.4 ms | **3.8 ± 1.1 ms** | **12.06× faster** |
+| `structural_objects` | 193.6 ± 7.5 ms | 60.0 ± 2.5 ms | **25.2 ± 0.7 ms** | **2.38× faster** |
+| `tsx_components` | 186.2 ± 8.3 ms | 53.2 ± 2.0 ms | **23.4 ± 0.7 ms** | **2.27× faster** |
+| `type_predicates` | 269.6 ± 15.3 ms | 79.2 ± 3.8 ms | **35.7 ± 1.7 ms** | **2.22× faster** |
+| `type_predicates_large` | 1136.2 ± 132.3 ms | 395.2 ± 39.6 ms | **263.7 ± 11.2 ms** | **1.50× faster** |
+| `variadic_tuples` | 265.6 ± 9.3 ms | 81.0 ± 2.9 ms | **36.2 ± 0.9 ms** | **2.24× faster** |
 
 Home records lower means on **20/20 admitted workloads** and lower paired times
-in **599/600 rounds**. The sole individual loss is a 64.27 ms Home outlier in
-`commonjs_graph` round 15 versus 47.58 ms for native TS; Home still wins that
-row's mean by 1.44×. The 1.32× `type_predicates_large` mean margin is the
-narrowest row and is not evidence of universal leadership. These are local
+in **600/600 rounds**. Every row's paired 95% confidence interval for the
+fastest-competitor-minus-Home difference is above zero. The narrowest mean
+lead is **1.50×**, shared by `commonjs_graph` and `type_predicates_large`; this
+is still not evidence of universal leadership. These are local
 synthetic results; real projects, other platforms, and broader rejection
 coverage remain separate validation work. Historical snapshots, including
 losses, remain in the checkpoint sections below and are not averaged into this
@@ -57,6 +57,60 @@ wins. This is a display-resolution rule, not a statistical significance test;
 other directional labels also compare means, not certainty. These are local
 synthetic measurements, not a claim that every real project or machine has
 the same speedup.
+
+### Prepared source-marker reuse
+
+Commit `5efbd19df`, tracked in
+[#416](https://github.com/home-lang/home/issues/416), removes a duplicate
+whole-program source scan. `ts_driver.prepareSource` already builds one exact
+multi-pattern marker index per file; Program now borrows that immutable index
+for its cross-file discovery pass instead of scanning every source again with
+a second matcher. The shared index gained the two Program-only markers,
+`interface` and `exports`. Pre-compilation callers retain an owned-index path,
+and dropping a compilation clears a borrowed view before freeing its storage.
+A regression test verifies that prepared files point at the exact
+`Compilation.source_markers` index.
+
+The fixed before binary has SHA-256
+`150c2206d8d38990a2d0054d03c8939357960d5a26c0e6c0b9ca560d7fc8581b`;
+the accepted candidate is
+`0d2aed7253152acb66965e5148d09c5a50bf7512e9062faecee0daa70caa3f60`.
+Both exit 0 with byte-identical stdout and stderr on the unchanged 32,768- and
+65,536-family predicate projects. Focused marker tests, the full ReleaseFast
+Program suite, the full ReleaseFast checker suite, and all 95 benchmark-harness
+tests pass.
+
+Each A/B scale used three alternating warmup pairs followed by measured pairs
+whose process order reversed every round. Times are untrimmed mean ± sample
+standard deviation. The paired interval is for before-minus-after time, so an
+interval wholly above zero favors the candidate.
+
+| Source-marker A/B | Metric | Before | After | Speedup | After wins | Paired 95% CI |
+|---|---|---:|---:|---:|---:|---:|
+| 32,768 families, 20 pairs | Wall | 5389.9 ± 460.6 ms | **4961.4 ± 296.3 ms** | **1.086×** | 19/20 | +242.7 to +614.2 ms |
+| 32,768 families, 20 pairs | CPU | 5256.2 ± 355.2 ms | **4856.8 ± 236.2 ms** | **1.082×** | 19/20 | +255.4 to +543.4 ms |
+| 65,536 families, 20 pairs | Wall | 10967.9 ± 968.4 ms | **10533.7 ± 979.8 ms** | **1.041×** | 12/20 | +4.4 to +864.0 ms |
+| 65,536 families, 20 pairs | CPU | 10703.8 ± 782.2 ms | **10202.3 ± 746.9 ms** | **1.049×** | 16/20 | +187.9 to +815.0 ms |
+
+The 65,536-family wall result is noisy because unrelated builds began during
+the run. No sample was removed; both its wall and process-CPU intervals remain
+positive. A separate 10-pair screen at 32,768 families also favored the
+candidate on wall (1.035×, 9/10, CI +62.7 to +294.8 ms) and CPU (1.047×,
+9/10, CI +132.1 to +333.0 ms). Raw A/B evidence is retained in
+`bench/vs_tsgo/results/program-source-marker-reuse.Ii55xS/`.
+
+The independent focused three-compiler checkpoint `20260831T214804Z` compares
+version-verified TS 6.0.3, native TS 7.0.2, and the same immutable Home binary:
+
+| Focused `type_predicates_large` | tsc 6.0.3 | native TS 7.0.2 | Home 0.1.0 | Home vs fastest competitor |
+|---|---:|---:|---:|---:|
+| 30 interleaved rounds | 1185.5 ± 109.7 ms | 408.2 ± 33.7 ms | **284.6 ± 25.9 ms** | **1.43× faster** |
+
+Home wins all 30 focused pairs; the paired fastest-competitor-minus-Home 95%
+interval is +113.7 to +133.6 ms. All 30 round files / 90 successful finite
+samples are retained, and compiler provenance is unchanged before and after
+measurement. The complete 20-workload checkpoint using the same binary is the
+[current snapshot](#current-snapshot).
 
 ## Linux ARM64 container checkpoint
 
