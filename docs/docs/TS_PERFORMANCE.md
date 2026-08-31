@@ -10,36 +10,36 @@ Ongoing coverage and optimization work is tracked in
 
 ## Current snapshot
 
-Measured 2026-08-30 at commit `12e4f73ef` on an Apple M3 Pro MacBook Pro
+Measured 2026-08-30 at commit `43e1f1ea8` on an Apple M3 Pro MacBook Pro
 (11 cores, 18 GB RAM, arm64, macOS 27.0). Each value is the mean and sample
 standard deviation of 30 new compiler processes after three warmup rounds.
-The complete raw-result identifier is `20260831T050307Z`. The runner first
+The complete raw-result identifier is `20260831T053521Z`. The runner first
 admitted all 20 selected workloads against version-checked TS **6.0.3**, native
 TS **7.0.2**, and Home. Native TS 7 and `tsgo` are one competitor. All **600
 round files / 1,800 successful finite samples** are retained without filtering.
 
 | Workload | tsc 6.0.3 | native TS 7.0.2 | Home 0.1.0 | Home vs fastest competitor |
 |---|---:|---:|---:|---:|
-| `checkjs_jsdoc` | 215.4 ± 7.3 ms | 57.4 ± 2.2 ms | **37.1 ± 1.6 ms** | **1.55× faster** |
-| `class_hierarchy` | 194.7 ± 19.0 ms | 54.9 ± 2.7 ms | **27.6 ± 1.2 ms** | **1.99× faster** |
-| `commonjs_graph` | 157.4 ± 5.1 ms | 50.8 ± 1.2 ms | **33.4 ± 0.6 ms** | **1.52× faster** |
-| `control_flow` | 192.2 ± 6.0 ms | 59.9 ± 0.9 ms | **32.6 ± 0.9 ms** | **1.83× faster** |
-| `deep_types` | 131.2 ± 2.1 ms | 54.2 ± 2.4 ms | **25.8 ± 0.4 ms** | **2.10× faster** |
-| `destructuring` | 142.2 ± 7.9 ms | 48.8 ± 1.0 ms | **18.0 ± 0.4 ms** | **2.71× faster** |
-| `generic_calls` | 180.5 ± 4.0 ms | 56.9 ± 5.0 ms | **21.9 ± 1.0 ms** | **2.59× faster** |
-| `import_graph` | 138.0 ± 14.4 ms | 47.7 ± 1.3 ms | **20.2 ± 0.6 ms** | **2.36× faster** |
-| `interface_composition` | 214.4 ± 14.5 ms | 68.2 ± 5.2 ms | **46.0 ± 5.6 ms** | **1.48× faster** |
-| `many_files` | 214.9 ± 8.3 ms | 54.9 ± 1.8 ms | **24.3 ± 0.7 ms** | **2.26× faster** |
-| `null_safe_access` | 193.1 ± 1.8 ms | 59.0 ± 0.9 ms | **37.4 ± 0.8 ms** | **1.58× faster** |
-| `overload_resolution` | 203.8 ± 3.9 ms | 67.1 ± 4.8 ms | **28.9 ± 0.6 ms** | **2.32× faster** |
-| `recursive_generics` | 153.5 ± 5.4 ms | 72.3 ± 1.0 ms | **15.7 ± 0.2 ms** | **4.60× faster** |
-| `reexport_graph` | 97.5 ± 1.2 ms | 42.4 ± 0.8 ms | **17.2 ± 0.5 ms** | **2.46× faster** |
-| `startup` | 69.9 ± 16.8 ms | 46.2 ± 21.9 ms | **3.8 ± 1.7 ms** | **12.27× faster** |
-| `structural_objects` | 190.8 ± 7.9 ms | 59.9 ± 1.8 ms | **27.5 ± 0.7 ms** | **2.18× faster** |
-| `tsx_components` | 162.3 ± 1.4 ms | 47.8 ± 0.9 ms | **22.1 ± 0.2 ms** | **2.16× faster** |
-| `type_predicates` | 241.2 ± 3.1 ms | 73.3 ± 1.4 ms | **38.2 ± 1.3 ms** | **1.92× faster** |
-| `type_predicates_large` | 1018.1 ± 18.0 ms | 360.7 ± 18.3 ms | **290.0 ± 3.8 ms** | **1.24× faster** |
-| `variadic_tuples` | 254.8 ± 10.8 ms | 79.1 ± 2.7 ms | **41.7 ± 1.6 ms** | **1.90× faster** |
+| `checkjs_jsdoc` | 202.1 ± 1.7 ms | 53.9 ± 1.2 ms | **35.3 ± 1.0 ms** | **1.53× faster** |
+| `class_hierarchy` | 181.1 ± 1.7 ms | 52.0 ± 0.8 ms | **25.9 ± 0.3 ms** | **2.01× faster** |
+| `commonjs_graph` | 151.1 ± 2.3 ms | 48.8 ± 1.2 ms | **32.4 ± 0.7 ms** | **1.51× faster** |
+| `control_flow` | 191.6 ± 5.0 ms | 59.8 ± 2.0 ms | **32.1 ± 1.0 ms** | **1.86× faster** |
+| `deep_types` | 129.9 ± 5.1 ms | 53.3 ± 1.7 ms | **25.6 ± 0.3 ms** | **2.08× faster** |
+| `destructuring` | 136.7 ± 1.6 ms | 46.9 ± 0.9 ms | **17.1 ± 0.2 ms** | **2.74× faster** |
+| `generic_calls` | 178.0 ± 1.6 ms | 54.9 ± 0.8 ms | **21.3 ± 0.2 ms** | **2.57× faster** |
+| `import_graph` | 130.6 ± 2.4 ms | 45.9 ± 1.2 ms | **19.6 ± 0.4 ms** | **2.34× faster** |
+| `interface_composition` | 198.0 ± 3.4 ms | 61.9 ± 1.2 ms | **41.5 ± 0.6 ms** | **1.49× faster** |
+| `many_files` | 208.9 ± 1.9 ms | 53.3 ± 0.9 ms | **23.6 ± 0.5 ms** | **2.25× faster** |
+| `null_safe_access` | 189.0 ± 6.0 ms | 57.3 ± 1.4 ms | **35.4 ± 0.8 ms** | **1.62× faster** |
+| `overload_resolution` | 197.2 ± 1.5 ms | 64.9 ± 5.0 ms | **27.7 ± 0.3 ms** | **2.34× faster** |
+| `recursive_generics` | 150.5 ± 4.6 ms | 70.5 ± 1.4 ms | **15.2 ± 0.6 ms** | **4.63× faster** |
+| `reexport_graph` | 96.8 ± 2.2 ms | 42.0 ± 1.1 ms | **17.5 ± 0.5 ms** | **2.40× faster** |
+| `startup` | 65.5 ± 10.6 ms | 39.3 ± 4.0 ms | **3.2 ± 0.1 ms** | **12.24× faster** |
+| `structural_objects` | 183.5 ± 5.7 ms | 57.8 ± 1.9 ms | **26.3 ± 0.8 ms** | **2.20× faster** |
+| `tsx_components` | 161.6 ± 1.6 ms | 47.9 ± 3.0 ms | **22.5 ± 2.3 ms** | **2.13× faster** |
+| `type_predicates` | 241.0 ± 5.1 ms | 72.9 ± 1.3 ms | **37.0 ± 0.6 ms** | **1.97× faster** |
+| `type_predicates_large` | 985.6 ± 14.9 ms | 344.2 ± 7.4 ms | **277.6 ± 3.8 ms** | **1.24× faster** |
+| `variadic_tuples` | 242.7 ± 6.7 ms | 75.5 ± 1.1 ms | **39.7 ± 0.5 ms** | **1.90× faster** |
 
 Home records lower means on **20/20 admitted workloads** and lower paired times
 in **600/600 rounds**. Every row wins all 30 paired rounds. The 1.24×
@@ -217,6 +217,8 @@ workload-specific shortcuts:
 - identifier scanning tests the common ASCII continuation case before the
   UTF-8 whitespace tables, while escaped identifiers and non-ASCII whitespace
   retain their complete scanner paths;
+- builtin object-type lowering uses an exact index of the 44 supported names
+  to reject ordinary user-defined names before the specialized recipe chain;
 - driver preparation computes the exact source-marker index once and reuses it
   for conservative directive/reference gates and checker source facts;
 - JSDoc and triple-slash reference presence reuse the existing one-pass source
@@ -633,6 +635,53 @@ takes **288.4 ± 5.7 ms**, a **1.22×** lead. The complete 20-workload result is
 has the lower mean on 20/20 rows and the lower individual time in 600/600
 rounds. Both official runs retain every sample and verify candidate SHA-256
 `aae87472b82685d59b37aa53218173120f8e6df190a473ca04477cf3b46637d6`
+before admission and after measurement.
+
+### Builtin object name gate checkpoint
+
+Commit `43e1f1ea8`, tracked by
+[#416](https://github.com/home-lang/home/issues/416), adds an exact name gate
+before builtin object-type lowering. Previously, every failed user-defined
+type name traversed the long chain of builtin recipes and string comparisons.
+The static index contains all and only the 44 names recognized by those
+existing specialized and fallback paths. A matching name still runs its
+original recipe unchanged; a nonmatching name now returns before the chain.
+
+The exact-final Home A/B uses the suite's unchanged type-predicate generator
+at 32,768 families with identical `--noEmit -p` arguments. Both binaries exit
+zero with byte-identical empty stdout and stderr. The committed ASCII-scanner
+binary (SHA-256
+`aae87472b82685d59b37aa53218173120f8e6df190a473ca04477cf3b46637d6`)
+is the baseline; the builtin-gate candidate has SHA-256
+`58b48a6b39d76c7ffa6cf3343490bd7da423692135076f3cbee6da8b54aa8206`.
+After three alternating warmup pairs, 20 measured pairs reverse process order
+each round. All 40 finite samples remain in
+`builtin-object-name-gate-final-ab.32768`; none is filtered.
+
+| 32,768 predicate-family Home A/B | Recipe chain for every name | Exact 44-name gate | Baseline / candidate | Lower candidate time |
+|---|---:|---:|---:|---:|
+| Wall clock | 4981.9 ± 172.9 ms | **4890.1 ± 149.9 ms** | **1.0188×** | **17/20 pairs** |
+| Process CPU | 4960.5 ± 157.6 ms | **4866.9 ± 135.7 ms** | **1.0192×** | **16/20 pairs** |
+
+The wall-clock mean paired reduction is 91.9 ms with a 95% paired t
+confidence interval of 30.2–153.6 ms; its exact two-sided sign-test result is
+`p = 0.0025768`. Process CPU time is lower by a paired mean of 93.6 ms with a
+39.2–148.0 ms interval and `p = 0.0118179`. An independent pre-test-layout
+build of the same production logic also measured lower wall and CPU means:
+1.0207× and 1.0202× respectively, each with 19/20 lower candidate pairs and
+positive paired confidence intervals. The focused completeness regression
+resolves all 44 builtin recipes and rejects prefix and suffix lookalikes. A
+mechanical audit reports 44 gated and 44 recognized names with no missing or
+extra entries; the broader ReleaseFast checker builtin subset, ReleaseFast
+production build, formatting, and diff checks pass.
+
+The exact committed-binary 30-round confirmation is `20260831T053315Z`: TS
+6.0.3 takes 999.6 ± 27.0 ms, native TS 7.0.2 takes 349.9 ± 11.5 ms, and Home
+takes **280.7 ± 6.7 ms**, a **1.25×** lead. The complete 20-workload result is
+`20260831T053521Z`, reported in the [current snapshot](#current-snapshot): Home
+has the lower mean on 20/20 rows and the lower individual time in 600/600
+rounds. Both official runs retain every sample and verify candidate SHA-256
+`58b48a6b39d76c7ffa6cf3343490bd7da423692135076f3cbee6da8b54aa8206`
 before admission and after measurement.
 
 ## Historical workload milestones
