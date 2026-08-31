@@ -334,6 +334,9 @@ pub const Async = struct {
     }
 
     fn NewAsyncFSTask(comptime ReturnType: type, comptime ArgumentType: type, comptime function: anytype) type {
+        // Complex results transfer owned strings/buffers only during JS conversion.
+        // Admit only result shapes whose shutdown path needs no result destructor.
+        const shutdown_safe_result = ReturnType == void or ReturnType == bool or ReturnType == Null;
         return struct {
             pub const Task = @This();
 
@@ -341,7 +344,9 @@ pub const Async = struct {
             args: ArgumentType,
             globalObject: *jsc.JSGlobalObject,
             task: jsc.WorkPoolTask = .{ .callback = &workPoolCallback },
+            any_task: jsc.AnyTask = undefined,
             result: bun.sys.Maybe(ReturnType),
+            has_result: bool = false,
             ref: bun.Async.KeepAlive = .{},
             tracker: jsc.Debugger.AsyncTaskTracker,
 
@@ -366,11 +371,21 @@ pub const Async = struct {
                     .globalObject = globalObject,
                     .tracker = jsc.Debugger.AsyncTaskTracker.init(vm),
                 });
+                const promise_value = task.promise.value();
+                if (comptime shutdown_safe_result) {
+                    task.any_task = jsc.AnyTask.NewWithShutdown(Task, &runFromJSThread, &cancelForShutdown).init(task);
+                }
                 task.ref.ref(vm);
                 task.args.toThreadSafe();
                 task.tracker.didSchedule(globalObject);
+                if (comptime shutdown_safe_result) {
+                    if (!vm.native_work_pool_jobs.tryAdd()) {
+                        task.cancelForShutdown();
+                        return promise_value;
+                    }
+                }
                 jsc.WorkPool.schedule(&task.task);
-                return task.promise.value();
+                return promise_value;
             }
 
             fn workPoolCallback(task: *jsc.WorkPoolTask) void {
@@ -378,13 +393,21 @@ pub const Async = struct {
 
                 var node_fs = NodeFS{};
                 this.result = function(&node_fs, this.args, .async);
+                this.has_result = true;
 
                 if (this.result == .err) {
                     this.result.err = this.result.err.clone(bun.default_allocator);
                     std.mem.doNotOptimizeAway(&node_fs);
                 }
 
-                this.globalObject.bunVMConcurrently().eventLoop().enqueueTaskConcurrent(jsc.ConcurrentTask.createFrom(this));
+                const vm = this.globalObject.bunVMConcurrently();
+                if (comptime shutdown_safe_result) {
+                    // Publish the owner-thread cleanup before releasing the VM barrier.
+                    vm.eventLoop().enqueueTaskConcurrent(jsc.ConcurrentTask.create(this.any_task.task()));
+                    vm.native_work_pool_jobs.complete();
+                } else {
+                    vm.eventLoop().enqueueTaskConcurrent(jsc.ConcurrentTask.createFrom(this));
+                }
             }
 
             pub fn runFromJSThread(this: *Task) bun.JSTerminated!void {
@@ -424,8 +447,13 @@ pub const Async = struct {
                 }
             }
 
+            pub fn cancelForShutdown(this: *Task) void {
+                this.tracker.didCancel(this.globalObject);
+                this.deinit();
+            }
+
             pub fn deinit(this: *Task) void {
-                if (this.result == .err) {
+                if (this.has_result and this.result == .err) {
                     this.result.err.deinit();
                 }
 
