@@ -10,39 +10,39 @@ Ongoing coverage and optimization work is tracked in
 
 ## Current snapshot
 
-Measured 2026-08-30 at commit `800fff78b` on an Apple M3 Pro MacBook Pro
+Measured 2026-08-30 at commit `12e4f73ef` on an Apple M3 Pro MacBook Pro
 (11 cores, 18 GB RAM, arm64, macOS 27.0). Each value is the mean and sample
 standard deviation of 30 new compiler processes after three warmup rounds.
-The complete raw-result identifier is `20260831T040903Z`. The runner first
+The complete raw-result identifier is `20260831T050307Z`. The runner first
 admitted all 20 selected workloads against version-checked TS **6.0.3**, native
 TS **7.0.2**, and Home. Native TS 7 and `tsgo` are one competitor. All **600
 round files / 1,800 successful finite samples** are retained without filtering.
 
 | Workload | tsc 6.0.3 | native TS 7.0.2 | Home 0.1.0 | Home vs fastest competitor |
 |---|---:|---:|---:|---:|
-| `checkjs_jsdoc` | 217.9 ± 7.0 ms | 56.9 ± 1.6 ms | **37.6 ± 1.6 ms** | **1.51× faster** |
-| `class_hierarchy` | 192.4 ± 14.6 ms | 54.8 ± 2.9 ms | **27.6 ± 1.3 ms** | **1.99× faster** |
-| `commonjs_graph` | 160.0 ± 7.0 ms | 51.6 ± 2.0 ms | **34.5 ± 1.3 ms** | **1.49× faster** |
-| `control_flow` | 203.4 ± 16.2 ms | 62.2 ± 3.0 ms | **34.7 ± 1.7 ms** | **1.79× faster** |
-| `deep_types` | 136.6 ± 5.2 ms | 55.4 ± 1.6 ms | **27.4 ± 1.0 ms** | **2.02× faster** |
-| `destructuring` | 147.7 ± 5.8 ms | 49.3 ± 2.1 ms | **18.6 ± 0.8 ms** | **2.65× faster** |
-| `generic_calls` | 187.8 ± 12.5 ms | 57.3 ± 2.5 ms | **22.7 ± 0.8 ms** | **2.52× faster** |
-| `import_graph` | 140.5 ± 18.0 ms | 48.4 ± 1.9 ms | **20.7 ± 0.8 ms** | **2.34× faster** |
-| `interface_composition` | 206.3 ± 10.1 ms | 65.8 ± 11.4 ms | **43.6 ± 2.3 ms** | **1.51× faster** |
-| `many_files` | 235.3 ± 15.4 ms | 59.0 ± 2.6 ms | **26.1 ± 1.3 ms** | **2.26× faster** |
-| `null_safe_access` | 200.4 ± 7.3 ms | 60.2 ± 2.3 ms | **38.9 ± 1.2 ms** | **1.55× faster** |
-| `overload_resolution` | 209.4 ± 9.3 ms | 67.2 ± 4.6 ms | **31.0 ± 7.1 ms** | **2.17× faster** |
-| `recursive_generics` | 161.3 ± 12.6 ms | 74.7 ± 2.1 ms | **16.5 ± 0.5 ms** | **4.53× faster** |
-| `reexport_graph` | 109.1 ± 10.7 ms | 47.8 ± 5.8 ms | **22.7 ± 6.3 ms** | **2.10× faster** |
-| `startup` | 79.8 ± 37.1 ms | 45.3 ± 25.0 ms | **3.5 ± 0.6 ms** | **12.97× faster** |
-| `structural_objects` | 187.9 ± 5.8 ms | 59.0 ± 1.9 ms | **27.7 ± 0.7 ms** | **2.13× faster** |
-| `tsx_components` | 170.2 ± 4.9 ms | 50.6 ± 2.9 ms | **23.1 ± 0.8 ms** | **2.19× faster** |
-| `type_predicates` | 253.8 ± 19.8 ms | 75.0 ± 2.0 ms | **40.3 ± 1.1 ms** | **1.86× faster** |
-| `type_predicates_large` | 1084.9 ± 71.9 ms | 376.9 ± 24.9 ms | **312.6 ± 9.9 ms** | **1.21× faster** |
-| `variadic_tuples` | 264.6 ± 12.5 ms | 79.3 ± 2.1 ms | **42.9 ± 1.4 ms** | **1.85× faster** |
+| `checkjs_jsdoc` | 215.4 ± 7.3 ms | 57.4 ± 2.2 ms | **37.1 ± 1.6 ms** | **1.55× faster** |
+| `class_hierarchy` | 194.7 ± 19.0 ms | 54.9 ± 2.7 ms | **27.6 ± 1.2 ms** | **1.99× faster** |
+| `commonjs_graph` | 157.4 ± 5.1 ms | 50.8 ± 1.2 ms | **33.4 ± 0.6 ms** | **1.52× faster** |
+| `control_flow` | 192.2 ± 6.0 ms | 59.9 ± 0.9 ms | **32.6 ± 0.9 ms** | **1.83× faster** |
+| `deep_types` | 131.2 ± 2.1 ms | 54.2 ± 2.4 ms | **25.8 ± 0.4 ms** | **2.10× faster** |
+| `destructuring` | 142.2 ± 7.9 ms | 48.8 ± 1.0 ms | **18.0 ± 0.4 ms** | **2.71× faster** |
+| `generic_calls` | 180.5 ± 4.0 ms | 56.9 ± 5.0 ms | **21.9 ± 1.0 ms** | **2.59× faster** |
+| `import_graph` | 138.0 ± 14.4 ms | 47.7 ± 1.3 ms | **20.2 ± 0.6 ms** | **2.36× faster** |
+| `interface_composition` | 214.4 ± 14.5 ms | 68.2 ± 5.2 ms | **46.0 ± 5.6 ms** | **1.48× faster** |
+| `many_files` | 214.9 ± 8.3 ms | 54.9 ± 1.8 ms | **24.3 ± 0.7 ms** | **2.26× faster** |
+| `null_safe_access` | 193.1 ± 1.8 ms | 59.0 ± 0.9 ms | **37.4 ± 0.8 ms** | **1.58× faster** |
+| `overload_resolution` | 203.8 ± 3.9 ms | 67.1 ± 4.8 ms | **28.9 ± 0.6 ms** | **2.32× faster** |
+| `recursive_generics` | 153.5 ± 5.4 ms | 72.3 ± 1.0 ms | **15.7 ± 0.2 ms** | **4.60× faster** |
+| `reexport_graph` | 97.5 ± 1.2 ms | 42.4 ± 0.8 ms | **17.2 ± 0.5 ms** | **2.46× faster** |
+| `startup` | 69.9 ± 16.8 ms | 46.2 ± 21.9 ms | **3.8 ± 1.7 ms** | **12.27× faster** |
+| `structural_objects` | 190.8 ± 7.9 ms | 59.9 ± 1.8 ms | **27.5 ± 0.7 ms** | **2.18× faster** |
+| `tsx_components` | 162.3 ± 1.4 ms | 47.8 ± 0.9 ms | **22.1 ± 0.2 ms** | **2.16× faster** |
+| `type_predicates` | 241.2 ± 3.1 ms | 73.3 ± 1.4 ms | **38.2 ± 1.3 ms** | **1.92× faster** |
+| `type_predicates_large` | 1018.1 ± 18.0 ms | 360.7 ± 18.3 ms | **290.0 ± 3.8 ms** | **1.24× faster** |
+| `variadic_tuples` | 254.8 ± 10.8 ms | 79.1 ± 2.7 ms | **41.7 ± 1.6 ms** | **1.90× faster** |
 
 Home records lower means on **20/20 admitted workloads** and lower paired times
-in **600/600 rounds**. Every row wins all 30 paired rounds. The 1.21×
+in **600/600 rounds**. Every row wins all 30 paired rounds. The 1.24×
 `type_predicates_large` mean margin is the narrowest row and is not evidence
 of universal leadership. These are local synthetic results; real projects,
 other platforms, and broader rejection coverage remain separate validation
@@ -214,6 +214,9 @@ workload-specific shortcuts:
   leak detection;
 - parser and checker feature probes cache source-level facts instead of
   repeatedly scanning whole files;
+- identifier scanning tests the common ASCII continuation case before the
+  UTF-8 whitespace tables, while escaped identifiers and non-ASCII whitespace
+  retain their complete scanner paths;
 - driver preparation computes the exact source-marker index once and reuses it
   for conservative directive/reference gates and checker source facts;
 - JSDoc and triple-slash reference presence reuse the existing one-pass source
@@ -580,6 +583,57 @@ reported in the [current snapshot](#current-snapshot): Home has the lower mean
 on 20/20 rows and the lower individual time in 600/600 rounds. Both official
 runs retain every sample and verify unchanged compiler provenance before
 admission and after measurement.
+
+### ASCII identifier scanner checkpoint
+
+Commit `12e4f73ef`, tracked by
+[#416](https://github.com/home-lang/home/issues/416), changes the identifier
+scanner's dispatch order without changing its accepted syntax. The previous
+loop probed both UTF-8 whitespace tables for every byte before testing whether
+an ordinary ASCII letter or digit continues the identifier. The new path tests
+ASCII continuation first. Backslash escapes still use the complete escape
+path, and non-ASCII bytes still run both Unicode whitespace and line-terminator
+checks. A focused regression verifies that U+00A0 and U+2028 terminate an
+identifier and that U+2028 preserves the following token's newline flag.
+
+The exact-final Home A/B uses the suite's unchanged type-predicate generator
+at 32,768 families with identical `--noEmit -p` arguments. This is a scaled
+diagnostic corpus for the scanner hotspot, not a replacement for the standard
+2,048-family competitor row. Both binaries exit zero with byte-identical empty
+stdout and stderr. The published JSDoc-index binary (SHA-256
+`b02ecda7944783f0437b8c205177fb66b4b09aa6e9ddaf5d331161114626a633`)
+is the baseline; the committed candidate has SHA-256
+`aae87472b82685d59b37aa53218173120f8e6df190a473ca04477cf3b46637d6`.
+After three alternating warmup pairs, 20 measured pairs reverse process order
+each round. All 40 finite samples remain in
+`ascii-identifier-fast-path-final-ab.32768`; none is filtered.
+
+| 32,768 predicate-family Home A/B | UTF-8 probes before ASCII | ASCII continuation first | Baseline / candidate | Lower candidate time |
+|---|---:|---:|---:|---:|
+| Process CPU | 7353.4 ± 112.6 ms | **7129.1 ± 108.2 ms** | **1.0315×** | **20/20 pairs** |
+| Wall clock | 8126.3 ± 277.9 ms | **8010.6 ± 689.5 ms** | **1.0145×** | **17/20 pairs** |
+
+The CPU paired reduction is 224.3 ms with a 95% paired t confidence interval
+of 178.9–269.7 ms; its exact two-sided sign-test result is `p = 0.0000019`.
+Wall clock retains two early candidate machine-stall outliers, so its paired
+t interval crosses zero (-125.4–357.0 ms) even though the direction is lower
+in 17/20 pairs (`p = 0.0026` by the exact two-sided sign test). An independent
+pre-test-layout build of the same production scanner logic measured a 1.0418×
+wall reduction with a positive 100.7–326.8 ms paired interval. The shorter
+8,192-family exact-final confirmation was directionally lower but inconclusive
+under contemporaneous host variance (13/20 wall and CPU wins); its samples are
+retained in `ascii-identifier-fast-path-final-ab.8192` rather than discarded.
+The ReleaseFast lexer suite, Unicode regression, ReleaseFast production build,
+formatting, and diff checks pass.
+
+The exact committed-binary 30-round confirmation is `20260831T050122Z`: TS
+6.0.3 takes 1017.3 ± 46.6 ms, native TS 7.0.2 takes 351.6 ± 8.1 ms, and Home
+takes **288.4 ± 5.7 ms**, a **1.22×** lead. The complete 20-workload result is
+`20260831T050307Z`, reported in the [current snapshot](#current-snapshot): Home
+has the lower mean on 20/20 rows and the lower individual time in 600/600
+rounds. Both official runs retain every sample and verify candidate SHA-256
+`aae87472b82685d59b37aa53218173120f8e6df190a473ca04477cf3b46637d6`
+before admission and after measurement.
 
 ## Historical workload milestones
 
