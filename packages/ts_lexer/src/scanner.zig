@@ -472,6 +472,10 @@ pub const Scanner = struct {
                     return;
                 },
                 else => {
+                    // Every non-ASCII whitespace or line terminator begins
+                    // with a high byte. Ordinary ASCII token boundaries can
+                    // return immediately without probing the UTF-8 tables.
+                    if (c < 0x80) return;
                     const unicode_space_len = self.unicodeWhitespaceLengthAt(self.pos);
                     if (unicode_space_len != 0) {
                         self.pos += unicode_space_len;
