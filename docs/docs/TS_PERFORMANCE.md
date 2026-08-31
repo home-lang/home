@@ -169,6 +169,28 @@ Raw evidence is retained under
 `bench/vs_tsgo/results/source-marker-trie.20260831T153305.99359/` and
 `bench/vs_tsgo/results/source-marker-pruned-trie.20260831T160024.69935/`.
 
+A parser-local exact-name cache was measured next and rejected. The 64-entry
+direct-mapped cache retained source offsets, the exact Wyhash, and the stable
+`StringId`; a possible hit still required equal length and full source-byte
+equality. A miss used the same precomputed hash for the canonical shared
+interner lookup, so identity, ownership, and concurrent publication remained
+unchanged. The focused ReleaseFast parser and string-interner suites passed,
+and the fixed candidate exited 0 with byte-identical stdout and stderr at both
+large scales. Its SHA-256 was
+`60ceb2f534ee01859e27f4ac3fabbd6630679b7361e90852f423bbdec087d97a`
+against baseline
+`0d2aed7253152acb66965e5148d09c5a50bf7512e9062faecee0daa70caa3f60`.
+
+The 32,768-family screen used three alternating warmup pairs and ten measured
+pairs with reversed order and no filtering. Wall time was 4716.3 ± 154.9 ms
+for the baseline versus 4721.7 ± 276.3 ms for the candidate (0.9989×, 5/10
+candidate wins, paired interval -123.8 to +112.9 ms). Process CPU was
+4665.3 ± 127.3 ms versus 4666.0 ± 234.1 ms (0.9999×, 5/10, interval -99.6
+to +98.2 ms). The initial gate failed, so no confirmation or 65,536 timing was
+run. The cache and prehashed public API were fully reverted. Raw evidence is
+retained under
+`bench/vs_tsgo/results/parser-local-interner-cache.20260831T162449.18110/`.
+
 The independent focused three-compiler checkpoint `20260831T214804Z` compares
 version-verified TS 6.0.3, native TS 7.0.2, and the same immutable Home binary:
 
