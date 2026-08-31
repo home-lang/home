@@ -1013,6 +1013,19 @@ interval -120.8–151.7 ms), and CPU measured 9911.9 ± 309.1 ms versus
 rounds remain under `parser-virtual-section-fact.BUr50C`; the API change is
 absent from the compiler.
 
+A declaration-diagnostic pass census was measured and fully reverted. The
+candidate classified top-level HIR declaration kinds once, then skipped each
+of eight specialized merge passes only when its required kinds were provably
+absent. It passed the full ReleaseFast checker suite and produced byte-identical
+output at both scales, but the added census merely offset the avoided empty
+passes. The ten-pair 32,768-family screen measured 4762.9 ± 84.4 ms for the
+accepted binary versus 4757.8 ± 128.0 ms for the candidate in wall time
+(1.0011×, 6/10 lower candidate pairs, paired interval -107.5–117.8 ms).
+Process CPU measured 4732.5 ± 60.6 ms versus 4725.7 ± 101.0 ms (1.0014×,
+6/10 pairs, interval -81.3–94.9 ms). Raw rounds remain under
+`declaration-pass-gates.4tu8mP/preliminary-ab.32768`; the census is absent from
+the compiler.
+
 The exact committed-binary 30-round focused confirmation is
 `20260831T091833Z`: TS 6.0.3 takes 980.2 ± 14.7 ms, native TS 7.0.2 takes
 345.0 ± 13.2 ms, and Home takes **256.2 ± 8.2 ms**, a **1.35×** lead. The
