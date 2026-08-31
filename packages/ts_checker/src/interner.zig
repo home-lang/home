@@ -312,6 +312,21 @@ const KeyHashCtx = struct {
     }
 };
 
+const PrehashedTypeKey = struct {
+    key: TypeKey,
+    hash: u64,
+};
+
+const PrehashedTypeKeyContext = struct {
+    pub fn hash(_: @This(), probe: PrehashedTypeKey) u64 {
+        return probe.hash;
+    }
+
+    pub fn eql(_: @This(), probe: PrehashedTypeKey, stored: TypeKey) bool {
+        return probe.key.eql(stored);
+    }
+};
+
 fn shardIndexFor(key_hash: u64) u32 {
     return @as(u32, @truncate(key_hash)) & SHARD_MASK;
 }
@@ -613,23 +628,25 @@ pub const Interner = struct {
     // These variable-length keys must own their slices just like unions,
     // signatures, and template literals; callers may release their buffers.
     fn internOwnedGraphKey(self: *Interner, key: TypeKey, flags: types.TypeFlags) !TypeId {
-        const shard = &self.shards[shardIndexFor(key.hash())];
+        const h = key.hash();
+        const probe: PrehashedTypeKey = .{ .key = key, .hash = h };
+        const shard = &self.shards[shardIndexFor(h)];
         shard.mu.lockShared();
-        if (shard.table.getContext(key, KeyHashCtx{})) |id| {
+        if (shard.table.getAdapted(probe, PrehashedTypeKeyContext{})) |id| {
             shard.mu.unlockShared();
             return id;
         }
         shard.mu.unlockShared();
         shard.mu.lock();
         defer shard.mu.unlock();
-        if (shard.table.getContext(key, KeyHashCtx{})) |id| return id;
+        if (shard.table.getAdapted(probe, PrehashedTypeKeyContext{})) |id| return id;
         const allocator = shard.key_arena.allocator();
         const owned: TypeKey = switch (key) {
             .tuple => |elements| .{ .tuple = try allocator.dupe(types.TupleElement, elements) },
             .instantiation => |value| .{ .instantiation = .{ .origin = value.origin, .args = try allocator.dupe(TypeId, value.args) } },
             else => unreachable,
         };
-        return self.publishKeyLocked(shard, owned, flags);
+        return self.publishKeyLocked(shard, owned, flags, h);
     }
 
     pub fn internTemplateLiteral(self: *Interner, texts: []const StringId, type_parts: []const TypeId) !TypeId {
@@ -638,11 +655,12 @@ pub const Interner = struct {
         // before publishing so the table key has stable storage.
         const probe: TypeKey = .{ .template_literal = .{ .texts = texts, .types = type_parts } };
         const h = probe.hash();
+        const prehashed: PrehashedTypeKey = .{ .key = probe, .hash = h };
         const shard_idx = shardIndexFor(h);
         const shard = &self.shards[shard_idx];
 
         shard.mu.lockShared();
-        if (shard.table.getContext(probe, KeyHashCtx{})) |found| {
+        if (shard.table.getAdapted(prehashed, PrehashedTypeKeyContext{})) |found| {
             shard.mu.unlockShared();
             return found;
         }
@@ -650,13 +668,13 @@ pub const Interner = struct {
 
         shard.mu.lock();
         defer shard.mu.unlock();
-        if (shard.table.getContext(probe, KeyHashCtx{})) |found| return found;
+        if (shard.table.getAdapted(prehashed, PrehashedTypeKeyContext{})) |found| return found;
 
         const ka = shard.key_arena.allocator();
         const owned_texts = try ka.dupe(StringId, texts);
         const owned_types = try ka.dupe(TypeId, type_parts);
         const owned_key: TypeKey = .{ .template_literal = .{ .texts = owned_texts, .types = owned_types } };
-        return try self.publishKeyLocked(shard, owned_key, .{ .is_string = true, .is_template_literal = true });
+        return try self.publishKeyLocked(shard, owned_key, .{ .is_string = true, .is_template_literal = true }, h);
     }
 
     pub fn internStringMapping(self: *Interner, kind: types.StringMappingKind, inner: TypeId) !TypeId {
@@ -1144,12 +1162,13 @@ pub const Interner = struct {
     /// dupe the slice into the shard arena before publishing.
     fn internKey(self: *Interner, key: TypeKey, flags: types.TypeFlags) !TypeId {
         const h = key.hash();
+        const probe: PrehashedTypeKey = .{ .key = key, .hash = h };
         const shard_idx = shardIndexFor(h);
         const shard = &self.shards[shard_idx];
 
         // Read fast path.
         shard.mu.lockShared();
-        if (shard.table.getContext(key, KeyHashCtx{})) |found| {
+        if (shard.table.getAdapted(probe, PrehashedTypeKeyContext{})) |found| {
             shard.mu.unlockShared();
             return found;
         }
@@ -1158,8 +1177,8 @@ pub const Interner = struct {
         // Write path: take exclusive lock, double-check, then publish.
         shard.mu.lock();
         defer shard.mu.unlock();
-        if (shard.table.getContext(key, KeyHashCtx{})) |found| return found;
-        return try self.publishKeyLocked(shard, key, flags);
+        if (shard.table.getAdapted(probe, PrehashedTypeKeyContext{})) |found| return found;
+        return try self.publishKeyLocked(shard, key, flags, h);
     }
 
     /// Sharded intern for keys whose `key` field is a canonical slice
@@ -1179,6 +1198,7 @@ pub const Interner = struct {
             else => @compileError("internKeyWithSlice: unsupported tag"),
         };
         const h = probe.hash();
+        const prehashed: PrehashedTypeKey = .{ .key = probe, .hash = h };
         const shard_idx = shardIndexFor(h);
         const shard = &self.shards[shard_idx];
 
@@ -1186,7 +1206,7 @@ pub const Interner = struct {
         // does a content compare, so the lookup is correct even
         // though the slice pointer doesn't match the shard-arena slice.
         shard.mu.lockShared();
-        if (shard.table.getContext(probe, KeyHashCtx{})) |found| {
+        if (shard.table.getAdapted(prehashed, PrehashedTypeKeyContext{})) |found| {
             shard.mu.unlockShared();
             return found;
         }
@@ -1194,7 +1214,7 @@ pub const Interner = struct {
 
         shard.mu.lock();
         defer shard.mu.unlock();
-        if (shard.table.getContext(probe, KeyHashCtx{})) |found| return found;
+        if (shard.table.getAdapted(prehashed, PrehashedTypeKeyContext{})) |found| return found;
 
         // Dupe the canonical slice into the shard arena so the table
         // key holds stable storage.
@@ -1204,7 +1224,7 @@ pub const Interner = struct {
             .intersection => .{ .intersection = owned },
             else => unreachable,
         };
-        return try self.publishKeyLocked(shard, owned_key, flags);
+        return try self.publishKeyLocked(shard, owned_key, flags, h);
     }
 
     /// Allocate the side payload + header for a freshly-keyed type.
@@ -1216,7 +1236,9 @@ pub const Interner = struct {
         shard: *Shard,
         key: TypeKey,
         flags: types.TypeFlags,
+        hash: u64,
     ) !TypeId {
+        try shard.table.ensureUnusedCapacity(self.gpa, 1);
         self.pool_mu.lock();
         defer self.pool_mu.unlock();
 
@@ -1348,7 +1370,11 @@ pub const Interner = struct {
                 .member_name = key.enum_lit.member_name,
             });
         }
-        try shard.table.putNoClobberContext(self.gpa, key, id, KeyHashCtx{});
+        const probe: PrehashedTypeKey = .{ .key = key, .hash = hash };
+        const entry = shard.table.getOrPutAssumeCapacityAdapted(probe, PrehashedTypeKeyContext{});
+        std.debug.assert(!entry.found_existing);
+        entry.key_ptr.* = key;
+        entry.value_ptr.* = id;
         return id;
     }
 
