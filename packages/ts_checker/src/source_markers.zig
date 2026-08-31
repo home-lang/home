@@ -8,7 +8,7 @@ pub const patterns = &[_][]const u8{
     "import",     "=",          "@import", "require",     "module",    "global",  "class",      "enum",           "type",
     "prototype",  "[",          "{",       ".prototype",  "protected", "@",       "@noLib",     "@nolib",         "@ts-check",
     "@check",     "@allow",     "@lib",    "import.meta", "?",         "/**",     "<reference", "@strict: false", "@strict:false",
-    "instanceof",
+    "instanceof", "interface",  "exports",
 };
 
 pub const Index = Matcher(patterns);

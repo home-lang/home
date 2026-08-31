@@ -36,7 +36,18 @@ const checked_schema = @import("checked_schema.zig");
 const program_source_markers = &[_][]const u8{
     "namespace", "module", "global", "declare", "interface", "class", "export", "exports", "=",
 };
-const ProgramSourceMarkerIndex = ts_driver.SourceMarkerMatcher(program_source_markers);
+const ProgramSourceMarkerIndex = ts_driver.SourceMarkerIndex;
+const ProgramSourceMarkers = union(enum) {
+    borrowed: *const ProgramSourceMarkerIndex,
+    owned: ProgramSourceMarkerIndex,
+
+    fn contains(self: *const ProgramSourceMarkers, comptime marker: []const u8) bool {
+        return switch (self.*) {
+            .borrowed => |index| index.contains(marker),
+            .owned => |*index| index.contains(marker),
+        };
+    }
+};
 
 const OwnerMutex = struct {
     state: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
@@ -162,7 +173,7 @@ pub const File = struct {
     source: []const u8,
     /// Exact byte facts for the current collection pass only. Cleared on
     /// every compilation exit; redirects never receive a source snapshot.
-    source_markers: ?ProgramSourceMarkerIndex = null,
+    source_markers: ?ProgramSourceMarkers = null,
     /// Compiled artefact. `null` until `compileAll` runs.
     compilation: ?*ts_driver.Compilation,
     /// Stable checked-source identity in `Program.owners`. Tombstoned before
@@ -435,10 +446,12 @@ pub const Program = struct {
 
     fn prepareSourceMarkers(self: *Program) void {
         for (self.files.items) |file| {
-            file.source_markers = if (file.redirect_target == null)
-                ProgramSourceMarkerIndex.scan(file.source)
+            file.source_markers = if (file.redirect_target != null)
+                null
+            else if (file.compilation) |compilation|
+                .{ .borrowed = &compilation.source_markers }
             else
-                null;
+                .{ .owned = ProgramSourceMarkerIndex.scan(file.source) };
         }
     }
 
@@ -453,6 +466,7 @@ pub const Program = struct {
     }
 
     fn dropCompilation(self: *Program, f: *File) void {
+        f.source_markers = null;
         if (f.owner != .none) {
             self.owners_mutex.lock();
             defer self.owners_mutex.unlock();
@@ -8367,6 +8381,16 @@ test "Program: source markers preserve collection metadata" {
 
     p.prepareSourceMarkers();
     defer p.clearSourceMarkers();
+    for (p.files.items) |file| {
+        const markers = file.source_markers orelse {
+            try T.expect(false);
+            continue;
+        };
+        switch (markers) {
+            .borrowed => |index| try T.expect(index == &file.compilation.?.source_markers),
+            .owned => try T.expect(false),
+        }
+    }
     const after_roots = try p.collectAmbientGlobalNamespaceRoots();
     defer Program.freeStringSlice(T.allocator, after_roots);
     const after_expandos = try p.collectScriptObjectExpandos();
