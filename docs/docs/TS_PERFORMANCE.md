@@ -10,36 +10,36 @@ Ongoing coverage and optimization work is tracked in
 
 ## Current snapshot
 
-Measured 2026-08-30 at commit `43e1f1ea8` on an Apple M3 Pro MacBook Pro
+Measured 2026-08-30 at commit `94a5b3589` on an Apple M3 Pro MacBook Pro
 (11 cores, 18 GB RAM, arm64, macOS 27.0). Each value is the mean and sample
 standard deviation of 30 new compiler processes after three warmup rounds.
-The complete raw-result identifier is `20260831T053521Z`. The runner first
+The complete raw-result identifier is `20260831T063443Z`. The runner first
 admitted all 20 selected workloads against version-checked TS **6.0.3**, native
 TS **7.0.2**, and Home. Native TS 7 and `tsgo` are one competitor. All **600
 round files / 1,800 successful finite samples** are retained without filtering.
 
 | Workload | tsc 6.0.3 | native TS 7.0.2 | Home 0.1.0 | Home vs fastest competitor |
 |---|---:|---:|---:|---:|
-| `checkjs_jsdoc` | 202.1 ± 1.7 ms | 53.9 ± 1.2 ms | **35.3 ± 1.0 ms** | **1.53× faster** |
-| `class_hierarchy` | 181.1 ± 1.7 ms | 52.0 ± 0.8 ms | **25.9 ± 0.3 ms** | **2.01× faster** |
-| `commonjs_graph` | 151.1 ± 2.3 ms | 48.8 ± 1.2 ms | **32.4 ± 0.7 ms** | **1.51× faster** |
-| `control_flow` | 191.6 ± 5.0 ms | 59.8 ± 2.0 ms | **32.1 ± 1.0 ms** | **1.86× faster** |
-| `deep_types` | 129.9 ± 5.1 ms | 53.3 ± 1.7 ms | **25.6 ± 0.3 ms** | **2.08× faster** |
-| `destructuring` | 136.7 ± 1.6 ms | 46.9 ± 0.9 ms | **17.1 ± 0.2 ms** | **2.74× faster** |
-| `generic_calls` | 178.0 ± 1.6 ms | 54.9 ± 0.8 ms | **21.3 ± 0.2 ms** | **2.57× faster** |
-| `import_graph` | 130.6 ± 2.4 ms | 45.9 ± 1.2 ms | **19.6 ± 0.4 ms** | **2.34× faster** |
-| `interface_composition` | 198.0 ± 3.4 ms | 61.9 ± 1.2 ms | **41.5 ± 0.6 ms** | **1.49× faster** |
-| `many_files` | 208.9 ± 1.9 ms | 53.3 ± 0.9 ms | **23.6 ± 0.5 ms** | **2.25× faster** |
-| `null_safe_access` | 189.0 ± 6.0 ms | 57.3 ± 1.4 ms | **35.4 ± 0.8 ms** | **1.62× faster** |
-| `overload_resolution` | 197.2 ± 1.5 ms | 64.9 ± 5.0 ms | **27.7 ± 0.3 ms** | **2.34× faster** |
-| `recursive_generics` | 150.5 ± 4.6 ms | 70.5 ± 1.4 ms | **15.2 ± 0.6 ms** | **4.63× faster** |
-| `reexport_graph` | 96.8 ± 2.2 ms | 42.0 ± 1.1 ms | **17.5 ± 0.5 ms** | **2.40× faster** |
-| `startup` | 65.5 ± 10.6 ms | 39.3 ± 4.0 ms | **3.2 ± 0.1 ms** | **12.24× faster** |
-| `structural_objects` | 183.5 ± 5.7 ms | 57.8 ± 1.9 ms | **26.3 ± 0.8 ms** | **2.20× faster** |
-| `tsx_components` | 161.6 ± 1.6 ms | 47.9 ± 3.0 ms | **22.5 ± 2.3 ms** | **2.13× faster** |
-| `type_predicates` | 241.0 ± 5.1 ms | 72.9 ± 1.3 ms | **37.0 ± 0.6 ms** | **1.97× faster** |
-| `type_predicates_large` | 985.6 ± 14.9 ms | 344.2 ± 7.4 ms | **277.6 ± 3.8 ms** | **1.24× faster** |
-| `variadic_tuples` | 242.7 ± 6.7 ms | 75.5 ± 1.1 ms | **39.7 ± 0.5 ms** | **1.90× faster** |
+| `checkjs_jsdoc` | 203.7 ± 7.3 ms | 54.1 ± 1.5 ms | **35.1 ± 0.4 ms** | **1.54× faster** |
+| `class_hierarchy` | 180.1 ± 1.5 ms | 51.9 ± 0.9 ms | **25.9 ± 0.4 ms** | **2.00× faster** |
+| `commonjs_graph` | 150.1 ± 1.5 ms | 48.1 ± 0.8 ms | **32.1 ± 0.4 ms** | **1.50× faster** |
+| `control_flow` | 185.0 ± 1.6 ms | 58.3 ± 0.9 ms | **31.3 ± 0.4 ms** | **1.86× faster** |
+| `deep_types` | 128.1 ± 8.6 ms | 52.3 ± 1.2 ms | **25.1 ± 0.3 ms** | **2.08× faster** |
+| `destructuring` | 136.7 ± 2.2 ms | 46.8 ± 0.7 ms | **17.2 ± 0.2 ms** | **2.72× faster** |
+| `generic_calls` | 175.1 ± 3.2 ms | 54.3 ± 3.5 ms | **21.1 ± 0.4 ms** | **2.57× faster** |
+| `import_graph` | 128.9 ± 2.7 ms | 45.4 ± 1.1 ms | **19.3 ± 0.6 ms** | **2.36× faster** |
+| `interface_composition` | 198.4 ± 8.1 ms | 62.7 ± 1.5 ms | **41.8 ± 0.4 ms** | **1.50× faster** |
+| `many_files` | 206.9 ± 5.8 ms | 52.9 ± 1.5 ms | **23.3 ± 0.8 ms** | **2.27× faster** |
+| `null_safe_access` | 190.1 ± 5.7 ms | 58.6 ± 6.1 ms | **35.5 ± 0.5 ms** | **1.65× faster** |
+| `overload_resolution` | 198.8 ± 5.3 ms | 65.6 ± 6.5 ms | **28.0 ± 0.6 ms** | **2.34× faster** |
+| `recursive_generics` | 148.8 ± 2.5 ms | 70.4 ± 1.0 ms | **15.7 ± 3.1 ms** | **4.48× faster** |
+| `reexport_graph` | 94.7 ± 1.1 ms | 40.8 ± 0.9 ms | **17.1 ± 1.0 ms** | **2.39× faster** |
+| `startup` | 65.4 ± 12.5 ms | 38.1 ± 1.0 ms | **3.2 ± 0.2 ms** | **11.75× faster** |
+| `structural_objects` | 183.1 ± 7.6 ms | 57.5 ± 0.9 ms | **26.2 ± 0.3 ms** | **2.20× faster** |
+| `tsx_components` | 158.8 ± 1.6 ms | 47.0 ± 1.1 ms | **21.7 ± 0.3 ms** | **2.16× faster** |
+| `type_predicates` | 235.7 ± 7.5 ms | 71.1 ± 1.3 ms | **37.5 ± 6.1 ms** | **1.90× faster** |
+| `type_predicates_large` | 975.6 ± 5.8 ms | 340.9 ± 7.3 ms | **275.0 ± 6.8 ms** | **1.24× faster** |
+| `variadic_tuples` | 241.0 ± 2.2 ms | 75.6 ± 1.3 ms | **39.5 ± 0.3 ms** | **1.91× faster** |
 
 Home records lower means on **20/20 admitted workloads** and lower paired times
 in **600/600 rounds**. Every row wins all 30 paired rounds. The 1.24×
@@ -226,6 +226,8 @@ workload-specific shortcuts:
 - visible type declarations are indexed per lexical scope while retaining the
   original resolver as an allocation-failure fallback;
 - source loading reuses one I/O runtime per compilation;
+- string interning computes Wyhash once and reuses it for shard selection,
+  optimistic lookup, write-lock verification, and insertion;
 - module resolution reuses one filesystem runtime, preserves extension order
   while snapshotting directories, and caches repeated package-boundary queries;
 - optimized builds compile sufficiently large programs with a bounded worker
@@ -682,6 +684,71 @@ takes **280.7 ± 6.7 ms**, a **1.25×** lead. The complete 20-workload result is
 has the lower mean on 20/20 rows and the lower individual time in 600/600
 rounds. Both official runs retain every sample and verify candidate SHA-256
 `58b48a6b39d76c7ffa6cf3343490bd7da423692135076f3cbee6da8b54aa8206`
+before admission and after measurement.
+
+### Prehashed string interner checkpoint
+
+Commit `94a5b3589`, tracked by
+[#416](https://github.com/home-lang/home/issues/416), removes repeated hashing
+from the shared string interner. Previously, `intern` computed Wyhash to choose
+one of 64 shards and the shard's string map recomputed the same hash for its
+optimistic read, exclusive-lock double-check, and insertion. `lookup` likewise
+hashed for both shard selection and the map probe. The new adapted map key
+carries the original Wyhash through those operations. The identical low bits
+still select the shard; byte equality, locks, stable IDs, allocation ordering,
+and owned key storage are unchanged.
+
+The exact Home A/B uses the suite's unchanged predicate generator and identical
+`--noEmit -p` arguments. Both binaries exit zero with byte-identical empty
+stdout and stderr at both scales. The builtin-name-gate binary (SHA-256
+`58b48a6b39d76c7ffa6cf3343490bd7da423692135076f3cbee6da8b54aa8206`)
+is the baseline; the committed prehash candidate has SHA-256
+`977e3cc7ab65ff1c0e1f7f382aebd8258e45baea5ed1fb2b03892b44c11fa9f0`.
+Each confirmatory run uses three alternating warmup pairs and 20 measured pairs
+whose process order reverses every round. All 80 finite samples remain in the
+two raw directories; none is filtered or pooled across scales.
+
+| Home A/B | Repeated Wyhash | Reused exact Wyhash | Baseline / candidate | Lower candidate time |
+|---|---:|---:|---:|---:|
+| 32,768 families, process CPU | 4730.5 ± 34.8 ms | **4706.2 ± 45.5 ms** | **1.0052×** | **13/20 pairs** |
+| 32,768 families, wall clock | 4738.5 ± 35.7 ms | **4718.4 ± 48.6 ms** | **1.0043×** | **12/20 pairs** |
+| 65,536 families, process CPU | 9824.1 ± 84.5 ms | **9764.4 ± 73.6 ms** | **1.0061×** | **15/20 pairs** |
+| 65,536 families, wall clock | 9865.2 ± 95.2 ms | **9806.4 ± 86.4 ms** | **1.0060×** | **14/20 pairs** |
+
+At 32,768 families, the CPU paired reduction is 24.3 ms with a 95% paired t
+confidence interval of 0.5–48.2 ms; its exact two-sided sign-test result is
+`p = 0.2632`. The wall interval is -5.6–45.8 ms. At 65,536 families, CPU is
+lower by a paired mean of 59.8 ms with a 4.7–114.9 ms interval and 15/20 lower
+candidate pairs (`p = 0.0414` by the exact two-sided sign test). Its wall mean
+is lower by 58.8 ms, with a -2.3–119.9 ms interval. A separate ten-pair
+32,768-family screen, retained but not pooled, measured 1.0108× lower wall and
+CPU means with 9/10 lower candidate pairs and positive paired intervals.
+
+A fresh 1 ms sampling profile confirms the intended mechanism: the duplicated
+string-map `get` leaf disappears, Wyhash leaf samples fall from 34 to 16, and
+byte-equality leaves fall from 334 to 291. These profile counts explain the
+change and are not timing claims. Validation passes the ReleaseFast interner
+suite (shared ownership, concurrency, deterministic sharding, and allocation
+failure), the ReleaseFast type-predicate checker subset, the ReleaseFast
+production build, formatting, and diff checks.
+
+Two adjacent ideas were measured and fully reverted. Adding `@target` to the
+one-pass marker automaton was effectively flat over 20 pairs: wall measured
+4849.1 ± 202.1 ms versus 4848.9 ± 147.6 ms (8/20 lower candidate pairs, paired
+interval -74.2–74.5 ms), while CPU was slightly higher. A compile-time-derived
+builtin terminal-byte prefilter was also flat in its ten-pair screen: wall
+measured 5233.9 ± 234.5 ms versus 5225.5 ± 269.3 ms (5/10 pairs, interval
+-108.2–125.1 ms), with the same 5/10 direction for CPU. Neither probe appears
+in the committed compiler or contributes to the accepted measurements.
+
+The exact committed-binary 30-round standard-workload confirmation is
+`20260831T063321Z`: TS 6.0.3 takes 980.1 ± 15.5 ms, native TS 7.0.2 takes
+342.9 ± 7.2 ms, and Home takes **274.2 ± 3.7 ms**, a **1.25×** lead. The
+complete 20-workload result is `20260831T063443Z`, reported in the
+[current snapshot](#current-snapshot): Home has the lower mean on 20/20 rows
+and the lower individual time in 600/600 rounds. Both official runs retain
+every sample and verify candidate SHA-256
+`977e3cc7ab65ff1c0e1f7f382aebd8258e45baea5ed1fb2b03892b44c11fa9f0`
 before admission and after measurement.
 
 ## Historical workload milestones
