@@ -268,7 +268,7 @@ every successful finite sample without filtering.
 
 | Platform | Workloads with the lowest Home mean | Strongest Home mean lead | Narrowest Home mean lead |
 |---|---:|---:|---:|
-| Apple M3 Pro, macOS ARM64 | 20 / 20 | `startup`: 12.36× faster | `type_predicates_large`: 1.20× faster |
+| Apple M3 Pro, macOS ARM64 | 20 / 20 | `startup`: 12.07× faster | `control_flow`: 1.28× faster |
 | Debian Bookworm, Linux ARM64 | 20 / 20 | `startup`: 21.67× faster | `checkjs_jsdoc`: 1.02× faster |
 
 See [the complete results, raw-result identifiers, fairness rules, and reproduction steps](docs/docs/TS_PERFORMANCE.md).
