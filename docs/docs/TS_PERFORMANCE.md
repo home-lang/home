@@ -120,6 +120,55 @@ win: wall was 4553.0 ± 160.8 ms before versus 4523.3 ± 139.6 ms after
 to +67.4 ms). The representation change was fully reverted. Raw rounds remain
 under `bench/vs_tsgo/results/source-marker-state-width.iZsnJ1/`.
 
+Two exact prefix-trie replacements were also measured and rejected. Unlike the
+39-search probe, each trie still made one outer pass over the source: the first
+row stayed hot, and deeper rows were visited only after a real marker prefix.
+The second version additionally stored the marker set reachable below each
+state so already-found prefix subtrees could be skipped. Isolated ten-round
+screens on the unchanged 100,993,656-byte source suggested substantial local
+scan savings: the accepted Aho–Corasick binary measured 390.109 ms in that
+session, the plain trie 148.670 ms, and the pruned trie 96.587 ms. These
+single-binary screens were used only to decide whether to build full compiler
+candidates; host load moved between invocations, so they are not acceptance
+evidence.
+
+The fixed baseline remained
+`0d2aed7253152acb66965e5148d09c5a50bf7512e9062faecee0daa70caa3f60`.
+The plain-trie compiler was
+`e07847318a52844f4222433db674027b9c2a4604cea3963f496a09c489da2e1c`;
+the pruned-trie compiler was
+`1657f5c3532fcfd2d4fe97ef3a2754ff62f128fc2c9055f987e5aaa5d619ffbb`.
+Both candidates exited 0 with byte-identical stdout and stderr at 32,768 and
+65,536 families. The focused marker tests, full ReleaseFast checker suite,
+full ReleaseFast Program suite, and all 95 harness tests passed for each
+candidate.
+
+Every A/B below used three alternating warmup pairs, reversed process order on
+each measured round, and retained every sample. The interval is paired
+baseline-minus-candidate time; an interval crossing zero fails admission.
+
+| Trie probe | Metric | Baseline | Candidate | Speedup | Candidate wins | Paired 95% CI |
+|---|---|---:|---:|---:|---:|---:|
+| Plain trie, 32,768 screen, 10 pairs | Wall | 4823.2 ± 191.1 ms | 4831.4 ± 239.8 ms | 0.9983× | 4/10 | -83.6 to +67.2 ms |
+| Plain trie, 32,768 screen, 10 pairs | CPU | 4776.5 ± 165.5 ms | 4774.2 ± 209.0 ms | 1.0005× | 4/10 | -69.9 to +74.5 ms |
+| Plain trie, 32,768 confirmation, 20 pairs | Wall | 4827.5 ± 324.7 ms | 4770.7 ± 310.9 ms | 1.0119× | 14/20 | -8.0 to +121.5 ms |
+| Plain trie, 32,768 confirmation, 20 pairs | CPU | 4754.0 ± 256.0 ms | 4707.1 ± 269.6 ms | 1.0100× | 13/20 | -8.4 to +102.2 ms |
+| Plain trie, 65,536 screen, 10 pairs | Wall | 10054.7 ± 488.8 ms | 9711.8 ± 417.9 ms | 1.0353× | 7/10 | +69.7 to +616.3 ms |
+| Plain trie, 65,536 screen, 10 pairs | CPU | 9920.3 ± 424.1 ms | 9597.7 ± 362.6 ms | 1.0336× | 8/10 | +84.3 to +561.0 ms |
+| Pruned trie, 32,768 screen, 10 pairs | Wall | 4666.1 ± 238.8 ms | 4628.9 ± 239.4 ms | 1.0080× | 5/10 | -70.4 to +144.7 ms |
+| Pruned trie, 32,768 screen, 10 pairs | CPU | 4615.8 ± 206.1 ms | 4561.1 ± 167.1 ms | 1.0120× | 6/10 | -28.9 to +138.2 ms |
+| Pruned trie, 65,536 screen, 10 pairs | Wall | 9417.7 ± 179.4 ms | 9318.2 ± 165.7 ms | 1.0107× | 4/10 | -116.6 to +315.6 ms |
+| Pruned trie, 65,536 screen, 10 pairs | CPU | 9355.6 ± 162.9 ms | 9252.8 ± 145.2 ms | 1.0111× | 4/10 | -91.5 to +297.0 ms |
+
+The plain trie produced one positive larger-scale screen, but its independent
+32,768-family confirmation remained inconclusive. The pruned variant did not
+reproduce the larger-scale interval and also remained inconclusive at 32,768.
+Neither candidate met the whole-compiler admission rule, so both were fully
+reverted and the accepted Aho–Corasick implementation remains in production.
+Raw evidence is retained under
+`bench/vs_tsgo/results/source-marker-trie.20260831T153305.99359/` and
+`bench/vs_tsgo/results/source-marker-pruned-trie.20260831T160024.69935/`.
+
 The independent focused three-compiler checkpoint `20260831T214804Z` compares
 version-verified TS 6.0.3, native TS 7.0.2, and the same immutable Home binary:
 

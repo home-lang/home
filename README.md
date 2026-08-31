@@ -271,7 +271,14 @@ every successful finite sample without filtering.
 | Apple M3 Pro, macOS ARM64 | 20 / 20 | `startup`: 12.06× faster | `commonjs_graph` / `type_predicates_large`: 1.50× faster |
 | Debian Bookworm, Linux ARM64 | 20 / 20 | `startup`: 21.67× faster | `checkjs_jsdoc`: 1.02× faster |
 
-See [the complete results, raw-result identifiers, fairness rules, and reproduction steps](docs/docs/TS_PERFORMANCE.md).
+The latest source-marker algorithm admission did not change that qualified
+snapshot:
+
+| Optimization probe | 32,768-family wall result | 65,536-family wall result | Decision |
+|---|---:|---:|---|
+| Exact pruned prefix trie | 1.008×; paired CI crosses zero | 1.011×; paired CI crosses zero | Rejected and reverted |
+
+See [the complete results, rejected-probe evidence, raw-result identifiers, fairness rules, and reproduction steps](docs/docs/TS_PERFORMANCE.md).
 
 ## Project status
 
