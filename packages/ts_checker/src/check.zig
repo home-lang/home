@@ -177497,6 +177497,7 @@ pub const Checker = struct {
 
     fn identifierHasInstanceofFallthroughJoin(self: *Checker, receiver: NodeId) CheckError!bool {
         if (receiver == hir_mod.none_node_id or self.hir.kindOf(receiver) != .identifier) return false;
+        if (self.source != null and self.sourceMarkerPosition("instanceof") == null) return false;
         const name = hir_mod.identifierOf(self.hir, receiver).name;
         const flow_t = self.lookupNarrow(name) orelse return false;
         const declared_t = self.visibleAnnotatedIdentifierType(receiver) orelse return false;
