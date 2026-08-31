@@ -122774,6 +122774,10 @@ pub const Checker = struct {
         container: NodeId,
         stmts: []const NodeId,
     ) void {
+        // A direct lookup over one or two statements is bounded and avoids
+        // allocating entries in both index maps for the many tiny function
+        // and branch bodies that are visited only a handful of times.
+        if (stmts.len < 3) return;
         if (self.indexed_annotated_value_containers.contains(container)) return;
         for (stmts) |statement| {
             const declaration = self.unwrapExportDecl(statement);
@@ -217546,6 +217550,21 @@ test "checker: type predicate narrows in then-branch" {
     const s_decl = then_stmts[0];
     const s_init = hir_mod.varDeclOf(&s.hir, s_decl).init;
     try T.expectEqual(types.Primitive.string_t, s.hir.typeOf(s_init));
+}
+
+test "checker: tiny scopes resolve annotated locals without building an index" {
+    const s = try newSetup(
+        \\function read() {
+        \\  const value: string = "ok";
+        \\  const invalid: number = value;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    const function = hir_mod.fnDeclOf(&s.hir, hir_mod.blockStmts(&s.hir, s.root)[0]);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expect(!s.checker.indexed_annotated_value_containers.contains(function.body));
 }
 
 test "checker: Object source satisfies an all-optional predicate parameter" {
