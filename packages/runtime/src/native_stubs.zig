@@ -74,7 +74,8 @@ comptime {
         // Bun__dns_internal_registerQuic now has its real export in
         // dns.zig (the noop left hostname HTTP/3 connects hanging).
         "Bun__InspectorBunFrontendDevServerAgent__setEnabled",
-        "Bun__Secrets__scheduleJob",
+        // Bun__Secrets__scheduleJob now has its real export in JSSecrets.zig;
+        // the noop left every Bun.secrets promise permanently pending.
         // Entry-point result handlers are real VirtualMachine exports. Native
         // promiseHandlerID compares their addresses against its fixed table.
         "BlockList__onStructuredCloneDestroy",

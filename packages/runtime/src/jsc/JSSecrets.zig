@@ -25,16 +25,17 @@ pub const SecretsJob = struct {
             .ctx = ctx,
             .promise = jsc.Strong.create(promise, global),
         });
-        job.any_task = jsc.AnyTask.New(SecretsJob, &runFromJS).init(job);
+        job.any_task = jsc.AnyTask.NewWithShutdown(SecretsJob, &runFromJS, &cancelForShutdown).init(job);
         return job;
     }
 
     pub fn runTask(task: *jsc.WorkPoolTask) void {
         const job: *SecretsJob = @fieldParentPtr("task", task);
-        var vm = job.vm;
-        defer vm.enqueueTaskConcurrent(jsc.ConcurrentTask.create(job.any_task.task()));
+        const vm = job.vm;
 
         SecretsJobOptions.Bun__SecretsJobOptions__runTask(job.ctx, vm.global);
+        vm.enqueueTaskConcurrent(jsc.ConcurrentTask.create(job.any_task.task()));
+        vm.native_work_pool_jobs.complete();
     }
 
     pub fn runFromJS(this: *SecretsJob) void {
@@ -58,16 +59,22 @@ pub const SecretsJob = struct {
         bun.destroy(this);
     }
 
-    pub fn schedule(this: *SecretsJob) void {
+    pub fn cancelForShutdown(this: *SecretsJob) void {
+        this.deinit();
+    }
+
+    pub fn schedule(this: *SecretsJob) bool {
+        if (!this.vm.native_work_pool_jobs.tryAdd()) return false;
         this.poll.ref(this.vm);
         jsc.WorkPool.schedule(&this.task);
+        return true;
     }
 };
 
 // Helper function for C++ to call with opaque pointer
 export fn Bun__Secrets__scheduleJob(global: *jsc.JSGlobalObject, options: *SecretsJob.SecretsJobOptions, promise: jsc.JSValue) void {
     const job = SecretsJob.create(global, options, promise);
-    job.schedule();
+    if (!job.schedule()) job.cancelForShutdown();
 }
 
 // Prevent dead code elimination

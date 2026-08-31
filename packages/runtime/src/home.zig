@@ -86,6 +86,10 @@ comptime {
     if (enable_jsc_link) {
         _ = @import("jsc/virtual_machine_exports.zig");
         _ = @import("jsc/CppTask.zig");
+        // Bun.secrets is provided by JSSecrets.zig. Force its strong scheduler
+        // export into executable builds so the native host functions enqueue
+        // real work instead of resolving to the historical no-op stub.
+        _ = @import("jsc/JSSecrets.zig");
         _ = @import("jsc/AbortSignal.zig").AbortSignal;
         _ = @import("jsc/PosixSignalHandle.zig");
         _ = @import("http_types/Method.zig").Method;

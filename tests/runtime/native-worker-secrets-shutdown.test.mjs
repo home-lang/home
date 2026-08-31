@@ -19,12 +19,6 @@ const withTimeout = async (promise, label) => {
   }
 }
 
-const normal = await withTimeout(Bun.dns.lookup('localhost', { backend: 'libc' }), 'normal libc lookup')
-assert.ok(Array.isArray(normal))
-assert.ok(normal.length > 0)
-assert.equal(typeof normal[0].address, 'string')
-assert.equal(getEventLoopStats().nativeWorkPoolJobs, 0)
-
 const workerSource = `
   const { parentPort } = require('node:worker_threads');
   const { getEventLoopStats } = require('bun:internal-for-testing');
@@ -35,8 +29,14 @@ const workerSource = `
       setTimeout(arm, 1);
       return;
     }
-    void Bun.dns.lookup('localhost', { backend: 'libc' });
-    parentPort.postMessage({ jobs: getEventLoopStats().nativeWorkPoolJobs });
+    const secret = Bun.secrets.get({
+      service: 'home-native-worker-shutdown-probe',
+      name: 'missing-secret',
+    });
+    parentPort.postMessage({
+      jobs: getEventLoopStats().nativeWorkPoolJobs,
+      promise: secret instanceof Promise,
+    });
   };
   arm();
 `
@@ -48,8 +48,8 @@ for (let iteration = 0; iteration < 2; iteration += 1) {
   let released = false
 
   try {
-    const [armed] = await withTimeout(once(worker, 'message'), 'DNS WorkTask worker arm')
-    assert.deepEqual(armed, { jobs: probeCount + 1 })
+    const [armed] = await withTimeout(once(worker, 'message'), 'secrets worker arm')
+    assert.deepEqual(armed, { jobs: probeCount + 1, promise: true })
 
     let terminated = false
     termination = worker.terminate().then(exitCode => {
@@ -62,15 +62,15 @@ for (let iteration = 0; iteration < 2; iteration += 1) {
 
     getEventLoopStats(false, false, true)
     released = true
-    const exitCode = await withTimeout(termination, 'DNS WorkTask worker termination')
+    const exitCode = await withTimeout(termination, 'secrets worker termination')
     assert.equal(typeof exitCode, 'number')
     assert.equal(getEventLoopStats().completedNativeWorkPoolProbeTasks, before.completedNativeWorkPoolProbeTasks + probeCount)
-    assert.equal(getEventLoopStats().cancelledWorkTasks, before.cancelledWorkTasks + 1)
+    assert.equal(getEventLoopStats().cancelledAnyTasks, before.cancelledAnyTasks + 1)
   } finally {
     if (!released) getEventLoopStats(false, false, true)
-    if (termination) await withTimeout(termination, 'DNS WorkTask worker cleanup')
-    else await withTimeout(worker.terminate(), 'DNS WorkTask worker cleanup')
+    if (termination) await withTimeout(termination, 'secrets worker cleanup')
+    else await withTimeout(worker.terminate(), 'secrets worker cleanup')
   }
 }
 
-console.log('native worker DNS WorkTask shutdown passed')
+console.log('native worker secrets shutdown passed')
