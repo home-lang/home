@@ -981,6 +981,21 @@ screen, so only paired within-batch differences are interpreted. All raw
 rounds remain under `perfect-keyword-index.YBAnkb/preliminary-ab.32768`; the
 perfect index is absent from the compiler.
 
+An exact source-marker gate for the legacy inline `@target` scan was measured
+and fully reverted as well. The candidate used the already-computed exact
+Aho–Corasick marker index to prove that `@target` was absent whenever a source
+contained no `@`; sources containing `@` retained the original directive
+parser. Both fixed binaries produced byte-identical output at 32,768 and
+65,536 families. After three alternating warmup pairs, the ten-pair
+32,768-family screen measured 5133.2 ± 503.0 ms for the accepted binary and
+5178.6 ± 505.6 ms for the candidate in wall time (0.9912×, 5/10 lower
+candidate pairs, paired interval -242.1–151.3 ms). Process CPU measured
+5027.4 ± 401.3 ms versus 5020.1 ± 321.2 ms (1.0015×, 6/10 pairs, paired
+interval -140.5–155.2 ms). The variable host makes the paired interval the
+decision criterion, and neither metric justified the branch. Raw rounds remain
+under `target-option-gate.shBw7j/preliminary-ab.32768`; the gate is absent from
+the compiler.
+
 The exact committed-binary 30-round focused confirmation is
 `20260831T091833Z`: TS 6.0.3 takes 980.2 ± 14.7 ms, native TS 7.0.2 takes
 345.0 ± 13.2 ms, and Home takes **256.2 ± 8.2 ms**, a **1.35×** lead. The
