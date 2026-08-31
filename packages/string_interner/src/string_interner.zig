@@ -61,6 +61,21 @@ const SHARD_MASK: u32 = N_SHARDS - 1; // 0x3F
 const LOCAL_MASK: u32 = (@as(u32, 1) << @intCast(LOCAL_BITS)) - 1; // 0x03FF_FFFF
 const MAX_LOCAL: u32 = LOCAL_MASK; // largest valid local index
 
+const PrehashedString = struct {
+    bytes: []const u8,
+    hash: u64,
+};
+
+const PrehashedStringContext = struct {
+    pub fn hash(_: @This(), key: PrehashedString) u64 {
+        return key.hash;
+    }
+
+    pub fn eql(_: @This(), key: PrehashedString, stored: []const u8) bool {
+        return std.mem.eql(u8, key.bytes, stored);
+    }
+};
+
 pub const InternError = error{
     /// A single shard exceeded its 64 M-entry capacity. In practice this
     /// implies pathological input — every TS program in the wild fits
@@ -195,7 +210,7 @@ pub const Interner = struct {
         errdefer self.deinit();
         // Pre-intern the empty string in shard 0 so it gets ID
         // `(0 << 26) | 0 = 0` deterministically.
-        const eid = try self.internAt(0, "");
+        const eid = try self.internAt(0, "", shardHash(""));
         std.debug.assert(eid == empty_string_id);
         return self;
     }
@@ -231,23 +246,29 @@ pub const Interner = struct {
     }
 
     fn shardIndex(bytes: []const u8) u32 {
-        return @as(u32, @truncate(shardHash(bytes))) & SHARD_MASK;
+        return shardIndexFromHash(shardHash(bytes));
+    }
+
+    fn shardIndexFromHash(hash: u64) u32 {
+        return @as(u32, @truncate(hash)) & SHARD_MASK;
     }
 
     /// Intern a string and return its stable `StringId`. Thread-safe.
     pub fn intern(self: *Interner, bytes: []const u8) InternError!StringId {
         if (bytes.len == 0) return empty_string_id;
-        return self.internAt(shardIndex(bytes), bytes);
+        const hash = shardHash(bytes);
+        return self.internAt(shardIndexFromHash(hash), bytes, hash);
     }
 
     /// Internal helper: intern `bytes` into a specific shard. Used by
     /// `init` to force the empty string into shard 0.
-    fn internAt(self: *Interner, shard_idx: u32, bytes: []const u8) InternError!StringId {
+    fn internAt(self: *Interner, shard_idx: u32, bytes: []const u8, hash: u64) InternError!StringId {
         const shard = &self.shards[shard_idx];
+        const key: PrehashedString = .{ .bytes = bytes, .hash = hash };
 
         // Read path: optimistic shared-lock lookup.
         shard.mu.lockShared();
-        if (shard.table.get(bytes)) |local| {
+        if (shard.table.getAdapted(key, PrehashedStringContext{})) |local| {
             shard.mu.unlockShared();
             return packId(shard_idx, local);
         }
@@ -258,7 +279,7 @@ pub const Interner = struct {
         shard.mu.lock();
         defer shard.mu.unlock();
 
-        if (shard.table.get(bytes)) |local| {
+        if (shard.table.getAdapted(key, PrehashedStringContext{})) |local| {
             return packId(shard_idx, local);
         }
 
@@ -277,7 +298,10 @@ pub const Interner = struct {
         // `strings` but not by `table`.
         try shard.table.ensureUnusedCapacity(self.allocator, 1);
         try shard.strings.append(self.allocator, owned);
-        shard.table.putAssumeCapacityNoClobber(owned, local);
+        const entry = shard.table.getOrPutAssumeCapacityAdapted(key, PrehashedStringContext{});
+        std.debug.assert(!entry.found_existing);
+        entry.key_ptr.* = owned;
+        entry.value_ptr.* = local;
 
         return packId(shard_idx, local);
     }
@@ -320,13 +344,15 @@ pub const Interner = struct {
     /// Thread-safe.
     pub fn lookup(self: *const Interner, bytes: []const u8) ?StringId {
         if (bytes.len == 0) return empty_string_id;
-        const shard_idx = shardIndex(bytes);
+        const hash = shardHash(bytes);
+        const shard_idx = shardIndexFromHash(hash);
         const shard = &self.shards[shard_idx];
+        const key: PrehashedString = .{ .bytes = bytes, .hash = hash };
 
         var mut_shard: *Shard = @constCast(shard);
         mut_shard.mu.lockShared();
         defer mut_shard.mu.unlockShared();
-        if (shard.table.get(bytes)) |local| {
+        if (shard.table.getAdapted(key, PrehashedStringContext{})) |local| {
             return packId(shard_idx, local);
         }
         return null;
