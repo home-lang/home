@@ -45977,10 +45977,25 @@ pub const Checker = struct {
         try self.collectJsTopLevelGlobalDeclEntries(stmts, &entries);
         try self.checkJsDocDefaultClassTypedefDuplicates(stmts, entries.items);
 
+        const no_entry = std.math.maxInt(usize);
+        var next_same_name: std.ArrayListUnmanaged(usize) = .empty;
+        defer next_same_name.deinit(self.gpa);
+        try next_same_name.resize(self.gpa, entries.items.len);
+        @memset(next_same_name.items, no_entry);
+        var last_by_name: std.AutoHashMapUnmanaged(hir_mod.StringId, usize) = .empty;
+        defer last_by_name.deinit(self.gpa);
+        for (entries.items, 0..) |entry, index| {
+            if (!entry.is_typedef and !entry.is_value) continue;
+            const gop = try last_by_name.getOrPut(self.gpa, entry.name);
+            if (gop.found_existing) next_same_name.items[gop.value_ptr.*] = index;
+            gop.value_ptr.* = index;
+        }
+
         for (entries.items, 0..) |left, i| {
             if (!left.is_typedef and !left.is_value) continue;
-            for (entries.items[i + 1 ..]) |right| {
-                if (left.name != right.name) continue;
+            var right_index = next_same_name.items[i];
+            while (right_index != no_entry) : (right_index = next_same_name.items[right_index]) {
+                const right = entries.items[right_index];
                 if (!right.is_typedef and !right.is_value) continue;
                 if (left.section != right.section and
                     (!self.jsGlobalSectionParticipates(stmts, left.section) or
@@ -237548,20 +237563,33 @@ test "checker: checkjs JSDoc typedef participates in script-global duplicate che
 
     var foo_duplicates: usize = 0;
     var bar_redeclares: usize = 0;
+    var relevant_codes: [8]u32 = undefined;
+    var relevant_count: usize = 0;
     for (s.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.duplicate_identifier and
             std.mem.indexOf(u8, d.message, "'Foo'") != null)
         {
             foo_duplicates += 1;
+            relevant_codes[relevant_count] = d.code;
+            relevant_count += 1;
         }
         if (d.code == TsCodes.cannot_redeclare_block_scoped and
             std.mem.indexOf(u8, d.message, "'Bar'") != null)
         {
             bar_redeclares += 1;
+            relevant_codes[relevant_count] = d.code;
+            relevant_count += 1;
         }
     }
     try T.expectEqual(@as(usize, 2), foo_duplicates);
     try T.expectEqual(@as(usize, 2), bar_redeclares);
+    try T.expectEqual(@as(usize, 4), relevant_count);
+    try T.expectEqualSlices(u32, &.{
+        TsCodes.duplicate_identifier,
+        TsCodes.cannot_redeclare_block_scoped,
+        TsCodes.duplicate_identifier,
+        TsCodes.cannot_redeclare_block_scoped,
+    }, relevant_codes[0..relevant_count]);
 }
 
 test "checker: tsgo current JS qualified typedef member keeps namespace meaning" {
