@@ -191,6 +191,26 @@ run. The cache and prehashed public API were fully reverted. Raw evidence is
 retained under
 `bench/vs_tsgo/results/parser-local-interner-cache.20260831T162449.18110/`.
 
+Conservative source-marker gates around declaration-space sibling passes were
+also measured and rejected. The candidate skipped namespace, class/interface,
+enum, or type-alias merge scans only when attached source made that declaration
+kind impossible; marker false positives retained the existing scan, and
+source-less checker callers retained every pass. The merge-focused ReleaseFast
+checker gate passed, and the fixed compiler produced byte-identical output at
+both large scales. Candidate SHA-256 was
+`41b9d70b977818d1548ae375d98ff3858a4a02e266b11c40130babfc6b984ad5`
+against baseline
+`0d2aed7253152acb66965e5148d09c5a50bf7512e9062faecee0daa70caa3f60`.
+
+The 32,768-family initial screen retained all ten reversed-order pairs after
+three alternating warmup pairs. Wall time regressed from 4699.2 ± 166.2 ms to
+4810.0 ± 287.3 ms (0.9770×, 3/10 candidate wins, paired interval -318.8 to
++97.1 ms). Process CPU moved from 4656.6 ± 143.0 ms to 4736.5 ± 221.4 ms
+(0.9831×, 3/10, interval -248.6 to +88.7 ms). The initial gate failed, so no
+confirmation or 65,536 timing was run; the gates were fully reverted. Raw
+evidence remains under
+`bench/vs_tsgo/results/declaration-pass-gates.20260831T163650.42200/`.
+
 The independent focused three-compiler checkpoint `20260831T214804Z` compares
 version-verified TS 6.0.3, native TS 7.0.2, and the same immutable Home binary:
 

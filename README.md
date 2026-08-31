@@ -278,6 +278,7 @@ snapshot:
 |---|---:|---:|---|
 | Exact pruned prefix trie | 1.008×; paired CI crosses zero | 1.011×; paired CI crosses zero | Rejected and reverted |
 | Parser-local exact-name cache | 0.999×; paired CI crosses zero | Not run after failed gate | Rejected and reverted |
+| Declaration-space marker gates | 0.977×; candidate slower | Not run after failed gate | Rejected and reverted |
 
 See [the complete results, rejected-probe evidence, raw-result identifiers, fairness rules, and reproduction steps](docs/docs/TS_PERFORMANCE.md).
 
