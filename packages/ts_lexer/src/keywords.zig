@@ -7,9 +7,9 @@
 //! Implementation: a comptime-built array indexed by identifier length
 //! (TS keywords range from 2 chars `as`/`do`/`if`/`in`/`is`/`of` to
 //! 11 chars `constructor` and `implements`), with a per-length linear
-//! scan over a tiny `(literal, kind)` array. With ≤ 6 candidates per
-//! length, the scan is faster than a hash and inlines into a register
-//! comparison sequence. tsgo uses a `map[string]ast.Kind` at
+//! scan over a `(literal, kind)` array. The compiler unrolls each bucket into
+//! direct comparisons; the largest same-length bucket has 16 candidates.
+//! tsgo uses a `map[string]ast.Kind` at
 //! `internal/scanner/scanner.go:36`; this approach beats it.
 
 const std = @import("std");
@@ -148,7 +148,7 @@ const buckets: [max_len + 1]Bucket = blk: {
 
 /// Look up an identifier-form bytes string and return its keyword kind,
 /// or `null` if it is not a keyword. Total work: one length check
-/// (range 2..11), then ≤ 6 short string compares against compile-time
+/// (range 2..11), then up to 16 short string compares against compile-time
 /// constants. The compiler unrolls into register-resident compares.
 pub fn lookup(bytes: []const u8) ?TokenKind {
     if (bytes.len < min_len or bytes.len > max_len) return null;

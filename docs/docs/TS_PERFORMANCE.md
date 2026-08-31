@@ -955,6 +955,18 @@ ReleaseFast production build, exact output checks at both scales, formatting,
 and diff checks. All A/B rounds and the profile remain under
 `ascii-trivia-fast-path.IbEFgd/`.
 
+One adjacent keyword-lookup replacement was measured and fully reverted.
+Zig's compile-time `StaticStringMap` preserved all keyword and lexer tests plus
+exact compiler output, but its ten-pair 32,768-family screen was slightly
+slower than the existing compile-time length buckets. Wall clock measured
+4425.8 ± 44.9 ms for the accepted binary versus 4441.2 ± 40.6 ms for the
+candidate (0.9965×, 6/10 lower candidate pairs, paired interval
+-61.2–30.4 ms). Process CPU measured 4415.4 ± 43.2 ms versus
+4432.3 ± 40.5 ms (0.9962×, 5/10 pairs, interval -61.0–27.1 ms). All raw
+rounds remain under `static-keyword-map.7qVurl/preliminary-ab.32768`; the
+static map is absent from the compiler. The existing lookup documentation now
+correctly records that the largest length bucket contains 16 candidates.
+
 The exact committed-binary 30-round focused confirmation is
 `20260831T091833Z`: TS 6.0.3 takes 980.2 ± 14.7 ms, native TS 7.0.2 takes
 345.0 ± 13.2 ms, and Home takes **256.2 ± 8.2 ms**, a **1.35×** lead. The
