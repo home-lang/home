@@ -99,6 +99,27 @@ candidate on wall (1.035×, 9/10, CI +62.7 to +294.8 ms) and CPU (1.047×,
 9/10, CI +132.1 to +333.0 ms). Raw A/B evidence is retained in
 `bench/vs_tsgo/results/program-source-marker-reuse.Ii55xS/`.
 
+Two marker-index follow-ups were measured and rejected. First, 39 independent
+exact `indexOf` searches were compared directly with the single Aho–Corasick
+pass on the unchanged 100,993,656-byte source. Each invocation used ten
+alternating in-process rounds. The current pass averaged 311.855, 266.118, and
+268.457 ms across three invocations; independent searches took 1367.862,
+1389.771, and 1424.940 ms. Replacing the combined pass would be roughly five
+times slower, so no production candidate was created.
+
+Second, the 244-state automaton was specialized to `u8` transitions while
+retaining `u16` for larger generic matcher instantiations. Its direct marker
+times improved to 240.446, 250.990, and 240.570 ms, and the focused 3/3 tests
+plus exact compiler output at both scales passed. The fixed compiler candidate
+(`733a59fe4fcb1cadf0cd5b0c23d2bdb6af9af26499a33230c4c2379e638422b3`)
+initially showed a 1.0085× wall and 1.0084× CPU improvement in ten pairs. The
+prespecified 20-pair confirmation did not reproduce a reliable whole-compiler
+win: wall was 4553.0 ± 160.8 ms before versus 4523.3 ± 139.6 ms after
+(1.0066×, 10/20, paired interval -17.5 to +77.0 ms), while CPU was
+4529.0 ± 149.5 ms versus 4502.1 ± 135.6 ms (1.0060×, 10/20, interval -13.6
+to +67.4 ms). The representation change was fully reverted. Raw rounds remain
+under `bench/vs_tsgo/results/source-marker-state-width.iZsnJ1/`.
+
 The independent focused three-compiler checkpoint `20260831T214804Z` compares
 version-verified TS 6.0.3, native TS 7.0.2, and the same immutable Home binary:
 
