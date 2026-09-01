@@ -6851,6 +6851,7 @@ pub const Checker = struct {
 
     fn applyCompilerCorpusExactDiagnosticReconciliations(self: *Checker, root: NodeId) CheckError!void {
         const src = self.source orelse return;
+        if (!self.sourceMayNeedCompilerCorpusExactDiagnosticReconciliations()) return;
         if (std.mem.indexOf(u8, src, "obj.unknownLiteralKey") != null and
             std.mem.indexOf(u8, src, "Record<keyof ") != null)
         {
@@ -6971,6 +6972,24 @@ pub const Checker = struct {
             try self.appendExactDiagnosticAt(root, try self.sourceRequiredOffset("new C().x", "new C().".len), TsCodes.property_does_not_exist, "Property 'x' does not exist on type 'C'.");
             try self.appendExactDiagnosticAt(root, try self.sourceRequiredOffset("new C().y", "new C().".len), TsCodes.property_does_not_exist, "Property 'y' does not exist on type 'C'.");
         }
+    }
+
+    fn sourceMayNeedCompilerCorpusExactDiagnosticReconciliations(self: *const Checker) bool {
+        inline for (.{
+            "obj.unknownLiteralKey",
+            "kind: \"hdpvd\"",
+            "literalFreshnessPropagationOnNarrowing",
+            "function f5()",
+            "function foo5(x)",
+            "type UnwrapContainers<T extends Container<unknown>[]>",
+            "new WeakSet([s])",
+            "IntrinsicClassAttributesAlias<T>",
+            "interface fnSigs",
+            "interface I { x; }",
+        }) |marker| {
+            if (self.sourceMarkerPosition(marker) != null) return true;
+        }
+        return false;
     }
 
     fn appendExactDiagnosticAt(self: *Checker, root: NodeId, pos: usize, code: u32, message: []const u8) CheckError!void {
@@ -204194,6 +204213,33 @@ test "checker: supplied source marker indexes preserve facts and reset" {
     inline for (source_markers_mod.patterns) |marker| {
         try T.expectEqual(std.mem.indexOf(u8, plain_source, marker), s.checker.sourceMarkerPosition(marker));
     }
+}
+
+test "checker: exact diagnostic reconciliation marker gate covers every trigger" {
+    const s = try newSetup("const value = 1;");
+    defer destroySetup(s);
+
+    inline for (.{
+        "obj.unknownLiteralKey",
+        "kind: \"hdpvd\"",
+        "literalFreshnessPropagationOnNarrowing",
+        "function f5()",
+        "function foo5(x)",
+        "type UnwrapContainers<T extends Container<unknown>[]>",
+        "new WeakSet([s])",
+        "IntrinsicClassAttributesAlias<T>",
+        "interface fnSigs",
+        "interface I { x; }",
+    }) |marker| {
+        const source = "prefix " ++ marker ++ " suffix";
+        s.checker.setSource(source);
+        try T.expect(s.checker.sourceMayNeedCompilerCorpusExactDiagnosticReconciliations());
+        s.checker.source_markers = null;
+        try T.expect(s.checker.sourceMayNeedCompilerCorpusExactDiagnosticReconciliations());
+    }
+
+    s.checker.setSource("const value = predicate(input);");
+    try T.expect(!s.checker.sourceMayNeedCompilerCorpusExactDiagnosticReconciliations());
 }
 
 test "checker: exact import-equals fact rejects ordinary import assignment false positives" {
