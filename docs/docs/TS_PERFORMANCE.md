@@ -58,6 +58,59 @@ other directional labels also compare means, not certainty. These are local
 synthetic measurements, not a claim that every real project or machine has
 the same speedup.
 
+### Primitive type-name dispatch (rejected)
+
+The retained profile showed byte equality checks as its hottest leaf, including
+the unresolved-signature path's repeated primitive-name chain. The rejected
+probe routed those checks through the existing primitive classifier and changed
+that classifier to dispatch first by exact byte length and, for six-byte names,
+the first byte. It accepted exactly the same twelve lowercase primitive names;
+there was no source gate, cache, allocation, result shortcut, or workload
+special case.
+
+The fixed accepted baseline binary is SHA-256
+`8bc94b0b9187865ab8ff38a29b1e25a57f8eb9f603453b3177ca5b41ec79f8b0`;
+the experimental candidate was
+`07eae0070563974803b18518db03e29e23052832a256a3d1e8460c6c41d1887d`.
+The focused classifier regression, complete ReleaseFast `ts_checker` and TS
+driver suites, all **95/95** benchmark-harness tests, `zig fmt --check`, and
+`git diff --check` passed. Baseline and candidate exited zero with
+byte-identical empty stdout and stderr on the unchanged official project and a
+deterministic 32,768-family copy.
+
+Every set used three alternating warmup pairs, reversed process order in every
+measured pair, and retained every successful finite sample. Paired intervals
+are baseline-minus-candidate:
+
+| Predicate A/B | Metric | Baseline | Candidate | Result | Paired 95% CI |
+|---|---|---:|---:|---:|---:|
+| Official 2,048 families, 10-pair screen | Wall | 215.440 ± 1.922 ms | **214.456 ± 1.507 ms** | **1.0046×; 6/10 wins** | **+0.170 to +1.824 ms** |
+| Official 2,048 families, 10-pair screen | CPU | 214.179 ± 1.879 ms | **213.282 ± 1.398 ms** | **1.0042×; 6/10 wins** | **+0.174 to +1.656 ms** |
+| Official 2,048 families, 30-pair confirmation | Wall | 239.333 ± 11.059 ms | **234.229 ± 6.926 ms** | **1.0218×; 20/30 wins** | **+1.983 to +8.664 ms** |
+| Official 2,048 families, 30-pair confirmation | CPU | 236.861 ± 7.378 ms | **232.208 ± 6.089 ms** | **1.0200×; 22/30 wins** | **+2.150 to +7.167 ms** |
+| Diagnostic 32,768 families, 10 pairs | Wall | 3893.608 ± 78.673 ms | **3883.171 ± 131.193 ms** | 1.0027×; 7/10 wins | -74.299 to +74.560 ms |
+| Diagnostic 32,768 families, 10 pairs | CPU | 3883.077 ± 76.470 ms | **3861.250 ± 100.959 ms** | 1.0057×; 7/10 wins | -42.135 to +74.755 ms |
+
+Peak RSS favored the candidate by 0.009 MiB in the screen, 0.008 MiB in the
+confirmation, and 0.017 MiB at scale; all three paired RSS intervals were
+positive. Timing evidence, rather than RSS alone, controls admission.
+
+The screen overlapped a single unrelated zig-js benchmark at its start. A new
+`threadfuzz` shard started between the confirmation preflight and its first
+load snapshot, reaching 439.5% CPU; it remained active throughout that set.
+The queued fuzz workload had no idle gap, so the scale set ran under its next
+stable `broad` mode, which occupied 52.9% CPU at the start. By the end that
+shard had exited and unrelated Typesense and macOS services had started. No
+sample was filtered, replaced, or selectively rerun.
+
+Although both official sets cleared their gates, both required scale timing
+intervals cross zero. The candidate therefore failed the precommitted scale
+rule and was fully reverted. No source commit or TypeScript 6.0.3 versus native
+TypeScript 7.0.2 competitor checkpoint was admitted. The temporary 50 MB
+corpus was moved to Trash after recording exact outputs. Frozen binaries,
+load snapshots, and all 50 timing pairs are retained under
+`bench/vs_tsgo/results/primitive-type-name-dispatch.20260901T102051Z/`.
+
 ### Stable pool-index inference (rejected)
 
 The retained post-reservation profile attributed 19 direct samples in
