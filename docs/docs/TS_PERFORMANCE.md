@@ -284,6 +284,43 @@ accepted binary restored. Raw binaries, exact outputs, and every screen round
 are retained under
 `bench/vs_tsgo/results/union-flatten-buffer.20260901T063000Z/`.
 
+### Rejected prepared parser source-fact bundle
+
+The post-gate profile attributed separate scan costs to the parser's JSDoc
+diagnostic pre-pass and its two virtual-section presence searches. The driver
+already computes exact `/**`, `@filename:`, and `@Filename:` presence in the
+shared source-marker index. A combined API probe supplied both facts to
+driver-created parsers, skipped the JSDoc pre-pass only when absence was
+proven, and retained the original discovery scans for every direct parser
+caller. This deliberately tested the coherent bundle after the individual
+JSDoc and virtual-section probes were inconclusive.
+
+The fixed accepted baseline binary is SHA-256
+`ca0bda46834cc05f9c5f57bac5dd5bdec88af388cf6b7c6fc39fcce9b60604ae`;
+the experimental candidate was
+`7f71fe50dd77096c5be83bc968f0162ab1d09ecaedf1ad29e22c46ec39ecf742`.
+Both exited zero with byte-identical empty stdout and stderr on the unchanged
+2,048-, 32,768-, and 65,536-family predicate projects. The complete parser and
+driver test suites passed, including direct-parser fallback, prepared-source
+JSDoc diagnostics, and virtual-section behavior.
+
+The official screen used three alternating warmup pairs, reversed process
+order in every measured pair, retained every sample, and reports untrimmed
+mean ± sample standard deviation. Paired intervals are
+baseline-minus-candidate:
+
+| Predicate A/B | Metric | Baseline | Candidate | Result | Paired 95% CI |
+|---|---|---:|---:|---:|---:|
+| Official 2,048 families, 10-pair screen | Wall | 259.053 ± 20.896 ms | 258.442 ± 26.555 ms | 1.0024×; 5/10 wins | -15.021 to +16.244 ms |
+| Official 2,048 families, 10-pair screen | CPU | 252.151 ± 15.066 ms | 250.722 ± 16.447 ms | 1.0057×; 5/10 wins | -8.944 to +11.802 ms |
+
+Removing all three redundant scans together still produced nearly even pair
+direction and no interval support. The initial admission gate therefore
+failed; no scale timing, confirmation, or competitor checkpoint was run. The
+source probe was fully reverted and the accepted binary restored. Raw
+binaries, exact outputs, and every screen round are retained under
+`bench/vs_tsgo/results/parser-prepared-source-facts.20260901T070000Z/`.
+
 ### JSDoc import-type scan pruning
 
 Commit `532373ee1`, tracked in

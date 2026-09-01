@@ -286,6 +286,7 @@ recording both accepted and rejected probes:
 | Parser virtual-section fact reuse | 2,048 predicates: 1.007× lower wall mean; paired CI crosses zero | 32,768 predicates: 1.003× lower CPU mean, 4/10 wins | Rejected and reverted |
 | Reconciliation-sentinel root-set pruning | 2,048 predicates: 1.003× confirmation; paired CIs cross zero | 32,768 predicates: candidate slower, 5/10 wins | Rejected and reverted |
 | Union flatten-buffer elision | 2,048 predicates: 1.006× wall, 6/10 wins | Paired wall and CPU CIs cross zero; scale run not admitted | Rejected and reverted |
+| Prepared parser source-fact bundle | 2,048 predicates: 1.006× CPU, 5/10 wins | Paired wall and CPU CIs cross zero; scale run not admitted | Rejected and reverted |
 | One-pass special-identifier classification | 2,048 families: 1.010× CPU, 6/10 wins | Paired CIs cross zero; scale run not admitted | Rejected and reverted |
 | Declaration-map pre-sizing | 2,048 families: 1.028× CPU screen, 8/10 wins | Confirmation: 1.008× CPU, paired CI crosses zero | Rejected and reverted |
 | Identifier declaration-slot reuse | 2,048 families: 0.995× CPU, 5/10 wins | 0.973× wall; candidate slower | Rejected and reverted |
