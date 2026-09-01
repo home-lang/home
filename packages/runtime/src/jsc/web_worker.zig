@@ -855,11 +855,13 @@ fn shutdown(this: *WebWorker) void {
     if (vm_to_deinit) |vm| drainChildExitTasks(vm);
     Home__Worker__closeParentPort(cpp_worker);
 
-    // Work-pool jobs hold the creating VM and unref its event loop after their
-    // native callback returns. Close admission and wait outside the context
-    // registry lock so every admitted job has stopped touching the VM before
-    // callback cancellation or JSC teardown begins.
-    if (vm_to_deinit) |vm| vm.native_work_pool_jobs.closeAndWait();
+    // Native jobs retain raw creating-VM state until they publish their
+    // owner-thread completion. Close admission outside the context registry
+    // lock and join every admitted job before cancellation or JSC teardown.
+    if (vm_to_deinit) |vm| {
+        vm.native_work_pool_jobs.closeAndWait();
+        @import("../runtime/node/node_fs_stat_watcher.zig").StatWatcherScheduler.shutdown(vm);
+    }
 
     // Close identifier-based producer admission under ScriptExecutionContext's
     // registry lock, then dispose every admitted C++ task while its context is

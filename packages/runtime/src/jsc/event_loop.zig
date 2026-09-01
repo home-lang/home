@@ -701,7 +701,7 @@ pub fn getActiveTasks(globalObject: *jsc.JSGlobalObject, call_frame: *jsc.CallFr
     const cancellation_counts = cpp_tasks.shutdownCancellationCounts();
     const concurrent_probe_counts = cpp_tasks.concurrentShutdownProbeCounts();
 
-    const result = jsc.JSValue.createEmptyObject(globalObject, 17);
+    const result = jsc.JSValue.createEmptyObject(globalObject, 18);
     result.put(globalObject, jsc.ZigString.static("activeTasks"), jsc.JSValue.jsNumber(vm.active_tasks));
     result.put(globalObject, jsc.ZigString.static("concurrentRef"), jsc.JSValue.jsNumber(event_loop.concurrent_ref.load(.seq_cst)));
     result.put(globalObject, jsc.ZigString.static("cancelledCppTasks"), jsc.JSValue.jsNumber(@as(f64, @floatFromInt(cancellation_counts.cancelled))));
@@ -718,6 +718,7 @@ pub fn getActiveTasks(globalObject: *jsc.JSGlobalObject, call_frame: *jsc.CallFr
     result.put(globalObject, jsc.ZigString.static("cancelledRuntimeTranspilerJobs"), jsc.JSValue.jsNumber(@as(f64, @floatFromInt(jsc.ModuleLoader.RuntimeTranspilerStore.shutdownCancellationCount()))));
     result.put(globalObject, jsc.ZigString.static("cancelledWorkTasks"), jsc.JSValue.jsNumber(@as(f64, @floatFromInt(@import("./WorkTask.zig").shutdownCancellationCount()))));
     result.put(globalObject, jsc.ZigString.static("cancelledNodeZlibTasks"), jsc.JSValue.jsNumber(@as(f64, @floatFromInt(node_zlib_binding.shutdownCancellationCount()))));
+    result.put(globalObject, jsc.ZigString.static("cancelledStatWatcherTasks"), jsc.JSValue.jsNumber(@as(f64, @floatFromInt(node_fs_stat_watcher.shutdownCancellationCount()))));
 
     // Get num_polls from uws loop (POSIX) or active_handles from libuv (Windows)
     const num_polls: i32 = if (Environment.isWindows)
@@ -800,6 +801,7 @@ pub const WorkPoolTask = @import("../threading/work_pool.zig").Task;
 
 const std = @import("std");
 const node_zlib_binding = @import("../runtime/node/node_zlib_binding.zig");
+const node_fs_stat_watcher = @import("../runtime/node/node_fs_stat_watcher.zig");
 const tickQueueWithCount = @import("./Task.zig").tickQueueWithCount;
 const cancelTaskForShutdown = @import("./Task.zig").cancelForShutdown;
 

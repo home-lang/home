@@ -1,5 +1,15 @@
 const log = bun.Output.scoped(.StatWatcher, .visible);
 
+var shutdown_cancellation_count = std.atomic.Value(u64).init(0);
+
+fn recordShutdownCancellation() void {
+    _ = shutdown_cancellation_count.fetchAdd(1, .seq_cst);
+}
+
+pub fn shutdownCancellationCount() u64 {
+    return shutdown_cancellation_count.load(.seq_cst);
+}
+
 fn statToJSStats(globalThis: *jsc.JSGlobalObject, stats: *const bun.sys.PosixStat, bigint: bool) bun.JSError!jsc.JSValue {
     if (bigint) {
         return StatsBig.init(stats).toJS(globalThis);
@@ -100,9 +110,18 @@ pub const StatWatcherScheduler = struct {
             task: jsc.AnyTask,
 
             pub fn updateTimer(self: *@This()) void {
-                defer bun.default_allocator.destroy(self);
-                defer self.scheduler.deref();
+                defer self.deinit();
                 self.scheduler.setTimer(self.scheduler.getInterval());
+            }
+
+            fn cancelForShutdown(self: *@This()) void {
+                self.deinit();
+                recordShutdownCancellation();
+            }
+
+            fn deinit(self: *@This()) void {
+                self.scheduler.deref();
+                bun.default_allocator.destroy(self);
             }
         };
         // The singleton may retire before this queued update runs.
@@ -110,7 +129,7 @@ pub const StatWatcherScheduler = struct {
         const holder = bun.handleOom(bun.default_allocator.create(Holder));
         holder.* = .{
             .scheduler = this,
-            .task = jsc.AnyTask.New(Holder, Holder.updateTimer).init(holder),
+            .task = jsc.AnyTask.NewWithShutdown(Holder, Holder.updateTimer, Holder.cancelForShutdown).init(holder),
         };
         this.vm.enqueueTaskConcurrent(jsc.ConcurrentTask.create(jsc.Task.init(&holder.task)));
     }
@@ -129,13 +148,21 @@ pub const StatWatcherScheduler = struct {
             return;
         }
         this.ref(); // exactly one reference per work-pool hop
+        if (!this.vm.native_work_pool_jobs.tryAdd()) {
+            this.work_pool_in_flight.store(false, .release);
+            this.deref();
+            recordShutdownCancellation();
+            return;
+        }
         jsc.WorkPool.schedule(&this.task);
     }
 
     pub fn workPoolCallback(task: *jsc.WorkPoolTask) void {
         var this: *StatWatcherScheduler = @alignCast(@fieldParentPtr("task", task));
-        // Publish queue writes before isolation can drain it. Keep the
+        const vm = this.vm;
+        // Publish owner-thread work before the VM barrier can finish. Keep the
         // work-pool ref until after publishing; shutdown may drop RareData's.
+        defer vm.native_work_pool_jobs.complete();
         defer this.deref();
         defer this.work_pool_in_flight.store(false, .release);
         // Instant.now will not fail on our target platforms.
@@ -179,9 +206,10 @@ pub const StatWatcherScheduler = struct {
         }
     }
 
-    /// Retire the outgoing file's scheduler while its VM and timer heap are
-    /// live. A new file creates a new singleton lazily. Runs on the JS thread.
-    pub fn shutdownForIsolation(vm: *VirtualMachine) void {
+    /// Retire the scheduler while its VM and timer heap are live. Test-file
+    /// isolation may create a fresh singleton later; final VM teardown does
+    /// not. Runs on the JS thread after admitted native jobs quiesce.
+    pub fn shutdown(vm: *VirtualMachine) void {
         const rare = vm.rare_data orelse return;
         const owned = rare.node_fs_stat_watcher_scheduler orelse return;
         rare.node_fs_stat_watcher_scheduler = null;
@@ -386,6 +414,50 @@ pub const StatWatcher = struct {
         this.deref(); // but don't deinit until the scheduler drops its reference
     }
 
+    const CompletionKind = enum {
+        initial_success,
+        initial_error,
+        change,
+    };
+
+    const CompletionTask = struct {
+        watcher: *StatWatcher,
+        kind: CompletionKind,
+        task: jsc.AnyTask,
+
+        fn create(watcher: *StatWatcher, kind: CompletionKind) *CompletionTask {
+            const completion = bun.new(CompletionTask, .{
+                .watcher = watcher,
+                .kind = kind,
+                .task = undefined,
+            });
+            completion.task = jsc.AnyTask.NewWithShutdown(CompletionTask, run, cancelForShutdown).init(completion);
+            return completion;
+        }
+
+        fn run(this: *CompletionTask) void {
+            defer bun.destroy(this);
+            switch (this.kind) {
+                .initial_success => this.watcher.initialStatSuccessOnMainThread(),
+                .initial_error => this.watcher.initialStatErrorOnMainThread(),
+                .change => this.watcher.swapAndCallListenerOnMainThread(),
+            }
+        }
+
+        fn cancelForShutdown(this: *CompletionTask) void {
+            const watcher = this.watcher;
+            bun.destroy(this);
+            watcher.close();
+            watcher.deref();
+            recordShutdownCancellation();
+        }
+    };
+
+    fn enqueueCompletion(this: *StatWatcher, kind: CompletionKind) void {
+        const completion = CompletionTask.create(this, kind);
+        this.enqueueTaskConcurrent(jsc.ConcurrentTask.create(jsc.Task.init(&completion.task)));
+    }
+
     pub const InitialStatTask = struct {
         watcher: *StatWatcher,
         task: jsc.WorkPoolTask = .{ .callback = &workPoolCallback },
@@ -393,11 +465,20 @@ pub const StatWatcher = struct {
         pub fn createAndSchedule(watcher: *StatWatcher) void {
             const task = bun.new(InitialStatTask, .{ .watcher = watcher });
             watcher.ref();
+            if (!watcher.ctx.native_work_pool_jobs.tryAdd()) {
+                watcher.close();
+                watcher.deref();
+                bun.destroy(task);
+                recordShutdownCancellation();
+                return;
+            }
             jsc.WorkPool.schedule(&task.task);
         }
 
         fn workPoolCallback(task: *jsc.WorkPoolTask) void {
             const initial_stat_task: *InitialStatTask = @fieldParentPtr("task", task);
+            const vm = initial_stat_task.watcher.ctx;
+            defer vm.native_work_pool_jobs.complete();
             defer bun.destroy(initial_stat_task);
             const this = initial_stat_task.watcher;
 
@@ -419,13 +500,13 @@ pub const StatWatcher = struct {
                 .result => |*res| {
                     // we store the stat, but do not call the callback
                     this.setLastStat(res);
-                    this.enqueueTaskConcurrent(jsc.ConcurrentTask.fromCallback(this, initialStatSuccessOnMainThread));
+                    this.enqueueCompletion(.initial_success);
                 },
                 .err => {
                     // on enoent, eperm, we call cb with two zeroed stat objects
                     // and store previous stat as a zeroed stat object, and then call the callback.
                     this.setLastStat(&std.mem.zeroes(bun.sys.PosixStat));
-                    this.enqueueTaskConcurrent(jsc.ConcurrentTask.fromCallback(this, initialStatErrorOnMainThread));
+                    this.enqueueCompletion(.initial_error);
                 },
             }
         }
@@ -513,7 +594,7 @@ pub const StatWatcher = struct {
 
         this.setLastStat(&res);
         this.ref(); // Ensure it stays alive long enough to receive the callback.
-        this.enqueueTaskConcurrent(jsc.ConcurrentTask.fromCallback(this, swapAndCallListenerOnMainThread));
+        this.enqueueCompletion(.change);
     }
 
     /// After a restat found the file changed, this calls the listener function.

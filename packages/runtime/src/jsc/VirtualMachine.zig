@@ -1059,10 +1059,11 @@ pub fn globalExit(this: *VirtualMachine) noreturn {
             // resources underneath live threads; the OS reclaims them.
             bun.Global.exit(this.exit_handler.exit_code);
         }
-        // EventLoopTaskNoContext jobs retain a raw creating-VM pointer and
-        // unref its event loop after their native callback returns. Close
-        // admission and join them before JSC or the event loop is destroyed.
+        // Native jobs retain raw creating-VM state until they publish their
+        // owner-thread completion. Close admission and join them before JSC
+        // or the event loop is destroyed.
         this.native_work_pool_jobs.closeAndWait();
+        @import("../runtime/node/node_fs_stat_watcher.zig").StatWatcherScheduler.shutdown(this);
         @import("./CppTask.zig").beginScriptExecutionContextShutdown(this.global);
         this.eventLoop().cancelQueuedTasksForShutdown();
         // Embedded per-VM socket groups must drain while JSC is still alive
@@ -2660,7 +2661,7 @@ pub fn swapGlobalForTestIsolation(this: *VirtualMachine) void {
 
     // A long timeout would otherwise retain the outgoing global until its
     // deadline. Close the watchFile scheduler first while its timer is live.
-    @import("../runtime/node/node_fs_stat_watcher.zig").StatWatcherScheduler.shutdownForIsolation(this);
+    @import("../runtime/node/node_fs_stat_watcher.zig").StatWatcherScheduler.shutdown(this);
     this.timer.cancelAllTimeoutObjects(this);
 
     this.overridden_main.deinit();
