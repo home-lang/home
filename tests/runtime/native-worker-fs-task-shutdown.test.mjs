@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { once } from 'node:events'
 import { closeSync, exists, fstat, mkdtempSync, openSync, realpathSync, rmSync, symlinkSync } from 'node:fs'
-import { access, lstat, mkdir, mkdtemp, open, readFile, readlink, realpath, stat, statfs, writeFile } from 'node:fs/promises'
+import { access, lstat, mkdir, mkdtemp, open, readFile, readdir, readlink, realpath, stat, statfs, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Worker } from 'node:worker_threads'
@@ -55,11 +55,24 @@ assert.equal((await withTimeout(normalFileHandle.stat(), 'normal fs file handle 
 await withTimeout(normalFileHandle.close(), 'normal fs file handle close')
 const normalFd = openSync(normalOutput, 'r')
 assert.equal((await withTimeout(fstatAsync(normalFd), 'normal fs fstat')).isFile(), true)
+assert.equal((await withTimeout(readdir(root), 'normal fs readdir strings')).includes('normal.txt'), true)
+assert.equal(
+  (await withTimeout(readdir(root, { encoding: 'buffer' }), 'normal fs readdir buffers')).some(
+    entry => new TextDecoder().decode(entry) === 'normal.txt',
+  ),
+  true,
+)
+assert.equal(
+  (await withTimeout(readdir(root, { withFileTypes: true }), 'normal fs readdir dirents')).some(
+    entry => entry.name === 'normal.txt' && entry.isFile(),
+  ),
+  true,
+)
 assert.equal(getEventLoopStats().nativeWorkPoolJobs, 0)
 
 const workerSource = `
   const { exists, fstat } = require('node:fs');
-  const { access, lstat, mkdir, mkdtemp, open, readFile, readlink, realpath, stat, statfs, writeFile } = require('node:fs/promises');
+  const { access, lstat, mkdir, mkdtemp, open, readFile, readdir, readlink, realpath, stat, statfs, writeFile } = require('node:fs/promises');
   const { parentPort, workerData } = require('node:worker_threads');
   const { getEventLoopStats } = require('bun:internal-for-testing');
   const targetStarted = getEventLoopStats().startedNativeWorkPoolProbeTasks + ${probeCount};
@@ -85,6 +98,9 @@ const workerSource = `
     void realpath(workerData.link, { encoding: 'buffer' });
     void realpath(workerData.link, 'utf8');
     void open(workerData.existing, 'r');
+    void readdir(workerData.root);
+    void readdir(workerData.root, { encoding: 'buffer' });
+    void readdir(workerData.root, { withFileTypes: true });
     parentPort.postMessage({ jobs: getEventLoopStats().nativeWorkPoolJobs });
   };
   arm();
@@ -110,7 +126,7 @@ try {
 
     try {
       const [armed] = await withTimeout(once(worker, 'message'), 'fs task worker arm')
-      assert.deepEqual(armed, { jobs: probeCount + 16 })
+      assert.deepEqual(armed, { jobs: probeCount + 19 })
 
       let terminated = false
       termination = worker.terminate().then(exitCode => {
@@ -126,7 +142,7 @@ try {
       const exitCode = await withTimeout(termination, 'fs task worker termination')
       assert.equal(typeof exitCode, 'number')
       assert.equal(getEventLoopStats().completedNativeWorkPoolProbeTasks, before.completedNativeWorkPoolProbeTasks + probeCount)
-      assert.equal(getEventLoopStats().cancelledAnyTasks, before.cancelledAnyTasks + 16)
+      assert.equal(getEventLoopStats().cancelledAnyTasks, before.cancelledAnyTasks + 19)
     } finally {
       if (!released) getEventLoopStats(false, false, true)
       if (termination) await withTimeout(termination, 'fs task worker cleanup')

@@ -345,7 +345,8 @@ pub const Async = struct {
             ReturnType == StringOrUndefined or
             ReturnType == jsc.ZigString or
             ReturnType == StringOrBuffer or
-            ReturnType == FD;
+            ReturnType == FD or
+            ReturnType == Return.Readdir;
         return struct {
             pub const Task = @This();
 
@@ -477,6 +478,8 @@ pub const Async = struct {
                     this.result.result.deinitForShutdownResult();
                 } else if (comptime ReturnType == FD) {
                     this.result.result.close();
+                } else if (comptime ReturnType == Return.Readdir) {
+                    this.result.result.deinitForShutdown();
                 }
             }
 
@@ -3371,6 +3374,23 @@ const Return = struct {
             buffers,
             files,
         };
+
+        pub fn deinitForShutdown(this: *Readdir) void {
+            switch (this.*) {
+                .with_file_types => |items| {
+                    for (items) |item| item.deref();
+                    bun.default_allocator.free(items);
+                },
+                .buffers => |items| {
+                    for (items) |item| bun.default_allocator.free(item.buffer.byteSlice());
+                    bun.default_allocator.free(items);
+                },
+                .files => |items| {
+                    for (items) |item| item.deref();
+                    bun.default_allocator.free(items);
+                },
+            }
+        }
 
         pub fn toJS(this: Readdir, globalObject: *jsc.JSGlobalObject) bun.JSError!jsc.JSValue {
             switch (this) {
