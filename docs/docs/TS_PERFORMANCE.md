@@ -170,6 +170,41 @@ source probe was reverted and the accepted baseline binary restored. Raw
 evidence is retained under
 `bench/vs_tsgo/results/jsdoc-parser-presence-gate.20260901T053000Z/`.
 
+### Rejected parser virtual-section fact reuse
+
+The driver already records exact `@filename:` and `@Filename:` presence in the
+shared source-marker index. A logical probe added an explicit parser
+constructor for that fact so driver-prepared sources could avoid the two
+standalone `indexOf` calls in `Parser.init`; direct parser callers retained the
+original discovery path. A mixed-file regression exercised the explicit-fact
+constructor with uppercase `@Filename:` sections.
+
+The fixed accepted baseline binary is SHA-256
+`ca0bda46834cc05f9c5f57bac5dd5bdec88af388cf6b7c6fc39fcce9b60604ae`;
+the experimental candidate was
+`3e902387bd0adccbb4642407467f90e7ce3f2de29faccc8d602fa1f24c54d378`.
+Both produced byte-identical output at the unchanged 2,048-, 32,768-, and
+65,536-family predicate scales. They also returned the same nonzero status and
+byte-identical 348-byte diagnostic output for a mixed `.d.ts`/`.js` virtual
+fixture. The complete parser and driver suites passed.
+
+Each retained set used three alternating warmup pairs and reversed process
+order in every measured pair. Paired intervals are baseline-minus-candidate:
+
+| Predicate A/B | Metric | Baseline | Candidate | Result | Paired 95% CI |
+|---|---|---:|---:|---:|---:|
+| Official 2,048 families, 10-pair screen | Wall | 242.047 ± 5.350 ms | 240.399 ± 4.425 ms | 1.0069×; 8/10 wins | -2.942 to +6.237 ms |
+| Official 2,048 families, 10-pair screen | CPU | 239.772 ± 5.028 ms | 238.133 ± 3.994 ms | 1.0069×; 8/10 wins | -2.714 to +5.992 ms |
+| Diagnostic 32,768 families, 10 pairs | Wall | 4069.149 ± 128.847 ms | 4062.120 ± 115.320 ms | 1.0017×; 4/10 wins | -44.382 to +58.439 ms |
+| Diagnostic 32,768 families, 10 pairs | CPU | 4045.291 ± 122.162 ms | 4034.395 ± 105.810 ms | 1.0027×; 4/10 wins | -43.525 to +65.318 ms |
+
+The unchanged larger project did not amplify the apparent official-screen
+gain: both means were near ties, only four candidate wins occurred, and both
+paired intervals crossed zero. The source probe was therefore rejected and
+fully reverted without a confirmation or competitor checkpoint. Every sample
+is retained under
+`bench/vs_tsgo/results/parser-virtual-section-fact.20260901T055116Z/`.
+
 ### JSDoc import-type scan pruning
 
 Commit `532373ee1`, tracked in

@@ -283,6 +283,7 @@ recording both accepted and rejected probes:
 | Program import-resolution cache | 128 owners: **1.21× faster**, 30/30 paired wins | 2,048 owners: **2.22× faster**, 20/20 paired wins | Accepted in `49641900e` |
 | Larger string-interner hint | 32,768 families: 0.985× CPU; candidate slower | 0.958× wall; paired CIs cross zero | Rejected and reverted |
 | Parser JSDoc-presence reuse | 2,048 predicates: 1.008× lower wall mean; paired CIs cross zero | 32,768 predicates: both retained sets inconclusive under external load | Rejected and reverted |
+| Parser virtual-section fact reuse | 2,048 predicates: 1.007× lower wall mean; paired CI crosses zero | 32,768 predicates: 1.003× lower CPU mean, 4/10 wins | Rejected and reverted |
 | One-pass special-identifier classification | 2,048 families: 1.010× CPU, 6/10 wins | Paired CIs cross zero; scale run not admitted | Rejected and reverted |
 | Declaration-map pre-sizing | 2,048 families: 1.028× CPU screen, 8/10 wins | Confirmation: 1.008× CPU, paired CI crosses zero | Rejected and reverted |
 | Identifier declaration-slot reuse | 2,048 families: 0.995× CPU, 5/10 wins | 0.973× wall; candidate slower | Rejected and reverted |
