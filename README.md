@@ -276,6 +276,7 @@ recording both accepted and rejected probes:
 
 | Optimization probe | Primary fair A/B | Secondary scale | Decision |
 |---|---:|---:|---|
+| JSDoc import-type scan pruning | 128 CheckJS families: **1.015× faster**, confirmation paired CIs positive | 4,096 families: **1.215× faster**, 10/10 paired wins | Accepted in `532373ee1` |
 | Source-marker root-gap fast-forward | 2,048 predicates: **1.014× faster**, paired CIs positive | 65,536 predicates: **1.014× faster**, paired CIs positive | Accepted in `7ca9946c8` |
 | Dependency-free declaration schemas | 2,048 predicates: **1.046× faster**, 30/30 paired wins | Full checkpoint: **20/20** lower means, **600/600** paired wins | Accepted in `e0f2fb6d7` |
 | Program import-resolution cache | 128 owners: **1.21× faster**, 30/30 paired wins | 2,048 owners: **2.22× faster**, 20/20 paired wins | Accepted in `49641900e` |

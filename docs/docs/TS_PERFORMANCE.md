@@ -58,6 +58,75 @@ other directional labels also compare means, not certainty. These are local
 synthetic measurements, not a claim that every real project or machine has
 the same speedup.
 
+### JSDoc import-type scan pruning
+
+Commit `532373ee1`, tracked in
+[#416](https://github.com/home-lang/home/issues/416), removes a quadratic path
+from checked-JavaScript files with many ordinary JSDoc blocks. The
+`checkJSDocImportTypeModuleTargets` pass previously parsed every block and then
+called `jsDocCommentAnchor` before determining whether the block contained an
+`import(...)` or `typeof import(...)` type. That anchor lookup scans the
+top-level statements, so a file with many comments and statements but no
+import types paid a comments-by-statements cost.
+
+The checker now reuses the exact `import` source marker already built during
+source preparation. A source without that substring cannot contain either
+import-type spelling, so the pass returns without parsing comments. In a mixed
+source that does contain `import`, the checker resolves and reuses an anchor
+only after encountering a relevant tag. The tag parser, type lowering,
+diagnostic order, and resolution behavior at every relevant tag are unchanged;
+no result cache or benchmark-only gate was added.
+
+The locally rebuilt baseline binary is SHA-256
+`f8a583689b452b8205ab4ebe977fcdafde85e7f29660bd1661e4a2e9b68277b4`;
+the accepted candidate is
+`5748ad8edbbb55ad43bfa84a11d3f87c10ae1994e9de01b138640d970977e5f3`.
+Both exit zero with byte-identical empty stdout and stderr on the unchanged
+official 128-family `checkjs_jsdoc` project and on a deterministic
+4,096-family project produced by the same generator with only its family count
+changed. Focused `ts_checker` tests matching `JSDoc import` pass, including
+cross-module type resolution, script-versus-CommonJS behavior, import tags,
+export-equals aliases, and invalid import forms. `zig fmt --check` also passes.
+
+Each A/B set used three alternating warmup pairs, reversed process order in
+every measured round, retained every sample, and reports untrimmed mean ±
+sample standard deviation. The paired interval is baseline-minus-candidate,
+so an interval wholly above zero favors the candidate.
+
+| CheckJS/JSDoc A/B | Metric | Baseline | Candidate | Result | Paired 95% CI |
+|---|---|---:|---:|---:|---:|
+| Official 128 families, 10-pair screen | Wall | 34.465 ± 0.598 ms | **33.918 ± 0.649 ms** | **1.0161×; 8/10 wins** | **+0.147 to +0.946 ms** |
+| Official 128 families, 10-pair screen | CPU | 33.394 ± 0.507 ms | **32.901 ± 0.565 ms** | **1.0150×; 8/10 wins** | **+0.255 to +0.731 ms** |
+| Official 128 families, first 30-pair confirmation | Wall | 36.928 ± 12.098 ms | 36.574 ± 14.660 ms | 1.0097×; 23/30 wins | -0.660 to +1.368 ms |
+| Official 128 families, first 30-pair confirmation | CPU | 34.785 ± 6.213 ms | 34.809 ± 10.612 ms | 0.9993×; 24/30 wins | -1.694 to +1.645 ms |
+| Official 128 families, independent 30-pair confirmation | Wall | 35.297 ± 1.198 ms | **34.793 ± 1.071 ms** | **1.0145×; 20/30 wins** | **+0.035 to +0.971 ms** |
+| Official 128 families, independent 30-pair confirmation | CPU | 34.235 ± 1.072 ms | **33.702 ± 0.894 ms** | **1.0158×; 19/30 wins** | **+0.151 to +0.916 ms** |
+| Diagnostic 4,096 families, 10 pairs | Wall | 6454.022 ± 78.338 ms | **5312.256 ± 67.011 ms** | **1.2149×; 10/10 wins** | **+1086.273 to +1197.257 ms** |
+| Diagnostic 4,096 families, 10 pairs | CPU | 6412.810 ± 62.141 ms | **5281.181 ± 55.399 ms** | **1.2143×; 10/10 wins** | **+1084.489 to +1178.770 ms** |
+
+The first confirmation began during transient shared-host activity and retained
+all 30 noisy pairs; it is shown separately and was neither filtered nor pooled.
+Because its 12–15 ms standard deviations were far above the screen, a second
+independent 30-pair confirmation was run and also retained in full. Its wall
+and CPU intervals both clear zero. The unchanged larger diagnostic then
+confirmed the expected scaling improvement with 10/10 wins.
+
+The schema-3 competitor checkpoint `20260901T044935Z` independently validated
+the official workload, compiler versions, rejection controls, and executable
+hashes before and after 30 rotating-order rounds following three warmups:
+
+| Focused workload | tsc 6.0.3 | native TS 7.0.2 | Home 0.1.0 | Home vs fastest competitor |
+|---|---:|---:|---:|---:|
+| `checkjs_jsdoc` | 241.3 ± 59.1 ms | 64.7 ± 19.5 ms | **39.8 ± 16.9 ms** | **1.63× faster** |
+
+Home had the lower wall time in 29/30 pairs against native TS 7 and all 30
+pairs against TS 6; its native-TS-7-minus-Home paired wall interval is
+**+21.947 to +27.861 ms**. Process CPU favored Home in 30/30 pairs against
+both references. Raw A/B evidence is retained under
+`bench/vs_tsgo/results/checkjs-import-type-gate.20260901T043158Z/`; pinned
+competitor rounds and verified provenance are under
+`bench/vs_tsgo/results/20260901T044935Z/`.
+
 ### Program import-resolution reuse
 
 Commit `49641900e`, tracked in
