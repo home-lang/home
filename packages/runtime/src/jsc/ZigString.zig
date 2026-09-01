@@ -599,7 +599,11 @@ pub const ZigString = extern struct {
     }
 
     pub inline fn deinitGlobal(this: ZigString) void {
-        bun.default_allocator.free(this.slice());
+        if (this.is16Bit()) {
+            bun.default_allocator.free(this.utf16SliceAligned());
+        } else {
+            bun.default_allocator.free(this.slice());
+        }
     }
 
     pub inline fn markGlobal(this: *ZigString) void {

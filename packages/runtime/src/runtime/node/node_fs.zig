@@ -334,14 +334,16 @@ pub const Async = struct {
     }
 
     fn NewAsyncFSTask(comptime ReturnType: type, comptime ArgumentType: type, comptime function: anytype) type {
-        // Complex results transfer owned strings/buffers only during JS conversion.
-        // Admit only value-only result shapes whose shutdown path needs no destructor.
+        // Results are admitted only when they are value-only or have explicit
+        // cancellation cleanup in deinitResultForShutdown below.
         const shutdown_safe_result = ReturnType == void or
             ReturnType == bool or
             ReturnType == Null or
             ReturnType == bun.jsc.Node.Stats or
             ReturnType == StatOrNotFound or
-            ReturnType == bun.jsc.Node.StatFS;
+            ReturnType == bun.jsc.Node.StatFS or
+            ReturnType == StringOrUndefined or
+            ReturnType == jsc.ZigString;
         return struct {
             pub const Task = @This();
 
@@ -454,7 +456,22 @@ pub const Async = struct {
 
             pub fn cancelForShutdown(this: *Task) void {
                 this.tracker.didCancel(this.globalObject);
+                this.deinitResultForShutdown();
                 this.deinit();
+            }
+
+            fn deinitResultForShutdown(this: *Task) void {
+                if (!this.has_result or this.result != .result) return;
+
+                if (comptime ReturnType == StringOrUndefined) {
+                    switch (this.result.result) {
+                        .string => |result_string| result_string.deref(),
+                        .none => {},
+                    }
+                } else if (comptime ReturnType == jsc.ZigString) {
+                    bun.assert(this.result.result.isGloballyAllocated());
+                    this.result.result.deinitGlobal();
+                }
             }
 
             pub fn deinit(this: *Task) void {
