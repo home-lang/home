@@ -566,6 +566,9 @@ pub fn cancelForShutdown(task: Task, global: *jsc.JSGlobalObject) bool {
         @field(Task.Tag, @typeName(CopyFilePromiseTask)) => task.get(CopyFilePromiseTask).?.cancelForShutdown(),
         @field(Task.Tag, @typeName(GetAddrInfoRequestTask)) => task.get(GetAddrInfoRequestTask).?.cancelForShutdown(),
         @field(Task.Tag, @typeName(RuntimeTranspilerStore)) => task.get(RuntimeTranspilerStore).?.cancelForShutdown(),
+        @field(Task.Tag, @typeName(NativeZlib)) => task.get(NativeZlib).?.cancelForShutdown(),
+        @field(Task.Tag, @typeName(NativeBrotli)) => task.get(NativeBrotli).?.cancelForShutdown(),
+        @field(Task.Tag, @typeName(NativeZstd)) => task.get(NativeZstd).?.cancelForShutdown(),
         else => return false,
     }
     return true;

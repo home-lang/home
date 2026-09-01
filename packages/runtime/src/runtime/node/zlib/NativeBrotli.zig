@@ -10,6 +10,7 @@ pub const fromJSDirect = js.fromJSDirect;
 const impl = CompressionStream(@This());
 pub const write = impl.write;
 pub const runFromJSThread = impl.runFromJSThread;
+pub const cancelForShutdown = impl.cancelForShutdown;
 pub const writeSync = impl.writeSync;
 pub const reset = impl.reset;
 pub const close = impl.close;

@@ -133,6 +133,10 @@ pub fn CompressionStream(comptime T: type) type {
             const vm = globalThis.bunVM();
             this.task = .{ .callback = &AsyncJob.runTask };
             this.poll_ref.ref(vm);
+            if (!vm.native_work_pool_jobs.tryAdd()) {
+                this.cancelForShutdown();
+                return .js_undefined;
+            }
             jsc.WorkPool.schedule(&this.task);
 
             return .js_undefined;
@@ -151,28 +155,14 @@ pub fn CompressionStream(comptime T: type) type {
                 this.stream.doWork();
 
                 vm.enqueueTaskConcurrent(jsc.ConcurrentTask.create(jsc.Task.init(this)));
+                vm.native_work_pool_jobs.complete();
             }
         };
 
-        pub fn runFromJSThread(this: *T) void {
-            const global: *jsc.JSGlobalObject = this.globalThis;
-            const vm = global.bunVM();
-            defer this.deref();
-            defer this.poll_ref.unref(vm);
-
+        fn takePendingWrite(this: *T, global: *jsc.JSGlobalObject) ?jsc.JSValue {
             this.write_in_progress = false;
 
-            // Clear the strong handle before we call any callbacks.
-            const this_value = this.this_value.trySwap() orelse {
-                debug("this_value is null in runFromJSThread", .{});
-                return;
-            };
-
-            this_value.ensureStillAlive();
-
-            // Release both detachment pins and GC roots before any error or
-            // write callback. A callback may synchronously schedule a new write;
-            // old completion cleanup must not clear that new write's ownership.
+            const this_value = this.this_value.trySwap() orelse return null;
             for ([2]?jsc.JSValue{
                 T.js.pendingInputGetCached(this_value),
                 T.js.pendingOutputGetCached(this_value),
@@ -184,6 +174,22 @@ pub fn CompressionStream(comptime T: type) type {
             }
             T.js.pendingInputSetCached(this_value, global, .zero);
             T.js.pendingOutputSetCached(this_value, global, .zero);
+            return this_value;
+        }
+
+        pub fn runFromJSThread(this: *T) void {
+            const global: *jsc.JSGlobalObject = this.globalThis;
+            const vm = global.bunVM();
+            defer this.deref();
+            defer this.poll_ref.unref(vm);
+
+            // Clear the strong handle before we call any callbacks.
+            const this_value = takePendingWrite(this, global) orelse {
+                debug("this_value is null in runFromJSThread", .{});
+                return;
+            };
+
+            this_value.ensureStillAlive();
 
             if (!(checkError(this, global, this_value))) {
                 return;
@@ -198,6 +204,15 @@ pub fn CompressionStream(comptime T: type) type {
 
             if (this.pending_reset) resetInternal(this, global, this_value);
             if (this.pending_close) _ = closeInternal(this);
+        }
+
+        pub fn cancelForShutdown(this: *T) void {
+            const global = this.globalThis;
+            const vm = global.bunVM();
+            _ = takePendingWrite(this, global);
+            this.poll_ref.unref(vm);
+            this.deref();
+            _ = shutdown_cancellation_count.fetchAdd(1, .seq_cst);
         }
 
         pub fn writeSync(this: *T, globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
@@ -380,6 +395,12 @@ pub const NativeZlib = jsc.Codegen.JSNativeZlib.getConstructor;
 pub const NativeBrotli = jsc.Codegen.JSNativeBrotli.getConstructor;
 
 pub const NativeZstd = jsc.Codegen.JSNativeZstd.getConstructor;
+
+var shutdown_cancellation_count = std.atomic.Value(u64).init(0);
+
+pub fn shutdownCancellationCount() u64 {
+    return shutdown_cancellation_count.load(.seq_cst);
+}
 
 pub const CountedKeepAlive = struct {
     keep_alive: bun.Async.KeepAlive = .{},
