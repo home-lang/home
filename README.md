@@ -292,6 +292,7 @@ recording both accepted and rejected probes:
 | [Unique interface-heritage index](docs/docs/TS_PERFORMANCE.md#unique-interface-heritage-index-rejected) | 128 interface families: 0.995× wall, 4/10 wins | Wall and CPU paired CIs cross zero; no scale timing admitted | Rejected and reverted |
 | [Merged-interface scan indexes](docs/docs/TS_PERFORMANCE.md#merged-interface-scan-indexes-rejected) | Broad index: 1.015× wall; refined chain: 0.999× wall | Both designs' wall and CPU paired CIs cross zero | Rejected and reverted |
 | [Namespace merge-order indexes](docs/docs/TS_PERFORMANCE.md#namespace-merge-order-indexes-rejected) | Ordinal index: 1.013× wall; existing-index reuse: 0.989× wall | Both designs' wall and CPU paired CIs cross zero | Rejected and reverted |
+| [`declarationName` forced inline](docs/docs/TS_PERFORMANCE.md#declarationname-forced-inline-rejected) | Clean screen: 1.010× wall, 6/10 wins | Wall and CPU paired CIs cross zero; binary +16,544 bytes | Rejected and reverted |
 | Contextual cache descendant index | 128 interfaces: **1.051× wall**, confirmation CIs positive | 2,048 interfaces: **1.152× wall**, 10/10 paired wins | Accepted in `21e6155d4` |
 | Free-type traversal generation marks | Byte screen: **1.023× wall**, 10/10 wins | Confirmation: 1.004× wall, but paired wall and CPU CIs cross zero | Rejected and reverted |
 | Free-type-parameter root memo | 2,048 predicates: 0.993× wall, 4/10 wins | Candidate slower and RSS higher in 10/10 pairs; no confirmation admitted | Rejected and reverted |

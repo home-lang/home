@@ -691,6 +691,44 @@ binaries, exact-output checks, and every round remain under
 `namespace-merge-order-index.20260901T150258Z/` and
 `namespace-merge-function-index.20260901T153151Z/`.
 
+### `declarationName` forced inline (rejected)
+
+The next largest untreated leaf in the same accepted-code profile was the
+small, pure HIR accessor `declarationName` with 854 exclusive samples. The
+candidate changed only its Zig declaration from `fn` to `inline fn`, allowing
+known declaration kinds to fold at its many checker call sites without adding
+a cache or changing lookup semantics.
+
+The full ReleaseFast checker suite passed. The fixed accepted baseline and
+candidate both exited zero with byte-identical empty output on the unchanged
+official 128-family project and existing 2,048-family scale. The baseline
+binary was SHA-256
+`cf92eaf386deb3e3d075af85f689072c2a196d6fe16d460603c0710a597dd4ee`;
+the inline candidate was
+`45d120d2ea5883a6fc79f2229b3b2fb91ab19edef022246a8bf48b0d7d36f865`.
+Its file size increased from 12,288,760 to 12,305,304 bytes, a 16,544-byte or
+0.135% expansion.
+
+An initial ten-pair set was retained but excluded from admission. A macOS
+maintenance service that had appeared stable remained active and the measured
+wall means rose to 54.407 ± 12.023 ms for baseline and 49.121 ± 10.374 ms for
+candidate; the wall paired interval spanned -4.165 to +14.734 ms. After that
+exact process exited, a 30-second settling interval and one short follow-on
+test process completed before a fresh clean screen began. The clean screen
+retained every reversed-order pair after three alternating warmup pairs:
+
+| Official 128-family clean A/B, 10 pairs | Baseline | Forced inline | Result | Paired 95% CI |
+|---|---:|---:|---:|---:|
+| Wall | 33.385 ± 0.732 ms | **33.041 ± 0.505 ms** | 1.0104×; 6/10 candidate wins | -0.138 to +0.931 ms |
+| CPU | 32.419 ± 0.434 ms | **32.226 ± 0.423 ms** | 1.0060×; 4/10 candidate wins | -0.128 to +0.574 ms |
+| Peak RSS | **16.655 ± 0.052 MiB** | 16.703 ± 0.007 MiB | 0.9971×; 0/10 candidate wins | **-0.080 to -0.019 MiB** |
+
+Neither timing interval established an improvement, while measured RSS and
+binary size increased. The inline hint was fully reverted; no confirmation,
+scale timing, source commit, or compiler checkpoint was admitted. Both the
+excluded loaded set and every clean round remain under
+`declaration-name-inline.20260901T154420Z/`.
+
 ### Free-type traversal generation marks (rejected)
 
 After the root memo failed, the same retained profile still showed hash-table
