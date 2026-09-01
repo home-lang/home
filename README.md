@@ -289,6 +289,7 @@ recording both accepted and rejected probes:
 | Union flatten-buffer elision | 2,048 predicates: 1.006× wall, 6/10 wins | Paired wall and CPU CIs cross zero; scale run not admitted | Rejected and reverted |
 | Prepared parser source-fact bundle | 2,048 predicates: 1.006× CPU, 5/10 wins | Paired wall and CPU CIs cross zero; scale run not admitted | Rejected and reverted |
 | Type-alias merge inline-first targets | 2,048 predicates: 1.009× wall, 6/10 wins | Paired CIs cross zero; scale run not admitted | Rejected and reverted |
+| Duplicate-class threshold flag | 2,048 predicates: 1.009× slower wall, 4/10 wins | Paired wall and CPU CIs cross zero; scale run not admitted | Rejected and reverted |
 | One-pass special-identifier classification | 2,048 families: 1.010× CPU, 6/10 wins | Paired CIs cross zero; scale run not admitted | Rejected and reverted |
 | Declaration-map pre-sizing | 2,048 families: 1.028× CPU screen, 8/10 wins | Confirmation: 1.008× CPU, paired CI crosses zero | Rejected and reverted |
 | Identifier declaration-slot reuse | 2,048 families: 0.995× CPU, 5/10 wins | 0.973× wall; candidate slower | Rejected and reverted |
