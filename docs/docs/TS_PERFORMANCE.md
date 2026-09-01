@@ -129,6 +129,43 @@ evidence is retained under
 competitor checkpoints retain their metadata and every round file in their
 timestamped result directories.
 
+### Rejected type-alias merge inline-first targets
+
+The post-bucket profile under
+`predicate-post-bucket-profile.20260901T070000Z` attributed 223 top-of-stack
+samples to `checkDeclarationSpaceDiagnosticsImpl`. One child pass,
+`checkTypeAliasDeclarationMergeDiagnostics`, stored a dynamic list for every
+class/interface name even when the group contained only one declaration. An
+exact probe kept the first target inline in the map value and allocated an
+overflow list only for genuine multi-target groups. Target order and the
+alias-to-every-target diagnostic loop were unchanged; a focused regression
+covered an alias conflicting with both a class and its merged interface.
+
+The fixed accepted baseline binary is SHA-256
+`9e86ee995ca30484ae41d0f0adafea23a386d1ad57fd932b4941909c20d4711d`;
+the experimental candidate was
+`d0e1896e83807ca257b7bd45fce2d1e72a02c7f1c935c8daac6871db15b185f6`.
+Both exited zero with byte-identical empty stdout and stderr on the unchanged
+2,048-, 32,768-, and 65,536-family predicate projects. The focused type-alias
+checker suite passed, including the multi-target overflow regression.
+
+The official screen retained all ten reversed-order pairs after three
+alternating warmup pairs. Two unrelated Zig test shards in another repository
+held a stable two-core load throughout; no sample was filtered or restarted.
+Paired intervals are baseline-minus-candidate:
+
+| Predicate A/B | Metric | Baseline | Candidate | Result | Paired 95% CI |
+|---|---|---:|---:|---:|---:|
+| Official 2,048 families, 10-pair screen | Wall | 232.604 ± 14.432 ms | 230.552 ± 5.974 ms | 1.0089×; 6/10 wins | -5.243 to +9.348 ms |
+| Official 2,048 families, 10-pair screen | CPU | 229.749 ± 11.273 ms | 228.636 ± 5.582 ms | 1.0049×; 5/10 wins | -4.146 to +6.371 ms |
+
+The external load may widen variance, but neither metric established pair
+direction and both intervals crossed zero. The initial gate therefore failed;
+no confirmation, scale timing, or competitor checkpoint was run. The source
+probe was fully reverted and the accepted binary restored. Raw binaries,
+exact outputs, and every screen round are retained under
+`bench/vs_tsgo/results/type-alias-merge-inline-first.20260901T083000Z/`.
+
 ### Exact diagnostic-reconciliation marker gate
 
 Commit `587c64343`, tracked in
