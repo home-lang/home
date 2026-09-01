@@ -10,41 +10,41 @@ Ongoing coverage and optimization work is tracked in
 
 ## Current snapshot
 
-Measured 2026-09-01 at commit `e0f2fb6d7` on an Apple M3 Pro MacBook Pro
+Measured 2026-09-01 at commit `1a7ac8a7a` on an Apple M3 Pro MacBook Pro
 (11 cores, 18 GB RAM, arm64, macOS 27.0). Each value is the mean and sample
 standard deviation of 30 new compiler processes after three warmup rounds.
-The complete raw-result identifier is `20260901T024535Z`. The runner first
+The complete raw-result identifier is `20260901T065201Z`. The runner first
 admitted all 20 selected workloads against version-checked TS **6.0.3**, native
 TS **7.0.2**, and Home. Native TS 7 and `tsgo` are one competitor. All **600
 round files / 1,800 successful finite samples** are retained without filtering.
 
 | Workload | tsc 6.0.3 | native TS 7.0.2 | Home 0.1.0 | Home vs fastest competitor |
 |---|---:|---:|---:|---:|
-| `checkjs_jsdoc` | 221.1 ± 29.3 ms | 57.4 ± 3.6 ms | **35.0 ± 3.2 ms** | **1.64× faster** |
-| `class_hierarchy` | 208.9 ± 16.6 ms | 57.9 ± 3.2 ms | **27.5 ± 0.8 ms** | **2.10× faster** |
-| `commonjs_graph` | 157.7 ± 3.9 ms | 50.5 ± 1.1 ms | **26.5 ± 0.6 ms** | **1.90× faster** |
-| `control_flow` | 221.8 ± 37.6 ms | 65.6 ± 7.3 ms | **31.5 ± 6.0 ms** | **2.08× faster** |
-| `deep_types` | 132.4 ± 1.6 ms | 54.1 ± 1.3 ms | **24.7 ± 0.4 ms** | **2.19× faster** |
-| `destructuring` | 153.8 ± 4.0 ms | 52.8 ± 1.2 ms | **17.1 ± 0.4 ms** | **3.09× faster** |
-| `generic_calls` | 184.7 ± 4.0 ms | 56.3 ± 1.3 ms | **19.9 ± 0.4 ms** | **2.84× faster** |
-| `import_graph` | 134.4 ± 2.3 ms | 48.5 ± 1.6 ms | **20.9 ± 1.1 ms** | **2.32× faster** |
-| `interface_composition` | 241.0 ± 25.5 ms | 72.3 ± 6.8 ms | **45.2 ± 3.9 ms** | **1.60× faster** |
-| `many_files` | 216.4 ± 3.9 ms | 55.8 ± 2.6 ms | **21.3 ± 0.5 ms** | **2.62× faster** |
-| `null_safe_access` | 218.5 ± 16.5 ms | 66.1 ± 6.7 ms | **35.9 ± 1.8 ms** | **1.84× faster** |
-| `overload_resolution` | 225.8 ± 6.2 ms | 71.1 ± 2.1 ms | **28.5 ± 0.7 ms** | **2.50× faster** |
-| `recursive_generics` | 155.7 ± 4.6 ms | 72.8 ± 1.6 ms | **14.9 ± 0.4 ms** | **4.89× faster** |
-| `reexport_graph` | 98.4 ± 1.5 ms | 42.7 ± 1.0 ms | **20.4 ± 1.0 ms** | **2.09× faster** |
-| `startup` | 77.0 ± 27.4 ms | 48.4 ± 21.5 ms | **4.1 ± 2.1 ms** | **11.69× faster** |
-| `structural_objects` | 206.6 ± 9.2 ms | 64.3 ± 3.5 ms | **26.5 ± 1.1 ms** | **2.43× faster** |
-| `tsx_components` | 168.9 ± 6.6 ms | 49.3 ± 1.4 ms | **21.0 ± 0.6 ms** | **2.35× faster** |
-| `type_predicates` | 266.0 ± 13.6 ms | 79.4 ± 5.5 ms | **34.8 ± 1.7 ms** | **2.28× faster** |
-| `type_predicates_large` | 1119.9 ± 56.1 ms | 388.9 ± 17.0 ms | **259.1 ± 15.2 ms** | **1.50× faster** |
-| `variadic_tuples` | 269.7 ± 20.4 ms | 81.4 ± 3.6 ms | **35.7 ± 1.3 ms** | **2.28× faster** |
+| `checkjs_jsdoc` | 217.8 ± 11.4 ms | 57.0 ± 2.0 ms | **33.4 ± 1.0 ms** | **1.71× faster** |
+| `class_hierarchy` | 187.3 ± 14.2 ms | 52.7 ± 1.6 ms | **24.7 ± 0.9 ms** | **2.14× faster** |
+| `commonjs_graph` | 168.8 ± 28.6 ms | 51.3 ± 2.6 ms | **26.9 ± 1.3 ms** | **1.91× faster** |
+| `control_flow` | 202.0 ± 13.5 ms | 61.5 ± 2.3 ms | **28.5 ± 0.8 ms** | **2.16× faster** |
+| `deep_types` | 139.2 ± 16.9 ms | 55.7 ± 3.5 ms | **25.4 ± 1.4 ms** | **2.19× faster** |
+| `destructuring` | 157.5 ± 66.1 ms | 53.5 ± 19.3 ms | **18.0 ± 8.1 ms** | **2.97× faster** |
+| `generic_calls` | 189.8 ± 11.6 ms | 58.3 ± 6.0 ms | **20.6 ± 2.7 ms** | **2.83× faster** |
+| `import_graph` | 136.1 ± 5.3 ms | 48.3 ± 1.5 ms | **21.2 ± 1.4 ms** | **2.28× faster** |
+| `interface_composition` | 201.3 ± 13.6 ms | 63.6 ± 6.8 ms | **38.9 ± 1.3 ms** | **1.63× faster** |
+| `many_files` | 221.9 ± 10.9 ms | 57.1 ± 2.0 ms | **22.0 ± 0.9 ms** | **2.60× faster** |
+| `null_safe_access` | 201.3 ± 12.6 ms | 60.7 ± 3.8 ms | **33.6 ± 2.9 ms** | **1.81× faster** |
+| `overload_resolution` | 208.6 ± 22.4 ms | 65.9 ± 6.9 ms | **25.4 ± 0.9 ms** | **2.60× faster** |
+| `recursive_generics` | 168.0 ± 10.6 ms | 78.5 ± 6.6 ms | **15.3 ± 0.8 ms** | **5.14× faster** |
+| `reexport_graph` | 101.9 ± 3.5 ms | 45.0 ± 5.8 ms | **21.4 ± 1.6 ms** | **2.10× faster** |
+| `startup` | 73.7 ± 21.3 ms | 47.5 ± 21.7 ms | **3.8 ± 1.1 ms** | **12.50× faster** |
+| `structural_objects` | 187.6 ± 11.5 ms | 58.0 ± 2.0 ms | **23.8 ± 2.3 ms** | **2.43× faster** |
+| `tsx_components` | 170.0 ± 7.1 ms | 50.0 ± 1.6 ms | **21.8 ± 0.6 ms** | **2.29× faster** |
+| `type_predicates` | 255.9 ± 9.9 ms | 77.3 ± 6.1 ms | **32.0 ± 0.7 ms** | **2.42× faster** |
+| `type_predicates_large` | 998.9 ± 22.7 ms | 347.8 ± 10.9 ms | **227.8 ± 15.9 ms** | **1.53× faster** |
+| `variadic_tuples` | 268.7 ± 21.8 ms | 81.6 ± 5.9 ms | **35.3 ± 1.6 ms** | **2.31× faster** |
 
 Home records lower means on **20/20 admitted workloads** and lower paired times
 in **600/600 rounds**. Every row's paired 95% confidence interval for the
 fastest-competitor-minus-Home difference is above zero. The narrowest mean
-lead is **1.50×** on `type_predicates_large`; this is still not evidence of
+lead is **1.53×** on `type_predicates_large`; this is still not evidence of
 universal leadership. These are local
 synthetic results; real projects, other platforms, and broader rejection
 coverage remain separate validation work. Historical snapshots, including
@@ -57,6 +57,77 @@ wins. This is a display-resolution rule, not a statistical significance test;
 other directional labels also compare means, not certainty. These are local
 synthetic measurements, not a claim that every real project or machine has
 the same speedup.
+
+### Default-export merge bucket records
+
+Commit `1a7ac8a7a`, tracked in
+[#416](https://github.com/home-lang/home/issues/416), reduces temporary
+allocation and copying in `checkDefaultExportMerges`. That pass groups every
+top-level merging declaration by its interned name and virtual source section.
+Each bucket previously maintained five parallel dynamic arrays for declaration
+nodes, owner nodes, export flags, and declaration spaces. Even a unique name
+therefore allocated and grew five buffers before the pass discovered that no
+merge existed.
+
+Each bucket now appends one record containing the four facts actually consumed
+by merge analysis. Grouping keys, insertion order, declaration-space unions,
+diagnostic conditions, and diagnostic order are unchanged; the unused owner
+entry is gone. The common unique-name bucket performs one allocation instead
+of five, while genuine merge buckets retain the same exact records in the same
+order. This is a general representation improvement, not a source marker,
+workload gate, cache, or benchmark mode.
+
+The fixed accepted baseline binary is SHA-256
+`ca0bda46834cc05f9c5f57bac5dd5bdec88af388cf6b7c6fc39fcce9b60604ae`;
+the accepted candidate is
+`9e86ee995ca30484ae41d0f0adafea23a386d1ad57fd932b4941909c20d4711d`.
+Both exited zero with byte-identical empty stdout and stderr on the unchanged
+2,048-, 32,768-, and 65,536-family predicate projects. Focused default-export
+and TS2395 merge tests pass, as do the complete ReleaseFast `ts_checker` suite
+and all **95/95** benchmark-harness tests.
+
+Every A/B set used three alternating warmup pairs, reversed process order in
+every measured pair, retained every sample, and reports untrimmed mean ± sample
+standard deviation. The 30-pair confirmation was independent of the screen.
+Paired intervals are baseline-minus-candidate:
+
+| Predicate A/B | Metric | Baseline | Candidate | Result | Paired 95% CI |
+|---|---|---:|---:|---:|---:|
+| Official 2,048 families, 10-pair screen | Wall | 241.374 ± 14.475 ms | **235.917 ± 10.657 ms** | **1.0231×; 9/10 wins** | **+0.330 to +10.584 ms** |
+| Official 2,048 families, 10-pair screen | CPU | 238.947 ± 13.544 ms | **233.828 ± 10.180 ms** | **1.0219×; 9/10 wins** | **+0.354 to +9.884 ms** |
+| Official 2,048 families, 30-pair confirmation | Wall | 240.368 ± 12.673 ms | **233.717 ± 14.413 ms** | **1.0285×; 24/30 wins** | **+3.677 to +9.625 ms** |
+| Official 2,048 families, 30-pair confirmation | CPU | 237.972 ± 11.798 ms | **231.652 ± 12.909 ms** | **1.0273×; 25/30 wins** | **+3.520 to +9.121 ms** |
+| Diagnostic 32,768 families, 10 pairs | Wall | 3974.070 ± 96.984 ms | 3903.403 ± 138.051 ms | 1.0181×; 9/10 wins | -48.164 to +189.498 ms |
+| Diagnostic 32,768 families, 10 pairs | CPU | 3965.214 ± 94.695 ms | **3873.200 ± 82.108 ms** | **1.0238×; 9/10 wins** | **+10.202 to +173.825 ms** |
+| Diagnostic 65,536 families, 10 pairs | Wall | 8722.056 ± 513.095 ms | 8392.079 ± 529.550 ms | 1.0393×; 7/10 wins | -113.024 to +772.979 ms |
+| Diagnostic 65,536 families, 10 pairs | CPU | 8584.237 ± 389.892 ms | 8320.124 ± 474.210 ms | 1.0317×; 7/10 wins | -61.514 to +589.739 ms |
+
+The independent official confirmation is decisive for both metrics, and the
+32,768-family CPU interval independently clears zero. The 32,768 wall result
+and both 65,536 metrics retain lower candidate means but are explicitly
+inconclusive because their intervals cross zero. They were neither filtered
+nor used to strengthen the acceptance claim.
+
+The independent schema-3 checkpoint `20260901T065015Z` version-verified
+JavaScript TypeScript 6.0.3 and native TypeScript 7.0.2, hashed every compiler
+and tool payload before and after timing, and retained 30 rotating-order rounds
+after three warmups:
+
+| Focused workload | tsc 6.0.3 | native TS 7.0.2 | Home 0.1.0 | Home vs fastest competitor |
+|---|---:|---:|---:|---:|
+| `type_predicates_large` | 1004.8 ± 26.3 ms | 347.4 ± 9.4 ms | **224.5 ± 10.1 ms** | **1.55× faster** |
+
+Home wins all 30 focused wall pairs against both references. The
+native-TS-7-minus-Home paired 95% interval is **+118.439 to +127.422 ms**;
+process CPU also favors Home in all 30 pairs. The subsequent complete schema-3
+checkpoint `20260901T065201Z`, published as the [current
+snapshot](#current-snapshot), verifies the accepted binary across all 20
+workloads: Home has the lowest mean in **20/20**, wins all **600/600** paired
+rounds against native TS 7, and every paired interval is positive. Raw A/B
+evidence is retained under
+`bench/vs_tsgo/results/default-export-bucket-records.20260901T074000Z/`; both
+competitor checkpoints retain their metadata and every round file in their
+timestamped result directories.
 
 ### Exact diagnostic-reconciliation marker gate
 

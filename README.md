@@ -268,7 +268,7 @@ every successful finite sample without filtering.
 
 | Platform | Workloads with the lowest Home mean | Strongest Home mean lead | Narrowest Home mean lead |
 |---|---:|---:|---:|
-| Apple M3 Pro, macOS ARM64 | 20 / 20 | `startup`: 11.69× faster | `type_predicates_large`: 1.50× faster |
+| Apple M3 Pro, macOS ARM64 | 20 / 20 | `startup`: 12.50× faster | `type_predicates_large`: 1.53× faster |
 | Debian Bookworm, Linux ARM64 | 20 / 20 | `startup`: 21.67× faster | `checkjs_jsdoc`: 1.02× faster |
 
 The latest optimization admissions preserve that qualified snapshot while
@@ -276,6 +276,7 @@ recording both accepted and rejected probes:
 
 | Optimization probe | Primary fair A/B | Secondary scale | Decision |
 |---|---:|---:|---|
+| Default-export merge bucket records | 2,048 predicates: **1.028× faster**, confirmation CIs positive | 32,768 predicates: **1.024× CPU**, 9/10 wins | Accepted in `1a7ac8a7a` |
 | Exact diagnostic-reconciliation marker gate | 2,048 predicates: **1.026× faster**, paired CIs positive | 32,768 predicates: **1.024× faster**, 10/10 paired wins | Accepted in `587c64343` |
 | JSDoc import-type scan pruning | 128 CheckJS families: **1.015× faster**, confirmation paired CIs positive | 4,096 families: **1.215× faster**, 10/10 paired wins | Accepted in `532373ee1` |
 | Source-marker root-gap fast-forward | 2,048 predicates: **1.014× faster**, paired CIs positive | 65,536 predicates: **1.014× faster**, paired CIs positive | Accepted in `7ca9946c8` |
