@@ -58,6 +58,74 @@ other directional labels also compare means, not certainty. These are local
 synthetic measurements, not a claim that every real project or machine has
 the same speedup.
 
+### Exact diagnostic-reconciliation marker gate
+
+Commit `587c64343`, tracked in
+[#416](https://github.com/home-lang/home/issues/416), avoids an unnecessary
+post-check source scan on ordinary files. Sampling the unchanged 65,536-family
+`type_predicates_large` project identified
+`applyCompilerCorpusExactDiagnosticReconciliations` as the dominant sampled
+checker leaf. That compatibility pass searched every source separately for a
+small set of exact upstream-corpus constructs even though none occur in the
+valid predicate workload.
+
+The checker now includes one necessary sentinel for every reconciliation
+branch in the source marker index already built by `prepareSource`. If none of
+those exact sentinels is present, the reconciliation pass returns immediately;
+if any is present, every original exact condition and diagnostic action still
+runs. The uncached checker path retains exact `indexOf` fallback behavior. This
+is a general necessary-condition gate over real source text, not a workload
+name, result cache, diagnostic shortcut, or benchmark-only mode.
+
+The fixed baseline binary is SHA-256
+`5748ad8edbbb55ad43bfa84a11d3f87c10ae1994e9de01b138640d970977e5f3`;
+the accepted candidate is
+`ca0bda46834cc05f9c5f57bac5dd5bdec88af388cf6b7c6fc39fcce9b60604ae`.
+Both exit zero with byte-identical empty stdout and stderr on the unchanged
+official 2,048-family project and deterministic 32,768- and 65,536-family
+copies generated with only the family count changed. A focused test covers
+every sentinel through both indexed and fallback lookup paths. The complete
+ReleaseFast `ts_checker` suite and all 95 benchmark-harness tests pass.
+
+Every A/B set used three alternating warmup pairs, reversed process order in
+each measured round, retained every sample, and reports untrimmed mean ± sample
+standard deviation. Paired intervals are baseline-minus-candidate; intervals
+wholly above zero favor the candidate.
+
+| Predicate A/B | Metric | Baseline | Candidate | Result | Paired 95% CI |
+|---|---|---:|---:|---:|---:|
+| Official 2,048 families, 10-pair screen | Wall | 249.171 ± 2.809 ms | **243.385 ± 2.695 ms** | **1.0238×; 9/10 wins** | **+2.831 to +8.742 ms** |
+| Official 2,048 families, 10-pair screen | CPU | 246.565 ± 2.789 ms | **240.868 ± 2.462 ms** | **1.0237×; 9/10 wins** | **+2.846 to +8.548 ms** |
+| Official 2,048 families, 30-pair confirmation | Wall | 248.825 ± 3.471 ms | **242.644 ± 8.619 ms** | **1.0255×; 28/30 wins** | **+2.540 to +9.822 ms** |
+| Official 2,048 families, 30-pair confirmation | CPU | 246.300 ± 3.345 ms | **239.937 ± 7.287 ms** | **1.0265×; 29/30 wins** | **+3.228 to +9.499 ms** |
+| Diagnostic 32,768 families, 10 pairs | Wall | 4370.414 ± 50.111 ms | **4271.202 ± 42.435 ms** | **1.0232×; 10/10 wins** | **+69.986 to +128.437 ms** |
+| Diagnostic 32,768 families, 10 pairs | CPU | 4347.483 ± 47.148 ms | **4247.370 ± 36.548 ms** | **1.0236×; 10/10 wins** | **+75.027 to +125.199 ms** |
+| Diagnostic 65,536 families, 10 pairs | Wall | 9299.204 ± 186.830 ms | 9173.403 ± 254.585 ms | 1.0137×; 8/10 wins | -44.569 to +296.173 ms |
+| Diagnostic 65,536 families, 10 pairs | CPU | 9194.124 ± 162.523 ms | 9078.005 ± 220.901 ms | 1.0128×; 8/10 wins | -48.866 to +281.103 ms |
+
+The official screen and independent 30-pair confirmation are decisive, as is
+the 32,768-family scale check. The retained 65,536-family set has lower
+candidate means but is explicitly inconclusive because both paired intervals
+cross zero; it was neither filtered nor used as the acceptance gate.
+
+The schema-3 competitor checkpoint `20260901T051415Z` independently admitted
+the official workload against JavaScript TypeScript 6.0.3 and native
+TypeScript 7.0.2 (`tsgo`), verified compiler and tool payloads before and after
+timing, and ran 30 rotating-order rounds after three warmups:
+
+| Focused workload | tsc 6.0.3 | native TS 7.0.2 | Home 0.1.0 | Home vs fastest competitor |
+|---|---:|---:|---:|---:|
+| `type_predicates_large` | 1178.4 ± 145.4 ms | 401.6 ± 32.8 ms | **267.2 ± 55.9 ms** | **1.50× faster** |
+
+Home had the lower wall time in 29/30 pairs against native TS 7 and all 30
+pairs against TS 6. Its native-TS-7-minus-Home paired wall interval is
+**+120.576 to +148.318 ms**; process CPU favored Home in all 30 pairs against
+both references. Raw profile, exact-output, and A/B evidence is retained under
+`bench/vs_tsgo/results/predicate-current-profile.20260901T045324Z/` and
+`bench/vs_tsgo/results/exact-diagnostic-marker-gate.20260901T045636Z/`;
+the pinned-competitor rounds and verified provenance are under
+`bench/vs_tsgo/results/20260901T051415Z/`.
+
 ### JSDoc import-type scan pruning
 
 Commit `532373ee1`, tracked in
