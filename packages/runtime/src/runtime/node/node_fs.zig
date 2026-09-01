@@ -341,6 +341,8 @@ pub const Async = struct {
             ReturnType == Null or
             ReturnType == bun.jsc.Node.Stats or
             ReturnType == StatOrNotFound or
+            ReturnType == Return.Read or
+            ReturnType == Return.Write or
             ReturnType == bun.jsc.Node.StatFS or
             ReturnType == StringOrUndefined or
             ReturnType == jsc.ZigString or

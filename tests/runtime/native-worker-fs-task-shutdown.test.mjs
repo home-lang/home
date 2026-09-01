@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { once } from 'node:events'
-import { closeSync, exists, fstat, mkdtempSync, openSync, realpathSync, rmSync, symlinkSync } from 'node:fs'
+import { closeSync, exists, fstat, mkdtempSync, openSync, read, readv, realpathSync, rmSync, symlinkSync, write, writev } from 'node:fs'
 import { access, lstat, mkdir, mkdtemp, open, readFile, readdir, readlink, realpath, stat, statfs, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -33,6 +33,34 @@ const fstatAsync = fd =>
       else resolve(stats)
     })
   })
+const readAsync = (fd, buffer, position) =>
+  new Promise((resolve, reject) => {
+    read(fd, buffer, 0, buffer.length, position, (error, bytesRead) => {
+      if (error) reject(error)
+      else resolve(bytesRead)
+    })
+  })
+const readvAsync = (fd, buffers, position) =>
+  new Promise((resolve, reject) => {
+    readv(fd, buffers, position, (error, bytesRead) => {
+      if (error) reject(error)
+      else resolve(bytesRead)
+    })
+  })
+const writeAsync = (fd, buffer, position) =>
+  new Promise((resolve, reject) => {
+    write(fd, buffer, 0, buffer.length, position, (error, bytesWritten) => {
+      if (error) reject(error)
+      else resolve(bytesWritten)
+    })
+  })
+const writevAsync = (fd, buffers, position) =>
+  new Promise((resolve, reject) => {
+    writev(fd, buffers, position, (error, bytesWritten) => {
+      if (error) reject(error)
+      else resolve(bytesWritten)
+    })
+  })
 
 await withTimeout(writeFile(normalOutput, 'normal'), 'normal fs write')
 symlinkSync(normalOutput, normalLink)
@@ -53,8 +81,17 @@ assert.equal(await withTimeout(realpath(normalLink, 'utf8'), 'normal fs realpath
 const normalFileHandle = await withTimeout(open(normalOutput, 'r'), 'normal fs open')
 assert.equal((await withTimeout(normalFileHandle.stat(), 'normal fs file handle stat')).isFile(), true)
 await withTimeout(normalFileHandle.close(), 'normal fs file handle close')
-const normalFd = openSync(normalOutput, 'r')
+const normalFd = openSync(normalOutput, 'r+')
 assert.equal((await withTimeout(fstatAsync(normalFd), 'normal fs fstat')).isFile(), true)
+const normalReadBuffer = Buffer.alloc(1)
+assert.equal(await withTimeout(readAsync(normalFd, normalReadBuffer, 0), 'normal fs read'), 1)
+assert.equal(normalReadBuffer.toString(), 'n')
+const normalReadvBuffer = Buffer.alloc(1)
+assert.equal(await withTimeout(readvAsync(normalFd, [normalReadvBuffer], 1), 'normal fs readv'), 1)
+assert.equal(normalReadvBuffer.toString(), 'o')
+assert.equal(await withTimeout(writeAsync(normalFd, Buffer.from('N'), 0), 'normal fs write'), 1)
+assert.equal(await withTimeout(writevAsync(normalFd, [Buffer.from('O')], 1), 'normal fs writev'), 1)
+assert.equal(await withTimeout(readFile(normalOutput, 'utf8'), 'normal fs positional writes'), 'NOrmal')
 assert.equal((await withTimeout(readdir(root), 'normal fs readdir strings')).includes('normal.txt'), true)
 assert.equal(
   (await withTimeout(readdir(root, { encoding: 'buffer' }), 'normal fs readdir buffers')).some(
@@ -71,7 +108,7 @@ assert.equal(
 assert.equal(getEventLoopStats().nativeWorkPoolJobs, 0)
 
 const workerSource = `
-  const { exists, fstat } = require('node:fs');
+  const { exists, fstat, read, readv, write, writev } = require('node:fs');
   const { access, lstat, mkdir, mkdtemp, open, readFile, readdir, readlink, realpath, stat, statfs, writeFile } = require('node:fs/promises');
   const { parentPort, workerData } = require('node:worker_threads');
   const { getEventLoopStats } = require('bun:internal-for-testing');
@@ -101,6 +138,10 @@ const workerSource = `
     void readdir(workerData.root);
     void readdir(workerData.root, { encoding: 'buffer' });
     void readdir(workerData.root, { withFileTypes: true });
+    read(workerData.fd, Buffer.alloc(1), 0, 1, 0, () => {});
+    readv(workerData.fd, [Buffer.alloc(1)], 1, () => {});
+    write(workerData.fd, Buffer.from('N'), 0, 1, 0, () => {});
+    writev(workerData.fd, [Buffer.from('O')], 1, () => {});
     parentPort.postMessage({ jobs: getEventLoopStats().nativeWorkPoolJobs });
   };
   arm();
@@ -126,7 +167,7 @@ try {
 
     try {
       const [armed] = await withTimeout(once(worker, 'message'), 'fs task worker arm')
-      assert.deepEqual(armed, { jobs: probeCount + 19 })
+      assert.deepEqual(armed, { jobs: probeCount + 23 })
 
       let terminated = false
       termination = worker.terminate().then(exitCode => {
@@ -142,7 +183,7 @@ try {
       const exitCode = await withTimeout(termination, 'fs task worker termination')
       assert.equal(typeof exitCode, 'number')
       assert.equal(getEventLoopStats().completedNativeWorkPoolProbeTasks, before.completedNativeWorkPoolProbeTasks + probeCount)
-      assert.equal(getEventLoopStats().cancelledAnyTasks, before.cancelledAnyTasks + 19)
+      assert.equal(getEventLoopStats().cancelledAnyTasks, before.cancelledAnyTasks + 23)
     } finally {
       if (!released) getEventLoopStats(false, false, true)
       if (termination) await withTimeout(termination, 'fs task worker cleanup')
