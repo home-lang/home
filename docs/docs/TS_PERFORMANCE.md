@@ -368,6 +368,81 @@ native TypeScript 7.0.2 competitor checkpoint was admitted. Frozen binaries,
 exact outputs, load snapshots, and every screen sample remain under
 `qualified-type-root-namespace-index.20260901T125755Z/`.
 
+### Namespace-value miss index
+
+Commit [`4ba46f4d6`](https://github.com/home-lang/home/commit/4ba46f4d6),
+tracked in [#416](https://github.com/home-lang/home/issues/416), removes the
+next independently profiled root scan. Ordinary property accesses call
+`mergedNamespaceValueMemberType` because the same source can contain real
+namespace values. The helper first performs an indexed visible-namespace
+lookup, but a miss then repeated a linear scan of every root statement. On the
+4,096-family profile corpus, this redundant fallback was the largest exclusive
+leaf with 1,322 samples.
+
+The accepted path returns the exact negative result only after the visible
+namespace lookup has completed the root index and found no namespace. Virtual
+filename sections retain the old scan, because declarations can cross section
+keys. Roots containing dotted namespace declarations also retain it, because
+`namespace A.B {}` creates the runtime root `A` without an exact `A` index
+entry. A failed dotted-marker allocation now leaves the index incomplete, so
+allocation failure also retains the old scan. Visible and reopened namespaces
+continue through the unchanged member and merge logic. No property name,
+namespace name, diagnostic, or benchmark-specific pattern is cached.
+
+The fixed accepted baseline is SHA-256
+`f451419a6bbd8e897e9f0b048f992a8034866d95d458591c916f090be0a95e23`;
+the candidate is
+`4c0f758c9c8a8bf313ced6fd4d8b872e6f6b96166503b7c4035e8141a2fea7a9`.
+Both exit zero with byte-identical empty stdout and stderr on the unchanged
+official 128-family project and the existing 2,048-family, 92,160-line scale.
+
+The official screen retained all ten reversed-order pairs after three
+alternating warmup pairs:
+
+| Official 128-family A/B, 10 pairs | Baseline | Namespace miss index | Result | Paired 95% CI |
+|---|---:|---:|---:|---:|
+| Wall | 34.655 ± 1.014 ms | **33.321 ± 1.000 ms** | **1.0400×; 8/10 candidate wins** | **+0.486 to +2.185 ms** |
+| CPU | 33.709 ± 0.923 ms | **32.306 ± 0.842 ms** | **1.0434×; 8/10 candidate wins** | **+0.720 to +2.092 ms** |
+| Peak RSS | 16.423 ± 0.012 MiB | **16.422 ± 0.010 MiB** | 1.0001×; 2/10 candidate wins | -0.003 to +0.006 MiB |
+
+The independent 30-pair confirmation retained every round:
+
+| Official 128-family A/B, 30 pairs | Baseline | Namespace miss index | Result | Paired 95% CI |
+|---|---:|---:|---:|---:|
+| Wall | 36.506 ± 1.128 ms | **35.183 ± 1.350 ms** | **1.0376×; 20/30 candidate wins** | **+0.700 to +1.937 ms** |
+| CPU | 35.480 ± 0.970 ms | **34.027 ± 1.080 ms** | **1.0427×; 26/30 candidate wins** | **+0.977 to +1.930 ms** |
+| Peak RSS | 16.426 ± 0.009 MiB | **16.424 ± 0.011 MiB** | 1.0001×; 7/30 candidate wins | -0.003 to +0.006 MiB |
+
+At 16× scale, the same frozen binaries retained all ten pairs:
+
+| Scaled 2,048-family A/B, 10 pairs | Baseline | Namespace miss index | Result | Paired 95% CI |
+|---|---:|---:|---:|---:|
+| Wall | 2506.140 ± 57.410 ms | **2077.577 ± 56.174 ms** | **1.2063×; 10/10 candidate wins** | **+387.978 to +479.160 ms** |
+| CPU | 2486.218 ± 54.444 ms | **2057.291 ± 55.361 ms** | **1.2085×; 10/10 candidate wins** | **+389.549 to +479.714 ms** |
+| Peak RSS | 113.894 ± 0.012 MiB | 113.894 ± 0.012 MiB | 1.0000×; 2/10 candidate wins | -0.006 to +0.006 MiB |
+
+Focused dotted- and merged-namespace tests pass, as do the complete ReleaseFast
+checker 4,325/4,325, driver 188/188, and CLI 69/69 suites. The benchmark
+harness passes 95/95 tests. All 20 version-pinned workload admissions and
+their rejection controls pass against TS 6.0.3, the single native TS 7.0.2
+(`tsgo`) competitor, and the frozen candidate; the admission-only artifact is
+`20260901T132853Z`.
+
+A separate final checkpoint uses verified unchanged compiler provenance,
+three warmups, 30 rotating-order rounds, and retains every sample:
+
+| Final interface-composition checkpoint | Mean ± sample SD | Paired detail |
+|---|---:|---:|
+| TS 6.0.3 | 210.2 ± 5.2 ms | — |
+| Native TS 7.0.2 | 70.8 ± 19.9 ms | Fastest competitor |
+| Home at `4ba46f4d6` | **34.7 ± 5.1 ms** | **2.04× faster; 30/30 wins; TS7-minus-Home CI +30.368 to +44.490 ms** |
+
+The first Home round was a 61.2 ms outlier and remains included. Frozen
+binaries, exact outputs, load snapshots, and every A/B round are retained
+under `namespace-value-miss-index.20260901T130826Z/`; all 30 competitor rounds
+and verified provenance are under `20260901T132947Z/`. TS 7 and `tsgo` remain
+one native competitor throughout.
+
 ### Free-type traversal generation marks (rejected)
 
 After the root memo failed, the same retained profile still showed hash-table
