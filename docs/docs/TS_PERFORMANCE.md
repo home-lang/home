@@ -10,41 +10,41 @@ Ongoing coverage and optimization work is tracked in
 
 ## Current snapshot
 
-Measured 2026-09-01 at commit `1a7ac8a7a` on an Apple M3 Pro MacBook Pro
+Measured 2026-09-01 at commit `ed8bf949b` on an Apple M3 Pro MacBook Pro
 (11 cores, 18 GB RAM, arm64, macOS 27.0). Each value is the mean and sample
 standard deviation of 30 new compiler processes after three warmup rounds.
-The complete raw-result identifier is `20260901T065201Z`. The runner first
+The complete raw-result identifier is `20260901T084835Z`. The runner first
 admitted all 20 selected workloads against version-checked TS **6.0.3**, native
 TS **7.0.2**, and Home. Native TS 7 and `tsgo` are one competitor. All **600
 round files / 1,800 successful finite samples** are retained without filtering.
 
 | Workload | tsc 6.0.3 | native TS 7.0.2 | Home 0.1.0 | Home vs fastest competitor |
 |---|---:|---:|---:|---:|
-| `checkjs_jsdoc` | 217.8 ± 11.4 ms | 57.0 ± 2.0 ms | **33.4 ± 1.0 ms** | **1.71× faster** |
-| `class_hierarchy` | 187.3 ± 14.2 ms | 52.7 ± 1.6 ms | **24.7 ± 0.9 ms** | **2.14× faster** |
-| `commonjs_graph` | 168.8 ± 28.6 ms | 51.3 ± 2.6 ms | **26.9 ± 1.3 ms** | **1.91× faster** |
-| `control_flow` | 202.0 ± 13.5 ms | 61.5 ± 2.3 ms | **28.5 ± 0.8 ms** | **2.16× faster** |
-| `deep_types` | 139.2 ± 16.9 ms | 55.7 ± 3.5 ms | **25.4 ± 1.4 ms** | **2.19× faster** |
-| `destructuring` | 157.5 ± 66.1 ms | 53.5 ± 19.3 ms | **18.0 ± 8.1 ms** | **2.97× faster** |
-| `generic_calls` | 189.8 ± 11.6 ms | 58.3 ± 6.0 ms | **20.6 ± 2.7 ms** | **2.83× faster** |
-| `import_graph` | 136.1 ± 5.3 ms | 48.3 ± 1.5 ms | **21.2 ± 1.4 ms** | **2.28× faster** |
-| `interface_composition` | 201.3 ± 13.6 ms | 63.6 ± 6.8 ms | **38.9 ± 1.3 ms** | **1.63× faster** |
-| `many_files` | 221.9 ± 10.9 ms | 57.1 ± 2.0 ms | **22.0 ± 0.9 ms** | **2.60× faster** |
-| `null_safe_access` | 201.3 ± 12.6 ms | 60.7 ± 3.8 ms | **33.6 ± 2.9 ms** | **1.81× faster** |
-| `overload_resolution` | 208.6 ± 22.4 ms | 65.9 ± 6.9 ms | **25.4 ± 0.9 ms** | **2.60× faster** |
-| `recursive_generics` | 168.0 ± 10.6 ms | 78.5 ± 6.6 ms | **15.3 ± 0.8 ms** | **5.14× faster** |
-| `reexport_graph` | 101.9 ± 3.5 ms | 45.0 ± 5.8 ms | **21.4 ± 1.6 ms** | **2.10× faster** |
-| `startup` | 73.7 ± 21.3 ms | 47.5 ± 21.7 ms | **3.8 ± 1.1 ms** | **12.50× faster** |
-| `structural_objects` | 187.6 ± 11.5 ms | 58.0 ± 2.0 ms | **23.8 ± 2.3 ms** | **2.43× faster** |
-| `tsx_components` | 170.0 ± 7.1 ms | 50.0 ± 1.6 ms | **21.8 ± 0.6 ms** | **2.29× faster** |
-| `type_predicates` | 255.9 ± 9.9 ms | 77.3 ± 6.1 ms | **32.0 ± 0.7 ms** | **2.42× faster** |
-| `type_predicates_large` | 998.9 ± 22.7 ms | 347.8 ± 10.9 ms | **227.8 ± 15.9 ms** | **1.53× faster** |
-| `variadic_tuples` | 268.7 ± 21.8 ms | 81.6 ± 5.9 ms | **35.3 ± 1.6 ms** | **2.31× faster** |
+| `checkjs_jsdoc` | 203.0 ± 2.3 ms | 55.6 ± 6.7 ms | **31.8 ± 0.5 ms** | **1.75× faster** |
+| `class_hierarchy` | 187.6 ± 9.4 ms | 53.4 ± 2.1 ms | **24.5 ± 1.2 ms** | **2.18× faster** |
+| `commonjs_graph` | 151.2 ± 2.5 ms | 49.1 ± 1.5 ms | **25.5 ± 0.7 ms** | **1.92× faster** |
+| `control_flow` | 187.6 ± 3.9 ms | 59.4 ± 2.1 ms | **26.8 ± 0.8 ms** | **2.21× faster** |
+| `deep_types` | 126.9 ± 2.6 ms | 52.1 ± 1.0 ms | **23.7 ± 0.6 ms** | **2.20× faster** |
+| `destructuring` | 143.1 ± 7.6 ms | 49.8 ± 2.4 ms | **15.9 ± 0.7 ms** | **3.14× faster** |
+| `generic_calls` | 174.6 ± 2.0 ms | 54.1 ± 1.3 ms | **18.5 ± 0.4 ms** | **2.92× faster** |
+| `import_graph` | 128.5 ± 1.3 ms | 45.8 ± 2.1 ms | **19.4 ± 0.4 ms** | **2.36× faster** |
+| `interface_composition` | 201.2 ± 9.4 ms | 63.5 ± 1.7 ms | **38.9 ± 0.7 ms** | **1.63× faster** |
+| `many_files` | 204.9 ± 4.3 ms | 54.0 ± 8.0 ms | **20.2 ± 0.6 ms** | **2.67× faster** |
+| `null_safe_access` | 192.8 ± 9.5 ms | 58.3 ± 1.4 ms | **32.5 ± 3.0 ms** | **1.79× faster** |
+| `overload_resolution` | 205.8 ± 3.6 ms | 67.0 ± 1.5 ms | **25.8 ± 0.5 ms** | **2.60× faster** |
+| `recursive_generics` | 152.6 ± 4.6 ms | 73.2 ± 5.7 ms | **14.2 ± 0.4 ms** | **5.16× faster** |
+| `reexport_graph` | 95.0 ± 1.6 ms | 41.0 ± 0.7 ms | **19.3 ± 1.4 ms** | **2.12× faster** |
+| `startup` | 69.3 ± 27.8 ms | 44.9 ± 20.9 ms | **3.6 ± 1.1 ms** | **12.56× faster** |
+| `structural_objects` | 189.9 ± 2.4 ms | 60.2 ± 1.3 ms | **23.9 ± 0.6 ms** | **2.52× faster** |
+| `tsx_components` | 159.5 ± 6.6 ms | 47.0 ± 1.5 ms | **19.9 ± 0.3 ms** | **2.36× faster** |
+| `type_predicates` | 238.5 ± 9.3 ms | 73.1 ± 4.3 ms | **31.0 ± 2.1 ms** | **2.36× faster** |
+| `type_predicates_large` | 1000.4 ± 27.8 ms | 354.9 ± 20.1 ms | **223.8 ± 10.7 ms** | **1.59× faster** |
+| `variadic_tuples` | 243.4 ± 4.8 ms | 77.5 ± 5.0 ms | **33.1 ± 1.4 ms** | **2.34× faster** |
 
 Home records lower means on **20/20 admitted workloads** and lower paired times
 in **600/600 rounds**. Every row's paired 95% confidence interval for the
 fastest-competitor-minus-Home difference is above zero. The narrowest mean
-lead is **1.53×** on `type_predicates_large`; this is still not evidence of
+lead is **1.59×** on `type_predicates_large`; this is still not evidence of
 universal leadership. These are local
 synthetic results; real projects, other platforms, and broader rejection
 coverage remain separate validation work. Historical snapshots, including
@@ -57,6 +57,78 @@ wins. This is a display-resolution rule, not a statistical significance test;
 other directional labels also compare means, not certainty. These are local
 synthetic measurements, not a claim that every real project or machine has
 the same speedup.
+
+### Token-count HIR reservation
+
+Commit `ed8bf949b`, tracked in
+[#416](https://github.com/home-lang/home/issues/416), reserves parse-time HIR
+storage once the lexer has produced the exact token count. HIR appends every
+node to five parallel hot columns (`kind`, span, parent, type, and payload) and
+stores variable-arity child edges in a sixth array. Previously each array grew
+independently and copied its accumulated prefix several times. The accepted
+change uses `tokens + 1` as one source-proportional capacity hint for all six
+arrays before parsing. It changes capacity only: sentinel lengths, NodeIds,
+parent links, payload order, recovery behavior, and diagnostics are unchanged.
+Parser recovery can exceed the hint and retains ordinary exact ArrayList
+growth.
+
+The fixed accepted baseline binary is SHA-256
+`9e86ee995ca30484ae41d0f0adafea23a386d1ad57fd932b4941909c20d4711d`;
+the accepted candidate is
+`c66959f3321a4649d607dffb1d095cc1146454a4ac400420930f55b962cdbe06`.
+The complete HIR, TS driver, TS parser, and ReleaseFast `ts_checker` suites
+pass, as do all **95/95** benchmark-harness tests. A focused HIR invariant test
+proves reservation preserves sentinel lengths and the first allocated NodeId.
+Both binaries also exited zero with byte-identical empty stdout and stderr on
+the unchanged 2,048-family predicate project and deterministic 32,768- and
+65,536-family copies generated by changing only the family count.
+
+Every A/B set used three alternating warmup pairs, reversed process order in
+every measured pair, retained every sample, and reports untrimmed mean ± sample
+standard deviation. The 30-pair official confirmation was independent of the
+screen. The diagnostic 32,768-family run changed only generator scale and
+removed its validated 48 MB temporary corpus after recording exact outputs and
+all timing rounds. Paired intervals are baseline-minus-candidate:
+
+| Predicate A/B | Metric | Baseline | Candidate | Result | Paired 95% CI |
+|---|---|---:|---:|---:|---:|
+| Official 2,048 families, 10-pair screen | Wall | 219.647 ± 4.992 ms | **216.064 ± 3.003 ms** | **1.0166×; 10/10 wins** | **+2.015 to +5.291 ms** |
+| Official 2,048 families, 10-pair screen | CPU | 218.469 ± 4.785 ms | **214.882 ± 2.929 ms** | **1.0167×; 10/10 wins** | **+2.146 to +5.167 ms** |
+| Official 2,048 families, 30-pair confirmation | Wall | 222.721 ± 9.704 ms | **218.584 ± 3.863 ms** | **1.0189×; 26/30 wins** | **+1.456 to +7.648 ms** |
+| Official 2,048 families, 30-pair confirmation | CPU | 220.865 ± 7.730 ms | **217.313 ± 3.780 ms** | **1.0163×; 27/30 wins** | **+1.420 to +6.333 ms** |
+| Diagnostic 32,768 families, 10 pairs | Wall | 3885.596 ± 133.312 ms | **3859.890 ± 113.374 ms** | **1.0067×; 8/10 wins** | **+1.671 to +50.651 ms** |
+| Diagnostic 32,768 families, 10 pairs | CPU | 3874.683 ± 123.916 ms | **3852.885 ± 110.856 ms** | **1.0057×; 8/10 wins** | **+0.138 to +44.724 ms** |
+
+On the official workload, reservation increases peak RSS by **0.509 MiB** in
+the 30-pair confirmation (74.559 ± 0.516 MiB to 75.068 ± 0.013 MiB; paired
+interval +0.337 to +0.681 MiB for candidate-minus-baseline). At 32,768
+families the candidate instead lowers mean peak RSS by **3.147 MiB**
+(1001.611 ± 2.482 MiB to 998.464 ± 4.146 MiB; baseline-minus-candidate interval
++0.786 to +5.509 MiB), because the single estimate avoids geometric-growth
+overcapacity. Substantial unrelated Spotlight, git, FSEvents, and application
+activity remains visible in the retained load snapshots. Alternating order and
+independent positive decision intervals, rather than filtered samples, support
+acceptance.
+
+The independent focused schema-3 checkpoint `20260901T084648Z` verified every
+compiler and tool payload before and after 30 rotating-order rounds:
+
+| Focused workload | tsc 6.0.3 | native TS 7.0.2 | Home 0.1.0 | Home vs fastest competitor |
+|---|---:|---:|---:|---:|
+| `type_predicates_large` | 1006.1 ± 35.5 ms | 350.3 ± 11.1 ms | **221.7 ± 6.0 ms** | **1.58× faster** |
+
+Home wins all 30 focused wall pairs against both references. The
+native-TS-7-minus-Home paired wall interval is **+125.455 to +132.086 ms**;
+process CPU also favors Home in all 30 pairs. The subsequent complete
+schema-3 checkpoint `20260901T084835Z`, published as the [current
+snapshot](#current-snapshot), verifies the same immutable candidate across all
+20 workloads: Home has the lowest mean in **20/20**, wins all **600/600** wall
+pairs against native TS 7.0.2, and every paired interval is positive. The
+narrowest interval lower bound is **+21.109 ms** on `reexport_graph`. Raw A/B
+evidence is retained under
+`bench/vs_tsgo/results/hir-token-reservation.20260901T133000Z/`; both competitor
+checkpoints retain verified metadata and every round file in their timestamped
+result directories.
 
 ### Default-export merge bucket records
 
@@ -119,11 +191,11 @@ after three warmups:
 
 Home wins all 30 focused wall pairs against both references. The
 native-TS-7-minus-Home paired 95% interval is **+118.439 to +127.422 ms**;
-process CPU also favors Home in all 30 pairs. The subsequent complete schema-3
-checkpoint `20260901T065201Z`, published as the [current
-snapshot](#current-snapshot), verifies the accepted binary across all 20
-workloads: Home has the lowest mean in **20/20**, wins all **600/600** paired
-rounds against native TS 7, and every paired interval is positive. Raw A/B
+process CPU also favors Home in all 30 pairs. At admission, the subsequent
+complete schema-3 checkpoint `20260901T065201Z` verified that accepted binary
+across all 20 workloads: Home had the lowest mean in **20/20**, won all
+**600/600** paired rounds against native TS 7, and every paired interval was
+positive. Raw A/B
 evidence is retained under
 `bench/vs_tsgo/results/default-export-bucket-records.20260901T074000Z/`; both
 competitor checkpoints retain their metadata and every round file in their

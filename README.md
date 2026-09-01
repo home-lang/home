@@ -268,7 +268,7 @@ every successful finite sample without filtering.
 
 | Platform | Workloads with the lowest Home mean | Strongest Home mean lead | Narrowest Home mean lead |
 |---|---:|---:|---:|
-| Apple M3 Pro, macOS ARM64 | 20 / 20 | `startup`: 12.50× faster | `type_predicates_large`: 1.53× faster |
+| Apple M3 Pro, macOS ARM64 | 20 / 20 | `startup`: 12.56× faster | `type_predicates_large`: 1.59× faster |
 | Debian Bookworm, Linux ARM64 | 20 / 20 | `startup`: 21.67× faster | `checkjs_jsdoc`: 1.02× faster |
 
 The latest optimization admissions preserve that qualified snapshot while
@@ -276,6 +276,7 @@ recording both accepted and rejected probes:
 
 | Optimization probe | Primary fair A/B | Secondary scale | Decision |
 |---|---:|---:|---|
+| Token-count HIR reservation | 2,048 predicates: **1.019× faster**, confirmation CIs positive | 32,768 predicates: **1.007× wall**, **1.006× CPU**, paired CIs positive | Accepted in `ed8bf949b` |
 | Default-export merge bucket records | 2,048 predicates: **1.028× faster**, confirmation CIs positive | 32,768 predicates: **1.024× CPU**, 9/10 wins | Accepted in `1a7ac8a7a` |
 | Exact diagnostic-reconciliation marker gate | 2,048 predicates: **1.026× faster**, paired CIs positive | 32,768 predicates: **1.024× faster**, 10/10 paired wins | Accepted in `587c64343` |
 | JSDoc import-type scan pruning | 128 CheckJS families: **1.015× faster**, confirmation paired CIs positive | 4,096 families: **1.215× faster**, 10/10 paired wins | Accepted in `532373ee1` |
@@ -293,6 +294,7 @@ recording both accepted and rejected probes:
 | Duplicate-class second-pass gate | 2,048 predicates: 1.007× wall, 5/10 wins | Paired wall and CPU CIs cross zero; scale run not admitted | Rejected and reverted |
 | Local-boundary NodeId keys | 2,048 predicates: 1.001× wall, 6/10 wins | Paired wall and CPU CIs cross zero; scale run not admitted | Rejected and reverted |
 | Namespace declaration-pass gate | 2,048 predicates: 1.002× wall, 6/10 wins | Clean-rerun wall and CPU CIs cross zero; scale run not admitted | Rejected and reverted |
+| Recovered-parameter identity reuse | 2,048 predicates: 1.004× confirmation; paired CIs cross zero | 65,536 predicates: 1.002× CPU, 8/10 wins; paired CI crosses zero | Rejected and reverted |
 | One-pass special-identifier classification | 2,048 families: 1.010× CPU, 6/10 wins | Paired CIs cross zero; scale run not admitted | Rejected and reverted |
 | Declaration-map pre-sizing | 2,048 families: 1.028× CPU screen, 8/10 wins | Confirmation: 1.008× CPU, paired CI crosses zero | Rejected and reverted |
 | Identifier declaration-slot reuse | 2,048 families: 0.995× CPU, 5/10 wins | 0.973× wall; candidate slower | Rejected and reverted |
