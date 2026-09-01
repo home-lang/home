@@ -58,6 +58,70 @@ other directional labels also compare means, not certainty. These are local
 synthetic measurements, not a claim that every real project or machine has
 the same speedup.
 
+### Program import-resolution reuse
+
+Commit `49641900e`, tracked in
+[#416](https://github.com/home-lang/home/issues/416), removes repeated module
+resolution from cross-file program-export matching. A single import can be
+compared with many candidate CommonJS owners, exported classes, values, types,
+or augmentations. Previously every comparison called the external resolver
+again and, after a non-match, allocated another `std.fs.path.resolve` result.
+
+The checker now caches the immutable resolution for each exact
+`(import node, specifier)` pair. The entry retains both the external-resolver
+answer and the existing filesystem fallback, normalized with the same
+extension stripping already used by `programModulePathMatches`. It does not
+cache a target-specific true/false answer: every candidate owner still goes
+through the original exact normalized-path comparison. The cache is cleared
+when the source, external resolver, or importer path changes and is released
+with the checker.
+
+The fixed accepted baseline binary has SHA-256
+`0d2aed7253152acb66965e5148d09c5a50bf7512e9062faecee0daa70caa3f60`;
+the candidate is
+`ec99b3fcca63f39d97f147bbe2ad5139bf5e53a22f885e25bd1f6eb971386789`.
+Both exit 0 with byte-identical empty stdout and stderr on the unchanged
+2,048-owner, 2,050-source checked-JavaScript project. That project is the same
+deterministic `commonjs_graph` generator scaled only in family count: every
+owner exports two concrete class instances and the root consumes their nested
+fields through real `require` edges.
+
+Each A/B scale used three alternating warmup pairs, reversed process order in
+every measured round, retained every sample, and reports untrimmed mean ±
+sample standard deviation. The paired interval is baseline-minus-candidate,
+so an interval wholly above zero favors the candidate.
+
+| Scale and gate | Baseline | Candidate | Result | Paired 95% CI |
+|---|---:|---:|---:|---:|
+| Standard 128 owners, wall, 30 pairs | 36.5 ± 3.1 ms | **30.1 ± 2.0 ms** | **1.212×; 30/30 wins** | **+5.3 to +7.5 ms** |
+| Standard 128 owners, CPU, 30 pairs | 51.6 ± 2.9 ms | **44.9 ± 2.9 ms** | **1.149×; 30/30 wins** | **+5.5 to +7.8 ms** |
+| Scaled 2,048 owners, wall screen, 10 pairs | 3050.4 ± 111.2 ms | **1433.7 ± 74.6 ms** | **2.128×; 10/10 wins** | **+1516.3 to +1717.2 ms** |
+| Scaled 2,048 owners, CPU screen, 10 pairs | 3215.3 ± 99.2 ms | **1609.4 ± 40.6 ms** | **1.998×; 10/10 wins** | **+1540.6 to +1671.2 ms** |
+| Scaled 2,048 owners, wall confirmation, 20 pairs | 3471.2 ± 261.2 ms | **1565.2 ± 183.4 ms** | **2.218×; 20/20 wins** | **+1810.0 to +2001.9 ms** |
+| Scaled 2,048 owners, CPU confirmation, 20 pairs | 3489.9 ± 166.4 ms | **1705.6 ± 140.4 ms** | **2.046×; 20/20 wins** | **+1728.7 to +1840.0 ms** |
+
+The standard schema-3 competitor checkpoint `20260901T012536Z` independently
+validated the unmodified 128-owner workload, verified compiler/tool payloads
+before and after timing, and used 30 interleaved rounds after three warmups:
+
+| Focused workload | tsc 6.0.3 | native TS 7.0.2 | Home 0.1.0 | Home vs fastest competitor |
+|---|---:|---:|---:|---:|
+| `commonjs_graph` | 263.0 ± 48.8 ms | 83.9 ± 27.9 ms | **42.9 ± 10.5 ms** | **1.95× faster** |
+
+Home won 30/30 paired rounds against both references. The paired native-TS-7
+minus Home interval is **+32.3 to +49.7 ms**. This focused run does not replace
+the 20-workload qualified snapshot above; it isolates the changed workload on
+the same host under the load present for this admission.
+
+Correctness gates passed the full ReleaseFast checker suite, all 95 benchmark
+harness tests, and three untimed cross-compiler audits: 198 CommonJS instance
+checks, 132 static-require discovery checks, and 720 graph-type checks, with
+zero failures against TS 6.0.3, native TS 7.0.2, and Home. Raw local evidence
+is retained under
+`bench/vs_tsgo/results/commonjs-import-resolution-cache.20260901T011915Z/`;
+the pinned-competitor rounds and provenance are in
+`bench/vs_tsgo/results/20260901T012536Z/`.
+
 ### Prepared source-marker reuse
 
 Commit `5efbd19df`, tracked in

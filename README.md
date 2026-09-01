@@ -271,14 +271,15 @@ every successful finite sample without filtering.
 | Apple M3 Pro, macOS ARM64 | 20 / 20 | `startup`: 12.06× faster | `commonjs_graph` / `type_predicates_large`: 1.50× faster |
 | Debian Bookworm, Linux ARM64 | 20 / 20 | `startup`: 21.67× faster | `checkjs_jsdoc`: 1.02× faster |
 
-The latest source-marker algorithm admission did not change that qualified
-snapshot:
+The latest optimization admissions preserve that qualified snapshot while
+recording both accepted and rejected probes:
 
-| Optimization probe | 32,768-family wall result | 65,536-family wall result | Decision |
+| Optimization probe | Primary fair A/B | Secondary scale | Decision |
 |---|---:|---:|---|
-| Exact pruned prefix trie | 1.008×; paired CI crosses zero | 1.011×; paired CI crosses zero | Rejected and reverted |
-| Parser-local exact-name cache | 0.999×; paired CI crosses zero | Not run after failed gate | Rejected and reverted |
-| Declaration-space marker gates | 0.977×; candidate slower | Not run after failed gate | Rejected and reverted |
+| Program import-resolution cache | 128 owners: **1.21× faster**, 30/30 paired wins | 2,048 owners: **2.22× faster**, 20/20 paired wins | Accepted in `49641900e` |
+| Exact pruned prefix trie | 32,768 families: 1.008×; paired CI crosses zero | 65,536 families: 1.011×; paired CI crosses zero | Rejected and reverted |
+| Parser-local exact-name cache | 32,768 families: 0.999×; paired CI crosses zero | Not run after failed gate | Rejected and reverted |
+| Declaration-space marker gates | 32,768 families: 0.977×; candidate slower | Not run after failed gate | Rejected and reverted |
 
 See [the complete results, rejected-probe evidence, raw-result identifiers, fairness rules, and reproduction steps](docs/docs/TS_PERFORMANCE.md).
 
