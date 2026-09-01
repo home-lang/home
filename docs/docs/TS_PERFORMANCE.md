@@ -248,6 +248,42 @@ was therefore rejected and fully reverted without a competitor checkpoint.
 Raw binaries, exact outputs, and every A/B round are retained under
 `bench/vs_tsgo/results/reconciliation-root-set.20260901T060254Z/`.
 
+### Rejected union flatten-buffer elision
+
+The post-gate profile retained allocation and copying inside
+`Interner.internUnion`. The existing canonicalizer always expands its inputs
+into a temporary list before making the separate sortable copy, even when no
+input is itself a union. An exact probe kept the caller's immutable slice in
+that common case and allocated the expansion list only after finding a nested
+union. Nested-union flattening, sorting, deduplication, flag folding, and
+interner publication remained unchanged.
+
+The fixed accepted baseline binary is SHA-256
+`ca0bda46834cc05f9c5f57bac5dd5bdec88af388cf6b7c6fc39fcce9b60604ae`;
+the experimental candidate was
+`7a509d9a7537b1d5d95b9d37ca110d5702d6d4a643161fd208fcdbcb370cef8e`.
+Both exited zero with byte-identical empty stdout and stderr on the unchanged
+2,048-, 32,768-, and 65,536-family predicate projects. The focused ReleaseFast
+union-interner tests passed, including sort/dedup canonicalization, flag
+folding, and single and multiple nested unions.
+
+The official screen used three alternating warmup pairs, reversed process
+order in every measured pair, retained every sample, and reports untrimmed
+mean ± sample standard deviation. Paired intervals are
+baseline-minus-candidate:
+
+| Predicate A/B | Metric | Baseline | Candidate | Result | Paired 95% CI |
+|---|---|---:|---:|---:|---:|
+| Official 2,048 families, 10-pair screen | Wall | 244.818 ± 18.098 ms | 243.463 ± 12.739 ms | 1.0056×; 6/10 wins | -9.806 to +12.516 ms |
+| Official 2,048 families, 10-pair screen | CPU | 241.483 ± 14.992 ms | 240.638 ± 11.692 ms | 1.0035×; 6/10 wins | -8.621 to +10.312 ms |
+
+Neither metric cleared zero or established convincing pair direction. The
+initial admission gate therefore failed; no scale timing, confirmation, or
+competitor checkpoint was run. The source probe was fully reverted and the
+accepted binary restored. Raw binaries, exact outputs, and every screen round
+are retained under
+`bench/vs_tsgo/results/union-flatten-buffer.20260901T063000Z/`.
+
 ### JSDoc import-type scan pruning
 
 Commit `532373ee1`, tracked in
