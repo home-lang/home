@@ -443,6 +443,97 @@ under `namespace-value-miss-index.20260901T130826Z/`; all 30 competitor rounds
 and verified provenance are under `20260901T132947Z/`. TS 7 and `tsgo` remain
 one native competitor throughout.
 
+### Enum-free visible-namespace index
+
+Commit [`65a6037e6`](https://github.com/home-lang/home/commit/65a6037e6),
+tracked in [#416](https://github.com/home-lang/home/issues/416), removes the
+next independently profiled statement-list scan. A fresh ten-second sample of
+the accepted 4,096-family binary recorded 776 exclusive samples in
+`visibleTypeDeclarationExistsAt`. That helper walked every statement in each
+enclosing block and namespace while resolving whether a declaration name was
+already visible.
+
+The checker now reuses its exact per-container namespace-declaration index for
+those lookups when an attached source is known to contain no enum declaration
+and no virtual filename sections. A matching indexed namespace returns the
+same positive answer; a completed indexed miss advances to the next enclosing
+container without rescanning its statements. An incomplete index, any enum-
+bearing source, virtual sections, and source-less HIR all retain the unchanged
+linear loop. The enum gate matters because enum declarations can participate
+in the same type-visible result without being namespace-index entries.
+Allocation failure leaves the relevant index incomplete and therefore also
+falls back to the original scan. No declaration name or workload-specific
+shape is cached.
+
+The fixed accepted baseline binary is SHA-256
+`4c0f758c9c8a8bf313ced6fd4d8b872e6f6b96166503b7c4035e8141a2fea7a9`;
+the candidate is
+`cf92eaf386deb3e3d075af85f689072c2a196d6fe16d460603c0710a597dd4ee`.
+Both exit zero with byte-identical empty stdout and stderr on the unchanged
+official 128-family project and the existing 2,048-family, 92,160-line scale.
+
+The official screen retained all ten reversed-order pairs after three
+alternating warmup pairs:
+
+| Official 128-family A/B, 10 pairs | Baseline | Visible-namespace index | Result | Paired 95% CI |
+|---|---:|---:|---:|---:|
+| Wall | 33.786 ± 1.088 ms | **32.914 ± 1.027 ms** | **1.0265×; 8/10 candidate wins** | **+0.312 to +1.423 ms** |
+| CPU | 32.851 ± 0.881 ms | **31.906 ± 0.821 ms** | **1.0296×; 9/10 candidate wins** | **+0.520 to +1.352 ms** |
+| Peak RSS | 16.423 ± 0.009 MiB | **16.398 ± 0.024 MiB** | 1.0015×; 5/10 candidate wins | **+0.009 to +0.044 MiB** |
+
+The independent 30-pair confirmation retained every round:
+
+| Official 128-family A/B, 30 pairs | Baseline | Visible-namespace index | Result | Paired 95% CI |
+|---|---:|---:|---:|---:|
+| Wall | 35.036 ± 1.115 ms | **33.956 ± 1.127 ms** | **1.0318×; 25/30 candidate wins** | **+0.505 to +1.627 ms** |
+| CPU | 33.946 ± 0.958 ms | **32.884 ± 0.968 ms** | **1.0323×; 25/30 candidate wins** | **+0.596 to +1.491 ms** |
+| Peak RSS | 16.421 ± 0.011 MiB | **16.399 ± 0.029 MiB** | 1.0014×; 15/30 candidate wins | **+0.014 to +0.032 MiB** |
+
+At 16× scale, the same frozen binaries retained all ten pairs:
+
+| Scaled 2,048-family A/B, 10 pairs | Baseline | Visible-namespace index | Result | Paired 95% CI |
+|---|---:|---:|---:|---:|
+| Wall | 2102.508 ± 35.611 ms | **1859.311 ± 31.373 ms** | **1.1308×; 10/10 candidate wins** | **+215.583 to +271.102 ms** |
+| CPU | 2083.572 ± 32.784 ms | **1841.363 ± 27.314 ms** | **1.1315×; 10/10 candidate wins** | **+218.572 to +266.353 ms** |
+| Peak RSS | **114.320 ± 0.453 MiB** | 114.755 ± 0.011 MiB | 0.9962×; 0/10 candidate wins | **-0.697 to -0.173 MiB** |
+
+The scale result therefore discloses a 0.435 MiB higher candidate mean while
+saving about 243 ms of wall time. The official project instead measured a
+small RSS reduction. A refinement that built the index only for containers
+with at least 16 statements reduced official RSS too, but failed the timing
+admission rule: its ten-pair wall result was 35.454 ± 1.540 ms versus 34.929 ±
+3.052 ms with a -1.862 to +2.470 ms paired interval, and CPU was 34.347 ±
+1.315 ms versus 33.690 ± 2.728 ms with a -1.427 to +2.300 ms interval. Both
+timing intervals crossed zero, so that bounded form was rejected without a
+confirmation or scale run. Its frozen binary and every sample remain under
+`bounded-enum-free-visible-namespace-index.20260901T134342Z/` and are not
+mixed into the accepted tables.
+
+The complete ReleaseFast checker passes 4,325/4,325 tests, driver 188/188,
+CLI 69/69, and the benchmark harness 95/95. All 20 positive and negative
+workload admissions pass against TS 6.0.3, the single native TS 7.0.2 (`tsgo`)
+competitor, and the frozen candidate; the admission-only artifact is
+`20260901T135121Z`.
+
+A separate final checkpoint uses verified unchanged compiler provenance,
+three warmups, 30 rotating-order rounds, and retains every sample:
+
+| Final interface-composition checkpoint | Mean ± sample SD | Paired detail |
+|---|---:|---:|
+| TS 6.0.3 | 220.1 ± 46.4 ms | — |
+| Native TS 7.0.2 | 69.9 ± 21.6 ms | Fastest competitor |
+| Home at `65a6037e6` | **35.5 ± 9.2 ms** | **1.97× faster; 29/30 wins; TS7-minus-Home CI +29.691 to +40.983 ms** |
+
+Home's only loss was the first measured round by 1.10 ms. The next round had
+large values for all three compilers—459.8 ms for TS 6, 183.9 ms for native TS
+7, and 71.1 ms for Home—and remains included. The target-selection profile is
+retained under
+`interface-composition-profile-namespace-miss.20260901T133105Z/`; frozen
+binaries, exact outputs, load snapshots, and every accepted A/B round are
+under `enum-free-visible-namespace-index.20260901T133659Z/`; all 30 competitor
+rounds and verified provenance are under `20260901T135136Z/`. TS 7 and `tsgo`
+remain one native competitor throughout.
+
 ### Free-type traversal generation marks (rejected)
 
 After the root memo failed, the same retained profile still showed hash-table
