@@ -5169,6 +5169,12 @@ pub const Checker = struct {
     indexed_named_type_containers: std.AutoHashMapUnmanaged(NodeId, void) = .empty,
     visible_same_name_value_decls: std.AutoHashMapUnmanaged(VisibleNamedTypeKey, NodeId) = .empty,
     indexed_same_name_value_containers: std.AutoHashMapUnmanaged(NodeId, void) = .empty,
+    /// Names handled by resolveValueDeclInStmt but omitted from the existing
+    /// simple-value index: patterns, classes, imports, and loop bindings. When
+    /// both indexes are complete, a miss in both proves a statement scan
+    /// cannot find the requested value name.
+    additional_resolvable_value_decl_names: std.AutoHashMapUnmanaged(VisibleNamedTypeKey, void) = .empty,
+    indexed_additional_resolvable_value_containers: std.AutoHashMapUnmanaged(NodeId, void) = .empty,
     source_var_declaration_names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty,
     source_var_declarations_indexed: bool = false,
     visible_namespace_decls: std.AutoHashMapUnmanaged(VisibleNamedTypeKey, NodeId) = .empty,
@@ -5657,6 +5663,8 @@ pub const Checker = struct {
         self.indexed_named_type_containers.clearRetainingCapacity();
         self.visible_same_name_value_decls.clearRetainingCapacity();
         self.indexed_same_name_value_containers.clearRetainingCapacity();
+        self.additional_resolvable_value_decl_names.clearRetainingCapacity();
+        self.indexed_additional_resolvable_value_containers.clearRetainingCapacity();
         self.visible_namespace_decls.clearRetainingCapacity();
         self.indexed_namespace_containers.clearRetainingCapacity();
         self.containers_with_dotted_namespace_decls.clearRetainingCapacity();
@@ -6153,6 +6161,8 @@ pub const Checker = struct {
         self.indexed_named_type_containers.deinit(self.gpa);
         self.visible_same_name_value_decls.deinit(self.gpa);
         self.indexed_same_name_value_containers.deinit(self.gpa);
+        self.additional_resolvable_value_decl_names.deinit(self.gpa);
+        self.indexed_additional_resolvable_value_containers.deinit(self.gpa);
         self.source_var_declaration_names.deinit(self.gpa);
         self.visible_namespace_decls.deinit(self.gpa);
         self.indexed_namespace_containers.deinit(self.gpa);
@@ -74355,6 +74365,110 @@ pub const Checker = struct {
         self.indexed_same_name_value_containers.put(self.gpa, container, {}) catch {};
     }
 
+    fn indexResolvableValueDeclNames(
+        self: *Checker,
+        container: NodeId,
+        stmts: []const NodeId,
+        has_virtual_sections: bool,
+    ) void {
+        if (self.indexed_additional_resolvable_value_containers.contains(container)) return;
+
+        for (stmts) |raw| {
+            const decl = self.unwrapExportDecl(raw);
+            const decl_kind = self.hir.kindOf(decl);
+            if (decl_kind == .var_decl or decl_kind == .let_decl or decl_kind == .const_decl) {
+                const variable = hir_mod.varDeclOf(self.hir, decl);
+                if (variable.name == hir_mod.none_node_id) continue;
+                const name_kind = self.hir.kindOf(variable.name);
+                if (name_kind == .identifier) {
+                    // Simple variables are already exact in
+                    // visible_same_name_value_decls.
+                    continue;
+                } else if (name_kind == .object_pattern or name_kind == .array_pattern) {
+                    var names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+                    defer names.deinit(self.gpa);
+                    self.collectBindingNames(variable.name, &names) catch return;
+                    var it = names.keyIterator();
+                    while (it.next()) |name| {
+                        self.indexResolvableValueDeclName(container, name.*, decl, has_virtual_sections) catch return;
+                    }
+                } else if (name_kind == .object_literal or name_kind == .array_literal) {
+                    // Recovery HIR can preserve literal-shaped bindings, but
+                    // collectBindingNames intentionally accepts only binding
+                    // patterns. Keep the original scan for such containers.
+                    return;
+                }
+                continue;
+            }
+            if (decl_kind == .fn_decl or decl_kind == .fn_expr) {
+                // Functions are already exact in the simple-value index.
+                continue;
+            }
+            if (decl_kind == .class_decl or decl_kind == .class_expr) {
+                const name = self.declarationName(decl) orelse continue;
+                self.indexResolvableValueDeclName(container, name, decl, has_virtual_sections) catch return;
+                continue;
+            }
+            if (decl_kind == .import_decl) {
+                const imp = hir_mod.importOf(self.hir, decl);
+                if (imp.default_binding != hir_mod.none_node_id and self.hir.kindOf(imp.default_binding) == .identifier) {
+                    self.indexResolvableValueDeclName(
+                        container,
+                        hir_mod.identifierOf(self.hir, imp.default_binding).name,
+                        decl,
+                        has_virtual_sections,
+                    ) catch return;
+                }
+                if (imp.namespace_binding != hir_mod.none_node_id and self.hir.kindOf(imp.namespace_binding) == .identifier) {
+                    self.indexResolvableValueDeclName(
+                        container,
+                        hir_mod.identifierOf(self.hir, imp.namespace_binding).name,
+                        decl,
+                        has_virtual_sections,
+                    ) catch return;
+                }
+                for (hir_mod.importNamed(self.hir, decl)) |specifier| {
+                    if (self.hir.kindOf(specifier) != .import_specifier) continue;
+                    self.indexResolvableValueDeclName(
+                        container,
+                        hir_mod.importSpecifierOf(self.hir, specifier).local,
+                        decl,
+                        has_virtual_sections,
+                    ) catch return;
+                }
+                continue;
+            }
+            if (decl_kind == .for_in_stmt or decl_kind == .for_of_stmt) {
+                const loop = hir_mod.forInOf(self.hir, decl);
+                if (loop.target == hir_mod.none_node_id or self.hir.kindOf(loop.target) != .var_decl) continue;
+                const variable = hir_mod.varDeclOf(self.hir, loop.target);
+                if (variable.name == hir_mod.none_node_id or self.hir.kindOf(variable.name) != .identifier) continue;
+                self.indexResolvableValueDeclName(
+                    container,
+                    hir_mod.identifierOf(self.hir, variable.name).name,
+                    decl,
+                    has_virtual_sections,
+                ) catch return;
+            }
+        }
+        self.indexed_additional_resolvable_value_containers.put(self.gpa, container, {}) catch {};
+    }
+
+    fn indexResolvableValueDeclName(
+        self: *Checker,
+        container: NodeId,
+        name: hir_mod.StringId,
+        decl: NodeId,
+        has_virtual_sections: bool,
+    ) CheckError!void {
+        const section = if (has_virtual_sections) self.virtualSectionStartForNode(decl) else 0;
+        try self.additional_resolvable_value_decl_names.put(self.gpa, .{
+            .container = container,
+            .name = name,
+            .virtual_section_start = section,
+        }, {});
+    }
+
     fn findVisibleNamedClassDecl(
         self: *Checker,
         anchor: NodeId,
@@ -131882,6 +131996,7 @@ pub const Checker = struct {
                 }
                 const has_virtual_sections = self.sourceHasVirtualFilenameSections();
                 self.indexVisibleSameNameValueBindings(cur, stmts, has_virtual_sections);
+                var indexed_simple_value_decl_found = false;
                 if (self.visible_same_name_value_decls.get(.{
                     .container = cur,
                     .name = id.name,
@@ -131890,10 +132005,36 @@ pub const Checker = struct {
                     else
                         0,
                 })) |declaration| {
+                    indexed_simple_value_decl_found = true;
                     if (self.resolveValueDeclInStmt(declaration, node, id) catch null) |t| return t;
                 }
-                for (stmts) |s| {
-                    if (self.resolveValueDeclInStmt(s, node, id) catch null) |t| return t;
+                // A supplemental hash index costs more than scanning a tiny
+                // lexical block. Restrict it to statement lists large enough
+                // to amortize construction and retain the original walk for
+                // smaller scopes.
+                const should_index_additional_value_decls = stmts.len >= 16;
+                if (should_index_additional_value_decls) {
+                    self.indexResolvableValueDeclNames(cur, stmts, has_virtual_sections);
+                }
+                // Together the completed indexes contain every statement kind
+                // handled by resolveValueDeclInStmt. For ordinary single-source
+                // HIR, a miss in both proves the full statement walk cannot
+                // resolve this name. Virtual sections retain the walk because
+                // ambient and script declarations can cross section keys.
+                const can_skip_value_decl_scan = !has_virtual_sections and
+                    should_index_additional_value_decls and
+                    self.indexed_same_name_value_containers.contains(cur) and
+                    self.indexed_additional_resolvable_value_containers.contains(cur) and
+                    !indexed_simple_value_decl_found and
+                    !self.additional_resolvable_value_decl_names.contains(.{
+                        .container = cur,
+                        .name = id.name,
+                        .virtual_section_start = 0,
+                    });
+                if (!can_skip_value_decl_scan) {
+                    for (stmts) |s| {
+                        if (self.resolveValueDeclInStmt(s, node, id) catch null) |t| return t;
+                    }
                 }
             }
             if (k == .switch_stmt) {
@@ -210658,6 +210799,52 @@ test "checker: contextual cache clearing follows exact HIR child edges" {
             types.Primitive.string_t;
         try T.expectEqual(expected, s.hir.typeOf(node));
     }
+}
+
+test "checker: complementary value indexes cover linear-scan declaration names" {
+    const s = try newSetup(
+        \\import defaultValue, { named as alias } from "pkg";
+        \\import * as namespaceValue from "pkg2";
+        \\const scalar = 1;
+        \\const { destructured } = { destructured: 2 };
+        \\function callable() {}
+        \\class Constructable {}
+        \\enum RuntimeEnum { value }
+        \\namespace Box { export const value = 1; }
+    );
+    defer destroySetup(s);
+
+    const stmts = hir_mod.blockStmts(&s.hir, s.root);
+    s.checker.indexVisibleSameNameValueBindings(s.root, stmts, false);
+    s.checker.indexResolvableValueDeclNames(s.root, stmts, false);
+    try T.expect(s.checker.indexed_same_name_value_containers.contains(s.root));
+    try T.expect(s.checker.indexed_additional_resolvable_value_containers.contains(s.root));
+
+    for ([_][]const u8{ "scalar", "callable" }) |name| {
+        try T.expect(s.checker.visible_same_name_value_decls.contains(.{
+            .container = s.root,
+            .name = try s.sint.intern(name),
+            .virtual_section_start = 0,
+        }));
+    }
+    for ([_][]const u8{ "defaultValue", "alias", "namespaceValue", "destructured", "Constructable" }) |name| {
+        try T.expect(s.checker.additional_resolvable_value_decl_names.contains(.{
+            .container = s.root,
+            .name = try s.sint.intern(name),
+            .virtual_section_start = 0,
+        }));
+    }
+
+    // Namespaces are resolved by their dedicated value-space path, so a miss
+    // in both statement-resolver indexes is exact.
+    const namespace_name = try s.sint.intern("Box");
+    const namespace_key = VisibleNamedTypeKey{
+        .container = s.root,
+        .name = namespace_name,
+        .virtual_section_start = 0,
+    };
+    try T.expect(!s.checker.visible_same_name_value_decls.contains(namespace_key));
+    try T.expect(!s.checker.additional_resolvable_value_decl_names.contains(namespace_key));
 }
 
 test "checker: free type parameter queries traverse cycles without losing reachable parameters" {
