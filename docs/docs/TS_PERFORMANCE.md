@@ -145,6 +145,91 @@ Frozen A/B binaries, the 2,048-family corpus, exact outputs, load snapshots,
 and every screen, confirmation, and scale round are retained under
 `bench/vs_tsgo/results/contextual-type-child-index.20260901T112050Z/`.
 
+### Complementary value-declaration indexes
+
+Commit [`8d1d198b2`](https://github.com/home-lang/home/commit/8d1d198b2),
+tracked in [#416](https://github.com/home-lang/home/issues/416), removes the
+next profile-backed statement-list scan from ordinary identifier resolution.
+After the contextual-cache change above, the retained 4,096-family profile
+showed `resolveValueDeclInStmt` as the largest exclusive leaf. A namespace
+value reference could miss the existing simple variable/function index, scan
+every statement in the root, and only then continue to the dedicated namespace
+resolver.
+
+The checker now pairs the existing simple-value index with a supplemental exact
+index for only the declaration forms it omitted: binding patterns, classes,
+imports, and loop bindings. A linear scan is skipped only when both indexes
+completed successfully and both miss. Allocation failure leaves an index
+incomplete and therefore executes the unchanged scan. Virtual multi-file
+sections also retain the scan because ambient script declarations can cross
+section keys, as do recovery HIR bindings that cannot be enumerated exactly.
+The supplemental index is built only for blocks with at least 16 statements;
+smaller blocks keep the cheaper linear walk.
+
+The fixed baseline is the accepted contextual-cache binary, SHA-256
+`927659113386a43edda5fc884cf8b1eabab5ee6eec11e454c52752b84b0f869d`.
+The final candidate is
+`e51d04c1c63f463d2512b92e0dcf34002344800896d9fdc208ba6846fe9f76a5`.
+Both exit zero with byte-identical empty output on the unchanged official
+128-family project and the independently generated 2,048-family, 92,160-line
+scale. The scale is accepted silently by TS 6.0.3, native TS 7.0.2, and both
+Home binaries.
+
+The official screen retained all ten reversed-order pairs after three
+alternating warmup pairs:
+
+| Official 128-family A/B, 10 pairs | Baseline | Complementary indexes | Result | Paired 95% CI |
+|---|---:|---:|---:|---:|
+| Wall | 38.167 ± 0.793 ms | **36.102 ± 0.973 ms** | **1.0572×; 10/10 candidate wins** | **+1.397 to +2.782 ms** |
+| CPU | 37.371 ± 0.752 ms | **35.203 ± 0.831 ms** | **1.0616×; 10/10 candidate wins** | **+1.636 to +2.763 ms** |
+| Peak RSS | **16.391 ± 0.035 MiB** | 16.419 ± 0.012 MiB | 0.9983×; 0/10 candidate wins | **-0.047 to -0.009 MiB** |
+
+The independent 30-pair confirmation retained every round:
+
+| Official 128-family A/B, 30 pairs | Baseline | Complementary indexes | Result | Paired 95% CI |
+|---|---:|---:|---:|---:|
+| Wall | 36.772 ± 0.886 ms | **34.771 ± 0.914 ms** | **1.0575×; 30/30 candidate wins** | **+1.644 to +2.348 ms** |
+| CPU | 35.991 ± 0.790 ms | **33.947 ± 0.834 ms** | **1.0602×; 30/30 candidate wins** | **+1.738 to +2.343 ms** |
+| Peak RSS | **16.393 ± 0.035 MiB** | 16.423 ± 0.010 MiB | 0.9982×; 0/30 candidate wins | **-0.041 to -0.019 MiB** |
+
+At 16× scale, the same final binaries retained all ten pairs:
+
+| Scaled 2,048-family A/B, 10 pairs | Baseline | Complementary indexes | Result | Paired 95% CI |
+|---|---:|---:|---:|---:|
+| Wall | 3285.301 ± 99.137 ms | **2621.967 ± 52.107 ms** | **1.2530×; 10/10 candidate wins** | **+624.290 to +703.416 ms** |
+| CPU | 3279.234 ± 93.889 ms | **2618.173 ± 50.545 ms** | **1.2525×; 10/10 candidate wins** | **+624.247 to +698.274 ms** |
+| Peak RSS | **113.856 ± 0.035 MiB** | 113.892 ± 0.012 MiB | 0.9997×; 0/10 candidate wins | **-0.059 to -0.013 MiB** |
+
+The final form therefore trades a measured fixed RSS delta of roughly 0.03 MiB
+for about 2.0 ms on the official project and 663 ms at scale. Two earlier forms
+were rejected despite timing wins: a duplicated complete name map reached a
+0.56 MiB scale delta, and an unbounded supplemental completion set reached a
+1.10 MiB scale delta. Their samples remain under
+`resolvable-value-negative-index.20260901T115523Z/` and
+`complementary-value-index.20260901T120833Z/`; they are not mixed with the final
+tables. Final evidence is under
+`bounded-complementary-value-index.20260901T121547Z/`.
+
+All 20 version-pinned workload admissions and their negative controls pass.
+The complete ReleaseFast checker passes 4,325/4,325 tests, driver 188/188, CLI
+69/69, and the benchmark harness 95/95. The admission-only three-compiler gate
+is `20260901T122448Z`; its single timing sample is not used as a performance
+claim.
+
+A separate final 30-round checkpoint uses three warmups, round-robin order,
+and verified unchanged provenance. It retains two early Home outliers at 239.3
+and 111.3 ms and every other sample:
+
+| Final interface-composition checkpoint | Mean ± sample SD | Paired detail |
+|---|---:|---:|
+| TS 6.0.3 | 219.7 ± 13.9 ms | — |
+| Native TS 7.0.2 | 76.0 ± 28.0 ms | Fastest competitor |
+| Home at `8d1d198b2` | **47.1 ± 38.7 ms** | **1.61× faster; 29/30 wins; TS7-minus-Home CI +16.520 to +38.149 ms** |
+
+All 30 round files / 90 finite successful samples are retained under
+`bench/vs_tsgo/results/20260901T122547Z/`. TS 7 and `tsgo` are one native
+competitor throughout; no superseded development build is counted.
+
 ### Free-type traversal generation marks (rejected)
 
 After the root memo failed, the same retained profile still showed hash-table
