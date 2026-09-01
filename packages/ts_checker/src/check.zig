@@ -62463,6 +62463,7 @@ pub const Checker = struct {
     }
 
     fn virtualExportAssignmentTargetDeclForLocal(self: *Checker, local_name: hir_mod.StringId, anchor: NodeId) CheckError!?NodeId {
+        if (self.source != null and !self.source_may_have_import_declaration) return null;
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
         const has_sections = self.sourceHasVirtualFilenameSections();
