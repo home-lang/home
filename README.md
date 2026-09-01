@@ -290,6 +290,7 @@ recording both accepted and rejected probes:
 | [Namespace-value miss index](docs/docs/TS_PERFORMANCE.md#namespace-value-miss-index) | 128 interface families: **1.038× faster**, confirmation CIs positive | 2,048 families: **1.206× faster**, 10/10 paired wins | Accepted in `4ba46f4d6` |
 | [Enum-free visible-namespace index](docs/docs/TS_PERFORMANCE.md#enum-free-visible-namespace-index) | 128 interface families: **1.032× faster**, confirmation CIs positive | 2,048 families: **1.131× faster**, 10/10 paired wins; +0.435 MiB RSS | Accepted in `65a6037e6` |
 | [Unique interface-heritage index](docs/docs/TS_PERFORMANCE.md#unique-interface-heritage-index-rejected) | 128 interface families: 0.995× wall, 4/10 wins | Wall and CPU paired CIs cross zero; no scale timing admitted | Rejected and reverted |
+| [Merged-interface scan indexes](docs/docs/TS_PERFORMANCE.md#merged-interface-scan-indexes-rejected) | Broad index: 1.015× wall; refined chain: 0.999× wall | Both designs' wall and CPU paired CIs cross zero | Rejected and reverted |
 | Contextual cache descendant index | 128 interfaces: **1.051× wall**, confirmation CIs positive | 2,048 interfaces: **1.152× wall**, 10/10 paired wins | Accepted in `21e6155d4` |
 | Free-type traversal generation marks | Byte screen: **1.023× wall**, 10/10 wins | Confirmation: 1.004× wall, but paired wall and CPU CIs cross zero | Rejected and reverted |
 | Free-type-parameter root memo | 2,048 predicates: 0.993× wall, 4/10 wins | Candidate slower and RSS higher in 10/10 pairs; no confirmation admitted | Rejected and reverted |

@@ -577,6 +577,65 @@ retained under
 binaries and every screen round remain under
 `interface-heritage-index.20260901T140413Z/`.
 
+### Merged-interface scan indexes (rejected)
+
+The same independent 8,192-family profile identified the next two untreated
+checker leaves: `checkUncheckedMergedInterfacesInStmts` with 685 exclusive
+samples and `collectPriorMergedInterfaceExtends` with 658. Two exact designs
+tested whether one source-ordered declaration index could replace their
+repeated statement scans without changing merge semantics.
+
+The broad design built a standalone index for root and namespace interface and
+class declarations. It preserved source order, qualified names, class and
+interface interactions, virtual-file fallback, and the original scan whenever
+the index was incomplete. The full ReleaseFast checker suite passed, and the
+baseline and candidate both exited zero with byte-identical empty output on
+the unchanged official 128-family project and existing 2,048-family scale.
+The fixed baseline binary was SHA-256
+`cf92eaf386deb3e3d075af85f689072c2a196d6fe16d460603c0710a597dd4ee`;
+the broad candidate was
+`b0cdd5514609bd31c1dad743e12ce1de827b016f59eae2623bdd1cb0c15f0f20`.
+
+An initial ten-pair set was retained but excluded from admission because ten
+unrelated Zig test shards were running concurrently: its wall means were
+46.404 ± 20.165 ms for baseline and 79.648 ± 36.129 ms for candidate. After
+those processes exited, a fresh clean screen retained every reversed-order
+pair after three alternating warmup pairs:
+
+| Official 128-family broad-index A/B, 10 pairs | Baseline | Broad index | Result | Paired 95% CI |
+|---|---:|---:|---:|---:|
+| Wall | 34.339 ± 1.536 ms | **33.846 ± 1.265 ms** | 1.0146×; 6/10 candidate wins | -0.770 to +1.695 ms |
+| CPU | 33.281 ± 1.486 ms | **32.773 ± 1.233 ms** | 1.0155×; 6/10 candidate wins | -0.640 to +1.612 ms |
+| Peak RSS | **16.617 ± 0.013 MiB** | 16.622 ± 0.012 MiB | 0.9997×; 1/10 candidate wins | -0.014 to +0.003 MiB |
+
+The refinement avoided the standalone prepass. It extended the already
+accepted visible named-type index only when a duplicate interface was found,
+recording source-ordered successor links while leaving unique declarations
+without extra chain entries. Both merge consumers used those links only for
+exact root-statement cases and retained the original scan for virtual files,
+classes, incomplete indexes, or any chain that did not reach the current
+declaration. The full ReleaseFast checker suite again passed, and both binaries
+again produced byte-identical empty output on the official and scaled projects.
+The refined candidate was SHA-256
+`6b664bad7337687da1d19155b6b2832d48a3b8879d574c033401ba1e6d0d9393`.
+
+Its independent screen also retained every reversed-order pair after three
+alternating warmup pairs:
+
+| Official 128-family duplicate-chain A/B, 10 pairs | Baseline | Refined chain | Result | Paired 95% CI |
+|---|---:|---:|---:|---:|
+| Wall | **34.103 ± 1.087 ms** | 34.138 ± 1.122 ms | 0.9990×; 4/10 candidate wins | -0.901 to +0.871 ms |
+| CPU | 32.988 ± 0.885 ms | **32.909 ± 0.976 ms** | 1.0024×; 5/10 candidate wins | -0.518 to +0.754 ms |
+| Peak RSS | 16.608 ± 0.009 MiB | **16.595 ± 0.012 MiB** | 1.0008×; 5/10 candidate wins | **+0.003 to +0.022 MiB** |
+
+Neither exact design established positive wall and CPU intervals. The refined
+form's 0.0125 MiB mean RSS reduction does not override that timing rule. Both
+candidates were fully reverted; no confirmation, scale timing, source commit,
+or compiler checkpoint was admitted. Frozen binaries, exact-output checks, the
+excluded loaded set, and every clean broad round remain under
+`merged-type-declaration-index.20260901T141838Z/`; the refined artifacts and
+every round remain under `duplicate-interface-chain.20260901T144314Z/`.
+
 ### Free-type traversal generation marks (rejected)
 
 After the root memo failed, the same retained profile still showed hash-table
