@@ -205,6 +205,49 @@ fully reverted without a confirmation or competitor checkpoint. Every sample
 is retained under
 `bench/vs_tsgo/results/parser-virtual-section-fact.20260901T055116Z/`.
 
+### Rejected reconciliation-sentinel root-set pruning
+
+The accepted exact diagnostic-reconciliation gate added ten rare sentinels to
+the shared Aho–Corasick source-marker index. Six introduced first bytes not
+used by the original 39 markers, which expanded the root-state byte set used
+by `indexOfAnyPos`. This exact probe replaced only those six sentinels with
+necessary suffixes whose first bytes already occurred in the original set.
+The complete branch-specific conditions in
+`applyCompilerCorpusExactDiagnosticReconciliations` remained unchanged, so a
+suffix could only trigger the existing exact reconciliation checks; it could
+not suppress or create a diagnostic by itself.
+
+The fixed accepted baseline binary is SHA-256
+`ca0bda46834cc05f9c5f57bac5dd5bdec88af388cf6b7c6fc39fcce9b60604ae`;
+the experimental candidate was
+`cafc7e811c5dc8e1c1c1ef729dd22ca1c2e037edefe6e7700156cb2067104748`.
+Both exited zero with byte-identical empty stdout and stderr on the unchanged
+2,048-, 32,768-, and 65,536-family predicate projects. Focused source-marker
+and exact reconciliation-gate tests passed, including indexed and fallback
+paths plus coverage of every sentinel.
+
+Every retained set used three alternating warmup pairs, reversed process order
+in every measured pair, retained every finite sample, and reports untrimmed
+mean ± sample standard deviation. The 30-pair confirmation was independent of
+the initial screen. Paired intervals are baseline-minus-candidate:
+
+| Predicate A/B | Metric | Baseline | Candidate | Result | Paired 95% CI |
+|---|---|---:|---:|---:|---:|
+| Official 2,048 families, 10-pair screen | Wall | 229.344 ± 2.895 ms | **226.531 ± 1.847 ms** | **1.0124×; 9/10 wins** | **+0.383 to +5.243 ms** |
+| Official 2,048 families, 10-pair screen | CPU | 227.708 ± 2.940 ms | **224.807 ± 2.114 ms** | **1.0129×; 9/10 wins** | **+0.406 to +5.396 ms** |
+| Official 2,048 families, 30-pair confirmation | Wall | 227.299 ± 2.680 ms | 226.574 ± 1.759 ms | 1.0032×; 18/30 wins | -0.338 to +1.788 ms |
+| Official 2,048 families, 30-pair confirmation | CPU | 225.448 ± 2.758 ms | 224.687 ± 1.783 ms | 1.0034×; 16/30 wins | -0.316 to +1.838 ms |
+| Diagnostic 32,768 families, 10 pairs | Wall | **3911.739 ± 25.827 ms** | 3918.677 ± 15.862 ms | 0.9982×; 5/10 wins | -31.177 to +17.302 ms |
+| Diagnostic 32,768 families, 10 pairs | CPU | **3896.615 ± 25.726 ms** | 3904.611 ± 15.054 ms | 0.9980×; 5/10 wins | -30.283 to +14.292 ms |
+
+The promising initial screen did not reproduce decisively: the independent
+confirmation shrank to about 0.3%, both paired intervals crossed zero, and
+pair direction was nearly even. The unchanged 32,768-family scale then had
+higher candidate means and only five wins for both metrics. The optimization
+was therefore rejected and fully reverted without a competitor checkpoint.
+Raw binaries, exact outputs, and every A/B round are retained under
+`bench/vs_tsgo/results/reconciliation-root-set.20260901T060254Z/`.
+
 ### JSDoc import-type scan pruning
 
 Commit `532373ee1`, tracked in
