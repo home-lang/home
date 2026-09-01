@@ -74879,6 +74879,9 @@ pub const Checker = struct {
         {
             return false;
         }
+        const can_index_namespaces = self.source != null and
+            !self.source_may_have_enum_declaration and
+            !self.sourceHasVirtualFilenameSections();
         const anchor_section = self.virtualSectionStartForNode(anchor);
         var cur: hir_mod.NodeId = self.hir.parentOf(anchor);
         while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
@@ -74888,6 +74891,17 @@ pub const Checker = struct {
                 hir_mod.blockStmts(self.hir, cur)
             else
                 hir_mod.namespaceBody(self.hir, cur);
+            if (can_index_namespaces) {
+                self.indexVisibleNamespaceDecls(cur, stmts, false);
+                if (self.indexed_namespace_containers.contains(cur)) {
+                    if (self.visible_namespace_decls.contains(.{
+                        .container = cur,
+                        .name = name,
+                        .virtual_section_start = 0,
+                    })) return true;
+                    continue;
+                }
+            }
             for (stmts) |raw| {
                 const decl = self.unwrapExportDecl(raw);
                 const decl_kind = self.hir.kindOf(decl);
