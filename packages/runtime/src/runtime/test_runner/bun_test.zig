@@ -54,6 +54,7 @@ pub const js_fns = struct {
                 const cfg: ExecutionEntryCfg = .{
                     .has_done_parameter = has_done_parameter,
                     .timeout = args.options.timeout,
+                    .timeout_is_explicit = args.options.timeout_is_explicit,
                 };
                 const bunTest = bunTestRoot.getActiveFileUnlessInPreload(globalThis.bunVM()) orelse {
                     if (tag == .onTestFinished) {
@@ -951,6 +952,8 @@ pub const DescribeScope = struct {
 pub const ExecutionEntryCfg = struct {
     /// 0 = unlimited timeout
     timeout: u32,
+    /// Explicit per-test and per-hook timeouts are fixed at registration.
+    timeout_is_explicit: bool = false,
     has_done_parameter: bool,
     /// Number of times to retry a failed test (0 = no retries)
     retry_count: u32 = 0,
@@ -962,6 +965,7 @@ pub const ExecutionEntry = struct {
     callback: ?Strong,
     /// 0 = unlimited timeout
     timeout: u32,
+    timeout_is_explicit: bool,
     has_done_parameter: bool,
     /// '.epoch' = not set
     /// when this entry begins executing, the timespec will be set to the current time plus the timeout(ms).
@@ -983,6 +987,7 @@ pub const ExecutionEntry = struct {
             .base = .init(base, gpa, name_not_owned, parent, cb != null),
             .callback = null,
             .timeout = cfg.timeout,
+            .timeout_is_explicit = cfg.timeout_is_explicit,
             .has_done_parameter = cfg.has_done_parameter,
             .added_in_phase = phase,
             .retry_count = cfg.retry_count,

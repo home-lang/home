@@ -251,6 +251,7 @@ fn enqueueDescribeOrTestCallback(this: *ScopeFunctions, bunTest: *bun_test.BunTe
             _ = try bunTest.collection.active_scope.appendTest(bunTest.gpa, description, if (matches_filter) callback else null, .{
                 .has_done_parameter = has_done_parameter,
                 .timeout = options.timeout,
+                .timeout_is_explicit = options.timeout_is_explicit,
                 .retry_count = options.retry orelse 0,
                 .repeat_count = options.repeats,
             }, base, .collection);
@@ -297,6 +298,7 @@ const ParseArgumentsResult = struct {
 };
 const ParseArgumentsOptions = struct {
     timeout: u32 = 0,
+    timeout_is_explicit: bool = false,
     retry: ?u32 = null,
     repeats: u32 = 0,
 };
@@ -419,6 +421,7 @@ pub fn parseArguments(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame
     const override_timeout_ms: ?u32 = if (bun.jsc.Jest.Jest.runner) |runner| if (runner.default_timeout_override != std.math.maxInt(u32)) runner.default_timeout_override else null else null;
     const timeout_option_ms: ?u32 = if (timeout_option) |timeout| std.math.lossyCast(u32, timeout) else null;
     result.options.timeout = timeout_option_ms orelse override_timeout_ms orelse default_timeout_ms orelse 0;
+    result.options.timeout_is_explicit = timeout_option_ms != null;
 
     return result;
 }

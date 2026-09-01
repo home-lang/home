@@ -554,9 +554,16 @@ fn onEntryStarted(_: *Execution, entry: *ExecutionEntry) void {
 
     groupLog.begin(@src());
     defer groupLog.end();
-    if (entry.timeout != 0) {
-        groupLog.log("-> entry.timeout: {}", .{entry.timeout});
-        entry.timespec = bun.timespec.msFromNow(.force_real_time, entry.timeout);
+    // Collection precedes beforeAll hooks. Re-read the default here so a
+    // setDefaultTimeout() call in beforeAll affects inherited test timeouts;
+    // explicit per-test timeouts remain fixed at their registered value.
+    const timeout = if (!entry.timeout_is_explicit and bun.jsc.Jest.Jest.runner != null and bun.jsc.Jest.Jest.runner.?.default_timeout_override != std.math.maxInt(u32))
+        bun.jsc.Jest.Jest.runner.?.default_timeout_override
+    else
+        entry.timeout;
+    if (timeout != 0) {
+        groupLog.log("-> entry.timeout: {}", .{timeout});
+        entry.timespec = bun.timespec.msFromNow(.force_real_time, timeout);
     } else {
         groupLog.log("-> entry.timeout: 0", .{});
         entry.timespec = .epoch;
