@@ -277,6 +277,34 @@ confirmation or 65,536 timing was run; the gates were fully reverted. Raw
 evidence remains under
 `bench/vs_tsgo/results/declaration-pass-gates.20260831T163650.42200/`.
 
+After accepting the program import-resolution cache, a fresh sample of the
+current binary on the unchanged 32,768-family predicate project confirmed that
+the earlier source-preparation hotspot had moved: `ts_driver.prepareSource`
+fell from 316 to 23 exclusive samples. Repeated structural annotation lookup
+was now visible at 68 exclusive samples in
+`visibleAnnotatedIdentifierTypeNode`. A 256-entry checker-local direct-mapped
+cache was tested for that exact `(identifier node -> annotation node or miss)`
+query. Hits verified the full NodeId, collisions used the unchanged parent
+walk, the cache allocated no memory, and source or bound-module replacement
+cleared every slot.
+
+The fixed accepted baseline was
+`ec99b3fcca63f39d97f147bbe2ad5139bf5e53a22f885e25bd1f6eb971386789`;
+the cache candidate was
+`5e0969b8ee1cf0fb2716e40678327f6e99a346aa26c16ed50f8c906f9b818353`.
+Both exited 0 with byte-identical empty stdout and stderr on the 32,768-family
+project, and the focused ReleaseFast type-predicate checker gate passed. The
+screen retained all ten reversed-order pairs after three alternating warmup
+pairs. Wall time was 5155.6 ± 318.3 ms for the baseline versus
+5175.6 ± 235.3 ms for the candidate (0.9961×, 5/10 candidate wins, paired
+interval -295.3 to +255.3 ms). Process CPU was 5024.3 ± 250.2 ms versus
+5014.0 ± 151.9 ms (1.0021×, 5/10, interval -181.4 to +202.1 ms). Both
+intervals cross zero and wall mean regressed, so the cache was fully reverted
+without a confirmation or larger-scale run. Raw evidence remains under
+`bench/vs_tsgo/results/visible-annotation-hot-cache.20260901T020323Z/`; the
+fresh accepted-binary profile is under
+`bench/vs_tsgo/results/predicate-current-profile.20260901T014600Z/`.
+
 The independent focused three-compiler checkpoint `20260831T214804Z` compares
 version-verified TS 6.0.3, native TS 7.0.2, and the same immutable Home binary:
 
