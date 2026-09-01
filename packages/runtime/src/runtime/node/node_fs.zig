@@ -514,6 +514,7 @@ pub fn NewAsyncCpTask(comptime is_shell: bool) type {
         args: Arguments.Cp,
         evtloop: jsc.EventLoopHandle,
         task: jsc.WorkPoolTask = .{ .callback = &workPoolCallback },
+        any_task: if (is_shell) u0 else jsc.AnyTask = if (is_shell) 0 else undefined,
         result: bun.sys.Maybe(Return.Cp),
         /// If this task is called by the shell then we shouldn't call this as
         /// it is not threadsafe and is unnecessary as the process will be kept
@@ -622,7 +623,14 @@ pub fn NewAsyncCpTask(comptime is_shell: bool) type {
             arena: bun.ArenaAllocator,
         ) jsc.JSValue {
             const task = createWithShellTask(globalObject, cp_args, vm, arena, 0, true);
-            return task.promise.value();
+            const promise_value = task.promise.value();
+            task.any_task = jsc.AnyTask.NewWithShutdown(ThisAsyncCpTask, &runFromJSThread, &cancelForShutdown).init(task);
+            if (!vm.native_work_pool_jobs.tryAdd()) {
+                task.cancelForShutdown();
+                return promise_value;
+            }
+            jsc.WorkPool.schedule(&task.task);
+            return promise_value;
         }
 
         pub fn createWithShellTask(
@@ -652,7 +660,9 @@ pub fn NewAsyncCpTask(comptime is_shell: bool) type {
             task.args.dest.toThreadSafe();
             task.tracker.didSchedule(globalObject);
 
-            jsc.WorkPool.schedule(&task.task);
+            if (comptime is_shell) {
+                jsc.WorkPool.schedule(&task.task);
+            }
 
             return task;
         }
@@ -725,7 +735,13 @@ pub fn NewAsyncCpTask(comptime is_shell: bool) type {
             }
 
             if (this.evtloop == .js) {
-                this.evtloop.enqueueTaskConcurrent(.{ .js = jsc.ConcurrentTask.fromCallback(this, runFromJSThread) });
+                if (comptime is_shell) {
+                    this.evtloop.enqueueTaskConcurrent(.{ .js = jsc.ConcurrentTask.fromCallback(this, runFromJSThread) });
+                } else {
+                    const vm = this.evtloop.bunVM().?;
+                    vm.eventLoop().enqueueTaskConcurrent(jsc.ConcurrentTask.create(this.any_task.task()));
+                    vm.native_work_pool_jobs.complete();
+                }
             } else {
                 this.evtloop.enqueueTaskConcurrent(.{ .mini = jsc.AnyTaskWithExtraContext.fromCallbackAutoDeinit(this, "runFromJSThreadMini") });
             }
@@ -770,12 +786,22 @@ pub fn NewAsyncCpTask(comptime is_shell: bool) type {
             }
         }
 
+        fn cancelForShutdown(this: *ThisAsyncCpTask) void {
+            const globalObject = this.evtloop.globalObject().?;
+            this.tracker.didCancel(globalObject);
+            this.deinit();
+        }
+
         pub fn deinit(this: *ThisAsyncCpTask) void {
-            if (this.result == .err) {
+            if (this.has_result.load(.monotonic) and this.result == .err) {
                 this.result.err.deinit();
             }
             if (comptime !is_shell) this.ref.unref(this.evtloop);
-            this.args.deinit();
+            if (comptime is_shell) {
+                this.args.deinit();
+            } else {
+                this.args.deinitAndUnprotect();
+            }
             this.promise.deinit();
             this.arena.deinit();
             bun.destroy(this);
@@ -3163,6 +3189,13 @@ pub const Arguments = struct {
             if (this.flags.deinit_paths) {
                 this.src.deinit();
                 this.dest.deinit();
+            }
+        }
+
+        pub fn deinitAndUnprotect(this: *const Cp) void {
+            if (this.flags.deinit_paths) {
+                this.src.deinitAndUnprotect();
+                this.dest.deinitAndUnprotect();
             }
         }
 

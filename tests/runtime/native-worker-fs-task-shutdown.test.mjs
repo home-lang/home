@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { once } from 'node:events'
 import { closeSync, exists, fstat, mkdtempSync, openSync, read, readv, realpathSync, rmSync, symlinkSync, write, writev } from 'node:fs'
-import { access, lstat, mkdir, mkdtemp, open, readFile, readdir, readlink, realpath, stat, statfs, writeFile } from 'node:fs/promises'
+import { access, cp, lstat, mkdir, mkdtemp, open, readFile, readdir, readlink, realpath, stat, statfs, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Worker } from 'node:worker_threads'
@@ -26,6 +26,8 @@ const withTimeout = async (promise, label) => {
 const root = mkdtempSync(join(tmpdir(), 'home-fs-task-shutdown-'))
 const normalOutput = join(root, 'normal.txt')
 const normalLink = join(root, 'normal-link')
+const cpSource = join(root, 'cp-source')
+const normalCpDest = join(root, 'normal-cp-dest')
 const fstatAsync = fd =>
   new Promise((resolve, reject) => {
     fstat(fd, (error, stats) => {
@@ -92,6 +94,13 @@ assert.equal(normalReadvBuffer.toString(), 'o')
 assert.equal(await withTimeout(writeAsync(normalFd, Buffer.from('N'), 0), 'normal fs write'), 1)
 assert.equal(await withTimeout(writevAsync(normalFd, [Buffer.from('O')], 1), 'normal fs writev'), 1)
 assert.equal(await withTimeout(readFile(normalOutput, 'utf8'), 'normal fs positional writes'), 'NOrmal')
+await withTimeout(mkdir(join(cpSource, 'nested'), { recursive: true }), 'normal fs cp source mkdir')
+await withTimeout(writeFile(join(cpSource, 'root.txt'), 'root copy'), 'normal fs cp root write')
+await withTimeout(writeFile(join(cpSource, 'nested', 'child.txt'), 'child copy'), 'normal fs cp child write')
+await withTimeout(mkdir(normalCpDest), 'normal fs cp destination mkdir')
+await withTimeout(cp(cpSource, normalCpDest, { recursive: true }), 'normal fs recursive cp')
+assert.equal(await withTimeout(readFile(join(normalCpDest, 'root.txt'), 'utf8'), 'normal fs cp root read'), 'root copy')
+assert.equal(await withTimeout(readFile(join(normalCpDest, 'nested', 'child.txt'), 'utf8'), 'normal fs cp child read'), 'child copy')
 assert.equal((await withTimeout(readdir(root), 'normal fs readdir strings')).includes('normal.txt'), true)
 assert.equal(
   (await withTimeout(readdir(root, { encoding: 'buffer' }), 'normal fs readdir buffers')).some(
@@ -125,7 +134,7 @@ assert.equal(getEventLoopStats().nativeWorkPoolJobs, 0)
 
 const workerSource = `
   const { exists, fstat, read, readv, write, writev } = require('node:fs');
-  const { access, lstat, mkdir, mkdtemp, open, readFile, readdir, readlink, realpath, stat, statfs, writeFile } = require('node:fs/promises');
+  const { access, cp, lstat, mkdir, mkdtemp, open, readFile, readdir, readlink, realpath, stat, statfs, writeFile } = require('node:fs/promises');
   const { parentPort, workerData } = require('node:worker_threads');
   const { getEventLoopStats } = require('bun:internal-for-testing');
   const targetStarted = getEventLoopStats().startedNativeWorkPoolProbeTasks + ${probeCount};
@@ -161,6 +170,7 @@ const workerSource = `
     readv(workerData.fd, [Buffer.alloc(1)], 1, () => {});
     write(workerData.fd, Buffer.from('N'), 0, 1, 0, () => {});
     writev(workerData.fd, [Buffer.from('O')], 1, () => {});
+    void cp(workerData.cpSource, workerData.cpDest, { recursive: true });
     parentPort.postMessage({ jobs: getEventLoopStats().nativeWorkPoolJobs });
   };
   arm();
@@ -169,6 +179,8 @@ const workerSource = `
 try {
   for (let iteration = 0; iteration < 2; iteration += 1) {
     const before = getEventLoopStats()
+    const workerCpDest = join(root, `worker-copy-${iteration}`)
+    await withTimeout(mkdir(workerCpDest), 'worker fs cp destination mkdir')
     const worker = new Worker(workerSource, {
       eval: true,
       workerData: {
@@ -179,6 +191,8 @@ try {
         link: normalLink,
         mkdirTarget: join(root, `worker-dir-${iteration}`, 'nested'),
         mkdtempPrefix: join(root, `λ-worker-${iteration}-`),
+        cpSource,
+        cpDest: workerCpDest,
       },
     })
     let termination
@@ -186,7 +200,7 @@ try {
 
     try {
       const [armed] = await withTimeout(once(worker, 'message'), 'fs task worker arm')
-      assert.deepEqual(armed, { jobs: probeCount + 26 })
+      assert.deepEqual(armed, { jobs: probeCount + 28 })
 
       let terminated = false
       termination = worker.terminate().then(exitCode => {
@@ -202,7 +216,7 @@ try {
       const exitCode = await withTimeout(termination, 'fs task worker termination')
       assert.equal(typeof exitCode, 'number')
       assert.equal(getEventLoopStats().completedNativeWorkPoolProbeTasks, before.completedNativeWorkPoolProbeTasks + probeCount)
-      assert.equal(getEventLoopStats().cancelledAnyTasks, before.cancelledAnyTasks + 26)
+      assert.equal(getEventLoopStats().cancelledAnyTasks, before.cancelledAnyTasks + 28)
     } finally {
       if (!released) getEventLoopStats(false, false, true)
       if (termination) await withTimeout(termination, 'fs task worker cleanup')
