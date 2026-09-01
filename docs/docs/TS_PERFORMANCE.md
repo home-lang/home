@@ -496,6 +496,34 @@ so the probe was fully reverted and no scale timing was run. Raw binaries,
 exact output, and every screen and confirmation round remain under
 `bench/vs_tsgo/results/declaration-map-presize.20260901T041500Z/`.
 
+### Rejected identifier declaration-slot reuse
+
+The accepted profile showed material exclusive time in `typeOfIdentifier`.
+That function can ask whether the same immutable HIR node is a declaration
+name at many fallback branches, so an exact probe evaluated
+`isDeclNameSlot(node)` once at its first use and reused the boolean in the 36
+later branches. Early `await`, private-name, constructor-field, and `this`
+exits remained before the computation. No cache, semantic gate, lookup
+reordering, or diagnostic reordering was introduced.
+
+The immutable baseline is SHA-256
+`60e10affa923acd3265511f91f248277cf7bbf70e28508ff1bf903b8761bf2a2`;
+the fixed candidate is
+`6df9a6db988911be719b9f0079296fa815b18a6d0e17d60e629140472de37b81`.
+Both exit zero with byte-identical empty stdout and stderr on the official
+2,048-family and unchanged 32,768-family predicate projects.
+
+The official-workload screen retained all ten reversed-order pairs after three
+alternating warmup pairs, with no filtering. Wall time regressed from
+292.454 ± 28.421 ms to 300.577 ± 30.022 ms (0.9730× baseline/candidate,
+4/10 candidate wins), with a paired 95% interval of -33.078 to +16.832 ms.
+Process CPU was effectively flat to worse at 283.171 ± 19.615 ms versus
+284.514 ± 15.643 ms (0.9953×, 5/10), with an interval of -19.859 to
++17.172 ms. The initial gate failed, so no confirmation or scale timing was
+run and the probe was fully reverted. Raw binaries, exact outputs, and every
+screen round remain under
+`bench/vs_tsgo/results/identifier-decl-slot-reuse.20260901T035734Z/`.
+
 ## Linux ARM64 container checkpoint
 
 Measured 2026-08-29 at commit `6ac9b5e59` in a pinned Debian Bookworm
