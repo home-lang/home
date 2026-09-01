@@ -636,6 +636,61 @@ excluded loaded set, and every clean broad round remain under
 `merged-type-declaration-index.20260901T141838Z/`; the refined artifacts and
 every round remain under `duplicate-interface-chain.20260901T144314Z/`.
 
+### Namespace merge-order indexes (rejected)
+
+The same 8,192-family profile next showed 569 exclusive samples in
+`checkNamespaceFunctionMergeOrder`. The workload has many independent
+namespace declarations whose names do not match later top-level functions, so
+the original diagnostic pass repeatedly scans the remaining statement suffix
+to establish each negative result.
+
+The first exact design indexed the last direct class or function statement by
+declaration name and virtual-file section for lists with at least 16 entries.
+Statement ordinals, rather than source offsets, preserved parser-recovery
+ordering; diagnostics still ran in their original forward order. Smaller
+lists and allocation failure retained the original suffix scan. The full
+ReleaseFast checker suite passed, and the fixed accepted baseline and candidate
+both exited zero with byte-identical empty output on the unchanged official
+128-family project and existing 2,048-family scale. The baseline binary was
+SHA-256
+`cf92eaf386deb3e3d075af85f689072c2a196d6fe16d460603c0710a597dd4ee`;
+the ordinal-index candidate was
+`bdf32ce6c3e3a8cf597c0bcd142d2746ec5403b5eb0297d6bccf16d33d0ab506`.
+
+Its screen retained every reversed-order pair after three alternating warmup
+pairs:
+
+| Official 128-family ordinal-index A/B, 10 pairs | Baseline | Ordinal index | Result | Paired 95% CI |
+|---|---:|---:|---:|---:|
+| Wall | 33.121 ± 1.345 ms | **32.684 ± 1.029 ms** | 1.0134×; 5/10 candidate wins | -0.319 to +1.288 ms |
+| CPU | 32.122 ± 1.180 ms | **31.772 ± 0.957 ms** | 1.0110×; 6/10 candidate wins | -0.261 to +1.041 ms |
+| Peak RSS | 16.609 ± 0.015 MiB | **16.581 ± 0.023 MiB** | 1.0017×; 5/10 candidate wins | **+0.009 to +0.047 MiB** |
+
+A simpler refinement then removed the new map entirely. For an attached source
+with no class or enum syntax, it reused the existing per-container function
+index: an exact miss proved that no same-name class or function could occur
+later, while any hit, virtual-file ambiguity, small list, or HIR-only setup
+retained the original order- and section-sensitive suffix scan. The full
+ReleaseFast checker suite and both exact-output checks passed again. The
+refined candidate was SHA-256
+`332075196c3527a3c7b13d8db4a940a5c166a7d806e77c1d454a262314c5adba`.
+
+Its independent screen used the same protocol and retained every pair:
+
+| Official 128-family existing-index A/B, 10 pairs | Baseline | Existing-index reuse | Result | Paired 95% CI |
+|---|---:|---:|---:|---:|
+| Wall | **34.091 ± 1.709 ms** | 34.474 ± 2.232 ms | 0.9889×; 5/10 candidate wins | -1.386 to +0.482 ms |
+| CPU | **33.113 ± 1.514 ms** | 33.265 ± 1.660 ms | 0.9954×; 6/10 candidate wins | -0.805 to +0.439 ms |
+| Peak RSS | 16.608 ± 0.009 MiB | **16.603 ± 0.013 MiB** | 1.0003×; 2/10 candidate wins | 0.000 to +0.011 MiB |
+
+The ordinal form's positive means did not establish positive timing intervals,
+and the simpler reuse regressed both timing means. The small RSS changes do not
+override the timing rule. Both candidates were fully reverted; no confirmation,
+scale timing, source commit, or compiler checkpoint was admitted. Frozen
+binaries, exact-output checks, and every round remain under
+`namespace-merge-order-index.20260901T150258Z/` and
+`namespace-merge-function-index.20260901T153151Z/`.
+
 ### Free-type traversal generation marks (rejected)
 
 After the root memo failed, the same retained profile still showed hash-table
