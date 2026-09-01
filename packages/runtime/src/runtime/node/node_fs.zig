@@ -343,7 +343,8 @@ pub const Async = struct {
             ReturnType == StatOrNotFound or
             ReturnType == bun.jsc.Node.StatFS or
             ReturnType == StringOrUndefined or
-            ReturnType == jsc.ZigString;
+            ReturnType == jsc.ZigString or
+            ReturnType == StringOrBuffer;
         return struct {
             pub const Task = @This();
 
@@ -471,6 +472,8 @@ pub const Async = struct {
                 } else if (comptime ReturnType == jsc.ZigString) {
                     bun.assert(this.result.result.isGloballyAllocated());
                     this.result.result.deinitGlobal();
+                } else if (comptime ReturnType == StringOrBuffer) {
+                    this.result.result.deinitForShutdownResult();
                 }
             }
 

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { once } from 'node:events'
-import { closeSync, exists, fstat, mkdtempSync, openSync, rmSync } from 'node:fs'
-import { access, lstat, mkdir, mkdtemp, stat, statfs, writeFile } from 'node:fs/promises'
+import { closeSync, exists, fstat, mkdtempSync, openSync, realpathSync, rmSync, symlinkSync } from 'node:fs'
+import { access, lstat, mkdir, mkdtemp, readFile, readlink, realpath, stat, statfs, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Worker } from 'node:worker_threads'
@@ -25,6 +25,7 @@ const withTimeout = async (promise, label) => {
 
 const root = mkdtempSync(join(tmpdir(), 'home-fs-task-shutdown-'))
 const normalOutput = join(root, 'normal.txt')
+const normalLink = join(root, 'normal-link')
 const fstatAsync = fd =>
   new Promise((resolve, reject) => {
     fstat(fd, (error, stats) => {
@@ -34,6 +35,7 @@ const fstatAsync = fd =>
   })
 
 await withTimeout(writeFile(normalOutput, 'normal'), 'normal fs write')
+symlinkSync(normalOutput, normalLink)
 await withTimeout(access(normalOutput), 'normal fs access')
 assert.equal(await withTimeout(new Promise(resolve => exists(normalOutput, resolve)), 'normal fs exists'), true)
 assert.equal((await withTimeout(stat(normalOutput), 'normal fs stat')).isFile(), true)
@@ -41,13 +43,20 @@ assert.equal((await withTimeout(lstat(normalOutput), 'normal fs lstat')).isFile(
 assert.equal((await withTimeout(statfs(root), 'normal fs statfs')).bsize > 0, true)
 assert.equal(await withTimeout(mkdir(join(root, 'normal', 'nested'), { recursive: true }), 'normal fs mkdir'), join(root, 'normal'))
 assert.equal((await withTimeout(mkdtemp(join(root, 'λ-normal-')), 'normal fs mkdtemp')).startsWith(join(root, 'λ-normal-')), true)
+assert.equal((await withTimeout(readFile(normalOutput), 'normal fs readFile buffer')).toString(), 'normal')
+assert.equal(await withTimeout(readFile(normalOutput, 'utf8'), 'normal fs readFile string'), 'normal')
+assert.equal((await withTimeout(readlink(normalLink, { encoding: 'buffer' }), 'normal fs readlink buffer')).toString(), normalOutput)
+assert.equal(await withTimeout(readlink(normalLink, 'utf8'), 'normal fs readlink string'), normalOutput)
+const expectedRealPath = realpathSync(normalOutput)
+assert.equal((await withTimeout(realpath(normalLink, { encoding: 'buffer' }), 'normal fs realpath buffer')).toString(), expectedRealPath)
+assert.equal(await withTimeout(realpath(normalLink, 'utf8'), 'normal fs realpath string'), expectedRealPath)
 const normalFd = openSync(normalOutput, 'r')
 assert.equal((await withTimeout(fstatAsync(normalFd), 'normal fs fstat')).isFile(), true)
 assert.equal(getEventLoopStats().nativeWorkPoolJobs, 0)
 
 const workerSource = `
   const { exists, fstat } = require('node:fs');
-  const { access, lstat, mkdir, mkdtemp, stat, statfs, writeFile } = require('node:fs/promises');
+  const { access, lstat, mkdir, mkdtemp, readFile, readlink, realpath, stat, statfs, writeFile } = require('node:fs/promises');
   const { parentPort, workerData } = require('node:worker_threads');
   const { getEventLoopStats } = require('bun:internal-for-testing');
   const targetStarted = getEventLoopStats().startedNativeWorkPoolProbeTasks + ${probeCount};
@@ -66,6 +75,12 @@ const workerSource = `
     void statfs(workerData.root);
     void mkdir(workerData.mkdirTarget, { recursive: true });
     void mkdtemp(workerData.mkdtempPrefix);
+    void readFile(workerData.existing);
+    void readFile(workerData.existing, 'utf8');
+    void readlink(workerData.link, { encoding: 'buffer' });
+    void readlink(workerData.link, 'utf8');
+    void realpath(workerData.link, { encoding: 'buffer' });
+    void realpath(workerData.link, 'utf8');
     parentPort.postMessage({ jobs: getEventLoopStats().nativeWorkPoolJobs });
   };
   arm();
@@ -81,6 +96,7 @@ try {
         fd: normalFd,
         output: join(root, `worker-${iteration}.txt`),
         root,
+        link: normalLink,
         mkdirTarget: join(root, `worker-dir-${iteration}`, 'nested'),
         mkdtempPrefix: join(root, `λ-worker-${iteration}-`),
       },
@@ -90,7 +106,7 @@ try {
 
     try {
       const [armed] = await withTimeout(once(worker, 'message'), 'fs task worker arm')
-      assert.deepEqual(armed, { jobs: probeCount + 9 })
+      assert.deepEqual(armed, { jobs: probeCount + 15 })
 
       let terminated = false
       termination = worker.terminate().then(exitCode => {
@@ -106,7 +122,7 @@ try {
       const exitCode = await withTimeout(termination, 'fs task worker termination')
       assert.equal(typeof exitCode, 'number')
       assert.equal(getEventLoopStats().completedNativeWorkPoolProbeTasks, before.completedNativeWorkPoolProbeTasks + probeCount)
-      assert.equal(getEventLoopStats().cancelledAnyTasks, before.cancelledAnyTasks + 9)
+      assert.equal(getEventLoopStats().cancelledAnyTasks, before.cancelledAnyTasks + 15)
     } finally {
       if (!released) getEventLoopStats(false, false, true)
       if (termination) await withTimeout(termination, 'fs task worker cleanup')

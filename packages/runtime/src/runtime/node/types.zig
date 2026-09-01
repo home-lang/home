@@ -233,6 +233,18 @@ pub const StringOrBuffer = union(enum) {
         }
     }
 
+    /// Releases a value produced by a native filesystem operation when its JS
+    /// conversion is skipped during VM shutdown. Do not use this for argument
+    /// values: their `.buffer` variant may borrow a protected JS typed array.
+    pub fn deinitForShutdownResult(this: *StringOrBuffer) void {
+        switch (this.*) {
+            inline .threadsafe_string, .string => |*str| str.deinit(),
+            .encoded_slice => |*encoded| encoded.deinit(),
+            .buffer => |*buffer| buffer.destroy(),
+        }
+        this.* = .empty;
+    }
+
     pub fn fromJSMaybeAsync(global: *jsc.JSGlobalObject, allocator: std.mem.Allocator, value: jsc.JSValue, is_async: bool, allow_string_object: bool) JSError!?StringOrBuffer {
         return switch (value.jsType()) {
             .String,
