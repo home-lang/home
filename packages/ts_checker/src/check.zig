@@ -4491,6 +4491,12 @@ pub const Checker = struct {
     /// TS2742 (each currently dissolves into sequential non-nested evals
     /// with no live cycle). Not yet wired into any resolution path.
     type_resolutions: std.ArrayListUnmanaged(TypeResolution) = .empty,
+    /// Exact HIR child adjacency used when contextual rechecking invalidates
+    /// cached types below a function. Built lazily because most source files
+    /// never need a contextual second pass.
+    cached_type_child_offsets: std.ArrayListUnmanaged(u32) = .empty,
+    cached_type_children: std.ArrayListUnmanaged(NodeId) = .empty,
+    cached_type_clear_stack: std.ArrayListUnmanaged(NodeId) = .empty,
     /// Non-zero while lowering the object side of an indexed access when
     /// that object is syntactically a mapped type (`{ [P in K]: V }[K]`).
     /// tsc reports TS2615 from lazy mapped-symbol resolution; Home
@@ -6028,6 +6034,9 @@ pub const Checker = struct {
         self.type_arg_lower_in_progress.deinit(self.gpa);
         self.reported_circular_type_arg_nodes.deinit(self.gpa);
         self.type_resolutions.deinit(self.gpa);
+        self.cached_type_child_offsets.deinit(self.gpa);
+        self.cached_type_children.deinit(self.gpa);
+        self.cached_type_clear_stack.deinit(self.gpa);
         self.conditional_branch_check_names.deinit(self.gpa);
         self.reported_mapped_property_cycles.deinit(self.gpa);
         self.pending_instantiated_mapped_cycles.deinit(self.gpa);
@@ -118330,6 +118339,71 @@ pub const Checker = struct {
 
     fn clearCachedTypesWithin(self: *Checker, root: NodeId) void {
         if (root == hir_mod.none_node_id) return;
+        if (!self.ensureCachedTypeChildIndex()) {
+            self.clearCachedTypesWithinSlow(root);
+            return;
+        }
+        const stack = &self.cached_type_clear_stack;
+        stack.clearRetainingCapacity();
+        stack.append(self.gpa, root) catch {
+            self.clearCachedTypesWithinSlow(root);
+            return;
+        };
+        while (stack.pop()) |node| {
+            self.hir.setType(node, types.Primitive.none);
+            const start = self.cached_type_child_offsets.items[node];
+            const end = self.cached_type_child_offsets.items[node + 1];
+            stack.appendSlice(self.gpa, self.cached_type_children.items[start..end]) catch {
+                self.clearCachedTypesWithinSlow(root);
+                return;
+            };
+        }
+    }
+
+    fn ensureCachedTypeChildIndex(self: *Checker) bool {
+        const node_count = self.hir.nodeCount();
+        if (self.cached_type_child_offsets.items.len == @as(usize, node_count) + 1) return true;
+
+        var offsets: std.ArrayListUnmanaged(u32) = .empty;
+        var children: std.ArrayListUnmanaged(NodeId) = .empty;
+        var committed = false;
+        defer if (!committed) {
+            offsets.deinit(self.gpa);
+            children.deinit(self.gpa);
+        };
+        offsets.resize(self.gpa, @as(usize, node_count) + 1) catch return false;
+        @memset(offsets.items, 0);
+        var node: NodeId = 1;
+        while (node < node_count) : (node += 1) {
+            const parent = self.hir.parentOf(node);
+            if (parent == hir_mod.none_node_id or parent >= node_count or parent == node) continue;
+            offsets.items[@as(usize, parent) + 1] += 1;
+        }
+        for (offsets.items[1..], 0..) |*offset, index| {
+            offset.* += offsets.items[index];
+        }
+        const edge_count = offsets.items[node_count];
+        children.resize(self.gpa, @intCast(edge_count)) catch return false;
+        const next = self.gpa.dupe(u32, offsets.items[0..node_count]) catch return false;
+        defer self.gpa.free(next);
+        node = 1;
+        while (node < node_count) : (node += 1) {
+            const parent = self.hir.parentOf(node);
+            if (parent == hir_mod.none_node_id or parent >= node_count or parent == node) continue;
+            const child_index = next[parent];
+            children.items[child_index] = node;
+            next[parent] += 1;
+        }
+
+        self.cached_type_child_offsets.deinit(self.gpa);
+        self.cached_type_children.deinit(self.gpa);
+        self.cached_type_child_offsets = offsets;
+        self.cached_type_children = children;
+        committed = true;
+        return true;
+    }
+
+    fn clearCachedTypesWithinSlow(self: *Checker, root: NodeId) void {
         const root_span = self.hir.spanOf(root);
         const root_span_is_reliable = root_span.end > root_span.start;
         var node: NodeId = 0;
@@ -210542,6 +210616,49 @@ const StaticValueModuleResolver = struct {
         };
     }
 };
+
+test "checker: contextual cache clearing follows exact HIR child edges" {
+    const s = try newSetup(
+        \\const first = (value: string) => value;
+        \\const second = (value: number) => value;
+    );
+    defer destroySetup(s);
+    var first_arrow = hir_mod.none_node_id;
+    var node: NodeId = 1;
+    while (node < s.hir.nodeCount()) : (node += 1) {
+        if (s.hir.kindOf(node) == .arrow_fn) {
+            first_arrow = node;
+            break;
+        }
+    }
+    try T.expect(first_arrow != hir_mod.none_node_id);
+
+    node = 1;
+    while (node < s.hir.nodeCount()) : (node += 1) s.hir.setType(node, types.Primitive.number_t);
+    s.checker.clearCachedTypesWithin(first_arrow);
+    node = 1;
+    while (node < s.hir.nodeCount()) : (node += 1) {
+        const expected = if (s.checker.nodeIsAncestorOf(first_arrow, node))
+            types.Primitive.none
+        else
+            types.Primitive.number_t;
+        try T.expectEqual(expected, s.hir.typeOf(node));
+    }
+
+    const offsets_ptr = s.checker.cached_type_child_offsets.items.ptr;
+    node = 1;
+    while (node < s.hir.nodeCount()) : (node += 1) s.hir.setType(node, types.Primitive.string_t);
+    s.checker.clearCachedTypesWithin(first_arrow);
+    try T.expectEqual(offsets_ptr, s.checker.cached_type_child_offsets.items.ptr);
+    node = 1;
+    while (node < s.hir.nodeCount()) : (node += 1) {
+        const expected = if (s.checker.nodeIsAncestorOf(first_arrow, node))
+            types.Primitive.none
+        else
+            types.Primitive.string_t;
+        try T.expectEqual(expected, s.hir.typeOf(node));
+    }
+}
 
 test "checker: free type parameter queries traverse cycles without losing reachable parameters" {
     const s = try newSetup("export {};");
