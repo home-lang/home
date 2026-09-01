@@ -180,6 +180,29 @@ pub fn deinit(cp: *Cp) void {
     assert(cp.state == .done or cp.state == .waiting_write_err);
 }
 
+fn cancelForShutdown(this: *Cp) void {
+    switch (this.state) {
+        .exec => |*exec| {
+            if (bun.take(&exec.err)) |err| {
+                var owned_err = err;
+                owned_err.deinit(bun.default_allocator);
+            }
+            if (comptime bun.Environment.isWindows) {
+                for (exec.ebusy.tasks.items) |task| task.deinit();
+                exec.ebusy.deinit();
+            }
+        },
+        .ebusy => |*ebusy| {
+            if (comptime bun.Environment.isWindows) {
+                for (ebusy.state.tasks.items[ebusy.idx..]) |task| task.deinit();
+                ebusy.state.deinit();
+            }
+        },
+        .idle, .waiting_write_err, .done => {},
+    }
+    this.state = .done;
+}
+
 pub fn writeFailingError(this: *Cp, buf: []const u8, exit_code: ExitCode) Yield {
     if (this.bltn().stderr.needsIO()) |safeguard| {
         this.state = .waiting_write_err;
@@ -341,7 +364,17 @@ pub const ShellCpTask = struct {
 
     pub fn schedule(this: *@This()) void {
         debug("schedule", .{});
+        if (!this.event_loop.tryAddNativeWorkPoolJob()) {
+            this.cancelForShutdown();
+            return;
+        }
         WorkPool.schedule(&this.task);
+    }
+
+    pub fn cancelForShutdown(this: *ShellCpTask) void {
+        this.cp.cancelForShutdown();
+        this.deinit();
+        bun.shell.interpret.recordShutdownCancellation();
     }
 
     pub fn create(
@@ -418,6 +451,12 @@ pub const ShellCpTask = struct {
         }
     }
 
+    fn publishToEventLoopAndComplete(this: *ShellCpTask) void {
+        const event_loop = this.event_loop;
+        this.enqueueToEventLoop();
+        event_loop.completeNativeWorkPoolJob();
+    }
+
     pub fn runFromMainThread(this: *ShellCpTask) void {
         debug("runFromMainThread", .{});
         this.cp.onShellCpTaskDone(this);
@@ -432,7 +471,7 @@ pub const ShellCpTask = struct {
         var this: *@This() = @fieldParentPtr("task", task);
         if (this.runFromThreadPoolImpl()) |e| {
             this.err = e;
-            this.enqueueToEventLoop();
+            this.publishToEventLoopAndComplete();
             return;
         }
     }
@@ -575,12 +614,15 @@ pub const ShellCpTask = struct {
         return null;
     }
 
-    fn onSubtaskFinish(this: *ShellCpTask, err: Maybe(void)) void {
+    pub fn prepareSubtaskFinish(this: *ShellCpTask, err: Maybe(void)) void {
         debug("onSubtaskFinish", .{});
         if (err.asErr()) |e| {
             this.err = bun.shell.ShellErr.newSys(e);
         }
-        this.enqueueToEventLoop();
+    }
+
+    pub fn publishSubtaskFinish(this: *ShellCpTask) void {
+        this.publishToEventLoopAndComplete();
     }
 
     pub fn onCopyImpl(this: *ShellCpTask, src: [:0]const u8, dest: [:0]const u8) void {
@@ -610,7 +652,8 @@ pub const ShellCpTask = struct {
     }
 
     pub fn cpOnFinish(this: *ShellCpTask, result: Maybe(void)) void {
-        this.onSubtaskFinish(result);
+        this.prepareSubtaskFinish(result);
+        this.publishSubtaskFinish();
     }
 };
 

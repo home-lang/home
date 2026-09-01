@@ -20,6 +20,7 @@ concurrent_task: jsc.EventLoopTask,
 async_deinit: AsyncDeinitReader,
 is_reading: if (bun.Environment.isWindows) bool else u0 = if (bun.Environment.isWindows) false else 0,
 started: bool = false,
+pollable: bool,
 
 pub const ChildPtr = IOReaderChildPtr;
 pub const ReaderImpl = bun.io.BufferedReader;
@@ -56,6 +57,13 @@ pub fn loop(this: *IOReader) *bun.Async.Loop {
 }
 
 pub fn init(fd: bun.FD, evtloop: jsc.EventLoopHandle) *IOReader {
+    const pollable = if (bun.Environment.isPosix)
+        switch (bun.sys.fstat(fd)) {
+            .result => |stat| bun.shell.interpret.isPollable(fd, stat.mode),
+            .err => false,
+        }
+    else
+        false;
     const this = bun.new(IOReader, .{
         .ref_count = .init(),
         .fd = fd,
@@ -63,6 +71,7 @@ pub fn init(fd: bun.FD, evtloop: jsc.EventLoopHandle) *IOReader {
         .evtloop = evtloop,
         .concurrent_task = jsc.EventLoopTask.fromEventLoop(evtloop),
         .async_deinit = .{},
+        .pollable = pollable,
     });
     log("IOReader(0x{x}, fd={f}) create", .{ @intFromPtr(this), fd });
 
@@ -80,11 +89,14 @@ pub fn init(fd: bun.FD, evtloop: jsc.EventLoopHandle) *IOReader {
 
 /// Idempotent function to start the reading
 pub fn start(this: *IOReader) Yield {
+    if (bun.Environment.isPosix and this.started and !this.pollable) return .suspended;
     this.started = true;
     if (bun.Environment.isPosix) {
         if (this.reader.handle == .closed or !this.reader.handle.poll.isRegistered()) {
-            if (this.reader.start(this.fd, true).asErr()) |e| {
+            if (this.reader.start(this.fd, this.pollable).asErr()) |e| {
                 this.onReaderError(e);
+            } else if (!this.pollable) {
+                this.reader.read();
             }
         }
         return .suspended;

@@ -736,7 +736,10 @@ pub fn NewAsyncCpTask(comptime is_shell: bool) type {
 
             if (this.evtloop == .js) {
                 if (comptime is_shell) {
-                    this.evtloop.enqueueTaskConcurrent(.{ .js = jsc.ConcurrentTask.fromCallback(this, runFromJSThread) });
+                    const shelltask = this.shelltask;
+                    shelltask.prepareSubtaskFinish(this.result);
+                    this.deinit();
+                    shelltask.publishSubtaskFinish();
                 } else {
                     const vm = this.evtloop.bunVM().?;
                     vm.eventLoop().enqueueTaskConcurrent(jsc.ConcurrentTask.create(this.any_task.task()));

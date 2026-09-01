@@ -4661,6 +4661,7 @@ pub const TestingAPIs = struct {
 
     pub fn disabledOnThisPlatform(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
         if (comptime bun.Environment.isWindows) return .false;
+        if (bun.feature_flag.BUN_ENABLE_EXPERIMENTAL_SHELL_BUILTINS.get()) return .false;
 
         const arguments_ = callframe.arguments_old(1);
         var arguments = jsc.CallFrame.ArgumentsSlice.init(globalThis.bunVM(), arguments_.slice());
