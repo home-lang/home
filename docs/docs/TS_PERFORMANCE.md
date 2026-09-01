@@ -58,6 +58,67 @@ other directional labels also compare means, not certainty. These are local
 synthetic measurements, not a claim that every real project or machine has
 the same speedup.
 
+### Free-type traversal generation marks (rejected)
+
+After the root memo failed, the same retained profile still showed hash-table
+`getOrPut` work inside `containsFreeTypeParameter`'s cycle detector. The
+rejected follow-up kept the graph walk and every query boundary unchanged, but
+used each dense TypeId as an index into a checker-local generation-mark array.
+The first form used `u32` marks. A second form used byte epochs and cleared the
+array on generation 255, reducing the dense scratch footprint by 75%. This was
+not a semantic result cache: every query still traversed its reachable graph.
+Allocation failure continued to return the original conservative answer.
+
+The fixed accepted baseline binary is SHA-256
+`cf7fab7977de31aaaf298cf54a316082ab3e0dd6523f1b37ec53b99e2f0dfc71`.
+The `u32` candidate was
+`06b0551f2960e047f91f905aee9e291854d3b72b12c058e3e6f6163b0f9620da`;
+the byte candidate was
+`b78ee20f1a2513e62406a5c578a613bd1191d166809e11249f64e957206a5759`.
+The focused ReleaseFast cyclic-graph regression passed for positive and
+negative answers, and the byte form additionally forced the rollover path.
+Baseline and both candidates exited zero with byte-identical empty stdout and
+stderr on the unchanged official project.
+
+The `u32` screen retained all ten reversed-order pairs after three alternating
+warmup pairs:
+
+| Official 2,048-family `u32` A/B, 10 pairs | Baseline | Candidate | Result | Paired 95% CI |
+|---|---:|---:|---:|---:|
+| Wall | 217.880 ± 2.309 ms | **216.312 ± 2.383 ms** | 1.0072×; 6/10 candidate wins | -0.207 to +3.489 ms |
+| CPU | 216.859 ± 2.201 ms | **215.214 ± 2.372 ms** | 1.0076×; 7/10 candidate wins | -0.064 to +3.470 ms |
+| Peak RSS | **75.372 ± 0.307 MiB** | 75.667 ± 0.008 MiB | 0.9961×; 0/10 candidate wins | **-0.473 to -0.117 MiB** |
+
+The timing intervals crossed zero and RSS was conclusively higher, so that
+representation failed. The byte refinement passed its ten-pair screen:
+
+| Official 2,048-family byte A/B, 10 pairs | Baseline | Candidate | Result | Paired 95% CI |
+|---|---:|---:|---:|---:|
+| Wall | 219.519 ± 4.105 ms | **214.639 ± 2.170 ms** | **1.0227×; 10/10 candidate wins** | **+2.584 to +7.245 ms** |
+| CPU | 218.253 ± 3.884 ms | **213.514 ± 1.971 ms** | **1.0222×; 10/10 candidate wins** | **+2.563 to +6.991 ms** |
+| Peak RSS | 75.089 ± 0.008 MiB | **74.977 ± 0.117 MiB** | 1.0015×; 5/10 candidate wins | **+0.044 to +0.183 MiB** |
+
+The required independent 30-pair confirmation did not reproduce a certain
+timing improvement:
+
+| Official 2,048-family byte A/B, 30 pairs | Baseline | Candidate | Result | Paired 95% CI |
+|---|---:|---:|---:|---:|
+| Wall | 219.443 ± 3.498 ms | **218.508 ± 6.756 ms** | 1.0043×; 23/30 candidate wins | -1.382 to +2.543 ms |
+| CPU | 218.265 ± 3.408 ms | **217.191 ± 6.019 ms** | 1.0049×; 23/30 candidate wins | -0.868 to +2.469 ms |
+| Peak RSS | 75.080 ± 0.011 MiB | **74.975 ± 0.111 MiB** | 1.0014×; 15/30 candidate wins | **+0.069 to +0.142 MiB** |
+
+No repository test workload was active in either screen or at the start of
+confirmation. An unrelated `tools/test_representative_matrix.ts` process
+appeared in the final confirmation snapshot. Every sample remains retained;
+paired order reversal and the failed timing intervals avoid attributing or
+discarding individual rounds. Both source forms and the rollover regression
+were fully reverted, and no scale run, source commit, or competitor checkpoint
+was admitted. Frozen binaries, exact outputs, load snapshots, and all timing
+rounds are retained under
+`bench/vs_tsgo/results/free-type-parameter-generation-marks.20260901T105309Z/`
+and
+`bench/vs_tsgo/results/free-type-parameter-byte-generation-marks.20260901T111418Z/`.
+
 ### Free-type-parameter root memo (rejected)
 
 The retained profile showed repeated `containsFreeTypeParameter` graph walks in
