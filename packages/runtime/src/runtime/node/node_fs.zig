@@ -344,7 +344,8 @@ pub const Async = struct {
             ReturnType == bun.jsc.Node.StatFS or
             ReturnType == StringOrUndefined or
             ReturnType == jsc.ZigString or
-            ReturnType == StringOrBuffer;
+            ReturnType == StringOrBuffer or
+            ReturnType == FD;
         return struct {
             pub const Task = @This();
 
@@ -474,6 +475,8 @@ pub const Async = struct {
                     this.result.result.deinitGlobal();
                 } else if (comptime ReturnType == StringOrBuffer) {
                     this.result.result.deinitForShutdownResult();
+                } else if (comptime ReturnType == FD) {
+                    this.result.result.close();
                 }
             }
 
