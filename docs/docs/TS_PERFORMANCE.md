@@ -350,18 +350,59 @@ secondary observations neither strengthen nor weaken the accepted standard
 workload result. Raw evidence is under
 `bench/vs_tsgo/results/dependency-free-declarations.20260901T022352Z/`.
 
-The independent focused three-compiler checkpoint `20260901T024321Z` compares
-version-verified TS 6.0.3, native TS 7.0.2, and the same immutable Home binary:
+### Source-marker root-gap fast-forward
+
+Commit `7ca9946c8`, tracked in
+[#416](https://github.com/home-lang/home/issues/416), keeps the accepted exact
+Aho–Corasick source-marker matcher and fast-forwards only gaps that are proven
+to remain at its root. The matcher computes the distinct first bytes of every
+registered marker at compile time. While the automaton is at state zero,
+`std.mem.indexOfAnyPos` skips to the next possible first byte in bulk. Every
+possible prefix, failure transition, overlapping match, suffix match, and
+first-occurrence position still uses the unchanged automaton. This is not the
+previous rejected trie replacement and does not add a semantic feature gate.
+
+The immutable accepted baseline is SHA-256
+`83f48045ba8dc697177eb2d6d453409cb06ae44167d094b6d70ed6e1dec25e7e`;
+the root-gap candidate is
+`60e10affa923acd3265511f91f248277cf7bbf70e28508ff1bf903b8761bf2a2`.
+Both exit zero with byte-identical empty stdout and stderr on the official
+2,048-family and unchanged 65,536-family predicate projects. The focused exact
+marker tests, full ReleaseFast checker, driver, and Program suites, all
+**95/95** harness tests, and every positive and negative admission gate for all
+20 workloads pass.
+
+The unchanged official `type_predicates_large` A/B retained all 30
+reversed-order pairs after three alternating warmup pairs. No sample was
+filtered. Wall time falls from **240.611 ± 3.256 ms** to
+**237.311 ± 5.460 ms** (**1.0139×**, 27/30 candidate wins), with a paired 95%
+interval of **+1.558 to +5.040 ms**. Process CPU falls from
+**238.928 ± 3.153 ms** to **235.592 ± 4.990 ms** (**1.0142×**, 26/30), with
+an interval of **+1.716 to +4.956 ms**.
+
+The independent 65,536-family screen retained all ten pairs with the starting
+order reversed. Wall falls from 8747.426 ± 109.663 ms to
+8626.257 ± 116.604 ms (**1.0140×**, 8/10), with a paired interval of
+**+40.535 to +201.804 ms**. Process CPU falls from
+8715.280 ± 81.749 ms to 8591.872 ± 96.556 ms (**1.0144×**, 9/10), with an
+interval of **+65.075 to +181.743 ms**. Raw exact outputs and every A/B round
+remain under
+`bench/vs_tsgo/results/source-marker-root-skip.20260901T025847Z/`.
+
+The independent focused three-compiler checkpoint `20260901T031352Z` compares
+version-verified TS 6.0.3, native TS 7.0.2, and the latest immutable Home binary:
 
 | Focused `type_predicates_large` | tsc 6.0.3 | native TS 7.0.2 | Home 0.1.0 | Home vs fastest competitor |
 |---|---:|---:|---:|---:|
-| 30 interleaved rounds | 1147.4 ± 290.2 ms | 398.4 ± 50.3 ms | **266.8 ± 50.8 ms** | **1.49× faster** |
+| 30 interleaved rounds | 1242.7 ± 414.8 ms | 413.2 ± 84.6 ms | **267.8 ± 36.4 ms** | **1.54× faster** |
 
 Home beats native TS 7 in 29/30 focused pairs and TS 6 in 30/30. The paired
-native-TS-7-minus-Home 95% interval is +111.5 to +151.8 ms. All 30 round files
+native-TS-7-minus-Home 95% interval is +111.6 to +179.2 ms. All 30 round files
 / 90 successful finite samples are retained, and compiler provenance is
-unchanged before and after measurement. The complete 20-workload checkpoint
-using the same binary is the [current snapshot](#current-snapshot).
+unchanged before and after measurement. The immediately preceding complete
+20-workload checkpoint is the [current snapshot](#current-snapshot); all 20
+admission gates pass on this newer binary, while its focused timing remains
+separate rather than replacing or being pooled with that full checkpoint.
 
 ## Linux ARM64 container checkpoint
 
