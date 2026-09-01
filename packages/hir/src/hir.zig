@@ -1365,6 +1365,20 @@ pub const Hir = struct {
         return self;
     }
 
+    /// Reserve the hot node columns and child-edge pool before parsing.
+    /// A lexical token is a conservative capacity estimate for the HIR node
+    /// or child relation it can produce. Parser recovery may exceed the hint;
+    /// ordinary ArrayList growth remains the exact fallback in that case.
+    pub fn reserveForTokenCount(self: *Hir, token_count: usize) !void {
+        const capacity = std.math.add(usize, token_count, 1) catch return error.OutOfMemory;
+        try self.kinds.ensureTotalCapacity(self.gpa, capacity);
+        try self.spans.ensureTotalCapacity(self.gpa, capacity);
+        try self.parents.ensureTotalCapacity(self.gpa, capacity);
+        try self.types.ensureTotalCapacity(self.gpa, capacity);
+        try self.payloads.ensureTotalCapacity(self.gpa, capacity);
+        try self.child_pool.ensureTotalCapacity(self.gpa, capacity);
+    }
+
     pub fn deinit(self: *Hir) void {
         self.kinds.deinit(self.gpa);
         self.spans.deinit(self.gpa);
@@ -3703,6 +3717,29 @@ test "Hir: init reserves index 0 in every column" {
     try t.expectEqual(NodeKind.none, hir.kindOf(none_node_id));
     try t.expectEqual(reserved_type_ids.none, hir.typeOf(none_node_id));
     try t.expectEqual(none_node_id, hir.parentOf(none_node_id));
+}
+
+test "Hir: token reservation preserves sentinel lengths and node identity" {
+    const t = std.testing;
+    var hir = try Hir.init(t.allocator);
+    defer hir.deinit();
+
+    try hir.reserveForTokenCount(128);
+    try t.expectEqual(@as(usize, 1), hir.kinds.items.len);
+    try t.expectEqual(@as(usize, 1), hir.spans.items.len);
+    try t.expectEqual(@as(usize, 1), hir.parents.items.len);
+    try t.expectEqual(@as(usize, 1), hir.types.items.len);
+    try t.expectEqual(@as(usize, 1), hir.payloads.items.len);
+    try t.expectEqual(@as(usize, 1), hir.child_pool.items.len);
+    try t.expect(hir.kinds.capacity >= 129);
+    try t.expect(hir.child_pool.capacity >= 129);
+
+    var builder = Builder.init(&hir);
+    defer builder.deinit();
+    const node = try builder.addIdentifier(.{ .start = 2, .end = 6 }, 42);
+    try t.expectEqual(@as(NodeId, 1), node);
+    try t.expectEqual(NodeKind.identifier, hir.kindOf(node));
+    try t.expectEqual(@as(StringId, 42), identifierOf(&hir, node).name);
 }
 
 test "Hir: build a small program and read it back" {

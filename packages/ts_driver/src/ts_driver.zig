@@ -2059,6 +2059,12 @@ pub fn prepareSource(
     };
     errdefer c.tokens.deinit(gpa);
 
+    // Tokenization gives parsing a source-proportional upper estimate for
+    // hot HIR storage. Reserve once so the parallel node columns and child
+    // edge pool do not independently reallocate and copy the same growing
+    // source graph. Recovery can still grow beyond this exact hint.
+    c.hir.reserveForTokenCount(c.tokens.items.len) catch return error.OutOfMemory;
+
     // Drain scanner diagnostics.
     for (scanner.diagnostics.items) |d| {
         if (options.is_tsx and scannerDiagnosticIsSuppressedInJsxText(d.message) and
