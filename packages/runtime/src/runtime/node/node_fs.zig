@@ -1025,6 +1025,7 @@ pub const AsyncReaddirRecursiveTask = struct {
     args: Arguments.Readdir,
     globalObject: *jsc.JSGlobalObject,
     task: jsc.WorkPoolTask = .{ .callback = &workPoolCallback },
+    any_task: jsc.AnyTask = undefined,
     ref: bun.Async.KeepAlive = .{},
     tracker: jsc.Debugger.AsyncTaskTracker,
 
@@ -1142,13 +1143,19 @@ pub const AsyncReaddirRecursiveTask = struct {
                 .buffers => .{ .buffers = std.array_list.Managed(Buffer).init(bun.default_allocator) },
             },
         });
+        const promise_value = task.promise.value();
+        task.any_task = jsc.AnyTask.NewWithShutdown(AsyncReaddirRecursiveTask, &runFromJSThread, &cancelForShutdown).init(task);
         task.ref.ref(vm);
         task.args.toThreadSafe();
         task.tracker.didSchedule(globalObject);
 
+        if (!vm.native_work_pool_jobs.tryAdd()) {
+            task.cancelForShutdown();
+            return promise_value;
+        }
         jsc.WorkPool.schedule(&task.task);
 
-        return task.promise.value();
+        return promise_value;
     }
 
     pub fn performWork(this: *AsyncReaddirRecursiveTask, basename: [:0]const u8, buf: *bun.PathBuffer, comptime is_root: bool) void {
@@ -1286,7 +1293,9 @@ pub const AsyncReaddirRecursiveTask = struct {
             }
         }
 
-        this.globalObject.bunVMConcurrently().enqueueTaskConcurrent(jsc.ConcurrentTask.create(jsc.Task.init(this)));
+        const vm = this.globalObject.bunVMConcurrently();
+        vm.eventLoop().enqueueTaskConcurrent(jsc.ConcurrentTask.create(this.any_task.task()));
+        vm.native_work_pool_jobs.complete();
     }
 
     fn clearResultList(this: *AsyncReaddirRecursiveTask) void {
@@ -1338,6 +1347,11 @@ pub const AsyncReaddirRecursiveTask = struct {
         }
     }
 
+    pub fn cancelForShutdown(this: *AsyncReaddirRecursiveTask) void {
+        this.tracker.didCancel(this.globalObject);
+        this.deinit();
+    }
+
     pub fn deinit(this: *AsyncReaddirRecursiveTask) void {
         bun.assert(this.root_fd == bun.invalid_fd); // should already have closed it
         if (this.pending_err) |*err| {
@@ -1345,7 +1359,7 @@ pub const AsyncReaddirRecursiveTask = struct {
         }
 
         this.ref.unref(this.globalObject.bunVM());
-        this.args.deinit();
+        this.args.deinitAndUnprotect();
         bun.default_allocator.free(this.root_path.slice());
         this.clearResultList();
         this.promise.deinit();

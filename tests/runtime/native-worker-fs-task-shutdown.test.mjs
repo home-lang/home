@@ -105,6 +105,22 @@ assert.equal(
   ),
   true,
 )
+assert.equal(
+  (await withTimeout(readdir(root, { recursive: true }), 'normal fs recursive readdir strings')).includes(join('normal', 'nested')),
+  true,
+)
+assert.equal(
+  (await withTimeout(readdir(root, { encoding: 'buffer', recursive: true }), 'normal fs recursive readdir buffers')).some(
+    entry => new TextDecoder().decode(entry) === join('normal', 'nested'),
+  ),
+  true,
+)
+assert.equal(
+  (await withTimeout(readdir(root, { recursive: true, withFileTypes: true }), 'normal fs recursive readdir dirents')).some(
+    entry => entry.name === 'nested' && entry.isDirectory(),
+  ),
+  true,
+)
 assert.equal(getEventLoopStats().nativeWorkPoolJobs, 0)
 
 const workerSource = `
@@ -138,6 +154,9 @@ const workerSource = `
     void readdir(workerData.root);
     void readdir(workerData.root, { encoding: 'buffer' });
     void readdir(workerData.root, { withFileTypes: true });
+    void readdir(workerData.root, { recursive: true });
+    void readdir(workerData.root, { encoding: 'buffer', recursive: true });
+    void readdir(workerData.root, { recursive: true, withFileTypes: true });
     read(workerData.fd, Buffer.alloc(1), 0, 1, 0, () => {});
     readv(workerData.fd, [Buffer.alloc(1)], 1, () => {});
     write(workerData.fd, Buffer.from('N'), 0, 1, 0, () => {});
@@ -167,7 +186,7 @@ try {
 
     try {
       const [armed] = await withTimeout(once(worker, 'message'), 'fs task worker arm')
-      assert.deepEqual(armed, { jobs: probeCount + 23 })
+      assert.deepEqual(armed, { jobs: probeCount + 26 })
 
       let terminated = false
       termination = worker.terminate().then(exitCode => {
@@ -183,7 +202,7 @@ try {
       const exitCode = await withTimeout(termination, 'fs task worker termination')
       assert.equal(typeof exitCode, 'number')
       assert.equal(getEventLoopStats().completedNativeWorkPoolProbeTasks, before.completedNativeWorkPoolProbeTasks + probeCount)
-      assert.equal(getEventLoopStats().cancelledAnyTasks, before.cancelledAnyTasks + 23)
+      assert.equal(getEventLoopStats().cancelledAnyTasks, before.cancelledAnyTasks + 26)
     } finally {
       if (!released) getEventLoopStats(false, false, true)
       if (termination) await withTimeout(termination, 'fs task worker cleanup')
