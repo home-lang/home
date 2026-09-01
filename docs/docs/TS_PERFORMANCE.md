@@ -58,6 +58,53 @@ other directional labels also compare means, not certainty. These are local
 synthetic measurements, not a claim that every real project or machine has
 the same speedup.
 
+### Stable pool-index inference (rejected)
+
+The retained post-reservation profile attributed 19 direct samples in
+`inferFromPair` to copying object-member slices. Those copies prevent recursive
+inference from retaining a slice across interner growth, because growth can
+relocate the backing array. The rejected probe instead copied each current
+member value immediately before recursion and re-fetched the next value using
+the payload's stable pool offset. It applied the same representation rule to
+parameter unions, parameter intersections, argument unions, and parameter
+objects; no inference branch, member order, or diagnostic rule changed.
+
+The fixed accepted baseline binary is SHA-256
+`8bc94b0b9187865ab8ff38a29b1e25a57f8eb9f603453b3177ca5b41ec79f8b0`;
+the experimental candidate was
+`9d98cec9ef1b1c8a6928a9ad57c8975d750a2ee21779c2bdbc4e80d0802fee51`.
+A focused recursive-inference regression and the complete ReleaseFast
+`ts_checker` suite passed. Baseline and candidate also exited zero with
+byte-identical empty stdout and stderr on the unchanged official project.
+
+The official screen and independent confirmation each used three alternating
+warmup pairs, reversed process order in every measured pair, and retained
+every successful finite sample. Paired intervals are
+baseline-minus-candidate:
+
+| Official 2,048-family A/B | Metric | Baseline | Candidate | Result | Paired 95% CI |
+|---|---|---:|---:|---:|---:|
+| 10-pair screen | Wall | 215.851 ± 2.596 ms | **213.636 ± 2.078 ms** | **1.0104×; 10/10 wins** | **+1.473 to +2.968 ms** |
+| 10-pair screen | CPU | 214.688 ± 2.529 ms | **212.560 ± 2.045 ms** | **1.0100×; 10/10 wins** | **+1.484 to +2.824 ms** |
+| 30-pair confirmation | Wall | 222.219 ± 13.030 ms | **218.938 ± 8.714 ms** | 1.0150×; 20/30 wins | -1.575 to +8.838 ms |
+| 30-pair confirmation | CPU | 219.641 ± 7.267 ms | **217.443 ± 7.563 ms** | 1.0101×; 20/30 wins | -1.203 to +5.471 ms |
+
+Mean peak RSS favored the candidate in both sets. The screen measured 75.086
+± 0.008 MiB versus 74.873 ± 0.229 MiB (baseline-minus-candidate interval
++0.084 to +0.341 MiB); confirmation measured 75.085 ± 0.010 MiB versus
+74.874 ± 0.216 MiB (interval +0.139 to +0.284 MiB).
+
+The screen began with Spotlight occupying one core and ended with an unrelated
+Typesense process also using most of a core. By the confirmation's final load
+snapshot, unrelated git, FSEvents, Typesense, and MySQL processes were active.
+That activity plausibly widened the timing spread, but no sample was removed,
+replaced, or selectively rerun. Because both confirmation timing intervals
+cross zero, the candidate failed its precommitted admission rule. The source
+probe and regression were fully reverted; no scale run, source commit, or
+competitor checkpoint was admitted. Frozen binaries, exact outputs, load
+snapshots, and all 40 timing pairs are retained under
+`bench/vs_tsgo/results/inference-stable-pool-index.20260901T095901Z/`.
+
 ### Broad checker-directive marker gates (rejected)
 
 After rejecting exact directive-marker expansion, a smaller follow-up reused
