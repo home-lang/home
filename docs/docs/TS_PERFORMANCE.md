@@ -10,42 +10,44 @@ Ongoing coverage and optimization work is tracked in
 
 ## Current snapshot
 
-Measured 2026-08-31 at commit `5efbd19df` on an Apple M3 Pro MacBook Pro
+Measured 2026-09-01 at commit `49641900e` on an Apple M3 Pro MacBook Pro
 (11 cores, 18 GB RAM, arm64, macOS 27.0). Each value is the mean and sample
 standard deviation of 30 new compiler processes after three warmup rounds.
-The complete raw-result identifier is `20260831T215035Z`. The runner first
+The complete raw-result identifier is `20260901T013443Z`. The runner first
 admitted all 20 selected workloads against version-checked TS **6.0.3**, native
 TS **7.0.2**, and Home. Native TS 7 and `tsgo` are one competitor. All **600
 round files / 1,800 successful finite samples** are retained without filtering.
 
 | Workload | tsc 6.0.3 | native TS 7.0.2 | Home 0.1.0 | Home vs fastest competitor |
 |---|---:|---:|---:|---:|
-| `checkjs_jsdoc` | 221.7 ± 13.6 ms | 56.8 ± 2.5 ms | **34.8 ± 1.2 ms** | **1.63× faster** |
-| `class_hierarchy` | 225.5 ± 34.4 ms | 60.2 ± 8.6 ms | **28.6 ± 2.0 ms** | **2.10× faster** |
-| `commonjs_graph` | 161.0 ± 6.7 ms | 51.9 ± 4.2 ms | **34.6 ± 1.7 ms** | **1.50× faster** |
-| `control_flow` | 215.5 ± 10.5 ms | 65.0 ± 1.1 ms | **32.2 ± 0.7 ms** | **2.02× faster** |
-| `deep_types` | 160.5 ± 10.1 ms | 63.7 ± 5.0 ms | **28.9 ± 2.0 ms** | **2.21× faster** |
-| `destructuring` | 166.2 ± 7.4 ms | 55.2 ± 2.1 ms | **18.5 ± 0.5 ms** | **2.98× faster** |
-| `generic_calls` | 204.3 ± 7.6 ms | 63.7 ± 9.3 ms | **22.3 ± 0.7 ms** | **2.86× faster** |
-| `import_graph` | 168.9 ± 37.8 ms | 58.4 ± 10.2 ms | **25.3 ± 4.2 ms** | **2.31× faster** |
-| `interface_composition` | 221.3 ± 27.3 ms | 67.6 ± 4.6 ms | **43.0 ± 3.0 ms** | **1.57× faster** |
-| `many_files` | 231.1 ± 13.1 ms | 58.2 ± 2.6 ms | **26.4 ± 6.1 ms** | **2.20× faster** |
-| `null_safe_access` | 235.7 ± 22.4 ms | 66.4 ± 4.0 ms | **37.8 ± 2.9 ms** | **1.76× faster** |
-| `overload_resolution` | 245.8 ± 10.9 ms | 74.1 ± 2.7 ms | **30.2 ± 1.3 ms** | **2.45× faster** |
-| `recursive_generics` | 161.8 ± 12.3 ms | 77.7 ± 9.9 ms | **15.1 ± 0.6 ms** | **5.15× faster** |
-| `reexport_graph` | 110.7 ± 4.6 ms | 47.4 ± 2.9 ms | **22.6 ± 1.6 ms** | **2.10× faster** |
-| `startup` | 85.4 ± 46.6 ms | 45.8 ± 15.4 ms | **3.8 ± 1.1 ms** | **12.06× faster** |
-| `structural_objects` | 193.6 ± 7.5 ms | 60.0 ± 2.5 ms | **25.2 ± 0.7 ms** | **2.38× faster** |
-| `tsx_components` | 186.2 ± 8.3 ms | 53.2 ± 2.0 ms | **23.4 ± 0.7 ms** | **2.27× faster** |
-| `type_predicates` | 269.6 ± 15.3 ms | 79.2 ± 3.8 ms | **35.7 ± 1.7 ms** | **2.22× faster** |
-| `type_predicates_large` | 1136.2 ± 132.3 ms | 395.2 ± 39.6 ms | **263.7 ± 11.2 ms** | **1.50× faster** |
-| `variadic_tuples` | 265.6 ± 9.3 ms | 81.0 ± 2.9 ms | **36.2 ± 0.9 ms** | **2.24× faster** |
+| `checkjs_jsdoc` | 238.5 ± 11.0 ms | 60.8 ± 2.8 ms | **37.4 ± 1.9 ms** | **1.63× faster** |
+| `class_hierarchy` | 267.5 ± 104.4 ms | 75.8 ± 33.1 ms | **34.7 ± 16.6 ms** | **2.18× faster** |
+| `commonjs_graph` | 179.9 ± 10.7 ms | 55.7 ± 2.4 ms | **30.4 ± 3.0 ms** | **1.83× faster** |
+| `control_flow` | 359.9 ± 171.0 ms | 106.4 ± 67.6 ms | **60.1 ± 60.4 ms** | **1.77× faster** |
+| `deep_types` | 232.4 ± 183.1 ms | 74.7 ± 11.9 ms | **34.3 ± 8.2 ms** | **2.17× faster** |
+| `destructuring` | 148.8 ± 3.5 ms | 50.5 ± 1.7 ms | **17.3 ± 0.4 ms** | **2.93× faster** |
+| `generic_calls` | 436.3 ± 187.7 ms | 106.3 ± 40.1 ms | **37.9 ± 14.2 ms** | **2.81× faster** |
+| `import_graph` | 181.2 ± 22.7 ms | 62.2 ± 8.3 ms | **29.7 ± 8.8 ms** | **2.09× faster** |
+| `interface_composition` | 235.1 ± 17.7 ms | 70.6 ± 4.6 ms | **44.4 ± 2.4 ms** | **1.59× faster** |
+| `many_files` | 478.5 ± 132.7 ms | 109.9 ± 35.6 ms | **43.8 ± 11.4 ms** | **2.51× faster** |
+| `null_safe_access` | 228.4 ± 18.8 ms | 66.5 ± 4.2 ms | **38.6 ± 3.5 ms** | **1.73× faster** |
+| `overload_resolution` | 219.8 ± 6.6 ms | 68.4 ± 1.8 ms | **28.1 ± 1.1 ms** | **2.44× faster** |
+| `recursive_generics` | 166.3 ± 5.1 ms | 77.1 ± 2.2 ms | **15.6 ± 0.5 ms** | **4.95× faster** |
+| `reexport_graph` | 140.5 ± 47.0 ms | 55.7 ± 14.5 ms | **27.3 ± 8.0 ms** | **2.04× faster** |
+| `startup` | 116.9 ± 50.1 ms | 62.5 ± 15.2 ms | **6.8 ± 7.5 ms** | **9.21× faster** |
+| `structural_objects` | 208.9 ± 12.2 ms | 66.2 ± 11.5 ms | **27.7 ± 5.6 ms** | **2.39× faster** |
+| `tsx_components` | 242.5 ± 53.2 ms | 64.9 ± 13.9 ms | **28.0 ± 5.9 ms** | **2.32× faster** |
+| `type_predicates` | 316.0 ± 56.8 ms | 87.3 ± 7.9 ms | **39.0 ± 4.3 ms** | **2.24× faster** |
+| `type_predicates_large` | 1455.3 ± 369.1 ms | 484.6 ± 128.8 ms | **329.4 ± 93.3 ms** | **1.47× faster** |
+| `variadic_tuples` | 317.7 ± 41.9 ms | 90.1 ± 8.3 ms | **40.4 ± 3.6 ms** | **2.23× faster** |
 
 Home records lower means on **20/20 admitted workloads** and lower paired times
-in **600/600 rounds**. Every row's paired 95% confidence interval for the
+in **598/600 rounds**. The two individual non-wins are one `control_flow`
+round and one `type_predicates_large` round; neither was removed or rerun.
+Every row's paired 95% confidence interval for the
 fastest-competitor-minus-Home difference is above zero. The narrowest mean
-lead is **1.50×**, shared by `commonjs_graph` and `type_predicates_large`; this
-is still not evidence of universal leadership. These are local
+lead is **1.47×** on `type_predicates_large`; this is still not evidence of
+universal leadership. These are local
 synthetic results; real projects, other platforms, and broader rejection
 coverage remain separate validation work. Historical snapshots, including
 losses, remain in the checkpoint sections below and are not averaged into this
@@ -109,9 +111,9 @@ before and after timing, and used 30 interleaved rounds after three warmups:
 | `commonjs_graph` | 263.0 ± 48.8 ms | 83.9 ± 27.9 ms | **42.9 ± 10.5 ms** | **1.95× faster** |
 
 Home won 30/30 paired rounds against both references. The paired native-TS-7
-minus Home interval is **+32.3 to +49.7 ms**. This focused run does not replace
-the 20-workload qualified snapshot above; it isolates the changed workload on
-the same host under the load present for this admission.
+minus Home interval is **+32.3 to +49.7 ms**. This focused admission run was
+followed by the full qualified snapshot above; it separately isolates the
+changed workload on the same host.
 
 Correctness gates passed the full ReleaseFast checker suite, all 95 benchmark
 harness tests, and three untimed cross-compiler audits: 198 CommonJS instance
