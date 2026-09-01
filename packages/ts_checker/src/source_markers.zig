@@ -39,6 +39,29 @@ pub fn Matcher(comptime needles: []const []const u8) type {
         }
         break :blk .{ .classes = classes, .count = count };
     };
+    const root_byte_count = blk: {
+        var present: [256]bool = @splat(false);
+        var count: usize = 0;
+        for (needles) |needle| {
+            if (present[needle[0]]) continue;
+            present[needle[0]] = true;
+            count += 1;
+        }
+        break :blk count;
+    };
+    const root_bytes = blk: {
+        var present: [256]bool = @splat(false);
+        var result: [root_byte_count]u8 = undefined;
+        var count: usize = 0;
+        for (needles) |needle| {
+            const byte = needle[0];
+            if (present[byte]) continue;
+            present[byte] = true;
+            result[count] = byte;
+            count += 1;
+        }
+        break :blk result;
+    };
     return struct {
         const Self = @This();
         const absent = std.math.maxInt(usize);
@@ -96,7 +119,15 @@ pub fn Matcher(comptime needles: []const []const u8) type {
             var result: Self = .{};
             var state: u16 = 0;
             var seen: u64 = 0;
-            for (source, 0..) |byte, i| {
+            var i: usize = 0;
+            while (i < source.len) : (i += 1) {
+                // At the root, a byte outside this exact start set cannot
+                // enter any marker prefix. Let the standard-library search
+                // skip that guaranteed root-state gap in bulk.
+                if (state == 0) {
+                    i = std.mem.indexOfAnyPos(u8, source, i, &root_bytes) orelse break;
+                }
+                const byte = source[i];
                 state = automaton.transitions[state][alphabet.classes[byte]];
                 var fresh = automaton.outputs[state] & ~seen;
                 seen |= fresh;
