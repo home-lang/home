@@ -729,6 +729,86 @@ scale timing, source commit, or compiler checkpoint was admitted. Both the
 excluded loaded set and every clean round remain under
 `declaration-name-inline.20260901T154420Z/`.
 
+### Import-free virtual-import gate
+
+Commit [`83c44368c`](https://github.com/home-lang/home/commit/83c44368c),
+tracked in [#416](https://github.com/home-lang/home/issues/416), removes the
+next independently profiled root scan. The accepted-code 8,192-family profile
+recorded 293 exclusive samples in `virtualImportTypeForLocal`. Identifier
+resolution called that helper repeatedly, and it walked every root statement
+even when the attached source's exact marker index had already proved that no
+`import` token existed.
+
+The helper now returns the exact negative result from the same conservative
+`source_may_have_import_declaration` fact already used by sibling import
+lookups. Import-bearing sources and source-less HIR retain the unchanged root,
+virtual-section, program-export, external-resolver, and relative-module logic.
+No identifier, module specifier, diagnostic, or benchmark-specific shape is
+cached.
+
+The fixed accepted baseline binary is SHA-256
+`cf92eaf386deb3e3d075af85f689072c2a196d6fe16d460603c0710a597dd4ee`;
+the candidate is
+`1cb63e69d37841d207964c95c95f11fb7f42e0969c5403838f51e938efbc9b7b`.
+Both binaries are 12,288,760 bytes and exit zero with byte-identical empty
+stdout and stderr on the unchanged official 128-family project and existing
+2,048-family scale.
+
+An initial ten-pair set was retained but excluded because a follow-on thread
+fuzzer remained active and the baseline mean stayed well above its established
+range: wall was 41.558 ± 5.593 ms versus 40.492 ± 4.744 ms, with a -1.777 to
++4.023 ms paired interval. After that exact process and a transient database
+startup exited, a replacement screen retained every reversed-order pair after
+three alternating warmup pairs. One 45.662 ms baseline-minus-candidate outlier
+remains included:
+
+| Official 128-family replacement A/B, 10 pairs | Baseline | Import-free gate | Result | Paired 95% CI |
+|---|---:|---:|---:|---:|
+| Wall | 37.499 ± 14.478 ms | **32.501 ± 0.598 ms** | **1.1538×; 8/10 candidate wins** | **+0.277 to +14.128 ms** |
+| CPU | 35.222 ± 10.178 ms | **31.628 ± 0.565 ms** | **1.1136×; 9/10 candidate wins** | **+0.237 to +10.004 ms** |
+| Peak RSS | **16.606 ± 0.012 MiB** | 16.609 ± 0.010 MiB | 0.9998×; 1/10 candidate wins | -0.009 to +0.003 MiB |
+
+The required independent 30-pair confirmation retained every sample. It also
+includes a 21.437 ms baseline-minus-candidate wall outlier rather than
+filtering it:
+
+| Official 128-family confirmation A/B, 30 pairs | Baseline | Import-free gate | Result | Paired 95% CI |
+|---|---:|---:|---:|---:|
+| Wall | 33.946 ± 4.246 ms | **32.870 ± 0.812 ms** | **1.0327×; 18/30 candidate wins** | **+0.138 to +2.649 ms** |
+| CPU | 32.755 ± 2.772 ms | **31.948 ± 0.724 ms** | **1.0253×; 20/30 candidate wins** | **+0.178 to +1.813 ms** |
+| Peak RSS | 16.610 ± 0.010 MiB | **16.608 ± 0.009 MiB** | 1.0001×; 9/30 candidate wins | -0.002 to +0.006 MiB |
+
+At 16× scale, the same frozen binaries retained all ten pairs:
+
+| Scaled 2,048-family A/B, 10 pairs | Baseline | Import-free gate | Result | Paired 95% CI |
+|---|---:|---:|---:|---:|
+| Wall | 1870.621 ± 37.754 ms | **1768.735 ± 56.141 ms** | **1.0576×; 10/10 candidate wins** | **+70.251 to +129.207 ms** |
+| CPU | 1849.246 ± 29.039 ms | **1751.735 ± 45.407 ms** | **1.0557×; 10/10 candidate wins** | **+69.581 to +121.979 ms** |
+| Peak RSS | 121.575 ± 0.010 MiB | **119.505 ± 6.557 MiB** | 1.0173×; 2/10 candidate wins | -0.009 to +6.220 MiB |
+
+One candidate RSS sample was 20.734 MiB below its pair, so the scale memory
+mean is not treated as an established reduction; its paired interval crosses
+zero. The complete ReleaseFast checker, driver, and CLI suites pass, as do all
+95 benchmark-harness tests. All 20 positive and negative workload admissions
+pass against TypeScript 6.0.3, the single native TypeScript 7.0.2 (`tsgo`)
+competitor, and the frozen candidate; the admission-only artifact is
+`20260901T163600Z`.
+
+A separate final checkpoint uses verified unchanged compiler provenance,
+three warmups, 30 rotating-order rounds, and every retained sample:
+
+| Final interface-composition checkpoint | Mean ± sample SD | Paired detail |
+|---|---:|---:|
+| TypeScript 6.0.3 | 222.4 ± 13.0 ms | — |
+| Native TypeScript 7.0.2 | 69.5 ± 6.9 ms | Fastest competitor |
+| Home at `83c44368c` | **33.2 ± 1.0 ms** | **2.09× faster; 30/30 wins; TS7-minus-Home CI +34.526 to +39.086 ms** |
+
+Frozen binaries, exact outputs, the excluded loaded set, and every accepted
+A/B round remain under
+`import-free-virtual-import-gate.20260901T161554Z/`; all 30 competitor rounds
+and verified provenance remain under `20260901T163632Z/`. TS 7 and `tsgo`
+remain one native competitor throughout.
+
 ### Free-type traversal generation marks (rejected)
 
 After the root memo failed, the same retained profile still showed hash-table
