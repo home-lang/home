@@ -281,6 +281,7 @@ recording both accepted and rejected probes:
 | Program import-resolution cache | 128 owners: **1.21× faster**, 30/30 paired wins | 2,048 owners: **2.22× faster**, 20/20 paired wins | Accepted in `49641900e` |
 | Larger string-interner hint | 32,768 families: 0.985× CPU; candidate slower | 0.958× wall; paired CIs cross zero | Rejected and reverted |
 | One-pass special-identifier classification | 2,048 families: 1.010× CPU, 6/10 wins | Paired CIs cross zero; scale run not admitted | Rejected and reverted |
+| Declaration-map pre-sizing | 2,048 families: 1.028× CPU screen, 8/10 wins | Confirmation: 1.008× CPU, paired CI crosses zero | Rejected and reverted |
 | Exact pruned prefix trie | 32,768 families: 1.008×; paired CI crosses zero | 65,536 families: 1.011×; paired CI crosses zero | Rejected and reverted |
 | Parser-local exact-name cache | 32,768 families: 0.999×; paired CI crosses zero | Not run after failed gate | Rejected and reverted |
 | Declaration-space marker gates | 32,768 families: 0.977×; candidate slower | Not run after failed gate | Rejected and reverted |

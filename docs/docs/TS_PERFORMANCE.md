@@ -461,6 +461,41 @@ the probe was fully reverted. Raw binaries, exact outputs, and every screen
 round remain under
 `bench/vs_tsgo/results/special-identifier-classification.20260901T035000Z/`.
 
+### Rejected declaration-map pre-sizing
+
+`checkDeclarationSpaceDiagnosticsImpl` owns three temporary hash maps for
+ordinary declaration collisions, interface merges, and function
+implementations. A semantic-neutral probe counted the corresponding HIR
+declaration kinds, reserved each map's final upper-bound capacity, and then ran
+the unchanged diagnostic passes and insertion logic. The additional count was
+linear, allocation failure remained explicit, and diagnostic contents and
+order were unchanged.
+
+The immutable baseline is SHA-256
+`60e10affa923acd3265511f91f248277cf7bbf70e28508ff1bf903b8761bf2a2`;
+the fixed candidate is
+`c01cd4bf76e85650830292dc52d6ed958bf6166ca34ff6586695cfd2735b9dde`.
+Both exit zero with byte-identical empty stdout and stderr on the official
+2,048-family predicate project.
+
+The initial screen retained ten reversed-order pairs after three alternating
+warmup pairs, with no filtering. Wall measured 327.868 ± 16.578 ms versus
+318.948 ± 17.585 ms (1.0280×, 8/10 candidate wins), but its paired 95%
+interval was -10.141 to +27.981 ms. CPU measured 316.272 ± 13.006 ms versus
+307.522 ± 9.762 ms (1.0285×, 8/10), with an interval of -2.358 to
++19.858 ms. That signal admitted an independent confirmation; it was not
+pooled with the screen.
+
+The confirmation retained all 30 reversed-order pairs after a fresh set of
+three alternating warmup pairs. Wall measured 250.214 ± 9.998 ms versus
+248.246 ± 13.890 ms (1.0079×, 23/30), with a paired interval of -3.764 to
++7.700 ms. CPU measured 246.950 ± 8.510 ms versus
+244.955 ± 10.931 ms (1.0081×, 24/30), with an interval of -2.315 to
++6.305 ms. The independent confirmation did not clear the paired-mean rule,
+so the probe was fully reverted and no scale timing was run. Raw binaries,
+exact output, and every screen and confirmation round remain under
+`bench/vs_tsgo/results/declaration-map-presize.20260901T041500Z/`.
+
 ## Linux ARM64 container checkpoint
 
 Measured 2026-08-29 at commit `6ac9b5e59` in a pinned Debian Bookworm
