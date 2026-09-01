@@ -433,6 +433,34 @@ the 64-entry production capacity was restored. Raw exact outputs, binaries,
 and every measured pair remain under
 `bench/vs_tsgo/results/string-interner-cache-capacity.20260901T033000Z/`.
 
+### Rejected special-identifier classification
+
+The same post-root-gap profile attributed part of `mem.eqlBytes` to
+`typeOfIdentifier`, which tests ordinary names against `this`, `await`,
+`arguments`, and `new.target` along different fallback paths. An exact probe
+classified those mutually exclusive spellings once by length plus full byte
+equality and reused the result in the existing branches. It added no cache or
+feature gate and did not change lookup or diagnostic order.
+
+The immutable baseline is SHA-256
+`60e10affa923acd3265511f91f248277cf7bbf70e28508ff1bf903b8761bf2a2`;
+the fixed candidate is
+`340bcab7683acf3ab4e1b951c13dc6814818e036535fae4c65904e24d4a19721`.
+Both exit zero with byte-identical empty stdout and stderr on the official
+2,048-family and unchanged 32,768-family predicate projects.
+
+The official-workload screen retained all ten reversed-order pairs after three
+alternating warmup pairs, with no filtering. Wall measured
+246.588 ± 9.418 ms for the baseline versus 243.908 ± 5.698 ms for the
+candidate (1.0110×, 6/10 candidate wins), with a paired 95% interval of
+-6.114 to +11.473 ms. Process CPU measured 244.176 ± 8.272 ms versus
+241.710 ± 5.238 ms (1.0102×, 6/10), with an interval of -5.188 to
++10.121 ms. The means were lower but neither interval nor pair direction
+cleared the initial gate, so no larger-scale timing or confirmation was run and
+the probe was fully reverted. Raw binaries, exact outputs, and every screen
+round remain under
+`bench/vs_tsgo/results/special-identifier-classification.20260901T035000Z/`.
+
 ## Linux ARM64 container checkpoint
 
 Measured 2026-08-29 at commit `6ac9b5e59` in a pinned Debian Bookworm
