@@ -534,6 +534,49 @@ under `enum-free-visible-namespace-index.20260901T133659Z/`; all 30 competitor
 rounds and verified provenance are under `20260901T135136Z/`. TS 7 and `tsgo`
 remain one native competitor throughout.
 
+### Unique interface-heritage index (rejected)
+
+The next fresh profile used an independently generated 8,192-family version
+of the same interface-composition workload. It confirmed that the accepted
+visible-namespace path above had fallen to one residual sample. The largest
+untested checker leaf was then `interfaceHeritageReachesName` with 1,029
+exclusive samples; the larger `globalAugmentedValueType` leaf was skipped
+because its exact negative-index form had already failed admission.
+
+The rejected candidate built one local map for declaration-space diagnostics
+on statement lists with at least 16 entries. Each unique interface name mapped
+to its declaration, avoiding repeated statement scans while following
+heritage chains. Duplicate interface names retained the original scan so every
+merged declaration remained visible; smaller lists and an incomplete index
+also retained it. The map was scoped to one diagnostic pass and released at
+its end.
+
+The fixed accepted baseline binary is SHA-256
+`cf92eaf386deb3e3d075af85f689072c2a196d6fe16d460603c0710a597dd4ee`;
+the rejected candidate was
+`e981cbba2782982d653190d392fff68f9739c635740a6f3e7e6108e28e779626`.
+Both exited zero with byte-identical empty output on the unchanged official
+128-family project and the existing 2,048-family, 92,160-line scale. The full
+ReleaseFast checker suite also passed before timing.
+
+The official screen retained every reversed-order pair after three alternating
+warmup pairs:
+
+| Official 128-family A/B, 10 pairs | Baseline | Heritage index | Result | Paired 95% CI |
+|---|---:|---:|---:|---:|
+| Wall | **35.993 ± 1.751 ms** | 36.162 ± 1.586 ms | 0.9953×; 4/10 candidate wins | -1.142 to +0.824 ms |
+| CPU | **34.711 ± 1.509 ms** | 34.792 ± 1.436 ms | 0.9977×; 4/10 candidate wins | -0.933 to +0.859 ms |
+| Peak RSS | 16.608 ± 0.009 MiB | **16.591 ± 0.019 MiB** | 1.0010×; 5/10 candidate wins | **+0.005 to +0.031 MiB** |
+
+The timing means regressed slightly and both timing intervals crossed zero.
+The RSS reduction does not override the timing admission rule. The candidate
+was fully reverted; no confirmation, scale timing, source commit, or compiler
+checkpoint was admitted. The 8,192-family corpus and current-code profile are
+retained under
+`interface-composition-profile-visible-namespace.20260901T135700Z/`; frozen
+binaries and every screen round remain under
+`interface-heritage-index.20260901T140413Z/`.
+
 ### Free-type traversal generation marks (rejected)
 
 After the root memo failed, the same retained profile still showed hash-table
