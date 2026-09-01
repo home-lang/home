@@ -524,6 +524,34 @@ run and the probe was fully reverted. Raw binaries, exact outputs, and every
 screen round remain under
 `bench/vs_tsgo/results/identifier-decl-slot-reuse.20260901T035734Z/`.
 
+### Rejected parser identifier escape-flag reuse
+
+The scanner already records whether an identifier token contains a consumed
+Unicode escape. `internToken` nevertheless searched the raw identifier slice
+again for `\\` before entering its existing escape decoder. A one-line exact
+probe reused `TokenFlags.has_escape` for that decision while retaining the
+same `.identifier` kind guard, decoder, allocation fallback, and interner call.
+Scanner behavior and token layout were unchanged.
+
+The immutable baseline is SHA-256
+`60e10affa923acd3265511f91f248277cf7bbf70e28508ff1bf903b8761bf2a2`;
+the fixed candidate is
+`59beef049b14e6a8ebc314f1c7ff408f96d3e6d43052d447436b120e63081c56`.
+Both exit zero with byte-identical empty stdout and stderr on the official
+2,048-family and unchanged 32,768- and 65,536-family predicate projects. The
+full ReleaseFast parser suite passes, including bare identifiers, `\\uXXXX`,
+brace-form escapes, escaped enum members, and invalid escaped starts.
+
+The official-workload screen retained all ten reversed-order pairs after three
+alternating warmup pairs, with no filtering. Wall time regressed from
+440.866 ± 24.461 ms to 452.033 ± 25.669 ms (0.9753× baseline/candidate,
+5/10 candidate wins), with a paired 95% interval of -34.149 to +11.814 ms.
+Process CPU regressed from 377.824 ± 11.665 ms to 383.668 ± 19.005 ms
+(0.9848×, 5/10), with an interval of -24.280 to +12.592 ms. The initial gate
+failed, so no confirmation or scale timing was run and the probe was fully
+reverted. Raw binaries, exact outputs, and every screen round remain under
+`bench/vs_tsgo/results/parser-escape-flag-reuse.20260901T040925Z/`.
+
 ## Linux ARM64 container checkpoint
 
 Measured 2026-08-29 at commit `6ac9b5e59` in a pinned Debian Bookworm
