@@ -302,6 +302,35 @@ exact outputs, load snapshots, and A/B samples are under
 checkpoint is `20260901T124307Z/`. TS 7 and `tsgo` remain one native
 competitor throughout.
 
+### Global-namespace negative index (rejected)
+
+The next profile leaf, `globalAugmentedValueType`, repeatedly scanned the root
+for a namespace whose decoded identifier was exactly `global`. The rejected
+candidate reused the existing exact namespace index for a negative proof in
+ordinary single-source files. It did not use a text marker, so escaped
+identifiers remained correct; virtual sections, multiple matches, and an
+incomplete index retained the original scan.
+
+The fixed accepted baseline is SHA-256
+`f451419a6bbd8e897e9f0b048f992a8034866d95d458591c916f090be0a95e23`;
+the candidate was
+`8c75bc1b256d16ae2fb4eb6bfd6ad1a00837ca327adf2469f090c5bcb8bd7791`.
+Both exited zero with byte-identical empty output on the official and 16×
+projects. The official screen retained all ten reversed-order pairs after
+three alternating warmup pairs:
+
+| Official 128-family A/B, 10 pairs | Baseline | Candidate | Result | Paired 95% CI |
+|---|---:|---:|---:|---:|
+| Wall | **35.809 ± 1.140 ms** | 35.962 ± 1.904 ms | 0.9957×; 4/10 candidate wins | -1.491 to +1.072 ms |
+| CPU | 34.662 ± 0.932 ms | **34.560 ± 1.616 ms** | 1.0030×; 6/10 candidate wins | -1.017 to +1.036 ms |
+| Peak RSS | 16.420 ± 0.012 MiB | **16.405 ± 0.020 MiB** | 1.0010×; 5/10 candidate wins | **+0.006 to +0.027 MiB** |
+
+The wall mean regressed and both timing intervals crossed zero. The source was
+fully reverted; no confirmation, scale timing, source commit, or competitor
+checkpoint was admitted. Frozen binaries, exact outputs, load snapshots, and
+every screen sample remain under
+`global-namespace-negative-index.20260901T124843Z/`.
+
 ### Free-type traversal generation marks (rejected)
 
 After the root memo failed, the same retained profile still showed hash-table
