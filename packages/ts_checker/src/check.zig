@@ -7758,6 +7758,10 @@ pub const Checker = struct {
     fn checkJSDocImportTypeModuleTargets(self: *Checker, root: NodeId) CheckError!void {
         if (!self.check_js_enabled and !self.sourceHasCheckJsDirective()) return;
         const src = self.source orelse return;
+        // Import-type text necessarily contains `import`. Reuse the exact
+        // source marker collected by the driver so ordinary JSDoc-heavy
+        // files do not parse every comment for a construct they cannot have.
+        if (!self.source_may_have_import_declaration) return;
         var search_start: usize = 0;
         while (std.mem.indexOfPos(u8, src, search_start, "/**")) |comment_start| {
             const body_start = comment_start + 3;
@@ -7767,12 +7771,17 @@ pub const Checker = struct {
             if (!self.sourcePositionIsJsLike(comment_start)) continue;
             const tags = ts_parser.jsdoc.parse(self.gpa, src[body_start..comment_end]) catch continue;
             defer self.gpa.free(tags);
-            const anchor = self.jsDocCommentAnchor(root, comment_start);
+            var anchor: ?NodeId = null;
             for (tags) |tag| {
                 const type_text = std.mem.trim(u8, tag.type_text, " \t\r\n");
                 if (!std.mem.startsWith(u8, type_text, "import(") and
                     !std.mem.startsWith(u8, type_text, "typeof import(")) continue;
-                _ = try self.jsDocTypeTextToTypeAt(src, type_text, anchor);
+                const resolved_anchor = anchor orelse blk: {
+                    const value = self.jsDocCommentAnchor(root, comment_start);
+                    anchor = value;
+                    break :blk value;
+                };
+                _ = try self.jsDocTypeTextToTypeAt(src, type_text, resolved_anchor);
             }
         }
     }
