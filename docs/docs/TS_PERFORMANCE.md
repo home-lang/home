@@ -230,6 +230,78 @@ All 30 round files / 90 finite successful samples are retained under
 `bench/vs_tsgo/results/20260901T122547Z/`. TS 7 and `tsgo` are one native
 competitor throughout; no superseded development build is counted.
 
+### Import-free export-assignment gate
+
+Commit [`b3dcb63c5`](https://github.com/home-lang/home/commit/b3dcb63c5),
+tracked in [#416](https://github.com/home-lang/home/issues/416), applies the
+next fresh-profile result after the complementary value indexes. A ten-second
+sample of the accepted 4,096-family binary recorded 1,015 exclusive samples in
+`virtualExportAssignmentTargetDeclForLocal`, the second-largest leaf. That
+helper walked the complete source root looking for a require-style import even
+when the checker had already established that the attached source could not
+contain any import declaration.
+
+The helper now returns immediately from that exact negative source fact.
+Sources that can contain `import` keep the unchanged HIR walk, and source-less
+HIR callers also retain it. The source fact is conservative: a real import
+declaration necessarily contains the `import` token. This does not infer an
+export-assignment target, change module resolution, or specialize behavior for
+the benchmark corpus.
+
+The fixed baseline is the accepted complementary-index binary, SHA-256
+`e51d04c1c63f463d2512b92e0dcf34002344800896d9fdc208ba6846fe9f76a5`;
+the candidate is
+`f451419a6bbd8e897e9f0b048f992a8034866d95d458591c916f090be0a95e23`.
+Both exit zero with byte-identical empty output on the unchanged official
+128-family project and the independently generated 2,048-family, 92,160-line
+scale.
+
+The official screen retained every reversed-order pair after three alternating
+warmup pairs:
+
+| Official 128-family A/B, 10 pairs | Baseline | Import-free gate | Result | Paired 95% CI |
+|---|---:|---:|---:|---:|
+| Wall | 37.867 ± 0.858 ms | **36.265 ± 1.077 ms** | **1.0442×; 9/10 candidate wins** | **+1.003 to +2.205 ms** |
+| CPU | 36.798 ± 0.706 ms | **35.134 ± 0.941 ms** | **1.0474×; 10/10 candidate wins** | **+1.248 to +2.060 ms** |
+| Peak RSS | 16.416 ± 0.011 MiB | 16.419 ± 0.012 MiB | 0.9998×; 1/10 candidate wins | -0.013 to +0.006 MiB |
+
+The independent 30-pair confirmation also retained every round:
+
+| Official 128-family A/B, 30 pairs | Baseline | Import-free gate | Result | Paired 95% CI |
+|---|---:|---:|---:|---:|
+| Wall | 36.161 ± 0.860 ms | **34.845 ± 0.911 ms** | **1.0378×; 23/30 candidate wins** | **+0.833 to +1.802 ms** |
+| CPU | 35.162 ± 0.729 ms | **33.885 ± 0.762 ms** | **1.0377×; 26/30 candidate wins** | **+0.898 to +1.663 ms** |
+| Peak RSS | 16.424 ± 0.008 MiB | 16.423 ± 0.010 MiB | 1.0001×; 7/30 candidate wins | -0.003 to +0.005 MiB |
+
+At 16× scale, the same binaries retained all ten pairs:
+
+| Scaled 2,048-family A/B, 10 pairs | Baseline | Import-free gate | Result | Paired 95% CI |
+|---|---:|---:|---:|---:|
+| Wall | 2728.437 ± 47.535 ms | **2351.781 ± 48.171 ms** | **1.1602×; 10/10 candidate wins** | **+349.128 to +404.735 ms** |
+| CPU | 2709.193 ± 45.382 ms | **2336.193 ± 47.550 ms** | **1.1597×; 10/10 candidate wins** | **+343.958 to +402.185 ms** |
+| Peak RSS | 113.895 ± 0.011 MiB | 113.891 ± 0.013 MiB | 1.0000×; 2/10 candidate wins | -0.003 to +0.014 MiB |
+
+The complete ReleaseFast checker passes 4,325/4,325 tests, driver 188/188,
+CLI 69/69, and the benchmark harness 95/95. All 20 positive and negative
+workload admissions pass against TS 6.0.3, native TS 7.0.2, and the frozen
+candidate; the admission-only artifact is `20260901T123630Z`.
+
+A separate final checkpoint uses the same verified compiler pins, three
+warmups, 30 round-robin rounds, and retains every sample:
+
+| Final interface-composition checkpoint | Mean ± sample SD | Paired detail |
+|---|---:|---:|
+| TS 6.0.3 | 210.3 ± 8.6 ms | — |
+| Native TS 7.0.2 | 67.5 ± 11.8 ms | Fastest competitor |
+| Home at `b3dcb63c5` | **35.7 ± 2.0 ms** | **1.89× faster; 30/30 wins; TS7-minus-Home CI +29.141 to +36.480 ms** |
+
+The fresh profile is retained under
+`interface-composition-profile-final.20260901T122859Z/`; frozen binaries,
+exact outputs, load snapshots, and A/B samples are under
+`import-free-export-assignment-gate.20260901T123335Z/`; the final 30-round
+checkpoint is `20260901T124307Z/`. TS 7 and `tsgo` remain one native
+competitor throughout.
+
 ### Free-type traversal generation marks (rejected)
 
 After the root memo failed, the same retained profile still showed hash-table
