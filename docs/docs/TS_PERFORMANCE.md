@@ -404,6 +404,35 @@ unchanged before and after measurement. The immediately preceding complete
 admission gates pass on this newer binary, while its focused timing remains
 separate rather than replacing or being pooled with that full checkpoint.
 
+### Rejected larger string-interner hint
+
+The post-root-gap profile still showed the shared string interner as a material
+owned cost, so its existing exact 64-entry direct-mapped hint was tested at 256
+entries per shard. This is distinct from the earlier rejected parser-local
+cache: it changes only the capacity of the canonical shared hint. Every
+possible hit still takes the shard lock and verifies full byte equality; every
+miss still uses the unchanged prehashed canonical table. The tested size would
+increase total hint storage from 32 KiB to 128 KiB.
+
+The immutable baseline is SHA-256
+`60e10affa923acd3265511f91f248277cf7bbf70e28508ff1bf903b8761bf2a2`;
+the fixed 256-entry candidate is
+`793144e3a19604c96673c97d42fdf6d63a93ba27fc48b8615841adea73165b1e`.
+Both exit zero with byte-identical empty stdout and stderr on the official
+2,048-family and unchanged 32,768-family predicate projects. The ReleaseFast
+string-interner suite also passes.
+
+The 32,768-family screen retained all ten reversed-order pairs after three
+alternating warmup pairs, with no filtering. Wall time regressed from
+7727.518 ± 414.303 ms to 8069.492 ± 701.373 ms (0.9576× baseline/candidate,
+4/10 candidate wins), with a baseline-minus-candidate paired 95% interval of
+-706.254 to +22.306 ms. Process CPU regressed from 6215.600 ± 107.917 ms to
+6307.875 ± 115.115 ms (0.9854×, 4/10), with an interval of -209.220 to
++24.670 ms. The initial gate therefore failed; no confirmation was run, and
+the 64-entry production capacity was restored. Raw exact outputs, binaries,
+and every measured pair remain under
+`bench/vs_tsgo/results/string-interner-cache-capacity.20260901T033000Z/`.
+
 ## Linux ARM64 container checkpoint
 
 Measured 2026-08-29 at commit `6ac9b5e59` in a pinned Debian Bookworm

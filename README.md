@@ -279,6 +279,7 @@ recording both accepted and rejected probes:
 | Source-marker root-gap fast-forward | 2,048 predicates: **1.014× faster**, paired CIs positive | 65,536 predicates: **1.014× faster**, paired CIs positive | Accepted in `7ca9946c8` |
 | Dependency-free declaration schemas | 2,048 predicates: **1.046× faster**, 30/30 paired wins | Full checkpoint: **20/20** lower means, **600/600** paired wins | Accepted in `e0f2fb6d7` |
 | Program import-resolution cache | 128 owners: **1.21× faster**, 30/30 paired wins | 2,048 owners: **2.22× faster**, 20/20 paired wins | Accepted in `49641900e` |
+| Larger string-interner hint | 32,768 families: 0.985× CPU; candidate slower | 0.958× wall; paired CIs cross zero | Rejected and reverted |
 | Exact pruned prefix trie | 32,768 families: 1.008×; paired CI crosses zero | 65,536 families: 1.011×; paired CI crosses zero | Rejected and reverted |
 | Parser-local exact-name cache | 32,768 families: 0.999×; paired CI crosses zero | Not run after failed gate | Rejected and reverted |
 | Declaration-space marker gates | 32,768 families: 0.977×; candidate slower | Not run after failed gate | Rejected and reverted |
