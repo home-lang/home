@@ -58,6 +58,42 @@ other directional labels also compare means, not certainty. These are local
 synthetic measurements, not a claim that every real project or machine has
 the same speedup.
 
+### Broad checker-directive marker gates (rejected)
+
+After rejecting exact directive-marker expansion, a smaller follow-up reused
+two broad markers already present in the shared source index. Files without
+`@allow` returned before the exact `allowUnreachableCode` searches, and files
+without any `@` returned before the exact `noImplicitThis` search. Files that
+contained either broad marker retained the original exact substring searches,
+so the probe changed neither recognized spellings nor the marker automaton.
+
+The fixed baseline binary is SHA-256
+`c4a4d99e5b2c945512519592b0ea905667554224cbbd4a29aad904efd84feab3`;
+the candidate is
+`47e02a823771540696c07484039213cf8b51668bf4c62f6d94ba0e985bb3042a`.
+The complete ReleaseFast checker suite passed, including a focused test that
+preserved `noImplicitThis: false` behavior. `zig fmt --check` and
+`git diff --check` passed, and both binaries exited zero with byte-identical
+empty stdout and stderr on the unchanged official 2,048-family project.
+
+The primary screen used three alternating warmup pairs, reversed process
+order in every measured pair, and retained all ten pairs. One unrelated
+Typesense process and Spotlight remained active in the recorded load
+snapshots. Paired intervals are baseline-minus-candidate:
+
+| Official 2,048-family A/B, 10 pairs | Baseline | Candidate | Result | Paired 95% CI |
+|---|---:|---:|---:|---:|
+| Wall | **214.961 ± 1.612 ms** | 215.475 ± 3.620 ms | 0.9976×; 4/10 candidate wins | -2.748 to +1.359 ms |
+| CPU | **213.774 ± 1.480 ms** | 214.255 ± 3.497 ms | 0.9978×; 6/10 candidate wins | -2.542 to +1.271 ms |
+| Peak RSS | 75.084 ± 0.011 MiB | **75.081 ± 0.010 MiB** | 1.0000×; 2/10 candidate wins | +0.000 to +0.008 MiB |
+
+The candidate has slightly higher wall and CPU means, and both timing
+intervals cross zero. The probe therefore failed its primary gate and was
+fully reverted without a confirmation, scale run, source commit, or competitor
+checkpoint. Raw exact-output checks, load snapshots, and every timing round
+are retained under
+`bench/vs_tsgo/results/directive-broad-marker-gate.20260901T094320Z/`.
+
 ### Checker directive marker indexing (rejected)
 
 The post-HIR-reservation 32,768-family profile showed three whole-source

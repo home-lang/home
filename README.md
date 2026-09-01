@@ -283,6 +283,7 @@ recording both accepted and rejected probes:
 | Source-marker root-gap fast-forward | 2,048 predicates: **1.014× faster**, paired CIs positive | 65,536 predicates: **1.014× faster**, paired CIs positive | Accepted in `7ca9946c8` |
 | Dependency-free declaration schemas | 2,048 predicates: **1.046× faster**, 30/30 paired wins | Full checkpoint: **20/20** lower means, **600/600** paired wins | Accepted in `e0f2fb6d7` |
 | Program import-resolution cache | 128 owners: **1.21× faster**, 30/30 paired wins | 2,048 owners: **2.22× faster**, 20/20 paired wins | Accepted in `49641900e` |
+| Broad checker-directive marker gates | 2,048 predicates: 0.998× wall, 4/10 wins | Paired wall and CPU CIs cross zero; scale run not admitted | Rejected and reverted |
 | Checker directive marker indexing | 2,048 predicates, 60 final pairs: **1.013× wall**, **1.012× CPU**, paired CIs positive | 32,768 predicates: 1.020× wall mean, but paired wall CI crosses zero | Rejected and reverted |
 | Larger string-interner hint | 32,768 families: 0.985× CPU; candidate slower | 0.958× wall; paired CIs cross zero | Rejected and reverted |
 | Parser JSDoc-presence reuse | 2,048 predicates: 1.008× lower wall mean; paired CIs cross zero | 32,768 predicates: both retained sets inconclusive under external load | Rejected and reverted |
