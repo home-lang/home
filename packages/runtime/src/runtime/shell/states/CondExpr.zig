@@ -44,6 +44,10 @@ pub const ShellCondExprStatTask = struct {
         this.runFromMainThread();
     }
 
+    pub fn cancelForShutdown(this: *ShellCondExprStatTask) void {
+        this.deinit();
+    }
+
     pub fn deinit(this: *ShellCondExprStatTask) void {
         bun.destroy(this);
     }

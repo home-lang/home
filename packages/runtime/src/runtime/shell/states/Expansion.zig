@@ -914,6 +914,10 @@ pub const ShellGlobTask = struct {
 
     pub fn schedule(this: *This) void {
         debug("schedule", .{});
+        if (!this.event_loop.tryAddNativeWorkPoolJob()) {
+            this.cancelForShutdown();
+            return;
+        }
         WorkPool.schedule(&this.task);
     }
 
@@ -924,6 +928,13 @@ pub const ShellGlobTask = struct {
         } else {
             this.event_loop.mini.enqueueTaskConcurrent(this.concurrent_task.mini.from(this, "runFromMainThreadMini"));
         }
+        this.event_loop.completeNativeWorkPoolJob();
+    }
+
+    pub fn cancelForShutdown(this: *This) void {
+        this.ref.unref(this.event_loop);
+        this.deinit();
+        bun.shell.interpret.recordShutdownCancellation();
     }
 
     pub fn deinit(this: *This) void {

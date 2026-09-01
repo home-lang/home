@@ -204,7 +204,16 @@ pub const ShellTouchTask = struct {
 
     pub fn schedule(this: *@This()) void {
         debug("{f} schedule", .{this});
+        if (!this.event_loop.tryAddNativeWorkPoolJob()) {
+            this.cancelForShutdown();
+            return;
+        }
         WorkPool.schedule(&this.task);
+    }
+
+    pub fn cancelForShutdown(this: *@This()) void {
+        this.deinit();
+        bun.shell.interpret.recordShutdownCancellation();
     }
 
     pub fn runFromMainThread(this: *@This()) void {
@@ -264,6 +273,7 @@ pub const ShellTouchTask = struct {
         } else {
             this.event_loop.mini.enqueueTaskConcurrent(this.concurrent_task.mini.from(this, "runFromMainThreadMini"));
         }
+        this.event_loop.completeNativeWorkPoolJob();
     }
 };
 

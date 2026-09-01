@@ -150,6 +150,25 @@ pub const EventLoopHandle = union(EventLoopKind) {
         }
     }
 
+    /// Admit work that retains owner-loop state into the creating VM's
+    /// shutdown barrier. Mini event loops own their worker lifetime directly,
+    /// so they do not need the per-JS-VM barrier.
+    pub fn tryAddNativeWorkPoolJob(this: EventLoopHandle) bool {
+        return switch (this) {
+            .js => this.js.virtual_machine.native_work_pool_jobs.tryAdd(),
+            .mini => true,
+        };
+    }
+
+    /// Publish the owner-thread completion before calling this. VM teardown
+    /// waits for the count to reach zero and then cancels queued completions.
+    pub fn completeNativeWorkPoolJob(this: EventLoopHandle) void {
+        switch (this) {
+            .js => this.js.virtual_machine.native_work_pool_jobs.complete(),
+            .mini => {},
+        }
+    }
+
     pub fn init(context: anytype) EventLoopHandle {
         const Context = @TypeOf(context);
         return switch (Context) {

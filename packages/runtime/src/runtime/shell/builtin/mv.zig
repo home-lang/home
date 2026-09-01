@@ -64,6 +64,14 @@ pub const ShellMvCheckTargetTask = struct {
     pub fn runFromMainThreadMini(this: *@This(), _: *void) void {
         this.runFromMainThread();
     }
+
+    pub fn cancelForShutdown(this: *@This()) void {
+        if (bun.take(&this.result)) |result| {
+            if (result.asValue()) |maybe_fd| {
+                if (maybe_fd) |fd| fd.toOptional().close();
+            }
+        }
+    }
 };
 
 pub const ShellMvBatchedTask = struct {
@@ -170,6 +178,12 @@ pub const ShellMvBatchedTask = struct {
 
     pub fn runFromMainThreadMini(this: *@This(), _: *void) void {
         this.runFromMainThread();
+    }
+
+    pub fn cancelForShutdown(this: *@This()) void {
+        if (bun.take(&this.err)) |err| {
+            if (this.err_path_owned) bun.default_allocator.free(err.path);
+        }
     }
 };
 

@@ -1763,6 +1763,10 @@ pub fn ShellTask(
             debug("schedule", .{});
 
             this.ref.ref(this.event_loop);
+            if (!this.event_loop.tryAddNativeWorkPoolJob()) {
+                this.cancelForShutdown();
+                return;
+            }
             WorkPool.schedule(&this.task);
         }
 
@@ -1775,6 +1779,7 @@ pub fn ShellTask(
                 const ctx = this;
                 this.event_loop.mini.enqueueTaskConcurrent(this.concurrent_task.mini.from(ctx, "runFromMainThreadMini"));
             }
+            this.event_loop.completeNativeWorkPoolJob();
         }
 
         pub fn runFromThreadPool(task: *WorkPoolTask) void {
@@ -1795,7 +1800,24 @@ pub fn ShellTask(
         pub fn runFromMainThreadMini(this: *@This(), _: *void) void {
             this.runFromMainThread();
         }
+
+        pub fn cancelForShutdown(this: *@This()) void {
+            const ctx: *Ctx = @fieldParentPtr("task", this);
+            this.ref.unref(this.event_loop);
+            Ctx.cancelForShutdown(ctx);
+            recordShutdownCancellation();
+        }
     };
+}
+
+var shutdown_cancellation_count = std.atomic.Value(u64).init(0);
+
+pub fn recordShutdownCancellation() void {
+    _ = shutdown_cancellation_count.fetchAdd(1, .seq_cst);
+}
+
+pub fn shutdownCancellationCount() u64 {
+    return shutdown_cancellation_count.load(.seq_cst);
 }
 
 inline fn errnocast(errno: anytype) u16 {
