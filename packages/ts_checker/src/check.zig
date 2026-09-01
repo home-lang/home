@@ -3286,6 +3286,16 @@ const VisibleAnnotatedValueKey = struct {
     virtual_section_start: usize,
 };
 
+const ProgramImportResolutionKey = struct {
+    node: NodeId,
+    specifier: hir_mod.StringId,
+};
+
+const ProgramImportResolution = struct {
+    external_base: ?hir_mod.StringId = null,
+    fallback_base: ?hir_mod.StringId = null,
+};
+
 const NamedShapeCandidateBucket = struct {
     head: usize = std.math.maxInt(usize),
     count: usize = 0,
@@ -5328,6 +5338,11 @@ pub const Checker = struct {
     program_generic_defaults_active: std.AutoHashMapUnmanaged(*const ProgramClassSchema.Declaration, void) = .empty,
     program_schema_support: std.AutoHashMapUnmanaged(*const ProgramClassSchema.Schema, bool) = .empty,
     program_module_namespace_types: std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId) = .empty,
+    /// Module resolution is immutable during one source check, while program
+    /// export lookup compares the same import against many candidate owners.
+    /// Retain both the external-resolver and path-fallback answers so those
+    /// comparisons do not repeatedly resolve and allocate the same path.
+    program_import_resolutions: std.AutoHashMapUnmanaged(ProgramImportResolutionKey, ProgramImportResolution) = .empty,
     free_type_parameter_pending: std.ArrayListUnmanaged(TypeId) = .empty,
     free_type_parameter_visited: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
     this_type_parameter_pending: std.ArrayListUnmanaged(TypeId) = .empty,
@@ -5568,6 +5583,7 @@ pub const Checker = struct {
         self.clearProgramGenericInstances();
         self.program_schema_support.clearRetainingCapacity();
         self.program_module_namespace_types.clearRetainingCapacity();
+        self.program_import_resolutions.clearRetainingCapacity();
         self.source = source;
         self.source_facts = .{};
         self.source_markers = source_markers;
@@ -5768,6 +5784,7 @@ pub const Checker = struct {
     /// path appended in the upstream `'/p/q.js' implicitly has an
     /// 'any' type.` shape.
     pub fn setExternalResolver(self: *Checker, resolver: ?ExternalResolver) void {
+        self.program_import_resolutions.clearRetainingCapacity();
         self.external_resolver = resolver;
     }
 
@@ -5841,6 +5858,7 @@ pub const Checker = struct {
     /// file in isolation). Borrowed; the caller must keep the
     /// slice alive across `checkSourceFile`.
     pub fn setImporterPath(self: *Checker, path: []const u8) void {
+        self.program_import_resolutions.clearRetainingCapacity();
         self.importer_path = path;
     }
 
@@ -5869,6 +5887,7 @@ pub const Checker = struct {
         }
         self.narrow_scopes.deinit(self.gpa);
         self.program_module_namespace_types.deinit(self.gpa);
+        self.program_import_resolutions.deinit(self.gpa);
         self.clearProgramGenericInstances();
         self.program_generic_definitions.deinit(self.gpa);
         self.program_expression_parameters.deinit(self.gpa);
@@ -107540,20 +107559,40 @@ pub const Checker = struct {
     }
 
     fn programImportTargetsPath(self: *Checker, import_node: NodeId, spec: []const u8, target_path: []const u8) CheckError!bool {
-        if (self.external_resolver) |resolver| {
-            const containing = if (self.importer_path.len > 0)
-                self.importer_path
-            else
-                self.virtualSectionFilenameForNode(import_node) orelse "/__root__.ts";
-            if (resolver.resolve(spec, containing)) |resolved| {
-                if (programModulePathMatches(resolved.path, target_path)) return true;
+        const specifier = self.string_interner.intern(spec) catch return error.OutOfMemory;
+        const key: ProgramImportResolutionKey = .{ .node = import_node, .specifier = specifier };
+        const resolution = self.program_import_resolutions.get(key) orelse blk: {
+            var computed: ProgramImportResolution = .{};
+            if (self.external_resolver) |resolver| {
+                const containing = if (self.importer_path.len > 0)
+                    self.importer_path
+                else
+                    self.virtualSectionFilenameForNode(import_node) orelse "/__root__.ts";
+                if (resolver.resolve(spec, containing)) |resolved| {
+                    const base = stripProgramModuleExtension(resolved.path);
+                    computed.external_base = self.string_interner.intern(base) catch return error.OutOfMemory;
+                }
             }
+            if (self.importer_path.len != 0) {
+                const dir = std.fs.path.dirname(self.importer_path) orelse "";
+                const resolved = std.fs.path.resolve(self.gpa, &[_][]const u8{ dir, spec }) catch null;
+                if (resolved) |path| {
+                    defer self.gpa.free(path);
+                    const base = stripProgramModuleExtension(path);
+                    computed.fallback_base = self.string_interner.intern(base) catch return error.OutOfMemory;
+                }
+            }
+            try self.program_import_resolutions.put(self.gpa, key, computed);
+            break :blk computed;
+        };
+        const target_base = stripProgramModuleExtension(target_path);
+        if (resolution.external_base) |base| {
+            if (std.mem.eql(u8, self.string_interner.get(base), target_base)) return true;
         }
-        if (self.importer_path.len == 0) return false;
-        const dir = std.fs.path.dirname(self.importer_path) orelse "";
-        const resolved = std.fs.path.resolve(self.gpa, &[_][]const u8{ dir, spec }) catch return false;
-        defer self.gpa.free(resolved);
-        return programModulePathMatches(resolved, target_path);
+        if (resolution.fallback_base) |base| {
+            if (std.mem.eql(u8, self.string_interner.get(base), target_base)) return true;
+        }
+        return false;
     }
 
     fn programModulePathMatches(candidate: []const u8, target_path: []const u8) bool {
