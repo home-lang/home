@@ -24,13 +24,17 @@ pub const Graph = struct {
     values: []const driver.ProgramExportedValue = &.{},
     types: []const driver.ProgramExportedType = &.{},
 
+    pub fn init(gpa: std.mem.Allocator) Graph {
+        return .{ .arena = std.heap.ArenaAllocator.init(gpa) };
+    }
+
     pub fn deinit(self: *Graph) void {
         self.arena.deinit();
     }
 };
 
 pub fn collect(gpa: std.mem.Allocator, resolver: *resolver_mod.Resolver, sources: []const Source) !Graph {
-    var result: Graph = .{ .arena = std.heap.ArenaAllocator.init(gpa) };
+    var result = Graph.init(gpa);
     errdefer result.deinit();
     const arena = result.arena.allocator();
     var builder = try schemas.Builder.init(gpa, arena, resolver, sources);

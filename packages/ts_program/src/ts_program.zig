@@ -603,7 +603,7 @@ pub const Program = struct {
         defer self.gpa.free(module_interface_augmentations);
         const program_exported_classes = try self.collectProgramExportedClasses();
         defer freeProgramExportedClasses(self.gpa, program_exported_classes);
-        var declarations = try self.collectProgramDeclarations();
+        var declarations = try self.collectProgramDeclarationsForChecking();
         defer declarations.deinit();
         const program_ambient_module_interface_exports = try self.collectAmbientModuleInterfaceExports();
         defer freeProgramAmbientModuleInterfaceExports(self.gpa, program_ambient_module_interface_exports);
@@ -789,7 +789,7 @@ pub const Program = struct {
         defer self.gpa.free(module_interface_augmentations);
         const program_exported_classes = try self.collectProgramExportedClasses();
         defer freeProgramExportedClasses(self.gpa, program_exported_classes);
-        var declarations = try self.collectProgramDeclarations();
+        var declarations = try self.collectProgramDeclarationsForChecking();
         defer declarations.deinit();
         const program_ambient_module_interface_exports = try self.collectAmbientModuleInterfaceExports();
         defer freeProgramAmbientModuleInterfaceExports(self.gpa, program_ambient_module_interface_exports);
@@ -960,6 +960,19 @@ pub const Program = struct {
             try sources.append(self.gpa, .{ .path = file.path, .compilation = file.compilation orelse unreachable });
         }
         return declaration_graph.collect(self.gpa, self.resolver, sources.items) catch return error.OutOfMemory;
+    }
+
+    /// Program declaration schemas transfer types across resolved file
+    /// boundaries. A dependency-free program has no consumer for them: local
+    /// declarations are checked from their owner's HIR, while global scripts
+    /// and CommonJS use their dedicated program facts. Keep the full collector
+    /// available for callers that explicitly request an export snapshot.
+    fn collectProgramDeclarationsForChecking(self: *Program) ProgramError!declaration_graph.Graph {
+        for (self.files.items) |file| {
+            if (file.redirect_target == null and file.imports.items.len != 0)
+                return self.collectProgramDeclarations();
+        }
+        return declaration_graph.Graph.init(self.gpa);
     }
 
     fn collectAmbientModuleInterfaceExports(self: *const Program) ProgramError![]const ts_driver.ProgramAmbientModuleInterfaceExport {
@@ -2673,7 +2686,7 @@ pub const Program = struct {
         defer self.gpa.free(module_interface_augmentations);
         const program_exported_classes = try self.collectProgramExportedClasses();
         defer freeProgramExportedClasses(self.gpa, program_exported_classes);
-        var declarations = try self.collectProgramDeclarations();
+        var declarations = try self.collectProgramDeclarationsForChecking();
         defer declarations.deinit();
         const program_ambient_module_interface_exports = try self.collectAmbientModuleInterfaceExports();
         defer freeProgramAmbientModuleInterfaceExports(self.gpa, program_ambient_module_interface_exports);
@@ -4706,6 +4719,36 @@ test "Program: generic local declarations retain schemas without becoming export
         try T.expectEqualStrings("/classes.ts", class.declaration_path);
         try T.expectEqual(!std.mem.eql(u8, class.class_name, "Visible"), class.local_only);
     }
+}
+
+test "Program: checking skips declaration schemas without file dependencies" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    const source = "export interface Box<T> { value: T } export declare function make<T>(value: T): Box<T>; const valid: string = make('ok').value; const invalid: boolean = make(1).value;";
+    try vfs.addFile("/owner.ts", source);
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    _ = try program.add("/owner.ts", source);
+    try program.prepareNameStore();
+    try program.prepareFiles(.{ .bind_only = true });
+    try program.resolveImports();
+
+    var checking_graph = try program.collectProgramDeclarationsForChecking();
+    defer checking_graph.deinit();
+    try T.expectEqual(@as(usize, 0), checking_graph.values.len);
+    try T.expectEqual(@as(usize, 0), checking_graph.types.len);
+
+    var complete_graph = try program.collectProgramDeclarations();
+    defer complete_graph.deinit();
+    try T.expectEqual(@as(usize, 1), complete_graph.values.len);
+    try T.expectEqual(@as(usize, 1), complete_graph.types.len);
+
+    try program.compileAll(.{ .no_emit = true, .strict = true });
+    const compilation = program.fileById(0).compilation.?;
+    try expectCompilationHasDiagnosticCode(compilation, 2322);
+    try expectCompilationLacksDiagnosticCode(compilation, 2304);
 }
 
 test "Program: exported type and factory aliases share a source-owned declaration graph" {
