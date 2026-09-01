@@ -234,7 +234,16 @@ pub const ShellLsTask = struct {
     task: jsc.WorkPoolTask = .{ .callback = workPoolCallback },
 
     pub fn schedule(this: *@This()) void {
+        if (!this.event_loop.tryAddNativeWorkPoolJob()) {
+            this.cancelForShutdown();
+            return;
+        }
         jsc.WorkPool.schedule(&this.task);
+    }
+
+    pub fn cancelForShutdown(this: *@This()) void {
+        this.deinit();
+        bun.shell.interpret.recordShutdownCancellation();
     }
 
     pub fn create(
@@ -546,11 +555,13 @@ pub const ShellLsTask = struct {
 
     fn doneLogic(this: *@This()) void {
         debug("Done", .{});
+        const event_loop = this.event_loop;
         if (this.event_loop == .js) {
             this.event_loop.js.enqueueTaskConcurrent(this.concurrent_task.js.from(this, .manual_deinit));
         } else {
             this.event_loop.mini.enqueueTaskConcurrent(this.concurrent_task.mini.from(this, "runFromMainThreadMini"));
         }
+        event_loop.completeNativeWorkPoolJob();
     }
 
     pub fn takeOutput(this: *@This()) std.array_list.Managed(u8) {
