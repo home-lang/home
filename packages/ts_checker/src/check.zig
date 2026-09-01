@@ -45679,8 +45679,9 @@ pub const Checker = struct {
         // relative to that lexical namespace, not only from the source-file
         // root. This is the value-space counterpart of qualified type lookup.
         const path = [_]hir_mod.StringId{namespace_name};
-        if (self.findVisibleNamespaceByPath(anchor, &path)) |visible_ns| {
-            if (self.findExportedValueDeclInNamespace(visible_ns, member_name)) |member_node| {
+        const visible_ns = self.findVisibleNamespaceByPath(anchor, &path);
+        if (visible_ns) |namespace_node| {
+            if (self.findExportedValueDeclInNamespace(namespace_node, member_name)) |member_node| {
                 if (self.hir.kindOf(member_node) != .namespace_decl) {
                     return try self.checkedNamespaceValueMemberType(member_node, member_name, anchor);
                 }
@@ -45689,6 +45690,13 @@ pub const Checker = struct {
 
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        if (visible_ns == null and
+            !self.sourceHasVirtualFilenameSections() and
+            self.indexed_namespace_containers.contains(root) and
+            !self.containers_with_dotted_namespace_decls.contains(root))
+        {
+            return null;
+        }
         for (hir_mod.blockStmts(self.hir, root)) |raw| {
             const ns_node = self.unwrapExportDecl(raw);
             if (self.hir.kindOf(ns_node) != .namespace_decl) continue;
@@ -79800,7 +79808,7 @@ pub const Checker = struct {
             if (decl == hir_mod.none_node_id or self.hir.kindOf(decl) != .namespace_decl) continue;
             const decl_name = self.declarationName(decl) orelse continue;
             if (std.mem.indexOfScalar(u8, self.string_interner.get(decl_name), '.') != null) {
-                self.containers_with_dotted_namespace_decls.put(self.gpa, container, {}) catch {};
+                self.containers_with_dotted_namespace_decls.put(self.gpa, container, {}) catch return;
             }
             const section = if (has_virtual_sections) self.virtualSectionStartForNode(decl) else 0;
             const gop = self.visible_namespace_decls.getOrPut(self.gpa, .{
