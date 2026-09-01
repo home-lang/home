@@ -544,6 +544,13 @@ pub const ShellRmTask = struct {
             this.runFromMainThread();
         }
 
+        pub fn cancelForShutdown(this: *DirTask) void {
+            const task_manager = this.task_manager;
+            if (this.parent_task != null) this.deinit();
+            task_manager.decrPendingAndMaybeDeinit();
+            bun.shell.interpret.recordShutdownCancellation();
+        }
+
         pub fn runFromThreadPool(task: *jsc.WorkPoolTask) void {
             var this: *DirTask = @fieldParentPtr("task", task);
             this.runFromThreadPoolImpl();
@@ -736,7 +743,17 @@ pub const ShellRmTask = struct {
     }
 
     pub fn schedule(this: *@This()) void {
+        // This admission stays active until the recursive DirTask graph publishes completion.
+        if (!this.event_loop.tryAddNativeWorkPoolJob()) {
+            this.cancelForShutdown();
+            return;
+        }
         jsc.WorkPool.schedule(&this.task);
+    }
+
+    pub fn cancelForShutdown(this: *ShellRmTask) void {
+        this.decrPendingAndMaybeDeinit();
+        bun.shell.interpret.recordShutdownCancellation();
     }
 
     pub fn enqueue(this: *ShellRmTask, parent_dir: *DirTask, path: [:0]const u8, is_absolute: bool, kind_hint: DirTask.EntryKindHint) void {
@@ -800,11 +817,13 @@ pub const ShellRmTask = struct {
 
     pub fn finishConcurrently(this: *ShellRmTask) void {
         debug("finishConcurrently", .{});
+        const event_loop = this.event_loop;
         if (this.event_loop == .js) {
             this.event_loop.js.enqueueTaskConcurrent(this.concurrent_task.js.from(this, .manual_deinit));
         } else {
             this.event_loop.mini.enqueueTaskConcurrent(this.concurrent_task.mini.from(this, "runFromMainThreadMini"));
         }
+        event_loop.completeNativeWorkPoolJob();
     }
 
     pub fn bufJoin(this: *ShellRmTask, buf: *bun.PathBuffer, parts: []const []const u8, _: Syscall.Tag) Maybe([:0]const u8) {

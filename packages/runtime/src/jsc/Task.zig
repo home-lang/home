@@ -576,6 +576,8 @@ pub fn cancelForShutdown(task: Task, global: *jsc.JSGlobalObject) bool {
         @field(Task.Tag, @typeName(ShellMkdirTask)) => task.get(ShellMkdirTask).?.cancelForShutdown(),
         @field(Task.Tag, @typeName(ShellMvBatchedTask)) => task.get(ShellMvBatchedTask).?.task.cancelForShutdown(),
         @field(Task.Tag, @typeName(ShellMvCheckTargetTask)) => task.get(ShellMvCheckTargetTask).?.task.cancelForShutdown(),
+        @field(Task.Tag, @typeName(ShellRmDirTask)) => task.get(ShellRmDirTask).?.cancelForShutdown(),
+        @field(Task.Tag, @typeName(ShellRmTask)) => task.get(ShellRmTask).?.cancelForShutdown(),
         @field(Task.Tag, @typeName(ShellTouchTask)) => task.get(ShellTouchTask).?.cancelForShutdown(),
         else => return false,
     }
