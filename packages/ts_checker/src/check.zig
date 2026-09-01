@@ -16205,25 +16205,21 @@ pub const Checker = struct {
             name: hir_mod.StringId,
             virtual_section_start: usize,
         };
+        const BucketEntry = struct {
+            inner_decl: NodeId,
+            is_default: bool,
+            is_exported: bool,
+            spaces: DeclSpaces,
+        };
         const Bucket = struct {
             name: hir_mod.StringId,
-            // Parallel arrays kept short to avoid an extra allocation
-            // for the common single-decl case.
-            owner_stmts: std.ArrayListUnmanaged(NodeId) = .empty,
-            inner_decls: std.ArrayListUnmanaged(NodeId) = .empty,
-            is_default: std.ArrayListUnmanaged(bool) = .empty,
-            is_exported: std.ArrayListUnmanaged(bool) = .empty,
-            spaces: std.ArrayListUnmanaged(DeclSpaces) = .empty,
+            entries: std.ArrayListUnmanaged(BucketEntry) = .empty,
         };
         var buckets: std.AutoArrayHashMapUnmanaged(BucketKey, Bucket) = .empty;
         defer {
             var it = buckets.iterator();
             while (it.next()) |entry| {
-                entry.value_ptr.owner_stmts.deinit(self.gpa);
-                entry.value_ptr.inner_decls.deinit(self.gpa);
-                entry.value_ptr.is_default.deinit(self.gpa);
-                entry.value_ptr.is_exported.deinit(self.gpa);
-                entry.value_ptr.spaces.deinit(self.gpa);
+                entry.value_ptr.entries.deinit(self.gpa);
             }
             buckets.deinit(self.gpa);
         }
@@ -16249,24 +16245,25 @@ pub const Checker = struct {
             };
             const gop = try buckets.getOrPut(self.gpa, key);
             if (!gop.found_existing) gop.value_ptr.* = .{ .name = name };
-            try gop.value_ptr.owner_stmts.append(self.gpa, stmt);
-            try gop.value_ptr.inner_decls.append(self.gpa, inner);
-            try gop.value_ptr.is_default.append(self.gpa, is_default);
-            try gop.value_ptr.is_exported.append(self.gpa, is_exported);
-            try gop.value_ptr.spaces.append(self.gpa, sp);
+            try gop.value_ptr.entries.append(self.gpa, .{
+                .inner_decl = inner,
+                .is_default = is_default,
+                .is_exported = is_exported,
+                .spaces = sp,
+            });
         }
 
         var it = buckets.iterator();
         while (it.next()) |entry| {
             const b = entry.value_ptr;
-            if (b.inner_decls.items.len < 2) continue;
+            if (b.entries.items.len < 2) continue;
             // Two-`type X` aliases are handled by the dedicated type
             // alias merge pass in `checkDeclarationSpaceDiagnostics`
             // (which also anchors TS2300 properly). Skip here to
             // avoid double-emitting TS2395.
             var only_type_aliases = true;
-            for (b.inner_decls.items) |inner| {
-                if (self.hir.kindOf(inner) != .type_alias_decl) {
+            for (b.entries.items) |bucket_entry| {
+                if (self.hir.kindOf(bucket_entry.inner_decl) != .type_alias_decl) {
                     only_type_aliases = false;
                     break;
                 }
@@ -16276,13 +16273,13 @@ pub const Checker = struct {
             var default_exported_spaces: DeclSpaces = .{};
             var exported_spaces: DeclSpaces = .{};
             var non_exported_spaces: DeclSpaces = .{};
-            for (b.spaces.items, b.is_default.items, b.is_exported.items) |sp, is_def, is_exp| {
-                if (is_def) {
-                    default_exported_spaces = default_exported_spaces.unionWith(sp);
-                } else if (is_exp) {
-                    exported_spaces = exported_spaces.unionWith(sp);
+            for (b.entries.items) |bucket_entry| {
+                if (bucket_entry.is_default) {
+                    default_exported_spaces = default_exported_spaces.unionWith(bucket_entry.spaces);
+                } else if (bucket_entry.is_exported) {
+                    exported_spaces = exported_spaces.unionWith(bucket_entry.spaces);
                 } else {
-                    non_exported_spaces = non_exported_spaces.unionWith(sp);
+                    non_exported_spaces = non_exported_spaces.unionWith(bucket_entry.spaces);
                 }
             }
             const non_default_spaces = exported_spaces.unionWith(non_exported_spaces);
@@ -16302,12 +16299,11 @@ pub const Checker = struct {
                 .{name_str},
             );
 
-            for (b.owner_stmts.items, b.inner_decls.items, b.spaces.items) |owner, inner, sp| {
-                _ = owner;
-                if (sp.intersects(common_default_non_default)) {
-                    try self.reportAt(inner, self.declarationNameSpanStart(inner), TsCodes.default_export_merge, msg_2652);
-                } else if (sp.intersects(common_export_local)) {
-                    try self.reportAt(inner, self.declarationNameSpanStart(inner), TsCodes.declarations_must_all_be_exported_or_local, msg_2395);
+            for (b.entries.items) |bucket_entry| {
+                if (bucket_entry.spaces.intersects(common_default_non_default)) {
+                    try self.reportAt(bucket_entry.inner_decl, self.declarationNameSpanStart(bucket_entry.inner_decl), TsCodes.default_export_merge, msg_2652);
+                } else if (bucket_entry.spaces.intersects(common_export_local)) {
+                    try self.reportAt(bucket_entry.inner_decl, self.declarationNameSpanStart(bucket_entry.inner_decl), TsCodes.declarations_must_all_be_exported_or_local, msg_2395);
                 }
             }
         }
