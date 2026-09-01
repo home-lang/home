@@ -58,6 +58,44 @@ other directional labels also compare means, not certainty. These are local
 synthetic measurements, not a claim that every real project or machine has
 the same speedup.
 
+### Free-type-parameter root memo (rejected)
+
+The retained profile showed repeated `containsFreeTypeParameter` graph walks in
+inference and assignability. The rejected probe memoized completed root-query
+results by TypeId. Positive answers are monotonic and were always eligible;
+negative answers were cached only when the traversal saw no memberless object,
+because an empty object can be a reserved namespace identity whose members are
+completed later. Primitive and direct type-parameter fast paths stayed ahead of
+the memo lookup. A focused cyclic-graph regression covered cached positive and
+negative answers.
+
+The fixed accepted baseline binary is SHA-256
+`8bc94b0b9187865ab8ff38a29b1e25a57f8eb9f603453b3177ca5b41ec79f8b0`;
+the experimental candidate was
+`8d814b9fe6b41ed280a8f7a078861b8d601dc6194f8c1f61e0833c58e324a316`.
+The focused regression passed, and baseline and candidate exited zero with
+byte-identical empty stdout and stderr on the unchanged official project.
+
+The official screen used three alternating warmup pairs, reversed process
+order in every measured pair, and retained every successful finite sample.
+Paired intervals are baseline-minus-candidate:
+
+| Official 2,048-family A/B, 10 pairs | Baseline | Candidate | Result | Paired 95% CI |
+|---|---:|---:|---:|---:|
+| Wall | **216.023 ± 2.201 ms** | 217.643 ± 4.010 ms | 0.9926×; 4/10 candidate wins | -3.836 to +0.372 ms |
+| CPU | **214.927 ± 2.140 ms** | 216.599 ± 4.005 ms | 0.9923×; 4/10 candidate wins | -3.795 to +0.246 ms |
+| Peak RSS | **75.139 ± 0.060 MiB** | 75.197 ± 0.015 MiB | 0.9992×; 0/10 candidate wins | **-0.094 to -0.022 MiB** |
+
+No repository test workload was active in the starting load snapshot. An
+unrelated zig-js regression command appeared by the final snapshot. Every
+sample remains in the result; the candidate's higher timing means and 10/10
+RSS losses already fail the primary gate without attributing selected rounds
+to that late load. The source probe and regression were fully reverted, and no
+confirmation, scale run, source commit, or competitor checkpoint was admitted.
+Frozen binaries, exact outputs, load snapshots, and all timing rounds are
+retained under
+`bench/vs_tsgo/results/free-type-parameter-root-memo.20260901T104559Z/`.
+
 ### Primitive type-name dispatch (rejected)
 
 The retained profile showed byte equality checks as its hottest leaf, including
