@@ -126,6 +126,50 @@ both references. Raw profile, exact-output, and A/B evidence is retained under
 the pinned-competitor rounds and verified provenance are under
 `bench/vs_tsgo/results/20260901T051415Z/`.
 
+### Rejected parser JSDoc-presence reuse
+
+The post-marker-gate 65,536-family profile under
+`predicate-post-gate-profile.20260901T052300Z` showed 255 top-of-stack samples
+in `reportJSDocTypeArgumentSyntaxDiagnostics`. The logical probe supplied the
+parser with the exact `/**` presence fact already computed by the shared source
+marker index. Indexed callers could skip the parser's standalone byte scan only
+when absence was proven, while direct parser callers retained the existing
+fallback. A positive-path driver regression preserved real JSDoc diagnostics.
+
+The fixed accepted baseline binary is SHA-256
+`ca0bda46834cc05f9c5f57bac5dd5bdec88af388cf6b7c6fc39fcce9b60604ae`;
+the experimental candidate was
+`46bb697b636891de8b8d9e3472260525c85d267d4880cebbed8183593446711a`.
+Both exit zero with byte-identical empty stdout and stderr on unchanged 2,048-,
+32,768-, and 65,536-family predicate projects. The complete parser and driver
+test suites passed. These correctness results do not substitute for a measured
+performance admission.
+
+Every set below retained every sample after three alternating warmup pairs and
+reversed process order in each measured pair. Paired intervals are
+baseline-minus-candidate. No interval clears zero, so none supports acceptance:
+
+| Predicate A/B | Metric | Baseline | Candidate | Result | Paired 95% CI |
+|---|---|---:|---:|---:|---:|
+| Official 2,048 families, 10-pair screen | Wall | 256.561 ± 9.732 ms | 252.491 ± 10.873 ms | 1.0161×; 9/10 wins | -2.739 to +10.877 ms |
+| Official 2,048 families, 10-pair screen | CPU | 252.042 ± 8.962 ms | 248.436 ± 9.805 ms | 1.0145×; 8/10 wins | -2.884 to +10.096 ms |
+| Official 2,048 families, 30-pair confirmation | Wall | 254.126 ± 6.418 ms | 252.085 ± 8.404 ms | 1.0081×; 21/30 wins | -1.091 to +5.173 ms |
+| Official 2,048 families, 30-pair confirmation | CPU | 248.771 ± 4.054 ms | 246.934 ± 5.092 ms | 1.0074×; 20/30 wins | -0.401 to +4.076 ms |
+| First 32,768-family set, 10 pairs | Wall | 4593.952 ± 222.426 ms | 4514.325 ± 254.702 ms | 1.0176×; 6/10 wins | -119.839 to +279.092 ms |
+| First 32,768-family set, 10 pairs | CPU | 4487.025 ± 191.128 ms | 4424.545 ± 235.388 ms | 1.0141×; 5/10 wins | -113.987 to +238.947 ms |
+| Independent 32,768-family set, 10 pairs | Wall | 4096.643 ± 154.747 ms | 4421.331 ± 961.984 ms | 0.9266×; 5/10 wins | -1034.897 to +385.522 ms |
+| Independent 32,768-family set, 10 pairs | CPU | 4063.062 ± 132.979 ms | 4257.522 ± 600.774 ms | 0.9543×; 5/10 wins | -645.169 to +256.249 ms |
+
+The first scale set overlapped four unrelated CPU-saturating test shards. After
+those cleared, new test and service startup overlapped rounds 7–8 of the
+independent set; the two candidate wall samples were 4999.780 and 7011.918 ms.
+Those outliers remain in the table and raw files. The result is treated as an
+environmental admission failure rather than filtered, pooled, or reframed as a
+speed claim. Because the official confirmation also remained inconclusive, the
+source probe was reverted and the accepted baseline binary restored. Raw
+evidence is retained under
+`bench/vs_tsgo/results/jsdoc-parser-presence-gate.20260901T053000Z/`.
+
 ### JSDoc import-type scan pruning
 
 Commit `532373ee1`, tracked in
