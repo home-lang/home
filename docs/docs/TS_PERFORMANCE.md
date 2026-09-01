@@ -331,6 +331,43 @@ checkpoint was admitted. Frozen binaries, exact outputs, load snapshots, and
 every screen sample remain under
 `global-namespace-negative-index.20260901T124843Z/`.
 
+### Qualified-annotation root namespace index (rejected)
+
+The next accepted-binary profile attributed repeated root scans to
+`typeAnnotationRootIsUnresolved`. Qualified annotations such as
+`Composite42.Snapshot` searched every root statement for a one-segment
+namespace even though the checker already maintains an exact namespace index.
+The rejected candidate reused that index only for ordinary sources without
+virtual filename sections. An incomplete index fell back to the original scan,
+virtual sections retained the original scan, and source-less HIR retained the
+import walk. Attached sources whose conservative marker proved they contained
+no `import` token skipped the otherwise impossible root import loop.
+
+The fixed accepted baseline is SHA-256
+`f451419a6bbd8e897e9f0b048f992a8034866d95d458591c916f090be0a95e23`;
+the candidate was
+`6b3e6d85483a1124ebdc6a2b4547c8d68752c40ef3e7241e6dcbafda628b2548`.
+Both exited zero with byte-identical empty stdout and stderr on the unchanged
+official 128-family project and the existing 2,048-family, 92,160-line scale.
+The official screen retained all ten reversed-order pairs after three
+alternating warmup pairs:
+
+| Official 128-family A/B, 10 pairs | Baseline | Candidate | Result | Paired 95% CI |
+|---|---:|---:|---:|---:|
+| Wall | 52.427 ± 7.230 ms | **48.469 ± 5.878 ms** | 1.0817×; 6/10 candidate wins | -0.642 to +9.406 ms |
+| CPU | 50.360 ± 3.470 ms | **48.613 ± 2.195 ms** | 1.0359×; 7/10 candidate wins | -0.635 to +4.213 ms |
+| Peak RSS | 16.423 ± 0.009 MiB | **16.422 ± 0.010 MiB** | 1.0001×; 2/10 candidate wins | -0.003 to +0.006 MiB |
+
+Ten unrelated sharded Zig test processes occupied most of the workstation in
+both load snapshots; load average rose from 26.33 to 29.23 during the set.
+Every sample remains retained and process order was balanced. The lower means
+therefore do not override the precommitted paired-interval rule: both timing
+intervals cross zero. The source was fully reverted, and no confirmation,
+scale timing, correctness suite, source commit, or TypeScript 6.0.3 versus
+native TypeScript 7.0.2 competitor checkpoint was admitted. Frozen binaries,
+exact outputs, load snapshots, and every screen sample remain under
+`qualified-type-root-namespace-index.20260901T125755Z/`.
+
 ### Free-type traversal generation marks (rejected)
 
 After the root memo failed, the same retained profile still showed hash-table
