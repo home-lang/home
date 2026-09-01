@@ -58,6 +58,93 @@ other directional labels also compare means, not certainty. These are local
 synthetic measurements, not a claim that every real project or machine has
 the same speedup.
 
+### Contextual cache descendant index
+
+Commit `21e6155d4`, tracked in
+[#416](https://github.com/home-lang/home/issues/416), replaces repeated
+whole-HIR scans during contextual function rechecking with a lazily built,
+exact parent-to-children index. The original path visited every HIR node and
+walked parent chains to find the descendants whose cached types must be
+cleared. The index is built only when a contextual second pass occurs, then a
+reused stack visits exactly that function subtree. If building or extending
+either scratch structure fails, the checker executes the unchanged whole-HIR
+scan, so cache invalidation is never weakened.
+
+The direction came from an independently generated 4,096-family copy of the
+existing interface-composition workload. TS 6.0.3, native TS 7.0.2, and Home
+all accepted that scaled project silently. A ten-second sample of the accepted
+Home binary recorded 1,018 exclusive samples in `clearCachedTypesWithin`, the
+largest leaf in the trace. The profile corpus, exact outputs, and sample are
+retained under
+`bench/vs_tsgo/results/interface-composition-profile.20260901T111819Z/`.
+This scaled copy selected the implementation target; it did not replace the
+unchanged admitted workload used by the primary A/B.
+
+The fixed accepted baseline binary is SHA-256
+`cf7fab7977de31aaaf298cf54a316082ab3e0dd6523f1b37ec53b99e2f0dfc71`;
+the candidate is
+`927659113386a43edda5fc884cf8b1eabab5ee6eec11e454c52752b84b0f869d`.
+Both exit zero with byte-identical empty stdout and stderr on the official
+128-family project and the independent 4,096-family profile project. A focused
+regression verifies exact descendant invalidation, sibling preservation, and
+index reuse. The complete ReleaseFast checker, driver, and CLI suites pass.
+All 20 benchmark workloads also pass version-pinned admission, including every
+existing negative control, against TS 6.0.3 and the single native TS 7.0.2
+competitor.
+
+The official screen retained all ten reversed-order pairs after three
+alternating warmup pairs:
+
+| Official 128-family A/B, 10 pairs | Baseline | Descendant index | Result | Paired 95% CI |
+|---|---:|---:|---:|---:|
+| Wall | 40.302 ± 1.071 ms | **37.924 ± 0.994 ms** | **1.0627×; 10/10 candidate wins** | **+1.791 to +3.003 ms** |
+| CPU | 39.390 ± 0.990 ms | **37.069 ± 0.978 ms** | **1.0626×; 10/10 candidate wins** | **+1.773 to +2.873 ms** |
+| Peak RSS | 16.416 ± 0.008 MiB | **16.381 ± 0.037 MiB** | 1.0021×; 5/10 candidate wins | **+0.013 to +0.056 MiB** |
+
+The independent 30-pair confirmation retained every round:
+
+| Official 128-family A/B, 30 pairs | Baseline | Descendant index | Result | Paired 95% CI |
+|---|---:|---:|---:|---:|
+| Wall | 39.353 ± 0.657 ms | **37.441 ± 0.684 ms** | **1.0511×; 29/30 candidate wins** | **+1.547 to +2.268 ms** |
+| CPU | 38.498 ± 0.590 ms | **36.582 ± 0.584 ms** | **1.0524×; 30/30 candidate wins** | **+1.618 to +2.203 ms** |
+| Peak RSS | 16.422 ± 0.008 MiB | **16.387 ± 0.036 MiB** | 1.0021×; 15/30 candidate wins | **+0.022 to +0.047 MiB** |
+
+The required 16× scale used the identical generator at 2,048 families. All
+three pinned compilers and both Home binaries accepted it silently, and the
+Home outputs remained byte-identical:
+
+| Scaled 2,048-family A/B, 10 pairs | Baseline | Descendant index | Result | Paired 95% CI |
+|---|---:|---:|---:|---:|
+| Wall | 3913.685 ± 89.745 ms | **3397.317 ± 35.948 ms** | **1.1520×; 10/10 candidate wins** | **+459.034 to +564.619 ms** |
+| CPU | 3903.645 ± 85.059 ms | **3389.624 ± 35.453 ms** | **1.1516×; 10/10 candidate wins** | **+459.204 to +559.232 ms** |
+| Peak RSS | **112.316 ± 1.584 MiB** | 113.823 ± 0.011 MiB | 0.9868×; 0/10 candidate wins | **-2.414 to -0.603 MiB** |
+
+The exact index costs two `u32` entries per HIR node, producing the disclosed
+1.5 MiB peak-RSS increase on this 92,160-line scale while saving about 516 ms
+of wall time. The official workload has slightly lower measured RSS. An
+unrelated Zig test occupied one core throughout the official screen and
+appeared in both confirmation snapshots; the scale snapshots changed from an
+unrelated Zig test to an unrelated Zig build. Reversed process order, retained
+samples, and strongly positive timing intervals make those loads explicit
+without selecting rounds.
+
+A separate provenance-verified, round-robin checkpoint compares the accepted
+candidate directly with the pinned compilers for 30 fresh processes after
+three warmups:
+
+| Targeted interface-composition checkpoint | Mean ± sample SD | Paired detail |
+|---|---:|---:|
+| TS 6.0.3 | 202.1 ± 6.3 ms | — |
+| Native TS 7.0.2 | 66.1 ± 9.9 ms | Fastest competitor |
+| Home at `21e6155d4` | **40.8 ± 18.7 ms** | **1.62× faster; 29/30 wins; TS7-minus-Home CI +21.383 to +27.862 ms** |
+
+The first Home round was a 139.8 ms outlier and remains included. All **30
+round files / 90 successful finite samples** and unchanged before/after binary
+provenance are retained under `bench/vs_tsgo/results/20260901T113706Z/`.
+Frozen A/B binaries, the 2,048-family corpus, exact outputs, load snapshots,
+and every screen, confirmation, and scale round are retained under
+`bench/vs_tsgo/results/contextual-type-child-index.20260901T112050Z/`.
+
 ### Free-type traversal generation marks (rejected)
 
 After the root memo failed, the same retained profile still showed hash-table

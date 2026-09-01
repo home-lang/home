@@ -283,6 +283,7 @@ recording both accepted and rejected probes:
 | Source-marker root-gap fast-forward | 2,048 predicates: **1.014× faster**, paired CIs positive | 65,536 predicates: **1.014× faster**, paired CIs positive | Accepted in `7ca9946c8` |
 | Dependency-free declaration schemas | 2,048 predicates: **1.046× faster**, 30/30 paired wins | Full checkpoint: **20/20** lower means, **600/600** paired wins | Accepted in `e0f2fb6d7` |
 | Program import-resolution cache | 128 owners: **1.21× faster**, 30/30 paired wins | 2,048 owners: **2.22× faster**, 20/20 paired wins | Accepted in `49641900e` |
+| Contextual cache descendant index | 128 interfaces: **1.051× wall**, confirmation CIs positive | 2,048 interfaces: **1.152× wall**, 10/10 paired wins | Accepted in `21e6155d4` |
 | Free-type traversal generation marks | Byte screen: **1.023× wall**, 10/10 wins | Confirmation: 1.004× wall, but paired wall and CPU CIs cross zero | Rejected and reverted |
 | Free-type-parameter root memo | 2,048 predicates: 0.993× wall, 4/10 wins | Candidate slower and RSS higher in 10/10 pairs; no confirmation admitted | Rejected and reverted |
 | Primitive type-name dispatch | 2,048 predicates: **1.022× wall**, confirmation CIs positive | 32,768 predicates: 1.003× wall mean, but paired wall and CPU CIs cross zero | Rejected and reverted |
