@@ -58,6 +58,69 @@ other directional labels also compare means, not certainty. These are local
 synthetic measurements, not a claim that every real project or machine has
 the same speedup.
 
+### Checker directive marker indexing (rejected)
+
+The post-HIR-reservation 32,768-family profile showed three whole-source
+searches after checking: the unreachable-code pass searched separately for
+the true and false `allowUnreachableCode` spellings, and the final diagnostic
+cleanup searched for `noImplicitThis`. The rejected probe registered the five
+exact accepted spellings in the driver's existing one-pass source-marker
+index and reused their recorded first positions. This preserved the previous
+substring semantics and removed those three scans from the post-change
+profile; it was a general source-size optimization, not a predicate-specific
+shortcut.
+
+The fixed baseline binary is SHA-256
+`c66959f3321a4649d607dffb1d095cc1146454a4ac400420930f55b962cdbe06`.
+The exact final-source candidate is
+`65c2f95f8733ad569d00bfa25edb72bcafebc18257fdf77c68eddb55de4b2339`.
+The complete ReleaseFast checker and TS driver suites passed, as did all
+**95/95** benchmark-harness tests, `zig fmt --check`, and `git diff --check`.
+A focused behavioral test preserved `noImplicitThis: false` suppression.
+Baseline and candidate both exited zero with byte-identical empty stdout and
+stderr on the unchanged official 2,048-family project and the deterministic
+32,768-family diagnostic copy.
+
+The first exact-final-source official set was directionally positive but
+inconclusive. Before seeing another result, the decision rule was fixed to one
+additional independent 30-pair set and an aggregate over all 60 final-binary
+pairs, retaining the first set. Every set used three alternating warmup pairs,
+reversed process order in every measured pair, and retained every sample.
+Paired intervals are baseline-minus-candidate:
+
+| Official 2,048-family A/B | Metric | Baseline | Candidate | Result | Paired 95% CI |
+|---|---|---:|---:|---:|---:|
+| First final-source set, 30 pairs | Wall | 227.277 ± 3.927 ms | **226.107 ± 5.174 ms** | 1.0052×; 20/30 wins | -0.348 to +2.503 ms |
+| First final-source set, 30 pairs | CPU | 225.707 ± 3.890 ms | **224.550 ± 5.147 ms** | 1.0051×; 20/30 wins | -0.327 to +2.446 ms |
+| Second final-source set, 30 pairs | Wall | 231.640 ± 9.081 ms | **227.141 ± 4.851 ms** | 1.0198×; 24/30 wins | **+1.415 to +8.487 ms** |
+| Second final-source set, 30 pairs | CPU | 229.561 ± 6.919 ms | **225.522 ± 4.584 ms** | 1.0179×; 25/30 wins | **+1.520 to +7.024 ms** |
+| All final-source pairs, 60 pairs | Wall | 229.459 ± 7.277 ms | **226.624 ± 5.000 ms** | **1.0125×; 44/60 wins** | **+1.070 to +4.996 ms** |
+| All final-source pairs, 60 pairs | CPU | 227.634 ± 5.895 ms | **225.036 ± 4.857 ms** | **1.0115×; 45/60 wins** | **+1.109 to +4.274 ms** |
+
+Peak RSS was statistically flat across the 60 official pairs: 75.071 ± 0.011
+MiB for both rounded means, with a baseline-minus-candidate interval of
+-0.003 to +0.004 MiB.
+
+The separately required final-source 32,768-family set did not clear the
+precommitted wall-time gate:
+
+| Diagnostic 32,768-family A/B, 10 pairs | Baseline | Candidate | Result | Paired 95% CI |
+|---|---:|---:|---:|---:|
+| Wall | 5697.627 ± 1502.489 ms | **5584.008 ± 1722.591 ms** | 1.0203×; 7/10 wins | **-416.122 to +760.379 ms** |
+| CPU | 5052.219 ± 903.888 ms | **4849.417 ± 907.554 ms** | 1.0418×; 7/10 wins | +0.428 to +550.640 ms |
+| Peak RSS | 964.639 ± 48.742 MiB | **956.275 ± 67.481 MiB** | 1.0087×; 4/10 wins | +0.005 to +25.072 MiB |
+
+The retained host snapshots explain the extreme dispersion but do not erase
+it. A Zig build was already using one core at the start; by the end, ten
+unrelated `zig-js` test processes each occupied roughly 80–91% of a core.
+Individual paired wall differences ranged from -1473.438 to +2517.279 ms.
+No observation was filtered, replaced, or selectively rerun. Because the
+final scale wall interval crosses zero, the probe was rejected and completely
+reverted despite the positive official aggregate. Raw profiles, exact-output
+checks, preliminary evidence, both final official sets, the 60-pair aggregate,
+and the final scale set are retained under
+`bench/vs_tsgo/results/directive-marker-index.20260901T090828Z/`.
+
 ### Token-count HIR reservation
 
 Commit `ed8bf949b`, tracked in
