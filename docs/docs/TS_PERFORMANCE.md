@@ -10,43 +10,41 @@ Ongoing coverage and optimization work is tracked in
 
 ## Current snapshot
 
-Measured 2026-09-01 at commit `49641900e` on an Apple M3 Pro MacBook Pro
+Measured 2026-09-01 at commit `e0f2fb6d7` on an Apple M3 Pro MacBook Pro
 (11 cores, 18 GB RAM, arm64, macOS 27.0). Each value is the mean and sample
 standard deviation of 30 new compiler processes after three warmup rounds.
-The complete raw-result identifier is `20260901T013443Z`. The runner first
+The complete raw-result identifier is `20260901T024535Z`. The runner first
 admitted all 20 selected workloads against version-checked TS **6.0.3**, native
 TS **7.0.2**, and Home. Native TS 7 and `tsgo` are one competitor. All **600
 round files / 1,800 successful finite samples** are retained without filtering.
 
 | Workload | tsc 6.0.3 | native TS 7.0.2 | Home 0.1.0 | Home vs fastest competitor |
 |---|---:|---:|---:|---:|
-| `checkjs_jsdoc` | 238.5 ± 11.0 ms | 60.8 ± 2.8 ms | **37.4 ± 1.9 ms** | **1.63× faster** |
-| `class_hierarchy` | 267.5 ± 104.4 ms | 75.8 ± 33.1 ms | **34.7 ± 16.6 ms** | **2.18× faster** |
-| `commonjs_graph` | 179.9 ± 10.7 ms | 55.7 ± 2.4 ms | **30.4 ± 3.0 ms** | **1.83× faster** |
-| `control_flow` | 359.9 ± 171.0 ms | 106.4 ± 67.6 ms | **60.1 ± 60.4 ms** | **1.77× faster** |
-| `deep_types` | 232.4 ± 183.1 ms | 74.7 ± 11.9 ms | **34.3 ± 8.2 ms** | **2.17× faster** |
-| `destructuring` | 148.8 ± 3.5 ms | 50.5 ± 1.7 ms | **17.3 ± 0.4 ms** | **2.93× faster** |
-| `generic_calls` | 436.3 ± 187.7 ms | 106.3 ± 40.1 ms | **37.9 ± 14.2 ms** | **2.81× faster** |
-| `import_graph` | 181.2 ± 22.7 ms | 62.2 ± 8.3 ms | **29.7 ± 8.8 ms** | **2.09× faster** |
-| `interface_composition` | 235.1 ± 17.7 ms | 70.6 ± 4.6 ms | **44.4 ± 2.4 ms** | **1.59× faster** |
-| `many_files` | 478.5 ± 132.7 ms | 109.9 ± 35.6 ms | **43.8 ± 11.4 ms** | **2.51× faster** |
-| `null_safe_access` | 228.4 ± 18.8 ms | 66.5 ± 4.2 ms | **38.6 ± 3.5 ms** | **1.73× faster** |
-| `overload_resolution` | 219.8 ± 6.6 ms | 68.4 ± 1.8 ms | **28.1 ± 1.1 ms** | **2.44× faster** |
-| `recursive_generics` | 166.3 ± 5.1 ms | 77.1 ± 2.2 ms | **15.6 ± 0.5 ms** | **4.95× faster** |
-| `reexport_graph` | 140.5 ± 47.0 ms | 55.7 ± 14.5 ms | **27.3 ± 8.0 ms** | **2.04× faster** |
-| `startup` | 116.9 ± 50.1 ms | 62.5 ± 15.2 ms | **6.8 ± 7.5 ms** | **9.21× faster** |
-| `structural_objects` | 208.9 ± 12.2 ms | 66.2 ± 11.5 ms | **27.7 ± 5.6 ms** | **2.39× faster** |
-| `tsx_components` | 242.5 ± 53.2 ms | 64.9 ± 13.9 ms | **28.0 ± 5.9 ms** | **2.32× faster** |
-| `type_predicates` | 316.0 ± 56.8 ms | 87.3 ± 7.9 ms | **39.0 ± 4.3 ms** | **2.24× faster** |
-| `type_predicates_large` | 1455.3 ± 369.1 ms | 484.6 ± 128.8 ms | **329.4 ± 93.3 ms** | **1.47× faster** |
-| `variadic_tuples` | 317.7 ± 41.9 ms | 90.1 ± 8.3 ms | **40.4 ± 3.6 ms** | **2.23× faster** |
+| `checkjs_jsdoc` | 221.1 ± 29.3 ms | 57.4 ± 3.6 ms | **35.0 ± 3.2 ms** | **1.64× faster** |
+| `class_hierarchy` | 208.9 ± 16.6 ms | 57.9 ± 3.2 ms | **27.5 ± 0.8 ms** | **2.10× faster** |
+| `commonjs_graph` | 157.7 ± 3.9 ms | 50.5 ± 1.1 ms | **26.5 ± 0.6 ms** | **1.90× faster** |
+| `control_flow` | 221.8 ± 37.6 ms | 65.6 ± 7.3 ms | **31.5 ± 6.0 ms** | **2.08× faster** |
+| `deep_types` | 132.4 ± 1.6 ms | 54.1 ± 1.3 ms | **24.7 ± 0.4 ms** | **2.19× faster** |
+| `destructuring` | 153.8 ± 4.0 ms | 52.8 ± 1.2 ms | **17.1 ± 0.4 ms** | **3.09× faster** |
+| `generic_calls` | 184.7 ± 4.0 ms | 56.3 ± 1.3 ms | **19.9 ± 0.4 ms** | **2.84× faster** |
+| `import_graph` | 134.4 ± 2.3 ms | 48.5 ± 1.6 ms | **20.9 ± 1.1 ms** | **2.32× faster** |
+| `interface_composition` | 241.0 ± 25.5 ms | 72.3 ± 6.8 ms | **45.2 ± 3.9 ms** | **1.60× faster** |
+| `many_files` | 216.4 ± 3.9 ms | 55.8 ± 2.6 ms | **21.3 ± 0.5 ms** | **2.62× faster** |
+| `null_safe_access` | 218.5 ± 16.5 ms | 66.1 ± 6.7 ms | **35.9 ± 1.8 ms** | **1.84× faster** |
+| `overload_resolution` | 225.8 ± 6.2 ms | 71.1 ± 2.1 ms | **28.5 ± 0.7 ms** | **2.50× faster** |
+| `recursive_generics` | 155.7 ± 4.6 ms | 72.8 ± 1.6 ms | **14.9 ± 0.4 ms** | **4.89× faster** |
+| `reexport_graph` | 98.4 ± 1.5 ms | 42.7 ± 1.0 ms | **20.4 ± 1.0 ms** | **2.09× faster** |
+| `startup` | 77.0 ± 27.4 ms | 48.4 ± 21.5 ms | **4.1 ± 2.1 ms** | **11.69× faster** |
+| `structural_objects` | 206.6 ± 9.2 ms | 64.3 ± 3.5 ms | **26.5 ± 1.1 ms** | **2.43× faster** |
+| `tsx_components` | 168.9 ± 6.6 ms | 49.3 ± 1.4 ms | **21.0 ± 0.6 ms** | **2.35× faster** |
+| `type_predicates` | 266.0 ± 13.6 ms | 79.4 ± 5.5 ms | **34.8 ± 1.7 ms** | **2.28× faster** |
+| `type_predicates_large` | 1119.9 ± 56.1 ms | 388.9 ± 17.0 ms | **259.1 ± 15.2 ms** | **1.50× faster** |
+| `variadic_tuples` | 269.7 ± 20.4 ms | 81.4 ± 3.6 ms | **35.7 ± 1.3 ms** | **2.28× faster** |
 
 Home records lower means on **20/20 admitted workloads** and lower paired times
-in **598/600 rounds**. The two individual non-wins are one `control_flow`
-round and one `type_predicates_large` round; neither was removed or rerun.
-Every row's paired 95% confidence interval for the
+in **600/600 rounds**. Every row's paired 95% confidence interval for the
 fastest-competitor-minus-Home difference is above zero. The narrowest mean
-lead is **1.47×** on `type_predicates_large`; this is still not evidence of
+lead is **1.50×** on `type_predicates_large`; this is still not evidence of
 universal leadership. These are local
 synthetic results; real projects, other platforms, and broader rejection
 coverage remain separate validation work. Historical snapshots, including
@@ -305,18 +303,65 @@ without a confirmation or larger-scale run. Raw evidence remains under
 fresh accepted-binary profile is under
 `bench/vs_tsgo/results/predicate-current-profile.20260901T014600Z/`.
 
-The independent focused three-compiler checkpoint `20260831T214804Z` compares
+### Dependency-free declaration schemas
+
+Commit `e0f2fb6d7`, tracked in
+[#416](https://github.com/home-lang/home/issues/416), avoids constructing the
+program declaration-schema graph when the resolved program has no file
+dependencies. Those schemas transfer types across file boundaries. A program
+with no resolved dependency has no cross-file consumer: local declarations
+continue through their owner's HIR and symbol tables, global scripts use the
+bound-global index, and CommonJS uses its separate program facts. Any resolved
+file dependency retains the complete existing collector. The full export
+snapshot helper is also unchanged for callers that explicitly request it.
+
+The regression proves both sides of that boundary. Checking-time collection is
+empty for a dependency-free generic module, while its explicit export snapshot
+still contains the factory value and interface type. A full check retains local
+generic inference, emits the deliberate TS2322 control, and does not emit the
+TS2304 missing-name failure. The ReleaseFast Program suite, focused
+type-predicate checker suite, all **95/95** harness tests, and every positive and
+negative admission gate for all 20 benchmark workloads pass.
+
+The immutable baseline is SHA-256
+`ec99b3fcca63f39d97f147bbe2ad5139bf5e53a22f885e25bd1f6eb971386789`;
+the accepted candidate is
+`83f48045ba8dc697177eb2d6d453409cb06ae44167d094b6d70ed6e1dec25e7e`.
+Both exit zero with byte-identical empty stdout and stderr on the official
+2,048-family predicate workload and unchanged 32,768- and 65,536-family scale
+projects. The official `recursive_generics` output is also exact.
+
+The decisive unchanged official `type_predicates_large` A/B retained all 30
+reversed-order pairs after three alternating warmup pairs. No sample was
+filtered. Wall time falls from **258.315 ± 7.221 ms** to
+**246.859 ± 4.718 ms** (**1.0464×**, 30/30 candidate wins), with a paired 95%
+interval of **+9.586 to +13.325 ms**. Process CPU falls from
+**256.033 ± 7.037 ms** to **244.838 ± 4.605 ms** (**1.0457×**, 30/30), with
+an interval of **+9.428 to +12.962 ms**.
+
+The noisy larger-scale screens are retained rather than pooled or trimmed.
+At 32,768 families, wall measured 4498.5 ± 291.2 ms versus
+4511.5 ± 502.2 ms and CPU measured 4456.8 ± 252.2 ms versus
+4389.7 ± 341.0 ms; both paired intervals cross zero. At 65,536 families, the
+candidate has lower means—10363.7 ± 621.5 ms versus 10156.9 ± 1021.6 ms wall,
+and 10160.0 ± 414.0 ms versus 9975.6 ± 900.0 ms CPU—but both intervals again
+cross zero. The short `recursive_generics` confirmation is also neutral. These
+secondary observations neither strengthen nor weaken the accepted standard
+workload result. Raw evidence is under
+`bench/vs_tsgo/results/dependency-free-declarations.20260901T022352Z/`.
+
+The independent focused three-compiler checkpoint `20260901T024321Z` compares
 version-verified TS 6.0.3, native TS 7.0.2, and the same immutable Home binary:
 
 | Focused `type_predicates_large` | tsc 6.0.3 | native TS 7.0.2 | Home 0.1.0 | Home vs fastest competitor |
 |---|---:|---:|---:|---:|
-| 30 interleaved rounds | 1185.5 ± 109.7 ms | 408.2 ± 33.7 ms | **284.6 ± 25.9 ms** | **1.43× faster** |
+| 30 interleaved rounds | 1147.4 ± 290.2 ms | 398.4 ± 50.3 ms | **266.8 ± 50.8 ms** | **1.49× faster** |
 
-Home wins all 30 focused pairs; the paired fastest-competitor-minus-Home 95%
-interval is +113.7 to +133.6 ms. All 30 round files / 90 successful finite
-samples are retained, and compiler provenance is unchanged before and after
-measurement. The complete 20-workload checkpoint using the same binary is the
-[current snapshot](#current-snapshot).
+Home beats native TS 7 in 29/30 focused pairs and TS 6 in 30/30. The paired
+native-TS-7-minus-Home 95% interval is +111.5 to +151.8 ms. All 30 round files
+/ 90 successful finite samples are retained, and compiler provenance is
+unchanged before and after measurement. The complete 20-workload checkpoint
+using the same binary is the [current snapshot](#current-snapshot).
 
 ## Linux ARM64 container checkpoint
 

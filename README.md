@@ -268,7 +268,7 @@ every successful finite sample without filtering.
 
 | Platform | Workloads with the lowest Home mean | Strongest Home mean lead | Narrowest Home mean lead |
 |---|---:|---:|---:|
-| Apple M3 Pro, macOS ARM64 | 20 / 20 | `startup`: 9.21× faster | `type_predicates_large`: 1.47× faster |
+| Apple M3 Pro, macOS ARM64 | 20 / 20 | `startup`: 11.69× faster | `type_predicates_large`: 1.50× faster |
 | Debian Bookworm, Linux ARM64 | 20 / 20 | `startup`: 21.67× faster | `checkjs_jsdoc`: 1.02× faster |
 
 The latest optimization admissions preserve that qualified snapshot while
@@ -276,6 +276,7 @@ recording both accepted and rejected probes:
 
 | Optimization probe | Primary fair A/B | Secondary scale | Decision |
 |---|---:|---:|---|
+| Dependency-free declaration schemas | 2,048 predicates: **1.046× faster**, 30/30 paired wins | Full checkpoint: **20/20** lower means, **600/600** paired wins | Accepted in `e0f2fb6d7` |
 | Program import-resolution cache | 128 owners: **1.21× faster**, 30/30 paired wins | 2,048 owners: **2.22× faster**, 20/20 paired wins | Accepted in `49641900e` |
 | Exact pruned prefix trie | 32,768 families: 1.008×; paired CI crosses zero | 65,536 families: 1.011×; paired CI crosses zero | Rejected and reverted |
 | Parser-local exact-name cache | 32,768 families: 0.999×; paired CI crosses zero | Not run after failed gate | Rejected and reverted |

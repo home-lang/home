@@ -74,43 +74,43 @@ upstream `.errors.txt` baselines** in exact mode (`HOME_TS_CONFORMANCE_EXACT=1`)
 coarse mode (`HOME_TS_CONFORMANCE_FULL=1` alone) only asserts that we emit
 the same *families* of diagnostics.
 
-**Frontend performance snapshot** (`49641900e`, Apple M3 Pro, shared workstation;
+**Frontend performance snapshot** (`e0f2fb6d7`, Apple M3 Pro, shared workstation;
 30 interleaved runs after three warmups; lower is better):
 
 | Workload | tsc 6.0.3 | native TS 7.0.2 | Home 0.1.0 | Home vs fastest competitor |
 |---|---:|---:|---:|---:|
-| Startup | 116.9 ms | 62.5 ms | **6.8 ms** | **9.21× faster** |
-| 256 files | 478.5 ms | 109.9 ms | **43.8 ms** | **2.51× faster** |
-| Deep types | 232.4 ms | 74.7 ms | **34.3 ms** | **2.17× faster** |
-| 128-module import graph | 181.2 ms | 62.2 ms | **29.7 ms** | **2.09× faster** |
-| 64-leaf barrel graph | 140.5 ms | 55.7 ms | **27.3 ms** | **2.04× faster** |
-| 256 typed TSX components | 242.5 ms | 64.9 ms | **28.0 ms** | **2.32× faster** |
-| 256 generic call groups | 436.3 ms | 106.3 ms | **37.9 ms** | **2.81× faster** |
-| 256 exhaustive control-flow functions | 359.9 ms | 106.4 ms | **60.1 ms** | **1.77× faster** |
-| 256 type-predicate/assertion families | 316.0 ms | 87.3 ms | **39.0 ms** | **2.24× faster** |
-| 2,048 type-predicate/assertion families | 1455.3 ms | 484.6 ms | **329.4 ms** | **1.47× faster** |
-| 256 null-safe-access families | 228.4 ms | 66.5 ms | **38.6 ms** | **1.73× faster** |
-| 128 destructuring/rest/spread families | 148.8 ms | 50.5 ms | **17.3 ms** | **2.93× faster** |
-| 128 × 8 overload calls | 219.8 ms | 68.4 ms | **28.1 ms** | **2.44× faster** |
-| 128 generic class families | 267.5 ms | 75.8 ms | **34.7 ms** | **2.18× faster** |
-| 128 structural object families | 208.9 ms | 66.2 ms | **27.7 ms** | **2.39× faster** |
-| 128 interface/namespace families | 235.1 ms | 70.6 ms | **44.4 ms** | **1.59× faster** |
-| 256 variadic tuple families | 317.7 ms | 90.1 ms | **40.4 ms** | **2.23× faster** |
-| 128 checked-JavaScript/JSDoc families | 238.5 ms | 60.8 ms | **37.4 ms** | **1.63× faster** |
-| 128 checked-CommonJS owners + app | 179.9 ms | 55.7 ms | **30.4 ms** | **1.83× faster** |
-| 256 recursive generic payloads | 166.3 ms | 77.1 ms | **15.6 ms** | **4.95× faster** |
+| Startup | 77.0 ms | 48.4 ms | **4.1 ms** | **11.69× faster** |
+| 256 files | 216.4 ms | 55.8 ms | **21.3 ms** | **2.62× faster** |
+| Deep types | 132.4 ms | 54.1 ms | **24.7 ms** | **2.19× faster** |
+| 128-module import graph | 134.4 ms | 48.5 ms | **20.9 ms** | **2.32× faster** |
+| 64-leaf barrel graph | 98.4 ms | 42.7 ms | **20.4 ms** | **2.09× faster** |
+| 256 typed TSX components | 168.9 ms | 49.3 ms | **21.0 ms** | **2.35× faster** |
+| 256 generic call groups | 184.7 ms | 56.3 ms | **19.9 ms** | **2.84× faster** |
+| 256 exhaustive control-flow functions | 221.8 ms | 65.6 ms | **31.5 ms** | **2.08× faster** |
+| 256 type-predicate/assertion families | 266.0 ms | 79.4 ms | **34.8 ms** | **2.28× faster** |
+| 2,048 type-predicate/assertion families | 1119.9 ms | 388.9 ms | **259.1 ms** | **1.50× faster** |
+| 256 null-safe-access families | 218.5 ms | 66.1 ms | **35.9 ms** | **1.84× faster** |
+| 128 destructuring/rest/spread families | 153.8 ms | 52.8 ms | **17.1 ms** | **3.09× faster** |
+| 128 × 8 overload calls | 225.8 ms | 71.1 ms | **28.5 ms** | **2.50× faster** |
+| 128 generic class families | 208.9 ms | 57.9 ms | **27.5 ms** | **2.10× faster** |
+| 128 structural object families | 206.6 ms | 64.3 ms | **26.5 ms** | **2.43× faster** |
+| 128 interface/namespace families | 241.0 ms | 72.3 ms | **45.2 ms** | **1.60× faster** |
+| 256 variadic tuple families | 269.7 ms | 81.4 ms | **35.7 ms** | **2.28× faster** |
+| 128 checked-JavaScript/JSDoc families | 221.1 ms | 57.4 ms | **35.0 ms** | **1.64× faster** |
+| 128 checked-CommonJS owners + app | 157.7 ms | 50.5 ms | **26.5 ms** | **1.90× faster** |
+| 256 recursive generic payloads | 155.7 ms | 72.8 ms | **14.9 ms** | **4.89× faster** |
 
 **Cross-platform confirmation** (same admitted corpus, TS 6.0.3 versus native
 TS 7.0.2, 30 interleaved runs after three warmups):
 
 | Platform | Raw result | Home lower means | Narrowest mean lead | Full documentation |
 |---|---|---:|---:|---|
-| Apple M3 Pro / macOS arm64 | `20260901T013443Z` | **20/20** | 1.47×, large predicates | [macOS snapshot](/docs/TS_PERFORMANCE#current-snapshot) |
+| Apple M3 Pro / macOS arm64 | `20260901T024535Z` | **20/20** | 1.50×, large predicates | [macOS snapshot](/docs/TS_PERFORMANCE#current-snapshot) |
 | Linux arm64 / pinned Bookworm container | `20260829T035150Z` | **20/20** | 1.02×, CheckJS/JSDoc | [Linux checkpoint](/docs/TS_PERFORMANCE#linux-arm64-container-checkpoint) |
 
 Home has lower means on **20/20 admitted timed workloads** and wins
-**598/600 paired rounds**. The large-predicate row has the narrowest mean
-lead at **1.47×**. All 20 workloads pass admission
+**600/600 paired rounds**. The large-predicate row has the narrowest mean
+lead at **1.50×**. All 20 workloads pass admission
 before timing; all 600 round files and 1,800 successful samples are retained,
 and every row's paired 95% interval is above zero. This local synthetic
 snapshot is not universal benchmark leadership. Real-project validation and
