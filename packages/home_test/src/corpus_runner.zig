@@ -30341,6 +30341,27 @@ const harness_prelude =
     \\    },
     \\  },
     \\  inspect(value, options) {
+    \\    if (value && (typeof value === "object" || typeof value === "function")) {
+    \\      const constructorDescriptor = Object.getOwnPropertyDescriptor(value, "constructor");
+    \\      const constructor = constructorDescriptor && constructorDescriptor.value;
+    \\      if (typeof constructor === "function" && constructor !== Object && constructor.prototype === value) {
+    \\        const lines = [String(constructor.name || "(anonymous)") + " {"];
+    \\        for (const key of Reflect.ownKeys(value)) {
+    \\          if (key === "constructor" || key === Symbol.toStringTag) continue;
+    \\          const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    \\          if (!descriptor) continue;
+    \\          const label = typeof key === "symbol" ? "[" + String(key) + "]" : String(key);
+    \\          let inspected;
+    \\          if (Object.prototype.hasOwnProperty.call(descriptor, "value")) inspected = descriptor.value === value ? "[Circular]" : Bun.inspect(descriptor.value, options);
+    \\          else if (descriptor.get && descriptor.set) inspected = "[Getter/Setter]";
+    \\          else if (descriptor.get) inspected = "[Getter]";
+    \\          else inspected = "[Setter]";
+    \\          lines.push("  " + label + ": " + inspected + ",");
+    \\        }
+    \\        lines.push("}");
+    \\        return lines.join("\n");
+    \\      }
+    \\    }
     \\    if (value && typeof value.__home_inspect === "string") return value.__home_inspect;
     \\    if (value && (value instanceof Error || Object.prototype.toString.call(value) === "[object Error]")) {
     \\      const sourceURLFormats = __home_source_url_error_formats(value, globalThis.__home_active_source_evaluation);
@@ -30401,23 +30422,6 @@ const harness_prelude =
     \\    if (value && value.__home_error_event === true) return __home_inspect_error_event(value);
     \\    if (value && value.__home_timer_record && typeof value.valueOf === "function") {
     \\      return "Timeout (#" + String(+value) + (value.__home_timer_record.interval ? ", repeats" : "") + ")";
-    \\    }
-    \\    if (String(globalThis.__home_current_filename || "").endsWith("js/bun/util/inspect.test.js")) {
-    \\      const prototypeNames = [
-    \\        ["Request", typeof Request !== "undefined" && Request.prototype],
-    \\        ["Response", typeof Response !== "undefined" && Response.prototype],
-    \\        ["Blob", typeof Blob !== "undefined" && Blob.prototype],
-    \\        ["Headers", typeof Headers !== "undefined" && Headers.prototype],
-    \\        ["URL", typeof URL !== "undefined" && URL.prototype],
-    \\        ["URLSearchParams", typeof URLSearchParams !== "undefined" && URLSearchParams.prototype],
-    \\        ["ReadableStream", typeof ReadableStream !== "undefined" && ReadableStream.prototype],
-    \\        ["WritableStream", typeof WritableStream !== "undefined" && WritableStream.prototype],
-    \\        ["TransformStream", typeof TransformStream !== "undefined" && TransformStream.prototype],
-    \\        ["MessageEvent", typeof MessageEvent !== "undefined" && MessageEvent.prototype],
-    \\        ["CloseEvent", typeof CloseEvent !== "undefined" && CloseEvent.prototype],
-    \\        ["WebSocket", typeof WebSocket !== "undefined" && WebSocket.prototype],
-    \\      ];
-    \\      for (const entry of prototypeNames) if (value === entry[1]) return entry[0] + ".prototype";
     \\    }
     \\    if (value instanceof Error) {
     \\      if (String(globalThis.__home_current_filename || "").endsWith("cli/inspect/inspect.test.ts") && value.message === "test") {
@@ -30549,7 +30553,7 @@ const harness_prelude =
     \\      const isFile = typeof File === "function" && blob instanceof File;
     \\      const label = (isFile ? "File" : "Blob") + " (" + inspectSize(blob && blob.size) + ")";
     \\      const lines = [];
-    \\      if (Object.prototype.hasOwnProperty.call(blob, "name")) lines.push("name: " + JSON.stringify(String(blob.name)));
+    \\      if (blob && blob.name !== undefined) lines.push("name: " + JSON.stringify(String(blob.name)));
     \\      if (blob && blob.type) lines.push("type: " + JSON.stringify(inspectBlobType(blob.type)));
     \\      if (Object.prototype.hasOwnProperty.call(blob, "lastModified")) lines.push("lastModified: " + String(blob.lastModified));
     \\      if (lines.length === 0) return pad + label;
@@ -30646,7 +30650,7 @@ const harness_prelude =
     \\      const bodyBlob = typeof Blob === "function" && bodyValue instanceof Blob ? bodyValue : null;
     \\      const streamedSize = value.body && Object.prototype.hasOwnProperty.call(value.body, "__home_bytes_read") ? Number(value.body.__home_bytes_read || 0) : null;
     \\      const bodySize = bodyRef ? bodyRef.size : (bodyBlob ? bodyBlob.size : (typeof bodyValue === "string" ? __home_text_to_utf8_bytes(bodyValue).length : streamedSize));
-    \\      const headersText = inspectMessageHeaders(value.headers, true);
+    \\      const headersText = inspectMessageHeaders(value.headers, value.__home_default_content_type !== true);
     \\      const lines = ["Response" + (bodySize !== null ? " (" + inspectSize(bodySize) + ")" : "") + " {"];
     \\      lines.push("  ok: " + String(value.status >= 200 && value.status < 300) + ",");
     \\      lines.push("  url: " + JSON.stringify(value.url || "") + ",");
@@ -56367,6 +56371,7 @@ const harness_prelude =
     \\  return __home_util_inspect_value(value, options, new Set());
     \\}
     \\__home_util_inspect.custom = __home_util_inspect_custom;
+    \\Bun.inspect.custom = __home_util_inspect_custom;
     \\Object.defineProperty(__home_util_inspect, "defaultOptions", {
     \\  configurable: true,
     \\  enumerable: true,
