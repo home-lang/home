@@ -1051,6 +1051,12 @@ pub fn transform(this: *JSTranspiler, globalThis: *jsc.JSGlobalObject, callframe
         return globalThis.throwInvalidArgumentType("transform", "code", "string or Uint8Array");
     };
     errdefer code.deinitAndUnprotect();
+    if (code == .buffer) {
+        const bytes = try bun.default_allocator.dupe(u8, code.slice());
+        globalThis.vm().reportExtraMemory(bytes.len);
+        code.buffer.buffer.value.unprotect();
+        code = .{ .encoded_slice = jsc.ZigString.Slice.init(bun.default_allocator, bytes) };
+    }
 
     args.eat();
     const loader: ?Loader = brk: {

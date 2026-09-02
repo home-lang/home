@@ -438,11 +438,17 @@ pub const DebugTimer = struct {
     }
 };
 
-/// Minimal stand-in for `Output.Source`. The full buffered-stream machinery
-/// is not ported yet; the install cone only calls `Source.configureThread()`,
-/// which is a no-op until Home routes through its own buffered writer.
+/// Home owns its output writers separately from Bun's `Output.Source`, but
+/// thread configuration must retain Bun's non-output side effects. In
+/// particular, recursive parsers read the WTF stack bounds initialized here.
 pub const Source = struct {
-    pub fn configureThread() void {}
+    threadlocal var configured = false;
+
+    pub fn configureThread() void {
+        if (configured) return;
+        configured = true;
+        @import("home").StackCheck.configureThread();
+    }
 
     pub const ColorDepth = enum { none, @"16", @"256", @"16m" };
 
