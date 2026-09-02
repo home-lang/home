@@ -87,6 +87,12 @@ using namespace Zig;
 #define NAPI_PREAMBLE(_env)                                             \
     NAPI_LOG_CURRENT_FUNCTION;                                          \
     NAPI_CHECK_ARG(_env, _env);                                         \
+    if (_env->globalObject()->isShuttingDown()                           \
+        || _env->isVMTerminating()) [[unlikely]]                         \
+        return napi_set_last_error(                                     \
+            _env, _env->napiModule().nm_version >= 10                   \
+                ? napi_cannot_run_js                                    \
+                : napi_pending_exception);                              \
     /* You should not use this throw scope directly -- if you need */   \
     /* to throw or clear exceptions, make your own scope */             \
     auto napi_preamble_throw_scope__ = DECLARE_THROW_SCOPE(_env->vm()); \

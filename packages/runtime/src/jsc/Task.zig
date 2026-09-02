@@ -569,6 +569,7 @@ pub fn cancelForShutdown(task: Task, global: *jsc.JSGlobalObject) bool {
         @field(Task.Tag, @typeName(NativeZlib)) => task.get(NativeZlib).?.cancelForShutdown(),
         @field(Task.Tag, @typeName(NativeBrotli)) => task.get(NativeBrotli).?.cancelForShutdown(),
         @field(Task.Tag, @typeName(NativeZstd)) => task.get(NativeZstd).?.cancelForShutdown(),
+        @field(Task.Tag, @typeName(napi_async_work)) => task.get(napi_async_work).?.cancelForShutdown(global.bunVM()),
         @field(Task.Tag, @typeName(ShellCondExprStatTask)) => task.get(ShellCondExprStatTask).?.task.cancelForShutdown(),
         @field(Task.Tag, @typeName(ShellCpTask)) => task.get(ShellCpTask).?.cancelForShutdown(),
         @field(Task.Tag, @typeName(ShellGlobTask)) => task.get(ShellGlobTask).?.cancelForShutdown(),

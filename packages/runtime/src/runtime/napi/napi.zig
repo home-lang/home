@@ -1061,6 +1061,7 @@ pub const napi_async_work = struct {
     data: ?*anyopaque = null,
     status: std.atomic.Value(Status) = .init(.pending),
     scheduled: bool = false,
+    native_job_admitted: bool = false,
     poll_ref: Async.KeepAlive = .{},
 
     pub const Status = enum(u32) {
@@ -1089,11 +1090,15 @@ pub const napi_async_work = struct {
         bun.destroy(this);
     }
 
-    pub fn schedule(this: *napi_async_work) void {
-        if (this.scheduled) return;
+    pub fn schedule(this: *napi_async_work) bool {
+        if (this.scheduled) return true;
+        const vm = this.event_loop.virtual_machine;
+        if (!vm.native_work_pool_jobs.tryAdd()) return false;
+        this.native_job_admitted = true;
         this.scheduled = true;
-        this.poll_ref.ref(this.global.bunVM());
+        this.poll_ref.ref(vm);
         WorkPool.schedule(&this.task);
+        return true;
     }
 
     pub fn runFromThreadPool(task: *WorkPoolTask) void {
@@ -1103,14 +1108,22 @@ pub const napi_async_work = struct {
     fn run(this: *napi_async_work) void {
         if (this.status.cmpxchgStrong(.pending, .started, .seq_cst, .seq_cst)) |state| {
             if (state == .cancelled) {
-                this.event_loop.enqueueTaskConcurrent(this.concurrent_task.from(this, .manual_deinit));
+                this.publishCompletion();
                 return;
             }
         }
         this.execute(this.env.get(), this.data);
         this.status.store(.completed, .seq_cst);
 
+        this.publishCompletion();
+    }
+
+    fn publishCompletion(this: *napi_async_work) void {
+        const vm = this.event_loop.virtual_machine;
+        const native_job_admitted = this.native_job_admitted;
+        this.native_job_admitted = false;
         this.event_loop.enqueueTaskConcurrent(this.concurrent_task.from(this, .manual_deinit));
+        if (native_job_admitted) vm.native_work_pool_jobs.complete();
     }
 
     pub fn cancel(this: *napi_async_work) bool {
@@ -1148,7 +1161,40 @@ pub const napi_async_work = struct {
             global.reportActiveExceptionAsUnhandled(error.JSError);
         }
     }
+
+    pub fn cancelForShutdown(this: *napi_async_work, vm: *jsc.VirtualMachine) void {
+        bun.assert(!this.native_job_admitted);
+
+        // Match Node's ThreadPoolWork teardown: the native completion callback
+        // still runs after an admitted request finishes, while Node-API calls
+        // which could enter JavaScript report that the environment is closing.
+        var poll_ref = this.poll_ref;
+        poll_ref.unref(vm);
+
+        const complete = this.complete orelse {
+            _ = shutdown_cancellation_count.fetchAdd(1, .seq_cst);
+            return;
+        };
+        const env = this.env.get();
+        const data = this.data;
+        const status: NapiStatus = switch (this.status.load(.seq_cst)) {
+            .cancelled => .cancelled,
+            .completed => .ok,
+            .pending, .started => unreachable,
+        };
+        const handle_scope = NapiHandleScope.open(env, false);
+        defer if (handle_scope) |scope| scope.close(env);
+
+        _ = shutdown_cancellation_count.fetchAdd(1, .seq_cst);
+        complete(env, @intFromEnum(status), data);
+    }
 };
+
+var shutdown_cancellation_count = std.atomic.Value(u64).init(0);
+
+pub fn asyncWorkShutdownCancellationCount() u64 {
+    return shutdown_cancellation_count.load(.seq_cst);
+}
 pub const napi_threadsafe_function = *ThreadSafeFunction;
 pub const napi_threadsafe_function_release_mode = enum(c_uint) {
     release = 0,
@@ -1309,7 +1355,7 @@ pub export fn napi_queue_async_work(env_: napi_env, work_: ?*napi_async_work) na
         return env.invalidArg();
     };
     if (comptime bun.Environment.allow_assert) bun.assert(env.toJS() == work.global);
-    work.schedule();
+    if (!work.schedule()) return env.genericFailure();
     return env.ok();
 }
 pub export fn napi_cancel_async_work(env_: napi_env, work_: ?*napi_async_work) napi_status {
