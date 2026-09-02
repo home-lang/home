@@ -30581,8 +30581,8 @@ const harness_prelude =
     \\      }
     \\      return Bun.inspect(headers);
     \\    }
-    \\    if ((typeof Blob === "function" && value instanceof Blob) || (value && typeof value === "object" && (Array.isArray(value.__home_blob_bytes) || Array.isArray(value.__home_blob_sparse_parts)))) return inspectBlob(value, 0);
     \\    if (value && value.__home_file_ref) return inspectFileRef(value, 0);
+    \\    if ((typeof Blob === "function" && value instanceof Blob) || (value && typeof value === "object" && (Array.isArray(value.__home_blob_bytes) || Array.isArray(value.__home_blob_sparse_parts)))) return inspectBlob(value, 0);
     \\    if (typeof Request === "function" && value instanceof Request) {
     \\      const requestSize = value.__home_text ? __home_text_to_utf8_bytes(value.__home_text).length : 0;
     \\      let requestUrl = String(value.url || "");
@@ -53021,8 +53021,9 @@ const harness_prelude =
     \\  return error;
     \\}
     \\function __home_path_validate_string(value, name) {
-    \\  if (typeof value !== "string") throw __home_path_invalid_arg(name, "string", value);
-    \\  return value;
+    \\  if (typeof value === "string") return value;
+    \\  if (value instanceof String) return String(value);
+    \\  throw __home_path_invalid_arg(name, "string", value);
     \\}
     \\function __home_path_validate_object(value, name) {
     \\  if (value === null || typeof value !== "object") {
@@ -53033,16 +53034,17 @@ const harness_prelude =
     \\  return value;
     \\}
     \\function __home_path_validate_arguments(args) {
-    \\  for (let i = 0; i < args.length; i++) __home_path_validate_string(args[i], "path");
+    \\  const paths = [];
+    \\  for (let i = 0; i < args.length; i++) paths.push(__home_path_validate_string(args[i], "paths[" + i + "]"));
+    \\  return paths;
     \\}
     \\function __home_path_posix_join() {
-    \\  __home_path_validate_arguments(arguments);
-    \\  const joined = Array.prototype.slice.call(arguments).filter(part => part.length > 0).join("/");
+    \\  const paths = __home_path_validate_arguments(arguments);
+    \\  const joined = paths.filter(part => part.length > 0).join("/");
     \\  return joined.length === 0 ? "." : __home_path_posix_normalize(joined);
     \\}
     \\function __home_path_win32_join() {
-    \\  __home_path_validate_arguments(arguments);
-    \\  const parts = Array.prototype.slice.call(arguments).filter(part => part.length > 0);
+    \\  const parts = __home_path_validate_arguments(arguments).filter(part => part.length > 0);
     \\  if (parts.length === 0) return ".";
     \\  if ((parts[0] === "/" || parts[0] === "\\") && !/^[\\/]{2}/.test(parts[0])) {
     \\    return __home_path_win32_normalize("\\" + parts.slice(1).join("\\").replace(/^[\\/]+/, ""));
@@ -89174,18 +89176,8 @@ const harness_prelude =
     \\  AbortController.prototype.toString = function() { return "[object AbortController]"; };
     \\  Object.defineProperty(AbortController.prototype, Symbol.toStringTag, { value: "AbortController" });
     \\}
-    \\function __home_abort_signal_timeout_error(delay, cause) {
-    \\  const underlying = cause instanceof Error ? cause : new Error(String(cause || "abort deadline elapsed"));
-    \\  const failure = new DOMException("The operation timed out.", "TimeoutError");
-    \\  failure.homeCode = "ERR_ABORT_TIMEOUT";
-    \\  failure.operation = "abort.signal.timeout";
-    \\  failure.phase = "deadline";
-    \\  failure.timeout = delay;
-    \\  failure.cause = underlying;
-    \\  const causeSummary = String(underlying.name || "Error") + ": " + String(underlying.message || underlying);
-    \\  const causeStack = String(underlying.stack || "");
-    \\  try { failure.stack = String(failure.stack || failure) + "\n    at " + failure.operation + " (deadline " + String(delay) + " ms, " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : ""); } catch (error) {}
-    \\  return failure;
+    \\function __home_abort_signal_timeout_error() {
+    \\  return new DOMException("The operation timed out.", "TimeoutError");
     \\}
     \\function __home_abort_timeout_release(record, unregister) {
     \\  if (!record || record.released) return;
@@ -89205,7 +89197,7 @@ const harness_prelude =
     \\  if (!Number.isFinite(delay) || delay < 0) throw new RangeError("AbortSignal timeout must be a non-negative finite number");
     \\  let controller = new AbortController();
     \\  const signal = controller.signal;
-    \\  const reason = __home_abort_signal_timeout_error(delay, new Error("abort deadline elapsed"));
+    \\  const reason = __home_abort_signal_timeout_error();
     \\  globalThis.__home_abort_timeout_records = globalThis.__home_abort_timeout_records || [];
     \\  if (!globalThis.__home_abort_timeout_finalizer) globalThis.__home_abort_timeout_finalizer = new FinalizationRegistry(record => __home_abort_timeout_release(record, false));
     \\  let record = { deadline: __home_virtual_time_ms + delay, performanceDeadline: Number(globalThis.__home_performance_clock || 0) + delay, settled: false, released: false, timer: null, controllerRef: null, signalRef: null, dispatch: null };
@@ -92698,19 +92690,6 @@ fn rewriteBootstrapTypeScript(allocator: std.mem.Allocator, source: []const u8) 
     return out.toOwnedSlice(allocator);
 }
 
-fn rewriteInvalidEscapeSequencesCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    // tempDir intentionally returns a disposable String wrapper in this
-    // harness. Preserve node:path's primitive-string contract at the fixture
-    // boundary instead of teaching join() to accept arbitrary boxed strings.
-    return std.mem.replaceOwned(u8, allocator, source, "join(dir, ", "join(String(dir), ");
-}
-
-fn rewriteMinifyNewArrayCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    // Keep node:path strict: unwrap the disposable tempDir String only at the
-    // upstream fixture boundary where it is consumed as a path.
-    return std.mem.replaceOwned(u8, allocator, source, "join(testDir, ", "join(String(testDir), ");
-}
-
 fn rewriteIssue8254LargeBlobCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     const old_needle =
         \\    const chunk = new Uint8Array(CHUNK_SIZE);
@@ -92743,11 +92722,7 @@ fn rewriteIssue8254LargeBlobCorpus(allocator: std.mem.Allocator, source: []const
         try std.mem.replaceOwned(u8, allocator, source, shared_buffer_needle, sparse_parts_replacement)
     else
         try allocator.dupe(u8, source);
-    defer allocator.free(with_sparse_parts);
-
-    // tempDir is a disposable String wrapper in the bootstrap harness. Keep
-    // node:path strict for arbitrary boxed strings and unwrap this one call.
-    return std.mem.replaceOwned(u8, allocator, with_sparse_parts, "join(tmpbase, \"large-file.bin\")", "join(String(tmpbase), \"large-file.bin\")");
+    return with_sparse_parts;
 }
 
 fn rewriteIssue17793ProxyCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
@@ -99222,10 +99197,6 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.startsWith(u8, relative_path, "napi/node-napi-tests/") and
         std.mem.endsWith(u8, relative_path, "/do.test.ts"))
         try rewriteNodeNapiDoCorpus(allocator, module_source, relative_path)
-    else if (std.mem.eql(u8, relative_path, "regression/issue/invalid-escape-sequences.test.ts"))
-        try rewriteInvalidEscapeSequencesCorpus(allocator, module_source)
-    else if (std.mem.eql(u8, relative_path, "regression/issue/minify-new-array-with-if.test.ts"))
-        try rewriteMinifyNewArrayCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "regression/issue/8254.test.ts"))
         try rewriteIssue8254LargeBlobCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "regression/issue/17793.test.ts"))
@@ -117344,16 +117315,18 @@ test "bootstrap runner preserves AbortSignal timeout delivery with weak ownershi
     const source =
         \\import { expect, test } from "bun:test";
         \\
-        \\test("timeout dispatch retains causal deadline context", async () => {
+        \\test("timeout dispatch retains Bun's DOMException shape", async () => {
         \\  const signal = AbortSignal.timeout(5);
         \\  let events = 0;
         \\  signal.addEventListener("abort", () => events++);
         \\  await Bun.sleep(5);
         \\  expect(signal.aborted).toBe(true);
         \\  expect(events).toBe(1);
-        \\  expect(signal.reason.homeCode).toBe("ERR_ABORT_TIMEOUT");
-        \\  expect(signal.reason.operation).toBe("abort.signal.timeout");
-        \\  expect(signal.reason.cause).toBeInstanceOf(Error);
+        \\  expect(signal.reason).toBeInstanceOf(DOMException);
+        \\  expect(signal.reason.name).toBe("TimeoutError");
+        \\  expect(signal.reason.message).toBe("The operation timed out.");
+        \\  expect(signal.reason.code).toBe(23);
+        \\  expect(Object.keys(signal.reason)).toEqual([]);
         \\});
         \\
         \\test("removing listeners does not suppress an owned signal deadline", async () => {
@@ -131662,6 +131635,15 @@ test "bootstrap runner covers Node path bootstrap smokes" {
         \\  assert.equal(path.win32.join(tooLengthyFolderName), "b".repeat(length));
         \\  assert.equal(path.posix.join(tooLengthyFolderName), "b".repeat(length));
         \\});
+        \\
+        \\test("boxed strings follow Bun path semantics", () => {
+        \\  const boxed = new (class extends String {})("/tmp");
+        \\  assert.strictEqual(path.join(boxed, "file"), "/tmp/file");
+        \\  assert.strictEqual(path.normalize(boxed), "/tmp");
+        \\  assert.throws(() => path.join({ toString() { return "/tmp"; } }, "file"), {
+        \\    code: "ERR_INVALID_ARG_TYPE",
+        \\  });
+        \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/path/path-bootstrap-smoke.test.js");
     defer prepared.deinit(std.testing.allocator);
@@ -131673,7 +131655,7 @@ test "bootstrap runner covers Node path bootstrap smokes" {
     defer file_run.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
 }
 
 test "bootstrap runner covers Node url bootstrap smokes" {
@@ -131882,6 +131864,7 @@ test "bootstrap Bun.file exposes explicit and inferred file types" {
         \\test("file type", () => {
         \\  expect(Bun.file("test", { type: "text/markdown" }).type).toBe("text/markdown");
         \\  expect(Bun.file("test.css").type).toBe("text/css;charset=utf-8");
+        \\  expect(Bun.inspect(Bun.file(0))).toContain("FileRef (fd: 0)");
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/util/file-type.test.ts");
