@@ -546,11 +546,25 @@ pub fn joinWithLeftAssociativeOp(
     b: Expr,
     allocator: std.mem.Allocator,
 ) Expr {
+    return joinWithLeftAssociativeOpWithCheck(op, a, b, allocator, bun.StackCheck.init());
+}
+
+fn joinWithLeftAssociativeOpWithCheck(
+    comptime op: Op.Code,
+    a: Expr,
+    b: Expr,
+    allocator: std.mem.Allocator,
+    stack_check: bun.StackCheck,
+) Expr {
+    if (!stack_check.isSafeToRecurse()) {
+        return Expr.init(E.Binary, E.Binary{ .op = op, .left = a, .right = b }, a.loc);
+    }
+
     // "(a, b) op c" => "a, b op c"
     switch (a.data) {
         .e_binary => |comma| {
             if (comma.op == .bin_comma) {
-                comma.right = joinWithLeftAssociativeOp(op, comma.right, b, allocator);
+                comma.right = joinWithLeftAssociativeOpWithCheck(op, comma.right, b, allocator, stack_check);
                 return a;
             }
         },
@@ -562,11 +576,12 @@ pub fn joinWithLeftAssociativeOp(
     switch (b.data) {
         .e_binary => |binary| {
             if (binary.op == op) {
-                return joinWithLeftAssociativeOp(
+                return joinWithLeftAssociativeOpWithCheck(
                     op,
-                    joinWithLeftAssociativeOp(op, a, binary.left, allocator),
+                    joinWithLeftAssociativeOpWithCheck(op, a, binary.left, allocator, stack_check),
                     binary.right,
                     allocator,
+                    stack_check,
                 );
             }
         },
@@ -2714,6 +2729,11 @@ pub const Data = union(Tag) {
     }
 
     pub fn knownPrimitive(data: Expr.Data) PrimitiveType {
+        return knownPrimitiveWithCheck(data, bun.StackCheck.init());
+    }
+
+    fn knownPrimitiveWithCheck(data: Expr.Data, stack_check: bun.StackCheck) PrimitiveType {
+        if (!stack_check.isSafeToRecurse()) return .unknown;
         return switch (data) {
             .e_big_int => .bigint,
             .e_boolean, .e_branch_boolean => .boolean,
@@ -2722,7 +2742,7 @@ pub const Data = union(Tag) {
             .e_string => .string,
             .e_undefined => .undefined,
             .e_template => if (data.e_template.tag == null) PrimitiveType.string else PrimitiveType.unknown,
-            .e_if => mergeKnownPrimitive(data.e_if.yes.data, data.e_if.no.data),
+            .e_if => mergeKnownPrimitiveWithCheck(data.e_if.yes.data, data.e_if.no.data, stack_check),
             .e_binary => |binary| brk: {
                 switch (binary.op) {
                     .bin_strict_eq,
@@ -2736,11 +2756,11 @@ pub const Data = union(Tag) {
                     .bin_instanceof,
                     .bin_in,
                     => break :brk PrimitiveType.boolean,
-                    .bin_logical_or, .bin_logical_and => break :brk binary.left.data.mergeKnownPrimitive(binary.right.data),
+                    .bin_logical_or, .bin_logical_and => break :brk mergeKnownPrimitiveWithCheck(binary.left.data, binary.right.data, stack_check),
 
                     .bin_nullish_coalescing => {
-                        const left = binary.left.data.knownPrimitive();
-                        const right = binary.right.data.knownPrimitive();
+                        const left = knownPrimitiveWithCheck(binary.left.data, stack_check);
+                        const right = knownPrimitiveWithCheck(binary.right.data, stack_check);
                         if (left == .null or left == .undefined)
                             break :brk right;
 
@@ -2754,8 +2774,8 @@ pub const Data = union(Tag) {
                     },
 
                     .bin_add => {
-                        const left = binary.left.data.knownPrimitive();
-                        const right = binary.right.data.knownPrimitive();
+                        const left = knownPrimitiveWithCheck(binary.left.data, stack_check);
+                        const right = knownPrimitiveWithCheck(binary.right.data, stack_check);
 
                         if (left == .string or right == .string)
                             break :brk PrimitiveType.string;
@@ -2801,7 +2821,7 @@ pub const Data = union(Tag) {
 
                     .bin_assign,
                     .bin_comma,
-                    => break :brk binary.right.data.knownPrimitive(),
+                    => break :brk knownPrimitiveWithCheck(binary.right.data, stack_check),
 
                     else => {},
                 }
@@ -2814,7 +2834,7 @@ pub const Data = union(Tag) {
                 .un_typeof => PrimitiveType.string,
                 .un_not, .un_delete => PrimitiveType.boolean,
                 .un_pos => PrimitiveType.number, // Cannot be bigint because that throws an exception
-                .un_neg, .un_cpl => switch (data.e_unary.value.data.knownPrimitive()) {
+                .un_neg, .un_cpl => switch (knownPrimitiveWithCheck(data.e_unary.value.data, stack_check)) {
                     .bigint => PrimitiveType.bigint,
                     .unknown, .mixed => PrimitiveType.mixed,
                     else => PrimitiveType.number, // Can be number or bigint
@@ -2824,14 +2844,18 @@ pub const Data = union(Tag) {
                 else => PrimitiveType.unknown,
             },
 
-            .e_inlined_enum => |inlined| inlined.value.data.knownPrimitive(),
+            .e_inlined_enum => |inlined| knownPrimitiveWithCheck(inlined.value.data, stack_check),
 
             else => PrimitiveType.unknown,
         };
     }
 
     pub fn mergeKnownPrimitive(lhs: Expr.Data, rhs: Expr.Data) PrimitiveType {
-        return lhs.knownPrimitive().merge(rhs.knownPrimitive());
+        return mergeKnownPrimitiveWithCheck(lhs, rhs, bun.StackCheck.init());
+    }
+
+    fn mergeKnownPrimitiveWithCheck(lhs: Expr.Data, rhs: Expr.Data, stack_check: bun.StackCheck) PrimitiveType {
+        return knownPrimitiveWithCheck(lhs, stack_check).merge(knownPrimitiveWithCheck(rhs, stack_check));
     }
 
     /// Returns true if the result of the "typeof" operator on this expression is

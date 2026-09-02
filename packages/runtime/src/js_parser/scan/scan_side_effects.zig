@@ -84,6 +84,10 @@ pub const SideEffects = enum(u1) {
 
     pub fn simplifyUnusedExpr(p: anytype, expr: Expr) ?Expr {
         if (!p.options.features.dead_code_elimination) return expr;
+        if (!p.stack_check.isSafeToRecurse() or p.reported_stack_overflow) {
+            p.reportStackOverflow(expr.loc);
+            return expr;
+        }
         switch (expr.data) {
             .e_null,
             .e_undefined,
@@ -206,7 +210,7 @@ pub const SideEffects = enum(u1) {
                     .bin_le,
                     .bin_ge,
                     => {
-                        if (isPrimitiveWithSideEffects(bin.left.data) and isPrimitiveWithSideEffects(bin.right.data)) {
+                        if (isPrimitiveWithSideEffects(p, bin.left.loc, bin.left.data) and isPrimitiveWithSideEffects(p, bin.right.loc, bin.right.data)) {
                             const left_simplified = simplifyUnusedExpr(p, bin.left);
                             const right_simplified = simplifyUnusedExpr(p, bin.right);
 
@@ -555,7 +559,11 @@ pub const SideEffects = enum(u1) {
     // Returns true if this expression is known to result in a primitive value (i.e.
     // null, undefined, boolean, number, bigint, or string), even if the expression
     // cannot be removed due to side effects.
-    pub fn isPrimitiveWithSideEffects(data: Expr.Data) bool {
+    pub fn isPrimitiveWithSideEffects(p: anytype, loc: logger.Loc, data: Expr.Data) bool {
+        if (!p.stack_check.isSafeToRecurse()) {
+            p.reportStackOverflow(loc);
+            return false;
+        }
         switch (data) {
             .e_null,
             .e_undefined,
@@ -642,16 +650,16 @@ pub const SideEffects = enum(u1) {
                     .bin_logical_or_assign,
                     .bin_nullish_coalescing_assign,
                     => {
-                        return isPrimitiveWithSideEffects(e.left.data) and isPrimitiveWithSideEffects(e.right.data);
+                        return isPrimitiveWithSideEffects(p, e.left.loc, e.left.data) and isPrimitiveWithSideEffects(p, e.right.loc, e.right.data);
                     },
                     .bin_comma => {
-                        return isPrimitiveWithSideEffects(e.right.data);
+                        return isPrimitiveWithSideEffects(p, e.right.loc, e.right.data);
                     },
                     else => {},
                 }
             },
             .e_if => |e| {
-                return isPrimitiveWithSideEffects(e.yes.data) and isPrimitiveWithSideEffects(e.no.data);
+                return isPrimitiveWithSideEffects(p, e.yes.loc, e.yes.data) and isPrimitiveWithSideEffects(p, e.no.loc, e.no.data);
             },
             else => {},
         }
@@ -776,12 +784,16 @@ pub const SideEffects = enum(u1) {
             return Result{ .ok = false, .value = undefined, .side_effects = .could_have_side_effects };
         }
 
-        return toBooleanWithoutDCECheck(exp);
+        if (!p.stack_check.isSafeToRecurse()) {
+            p.reportStackOverflow(logger.Loc.Empty);
+            return Result{ .ok = false, .value = false, .side_effects = .could_have_side_effects };
+        }
+
+        return toBooleanWithoutDCECheck(p, exp);
     }
 
-    // Avoid passing through *P
     // This is a very recursive function.
-    fn toBooleanWithoutDCECheck(exp: Expr.Data) Result {
+    fn toBooleanWithoutDCECheck(p: anytype, exp: Expr.Data) Result {
         switch (exp) {
             .e_null, .e_undefined => {
                 return Result{ .ok = true, .value = false, .side_effects = .no_side_effects };
@@ -815,7 +827,7 @@ pub const SideEffects = enum(u1) {
                         return Result{ .ok = true, .value = true, .side_effects = .could_have_side_effects };
                     },
                     .un_not => {
-                        const result = toBooleanWithoutDCECheck(e_.value.data);
+                        const result = toBoolean(p, e_.value.data);
                         if (result.ok) {
                             return .{ .ok = true, .value = !result.value, .side_effects = result.side_effects };
                         }
@@ -827,21 +839,21 @@ pub const SideEffects = enum(u1) {
                 switch (e_.op) {
                     .bin_logical_or => {
                         // "anything || truthy" is truthy
-                        const result = toBooleanWithoutDCECheck(e_.right.data);
+                        const result = toBoolean(p, e_.right.data);
                         if (result.value and result.ok) {
                             return Result{ .ok = true, .value = true, .side_effects = .could_have_side_effects };
                         }
                     },
                     .bin_logical_and => {
                         // "anything && falsy" is falsy
-                        const result = toBooleanWithoutDCECheck(e_.right.data);
+                        const result = toBoolean(p, e_.right.data);
                         if (!result.value and result.ok) {
                             return Result{ .ok = true, .value = false, .side_effects = .could_have_side_effects };
                         }
                     },
                     .bin_comma => {
                         // "anything, truthy/falsy" is truthy/falsy
-                        var result = toBooleanWithoutDCECheck(e_.right.data);
+                        var result = toBoolean(p, e_.right.data);
                         if (result.ok) {
                             result.side_effects = .could_have_side_effects;
                             return result;
@@ -879,7 +891,7 @@ pub const SideEffects = enum(u1) {
                 }
             },
             .e_inlined_enum => |inlined| {
-                return toBooleanWithoutDCECheck(inlined.value.data);
+                return toBoolean(p, inlined.value.data);
             },
             .e_special => |special| switch (special) {
                 .module_exports,
@@ -907,6 +919,7 @@ const options = @import("../../bundler/options.zig");
 const bun = @import("bun");
 const Environment = bun.Environment;
 const assert = bun.assert;
+const logger = bun.logger;
 const strings = bun.strings;
 
 const js_ast = bun.ast;

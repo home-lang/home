@@ -386,6 +386,11 @@ pub fn Visit(
         }
 
         pub fn visitBinding(noalias p: *P, binding: BindingNodeIndex, duplicate_arg_check: ?*StringVoidMap) void {
+            if (!p.stack_check.isSafeToRecurse()) {
+                p.reportStackOverflow(binding.loc);
+                return;
+            }
+
             switch (binding.data) {
                 .b_missing => {},
                 .b_identifier => |bind| {

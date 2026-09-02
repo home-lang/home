@@ -21,6 +21,11 @@ pub fn VisitExpr(
         }
 
         pub fn visitExprInOut(p: *P, expr: Expr, in: ExprIn) Expr {
+            if (!p.stack_check.isSafeToRecurse() or p.reported_stack_overflow) {
+                p.reportStackOverflow(expr.loc);
+                return expr;
+            }
+
             if (in.assign_target != .none and !p.isValidAssignmentTarget(expr)) {
                 p.log.addError(p.source, expr.loc, "Invalid assignment target") catch unreachable;
             }

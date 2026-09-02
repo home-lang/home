@@ -770,6 +770,10 @@ pub fn Parse(
         }
 
         pub fn parseBinding(p: *P, comptime opts: ParseBindingOptions) anyerror!Binding {
+            if (!p.stack_check.isSafeToRecurse()) {
+                try bun.throwStackOverflow();
+            }
+
             const loc = p.lexer.loc();
 
             switch (p.lexer.token) {

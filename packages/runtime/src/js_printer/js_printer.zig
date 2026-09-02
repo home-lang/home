@@ -640,6 +640,9 @@ fn NewPrinter(
 
         binary_expression_stack: std.array_list.Managed(BinaryExpressionVisitor) = undefined,
 
+        stack_check: bun.StackCheck,
+        stack_overflowed: bool = false,
+
         was_lazy_export: bool = false,
         module_info: if (!may_have_module_info) void else ?*analyze_transpiled_module.ModuleInfo = if (!may_have_module_info) {} else null,
 
@@ -2057,7 +2060,18 @@ fn NewPrinter(
             }
         }
 
+        pub fn checkStackOverflow(p: *const Printer) !void {
+            if (p.stack_overflowed) {
+                return error.StackOverflow;
+            }
+        }
+
         pub fn printExpr(p: *Printer, expr: Expr, level: Level, in_flags: ExprFlag.Set) void {
+            if (!p.stack_check.isSafeToRecurse()) {
+                p.stack_overflowed = true;
+                return;
+            }
+
             var flags = in_flags;
 
             switch (expr.data) {
@@ -3628,6 +3642,11 @@ fn NewPrinter(
         }
 
         pub fn printBinding(p: *Printer, binding: Binding, tlm: TopLevelAndIsExport) void {
+            if (!p.stack_check.isSafeToRecurse()) {
+                p.stack_overflowed = true;
+                return;
+            }
+
             switch (binding.data) {
                 .b_missing => {},
                 .b_identifier => |b| {
@@ -5510,6 +5529,7 @@ fn NewPrinter(
                 .writer = writer,
                 .renamer = renamer,
                 .source_map_builder = source_map_builder,
+                .stack_check = bun.StackCheck.init(),
             };
             if (comptime generate_source_map) {
                 // This seems silly to cache but the .items() function apparently costs 1ms according to Instruments.
@@ -6168,6 +6188,7 @@ pub fn printAst(
             printer.printSemicolonIfNeeded();
         }
     }
+    try printer.checkStackOverflow();
 
     const have_module_info = PrinterType.may_have_module_info and opts.module_info != null;
     if (have_module_info) {
@@ -6236,6 +6257,7 @@ pub fn printJSON(
     defer printer.binary_expression_stack.clearAndFree();
 
     printer.printExpr(expr, Level.lowest, ExprFlag.Set{});
+    try printer.checkStackOverflow();
     if (printer.writer.getError()) {} else |err| {
         return err;
     }
@@ -6369,6 +6391,10 @@ pub fn printWithWriterAndPlatform(
         }
     }
 
+    printer.checkStackOverflow() catch |err| {
+        return .{ .err = err };
+    };
+
     printer.writer.done() catch |err| {
         // In bundle_v2, this is backed by an arena, but incremental uses
         // `dev.allocator` for this buffer, so it must be freed.
@@ -6435,6 +6461,7 @@ pub fn printCommonJS(
             printer.printSemicolonIfNeeded();
         }
     }
+    try printer.checkStackOverflow();
 
     // Add a couple extra newlines at the end
     printer.writer.print(@TypeOf("\n\n"), "\n\n");
