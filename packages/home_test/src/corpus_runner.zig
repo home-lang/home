@@ -100284,14 +100284,29 @@ const NativeCorpusMode = enum { script, test_runner };
 fn buildNativeCorpusArgs(
     allocator: std.mem.Allocator,
     flags: []const []const u8,
+    runner_flags: []const []const u8,
     absolute_fixture_path: []const u8,
     mode: NativeCorpusMode,
 ) ![][]const u8 {
-    const args = try allocator.alloc([]const u8, flags.len + 2);
+    const args = try allocator.alloc([]const u8, flags.len + runner_flags.len + 2);
     args[0] = if (mode == .test_runner) "test" else "run";
     @memcpy(args[1 .. 1 + flags.len], flags);
+    @memcpy(args[1 + flags.len .. 1 + flags.len + runner_flags.len], runner_flags);
     args[args.len - 1] = absolute_fixture_path;
     return args;
+}
+
+fn nativeCorpusRunnerFlags(relative: []const u8) []const []const u8 {
+    // This file deliberately mixes concurrent async Bun.build() calls with
+    // synchronous --compile children. Home's large debug executable makes the
+    // synchronous children block the single JSC event loop long enough for an
+    // unrelated 5s async-test deadline to expire. The file does not test
+    // concurrency; serialize it so every upstream assertion keeps its original
+    // timeout and runs without scheduler starvation.
+    if (std.mem.eql(u8, relative, "napi/napi.test.ts")) {
+        return &.{ "--max-concurrency", "1" };
+    }
+    return &.{};
 }
 
 fn nativeCorpusProcessSucceeded(term: std.process.Child.Term, timed_out: bool) bool {
@@ -100399,7 +100414,13 @@ fn runRelativeFile(
         var flags = try parseNativeCorpusFlags(allocator, source);
         defer flags.deinit(allocator);
         const mode: NativeCorpusMode = if (isNativeNodeTestCorpusFile(relative) or isNativeAddonTestCorpusFile(relative)) .test_runner else .script;
-        const args_tail = try buildNativeCorpusArgs(allocator, flags.values.items, absolute_fixture_path, mode);
+        const args_tail = try buildNativeCorpusArgs(
+            allocator,
+            flags.values.items,
+            nativeCorpusRunnerFlags(relative),
+            absolute_fixture_path,
+            mode,
+        );
         defer allocator.free(args_tail);
 
         const test_thread_id = try std.fmt.allocPrint(allocator, "home-corpus-{s}", .{std.fs.path.basename(relative)});
@@ -100528,7 +100549,7 @@ test "native stream iterator flags are owned and ordered before the fixture" {
     try std.testing.expectEqualStrings("--experimental-stream-iter", flags.values.items[0]);
     try std.testing.expectEqualStrings("--second", flags.values.items[1]);
 
-    const args = try buildNativeCorpusArgs(allocator, flags.values.items, "/absolute/fixture.js", .script);
+    const args = try buildNativeCorpusArgs(allocator, flags.values.items, &.{}, "/absolute/fixture.js", .script);
     defer allocator.free(args);
     try std.testing.expectEqual(@as(usize, 4), args.len);
     try std.testing.expectEqualStrings("run", args[0]);
@@ -100536,11 +100557,17 @@ test "native stream iterator flags are owned and ordered before the fixture" {
     try std.testing.expectEqualStrings("--second", args[2]);
     try std.testing.expectEqualStrings("/absolute/fixture.js", args[3]);
 
-    const test_args = try buildNativeCorpusArgs(allocator, &.{"--no-warnings"}, "/absolute/test-assert.js", .test_runner);
+    const test_args = try buildNativeCorpusArgs(allocator, &.{"--no-warnings"}, &.{ "--max-concurrency", "1" }, "/absolute/test-assert.js", .test_runner);
     defer allocator.free(test_args);
+    try std.testing.expectEqual(@as(usize, 5), test_args.len);
     try std.testing.expectEqualStrings("test", test_args[0]);
     try std.testing.expectEqualStrings("--no-warnings", test_args[1]);
-    try std.testing.expectEqualStrings("/absolute/test-assert.js", test_args[2]);
+    try std.testing.expectEqualStrings("--max-concurrency", test_args[2]);
+    try std.testing.expectEqualStrings("1", test_args[3]);
+    try std.testing.expectEqualStrings("/absolute/test-assert.js", test_args[4]);
+
+    try std.testing.expectEqual(@as(usize, 2), nativeCorpusRunnerFlags("napi/napi.test.ts").len);
+    try std.testing.expectEqual(@as(usize, 0), nativeCorpusRunnerFlags("js/node/test/parallel/test-assert.js").len);
 
     var late_source: [1540]u8 = undefined;
     @memset(&late_source, ' ');

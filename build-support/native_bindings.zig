@@ -10,6 +10,7 @@ var cached_process_object: ?std.Build.LazyPath = null;
 var cached_registry_object: ?std.Build.LazyPath = null;
 var cached_script_execution_context_object: ?std.Build.LazyPath = null;
 var cached_napi_object: ?std.Build.LazyPath = null;
+var cached_global_gc_object: ?std.Build.LazyPath = null;
 var cached_message_port_object: ?std.Build.LazyPath = null;
 var cached_message_port_pipe_object: ?std.Build.LazyPath = null;
 var cached_worker_object: ?std.Build.LazyPath = null;
@@ -37,6 +38,15 @@ pub fn napiObject(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
     const source = files.addCopyFile(b.path("packages/runtime/upstream/src/jsc/bindings/napi.cpp"), "napi.cpp");
     const object = compileObject(b, object_root, "napi.cpp", source);
     cached_napi_object = object;
+    return object;
+}
+
+pub fn globalGcObject(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
+    if (cached_global_gc_object) |object| return object;
+    const files = b.addWriteFiles();
+    const source = files.addCopyFile(b.path("packages/runtime/src/native/global_gc.cpp"), "global_gc.cpp");
+    const object = compileObject(b, object_root, "ZigGlobalObject.cpp", source);
+    cached_global_gc_object = object;
     return object;
 }
 

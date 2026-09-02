@@ -163,6 +163,7 @@ fn linkBunNative(b: *std.Build, m: *std.Build.Module, target: std.Build.Resolved
     m.addObjectFile(native_bindings.registryObject(b, bun_obj_root));
     m.addObjectFile(native_bindings.scriptExecutionContextObject(b, bun_obj_root));
     m.addObjectFile(native_bindings.napiObject(b, bun_obj_root));
+    m.addObjectFile(native_bindings.globalGcObject(b, bun_obj_root));
     m.addObjectFile(native_bindings.messagePortObject(b, bun_obj_root));
     m.addObjectFile(native_bindings.messagePortPipeObject(b, bun_obj_root));
     m.addObjectFile(native_bindings.workerObject(b, bun_obj_root));

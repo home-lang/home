@@ -44,6 +44,7 @@ var g_io: Io = undefined;
 
 extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
 extern "c" fn unsetenv(name: [*:0]const u8) c_int;
+extern fn Home__JSGlobalObject__addGc(*home_rt.jsc.JSGlobalObject) void;
 
 /// Get monotonic timestamp in nanoseconds (Zig 0.17 compatible)
 fn getMonotonicNs() u64 {
@@ -1767,6 +1768,7 @@ const VmRunState = struct {
     vm: *home_rt.jsc.VirtualMachine,
     entry_path: []const u8,
     print_result: bool = false,
+    expose_gc: bool = false,
     owned_preload_path: ?[]const u8 = null,
 
     var instance: VmRunState = undefined;
@@ -1827,6 +1829,8 @@ const VmRunState = struct {
 
     fn start(this: *VmRunState) void {
         const vm = this.vm;
+
+        if (this.expose_gc) Home__JSGlobalObject__addGc(vm.global);
 
         if (vm.loadEntryPoint(this.entry_path)) |promise| {
             // Preloads have finished loading. Remove only our generated file,
@@ -1904,7 +1908,6 @@ fn tryEvalFlagRun(allocator: std.mem.Allocator, args: []const [:0]const u8) !boo
     if (comptime !build_options.enable_jsc) return false;
     var code: ?[]const u8 = null;
     var print_mode = false;
-    var expose_gc = false;
     var experimental_stream_iter = false;
     var extra: std.ArrayListUnmanaged([:0]const u8) = .empty;
     defer extra.deinit(allocator);
@@ -1926,7 +1929,7 @@ fn tryEvalFlagRun(allocator: std.mem.Allocator, args: []const [:0]const u8) !boo
                 i += 1;
             }
         } else if (std.mem.eql(u8, a, "--expose-gc")) {
-            expose_gc = true;
+            // Parsed again by nativeRuntimeContext and installed on the VM.
         } else if (std.mem.eql(u8, a, "--experimental-stream-iter")) {
             // Only a leading runtime flag enables the feature. Once `-e` has
             // consumed its source, later flags are script arguments in Node.
@@ -1952,7 +1955,6 @@ fn tryEvalFlagRun(allocator: std.mem.Allocator, args: []const [:0]const u8) !boo
     // Preserve the raw module source for native completion-value evaluation.
     var src: std.ArrayListUnmanaged(u8) = .empty;
     defer src.deinit(allocator);
-    if (expose_gc) try src.appendSlice(allocator, "try { globalThis.gc = Bun.gc; } catch {}\n");
     try src.appendSlice(allocator, code.?);
 
     // Bun evaluates inline code as a virtual `<cwd>/[eval]` TypeScript module.
@@ -2268,7 +2270,13 @@ fn runFileViaVMOpts(
     vm.main_is_eval_entry = eval_source_text != null;
 
     // Hand control to JSC under the API lock; start() loads + runs the entry.
-    VmRunState.instance = .{ .vm = vm, .entry_path = abs_path, .print_result = print_result, .owned_preload_path = owned_preload_path };
+    VmRunState.instance = .{
+        .vm = vm,
+        .entry_path = abs_path,
+        .print_result = print_result,
+        .expose_gc = ctx.runtime_options.expose_gc,
+        .owned_preload_path = owned_preload_path,
+    };
     if (owned_preload_path != null) home_rt.Global.addExitCallback(VmRunState.cleanupOwnedPreloadAtExit);
     const callback = home_rt.jsc.OpaqueWrap(VmRunState, VmRunState.start);
     vm.global.vm().holdAPILock(&VmRunState.instance, callback);

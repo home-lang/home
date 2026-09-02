@@ -1184,10 +1184,15 @@ extern "C" JS_EXPORT napi_status node_api_post_finalizer(napi_env env,
     void* finalize_data,
     void* finalize_hint)
 {
-    NAPI_PREAMBLE(env);
+    // This is the escape hatch for experimental finalizers that run during GC,
+    // and Node also drains posted finalizers while the environment is being
+    // destroyed. It therefore uses node_api_basic_env semantics: validate the
+    // arguments without the GC, pending-exception, or can-call-JS checks from
+    // NAPI_PREAMBLE.
+    NAPI_PREAMBLE_NO_THROW_SCOPE(env);
     NAPI_CHECK_ARG(env, finalize_cb);
     napi_internal_enqueue_finalizer(env, finalize_cb, finalize_data, finalize_hint);
-    NAPI_RETURN_SUCCESS(env);
+    return napi_clear_last_error(env);
 }
 
 extern "C" napi_status napi_reference_unref(napi_env env, napi_ref ref,

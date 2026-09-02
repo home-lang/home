@@ -1,3 +1,5 @@
+const std = @import("std");
+
 pub export var Bun__reported_memory_size: usize = 0;
 pub export const Bun__githubURL: [*:0]const u8 = "https://github.com/oven-sh/bun";
 
@@ -31,8 +33,12 @@ extern fn u_hasBinaryProperty(c: c_int, which: c_int) callconv(.c) u8;
 fn icuHasBinaryProperty(c: u32, which: c_uint) callconv(.c) bool {
     return u_hasBinaryProperty(@intCast(c), @intCast(which)) != 0;
 }
-fn abortingPanic(_: [*]u8, _: usize) callconv(.c) noreturn {
-    @panic("Bun crash handler called");
+fn abortingPanic(message: [*]u8, message_len: usize) callconv(.c) noreturn {
+    // Keep Bun's stable crash prefix even when Zig changes its default panic
+    // formatting. Bun's Node-API tests use this line to stop a deliberately
+    // crashing child before symbolization or core-dump handling can stall it.
+    std.debug.print("panic(main thread): {s}\n", .{message[0..message_len]});
+    std.process.abort();
 }
 
 comptime {

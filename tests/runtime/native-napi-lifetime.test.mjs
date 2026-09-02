@@ -12,14 +12,31 @@ try {
   writeFileSync(source, `
 #include <node_api.h>
 #include <stdio.h>
+extern napi_status node_api_post_finalizer(napi_env env, napi_finalize finalize_cb, void *finalize_data, void *finalize_hint);
+static napi_ref wrapped_ref;
 static void instance_finalizer(napi_env env, void *data, void *hint) { puts("INSTANCE_FINALIZED"); }
 static void external_finalizer(napi_env env, void *data, void *hint) { puts("EXTERNAL_FINALIZED"); }
 static void cleanup(void *data) { puts("ENV_CLEANED"); }
+static void posted_finalizer(napi_env env, void *data, void *hint) {
+  puts("POSTED_FINALIZER");
+  if (napi_delete_reference(env, wrapped_ref) != napi_ok) puts("DELETE_REF_FAILED");
+  wrapped_ref = NULL;
+}
+static void wrap_finalizer(napi_env env, void *data, void *hint) {
+  puts("WRAP_FINALIZED");
+  if (node_api_post_finalizer(env, posted_finalizer, NULL, NULL) != napi_ok) puts("POST_FINALIZER_FAILED");
+}
 napi_value install(napi_env env) {
   napi_value value;
   if (napi_set_instance_data(env, NULL, instance_finalizer, NULL) != napi_ok) return NULL;
   if (napi_add_env_cleanup_hook(env, cleanup, NULL) != napi_ok) return NULL;
   if (napi_create_external(env, NULL, external_finalizer, NULL, &value) != napi_ok) return NULL;
+  return value;
+}
+napi_value install_wrap(napi_env env) {
+  napi_value value;
+  if (napi_create_object(env, &value) != napi_ok) return NULL;
+  if (napi_wrap(env, value, NULL, wrap_finalizer, NULL, &wrapped_ref) != napi_ok) return NULL;
   return value;
 }
 `)
@@ -41,15 +58,36 @@ if (isMainThread && process.argv[2].endsWith('-worker')) {
     worker.on('exit', code => code === 0 ? resolve() : reject(new Error('worker exit ' + code)));
   });
 } else {
-  const mode = isMainThread ? process.argv[2] : workerData;
-  const symbols = { install: { args: ['napi_env'], returns: 'napi_value' } };
+  const requestedMode = isMainThread ? process.argv[2] : workerData;
+  const mode = requestedMode.split('-')[0];
+  const exposeGc = requestedMode.endsWith('-expose-gc');
+  const symbols = {
+    install: { args: ['napi_env'], returns: 'napi_value' },
+    install_wrap: { args: ['napi_env'], returns: 'napi_value' },
+  };
   const library = mode === 'cc' ? cc({ source: ${JSON.stringify(source)}, symbols }) : dlopen(${JSON.stringify(binary)}, symbols);
-  globalThis.retainedExternal = library.symbols.install(null);
-  assert.notEqual(globalThis.retainedExternal, undefined);
-  library.close();
-  library.close();
-  Bun.gc(true);
-  console.log('CLOSED');
+  if (exposeGc) {
+    assert.equal(typeof global.gc, 'function');
+    let wrapped = library.symbols.install_wrap(null);
+    assert.notEqual(wrapped, undefined);
+    wrapped = null;
+    global.gc();
+    await Bun.sleep(0);
+    global.gc();
+    await Bun.sleep(0);
+    console.log('GC_FINISHED');
+    library.close();
+    library.close();
+  } else {
+    globalThis.retainedExternal = library.symbols.install(null);
+    globalThis.retainedWrapped = library.symbols.install_wrap(null);
+    assert.notEqual(globalThis.retainedExternal, undefined);
+    assert.notEqual(globalThis.retainedWrapped, undefined);
+    library.close();
+    library.close();
+    Bun.gc(true);
+    console.log('CLOSED');
+  }
 }
 `)
   // Main-thread teardown is opt-in; workers always destroy their JSC heap.
@@ -65,7 +103,21 @@ if (isMainThread && process.argv[2].endsWith('-worker')) {
     assert.equal(child.stderr, '', mode)
     const lines = child.stdout.trim().split(/\r?\n/)
     assert.equal(lines[0], 'CLOSED', mode)
-    assert.deepEqual(lines.slice(1).sort(), ['ENV_CLEANED', 'EXTERNAL_FINALIZED', 'INSTANCE_FINALIZED'], mode)
+    assert.deepEqual(
+      lines.slice(1).sort(),
+      ['ENV_CLEANED', 'EXTERNAL_FINALIZED', 'INSTANCE_FINALIZED', 'POSTED_FINALIZER', 'WRAP_FINALIZED'],
+      mode,
+    )
+  }
+  for (const mode of ['cc-expose-gc', 'dlopen-expose-gc']) {
+    const child = spawnSync(process.execPath, ['--expose-gc', 'run', entry, mode], { env, encoding: 'utf8', timeout: 15000 })
+    assert.equal(child.error, undefined, mode)
+    assert.equal(child.signal, null, mode + '\n' + child.stderr)
+    assert.equal(child.status, 0, mode + '\n' + child.stderr)
+    assert.equal(child.stderr, '', mode)
+    const lines = child.stdout.trim().split(/\r?\n/)
+    assert.ok(lines.indexOf('WRAP_FINALIZED') < lines.indexOf('GC_FINISHED'), mode)
+    assert.ok(lines.indexOf('POSTED_FINALIZER') < lines.indexOf('GC_FINISHED'), mode)
   }
 } finally {
   rmSync(directory, { recursive: true })

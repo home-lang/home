@@ -3,6 +3,8 @@ pub const webcore = @import("./runtime/webcore.zig");
 pub const api = @import("./runtime/api.zig");
 pub const bindgen = @import("./jsc/bindgen.zig");
 
+extern fn Home__JSGlobalObject__addGc(*jsc.JSGlobalObject) void;
+
 pub fn applyStandaloneRuntimeFlags(b: *bun.Transpiler, graph: *const bun.StandaloneModuleGraph) void {
     b.options.env.disable_default_env_files = graph.flags.disable_default_env_files;
     b.options.env.behavior = if (graph.flags.disable_default_env_files)
@@ -567,7 +569,7 @@ pub const Run = struct {
             bun.cpp.Bun__ExposeNodeModuleGlobals(vm.global);
         }
         if (runtime_options.expose_gc) {
-            bun.cpp.JSC__JSGlobalObject__addGc(vm.global);
+            Home__JSGlobalObject__addGc(vm.global);
         }
     }
 };
