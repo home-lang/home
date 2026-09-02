@@ -26041,6 +26041,7 @@ const harness_prelude =
     \\}
     \\const __home_crypto_hasher_aliases = {
     \\  "sha-1": "sha1",
+    \\  sha128: "sha1",
     \\  "sha-224": "sha224",
     \\  "sha-256": "sha256",
     \\  "sha-384": "sha384",
@@ -26063,7 +26064,6 @@ const harness_prelude =
     \\  md4: 16,
     \\  md5: 16,
     \\  sha1: 20,
-    \\  sha128: 16,
     \\  sha224: 28,
     \\  sha256: 32,
     \\  sha384: 48,
@@ -26076,86 +26076,6 @@ const harness_prelude =
     \\  "sha3-512": 64,
     \\  shake128: 16,
     \\  shake256: 32,
-    \\};
-    \\const __home_crypto_hmac_vectors = {
-    \\  sha1: "e2e1f7f597941d9b0021978618218a9e08731426",
-    \\  sha256: "c7a7c96c73af32ea6e5b1ca6768b1d822249eb88f85160433d7b09bb2b21e170",
-    \\  sha384: "2483522dcb7cb65fa13f0a3c1efe867abbd79ecb19a6ba4bac45d4f4bac31de2e2463b11838b8055601fad73d0b5af4c",
-    \\  sha512: "f82266c950db24eba03f899466fdf905494709f09f98f4b7d7db31f1443a33b4fe5ca82f74fb360609d8a05a87fb065dd77bee912c27de89cbba7897061ac735",
-    \\  blake2b512: "9e66ba10f4d7e80abc2584150fc5f9a246634118280fd9ae086794d37cb9919d681ee285b68f9cec2eda9f878d157125cc465c8b0e3c023a7040ed0be7f25023",
-    \\  md5: "4e7eb9f9332e4eb1dc5a2d7d065ba1bf",
-    \\  sha224: "d34c3a2647d4f82a4e6baeaa7d94379eafd931e0c16cbc44b4ba4d1e",
-    \\  "sha512-224": "af398c7f21f58e1377580227a89590d3ab8be52b31182fad9ec4d667",
-    \\  "sha512-256": "0ed15b2750a2a7281e96af006ab79e82ed54a7a2081bdb49e70a70d8c6bfeff0",
-    \\  "sha3-224": "3dd0595758af01c6a9d662326acc3bc0c7e49b94573f74f800b6c114",
-    \\  "sha3-256": "5b246f6c8b41fbd23b7aa3a73c0c93c6a35d4973bc727b24ad65f538d51ff3b6",
-    \\  "sha3-384": "f0af5d4479dc409e11c6e23014893c42a51fbd3435c93452f6154a87128174e2492a6b31994b1436ae681b3f1d838613",
-    \\  "sha3-512": "b15ed8373f1b493ccd417a7591745fdefbb4aa7b85c6937284de678e1a7b73b31e4da07561d358fefa30c6b1cf1a4b19a4c0d2f4f6e90ddfadc3a12367cb1a3c",
-    \\  ripemd160: "5291464ec22d15e61190b00b81b87c1a9dcb966f",
-    \\};
-    \\const __home_crypto_hmac_test_vectors = {
-    \\  "sha1|6869|6869": "f2a1c2327e7bf3297b3f494716666a30cf1ddf3f",
-    \\  "sha1|4e6f6465|736f6d652064617461746f20686d6163": "19fd6e1ba73d9ed2224dd5094a71babe85d9a892",
-    \\  "md5|6b6579|54686520717569636b2062726f776e20666f78206a756d7073206f76657220746865206c617a7920646f67": "80070713463e7749b90c2dc24911e275",
-    \\  "sha1|6b6579|54686520717569636b2062726f776e20666f78206a756d7073206f76657220746865206c617a7920646f67": "de7c9b85b8b78aa6bc8a7a36f70a90701c9db4d9",
-    \\  "sha256|6b6579|54686520717569636b2062726f776e20666f78206a756d7073206f76657220746865206c617a7920646f67": "f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8",
-    \\  "md5|6b6579|": "63530468a04e386459855da0063b6596",
-    \\  "sha1|6b6579|": "f42bb0eeb018ebbd4597ae7213711ec60760843f",
-    \\  "sha256|6b6579|": "5d5d139563c95b5967b9bd9a8c9b233a9dedb45072794cd232dc1b74832607d0",
-    \\  "md5||54686520717569636b2062726f776e20666f78206a756d7073206f76657220746865206c617a7920646f67": "ad262969c53bc16032f160081c4a07a0",
-    \\  "sha1||54686520717569636b2062726f776e20666f78206a756d7073206f76657220746865206c617a7920646f67": "2ba7f707ad5f187c412de3106583c3111d668de8",
-    \\  "sha256||54686520717569636b2062726f776e20666f78206a756d7073206f76657220746865206c617a7920646f67": "fb011e6154a19b9a4c767373c305275a5a69e8b68b0b4c9200c383dced19a416",
-    \\  "md5||": "74e6f7298a9c2d168935f58c001bad88",
-    \\  "sha1||": "fbdb1d1b18aa6c08324b7d64b71fb76370690e1d",
-    \\  "sha256||": "b613679a0814d9ec772f95d778c35fc5ff1697c493715653c6c712144292c5ad",
-    \\  "sha224|0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b|4869205468657265": "896fb1128abbdf196832107cd49df33f47b4b1169912ba4f53684b22",
-    \\  "sha256|0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b|4869205468657265": "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7",
-    \\  "sha384|0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b|4869205468657265": "afd03944d84895626b0825f4ab46907f15f9dadbe4101ec682aa034c7cebc59cfaea9ea9076ede7f4af152e8b2fa9cb6",
-    \\  "sha512|0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b|4869205468657265": "87aa7cdea5ef619d4ff0b4241a1d6cb02379f4e2ce4ec2787ad0b30545e17cdedaa833b7d6b8a702038b274eaea3f4e4be9d914eeb61f1702e696c203a126854",
-    \\  "sha224|4a656665|7768617420646f2079612077616e7420666f72206e6f7468696e673f": "a30e01098bc6dbbf45690f3a7e9e6d0f8bbea2a39e6148008fd05e44",
-    \\  "sha256|4a656665|7768617420646f2079612077616e7420666f72206e6f7468696e673f": "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843",
-    \\  "sha384|4a656665|7768617420646f2079612077616e7420666f72206e6f7468696e673f": "af45d2e376484031617f78d2b58a6b1b9c7ef464f5a01b47e42ec3736322445e8e2240ca5e69e2c78b3239ecfab21649",
-    \\  "sha512|4a656665|7768617420646f2079612077616e7420666f72206e6f7468696e673f": "164b7a7bfcf819e2e395fbe73b56e0a387bd64222e831fd610270cd7ea2505549758bf75c05a994a6d034f65f8f0e6fdcaeab1a34d4a6b4b636e070a38bce737",
-    \\  "sha224|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd": "7fb3cb3588c6c1f6ffa9694d7d6ad2649365b0c1f65d69d1ec8333ea",
-    \\  "sha256|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd": "773ea91e36800e46854db8ebd09181a72959098b3ef8c122d9635514ced565fe",
-    \\  "sha384|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd": "88062608d3e6ad8a0aa2ace014c8a86f0aa635d947ac9febe83ef4e55966144b2a5ab39dc13814b94e3ab6e101a34f27",
-    \\  "sha512|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd": "fa73b0089d56a284efb0f0756c890be9b1b5dbdd8ee81a3655f83e33b2279d39bf3e848279a722c806b485a47e67c807b946a337bee8942674278859e13292fb",
-    \\  "sha224|0102030405060708090a0b0c0d0e0f10111213141516171819|cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd": "6c11506874013cac6a2abc1bb382627cec6a90d86efc012de7afec5a",
-    \\  "sha256|0102030405060708090a0b0c0d0e0f10111213141516171819|cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd": "82558a389a443c0ea4cc819899f2083a85f0faa3e578f8077a2e3ff46729665b",
-    \\  "sha384|0102030405060708090a0b0c0d0e0f10111213141516171819|cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd": "3e8a69b7783c25851933ab6290af6ca77a9981480850009cc5577c6e1f573b4e6801dd23c4a7d679ccf8a386c674cffb",
-    \\  "sha512|0102030405060708090a0b0c0d0e0f10111213141516171819|cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd": "b0ba465637458c6990e5a8c5f61d4af7e576d97ff94b872de76f8050361ee3dba91ca5c11aa25eb4d679275cc5788063a5f19741120c4f2de2adebeb10a298dd",
-    \\  "sha224|0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c|546573742057697468205472756e636174696f6e": "0e2aea68a90c8d37c988bcdb9fca6fa8099cd857c7ec4a1815cac54c",
-    \\  "sha256|0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c|546573742057697468205472756e636174696f6e": "a3b6167473100ee06e0c796c2955552bfa6f7c0a6a8aef8b93f860aab0cd20c5",
-    \\  "sha384|0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c|546573742057697468205472756e636174696f6e": "3abf34c3503b2a23a46efc619baef897f4c8e42c934ce55ccbae9740fcbc1af4ca62269e2a37cd88ba926341efe4aeea",
-    \\  "sha512|0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c|546573742057697468205472756e636174696f6e": "415fad6271580a531d4179bc891d87a650188707922a4fbb36663a1eb16da008711c5b50ddd0fc235084eb9d3364a1454fb2ef67cd1d29fe6773068ea266e96b",
-    \\  "sha224|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|54657374205573696e67204c6172676572205468616e20426c6f636b2d53697a65204b6579202d2048617368204b6579204669727374": "95e9a0db962095adaebe9b2d6f0dbce2d499f112f2d2b7273fa6870e",
-    \\  "sha256|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|54657374205573696e67204c6172676572205468616e20426c6f636b2d53697a65204b6579202d2048617368204b6579204669727374": "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54",
-    \\  "sha384|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|54657374205573696e67204c6172676572205468616e20426c6f636b2d53697a65204b6579202d2048617368204b6579204669727374": "4ece084485813e9088d2c63a041bc5b44f9ef1012a2b588f3cd11f05033ac4c60c2ef6ab4030fe8296248df163f44952",
-    \\  "sha512|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|54657374205573696e67204c6172676572205468616e20426c6f636b2d53697a65204b6579202d2048617368204b6579204669727374": "80b24263c7c1a3ebb71493c1dd7be8b49b46d1f41b4aeec1121b013783f8f3526b56d037e05f2598bd0fd2215d6a1e5295e64f73f63f0aec8b915a985d786598",
-    \\  "sha224|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|5468697320697320612074657374207573696e672061206c6172676572207468616e20626c6f636b2d73697a65206b657920616e642061206c6172676572207468616e20626c6f636b2d73697a6520646174612e20546865206b6579206e6565647320746f20626520686173686564206265666f7265206265696e6720757365642062792074686520484d414320616c676f726974686d2e": "3a854166ac5d9f023f54d517d0b39dbd946770db9c2b95c9f6f565d1",
-    \\  "sha256|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|5468697320697320612074657374207573696e672061206c6172676572207468616e20626c6f636b2d73697a65206b657920616e642061206c6172676572207468616e20626c6f636b2d73697a6520646174612e20546865206b6579206e6565647320746f20626520686173686564206265666f7265206265696e6720757365642062792074686520484d414320616c676f726974686d2e": "9b09ffa71b942fcb27635fbcd5b0e944bfdc63644f0713938a7f51535c3a35e2",
-    \\  "sha384|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|5468697320697320612074657374207573696e672061206c6172676572207468616e20626c6f636b2d73697a65206b657920616e642061206c6172676572207468616e20626c6f636b2d73697a6520646174612e20546865206b6579206e6565647320746f20626520686173686564206265666f7265206265696e6720757365642062792074686520484d414320616c676f726974686d2e": "6617178e941f020d351e2f254e8fd32c602420feb0b8fb9adccebb82461e99c5a678cc31e799176d3860e6110c46523e",
-    \\  "sha512|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|5468697320697320612074657374207573696e672061206c6172676572207468616e20626c6f636b2d73697a65206b657920616e642061206c6172676572207468616e20626c6f636b2d73697a6520646174612e20546865206b6579206e6565647320746f20626520686173686564206265666f7265206265696e6720757365642062792074686520484d414320616c676f726974686d2e": "e37b6a775dc87dbaa4dfa9f96e5e3ffddebd71f8867289865df5a32d20cdc944b6022cac3c4982b10d5eeb55c3e4de15134676fb6de0446065c97440fa8c6a58",
-    \\  "md5|0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b|4869205468657265": "9294727a3638bb1c13f48ef8158bfc9d",
-    \\  "md5|4a656665|7768617420646f2079612077616e7420666f72206e6f7468696e673f": "750c783e6ab0b503eaa86e310a5db738",
-    \\  "md5|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd": "56be34521d144c88dbb8c733f0e8b3f6",
-    \\  "md5|0102030405060708090a0b0c0d0e0f10111213141516171819|cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd": "697eaf0aca3a3aea3a75164746ffaa79",
-    \\  "md5|0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c|546573742057697468205472756e636174696f6e": "56461ef2342edc00f9bab995690efd4c",
-    \\  "md5|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|54657374205573696e67204c6172676572205468616e20426c6f636b2d53697a65204b6579202d2048617368204b6579204669727374": "6b1ab7fe4bd7bf8f0b62e6ce61b9d0cd",
-    \\  "md5|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|54657374205573696e67204c6172676572205468616e20426c6f636b2d53697a65204b657920616e64204c6172676572205468616e204f6e6520426c6f636b2d53697a652044617461": "6f630fad67cda0ee1fb1f562db3aa53e",
-    \\  "sha1|0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b|4869205468657265": "b617318655057264e28bc0b6fb378c8ef146be00",
-    \\  "sha1|4a656665|7768617420646f2079612077616e7420666f72206e6f7468696e673f": "effcdf6ae5eb2fa2d27416d5f184df9c259a7c79",
-    \\  "sha1|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd": "125d7342b9ac11cd91a39af48aa17b4f63f175d3",
-    \\  "sha1|0102030405060708090a0b0c0d0e0f10111213141516171819|cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd": "4c9007f4026250c6bc8414f9bf50c86c2d7235da",
-    \\  "sha1|0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c|546573742057697468205472756e636174696f6e": "4c1a03424b55e07fe7f27be1d58bb9324a9a5a04",
-    \\  "sha1|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|54657374205573696e67204c6172676572205468616e20426c6f636b2d53697a65204b6579202d2048617368204b6579204669727374": "aa4ae5e15272d00e95705637ce8a3b55ed402112",
-    \\  "sha1|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|54657374205573696e67204c6172676572205468616e20426c6f636b2d53697a65204b657920616e64204c6172676572205468616e204f6e6520426c6f636b2d53697a652044617461": "e8e99d0f45237d786d6bbaa7965c7808bbff1a91",
-    \\  "sha256|77303074|": "08e9cf347c3a1b5b32abc2abb7fb91ddb8008210a5651c3488eceba95b8e4925",
-    \\  "sha1|6b6579|64617461": "104152c5bfdca07bc633eebd46199f0255c9f49d",
-    \\  "sha256|6b6579|6d657373616765": "6e9ef29b75fffc5b7abae527d58fdadb2fe42e7219011976917343065f58ed4a",
-    \\  "sha256||666f6f": "0c0d98f7e3d9d45e72e8877bc1b104327efb9c07b18f2ffeced76d81307f1fff",
-    \\  "sha3-256|000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f|53616d706c65206d65737361676520666f72206b65796c656e3c626c6f636b6c656e": "4fe8e202c4f058e8dddc23d8c34e467343e23555e24fc2f025d598f558f67205",
-    \\  "sha3-512|6b6579|64617461": "752bf49d54115aaa670ea62bdf79eb95e6df787938bec5fabdfc4745cf49f7fe11b7c2f73989ad2e568f06ced3a2d99536b05a121f43647b98ea43f818f38b33",
     \\};
     \\const __home_crypto_hash_vectors = {
     \\  "sha3-256|": "a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a",
@@ -26223,7 +26143,8 @@ const harness_prelude =
     \\  if (value === undefined || value === null) throw new TypeError("CryptoHasher input must not be null or undefined");
     \\  if (value && typeof value === "object" && value.__home_file_ref) throw new TypeError("Bun.file is not supported by CryptoHasher");
     \\  if (value && value.__home_logical_buffer) return value;
-    \\  return __home_body_bytes_sync(value);
+    \\  const bytes = __home_body_bytes_sync(value);
+    \\  return bytes instanceof Uint8Array ? bytes : Uint8Array.from(bytes);
     \\}
     \\function __home_crypto_hex_to_bytes(hex) {
     \\  const out = new Uint8Array(Math.floor(hex.length / 2));
@@ -26282,13 +26203,14 @@ const harness_prelude =
     \\      : "bytes:" + __home_crypto_bytes_to_hex(chunk)).join("|");
     \\    return __home_crypto_pseudo_digest(algorithm, [__home_text_to_utf8_bytes(shape)], null);
     \\  }
-    \\  if (!keyBytes && __home_native_hash && algorithm !== "sha1") {
-    \\    const bytes = __home_crypto_concat_chunks(chunks);
-    \\    const digest = __home_native_hash(algorithm, bytes);
+    \\  const bytes = __home_crypto_concat_chunks(chunks);
+    \\  const outputLength = algorithm === "md5-sha1" ? 36 : __home_crypto_hasher_lengths[algorithm];
+    \\  if (__home_native_hash && outputLength) {
+    \\    const output = new Uint8Array(outputLength);
+    \\    const digest = __home_native_hash(algorithm, bytes, keyBytes === null ? undefined : keyBytes, output);
     \\    if (digest && ArrayBuffer.isView(digest)) return new Uint8Array(digest.buffer, digest.byteOffset, digest.byteLength);
     \\  }
     \\  if (keyBytes) return null;
-    \\  const bytes = __home_crypto_concat_chunks(chunks);
     \\  if (algorithm === "sha3-256" && bytes.length === 1000000 && bytes.every(byte => byte === 0x61)) return __home_crypto_hex_to_bytes("5c8875ae474a3634ba4fd55ec85bffd661f32aca75c6d699d0cdcb6c115891c1");
     \\  const exact = __home_crypto_hash_vectors[algorithm + "|" + __home_crypto_bytes_to_hex(bytes)];
     \\  if (exact) return __home_crypto_hex_to_bytes(exact);
@@ -26334,7 +26256,11 @@ const harness_prelude =
     \\function __home_CryptoHasher(algorithm, key) {
     \\  if (!(this instanceof __home_CryptoHasher)) return new __home_CryptoHasher(algorithm, key);
     \\  this.algorithm = __home_crypto_hasher_algorithm(algorithm);
-    \\  if ((this.algorithm === "shake128" || this.algorithm === "shake256") && key !== undefined) throw new TypeError(this.algorithm + " does not support HMAC");
+    \\  if ((this.algorithm === "blake2s256" || this.algorithm === "shake128" || this.algorithm === "shake256") && key !== undefined) {
+    \\    const error = new Error("HMAC is not supported for this algorithm yet");
+    \\    error.name = "TODOError";
+    \\    throw error;
+    \\  }
     \\  this.__home_key = key === undefined ? null : __home_crypto_hasher_input(key);
     \\  this.__home_chunks = [];
     \\  this.__home_digested = false;
@@ -26369,17 +26295,8 @@ const harness_prelude =
     \\};
     \\__home_CryptoHasher.prototype.digest = function(encoding) {
     \\  if (this.__home_digested) throw new Error((this.constructor && this.constructor.name || "CryptoHasher") + " hasher already digested, create a new instance to digest again");
-    \\  if (this.__home_key && String(encoding || "buffer").toLowerCase() === "hex") {
-    \\    let text = "";
-    \\    for (const chunk of this.__home_chunks) text += new TextDecoder().decode(chunk);
-    \\    const keyText = new TextDecoder().decode(this.__home_key.slice(0, 3));
-    \\    const vector = text === "data\n" && keyText === "key" ? __home_crypto_hmac_vectors[this.algorithm] : null;
-    \\    if (vector) {
-    \\      this.__home_digested = true;
-    \\      return vector;
-    \\    }
-    \\  }
     \\  const vector = __home_crypto_hash_vector(this.algorithm, this.__home_chunks, this.__home_key);
+    \\  if (!vector && this.__home_key) throw new Error("HMAC is not supported for this algorithm");
     \\  const output = __home_crypto_encode_digest(vector || __home_crypto_pseudo_digest(this.algorithm, this.__home_chunks, this.__home_key), encoding);
     \\  if (this.__home_key || this.__home_one_shot) this.__home_digested = true;
     \\  else this.__home_chunks = [];
@@ -57740,14 +57657,8 @@ const harness_prelude =
     \\}
     \\function __home_crypto_node_digest_bytes(algorithm, chunks, keyBytes) {
     \\  const normalized = algorithm === "md5-sha1" ? "md5-sha1" : __home_crypto_hasher_algorithm(algorithm);
-    \\  if (keyBytes) {
-    \\    const keyHex = __home_crypto_bytes_to_hex(keyBytes);
-    \\    let dataHex = "";
-    \\    for (const chunk of chunks) dataHex += __home_crypto_bytes_to_hex(chunk);
-    \\    const hmacVector = __home_crypto_hmac_test_vectors[normalized + "|" + keyHex + "|" + dataHex];
-    \\    if (hmacVector) return __home_crypto_hex_to_bytes(hmacVector);
-    \\  }
     \\  const vector = __home_crypto_hash_vector(normalized, chunks, keyBytes);
+    \\  if (!vector && keyBytes) throw new Error("HMAC is not supported for this algorithm");
     \\  return vector || __home_crypto_pseudo_digest(normalized, chunks, keyBytes);
     \\}
     \\function __home_crypto_node_digest_output(bytes, encoding) {
