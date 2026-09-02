@@ -809,6 +809,50 @@ A/B round remain under
 and verified provenance remain under `20260901T163632Z/`. TS 7 and `tsgo`
 remain one native competitor throughout.
 
+### Prototype-assignment marker gate (rejected)
+
+A fresh ten-second sample of the accepted binary on an independently generated
+8,192-family copy of `interface_composition` recorded 271 exclusive samples in
+`scriptObjectExpandoHasPrototypeAssignment`. The rejected one-line candidate
+returned an exact miss when attached source bytes could not contain the
+`.prototype` spelling already tracked by the checker's conservative source
+marker index. Sources containing that spelling and source-less HIR retained the
+original whole-root scan. The optimization did not cache a semantic answer or
+alter the benchmark corpus.
+
+The fixed accepted baseline binary is SHA-256
+`47956122c70a686db1f1b9bc410efeb9af9997d1bec0dab385f4affd32e7da6e`;
+the candidate is
+`59de1b1c793eaef5aa6ce32f31792ecb5f133ed1fe72753d642d4bfa3986b567`.
+Both binaries are 12,026,760 bytes and exit zero with byte-identical empty
+stdout and stderr on the unchanged official 128-family project.
+
+The first ten-pair screen is retained separately. An unrelated optimized Zig
+build occupied a full core throughout, Spotlight used roughly 70% CPU, and a
+transient Typesense process appeared between the load snapshots. Wall time was
+32.053 ± 2.049 ms for the baseline and 35.239 ± 9.658 ms for the candidate
+(0.910×, 6/10 candidate wins, paired 95% interval -8.687 to +2.315 ms).
+Process CPU was 31.132 ± 1.868 ms versus 33.331 ± 7.516 ms, with an interval of
+-6.268 to +1.870 ms. No samples were filtered.
+
+After those identified transient processes exited, one separately labeled
+replacement screen retained all ten reversed-order pairs after three
+alternating warmup pairs. Two unrelated Zig library builds occupied two cores
+throughout both replacement snapshots:
+
+| Official 128-family replacement A/B, 10 pairs | Baseline | Marker gate | Result | Paired 95% CI |
+|---|---:|---:|---:|---:|
+| Wall | **31.648 ± 0.477 ms** | 31.780 ± 0.956 ms | 0.9958×; 5/10 candidate wins | -0.813 to +0.549 ms |
+| CPU | **30.695 ± 0.465 ms** | 30.781 ± 0.930 ms | 0.9972×; 5/10 candidate wins | -0.792 to +0.621 ms |
+| Peak RSS | **16.694 ± 0.011 MiB** | 16.697 ± 0.011 MiB | 0.9998×; 0/10 candidate wins | -0.008 to +0.002 MiB |
+
+The cleanest available means still regressed and both timing intervals crossed
+zero, so the marker gate was fully reverted. No confirmation, scale timing,
+correctness suite, source commit, or competitor checkpoint was admitted. The
+profile, frozen binaries, exact outputs, both load snapshots, and every timing
+round remain under
+`bench/vs_tsgo/results/script-expando-prototype-gate.20260902T211936Z/`.
+
 ### Free-type traversal generation marks (rejected)
 
 After the root memo failed, the same retained profile still showed hash-table
