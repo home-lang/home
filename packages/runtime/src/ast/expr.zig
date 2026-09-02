@@ -551,6 +551,7 @@ pub fn joinWithLeftAssociativeOp(
         .e_binary => |comma| {
             if (comma.op == .bin_comma) {
                 comma.right = joinWithLeftAssociativeOp(op, comma.right, b, allocator);
+                return a;
             }
         },
         else => {},

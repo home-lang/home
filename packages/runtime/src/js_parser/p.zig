@@ -2303,7 +2303,7 @@ pub fn NewParser_(
                         var is_sloppy_mode_block_level_fn_stmt = false;
                         const original_member_ref = value.ref;
 
-                        if (p.willUseRenamer() and symbol.kind == .hoisted_function) {
+                        if (symbol.kind == .hoisted_function) {
                             // Block-level function declarations behave like "let" in strict mode
                             if (scope.strict_mode != .sloppy_mode) {
                                 continue;
@@ -2327,13 +2327,15 @@ pub fn NewParser_(
                             //   }
                             //   f();
                             //
-                            const hoisted_ref = p.newSymbol(.hoisted, symbol.original_name) catch unreachable;
-                            symbols = p.symbols.items;
-                            bun.handleOom(scope.generated.append(p.allocator, hoisted_ref));
-                            p.hoisted_ref_for_sloppy_mode_block_fn.put(p.allocator, value.ref, hoisted_ref) catch unreachable;
-                            value.ref = hoisted_ref;
-                            symbol = &symbols[hoisted_ref.innerIndex()];
-                            is_sloppy_mode_block_level_fn_stmt = true;
+                            if (p.willUseRenamer()) {
+                                const hoisted_ref = p.newSymbol(.hoisted, symbol.original_name) catch unreachable;
+                                symbols = p.symbols.items;
+                                bun.handleOom(scope.generated.append(p.allocator, hoisted_ref));
+                                p.hoisted_ref_for_sloppy_mode_block_fn.put(p.allocator, value.ref, hoisted_ref) catch unreachable;
+                                value.ref = hoisted_ref;
+                                symbol = &symbols[hoisted_ref.innerIndex()];
+                                is_sloppy_mode_block_level_fn_stmt = true;
+                            }
                         }
 
                         if (hash == null) hash = Scope.getMemberHash(name);
