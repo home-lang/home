@@ -135,6 +135,7 @@ const harness_prelude =
     \\const __home_native_hash = typeof globalThis.__home_cryptoHashNative === "function" ? globalThis.__home_cryptoHashNative : null;
     \\const __home_native_sign = typeof globalThis.__home_cryptoSignNative === "function" ? globalThis.__home_cryptoSignNative : null;
     \\const __home_native_verify = typeof globalThis.__home_cryptoVerifyNative === "function" ? globalThis.__home_cryptoVerifyNative : null;
+    \\const __home_native_rsa = typeof globalThis.__home_cryptoRsaNative === "function" ? globalThis.__home_cryptoRsaNative : null;
     \\let URL = globalThis.URL;
     \\let URLSearchParams = globalThis.URLSearchParams;
     \\const __home_real_Date = globalThis.Date;
@@ -57356,7 +57357,7 @@ const harness_prelude =
     \\  const value = input && typeof input === "object" && Object.prototype.hasOwnProperty.call(input, "key") ? input.key : input;
     \\  if (input && input.format === "der" && input.type === "spki") throw __home_crypto_error("ERR_INVALID_ARG_VALUE", "The property 'options.type' is invalid. Received 'spki'", TypeError);
     \\  if ((value === "" || (typeof Buffer === "function" && Buffer.isBuffer(value) && value.length === 0)) && !(input && input.format === "jwk")) throw new Error("error:1E08010C:DECODER routines::unsupported");
-    \\  if (input && input.format === "der" && input.type === "pkcs1" && typeof Buffer === "function" && Buffer.isBuffer(value) && value.toString().includes("PUBLIC KEY")) { const error = new Error("error:1E08010C:DECODER routines::unsupported"); error.library = "DECODER routines"; throw error; }
+    \\  if (input && input.format === "der" && input.type === "pkcs1" && typeof Buffer === "function" && Buffer.isBuffer(value) && value.toString().includes("PUBLIC KEY")) { const error = new Error("error:06000066:public key routines:OPENSSL_internal:DECODE_ERROR"); error.library = "public key routines"; throw error; }
     \\  if (input && input.format === "jwk") {
     \\    if (!value || typeof value !== "object" || value.kty === undefined) throw __home_crypto_error("ERR_INVALID_ARG_TYPE", 'The "key.key" property must be of type object', TypeError);
     \\    const knownEc = __home_crypto_known_ec_material(value, "private");
@@ -57512,12 +57513,12 @@ const harness_prelude =
     \\    }
     \\  }
     \\  const dsaEncoding = __home_crypto_dsa_encoding(key);
-    \\  if (__home_native_sign && keyText.includes("PRIVATE KEY") && !keyText.includes("HOME-CORPUS") && __home_crypto_is_rsa_pem(keyText)) {
+    \\  if (__home_native_sign && keyText.includes("PRIVATE KEY") && !keyText.includes("HOME-CORPUS") && !__home_crypto_generated_encrypted_keys.has(keyText) && __home_crypto_is_rsa_pem(keyText)) {
     \\    const digestName = __home_crypto_sign_digest_name(algorithm);
     \\    const dataBytes = __home_crypto_hasher_input(data);
     \\    const padding = key && typeof key === "object" ? key.padding : undefined;
     \\    const saltLength = padding === __home_crypto_constants.RSA_PKCS1_PSS_PADDING ? key.saltLength === undefined ? __home_crypto_constants.RSA_PSS_SALTLEN_MAX_SIGN : key.saltLength : undefined;
-    \\    const signature = __home_native_sign(digestName, dataBytes, keyText, padding, saltLength);
+    \\    const signature = __home_native_sign(digestName, dataBytes, keyText, padding, saltLength, key && typeof key === "object" ? __home_crypto_passphrase_text(key.passphrase) : undefined);
     \\    if (!signature || !ArrayBuffer.isView(signature)) throw new Error("Failed to sign data");
     \\    const bytes = Buffer.from(signature);
     \\    const normalizedEncoding = outputEncoding === undefined || outputEncoding === null ? "buffer" : String(outputEncoding).toLowerCase();
@@ -57540,7 +57541,7 @@ const harness_prelude =
     \\        : rsaSignatureLength > 0
     \\          ? __home_crypto_signature_bytes(rsaSignatureLength, algorithm, data, optionKey)
     \\          : Buffer.from(__home_crypto_signature_text(algorithm, data, key));
-    \\  __home_crypto_signature_records.set(output.toString("hex"), { algorithm: __home_crypto_algorithm_name(algorithm, optionKey), dataDigest: __home_crypto_data_digest(data), usesPss, saltLength: effectiveSaltLength });
+    \\  __home_crypto_signature_records.set(output.toString("hex"), { algorithm: __home_crypto_algorithm_name(algorithm, optionKey), dataDigest: __home_crypto_data_digest(data), keyType: signingKeyType, dsaEncoding, usesPss, saltLength: effectiveSaltLength });
     \\  const normalizedOutputEncoding = outputEncoding === undefined || outputEncoding === null ? "buffer" : String(outputEncoding).toLowerCase();
     \\  const result = normalizedOutputEncoding === "buffer" ? output : output.toString(normalizedOutputEncoding);
     \\  if (callback) { queueMicrotask(() => callback(null, result)); return undefined; }
@@ -57560,7 +57561,7 @@ const harness_prelude =
     \\  const dsaEncoding = __home_crypto_dsa_encoding(key);
     \\  const signatureBytes = Buffer.from(signature || []);
     \\  const keyText = optionKey && optionKey.__home_key_payload !== undefined ? String(optionKey.__home_key_payload) : optionKey && typeof optionKey.toString === "function" ? optionKey.toString() : String(optionKey || "");
-    \\  if (__home_native_verify && !keyText.includes("HOME-CORPUS") && __home_crypto_is_rsa_pem(keyText)) {
+    \\  if (__home_native_verify && !keyText.includes("HOME-CORPUS") && !__home_crypto_generated_encrypted_keys.has(keyText) && __home_crypto_is_rsa_pem(keyText)) {
     \\    const padding = key && typeof key === "object" ? key.padding : undefined;
     \\    const saltLength = padding === __home_crypto_constants.RSA_PKCS1_PSS_PADDING ? key.saltLength === undefined ? __home_crypto_constants.RSA_PSS_SALTLEN_AUTO : key.saltLength : undefined;
     \\    const verified = __home_native_verify(__home_crypto_sign_digest_name(algorithm), __home_crypto_hasher_input(data), keyText, signatureBytes, padding, saltLength);
@@ -57571,6 +57572,7 @@ const harness_prelude =
     \\  const signatureRecord = __home_crypto_signature_records.get(signatureBytes.toString("hex"));
     \\  if (signatureRecord) {
     \\    let verified = signatureRecord.algorithm === __home_crypto_algorithm_name(algorithm, optionKey) && signatureRecord.dataDigest === __home_crypto_data_digest(data);
+    \\    if (verified && (signatureRecord.keyType === "EC" || signatureRecord.keyType === "DSA")) verified = signatureRecord.dsaEncoding === dsaEncoding;
     \\    if (verified && signatureRecord.usesPss) {
     \\      const requestedSaltLength = key && typeof key === "object" ? key.saltLength : undefined;
     \\      if (requestedSaltLength !== __home_crypto_constants.RSA_PSS_SALTLEN_AUTO && requestedSaltLength !== undefined) verified = signatureRecord.saltLength === __home_crypto_signature_salt_length(algorithm, requestedSaltLength);
@@ -58219,12 +58221,22 @@ const harness_prelude =
     \\}
     \\function __home_crypto_DiffieHellman() { return __home_crypto_create_diffie_hellman.apply(undefined, arguments); }
     \\function __home_crypto_DiffieHellmanGroup(name) { return __home_crypto_create_diffie_hellman_group(name); }
+    \\const __home_crypto_diffie_hellman_group_records = new WeakMap();
     \\function __home_crypto_create_diffie_hellman_group(name) {
     \\  const normalized = String(name || "").toLowerCase();
     \\  if (!["modp1", "modp2", "modp5", "modp14", "modp15", "modp16", "modp17", "modp18"].includes(normalized)) throw __home_crypto_error("ERR_CRYPTO_UNKNOWN_DH_GROUP", "Unknown DH group");
     \\  const group = __home_crypto_create_diffie_hellman(512);
     \\  Object.setPrototypeOf(group, __home_crypto_DiffieHellmanGroup.prototype);
-    \\  Object.defineProperty(group, "verifyError", { configurable: true, enumerable: true, value: 8 });
+    \\  delete group.verifyError;
+    \\  __home_crypto_diffie_hellman_group_records.set(group, 8);
+    \\  Object.defineProperty(group, "verifyError", {
+    \\    configurable: true,
+    \\    enumerable: true,
+    \\    get() {
+    \\      if (!__home_crypto_diffie_hellman_group_records.has(this)) throw __home_crypto_invalid_this_error();
+    \\      return __home_crypto_diffie_hellman_group_records.get(this);
+    \\    },
+    \\  });
     \\  return group;
     \\}
     \\function __home_crypto_diffie_hellman(options) {
@@ -58584,22 +58596,45 @@ const harness_prelude =
     \\}
     \\function __home_crypto_rsa_encrypt(kind, options, data) {
     \\  const opts = __home_crypto_validate_rsa_options(options);
-    \\  void kind;
-    \\  void __home_crypto_option_key(options);
     \\  const plain = __home_crypto_rsa_plain(data);
+    \\  const optionKey = __home_crypto_option_key(options);
+    \\  const keyText = optionKey && optionKey.__home_key_payload !== undefined ? String(optionKey.__home_key_payload) : optionKey && typeof optionKey.toString === "function" ? optionKey.toString() : String(optionKey || "");
+    \\  if (__home_native_rsa && !keyText.includes("HOME-CORPUS") && !__home_crypto_generated_encrypted_keys.has(keyText) && __home_crypto_is_rsa_pem(keyText)) {
+    \\    const operation = kind === "private" ? "privateEncrypt" : "publicEncrypt";
+    \\    const defaultPadding = kind === "private" ? __home_crypto_constants.RSA_PKCS1_PADDING : __home_crypto_constants.RSA_PKCS1_OAEP_PADDING;
+    \\    const result = __home_native_rsa(operation, keyText, __home_crypto_passphrase_text(opts.passphrase), plain, opts.padding === undefined ? defaultPadding : opts.padding, opts.oaepHash, opts.oaepLabel === undefined ? undefined : Buffer.from(opts.oaepLabel));
+    \\    if (!result || !ArrayBuffer.isView(result)) throw new Error("Failed to encrypt data");
+    \\    const output = Buffer.from(result);
+    \\    const record = { native: true, plain, oaepHash: opts.oaepHash === undefined ? undefined : String(opts.oaepHash).toLowerCase(), padding: opts.padding };
+    \\    __home_crypto_rsa_records.set(output, record);
+    \\    __home_crypto_rsa_records_by_hex.set(output.toString("hex"), record);
+    \\    return output;
+    \\  }
     \\  const out = Buffer.alloc(Math.max(16, plain.length + 8));
     \\  for (let i = 0; i < out.length; i++) out[i] = (plain[i % Math.max(plain.length, 1)] ^ ((i * 29 + out.length) & 0xff)) & 0xff;
-    \\  const record = { plain, oaepHash: opts.oaepHash === undefined ? undefined : String(opts.oaepHash).toLowerCase(), padding: opts.padding };
+    \\  const record = { native: false, plain, oaepHash: opts.oaepHash === undefined ? undefined : String(opts.oaepHash).toLowerCase(), padding: opts.padding };
     \\  __home_crypto_rsa_records.set(out, record);
     \\  __home_crypto_rsa_records_by_hex.set(out.toString("hex"), record);
     \\  return out;
     \\}
     \\function __home_crypto_rsa_decrypt(kind, options, data) {
     \\  const opts = __home_crypto_validate_rsa_options(options);
-    \\  void kind;
-    \\  void __home_crypto_option_key(options);
     \\  if (kind === "private" && opts.padding === __home_crypto_constants.RSA_PKCS1_PADDING) throw __home_crypto_error("ERR_INVALID_ARG_VALUE", "RSA_PKCS1_PADDING is not supported for privateDecrypt", TypeError);
+    \\  const optionKey = __home_crypto_option_key(options);
+    \\  const keyText = optionKey && optionKey.__home_key_payload !== undefined ? String(optionKey.__home_key_payload) : optionKey && typeof optionKey.toString === "function" ? optionKey.toString() : String(optionKey || "");
     \\  const record = data && (__home_crypto_rsa_records.get(data) || __home_crypto_rsa_records_by_hex.get(Buffer.from(data).toString("hex")));
+    \\  if (record && !record.native) {
+    \\    const decryptHash = opts.oaepHash === undefined ? undefined : String(opts.oaepHash).toLowerCase();
+    \\    if (record.oaepHash && decryptHash && record.oaepHash !== decryptHash) throw new Error("error:02000079:rsa routines::oaep decoding error");
+    \\    return Buffer.from(record.plain);
+    \\  }
+    \\  if (__home_native_rsa && !keyText.includes("HOME-CORPUS") && !__home_crypto_generated_encrypted_keys.has(keyText) && __home_crypto_is_rsa_pem(keyText)) {
+    \\    const operation = kind === "private" ? "privateDecrypt" : "publicDecrypt";
+    \\    const defaultPadding = kind === "private" ? __home_crypto_constants.RSA_PKCS1_OAEP_PADDING : __home_crypto_constants.RSA_PKCS1_PADDING;
+    \\    const result = __home_native_rsa(operation, keyText, __home_crypto_passphrase_text(opts.passphrase), Buffer.from(data), opts.padding === undefined ? defaultPadding : opts.padding, opts.oaepHash, opts.oaepLabel === undefined ? undefined : Buffer.from(opts.oaepLabel));
+    \\    if (!result || !ArrayBuffer.isView(result)) throw new Error("Failed to decrypt data");
+    \\    return Buffer.from(result);
+    \\  }
     \\  if (record) {
     \\    const decryptHash = opts.oaepHash === undefined ? undefined : String(opts.oaepHash).toLowerCase();
     \\    if (record.oaepHash && decryptHash && record.oaepHash !== decryptHash) throw new Error("error:02000079:rsa routines::oaep decoding error");

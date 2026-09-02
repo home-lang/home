@@ -197,6 +197,12 @@ pub const Runtime = struct {
         home_rt.jsc.callback.registerCallback(
             self.engine.currentContext(),
             self.engine.currentGlobalObject(),
+            "__home_cryptoRsaNative",
+            home_rt.jsc.node_modules.cryptoRsaNative,
+        );
+        home_rt.jsc.callback.registerCallback(
+            self.engine.currentContext(),
+            self.engine.currentGlobalObject(),
             "__home_textDecodeNative",
             textDecodeNative,
         );
