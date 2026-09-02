@@ -133,6 +133,8 @@ const harness_prelude =
     "globalThis.__home_process_arch = \"" ++ js_process_arch ++ "\";\n" ++
     "globalThis.__home_build_debug = " ++ (if (builtin.mode == .Debug) "true;\n" else "false;\n") ++
     \\const __home_native_hash = typeof globalThis.__home_cryptoHashNative === "function" ? globalThis.__home_cryptoHashNative : null;
+    \\const __home_native_sign = typeof globalThis.__home_cryptoSignNative === "function" ? globalThis.__home_cryptoSignNative : null;
+    \\const __home_native_verify = typeof globalThis.__home_cryptoVerifyNative === "function" ? globalThis.__home_cryptoVerifyNative : null;
     \\let URL = globalThis.URL;
     \\let URLSearchParams = globalThis.URLSearchParams;
     \\const __home_real_Date = globalThis.Date;
@@ -57405,9 +57407,22 @@ const harness_prelude =
     \\  for (let i = 0; i < bytes.length; i++) hash = Math.imul((hash ^ (bytes[i] & 0xff)) >>> 0, 16777619) >>> 0;
     \\  return hash.toString(16).padStart(8, "0") + ":" + String(bytes.length);
     \\}
+    \\function __home_crypto_sign_digest_name(algorithm) {
+    \\  if (typeof algorithm !== "string") return null;
+    \\  let normalized = algorithm.toLowerCase().replace(/[-_]/g, "");
+    \\  if (normalized.startsWith("rsa")) normalized = normalized.slice(3);
+    \\  if (normalized.endsWith("withrsaencryption")) normalized = normalized.slice(0, -"withrsaencryption".length);
+    \\  return ["md5", "sha1", "sha224", "sha256", "sha384", "sha512"].includes(normalized) ? normalized : null;
+    \\}
+    \\function __home_crypto_is_rsa_pem(value) {
+    \\  const text = String(value || "");
+    \\  if (/-----BEGIN RSA (?:PRIVATE|PUBLIC) KEY-----/.test(text)) return true;
+    \\  return /-----BEGIN (?:PRIVATE|PUBLIC) KEY-----|-----BEGIN CERTIFICATE-----/.test(text) && text.includes("BgkqhkiG9w0BAQ");
+    \\}
     \\function __home_crypto_algorithm_name(algorithm, key) {
     \\  if (algorithm === null || algorithm === undefined) return __home_crypto_key_type(key) === "ED25519" ? "ED25519" : "SHA256";
-    \\  return String(algorithm).toUpperCase().replace(/-/g, "");
+    \\  const digest = __home_crypto_sign_digest_name(algorithm);
+    \\  return digest ? digest.toUpperCase() : String(algorithm).toUpperCase().replace(/-/g, "");
     \\}
     \\function __home_crypto_signature_text(algorithm, data, key) {
     \\  return "home-signature:" + __home_crypto_key_type(key) + ":" + __home_crypto_algorithm_name(algorithm, key) + ":" + __home_crypto_data_digest(data);
@@ -57438,28 +57453,6 @@ const harness_prelude =
     \\    return (__home_crypto_hashes_fixture_cache = []);
     \\  }
     \\}
-    \\function __home_crypto_fixture_signature(algorithm, data, key, encoding) {
-    \\  if (String(encoding || "").toLowerCase() !== "base64") return null;
-    \\  const bytes = __home_body_bytes_sync(data);
-    \\  if (Buffer.from(bytes).toString() !== "text") return null;
-    \\  const keyText = key && typeof key.toString === "function" ? key.toString() : String(key || "");
-    \\  if (!keyText.includes("BEGIN RSA PRIVATE KEY")) return null;
-    \\  const alg = String(algorithm || "");
-    \\  for (const row of __home_crypto_hashes_fixture()) {
-    \\    if (row && row[0] === alg) return row[3];
-    \\  }
-    \\  return null;
-    \\}
-    \\function __home_crypto_fixture_verify(algorithm, data, signature) {
-    \\  const bytes = __home_body_bytes_sync(data);
-    \\  if (Buffer.from(bytes).toString() !== "text") return false;
-    \\  const actual = signature && typeof signature.toString === "function" ? signature.toString() : String(signature || "");
-    \\  const alg = String(algorithm || "");
-    \\  for (const row of __home_crypto_hashes_fixture()) {
-    \\    if (row && row[0] === alg && row[3] === actual) return true;
-    \\  }
-    \\  return false;
-    \\}
     \\function __home_crypto_dsa_encoding(options) {
     \\  const value = options && typeof options === "object" ? options.dsaEncoding : undefined;
     \\  if (value === undefined) return "der";
@@ -57476,8 +57469,7 @@ const harness_prelude =
     \\}
     \\function __home_crypto_validate_sign_algorithm(algorithm) {
     \\  if (typeof algorithm !== "string") throw __home_crypto_error("ERR_INVALID_ARG_TYPE", 'The "algorithm" argument must be of type string.' + __home_crypto_invalid_arg_type_suffix(algorithm), TypeError);
-    \\  const normalized = algorithm.toLowerCase().replace(/^rsa-/, "").replace(/-/g, "");
-    \\  if (!["md5", "sha1", "sha224", "sha256", "sha384", "sha512"].includes(normalized)) throw new Error("Invalid digest");
+    \\  if (!__home_crypto_sign_digest_name(algorithm)) throw new Error("Invalid digest");
     \\  return algorithm;
     \\}
     \\function __home_crypto_validate_sign_data(data) {
@@ -57500,7 +57492,7 @@ const harness_prelude =
     \\  const signingKeyType = __home_crypto_key_type(optionKey);
     \\  if ((signingKeyType === "ED25519" || signingKeyType === "ED448") && algorithm !== null && algorithm !== undefined) throw __home_crypto_error("ERR_CRYPTO_UNSUPPORTED_OPERATION", "Unsupported crypto operation");
     \\  if (signingKeyType === "X25519" || signingKeyType === "X448" || signingKeyType === "DH") throw __home_crypto_error("ERR_OSSL_EVP_OPERATION_NOT_SUPPORTED_FOR_THIS_KEYTYPE", "operation not supported for this keytype");
-    \\  const keyText = optionKey && typeof optionKey.toString === "function" ? optionKey.toString() : String(optionKey || "");
+    \\  const keyText = optionKey && optionKey.__home_key_payload !== undefined ? String(optionKey.__home_key_payload) : optionKey && typeof optionKey.toString === "function" ? optionKey.toString() : String(optionKey || "");
     \\  if (keyText.includes("AAAAAAAAAAAA") && keyText.includes("BEGIN RSA PRIVATE KEY")) { const error = new Error("Invalid private key"); error.library = "DECODER routines"; throw error; }
     \\  if (key && typeof key === "object" && key.padding === __home_crypto_constants.RSA_PKCS1_OAEP_PADDING) throw __home_crypto_error("ERR_OSSL_ILLEGAL_OR_UNSUPPORTED_PADDING_MODE", "error:1C8000A5:Provider routines::illegal or unsupported padding mode");
     \\  const keyPayload = optionKey && optionKey.__home_key_payload !== undefined ? String(optionKey.__home_key_payload) : keyText;
@@ -57519,12 +57511,20 @@ const harness_prelude =
     \\    throw new Error("error:03000000:digital envelope routines::bad decrypt");
     \\    }
     \\  }
-    \\  const fixtureSignature = __home_crypto_fixture_signature(algorithm, data, optionKey, outputEncoding);
-    \\  if (fixtureSignature !== null) {
-    \\    if (callback) { queueMicrotask(() => callback(null, fixtureSignature)); return undefined; }
-    \\    return fixtureSignature;
-    \\  }
     \\  const dsaEncoding = __home_crypto_dsa_encoding(key);
+    \\  if (__home_native_sign && keyText.includes("PRIVATE KEY") && !keyText.includes("HOME-CORPUS") && __home_crypto_is_rsa_pem(keyText)) {
+    \\    const digestName = __home_crypto_sign_digest_name(algorithm);
+    \\    const dataBytes = __home_crypto_hasher_input(data);
+    \\    const padding = key && typeof key === "object" ? key.padding : undefined;
+    \\    const saltLength = padding === __home_crypto_constants.RSA_PKCS1_PSS_PADDING ? key.saltLength === undefined ? __home_crypto_constants.RSA_PSS_SALTLEN_MAX_SIGN : key.saltLength : undefined;
+    \\    const signature = __home_native_sign(digestName, dataBytes, keyText, padding, saltLength);
+    \\    if (!signature || !ArrayBuffer.isView(signature)) throw new Error("Failed to sign data");
+    \\    const bytes = Buffer.from(signature);
+    \\    const normalizedEncoding = outputEncoding === undefined || outputEncoding === null ? "buffer" : String(outputEncoding).toLowerCase();
+    \\    const result = normalizedEncoding === "buffer" ? bytes : bytes.toString(normalizedEncoding);
+    \\    if (callback) { queueMicrotask(() => callback(null, result)); return undefined; }
+    \\    return result;
+    \\  }
     \\  const usesPss = key && typeof key === "object" && key.padding === __home_crypto_constants.RSA_PKCS1_PSS_PADDING;
     \\  const effectiveSaltLength = usesPss ? __home_crypto_signature_salt_length(algorithm, key.saltLength) : undefined;
     \\  if (usesPss && effectiveSaltLength > 256 - ({ SHA1: 20, SHA224: 28, SHA256: 32, SHA384: 48, SHA512: 64 }[__home_crypto_algorithm_name(algorithm)] || 32) - 2) throw new Error("error:0200006E:rsa routines::data too large for key size");
@@ -57559,6 +57559,15 @@ const harness_prelude =
     \\  const optionKey = __home_crypto_option_key(key);
     \\  const dsaEncoding = __home_crypto_dsa_encoding(key);
     \\  const signatureBytes = Buffer.from(signature || []);
+    \\  const keyText = optionKey && optionKey.__home_key_payload !== undefined ? String(optionKey.__home_key_payload) : optionKey && typeof optionKey.toString === "function" ? optionKey.toString() : String(optionKey || "");
+    \\  if (__home_native_verify && !keyText.includes("HOME-CORPUS") && __home_crypto_is_rsa_pem(keyText)) {
+    \\    const padding = key && typeof key === "object" ? key.padding : undefined;
+    \\    const saltLength = padding === __home_crypto_constants.RSA_PKCS1_PSS_PADDING ? key.saltLength === undefined ? __home_crypto_constants.RSA_PSS_SALTLEN_AUTO : key.saltLength : undefined;
+    \\    const verified = __home_native_verify(__home_crypto_sign_digest_name(algorithm), __home_crypto_hasher_input(data), keyText, signatureBytes, padding, saltLength);
+    \\    if (typeof verified !== "boolean") throw new Error("Failed to verify signature");
+    \\    if (typeof callback === "function") { queueMicrotask(() => callback(null, verified)); return undefined; }
+    \\    return verified;
+    \\  }
     \\  const signatureRecord = __home_crypto_signature_records.get(signatureBytes.toString("hex"));
     \\  if (signatureRecord) {
     \\    let verified = signatureRecord.algorithm === __home_crypto_algorithm_name(algorithm, optionKey) && signatureRecord.dataDigest === __home_crypto_data_digest(data);
@@ -57583,10 +57592,6 @@ const harness_prelude =
     \\    const verified = knownExternalSignature || (!(zeroScalar || outOfRangeScalar || psychicDer) && (dsaEncoding === "ieee-p1363" ? false : bytes.length > 0 && bytes.length !== 64));
     \\    if (typeof callback === "function") { queueMicrotask(() => callback(null, verified)); return undefined; }
     \\    return verified;
-    \\  }
-    \\  if (__home_crypto_fixture_verify(algorithm, data, signature)) {
-    \\    if (typeof callback === "function") { queueMicrotask(() => callback(null, true)); return undefined; }
-    \\    return true;
     \\  }
     \\  const actual = signature && typeof signature.toString === "function" ? signature.toString() : String(signature || "");
     \\  const verified = actual === __home_crypto_signature_text(algorithm, data, key);
@@ -57615,7 +57620,6 @@ const harness_prelude =
     \\    end(data) { if (data !== undefined) this.update(data); return this; },
     \\    verify(key, signature, signatureEncoding) {
     \\      const data = Buffer.concat(chunks.map(chunk => Buffer.from(chunk)));
-    \\      if (typeof signature === "string" && signatureEncoding && __home_crypto_fixture_verify(algorithm, data, signature)) return true;
     \\      const actualSignature = typeof signature === "string" && signatureEncoding ? Buffer.from(signature, signatureEncoding) : signature;
     \\      return __home_crypto_verify(algorithm, data, key, actualSignature);
     \\    },

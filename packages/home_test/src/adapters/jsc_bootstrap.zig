@@ -185,6 +185,18 @@ pub const Runtime = struct {
         home_rt.jsc.callback.registerCallback(
             self.engine.currentContext(),
             self.engine.currentGlobalObject(),
+            "__home_cryptoSignNative",
+            home_rt.jsc.node_modules.cryptoSignNative,
+        );
+        home_rt.jsc.callback.registerCallback(
+            self.engine.currentContext(),
+            self.engine.currentGlobalObject(),
+            "__home_cryptoVerifyNative",
+            home_rt.jsc.node_modules.cryptoVerifyNative,
+        );
+        home_rt.jsc.callback.registerCallback(
+            self.engine.currentContext(),
+            self.engine.currentGlobalObject(),
             "__home_textDecodeNative",
             textDecodeNative,
         );
