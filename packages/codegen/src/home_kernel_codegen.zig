@@ -1,6 +1,10 @@
 // Home Kernel Code Generator
-// Compiles Home language kernel code to native x86-64 assembly
-// with FFI calls to Zig stdlib modules
+// Compiles Home language kernel code to native assembly for a freestanding
+// target, with FFI calls to Zig stdlib modules.
+//
+// The lowering is architecture-neutral: it is a stack machine over the roles
+// defined in `kernel_target.zig`, which owns every instruction this file
+// emits. To add an architecture, implement it there.
 
 const std = @import("std");
 const ast = @import("ast");
@@ -12,6 +16,11 @@ const Symbol = parser_mod.Symbol;
 const Lexer = @import("lexer").Lexer;
 const Io = std.Io;
 const kernel_codegen = @import("kernel_codegen.zig");
+const kernel_target = @import("kernel_target.zig");
+const Arch = kernel_target.Arch;
+const Reg = kernel_target.Reg;
+const Cond = kernel_target.Cond;
+const BinOp = kernel_target.BinOp;
 
 /// String literal entry for .rodata section
 const StringLiteral = struct {
@@ -537,6 +546,9 @@ pub const HomeKernelCodegen = struct {
     output: std.ArrayList(u8),
     /// Kernel codegen options
     kernel_opts: kernel_codegen.KernelCodegenOptions,
+    /// Architecture this run is lowering for. Everything architecture-specific
+    /// lives behind `kernel_target.Emitter`; this field only selects it.
+    arch: Arch,
     /// Local variable tracking: name -> stack offset (in bytes from %rbp)
     locals: std.StringHashMap(i32),
     /// Current stack offset for allocating new variables
@@ -628,6 +640,7 @@ pub const HomeKernelCodegen = struct {
         result.module_resolver = module_resolver;
         result.output = .{ .items = &[_]u8{}, .capacity = 0 };
         result.kernel_opts = kernel_codegen.KernelCodegenOptions{};
+        result.arch = .x86_64;
         result.locals = std.StringHashMap(i32).init(allocator);
         result.stack_offset = -8; // Start at -8 from %rbp (first local variable)
         result.string_literals = .{ .items = &[_]StringLiteral{}, .capacity = 0 };
@@ -689,6 +702,14 @@ pub const HomeKernelCodegen = struct {
     /// Helper to write string to output
     fn writeAll(self: *HomeKernelCodegen, bytes: []const u8) !void {
         try self.output.appendSlice(self.allocator, bytes);
+    }
+
+    /// The instruction emitter for the selected architecture.
+    ///
+    /// Constructed per call rather than stored, because it borrows `output`,
+    /// which reallocates as the program grows.
+    fn emit(self: *HomeKernelCodegen) kernel_target.Emitter {
+        return .{ .arch = self.arch, .out = &self.output, .gpa = self.allocator };
     }
 
     /// Walk statements recording every name assigned to, so module-level
@@ -934,7 +955,7 @@ pub const HomeKernelCodegen = struct {
     /// Emit the address of a slice's data pointer's *target* — i.e. load the
     /// pointer word — given the address of the slice itself in %rax.
     fn emitSliceData(self: *HomeKernelCodegen) !void {
-        try self.writeAll("    movq (%rax), %rax\n");
+        try self.emit().loadIndirect(.acc, .acc, 8, false);
     }
 
     /// Alignment of a type: its own size for scalars, capped at 8.
@@ -1468,11 +1489,11 @@ pub const HomeKernelCodegen = struct {
         switch (expr.*) {
             .Identifier => |id| {
                 if (self.locals.get(id.name)) |offset| {
-                    try self.print("    leaq {d}(%rbp), %rax\n", .{offset});
+                    try self.emit().leaLocal(.acc, @intCast(offset));
                     return self.local_types.get(id.name) orelse "";
                 }
                 if (self.global_vars.get(id.name)) |g| {
-                    try self.print("    leaq {s}(%rip), %rax\n", .{g.symbol});
+                    try self.emit().leaSymbol(.acc, g.symbol);
                     return g.type_name;
                 }
                 // A function's address is its label. Interrupt tables are
@@ -1483,7 +1504,7 @@ pub const HomeKernelCodegen = struct {
                     // the bare name here produced a reference no object
                     // defined — `&scheduler_tick` handed to a callback
                     // registration linked against nothing.
-                    try self.print("    leaq {s}(%rip), %rax\n", .{try self.functionSymbol(id.name)});
+                    try self.emit().leaSymbol(.acc, try self.functionSymbol(id.name));
                     return "fn()";
                 }
                 try self.print("    # ERROR: cannot take the address of {s}\n", .{id.name});
@@ -1523,13 +1544,13 @@ pub const HomeKernelCodegen = struct {
                     // An array's storage starts at its own address.
                     _ = try self.emitAddress(idx.array) orelse return null;
                 }
-                try self.writeAll("    pushq %rax\n");
+                try self.emit().push(.acc);
                 try self.generateExpr(idx.index);
                 if (elem_size > 1) {
-                    try self.print("    imulq ${d}, %rax\n", .{elem_size});
+                    try self.emit().mulImm(@intCast(elem_size));
                 }
-                try self.writeAll("    popq %rcx\n");
-                try self.writeAll("    addq %rcx, %rax\n");
+                try self.emit().pop(.tmp);
+                try self.emit().binOp(.add);
                 return elem_type;
             },
             .MemberExpr => |m| {
@@ -1553,7 +1574,7 @@ pub const HomeKernelCodegen = struct {
                 // A slice's only field is its length, the second word.
                 if (isSliceType(splitAlign(base_type).bare) and std.mem.eql(u8, m.member, "len")) {
                     _ = try self.emitAddress(m.object) orelse return null;
-                    try self.print("    addq ${d}, %rax\n", .{SLICE_LEN_OFFSET});
+                    try self.emit().addImm(.acc, @intCast(SLICE_LEN_OFFSET));
                     return "usize";
                 }
                 // An array's length is known at compile time.
@@ -1581,7 +1602,7 @@ pub const HomeKernelCodegen = struct {
                     _ = try self.emitAddress(m.object) orelse return null;
                 }
                 if (field.offset > 0) {
-                    try self.print("    addq ${d}, %rax\n", .{field.offset});
+                    try self.emit().addImm(.acc, @intCast(field.offset));
                 }
                 return field.type_name;
             },
@@ -1641,22 +1662,22 @@ pub const HomeKernelCodegen = struct {
         const word = bit_offset / 64;
         if (word * 8 >= size) {
             try self.print("    # ERROR: bit offset {d} lies outside a {d}-byte container\n", .{ bit_offset, size });
-            try self.writeAll("    movq $0, %rax\n");
+            try self.emit().movImm(0);
             return bit_offset % 64;
         }
-        try self.print("    movq {d}(%rax), %rax\n", .{word * 8});
+        try self.emit().loadOffset(.acc, .acc, @intCast(word * 8));
         return bit_offset % 64;
     }
 
     fn emitLoadBacking(self: *HomeKernelCodegen, size: usize) !void {
-        const ld = loadFor(size) orelse {
+        _ = loadFor(size) orelse {
             try self.print("    # ERROR: cannot load a bitfield container of {d} bytes\n", .{size});
-            try self.writeAll("    movq $0, %rax\n");
+            try self.emit().movImm(0);
             return;
         };
-        try self.writeAll("    movq %rax, %rdx\n");
-        if (size < 8) try self.writeAll("    xorq %rax, %rax\n");
-        try self.print("    {s} (%rdx), %{s}\n", .{ ld.insn, ld.reg });
+        try self.emit().movReg(.tmp3, .acc);
+        if (size < 8) try self.emit().zero(.acc);
+        try self.emit().loadIndirect(.acc, .tmp3, size, false);
     }
 
     /// Emit the address of `base[start..]` into %rax, returning the element
@@ -1687,13 +1708,13 @@ pub const HomeKernelCodegen = struct {
 
         // Offset by the start index, when there is one.
         if (sl.start) |start| {
-            try self.writeAll("    pushq %rax\n");
+            try self.emit().push(.acc);
             try self.generateExpr(start);
             if (elem_size > 1) {
-                try self.print("    imulq ${d}, %rax\n", .{elem_size});
+                try self.emit().mulImm(@intCast(elem_size));
             }
-            try self.writeAll("    popq %rcx\n");
-            try self.writeAll("    addq %rcx, %rax\n");
+            try self.emit().pop(.tmp);
+            try self.emit().binOp(.add);
         }
         return elem_type;
     }
@@ -1704,38 +1725,38 @@ pub const HomeKernelCodegen = struct {
         if (sl.end) |end| {
             try self.generateExpr(end);
             if (sl.start) |start| {
-                try self.writeAll("    pushq %rax\n");
+                try self.emit().push(.acc);
                 try self.generateExpr(start);
-                try self.writeAll("    movq %rax, %rcx\n");
-                try self.writeAll("    popq %rax\n");
-                try self.writeAll("    subq %rcx, %rax\n");
+                try self.emit().movReg(.tmp, .acc);
+                try self.emit().pop(.acc);
+                try self.emit().binOp(.sub);
             }
             return;
         }
         // No end: the length is the base's, minus any start offset.
         const base_type = self.typeOfLValue(sl.array) orelse {
             try self.writeAll("    # ERROR: cannot determine slice length\n");
-            try self.writeAll("    movq $0, %rax\n");
+            try self.emit().movImm(0);
             return;
         };
         const bare = splitAlign(base_type).bare;
         if (self.arrayType(bare)) |arr| {
-            try self.print("    movq ${d}, %rax\n", .{arr.count});
+            try self.emit().movImm(@intCast(arr.count));
         } else if (isSliceType(bare)) {
             _ = try self.emitAddress(sl.array) orelse return;
-            try self.print("    addq ${d}, %rax\n", .{SLICE_LEN_OFFSET});
-            try self.writeAll("    movq (%rax), %rax\n");
+            try self.emit().addImm(.acc, @intCast(SLICE_LEN_OFFSET));
+            try self.emit().loadIndirect(.acc, .acc, 8, false);
         } else {
             try self.print("    # ERROR: cannot determine the length of {s}\n", .{bare});
-            try self.writeAll("    movq $0, %rax\n");
+            try self.emit().movImm(0);
             return;
         }
         if (sl.start) |start| {
-            try self.writeAll("    pushq %rax\n");
+            try self.emit().push(.acc);
             try self.generateExpr(start);
-            try self.writeAll("    movq %rax, %rcx\n");
-            try self.writeAll("    popq %rax\n");
-            try self.writeAll("    subq %rcx, %rax\n");
+            try self.emit().movReg(.tmp, .acc);
+            try self.emit().pop(.acc);
+            try self.emit().binOp(.sub);
         }
     }
 
@@ -1750,14 +1771,14 @@ pub const HomeKernelCodegen = struct {
             if (!info.is_bitfield) return;
         }
         const size = self.sizeOf(type_name) orelse 8;
-        const ld = loadFor(size) orelse {
+        _ = loadFor(size) orelse {
             try self.print("    # ERROR: cannot load a value of type {s} ({d} bytes)\n", .{ type_name, size });
-            try self.writeAll("    movq $0, %rax\n");
+            try self.emit().movImm(0);
             return;
         };
-        try self.writeAll("    movq %rax, %rdx\n");
-        if (size < 8) try self.writeAll("    xorq %rax, %rax\n");
-        try self.print("    {s} (%rdx), %{s}\n", .{ ld.insn, ld.reg });
+        try self.emit().movReg(.tmp3, .acc);
+        if (size < 8) try self.emit().zero(.acc);
+        try self.emit().loadIndirect(.acc, .tmp3, size, false);
     }
 
     /// Write a struct literal's fields directly into the struct storage whose
@@ -1773,7 +1794,7 @@ pub const HomeKernelCodegen = struct {
         const bare = splitAlign(type_name).bare;
         const info = self.structs.get(bare) orelse {
             try self.print("    # ERROR: struct literal of unknown type {s}\n", .{type_name});
-            try self.writeAll("    addq $8, %rsp\n");
+            try self.emit().addStack(self.emit().pushStride());
             return;
         };
         if (info.is_bitfield) {
@@ -1783,17 +1804,16 @@ pub const HomeKernelCodegen = struct {
             // The union holds a mutable pointer; nothing here writes through it.
             var as_expr = ast.Expr{ .StructLiteral = @constCast(lit) };
             try self.generateExpr(&as_expr);
-            try self.writeAll("    popq %rdx\n");
-            try self.print("    movq %rax, (%rdx)\n", .{});
+            try self.emit().pop(.tmp3);
+            try self.emit().storeIndirect(.acc, .tmp3, 8);
             return;
         }
 
-        try self.writeAll("    popq %rdi\n");
+        try self.emit().pop(.mem_dst);
         // Zero the full width so unmentioned fields read as zero.
-        try self.print("    movq ${d}, %rcx\n", .{info.size});
-        try self.writeAll("    xorq %rax, %rax\n");
-        try self.writeAll("    cld\n");
-        try self.writeAll("    rep stosb\n");
+        try self.emit().movImmReg(.mem_len, @intCast(info.size));
+        try self.emit().zero(.acc);
+        try self.emit().memFill(self.freshLabel());
 
         for (lit.fields) |fi| {
             var field: ?FieldInfo = null;
@@ -1812,43 +1832,43 @@ pub const HomeKernelCodegen = struct {
             if (fi.value.* == .ArrayLiteral or fi.value.* == .ArrayRepeat or
                 fi.value.* == .StructLiteral)
             {
-                try self.writeAll("    pushq %rdi\n");
-                try self.writeAll("    movq %rdi, %rax\n");
-                if (f.offset > 0) try self.print("    addq ${d}, %rax\n", .{f.offset});
+                try self.emit().push(.mem_dst);
+                try self.emit().movReg(.acc, .mem_dst);
+                if (f.offset > 0) try self.emit().addImm(.acc, @intCast(f.offset));
                 if (fi.value.* == .StructLiteral) {
-                    try self.writeAll("    pushq %rax\n");
+                    try self.emit().push(.acc);
                     try self.emitStructLiteralToMemory(f.type_name, fi.value.StructLiteral);
                 } else {
                     try self.emitArrayLiteralToMemory(f.type_name, fi.value);
                 }
-                try self.writeAll("    popq %rdi\n");
+                try self.emit().pop(.mem_dst);
                 continue;
             }
 
             // Base address survives the field's value expression.
-            try self.writeAll("    pushq %rdi\n");
+            try self.emit().push(.mem_dst);
             try self.generateExpr(fi.value);
-            try self.writeAll("    popq %rdi\n");
+            try self.emit().pop(.mem_dst);
             if (storeFor(f.size) == null) {
                 // Wide fields — arrays, nested structs — do not fit in a
                 // register. %rax holds the source address, %rdi the
                 // destination; copy the field's own width.
-                try self.print("    addq ${d}, %rdi\n", .{f.offset});
-                try self.writeAll("    movq %rax, %rsi\n");
-                try self.print("    movq ${d}, %rcx\n", .{f.size});
-                try self.writeAll("    cld\n");
-                try self.writeAll("    rep movsb\n");
-                // %rdi advanced; recompute it for the next field.
-                try self.writeAll("    subq %rcx, %rdi\n");
-                try self.print("    subq ${d}, %rdi\n", .{f.offset});
+                try self.emit().addImm(.mem_dst, @intCast(f.offset));
+                try self.emit().movReg(.mem_src, .acc);
+                try self.emit().movImmReg(.mem_len, @intCast(f.size));
+                try self.emit().memCopy(self.freshLabel());
+                // The copy advanced the destination and consumed the length;
+                // wind both back so the next field starts from the base.
+                try self.emit().aluRegs(.sub, .mem_dst, .mem_len);
+                try self.emit().addImm(.mem_dst, -@as(i64, @intCast(f.offset)));
                 continue;
             }
-            const st = storeFor(f.size) orelse {
+            _ = storeFor(f.size) orelse {
                 // Unreachable: the null case is handled above.
                 try self.print("    # ERROR: cannot lower field {s}.{s} of {d} bytes\n", .{ info.name, f.name, f.size });
                 continue;
             };
-            try self.print("    {s} %{s}, {d}(%rdi)\n", .{ st.insn, st.reg, f.offset });
+            try self.emit().storeOffsetSized(.acc, .mem_dst, @intCast(f.offset), f.size);
         }
     }
 
@@ -1870,12 +1890,12 @@ pub const HomeKernelCodegen = struct {
         };
         // Elements too wide for a register — an array of structs — are each
         // written as an aggregate into their own slot.
-        const st = storeFor(elem_size) orelse {
+        _ = storeFor(elem_size) orelse {
             if (!self.isStorageType(arr.elem_type)) {
                 try self.print("    # ERROR: cannot store array elements of {d} bytes\n", .{elem_size});
                 return;
             }
-            try self.writeAll("    pushq %rax\n"); // base address
+            try self.emit().push(.acc); // base address
             var idx: usize = 0;
             while (idx < arr.count) : (idx += 1) {
                 const element: ?*const ast.Expr = switch (value.*) {
@@ -1883,29 +1903,28 @@ pub const HomeKernelCodegen = struct {
                     .ArrayRepeat => |rep| rep.value,
                     else => null,
                 };
-                try self.writeAll("    movq (%rsp), %rax\n");
-                if (idx > 0) try self.print("    addq ${d}, %rax\n", .{idx * elem_size});
+                try self.emit().loadPushed(.acc, 0);
+                if (idx > 0) try self.emit().addImm(.acc, @intCast(idx * elem_size));
                 if (element) |e| {
                     if (e.* == .StructLiteral) {
-                        try self.writeAll("    pushq %rax\n");
+                        try self.emit().push(.acc);
                         try self.emitStructLiteralToMemory(arr.elem_type, e.StructLiteral);
                     } else {
                         try self.emitStoreToAddress(arr.elem_type, e);
                     }
                 } else {
                     // Unmentioned elements read as zero.
-                    try self.writeAll("    movq %rax, %rdi\n");
-                    try self.print("    movq ${d}, %rcx\n", .{elem_size});
-                    try self.writeAll("    xorq %rax, %rax\n");
-                    try self.writeAll("    cld\n");
-                    try self.writeAll("    rep stosb\n");
+                    try self.emit().movReg(.mem_dst, .acc);
+                    try self.emit().movImmReg(.mem_len, @intCast(elem_size));
+                    try self.emit().zero(.acc);
+                    try self.emit().memFill(self.freshLabel());
                 }
             }
-            try self.writeAll("    popq %rax\n");
+            try self.emit().pop(.acc);
             return;
         };
 
-        try self.writeAll("    pushq %rax\n"); // base address
+        try self.emit().push(.acc); // base address
 
         switch (value.*) {
             .ArrayLiteral => |lit| {
@@ -1915,36 +1934,36 @@ pub const HomeKernelCodegen = struct {
                         break;
                     }
                     try self.generateExpr(elem);
-                    try self.writeAll("    movq (%rsp), %rdx\n");
-                    if (i > 0) try self.print("    addq ${d}, %rdx\n", .{i * elem_size});
-                    try self.print("    {s} %{s}, (%rdx)\n", .{ st.insn, st.reg });
+                    try self.emit().loadPushed(.tmp3, 0);
+                    if (i > 0) try self.emit().addImm(.tmp3, @intCast(i * elem_size));
+                    try self.emit().storeIndirect(.acc, .tmp3, elem_size);
                 }
                 // Elements the literal does not mention read as zero.
                 var i: usize = lit.elements.len;
                 while (i < arr.count) : (i += 1) {
-                    try self.writeAll("    movq (%rsp), %rdx\n");
-                    if (i > 0) try self.print("    addq ${d}, %rdx\n", .{i * elem_size});
-                    try self.writeAll("    xorq %rax, %rax\n");
-                    try self.print("    {s} %{s}, (%rdx)\n", .{ st.insn, st.reg });
+                    try self.emit().loadPushed(.tmp3, 0);
+                    if (i > 0) try self.emit().addImm(.tmp3, @intCast(i * elem_size));
+                    try self.emit().zero(.acc);
+                    try self.emit().storeIndirect(.acc, .tmp3, elem_size);
                 }
             },
             .ArrayRepeat => |rep| {
                 // `[0; N]` — one value, repeated. Evaluate it once: repeating
                 // the expression would repeat its side effects too.
                 try self.generateExpr(rep.value);
-                try self.writeAll("    movq %rax, %rsi\n");
+                try self.emit().movReg(.tmp2, .acc);
                 var i: usize = 0;
                 while (i < arr.count) : (i += 1) {
-                    try self.writeAll("    movq (%rsp), %rdx\n");
-                    if (i > 0) try self.print("    addq ${d}, %rdx\n", .{i * elem_size});
-                    try self.writeAll("    movq %rsi, %rax\n");
-                    try self.print("    {s} %{s}, (%rdx)\n", .{ st.insn, st.reg });
+                    try self.emit().loadPushed(.tmp3, 0);
+                    if (i > 0) try self.emit().addImm(.tmp3, @intCast(i * elem_size));
+                    try self.emit().movReg(.acc, .tmp2);
+                    try self.emit().storeIndirect(.acc, .tmp3, elem_size);
                 }
             },
             else => {},
         }
 
-        try self.writeAll("    popq %rax\n");
+        try self.emit().pop(.acc);
     }
 
     fn emitStoreToAddress(
@@ -1957,7 +1976,7 @@ pub const HomeKernelCodegen = struct {
         // A struct literal is lowered field-by-field straight into the
         // destination; no intermediate copy exists anywhere.
         if (value.* == .StructLiteral) {
-            try self.writeAll("    pushq %rax\n");
+            try self.emit().push(.acc);
             try self.emitStructLiteralToMemory(type_name, value.StructLiteral);
             return;
         }
@@ -1981,10 +2000,11 @@ pub const HomeKernelCodegen = struct {
                 const callee = call.callee.Identifier.name;
                 if (self.fn_return_types.get(callee)) |rt| {
                     if (self.isStorageType(rt) and self.declared_fns.contains(callee)) {
-                        try self.writeAll("    pushq %rax\n"); // destination
+                        try self.emit().push(.acc); // destination
                         // The hidden pointer takes %rdi, so the declared
                         // arguments start one register later.
-                        const sret_arg_regs = [_][]const u8{ "rsi", "rdx", "rcx", "r8", "r9" };
+                        // Argument 0 is the hidden destination pointer, so
+                        // the visible arguments start at register 1.
                         var words: usize = 0;
                         var i: usize = call.args.len;
                         while (i > 0) {
@@ -1992,11 +2012,11 @@ pub const HomeKernelCodegen = struct {
                             words += try self.pushArgument(call.args[i]);
                         }
                         for (0..words) |reg_idx| {
-                            if (reg_idx >= sret_arg_regs.len) break;
-                            try self.print("    popq %{s}\n", .{sret_arg_regs[reg_idx]});
+                            const areg = self.emit().argReg(reg_idx + 1) orelse break;
+                            try self.emit().popNamed(areg);
                         }
-                        try self.writeAll("    popq %rdi\n");
-                        try self.print("    call {s}\n", .{try self.functionSymbol(callee)});
+                        try self.emit().pop(.mem_dst);
+                        try self.emit().call(try self.functionSymbol(callee));
                         return;
                     }
                 }
@@ -2010,31 +2030,30 @@ pub const HomeKernelCodegen = struct {
         // that such an expression leaves the struct's address in %rax — and
         // copied out of immediately, before that storage can go stale.
         if (self.isStorageType(type_name)) {
-            try self.writeAll("    pushq %rax\n");           // destination
+            try self.emit().push(.acc);           // destination
             if (try self.emitAddress(value)) |_| {
-                try self.writeAll("    movq %rax, %rsi\n");      // source
-                try self.writeAll("    popq %rdi\n");            // destination
+                try self.emit().movReg(.mem_src, .acc);   // source
+                try self.emit().pop(.mem_dst);            // destination
             } else {
                 try self.generateExpr(value);
-                try self.writeAll("    movq %rax, %rsi\n");
-                try self.writeAll("    popq %rdi\n");
+                try self.emit().movReg(.mem_src, .acc);
+                try self.emit().pop(.mem_dst);
             }
-            try self.print("    movq ${d}, %rcx\n", .{size});
-            try self.writeAll("    cld\n");
-            try self.writeAll("    rep movsb\n");
+            try self.emit().movImmReg(.mem_len, @intCast(size));
+            try self.emit().memCopy(self.freshLabel());
             return;
         }
 
-        const st = storeFor(size) orelse {
+        _ = storeFor(size) orelse {
             try self.print("    # ERROR: cannot store a value of type {s} ({d} bytes)\n", .{ type_name, size });
             return;
         };
         // Address first, stashed, then the value — so the value expression
         // cannot clobber the address.
-        try self.writeAll("    pushq %rax\n");
+        try self.emit().push(.acc);
         try self.generateExpr(value);
-        try self.writeAll("    popq %rdx\n");
-        try self.print("    {s} %{s}, (%rdx)\n", .{ st.insn, st.reg });
+        try self.emit().pop(.tmp3);
+        try self.emit().storeIndirect(.acc, .tmp3, size);
     }
 
     /// Record a module-level binding as storage. Returns false when its size
@@ -2193,7 +2212,7 @@ pub const HomeKernelCodegen = struct {
             if (g.init_elements != null) table_count += 1;
         }
         if (table_count > 0) {
-            try self.writeAll("\n.section .data\n");
+            try self.emit().sectionData();
             for (self.global_order.items) |name| {
                 const g = self.global_vars.get(name) orelse continue;
                 const elements = g.init_elements orelse continue;
@@ -2218,7 +2237,7 @@ pub const HomeKernelCodegen = struct {
         }
 
         if (data_count > 0) {
-            try self.writeAll("\n.section .data\n");
+            try self.emit().sectionData();
             for (self.global_order.items) |name| {
                 const g = self.global_vars.get(name) orelse continue;
                 const v = g.init_value orelse continue;
@@ -2235,7 +2254,7 @@ pub const HomeKernelCodegen = struct {
         }
 
         if (bss_count > 0) {
-            try self.writeAll("\n.section .bss\n");
+            try self.emit().sectionBss();
             for (self.global_order.items) |name| {
                 const g = self.global_vars.get(name) orelse continue;
                 if (g.init_value != null or g.init_elements != null) continue;
@@ -2316,8 +2335,6 @@ pub const HomeKernelCodegen = struct {
         const bare_field = splitAlign(field.type_name).bare;
         const resolved = self.resolveAlias(bare_field) orelse bare_field;
         if (!std.mem.startsWith(u8, resolved, "fn")) return false;
-
-        const arg_regs = [_][]const u8{ "rdi", "rsi", "rdx", "rcx", "r8", "r9" };
         if (args.len > 0) {
             var words: usize = 0;
             var i: usize = args.len;
@@ -2326,18 +2343,18 @@ pub const HomeKernelCodegen = struct {
                 words += try self.pushArgument(args[i]);
             }
             for (0..words) |reg_idx| {
-                if (reg_idx >= arg_regs.len) break;
-                try self.print("    popq %{s}\n", .{arg_regs[reg_idx]});
+                const areg = self.emit().argReg(reg_idx) orelse break;
+                try self.emit().popNamed(areg);
             }
         }
 
         // Load the pointer last, so evaluating the arguments cannot clobber it.
         _ = try self.emitAddress(member.object) orelse return false;
         if (field.offset > 0) {
-            try self.print("    addq ${d}, %rax\n", .{field.offset});
+            try self.emit().addImm(.acc, @intCast(field.offset));
         }
-        try self.writeAll("    movq (%rax), %rax\n");
-        try self.writeAll("    call *%rax\n");
+        try self.emit().loadIndirect(.acc, .acc, 8, false);
+        try self.emit().callReg(.acc);
         return true;
     }
 
@@ -2472,7 +2489,7 @@ pub const HomeKernelCodegen = struct {
             } else {
                 try self.generateExpr(slot.op.expr);
             }
-            try self.writeAll("    pushq %rax\n");
+            try self.emit().push(.acc);
             pushed += 1;
         }
         var remaining = pushed;
@@ -2528,17 +2545,17 @@ pub const HomeKernelCodegen = struct {
                 const dst = if (!signed and osize == 4) "eax" else "rax";
                 try self.print("    {s} %{s}, %{s}\n", .{ insn, sub, dst });
             } else {
-                try self.print("    movq %{s}, %rax\n", .{fullRegister(slot.reg)});
+                try self.emit().movFromNamed(.acc, fullRegister(slot.reg));
             }
             if (slot.op.expr.* == .Identifier) {
                 const name = slot.op.expr.Identifier.name;
                 if (self.locals.get(name)) |offset| {
-                    try self.print("    movq %rax, {d}(%rbp)\n", .{offset});
+                    try self.emit().storeLocal(.acc, @intCast(offset));
                     continue;
                 }
                 if (self.global_vars.get(name)) |g| {
-                    if (storeFor(g.size)) |st| {
-                        try self.print("    {s} %{s}, {s}(%rip)\n", .{ st.insn, st.reg, g.symbol });
+                    if (storeFor(g.size)) |_| {
+                        try self.emit().storeSymbolSized(.acc, g.symbol, g.size);
                         continue;
                     }
                 }
@@ -2666,10 +2683,10 @@ pub const HomeKernelCodegen = struct {
         // A string literal used where a slice is expected carries its length
         // with it: the length is known at compile time.
         if (arg.* == .StringLiteral) {
-            try self.print("    movq ${d}, %rax\n", .{arg.StringLiteral.value.len});
-            try self.writeAll("    pushq %rax\n");
+            try self.emit().movImm(@intCast(arg.StringLiteral.value.len));
+            try self.emit().push(.acc);
             try self.generateExpr(arg);
-            try self.writeAll("    pushq %rax\n");
+            try self.emit().push(.acc);
             return 2;
         }
         // `ptr[0..len]` passed to a `[]T` parameter travels as the pair the
@@ -2678,11 +2695,11 @@ pub const HomeKernelCodegen = struct {
         // what pops into the lower-numbered register.
         if (arg.* == .SliceExpr) {
             try self.emitSliceLength(arg.SliceExpr);
-            try self.writeAll("    pushq %rax\n");
+            try self.emit().push(.acc);
             _ = try self.emitSliceDataPointer(arg.SliceExpr) orelse {
-                try self.writeAll("    movq $0, %rax\n");
+                try self.emit().movImm(0);
             };
-            try self.writeAll("    pushq %rax\n");
+            try self.emit().push(.acc);
             return 2;
         }
         if (self.typeOfLValue(arg)) |t| {
@@ -2690,29 +2707,29 @@ pub const HomeKernelCodegen = struct {
             if (isSliceType(bare)) {
                 // Pass the pair through unchanged.
                 _ = try self.emitAddress(arg) orelse {
-                    try self.writeAll("    pushq %rax\n");
+                    try self.emit().push(.acc);
                     return 1;
                 };
-                try self.writeAll("    pushq %rax\n");           // save slice address
-                try self.print("    movq {d}(%rax), %rax\n", .{SLICE_LEN_OFFSET});
-                try self.writeAll("    movq %rax, %rcx\n");
-                try self.writeAll("    popq %rax\n");
-                try self.writeAll("    pushq %rcx\n");            // length
-                try self.writeAll("    movq (%rax), %rax\n");     // data pointer
-                try self.writeAll("    pushq %rax\n");
+                try self.emit().push(.acc);           // save slice address
+                try self.emit().loadOffset(.acc, .acc, @intCast(SLICE_LEN_OFFSET));
+                try self.emit().movReg(.tmp, .acc);
+                try self.emit().pop(.acc);
+                try self.emit().push(.tmp);            // length
+                try self.emit().loadIndirect(.acc, .acc, 8, false);     // data pointer
+                try self.emit().push(.acc);
                 return 2;
             }
             if (self.arrayType(bare)) |arr| {
                 // A fixed array decays to (pointer, length).
-                try self.print("    movq ${d}, %rax\n", .{arr.count});
-                try self.writeAll("    pushq %rax\n");
+                try self.emit().movImm(@intCast(arr.count));
+                try self.emit().push(.acc);
                 try self.generateExpr(arg);
-                try self.writeAll("    pushq %rax\n");
+                try self.emit().push(.acc);
                 return 2;
             }
         }
         try self.generateExpr(arg);
-        try self.writeAll("    pushq %rax\n");
+        try self.emit().push(.acc);
         return 1;
     }
 
@@ -2727,64 +2744,105 @@ pub const HomeKernelCodegen = struct {
         name: []const u8,
         args: []const *const ast.Expr,
     ) !bool {
-        const Kind = enum { none, out, in, plain, mmio_read, mmio_write };
+        const Kind = enum { none, out, in, cpu, mmio_read, mmio_write, barrier };
+        // What the CPU-state intrinsics do, named for the effect rather than
+        // for one architecture's mnemonic.
+        const CpuOp = enum { halt, disable_irq, enable_irq, nop, spin_hint };
         var kind: Kind = .none;
-        var suffix: []const u8 = "";   // b / w / l / q
-        var acc: []const u8 = "";      // al / ax / eax / rax
-        var plain_insn: []const u8 = "";
+        var width: usize = 0;
+        var cpu_op: CpuOp = .nop;
+        var barrier_kind: kernel_target.Barrier = .full;
 
-        if (std.mem.eql(u8, name, "outb")) { kind = .out; suffix = "b"; acc = "al"; }
-        else if (std.mem.eql(u8, name, "outw")) { kind = .out; suffix = "w"; acc = "ax"; }
-        else if (std.mem.eql(u8, name, "outl")) { kind = .out; suffix = "l"; acc = "eax"; }
-        else if (std.mem.eql(u8, name, "inb")) { kind = .in; suffix = "b"; acc = "al"; }
-        else if (std.mem.eql(u8, name, "inw")) { kind = .in; suffix = "w"; acc = "ax"; }
-        else if (std.mem.eql(u8, name, "inl")) { kind = .in; suffix = "l"; acc = "eax"; }
-        else if (std.mem.eql(u8, name, "hlt")) { kind = .plain; plain_insn = "hlt"; }
-        else if (std.mem.eql(u8, name, "cli")) { kind = .plain; plain_insn = "cli"; }
-        else if (std.mem.eql(u8, name, "sti")) { kind = .plain; plain_insn = "sti"; }
-        else if (std.mem.eql(u8, name, "nop")) { kind = .plain; plain_insn = "nop"; }
-        else if (std.mem.eql(u8, name, "pause")) { kind = .plain; plain_insn = "pause"; }
-        else if (std.mem.eql(u8, name, "mfence")) { kind = .plain; plain_insn = "mfence"; }
-        else if (std.mem.eql(u8, name, "mmio_read8")) { kind = .mmio_read; suffix = "b"; acc = "al"; }
-        else if (std.mem.eql(u8, name, "mmio_read16")) { kind = .mmio_read; suffix = "w"; acc = "ax"; }
-        else if (std.mem.eql(u8, name, "mmio_read32")) { kind = .mmio_read; suffix = "l"; acc = "eax"; }
-        else if (std.mem.eql(u8, name, "mmio_read64")) { kind = .mmio_read; suffix = "q"; acc = "rax"; }
-        else if (std.mem.eql(u8, name, "mmio_write8")) { kind = .mmio_write; suffix = "b"; acc = "cl"; }
-        else if (std.mem.eql(u8, name, "mmio_write16")) { kind = .mmio_write; suffix = "w"; acc = "cx"; }
-        else if (std.mem.eql(u8, name, "mmio_write32")) { kind = .mmio_write; suffix = "l"; acc = "ecx"; }
-        else if (std.mem.eql(u8, name, "mmio_write64")) { kind = .mmio_write; suffix = "q"; acc = "rcx"; }
+        if (std.mem.eql(u8, name, "outb")) { kind = .out; width = 1; }
+        else if (std.mem.eql(u8, name, "outw")) { kind = .out; width = 2; }
+        else if (std.mem.eql(u8, name, "outl")) { kind = .out; width = 4; }
+        else if (std.mem.eql(u8, name, "inb")) { kind = .in; width = 1; }
+        else if (std.mem.eql(u8, name, "inw")) { kind = .in; width = 2; }
+        else if (std.mem.eql(u8, name, "inl")) { kind = .in; width = 4; }
+        else if (std.mem.eql(u8, name, "hlt")) { kind = .cpu; cpu_op = .halt; }
+        else if (std.mem.eql(u8, name, "cli")) { kind = .cpu; cpu_op = .disable_irq; }
+        else if (std.mem.eql(u8, name, "sti")) { kind = .cpu; cpu_op = .enable_irq; }
+        else if (std.mem.eql(u8, name, "nop")) { kind = .cpu; cpu_op = .nop; }
+        else if (std.mem.eql(u8, name, "pause")) { kind = .cpu; cpu_op = .spin_hint; }
+        else if (std.mem.eql(u8, name, "mfence")) { kind = .barrier; barrier_kind = .full; }
+        // Architecture-neutral barrier names (home-lang/home#584). The x86
+        // spellings above stay accepted so existing kernel source keeps
+        // building.
+        else if (std.mem.eql(u8, name, "barrier_full")) { kind = .barrier; barrier_kind = .full; }
+        else if (std.mem.eql(u8, name, "barrier_loads")) { kind = .barrier; barrier_kind = .loads; }
+        else if (std.mem.eql(u8, name, "barrier_stores")) { kind = .barrier; barrier_kind = .stores; }
+        else if (std.mem.eql(u8, name, "barrier_sync")) { kind = .barrier; barrier_kind = .isync; }
+        else if (std.mem.eql(u8, name, "mmio_read8")) { kind = .mmio_read; width = 1; }
+        else if (std.mem.eql(u8, name, "mmio_read16")) { kind = .mmio_read; width = 2; }
+        else if (std.mem.eql(u8, name, "mmio_read32")) { kind = .mmio_read; width = 4; }
+        else if (std.mem.eql(u8, name, "mmio_read64")) { kind = .mmio_read; width = 8; }
+        else if (std.mem.eql(u8, name, "mmio_write8")) { kind = .mmio_write; width = 1; }
+        else if (std.mem.eql(u8, name, "mmio_write16")) { kind = .mmio_write; width = 2; }
+        else if (std.mem.eql(u8, name, "mmio_write32")) { kind = .mmio_write; width = 4; }
+        else if (std.mem.eql(u8, name, "mmio_write64")) { kind = .mmio_write; width = 8; }
         else return false;
 
         switch (kind) {
-            .plain => {
+            .cpu => {
                 if (args.len != 0) {
                     try self.print("    # {s}() takes no arguments, {d} given\n", .{ name, args.len });
                     return false;
                 }
-                try self.print("    {s}\n", .{plain_insn});
+                switch (cpu_op) {
+                    .halt => try self.emit().halt(),
+                    .disable_irq => try self.emit().disableInterrupts(),
+                    .enable_irq => try self.emit().enableInterrupts(),
+                    .nop => try self.emit().nop(),
+                    .spin_hint => try self.emit().spinHint(),
+                }
             },
-            .out => {
-                // out<suffix> %acc, %dx  —  port in %dx, value in the accumulator.
-                if (args.len != 2) {
-                    try self.print("    # {s}(port, value) needs 2 arguments, {d} given\n", .{ name, args.len });
+            .barrier => {
+                if (args.len != 0) {
+                    try self.print("    # {s}() takes no arguments, {d} given\n", .{ name, args.len });
                     return false;
                 }
-                try self.generateExpr(args[1]);
-                try self.writeAll("    pushq %rax\n");
-                try self.generateExpr(args[0]);
-                try self.writeAll("    movq %rax, %rdx\n");
-                try self.writeAll("    popq %rax\n");
-                try self.print("    out{s} %{s}, %dx\n", .{ suffix, acc });
+                try self.emit().barrier(barrier_kind);
             },
-            .in => {
-                if (args.len != 1) {
-                    try self.print("    # {s}(port) needs 1 argument, {d} given\n", .{ name, args.len });
+            .out, .in => {
+                // A separate I/O address space is an x86 concept. Emitting
+                // nothing, or an approximation, would leave a driver that
+                // looks correct and touches no hardware — so refuse, and name
+                // the replacement.
+                if (!self.emit().hasPortIo()) {
+                    try self.print(
+                        "    # ERROR: {s}() needs a port I/O address space, which {s} does not have.\n" ++
+                            "    # ERROR: use mmio_read{d}/mmio_write{d} against the device's register address instead.\n",
+                        .{ name, @tagName(self.arch), width * 8, width * 8 },
+                    );
                     return false;
                 }
-                try self.generateExpr(args[0]);
-                try self.writeAll("    movq %rax, %rdx\n");
-                try self.writeAll("    xorq %rax, %rax\n");
-                try self.print("    in{s} %dx, %{s}\n", .{ suffix, acc });
+                const acc_reg = self.emit().subReg(.acc, width);
+                const suffix = switch (width) {
+                    1 => "b",
+                    2 => "w",
+                    else => "l",
+                };
+                if (kind == .out) {
+                    if (args.len != 2) {
+                        try self.print("    # {s}(port, value) needs 2 arguments, {d} given\n", .{ name, args.len });
+                        return false;
+                    }
+                    try self.generateExpr(args[1]);
+                    try self.emit().push(.acc);
+                    try self.generateExpr(args[0]);
+                    try self.emit().movReg(.tmp3, .acc);
+                    try self.emit().pop(.acc);
+                    try self.print("    out{s} {s}, %dx\n", .{ suffix, acc_reg });
+                } else {
+                    if (args.len != 1) {
+                        try self.print("    # {s}(port) needs 1 argument, {d} given\n", .{ name, args.len });
+                        return false;
+                    }
+                    try self.generateExpr(args[0]);
+                    try self.emit().movReg(.tmp3, .acc);
+                    try self.emit().zero(.acc);
+                    try self.print("    in{s} %dx, {s}\n", .{ suffix, acc_reg });
+                }
             },
             .mmio_read => {
                 if (args.len != 1) {
@@ -2792,9 +2850,10 @@ pub const HomeKernelCodegen = struct {
                     return false;
                 }
                 try self.generateExpr(args[0]);
-                try self.writeAll("    movq %rax, %rdx\n");
-                try self.writeAll("    xorq %rax, %rax\n");
-                try self.print("    mov{s} (%rdx), %{s}\n", .{ suffix, acc });
+                try self.emit().movReg(.tmp3, .acc);
+                try self.emit().zero(.acc);
+                try self.emit().loadIndirect(.acc, .tmp3, width, false);
+                try self.emit().mmioBarrierAfterRead();
             },
             .mmio_write => {
                 if (args.len != 2) {
@@ -2802,39 +2861,44 @@ pub const HomeKernelCodegen = struct {
                     return false;
                 }
                 try self.generateExpr(args[1]);
-                try self.writeAll("    pushq %rax\n");
+                try self.emit().push(.acc);
                 try self.generateExpr(args[0]);
-                try self.writeAll("    movq %rax, %rdx\n");
-                try self.writeAll("    popq %rcx\n");
-                try self.print("    mov{s} %{s}, (%rdx)\n", .{ suffix, acc });
+                try self.emit().movReg(.tmp3, .acc);
+                try self.emit().pop(.tmp);
+                try self.emit().mmioBarrierBeforeWrite();
+                try self.emit().storeIndirect(.tmp, .tmp3, width);
             },
             .none => unreachable,
         }
         return true;
     }
 
-    /// Narrow %rax to the width of `type_name`, if that width is known and
-    /// smaller than a word. A widening or same-width cast needs no work: the
-    /// value is already in %rax.
+    /// Narrow the accumulator to the width of `type_name`, if that width is
+    /// known and smaller than a word. A widening or same-width cast needs no
+    /// work: the
+    /// value is already in the accumulator.
     fn emitNarrowTo(self: *HomeKernelCodegen, type_name: []const u8) !void {
         const bare = splitAlign(type_name).bare;
         const size = self.sizeOf(bare) orelse return;
         if (size >= 8) return;
         const signed = bare.len > 0 and bare[0] == 'i';
-        const insn = switch (size) {
-            1 => if (signed) "movsbq %al, %rax" else "movzbq %al, %rax",
-            2 => if (signed) "movswq %ax, %rax" else "movzwq %ax, %rax",
-            4 => if (signed) "movslq %eax, %rax" else "movl %eax, %eax",
-            else => return,
-        };
-        try self.print("    {s}\n", .{insn});
+        try self.emit().narrow(size, signed);
     }
 
-    /// Emit a comparison: %rax <op> %rcx, result 0 or 1 in %rax.
-    fn emitCompare(self: *HomeKernelCodegen, setcc: []const u8) !void {
-        try self.writeAll("    cmpq %rcx, %rax\n");
-        try self.print("    {s} %al\n", .{setcc});
-        try self.writeAll("    movzbq %al, %rax\n");
+    /// Emit a comparison of the accumulator against `tmp`, leaving 0 or 1 in
+    /// the accumulator.
+    fn emitCompare(self: *HomeKernelCodegen, cond: Cond) !void {
+        try self.emit().compareSet(cond);
+    }
+
+    /// Build a local label whose suffix is a name rather than a number.
+    fn labelText2(self: *HomeKernelCodegen, comptime kind: []const u8, suffix: []const u8) ![]const u8 {
+        return std.fmt.allocPrint(self.import_arena.allocator(), ".L_" ++ kind ++ "_{s}", .{suffix});
+    }
+
+    /// Build a local label, owned by the import arena so it outlives the call.
+    fn labelText(self: *HomeKernelCodegen, comptime kind: []const u8, id: usize) ![]const u8 {
+        return std.fmt.allocPrint(self.import_arena.allocator(), ".L_" ++ kind ++ "_{d}", .{id});
     }
 
     /// Allocate a fresh, deterministic label number.
@@ -3024,7 +3088,7 @@ pub const HomeKernelCodegen = struct {
 
         // Emit .rodata section with string literals
         if (self.string_literals.items.len > 0) {
-            try self.writeAll("\n.section .rodata\n");
+            try self.emit().sectionRodata();
 
             for (self.string_literals.items) |str_lit| {
                 try self.print(".L_str_{d}:\n", .{str_lit.label});
@@ -3111,19 +3175,14 @@ pub const HomeKernelCodegen = struct {
                 // Keep %rsp 16-byte aligned at the call boundary.
                 const frame_size: usize = (frame_bytes + 15) / 16 * 16;
 
-                try self.writeAll("    pushq %rbp\n");
-                try self.writeAll("    movq %rsp, %rbp\n");
-                if (frame_size > 0) {
-                    try self.print("    subq ${d}, %rsp\n", .{frame_size});
-                }
+                try self.emit().prologue(frame_size);
 
                 // Spill incoming arguments into their slots. Without this,
                 // every parameter reference emitted a "# not in locals"
                 // comment and read whatever happened to be in %rax.
-                const arg_regs = [_][]const u8{ "rdi", "rsi", "rdx", "rcx", "r8", "r9" };
                 var reg_index: usize = 0;
                 if (self.sret_slot != 0) {
-                    try self.print("    movq %rdi, {d}(%rbp)\n", .{self.sret_slot});
+                    try self.emit().storeNamedLocal(self.emit().argReg(0).?, self.sret_slot);
                     reg_index = 1;
                 }
                 for (func.params) |param| {
@@ -3132,14 +3191,14 @@ pub const HomeKernelCodegen = struct {
                     var w: usize = 0;
                     while (w < words) : (w += 1) {
                         const dest = slot + @as(i32, @intCast(w * 8));
-                        if (reg_index < arg_regs.len) {
-                            try self.print("    movq %{s}, {d}(%rbp)\n", .{ arg_regs[reg_index], dest });
+                        if (self.emit().argReg(reg_index)) |areg| {
+                            try self.emit().storeNamedLocal(areg, dest);
                         } else {
                             // Arguments past the registers arrive above the
                             // return address.
-                            const caller_offset = 16 + (reg_index - arg_regs.len) * 8;
-                            try self.print("    movq {d}(%rbp), %rax\n", .{caller_offset});
-                            try self.print("    movq %rax, {d}(%rbp)\n", .{dest});
+                            const caller_offset = 16 + (reg_index - self.arch.argRegCount()) * 8;
+                            try self.emit().loadLocal(.acc, @intCast(caller_offset));
+                            try self.emit().storeLocal(.acc, @intCast(dest));
                         }
                         reg_index += 1;
                     }
@@ -3154,9 +3213,8 @@ pub const HomeKernelCodegen = struct {
                 // ending in `return` then got a second one appended.
                 if (!noreturn_fn) {
                     try self.print(".L_epilogue_{s}:\n", .{func.name});
-                    try self.writeAll("    movq %rbp, %rsp\n");
-                    try self.writeAll("    popq %rbp\n");
-                    try self.writeAll("    ret\n");
+                    try self.emit().epilogue();
+                    try self.emit().ret();
                 }
 
                 self.current_fn = "";
@@ -3220,17 +3278,17 @@ pub const HomeKernelCodegen = struct {
                         if (decl.value) |value| {
                             if (value.* == .StructLiteral) {
                                 if (self.locals.get(decl.name)) |slot| {
-                                    try self.print("    leaq {d}(%rbp), %rax\n", .{slot});
+                                    try self.emit().leaLocal(.acc, @intCast(slot));
                                     try self.emitStructLiteralToMemory(tn, value.StructLiteral);
                                 }
                             } else if (value.* == .ArrayLiteral or value.* == .ArrayRepeat) {
                                 if (self.locals.get(decl.name)) |slot| {
-                                    try self.print("    leaq {d}(%rbp), %rax\n", .{slot});
+                                    try self.emit().leaLocal(.acc, @intCast(slot));
                                     try self.emitArrayLiteralToMemory(tn, value);
                                 }
                             } else if (self.typeOfLValue(value) != null) {
                                 if (self.locals.get(decl.name)) |slot| {
-                                    try self.print("    leaq {d}(%rbp), %rax\n", .{slot});
+                                    try self.emit().leaLocal(.acc, @intCast(slot));
                                     try self.emitStoreToAddress(tn, value);
                                 }
                             }
@@ -3241,7 +3299,7 @@ pub const HomeKernelCodegen = struct {
                 if (decl.value) |value| {
                     try self.generateExpr(value);
                     if (self.locals.get(decl.name)) |slot| {
-                        try self.print("    movq %rax, {d}(%rbp)\n", .{slot});
+                        try self.emit().storeLocal(.acc, @intCast(slot));
                     } else {
                         try self.print("    # ERROR: no frame slot reserved for {s}\n", .{decl.name});
                     }
@@ -3251,11 +3309,10 @@ pub const HomeKernelCodegen = struct {
                 // Generate if statement
                 try self.generateExpr(if_stmt.condition);
 
-                // Test condition (result in %rax)
-                try self.writeAll("    testq %rax, %rax\n");
-
+                // Branch on the condition, which the expression left in the
+                // accumulator.
                 const label_num = self.freshLabel();
-                try self.print("    jz .L_else_{d}\n", .{label_num});
+                try self.emit().jumpIfZero(.acc, try self.labelText("else", label_num));
 
                 // Then block
                 for (if_stmt.then_block.statements) |then_stmt| {
@@ -3285,8 +3342,7 @@ pub const HomeKernelCodegen = struct {
 
                 try self.print("{s}:\n", .{start});
                 try self.generateExpr(while_stmt.condition);
-                try self.writeAll("    testq %rax, %rax\n");
-                try self.print("    jz {s}\n", .{end});
+                try self.emit().jumpIfZero(.acc, end);
 
                 // break/continue inside the body target this loop; restore the
                 // enclosing loop's labels afterwards so nesting works.
@@ -3302,7 +3358,7 @@ pub const HomeKernelCodegen = struct {
                 self.loop_break = prev_break;
                 self.loop_continue = prev_continue;
 
-                try self.print("    jmp {s}\n", .{start});
+                try self.emit().jump(start);
                 try self.print("{s}:\n", .{end});
             },
             .ReturnStmt => |return_stmt| {
@@ -3311,51 +3367,49 @@ pub const HomeKernelCodegen = struct {
                     if (self.sret_slot != 0) {
                         // Copy into the caller's destination and hand the
                         // pointer back in %rax, as the ABI expects.
-                        try self.print("    movq {d}(%rbp), %rax\n", .{self.sret_slot});
+                        try self.emit().loadLocal(.acc, @intCast(self.sret_slot));
                         if (value.* == .StructLiteral) {
-                            try self.writeAll("    pushq %rax\n");
+                            try self.emit().push(.acc);
                             try self.emitStructLiteralToMemory(
                                 self.current_return_type,
                                 value.StructLiteral,
                             );
                         } else if (self.typeOfLValue(value) != null) {
-                            try self.writeAll("    pushq %rax\n");
+                            try self.emit().push(.acc);
                             if (try self.emitAddress(value)) |_| {
-                                try self.writeAll("    movq %rax, %rsi\n");
-                                try self.writeAll("    popq %rdi\n");
-                                try self.print("    movq ${d}, %rcx\n", .{self.sizeOf(self.current_return_type) orelse 8});
-                                try self.writeAll("    cld\n");
-                                try self.writeAll("    rep movsb\n");
+                                try self.emit().movReg(.mem_src, .acc);
+                                try self.emit().pop(.mem_dst);
+                                try self.emit().movImmReg(.mem_len, @intCast(self.sizeOf(self.current_return_type) orelse 8));
+                                try self.emit().memCopy(self.freshLabel());
                             } else {
-                                try self.writeAll("    addq $8, %rsp\n");
+                                try self.emit().addStack(self.emit().pushStride());
                             }
                         } else {
                             try self.print("    # ERROR: cannot return a {s} built from this expression\n", .{self.current_return_type});
                         }
-                        try self.print("    movq {d}(%rbp), %rax\n", .{self.sret_slot});
+                        try self.emit().loadLocal(.acc, @intCast(self.sret_slot));
                         if (self.current_fn.len > 0) {
-                            try self.print("    jmp .L_epilogue_{s}\n", .{self.current_fn});
+                            try self.emit().jump(try self.labelText2("epilogue", self.current_fn));
                             return;
                         }
                     }
                     try self.generateExpr(value);
                 }
                 if (self.current_fn.len > 0) {
-                    try self.print("    jmp .L_epilogue_{s}\n", .{self.current_fn});
+                    try self.emit().jump(try self.labelText2("epilogue", self.current_fn));
                 } else {
-                    try self.writeAll("    movq %rbp, %rsp\n");
-                    try self.writeAll("    popq %rbp\n");
-                    try self.writeAll("    ret\n");
+                    try self.emit().epilogue();
+                    try self.emit().ret();
                 }
             },
             .BreakStmt => {
                 if (self.loop_break.len > 0) {
-                    try self.print("    jmp {s}\n", .{self.loop_break});
+                    try self.emit().jump(self.loop_break);
                 }
             },
             .ContinueStmt => {
                 if (self.loop_continue.len > 0) {
-                    try self.print("    jmp {s}\n", .{self.loop_continue});
+                    try self.emit().jump(self.loop_continue);
                 }
             },
             .BlockStmt => |block| {
@@ -3376,7 +3430,7 @@ pub const HomeKernelCodegen = struct {
                 defer self.allocator.free(end_label);
 
                 try self.generateExpr(sw.value);
-                try self.writeAll("    pushq %rax\n");
+                try self.emit().push(.acc);
 
                 // Pass 1: one body label per non-default clause, then all
                 // the comparisons.
@@ -3404,16 +3458,16 @@ pub const HomeKernelCodegen = struct {
                         // Pattern into %rax, saved to %rcx; scrutinee loaded
                         // from the stack; compare and branch on equality.
                         try self.generateExpr(pattern);
-                        try self.writeAll("    movq %rax, %rcx\n");
-                        try self.writeAll("    movq (%rsp), %rax\n");
-                        try self.writeAll("    cmpq %rcx, %rax\n");
-                        try self.print("    je {s}\n", .{b.label});
+                        try self.emit().movReg(.tmp, .acc);
+                        try self.emit().loadPushed(.acc, 0);
+                        try self.emit().cmpRegs(.acc, .tmp);
+                        try self.emit().jumpCond(.eq, b.label);
                     }
                 }
                 if (default_clause) |di| {
                     try self.print("    jmp .L_switch_case_{d}_{d}\n", .{ label_num, di });
                 }
-                try self.print("    jmp {s}\n", .{end_label});
+                try self.emit().jump(end_label);
 
                 // Pass 2: bodies, each closed with a jump to the end.
                 for (bodies.items) |b| {
@@ -3422,18 +3476,18 @@ pub const HomeKernelCodegen = struct {
                     for (clause.body) |body_stmt| {
                         try self.generateStmt(body_stmt);
                     }
-                    try self.print("    jmp {s}\n", .{end_label});
+                    try self.emit().jump(end_label);
                 }
                 if (default_clause) |di| {
                     try self.print(".L_switch_case_{d}_{d}:\n", .{ label_num, di });
                     for (sw.cases[di].body) |body_stmt| {
                         try self.generateStmt(body_stmt);
                     }
-                    try self.print("    jmp {s}\n", .{end_label});
+                    try self.emit().jump(end_label);
                 }
 
                 try self.print("{s}:\n", .{end_label});
-                try self.writeAll("    addq $8, %rsp\n");
+                try self.emit().addStack(self.emit().pushStride());
             },
             // Declarations that describe types or module structure emit no
             // code by design; they are consumed by the pre-passes.
@@ -3454,23 +3508,23 @@ pub const HomeKernelCodegen = struct {
                 // anything past 64 bits is not representable at all.
                 if (std.math.cast(i64, lit.value)) |v| {
                     if (v >= -2147483648 and v <= 2147483647) {
-                        try self.print("    movq ${d}, %rax\n", .{v});
+                        try self.emit().movImm(@intCast(v));
                     } else {
-                        try self.print("    movabsq ${d}, %rax\n", .{v});
+                        try self.emit().movImm(@intCast(v));
                     }
                 } else if (std.math.cast(u64, lit.value)) |uv| {
                     // Unsigned values above i64 max are still 64-bit patterns;
                     // reinterpret rather than refuse. u64 max is how a kernel
                     // spells an all-ones mask.
-                    try self.print("    movabsq ${d}, %rax\n", .{@as(i64, @bitCast(uv))});
+                    try self.emit().movImm(@intCast(@as(i64, @bitCast(uv))));
                 } else {
                     try self.print("    # ERROR: integer literal {d} does not fit in 64 bits\n", .{lit.value});
-                    try self.writeAll("    movq $0, %rax\n");
+                    try self.emit().movImm(0);
                 }
             },
             .BooleanLiteral => |lit| {
                 // Load boolean as integer (0 or 1) into %rax
-                try self.print("    movq ${d}, %rax\n", .{if (lit.value) @as(i64, 1) else @as(i64, 0)});
+                try self.emit().movImm(@intCast(if (lit.value) @as(i64, 1) else @as(i64, 0)));
             },
             .InlineAsm => |asm_node| {
                 try self.emitInlineAsm(asm_node);
@@ -3495,7 +3549,7 @@ pub const HomeKernelCodegen = struct {
                         .content = lit.value,
                     });
                 }
-                try self.print("    leaq .L_str_{d}(%rip), %rax\n", .{label_num});
+                try self.emit().leaSymbol(.acc, try self.labelText("str", label_num));
             },
             .CallExpr => |call| {
                 // Check if this is a module member call (e.g., serial.init())
@@ -3512,7 +3566,6 @@ pub const HomeKernelCodegen = struct {
                         // of module-scoped names — `serial.writeChar` and
                         // `vga.writeChar` are different functions.
                         if (self.module_aliases.get(module_name)) |mod_id| {
-                            const arg_regs = [_][]const u8{ "rdi", "rsi", "rdx", "rcx", "r8", "r9" };
                             if (call.args.len > 0) {
                                 var words: usize = 0;
                                 var i: usize = call.args.len;
@@ -3521,14 +3574,14 @@ pub const HomeKernelCodegen = struct {
                                     words += try self.pushArgument(call.args[i]);
                                 }
                                 for (0..words) |reg_idx| {
-                                    if (reg_idx >= arg_regs.len) break;
-                                    try self.print("    popq %{s}\n", .{arg_regs[reg_idx]});
+                                    const areg = self.emit().argReg(reg_idx) orelse break;
+                                    try self.emit().popNamed(areg);
                                 }
                             }
                             if (isBootEntryPoint(func_name)) {
-                                try self.print("    call {s}\n", .{func_name});
+                                try self.emit().call(func_name);
                             } else {
-                                try self.print("    call {s}__{s}\n", .{ mod_id, func_name });
+                                try self.emit().call(try std.fmt.allocPrint(self.import_arena.allocator(), "{s}__{s}", .{ mod_id, func_name }));
                             }
                         } else if (self.symbol_table.lookupMemberSymbol(module_name, func_name)) |symbol| {
                             // A Zig module reached through FFI.
@@ -3561,7 +3614,6 @@ pub const HomeKernelCodegen = struct {
                     } else {
                         // Local function call
                         // Evaluate arguments (System V AMD64 ABI: rdi, rsi, rdx, rcx, r8, r9)
-                        const arg_regs = [_][]const u8{ "rdi", "rsi", "rdx", "rcx", "r8", "r9" };
 
                         // To handle multiple arguments correctly, we need to save previous args
                         // Strategy: evaluate in reverse order and push to stack, then pop into registers
@@ -3577,8 +3629,8 @@ pub const HomeKernelCodegen = struct {
                                 words += try self.pushArgument(call.args[i]);
                             }
                             for (0..words) |reg_idx| {
-                                if (reg_idx < arg_regs.len) {
-                                    try self.print("    popq %{s}\n", .{arg_regs[reg_idx]});
+                                if (self.emit().argReg(reg_idx)) |areg| {
+                                    try self.emit().popNamed(areg);
                                 } else {
                                     // Arguments beyond six stay on the stack.
                                     break;
@@ -3591,30 +3643,27 @@ pub const HomeKernelCodegen = struct {
                         // external the linker must supply, which fails loudly
                         // if it does not exist.
                         if (self.declared_fns.contains(func_name)) {
-                            try self.print("    call {s}\n", .{try self.functionSymbol(func_name)});
+                            try self.emit().call(try self.functionSymbol(func_name));
                         } else if (try self.isCallableVariable(func_name)) {
                             // Indirect call through a function-pointer
                             // variable: callbacks, handler tables, driver
                             // ops. The pointer is loaded AFTER the arguments
                             // are in place (it may live in a stack slot the
                             // argument pushes must not disturb).
-                            var ptr_reg: []const u8 = undefined;
                             var had_ptr: bool = false;
                             if (self.locals.get(func_name)) |slot| {
-                                try self.print("    movq {d}(%rbp), %r10\n", .{slot});
-                                ptr_reg = "%r10";
+                                try self.emit().loadLocal(.scratch2, @intCast(slot));
                                 had_ptr = true;
                             } else if (self.global_vars.get(func_name)) |gv| {
-                                try self.print("    movq {s}(%rip), %r10\n", .{gv.symbol});
-                                ptr_reg = "%r10";
+                                try self.emit().loadSymbol(.scratch2, gv.symbol);
                                 had_ptr = true;
                             }
                             if (!had_ptr) {
                                 try self.print("    # ERROR: cannot lower call through '{s}'\n", .{func_name});
                             }
-                            try self.print("    call *{s}\n", .{ptr_reg});
+                            try self.emit().callReg(.scratch2);
                         } else {
-                            try self.print("    call {s}\n", .{func_name});
+                            try self.emit().call(func_name);
                         }
                     }
                 }
@@ -3624,21 +3673,20 @@ pub const HomeKernelCodegen = struct {
                 // evaluate-both-operands shape below.
                 if (binary.op == .And or binary.op == .Or) {
                     const label_num = self.freshLabel();
+                    const short_label = try self.labelText("logic_short", label_num);
+                    const end_label = try self.labelText("logic_end", label_num);
                     try self.generateExpr(binary.left);
-                    try self.writeAll("    testq %rax, %rax\n");
                     if (binary.op == .And) {
-                        try self.print("    jz .L_logic_short_{d}\n", .{label_num});
+                        try self.emit().jumpIfZero(.acc, short_label);
                     } else {
-                        try self.print("    jnz .L_logic_short_{d}\n", .{label_num});
+                        try self.emit().jumpIfNotZero(.acc, short_label);
                     }
                     try self.generateExpr(binary.right);
-                    try self.writeAll("    testq %rax, %rax\n");
-                    try self.writeAll("    setne %al\n");
-                    try self.writeAll("    movzbq %al, %rax\n");
-                    try self.print("    jmp .L_logic_end_{d}\n", .{label_num});
+                    try self.emit().boolNormalize();
+                    try self.emit().jump(end_label);
                     try self.print(".L_logic_short_{d}:\n", .{label_num});
                     // Short-circuited: the answer is the left operand's truth.
-                    try self.print("    movq ${d}, %rax\n", .{if (binary.op == .And) @as(i64, 0) else @as(i64, 1)});
+                    try self.emit().movImm(@intCast(if (binary.op == .And) @as(i64, 0) else @as(i64, 1)));
                     try self.print(".L_logic_end_{d}:\n", .{label_num});
                     return;
                 }
@@ -3648,51 +3696,42 @@ pub const HomeKernelCodegen = struct {
                 // code evaluated the right operand first, which is observable
                 // as soon as either side has a side effect.
                 try self.generateExpr(binary.left);
-                try self.writeAll("    pushq %rax\n");
+                try self.emit().push(.acc);
                 try self.generateExpr(binary.right);
-                try self.writeAll("    movq %rax, %rcx\n");
-                try self.writeAll("    popq %rax\n");
+                try self.emit().movReg(.tmp, .acc);
+                try self.emit().pop(.acc);
 
                 switch (binary.op) {
-                    .Add, .CheckedAdd => try self.writeAll("    addq %rcx, %rax\n"),
-                    .Sub, .CheckedSub => try self.writeAll("    subq %rcx, %rax\n"),
-                    .Mul, .CheckedMul => try self.writeAll("    imulq %rcx, %rax\n"),
-                    .Div, .IntDiv, .CheckedDiv => {
-                        // cqto sign-extends %rax into %rdx:%rax for idivq.
-                        try self.writeAll("    cqto\n");
-                        try self.writeAll("    idivq %rcx\n");
-                    },
-                    .Mod => {
-                        try self.writeAll("    cqto\n");
-                        try self.writeAll("    idivq %rcx\n");
-                        try self.writeAll("    movq %rdx, %rax\n");
-                    },
-                    .BitAnd => try self.writeAll("    andq %rcx, %rax\n"),
-                    .BitOr => try self.writeAll("    orq %rcx, %rax\n"),
-                    .BitXor => try self.writeAll("    xorq %rcx, %rax\n"),
-                    // Shift counts must be in %cl.
-                    .LeftShift => try self.writeAll("    shlq %cl, %rax\n"),
-                    .RightShift => try self.writeAll("    sarq %cl, %rax\n"),
+                    .Add, .CheckedAdd => try self.emit().binOp(.add),
+                    .Sub, .CheckedSub => try self.emit().binOp(.sub),
+                    .Mul, .CheckedMul => try self.emit().binOp(.mul),
+                    .Div, .IntDiv, .CheckedDiv => try self.emit().binOp(.div),
+                    .Mod => try self.emit().binOp(.rem),
+                    .BitAnd => try self.emit().binOp(.bit_and),
+                    .BitOr => try self.emit().binOp(.bit_or),
+                    .BitXor => try self.emit().binOp(.bit_xor),
+                    .LeftShift => try self.emit().binOp(.shl),
+                    .RightShift => try self.emit().binOp(.shr_arith),
                     .Power => {
                         // Integer exponentiation by repeated multiplication;
                         // %rax = base, %rcx = exponent.
                         const lbl = self.freshLabel();
-                        try self.writeAll("    movq %rax, %rsi\n");
-                        try self.writeAll("    movq $1, %rax\n");
+                        try self.emit().movReg(.tmp2, .acc);
+                        try self.emit().movImm(1);
                         try self.print(".L_pow_start_{d}:\n", .{lbl});
-                        try self.writeAll("    testq %rcx, %rcx\n");
-                        try self.print("    jle .L_pow_end_{d}\n", .{lbl});
-                        try self.writeAll("    imulq %rsi, %rax\n");
-                        try self.writeAll("    decq %rcx\n");
+                        try self.emit().cmpImm(.tmp, 0);
+                        try self.emit().jumpCond(.le, try self.labelText("pow_end", lbl));
+                        try self.emit().aluRegs(.mul, .acc, .tmp2);
+                        try self.emit().addImm(.tmp, -1);
                         try self.print("    jmp .L_pow_start_{d}\n", .{lbl});
                         try self.print(".L_pow_end_{d}:\n", .{lbl});
                     },
-                    .Equal => try self.emitCompare("sete"),
-                    .NotEqual => try self.emitCompare("setne"),
-                    .Less => try self.emitCompare("setl"),
-                    .LessEq => try self.emitCompare("setle"),
-                    .Greater => try self.emitCompare("setg"),
-                    .GreaterEq => try self.emitCompare("setge"),
+                    .Equal => try self.emitCompare(.eq),
+                    .NotEqual => try self.emitCompare(.ne),
+                    .Less => try self.emitCompare(.lt),
+                    .LessEq => try self.emitCompare(.le),
+                    .Greater => try self.emitCompare(.gt),
+                    .GreaterEq => try self.emitCompare(.ge),
                     else => {
                         try self.print("    # unsupported binary operator: {s}\n", .{@tagName(binary.op)});
                     },
@@ -3713,11 +3752,11 @@ pub const HomeKernelCodegen = struct {
                             .{ m.object.Identifier.name, m.member },
                         );
                         if (self.globals.get(key)) |value| {
-                            try self.print("    movq ${d}, %rax\n", .{value});
+                            try self.emit().movImm(@intCast(value));
                             return;
                         }
                         if (self.enum_values.get(key)) |value| {
-                            try self.print("    movq ${d}, %rax\n", .{value});
+                            try self.emit().movImm(@intCast(value));
                             return;
                         }
                     }
@@ -3728,18 +3767,18 @@ pub const HomeKernelCodegen = struct {
                 if (expr.* == .MemberExpr) {
                     if (try self.bitFieldOf(expr.MemberExpr)) |bf| {
                         const addr_type = try self.emitAddress(expr.MemberExpr.object) orelse {
-                            try self.writeAll("    movq $0, %rax\n");
+                            try self.emit().movImm(0);
                             return;
                         };
                         _ = addr_type;
                         try self.emitLoadBacking(bf.container_size);
                         if (bf.field.bit_offset > 0) {
-                            try self.print("    shrq ${d}, %rax\n", .{bf.field.bit_offset});
+                            try self.emit().shiftImm(.shr_logical, @intCast(bf.field.bit_offset));
                         }
                         if (bf.field.bit_width < 64) {
                             const mask: u64 = (@as(u64, 1) << @intCast(bf.field.bit_width)) - 1;
-                            try self.print("    movabsq ${d}, %rcx\n", .{@as(i64, @bitCast(mask))});
-                            try self.writeAll("    andq %rcx, %rax\n");
+                            try self.emit().movImmReg(.tmp, @intCast(@as(i64, @bitCast(mask))));
+                            try self.emit().binOp(.bit_and);
                         }
                         return;
                     }
@@ -3753,11 +3792,11 @@ pub const HomeKernelCodegen = struct {
                             const key = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ enum_name, m.member });
                             defer self.allocator.free(key);
                             if (self.enum_values.get(key)) |v| {
-                                try self.print("    movq ${d}, %rax\n", .{v});
+                                try self.emit().movImm(@intCast(v));
                                 return;
                             }
                             try self.print("    # ERROR: enum {s} has no variant {s}\n", .{ enum_name, m.member });
-                            try self.writeAll("    movq $0, %rax\n");
+                            try self.emit().movImm(0);
                             return;
                         }
                     }
@@ -3769,7 +3808,7 @@ pub const HomeKernelCodegen = struct {
                     if (std.mem.eql(u8, m.member, "len")) {
                         if (self.typeOfLValue(m.object)) |bt| {
                             if (self.arrayType(splitAlign(bt).bare)) |arr| {
-                                try self.print("    movq ${d}, %rax\n", .{arr.count});
+                                try self.emit().movImm(@intCast(arr.count));
                                 return;
                             }
                         }
@@ -3777,7 +3816,7 @@ pub const HomeKernelCodegen = struct {
                 }
                 // Address into %rax, then load the value it points at.
                 const t = try self.emitAddress(expr) orelse {
-                    try self.writeAll("    movq $0, %rax\n");
+                    try self.emit().movImm(0);
                     return;
                 };
                 try self.emitLoadFromAddress(t);
@@ -3786,18 +3825,17 @@ pub const HomeKernelCodegen = struct {
                 // `&x` is the address of an lvalue, not a value computation.
                 if (unary.op == .AddressOf or unary.op == .Borrow or unary.op == .BorrowMut) {
                     _ = try self.emitAddress(unary.operand) orelse {
-                        try self.writeAll("    movq $0, %rax\n");
+                        try self.emit().movImm(0);
                     };
                     return;
                 }
                 try self.generateExpr(unary.operand);
                 switch (unary.op) {
-                    .Neg => try self.writeAll("    negq %rax\n"),
-                    .BitNot => try self.writeAll("    notq %rax\n"),
+                    .Neg => try self.emit().negate(),
+                    .BitNot => try self.emit().bitNot(),
                     .Not => {
-                        try self.writeAll("    testq %rax, %rax\n");
-                        try self.writeAll("    sete %al\n");
-                        try self.writeAll("    movzbq %al, %rax\n");
+                        try self.emit().cmpImm(.acc, 0);
+                        try self.emit().setFromFlags(.eq);
                     },
                     .Deref => {
                         // Load the pointee's width, not a machine word.
@@ -3807,18 +3845,12 @@ pub const HomeKernelCodegen = struct {
                         // memory size printed empty.
                         const size = self.derefLoadSize(unary.operand);
                         const signed = self.derefIsSigned(unary.operand);
-                        if (signed and size < 8) {
-                            const insn = switch (size) {
-                                1 => "movsbq",
-                                2 => "movswq",
-                                4 => "movslq",
-                                else => unreachable,
-                            };
-                            try self.print("    {s} (%rax), %rax\n", .{insn});
-                        } else if (loadFor(size)) |ld| {
-                            try self.print("    {s} (%rax), %{s}\n", .{ ld.insn, ld.reg });
+                        if (loadFor(size) != null) {
+                            try self.emit().loadIndirect(.acc, .acc, size, signed);
                         } else {
-                            try self.writeAll("    movq (%rax), %rax\n");
+                            // An aggregate has no register-sized load; the
+                            // address itself is the value.
+                            try self.emit().loadIndirect(.acc, .acc, 8, false);
                         }
                     },
                     else => {
@@ -3835,12 +3867,12 @@ pub const HomeKernelCodegen = struct {
                             return;
                         }
                         if (self.locals.get(target.name)) |offset| {
-                            try self.print("    movq %rax, {d}(%rbp)\n", .{offset});
+                            try self.emit().storeLocal(.acc, @intCast(offset));
                         } else if (self.global_vars.get(target.name)) |g| {
                             if (g.is_array) {
                                 try self.print("    # ERROR: cannot assign to the array {s} as a whole\n", .{g.name});
-                            } else if (storeFor(g.size)) |st| {
-                                try self.print("    {s} %{s}, {s}(%rip)\n", .{ st.insn, st.reg, g.symbol });
+                            } else if (storeFor(g.size)) |_| {
+                                try self.emit().storeSymbolSized(.acc, g.symbol, g.size);
                             } else {
                                 try self.print("    # ERROR: cannot store {s} of size {d}\n", .{ g.name, g.size });
                             }
@@ -3857,35 +3889,35 @@ pub const HomeKernelCodegen = struct {
                         // every neighbouring field.
                         if (try self.bitFieldOf(m)) |bf| {
                             _ = try self.emitAddress(m.object) orelse return;
-                            try self.writeAll("    pushq %rax\n");        // container address
+                            try self.emit().push(.acc);        // container address
                             try self.generateExpr(assign.value);
                             const mask: u64 = if (bf.field.bit_width >= 64)
                                 std.math.maxInt(u64)
                             else
                                 (@as(u64, 1) << @intCast(bf.field.bit_width)) - 1;
-                            try self.print("    movabsq ${d}, %rcx\n", .{@as(i64, @bitCast(mask))});
-                            try self.writeAll("    andq %rcx, %rax\n");   // value, truncated
+                            try self.emit().movImmReg(.tmp, @intCast(@as(i64, @bitCast(mask))));
+                            try self.emit().binOp(.bit_and);   // value, truncated
                             if (bf.field.bit_offset > 0) {
-                                try self.print("    shlq ${d}, %rax\n", .{bf.field.bit_offset});
+                                try self.emit().shiftImm(.shl, @intCast(bf.field.bit_offset));
                             }
-                            try self.writeAll("    movq %rax, %rsi\n");   // shifted value
-                            try self.writeAll("    popq %rdx\n");         // container address
-                            try self.writeAll("    pushq %rdx\n");
-                            try self.writeAll("    movq %rdx, %rax\n");
+                            try self.emit().movReg(.tmp2, .acc); // shifted value
+                            try self.emit().pop(.tmp3);         // container address
+                            try self.emit().push(.tmp3);
+                            try self.emit().movReg(.acc, .tmp3);
                             try self.emitLoadBacking(bf.container_size);
                             const shifted_mask: u64 = if (bf.field.bit_offset >= 64)
                                 0
                             else
                                 mask << @intCast(bf.field.bit_offset);
-                            try self.print("    movabsq ${d}, %rcx\n", .{@as(i64, @bitCast(~shifted_mask))});
-                            try self.writeAll("    andq %rcx, %rax\n");   // clear the range
-                            try self.writeAll("    orq %rsi, %rax\n");    // insert
-                            try self.writeAll("    popq %rdx\n");
-                            const st = storeFor(bf.container_size) orelse {
+                            try self.emit().movImmReg(.tmp, @intCast(@as(i64, @bitCast(~shifted_mask))));
+                            try self.emit().binOp(.bit_and);   // clear the range
+                            try self.emit().aluRegs(.bit_or, .acc, .tmp2);    // insert
+                            try self.emit().pop(.tmp3);
+                            _ = storeFor(bf.container_size) orelse {
                                 try self.print("    # ERROR: cannot store a bitfield container of {d} bytes\n", .{bf.container_size});
                                 return;
                             };
-                            try self.print("    {s} %{s}, (%rdx)\n", .{ st.insn, st.reg });
+                            try self.emit().storeIndirect(.acc, .tmp3, bf.container_size);
                             return;
                         }
                         const t = try self.emitAddress(assign.target) orelse return;
@@ -3904,21 +3936,21 @@ pub const HomeKernelCodegen = struct {
                     const t = self.local_types.get(id.name) orelse "";
                     if (t.len > 0 and self.isStorageType(t)) {
                         // An array or struct's value is its address, as in C.
-                        try self.print("    leaq {d}(%rbp), %rax\n", .{offset});
+                        try self.emit().leaLocal(.acc, @intCast(offset));
                     } else {
-                        try self.print("    movq {d}(%rbp), %rax\n", .{offset});
+                        try self.emit().loadLocal(.acc, @intCast(offset));
                     }
                 } else if (self.globals.get(id.name)) |value| {
-                    try self.print("    movq ${d}, %rax\n", .{value});
+                    try self.emit().movImm(@intCast(value));
                 } else if (self.global_vars.get(id.name)) |g| {
                     if (g.is_array) {
-                        try self.print("    leaq {s}(%rip), %rax\n", .{g.symbol});
-                    } else if (loadFor(g.size)) |ld| {
-                        if (g.size < 8) try self.writeAll("    xorq %rax, %rax\n");
-                        try self.print("    {s} {s}(%rip), %{s}\n", .{ ld.insn, g.symbol, ld.reg });
+                        try self.emit().leaSymbol(.acc, g.symbol);
+                    } else if (loadFor(g.size)) |_| {
+                        if (g.size < 8) try self.emit().zero(.acc);
+                        try self.emit().loadSymbolSized(.acc, g.symbol, g.size, false);
                     } else {
                         try self.print("    # ERROR: cannot load {s} of size {d}\n", .{ g.name, g.size });
-                        try self.writeAll("    movq $0, %rax\n");
+                        try self.emit().movImm(0);
                     }
                 } else {
                     // Emitting a comment and carrying on leaves %rax holding
@@ -3926,7 +3958,7 @@ pub const HomeKernelCodegen = struct {
                     // a working build that computes nonsense. Say so loudly
                     // in the output instead.
                     try self.print("    # ERROR: undefined variable {s}\n", .{id.name});
-                    try self.writeAll("    movq $0, %rax\n");
+                    try self.emit().movImm(0);
                 }
             },
             .SliceExpr => |sl| {
@@ -3934,7 +3966,7 @@ pub const HomeKernelCodegen = struct {
                 // The length only travels when the slice is passed to a
                 // parameter that declares one — see pushArgument.
                 _ = try self.emitSliceDataPointer(sl) orelse {
-                    try self.writeAll("    movq $0, %rax\n");
+                    try self.emit().movImm(0);
                 };
             },
             .ArrayLiteral => |lit| {
@@ -3942,7 +3974,7 @@ pub const HomeKernelCodegen = struct {
                 // is nowhere to put it. The declaration and assignment paths
                 // write the elements straight into the destination.
                 try self.print("    # ERROR: array literal of {d} elements needs a destination\n", .{lit.elements.len});
-                try self.writeAll("    movq $0, %rax\n");
+                try self.emit().movImm(0);
             },
             .StructLiteral => |lit| {
                 // A bitfield struct literal is just an integer: shift each
@@ -3950,8 +3982,8 @@ pub const HomeKernelCodegen = struct {
                 // `PageFlags { present: true, address: n, ... }` means.
                 if (self.structs.get(splitAlign(lit.type_name).bare)) |info| {
                     if (info.is_bitfield) {
-                        try self.writeAll("    xorq %rax, %rax\n");
-                        try self.writeAll("    pushq %rax\n");     // accumulator
+                        try self.emit().zero(.acc);
+                        try self.emit().push(.acc);     // accumulator
                         for (lit.fields) |fi| {
                             const field = blk: {
                                 for (info.fields) |f| {
@@ -3966,16 +3998,16 @@ pub const HomeKernelCodegen = struct {
                                 std.math.maxInt(u64)
                             else
                                 (@as(u64, 1) << @intCast(field.bit_width)) - 1;
-                            try self.print("    movabsq ${d}, %rcx\n", .{@as(i64, @bitCast(mask))});
-                            try self.writeAll("    andq %rcx, %rax\n");
+                            try self.emit().movImmReg(.tmp, @intCast(@as(i64, @bitCast(mask))));
+                            try self.emit().binOp(.bit_and);
                             if (field.bit_offset > 0) {
-                                try self.print("    shlq ${d}, %rax\n", .{field.bit_offset});
+                                try self.emit().shiftImm(.shl, @intCast(field.bit_offset));
                             }
-                            try self.writeAll("    popq %rcx\n");
-                            try self.writeAll("    orq %rcx, %rax\n");
-                            try self.writeAll("    pushq %rax\n");
+                            try self.emit().pop(.tmp);
+                            try self.emit().binOp(.bit_or);
+                            try self.emit().push(.acc);
                         }
-                        try self.writeAll("    popq %rax\n");
+                        try self.emit().pop(.acc);
                         return;
                     }
                 }
@@ -3986,25 +4018,25 @@ pub const HomeKernelCodegen = struct {
                 if (self.structs.get(splitAlign(lit.type_name).bare)) |info| {
                     const aligned = (info.size + 15) / 16 * 16;
                     try self.print("    subq ${d}, %rsp\n", .{aligned});
-                    try self.writeAll("    pushq %rsp\n");
+                    try self.emit().pushStackPtr();
                     try self.emitStructLiteralToMemory(lit.type_name, lit);
-                    try self.writeAll("    movq %rsp, %rax\n");
+                    try self.emit().movFromStackPtr(.acc);
                     return;
                 }
                 try self.print("    # ERROR: struct literal of unknown type {s}\n", .{lit.type_name});
-                try self.writeAll("    movq $0, %rax\n");
+                try self.emit().movImm(0);
             },
             .CharLiteral => |lit| {
                 // The lexeme still carries its quotes and any escape.
                 if (charLiteralValue(lit.value)) |v| {
-                    try self.print("    movq ${d}, %rax\n", .{v});
+                    try self.emit().movImm(@intCast(v));
                 } else {
                     try self.print("    # ERROR: unsupported character literal {s}\n", .{lit.value});
-                    try self.writeAll("    movq $0, %rax\n");
+                    try self.emit().movImm(0);
                 }
             },
             .NullLiteral => {
-                try self.writeAll("    movq $0, %rax\n");
+                try self.emit().movImm(0);
             },
             .TypeCastExpr => |cast| {
                 try self.generateExpr(cast.value);
@@ -4026,37 +4058,37 @@ pub const HomeKernelCodegen = struct {
                         // @TypeOf is only meaningful inside another builtin;
                         // on its own it has no runtime value.
                         try self.writeAll("    # ERROR: @TypeOf has no value outside @sizeOf / @alignOf\n");
-                        try self.writeAll("    movq $0, %rax\n");
+                        try self.emit().movImm(0);
                     },
                     .SizeOf => {
                         if (r.target_type orelse self.typeArgOf(r.target)) |t| {
                             if (self.sizeOf(t)) |n| {
-                                try self.print("    movq ${d}, %rax\n", .{n});
+                                try self.emit().movImm(@intCast(n));
                                 return;
                             }
                         }
                         try self.writeAll("    # ERROR: @sizeOf of an unknown type\n");
-                        try self.writeAll("    movq $0, %rax\n");
+                        try self.emit().movImm(0);
                     },
                     .AlignOf => {
                         if (r.target_type orelse self.typeArgOf(r.target)) |t| {
-                            try self.print("    movq ${d}, %rax\n", .{self.alignOf(t)});
+                            try self.emit().movImm(@intCast(self.alignOf(t)));
                             return;
                         }
                         try self.writeAll("    # ERROR: @alignOf of an unknown type\n");
-                        try self.writeAll("    movq $0, %rax\n");
+                        try self.emit().movImm(0);
                     },
                     .OffsetOf => {
                         if (r.target_type orelse self.typeArgOf(r.target)) |t| {
                             if (r.field_name) |fname| {
                                 if (self.findField(t, fname)) |f| {
-                                    try self.print("    movq ${d}, %rax\n", .{f.offset});
+                                    try self.emit().movImm(@intCast(f.offset));
                                     return;
                                 }
                             }
                         }
                         try self.writeAll("    # ERROR: @offsetOf of an unknown field\n");
-                        try self.writeAll("    movq $0, %rax\n");
+                        try self.emit().movImm(0);
                     },
                     .Min, .Max => {
                         const second = r.second_arg orelse {
@@ -4064,29 +4096,29 @@ pub const HomeKernelCodegen = struct {
                             return;
                         };
                         try self.generateExpr(r.target);
-                        try self.writeAll("    pushq %rax\n");
+                        try self.emit().push(.acc);
                         try self.generateExpr(second);
-                        try self.writeAll("    movq %rax, %rcx\n");
-                        try self.writeAll("    popq %rax\n");
-                        try self.writeAll("    cmpq %rcx, %rax\n");
+                        try self.emit().movReg(.tmp, .acc);
+                        try self.emit().pop(.acc);
+                        try self.emit().cmpRegs(.acc, .tmp);
                         if (r.kind == .Min) {
-                            try self.writeAll("    cmovgq %rcx, %rax\n");
+                            try self.emit().condMove(.gt, .acc, .tmp);
                         } else {
-                            try self.writeAll("    cmovlq %rcx, %rax\n");
+                            try self.emit().condMove(.lt, .acc, .tmp);
                         }
                     },
                     .Abs => {
                         try self.generateExpr(r.target);
-                        try self.writeAll("    movq %rax, %rcx\n");
-                        try self.writeAll("    negq %rcx\n");
-                        try self.writeAll("    cmpq %rcx, %rax\n");
-                        try self.writeAll("    cmovlq %rcx, %rax\n");
+                        try self.emit().movReg(.tmp, .acc);
+                        try self.emit().negateReg(.tmp);
+                        try self.emit().cmpRegs(.acc, .tmp);
+                        try self.emit().condMove(.lt, .acc, .tmp);
                     },
                     else => {
                         // Floating-point and type-introspection builtins have
                         // no lowering in a freestanding integer backend.
                         try self.print("    # ERROR: unsupported builtin: {s}\n", .{@tagName(r.kind)});
-                        try self.writeAll("    movq $0, %rax\n");
+                        try self.emit().movImm(0);
                     },
                 }
             },
@@ -4097,8 +4129,7 @@ pub const HomeKernelCodegen = struct {
                 // binding took whatever happened to be in %rax.
                 const label_num = self.freshLabel();
                 try self.generateExpr(if_expr.condition);
-                try self.writeAll("    testq %rax, %rax\n");
-                try self.print("    jz .L_ifexpr_else_{d}\n", .{label_num});
+                try self.emit().jumpIfZero(.acc, try self.labelText("ifexpr_else", label_num));
                 try self.generateExpr(if_expr.then_branch);
                 try self.print("    jmp .L_ifexpr_end_{d}\n", .{label_num});
                 try self.print(".L_ifexpr_else_{d}:\n", .{label_num});
@@ -4108,8 +4139,7 @@ pub const HomeKernelCodegen = struct {
             .TernaryExpr => |t| {
                 const label_num = self.freshLabel();
                 try self.generateExpr(t.condition);
-                try self.writeAll("    testq %rax, %rax\n");
-                try self.print("    jz .L_ternary_else_{d}\n", .{label_num});
+                try self.emit().jumpIfZero(.acc, try self.labelText("ternary_else", label_num));
                 try self.generateExpr(t.true_val);
                 try self.print("    jmp .L_ternary_end_{d}\n", .{label_num});
                 try self.print(".L_ternary_else_{d}:\n", .{label_num});
@@ -4129,7 +4159,7 @@ pub const HomeKernelCodegen = struct {
                 // surrounding statement compiles cleanly and computes the
                 // wrong answer — the worst failure mode this backend has.
                 try self.print("    # ERROR: unsupported expression: {s} at {s}\n", .{ @tagName(expr.*), self.at(expr) });
-                try self.writeAll("    movq $0, %rax\n");
+                try self.emit().movImm(0);
             },
         }
     }
@@ -4154,34 +4184,33 @@ pub const HomeKernelCodegen = struct {
 
         // Evaluate arguments according to System V AMD64 ABI
         // First 6 integer args: rdi, rsi, rdx, rcx, r8, r9
-        const arg_regs = [_][]const u8{ "rdi", "rsi", "rdx", "rcx", "r8", "r9" };
 
         // Save previous register values if needed
         for (args, 0..) |arg, i| {
-            if (i < arg_regs.len) {
+            if (self.emit().argReg(i)) |areg| {
                 // Evaluate argument (result in %rax)
                 try self.generateExpr(arg);
 
                 // Move to appropriate argument register
                 if (i == 0) {
-                    try self.print("    movq %rax, %{s}\n", .{arg_regs[i]});
+                    try self.emit().movToNamed(areg, .acc);
                 } else {
-                    try self.print("    movq %rax, %{s}\n", .{arg_regs[i]});
+                    try self.emit().movToNamed(areg, .acc);
                 }
             } else {
                 // Push additional arguments onto stack
                 try self.generateExpr(arg);
-                try self.writeAll("    pushq %rax\n");
+                try self.emit().push(.acc);
             }
         }
 
         // Call the external Zig function
-        try self.print("    call {s}\n", .{ffi_name.items});
+        try self.emit().call(ffi_name.items);
 
         // Clean up stack if we pushed extra arguments
-        if (args.len > arg_regs.len) {
-            const stack_bytes = (args.len - arg_regs.len) * 8;
-            try self.print("    addq ${d}, %rsp\n", .{stack_bytes});
+        if (args.len > self.arch.argRegCount()) {
+            const stack_bytes = (args.len - self.arch.argRegCount()) * 8;
+            try self.emit().addStack(@intCast(stack_bytes));
         }
     }
 };

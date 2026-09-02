@@ -2828,6 +2828,7 @@ const BuildCliParseError = struct {
         duplicate_entrypoint,
         unsupported_format,
         unsupported_target,
+        unsupported_kernel_target,
         unsupported_sourcemap,
         output_path_conflicts_with_outdir,
         bytecode_requires_compile,
@@ -2946,7 +2947,14 @@ fn parseBuildCliOptions(args: []const [:0]const u8) BuildCliParseResult {
         return .{ .err = .{ .kind = .unsupported_format, .argument = format } };
     }
     if (target) |value| {
-        if (!std.mem.eql(u8, value, "browser") and
+        // `--target` names a JavaScript runtime for a bundle, but an
+        // architecture triple for a kernel. The two vocabularies are
+        // disjoint, so which one applies is decided by `--kernel`.
+        if (kernel_mode) {
+            if (codegen_mod.KernelArch.parseTriple(value) == null) {
+                return .{ .err = .{ .kind = .unsupported_kernel_target, .argument = value } };
+            }
+        } else if (!std.mem.eql(u8, value, "browser") and
             !std.mem.eql(u8, value, "bun") and
             !std.mem.eql(u8, value, "node"))
         {
@@ -2991,6 +2999,11 @@ fn failBuildCliParse(parse_error: BuildCliParseError) noreturn {
         .duplicate_entrypoint => std.debug.print("error: build accepts one entrypoint; unexpected '{s}'\n", .{parse_error.argument.?}),
         .unsupported_format => std.debug.print(
             "error: unsupported build format '{s}' (expected esm, cjs, or iife)\n",
+            .{parse_error.argument.?},
+        ),
+        .unsupported_kernel_target => std.debug.print(
+            "error: --kernel --target '{s}' names no architecture this backend can lower for\n" ++
+                "  supported: x86_64-freestanding, aarch64-freestanding\n",
             .{parse_error.argument.?},
         ),
         .unsupported_target => std.debug.print(
@@ -3606,12 +3619,34 @@ fn buildCommand(allocator: std.mem.Allocator, options: BuildCliOptions) !void {
 
         std.debug.print("{s}Generating kernel assembly...{s}\n", .{ Color.Green.code(), Color.Reset.code() });
 
+        // `--target` selects the architecture to lower for. Without it the
+        // host's architecture is used, which keeps every existing invocation
+        // behaving as it did. An unrecognised triple is refused rather than
+        // silently producing code for the wrong machine.
+        const kernel_arch: codegen_mod.KernelArch = if (options.target) |t|
+            codegen_mod.KernelArch.parseTriple(t) orelse {
+                std.debug.print(
+                    "{s}Error:{s} --target '{s}' names no architecture this backend can lower for.\n" ++
+                        "  Supported: x86_64-freestanding, aarch64-freestanding\n",
+                    .{ Color.Red.code(), Color.Reset.code(), t },
+                );
+                return error.UnsupportedTarget;
+            }
+        else
+            // A freestanding kernel is always a cross-compile: the host's
+            // architecture says nothing about the machine the image will run
+            // on. x86-64 is the established default of this path, so every
+            // existing invocation keeps producing what it produced before,
+            // and reaching another architecture is an explicit `--target`.
+            codegen_mod.KernelArch.x86_64;
+
         var codegen = HomeKernelCodegen.init(
             allocator,
             &parser.symbol_table,
             &parser.module_resolver,
         );
         defer codegen.deinit();
+        codegen.arch = kernel_arch;
         // The backend derives each module's symbol prefix from its path, so
         // that two modules exporting the same name do not collide at link
         // time.
