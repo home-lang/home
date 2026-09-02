@@ -534,6 +534,12 @@ pub const TransformTask = struct {
             return;
         };
 
+        // Parser recovery can return a placeholder non-AST result alongside
+        // diagnostics. The JS-thread completion path owns conversion of those
+        // diagnostics into the rejected Promise, so never hand the placeholder
+        // AST to the printer.
+        if (this.log.hasAny()) return;
+
         if (parse_result.empty) {
             this.output_code = bun.String.empty;
             return;
@@ -1201,6 +1207,9 @@ fn namedExportsToJS(global: *JSGlobalObject, named_exports: *JSAst.Ast.NamedExpo
         named_exports.count(),
     ) catch unreachable;
     defer allocator.free(names);
+    named_exports.sort(strings.StringArrayByIndexSorter{
+        .keys = named_exports.keys(),
+    });
     var i: usize = 0;
     while (named_exports_iter.next()) |entry| {
         names[i] = bun.String.fromBytes(entry.key_ptr.*);
