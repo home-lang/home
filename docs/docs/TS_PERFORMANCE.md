@@ -887,6 +887,47 @@ profile, frozen binaries, exact outputs, both load snapshots, and every timing
 round remain under
 `bench/vs_tsgo/results/import-free-module-namespace-gate.20260902T212617Z/`.
 
+### Type-alias heritage fallback gate (rejected)
+
+The accepted-code 8,192-family profile recorded 211 exclusive samples in
+`findTypeAliasDeclForHeritageCycle`. The rejected one-line candidate reused the
+existing conservative type-alias source fact after the normal scoped lookup
+returned no declaration, avoiding the fallback whole-root scan only when
+attached source bytes could not contain type-alias syntax. Type-alias-bearing
+sources and source-less HIR retained the complete original lookup.
+
+The fixed accepted baseline binary is SHA-256
+`47956122c70a686db1f1b9bc410efeb9af9997d1bec0dab385f4affd32e7da6e`;
+the candidate is
+`25f9b4f471626fafef269c4ec53f8415ae7bc5a84bb4c6d22dcb229f12ae8113`.
+Both binaries are 12,026,760 bytes and exit zero with byte-identical empty
+stdout and stderr on the unchanged official 128-family project.
+
+The first ten-pair screen retained every reversed-order pair after three
+alternating warmup pairs. Two unrelated Zig links occupied two full cores in
+both snapshots. Wall time was 34.963 ± 1.549 ms for the baseline and
+34.010 ± 0.875 ms for the candidate (1.0280×, 7/10 candidate wins, paired 95%
+interval -0.406 to +2.311 ms). Process CPU was 33.363 ± 1.486 ms versus
+32.462 ± 0.617 ms, with an interval of -0.428 to +2.230 ms. The promising mean
+did not establish an improvement because both intervals crossed zero.
+
+After both identified links exited, one predeclared replacement retained all
+ten pairs. The host did not remain clean: ten unrelated test shards appeared
+before measurement, and another Zig link appeared by the final snapshot.
+
+| Official 128-family replacement A/B, 10 pairs | Baseline | Fallback gate | Result | Paired 95% CI |
+|---|---:|---:|---:|---:|
+| Wall | 39.621 ± 6.899 ms | **38.878 ± 5.739 ms** | 1.0191×; 6/10 candidate wins | -1.744 to +3.229 ms |
+| CPU | 36.736 ± 3.598 ms | **36.329 ± 3.970 ms** | 1.0112×; 5/10 candidate wins | -1.717 to +2.530 ms |
+| Peak RSS | 16.683 ± 0.011 MiB | 16.683 ± 0.008 MiB | 1.0000×; 2/10 candidate wins | -0.007 to +0.007 MiB |
+
+Neither retained set established a timing improvement, so the candidate was
+fully reverted rather than rerunning until noise favored it. No confirmation,
+scale timing, correctness suite, source commit, or competitor checkpoint was
+admitted. The profile, frozen binaries, exact outputs, load snapshots, and
+every timing round remain under
+`bench/vs_tsgo/results/type-alias-heritage-fallback-gate.20260902T213124Z/`.
+
 ### Free-type traversal generation marks (rejected)
 
 After the root memo failed, the same retained profile still showed hash-table
