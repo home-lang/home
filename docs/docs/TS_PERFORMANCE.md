@@ -809,6 +809,125 @@ A/B round remain under
 and verified provenance remain under `20260901T163632Z/`. TS 7 and `tsgo`
 remain one native competitor throughout.
 
+### Prototype-assignment marker gate (rejected)
+
+A fresh ten-second sample of the accepted binary on an independently generated
+8,192-family copy of `interface_composition` recorded 271 exclusive samples in
+`scriptObjectExpandoHasPrototypeAssignment`. The rejected one-line candidate
+returned an exact miss when attached source bytes could not contain the
+`.prototype` spelling already tracked by the checker's conservative source
+marker index. Sources containing that spelling and source-less HIR retained the
+original whole-root scan. The optimization did not cache a semantic answer or
+alter the benchmark corpus.
+
+The fixed accepted baseline binary is SHA-256
+`47956122c70a686db1f1b9bc410efeb9af9997d1bec0dab385f4affd32e7da6e`;
+the candidate is
+`59de1b1c793eaef5aa6ce32f31792ecb5f133ed1fe72753d642d4bfa3986b567`.
+Both binaries are 12,026,760 bytes and exit zero with byte-identical empty
+stdout and stderr on the unchanged official 128-family project.
+
+The first ten-pair screen is retained separately. An unrelated optimized Zig
+build occupied a full core throughout, Spotlight used roughly 70% CPU, and a
+transient Typesense process appeared between the load snapshots. Wall time was
+32.053 ± 2.049 ms for the baseline and 35.239 ± 9.658 ms for the candidate
+(0.910×, 6/10 candidate wins, paired 95% interval -8.687 to +2.315 ms).
+Process CPU was 31.132 ± 1.868 ms versus 33.331 ± 7.516 ms, with an interval of
+-6.268 to +1.870 ms. No samples were filtered.
+
+After those identified transient processes exited, one separately labeled
+replacement screen retained all ten reversed-order pairs after three
+alternating warmup pairs. Two unrelated Zig library builds occupied two cores
+throughout both replacement snapshots:
+
+| Official 128-family replacement A/B, 10 pairs | Baseline | Marker gate | Result | Paired 95% CI |
+|---|---:|---:|---:|---:|
+| Wall | **31.648 ± 0.477 ms** | 31.780 ± 0.956 ms | 0.9958×; 5/10 candidate wins | -0.813 to +0.549 ms |
+| CPU | **30.695 ± 0.465 ms** | 30.781 ± 0.930 ms | 0.9972×; 5/10 candidate wins | -0.792 to +0.621 ms |
+| Peak RSS | **16.694 ± 0.011 MiB** | 16.697 ± 0.011 MiB | 0.9998×; 0/10 candidate wins | -0.008 to +0.002 MiB |
+
+The cleanest available means still regressed and both timing intervals crossed
+zero, so the marker gate was fully reverted. No confirmation, scale timing,
+correctness suite, source commit, or competitor checkpoint was admitted. The
+profile, frozen binaries, exact outputs, both load snapshots, and every timing
+round remain under
+`bench/vs_tsgo/results/script-expando-prototype-gate.20260902T211936Z/`.
+
+### Import-free module-namespace gate (rejected)
+
+The same accepted-code 8,192-family profile recorded 236 exclusive samples in
+`moduleNamespaceTypeForLocalImport`. The rejected one-line candidate returned
+an exact miss when attached source bytes could not contain an import
+declaration, reusing the conservative `source_may_have_import_declaration` fact
+already used by the accepted virtual-import gate. Import-bearing sources and
+source-less HIR retained the complete module namespace, CommonJS, and interop
+resolution path.
+
+The fixed accepted baseline binary is SHA-256
+`47956122c70a686db1f1b9bc410efeb9af9997d1bec0dab385f4affd32e7da6e`;
+the candidate is
+`6a9c934dc2276f17ef4639dd17a327745ba1f1742ff4c23ed91c4196f7791f92`.
+Both binaries are 12,026,760 bytes and exit zero with byte-identical empty
+stdout and stderr on the unchanged official 128-family project.
+
+The official screen retained every reversed-order pair after three alternating
+warmup pairs. Two unrelated Zig builds occupied two full cores throughout both
+load snapshots:
+
+| Official 128-family A/B, 10 pairs | Baseline | Import-free gate | Result | Paired 95% CI |
+|---|---:|---:|---:|---:|
+| Wall | **33.200 ± 0.695 ms** | 33.275 ± 1.053 ms | 0.9978×; 5/10 candidate wins | -0.816 to +0.667 ms |
+| CPU | **31.856 ± 0.506 ms** | 31.931 ± 0.781 ms | 0.9977×; 6/10 candidate wins | -0.575 to +0.425 ms |
+| Peak RSS | 16.688 ± 0.007 MiB | **16.684 ± 0.010 MiB** | 1.0002×; 3/10 candidate wins | -0.004 to +0.010 MiB |
+
+Both timing means regressed and both intervals crossed zero, so the candidate
+was fully reverted. No replacement screen, confirmation, scale timing,
+correctness suite, source commit, or competitor checkpoint was admitted. The
+profile, frozen binaries, exact outputs, both load snapshots, and every timing
+round remain under
+`bench/vs_tsgo/results/import-free-module-namespace-gate.20260902T212617Z/`.
+
+### Type-alias heritage fallback gate (rejected)
+
+The accepted-code 8,192-family profile recorded 211 exclusive samples in
+`findTypeAliasDeclForHeritageCycle`. The rejected one-line candidate reused the
+existing conservative type-alias source fact after the normal scoped lookup
+returned no declaration, avoiding the fallback whole-root scan only when
+attached source bytes could not contain type-alias syntax. Type-alias-bearing
+sources and source-less HIR retained the complete original lookup.
+
+The fixed accepted baseline binary is SHA-256
+`47956122c70a686db1f1b9bc410efeb9af9997d1bec0dab385f4affd32e7da6e`;
+the candidate is
+`25f9b4f471626fafef269c4ec53f8415ae7bc5a84bb4c6d22dcb229f12ae8113`.
+Both binaries are 12,026,760 bytes and exit zero with byte-identical empty
+stdout and stderr on the unchanged official 128-family project.
+
+The first ten-pair screen retained every reversed-order pair after three
+alternating warmup pairs. Two unrelated Zig links occupied two full cores in
+both snapshots. Wall time was 34.963 ± 1.549 ms for the baseline and
+34.010 ± 0.875 ms for the candidate (1.0280×, 7/10 candidate wins, paired 95%
+interval -0.406 to +2.311 ms). Process CPU was 33.363 ± 1.486 ms versus
+32.462 ± 0.617 ms, with an interval of -0.428 to +2.230 ms. The promising mean
+did not establish an improvement because both intervals crossed zero.
+
+After both identified links exited, one predeclared replacement retained all
+ten pairs. The host did not remain clean: ten unrelated test shards appeared
+before measurement, and another Zig link appeared by the final snapshot.
+
+| Official 128-family replacement A/B, 10 pairs | Baseline | Fallback gate | Result | Paired 95% CI |
+|---|---:|---:|---:|---:|
+| Wall | 39.621 ± 6.899 ms | **38.878 ± 5.739 ms** | 1.0191×; 6/10 candidate wins | -1.744 to +3.229 ms |
+| CPU | 36.736 ± 3.598 ms | **36.329 ± 3.970 ms** | 1.0112×; 5/10 candidate wins | -1.717 to +2.530 ms |
+| Peak RSS | 16.683 ± 0.011 MiB | 16.683 ± 0.008 MiB | 1.0000×; 2/10 candidate wins | -0.007 to +0.007 MiB |
+
+Neither retained set established a timing improvement, so the candidate was
+fully reverted rather than rerunning until noise favored it. No confirmation,
+scale timing, correctness suite, source commit, or competitor checkpoint was
+admitted. The profile, frozen binaries, exact outputs, load snapshots, and
+every timing round remain under
+`bench/vs_tsgo/results/type-alias-heritage-fallback-gate.20260902T213124Z/`.
+
 ### Free-type traversal generation marks (rejected)
 
 After the root memo failed, the same retained profile still showed hash-table
