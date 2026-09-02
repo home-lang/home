@@ -853,6 +853,40 @@ profile, frozen binaries, exact outputs, both load snapshots, and every timing
 round remain under
 `bench/vs_tsgo/results/script-expando-prototype-gate.20260902T211936Z/`.
 
+### Import-free module-namespace gate (rejected)
+
+The same accepted-code 8,192-family profile recorded 236 exclusive samples in
+`moduleNamespaceTypeForLocalImport`. The rejected one-line candidate returned
+an exact miss when attached source bytes could not contain an import
+declaration, reusing the conservative `source_may_have_import_declaration` fact
+already used by the accepted virtual-import gate. Import-bearing sources and
+source-less HIR retained the complete module namespace, CommonJS, and interop
+resolution path.
+
+The fixed accepted baseline binary is SHA-256
+`47956122c70a686db1f1b9bc410efeb9af9997d1bec0dab385f4affd32e7da6e`;
+the candidate is
+`6a9c934dc2276f17ef4639dd17a327745ba1f1742ff4c23ed91c4196f7791f92`.
+Both binaries are 12,026,760 bytes and exit zero with byte-identical empty
+stdout and stderr on the unchanged official 128-family project.
+
+The official screen retained every reversed-order pair after three alternating
+warmup pairs. Two unrelated Zig builds occupied two full cores throughout both
+load snapshots:
+
+| Official 128-family A/B, 10 pairs | Baseline | Import-free gate | Result | Paired 95% CI |
+|---|---:|---:|---:|---:|
+| Wall | **33.200 ± 0.695 ms** | 33.275 ± 1.053 ms | 0.9978×; 5/10 candidate wins | -0.816 to +0.667 ms |
+| CPU | **31.856 ± 0.506 ms** | 31.931 ± 0.781 ms | 0.9977×; 6/10 candidate wins | -0.575 to +0.425 ms |
+| Peak RSS | 16.688 ± 0.007 MiB | **16.684 ± 0.010 MiB** | 1.0002×; 3/10 candidate wins | -0.004 to +0.010 MiB |
+
+Both timing means regressed and both intervals crossed zero, so the candidate
+was fully reverted. No replacement screen, confirmation, scale timing,
+correctness suite, source commit, or competitor checkpoint was admitted. The
+profile, frozen binaries, exact outputs, both load snapshots, and every timing
+round remain under
+`bench/vs_tsgo/results/import-free-module-namespace-gate.20260902T212617Z/`.
+
 ### Free-type traversal generation marks (rejected)
 
 After the root memo failed, the same retained profile still showed hash-table
