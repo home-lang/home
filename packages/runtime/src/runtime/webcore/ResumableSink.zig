@@ -84,10 +84,8 @@ pub fn ResumableSink(
                         const err = brk_err: {
                             const pending = byte_stream.pending.result;
                             if (pending == .err) {
-                                const js_err, const was_strong = pending.err.toJSWeak(this.globalThis);
+                                const js_err = pending.err.toJS(this.globalThis);
                                 js_err.ensureStillAlive();
-                                if (was_strong == .Strong)
-                                    js_err.unprotect();
                                 break :brk_err js_err;
                             }
                             break :brk_err null;
@@ -289,13 +287,14 @@ pub fn ResumableSink(
             allocator: std.mem.Allocator,
         ) void {
             var stream_ = stream;
-            const stream_needs_deinit = stream == .owned or stream == .owned_and_done;
+            const stream_needs_deinit = stream == .owned or stream == .owned_and_done or stream == .err;
 
             defer {
                 if (stream_needs_deinit) {
                     switch (stream_) {
                         .owned_and_done => |*owned| owned.deinit(allocator),
                         .owned => |*owned| owned.deinit(allocator),
+                        .err => stream_.deinit(),
                         else => unreachable,
                     }
                 }
@@ -311,10 +310,8 @@ pub fn ResumableSink(
             if (is_done) {
                 const err: ?jsc.JSValue = brk_err: {
                     if (stream == .err) {
-                        const js_err, const was_strong = stream.err.toJSWeak(this.globalThis);
+                        const js_err = stream.err.toJS(this.globalThis);
                         js_err.ensureStillAlive();
-                        if (was_strong == .Strong)
-                            js_err.unprotect();
                         break :brk_err js_err;
                     }
                     break :brk_err null;

@@ -83,6 +83,10 @@ pub fn onData(
 ) bun.JSTerminated!void {
     jsc.markBinding(@src());
     if (this.done) {
+        if (stream == .err) {
+            var err = stream.err;
+            err.deinit();
+        }
         if (stream.isDone() and (stream == .owned or stream == .owned_and_done)) {
             if (stream == .owned) allocator.free(stream.owned.slice());
             if (stream == .owned_and_done) allocator.free(stream.owned_and_done.slice());
@@ -431,8 +435,11 @@ pub fn toBufferedValue(this: *@This(), globalThis: *jsc.JSGlobalObject, action: 
     }
 
     if (this.pending.result == .err) {
-        const err, _ = this.pending.result.err.toJSWeak(globalThis);
-        this.pending.result.deinit();
+        var owned_err = this.pending.result.err;
+        this.pending.result = .{ .done = {} };
+        defer owned_err.deinit();
+        const err = owned_err.toJS(globalThis);
+        err.ensureStillAlive();
         this.done = true;
         this.buffer.clearAndFree();
         return jsc.JSPromise.dangerouslyCreateRejectedPromiseValueWithoutNotifyingVM(globalThis, err);

@@ -211,11 +211,7 @@ pub const Result = union(Tag) {
         switch (this.*) {
             .owned => |*owned| owned.clearAndFree(bun.default_allocator),
             .owned_and_done => |*owned_and_done| owned_and_done.clearAndFree(bun.default_allocator),
-            .err => |err| {
-                if (err == .JSValue) {
-                    err.JSValue.unprotect();
-                }
-            },
+            .err => |*err| err.deinit(),
             else => {},
         }
     }
@@ -224,26 +220,19 @@ pub const Result = union(Tag) {
         Error: Syscall.Error,
         AbortReason: jsc.CommonAbortReason,
 
-        // TODO: use an explicit jsc.Strong.Optional here.
-        JSValue: jsc.JSValue,
-        WeakJSValue: jsc.JSValue,
+        JSValue: jsc.Strong.Optional,
 
-        const WasStrong = enum {
-            Strong,
-            Weak,
-        };
+        pub fn deinit(this: *@This()) void {
+            if (this.* == .JSValue) {
+                this.JSValue.deinit();
+            }
+        }
 
-        pub fn toJSWeak(this: *const @This(), globalObject: *jsc.JSGlobalObject) struct { jsc.JSValue, WasStrong } {
+        pub fn toJS(this: *const @This(), globalObject: *jsc.JSGlobalObject) jsc.JSValue {
             return switch (this.*) {
-                .Error => |err| {
-                    return .{ err.toJS(globalObject) catch return .{ .zero, WasStrong.Weak }, WasStrong.Weak };
-                },
-                .JSValue => .{ this.JSValue, WasStrong.Strong },
-                .WeakJSValue => .{ this.WeakJSValue, WasStrong.Weak },
-                .AbortReason => |reason| {
-                    const value = reason.toJS(globalObject);
-                    return .{ value, WasStrong.Weak };
-                },
+                .Error => |err| err.toJS(globalObject) catch .zero,
+                .JSValue => |*value| value.get() orelse .js_undefined,
+                .AbortReason => |reason| reason.toJS(globalObject),
             };
         }
     };
@@ -529,15 +518,11 @@ pub const Result = union(Tag) {
 
         switch (result.*) {
             .err => |*err| {
-                const value = brk: {
-                    const js_err, const was_strong = err.toJSWeak(globalThis);
-                    js_err.ensureStillAlive();
-                    if (was_strong == .Strong)
-                        js_err.unprotect();
-
-                    break :brk js_err;
-                };
+                var owned_err = err.*;
                 result.* = .{ .temporary = .{} };
+                defer owned_err.deinit();
+                const value = owned_err.toJS(globalThis);
+                value.ensureStillAlive();
                 promise.rejectWithAsyncStack(globalThis, value) catch {}; // TODO: properly propagate exception upwards
             },
             .done => {
@@ -598,10 +583,7 @@ pub const Result = union(Tag) {
             },
 
             .err => |err| {
-                const js_err, const was_strong = err.toJSWeak(globalThis);
-                if (was_strong == .Strong) {
-                    js_err.unprotect();
-                }
+                const js_err = err.toJS(globalThis);
                 js_err.ensureStillAlive();
                 return jsc.JSPromise.rejectedPromise(globalThis, js_err).toJS();
             },
@@ -1568,7 +1550,9 @@ pub const BufferAction = union(enum) {
     }
 
     pub fn reject(this: *BufferAction, global: *jsc.JSGlobalObject, err: Result.StreamError) bun.JSTerminated!void {
-        return this.swap().reject(global, err.toJSWeak(global)[0]);
+        var owned_err = err;
+        defer owned_err.deinit();
+        return this.swap().reject(global, owned_err.toJS(global));
     }
 
     pub fn resolve(this: *BufferAction, global: *jsc.JSGlobalObject, result: jsc.JSValue) bun.JSTerminated!void {

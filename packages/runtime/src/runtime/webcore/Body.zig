@@ -298,7 +298,7 @@ pub const Value = union(Tag) {
                     .AbortReason = this.AbortReason,
                 },
                 else => .{
-                    .JSValue = this.toJS(globalObject),
+                    .JSValue = .create(this.toJS(globalObject), globalObject),
                 },
             };
         }
@@ -1576,13 +1576,14 @@ pub const ValueBufferer = struct {
 
     fn onStreamPipe(sink: *@This(), stream: jsc.WebCore.streams.Result, allocator: std.mem.Allocator) void {
         var stream_ = stream;
-        const stream_needs_deinit = stream == .owned or stream == .owned_and_done;
+        const stream_needs_deinit = stream == .owned or stream == .owned_and_done or stream == .err;
 
         defer {
             if (stream_needs_deinit) {
                 switch (stream_) {
                     .owned_and_done => |*owned| owned.deinit(allocator),
                     .owned => |*owned| owned.deinit(allocator),
+                    .err => stream_.deinit(),
                     else => unreachable,
                 }
             }

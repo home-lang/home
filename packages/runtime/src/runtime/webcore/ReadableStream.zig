@@ -660,9 +660,10 @@ pub fn NewSource(
                         if (err == .Error) {
                             return globalThis.throwValue(try err.Error.toJS(globalThis));
                         } else {
-                            const js_err = err.JSValue;
+                            var owned_err = err;
+                            defer owned_err.deinit();
+                            const js_err = owned_err.toJS(globalThis);
                             js_err.ensureStillAlive();
-                            js_err.unprotect();
                             return globalThis.throwValue(js_err);
                         }
                     },

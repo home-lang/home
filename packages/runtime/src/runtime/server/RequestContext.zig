@@ -1940,7 +1940,7 @@ pub fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, 
 
         pub fn onPipe(this: *RequestContext, stream: jsc.WebCore.streams.Result, allocator: std.mem.Allocator) void {
             var stream_ = stream;
-            const stream_needs_deinit = stream == .owned or stream == .owned_and_done;
+            const stream_needs_deinit = stream == .owned or stream == .owned_and_done or stream == .err;
             const is_done = stream.isDone();
             defer {
                 if (is_done) this.deref();
@@ -1948,6 +1948,7 @@ pub fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, 
                     switch (stream_) {
                         .owned_and_done => |*owned| owned.deinit(allocator),
                         .owned => |*owned| owned.deinit(allocator),
+                        .err => stream_.deinit(),
                         else => unreachable,
                     }
                 }
@@ -2439,7 +2440,7 @@ pub fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, 
 
                     readable.value.ensureStillAlive();
                     const js_err = bun.String.static("Request body exceeded maxRequestBodySize").toErrorInstance(globalThis);
-                    readable.ptr.Bytes.onData(.{ .err = .{ .JSValue = js_err } }, bun.default_allocator) catch {};
+                    readable.ptr.Bytes.onData(.{ .err = .{ .JSValue = .create(js_err, globalThis) } }, bun.default_allocator) catch {};
 
                     if (this.resp != null and !resp.hasResponded()) {
                         this.flags.has_written_status = true;
