@@ -173,23 +173,34 @@ pub const Location = struct {
                     .offset = 0,
                 };
             }
-            const data = source.initErrorPosition(r.loc);
-            var full_line = source.contents[data.line_start..data.line_end];
-            if (full_line.len > 80 + data.column_count) {
-                full_line = full_line[@max(data.column_count, 40) - 40 .. @min(data.column_count + 40, full_line.len - 40) + 40];
-            }
-
-            return Location{
-                .file = source.path.text,
-                .namespace = source.path.namespace,
-                .line = usize2Loc(data.line_count).start,
-                .column = usize2Loc(data.column_count).start,
-                .length = if (r.len > -1) @as(u32, @intCast(r.len)) else 1,
-                .line_text = std.mem.trimStart(u8, full_line, "\n\r"),
-                .offset = @as(usize, @intCast(@max(r.loc.start, 0))),
-            };
+            return initWithErrorPosition(source, r, source.initErrorPosition(r.loc));
         }
         return null;
+    }
+
+    pub fn initOrNullTracked(_source: ?*const Source, r: Range, tracker: *LineColumnTracker) ?Location {
+        if (_source) |source| {
+            if (r.isEmpty()) return initOrNull(source, r);
+            return initWithErrorPosition(source, r, tracker.errorPosition(source, r.loc));
+        }
+        return null;
+    }
+
+    fn initWithErrorPosition(source: *const Source, r: Range, data: Source.ErrorPosition) Location {
+        var full_line = source.contents[data.line_start..data.line_end];
+        if (full_line.len > 80 + data.column_count) {
+            full_line = full_line[@max(data.column_count, 40) - 40 .. @min(data.column_count + 40, full_line.len - 40) + 40];
+        }
+
+        return .{
+            .file = source.path.text,
+            .namespace = source.path.namespace,
+            .line = usize2Loc(data.line_count).start,
+            .column = usize2Loc(data.column_count).start,
+            .length = if (r.len > -1) @as(u32, @intCast(r.len)) else 1,
+            .line_text = std.mem.trimStart(u8, full_line, "\n\r"),
+            .offset = @as(usize, @intCast(@max(r.loc.start, 0))),
+        };
     }
 };
 
@@ -577,6 +588,124 @@ pub const Range = struct {
     }
 };
 
+const ErrorPositionState = struct {
+    line_start: usize = 0,
+    line_count: usize = 1,
+    column_number: usize = 1,
+    prev_code_point: i32 = 0,
+
+    fn advance(state: *ErrorPositionState, contents: []const u8, from: usize, to: usize) bool {
+        var iterator = strings.CodepointIterator{ .bytes = contents[from..to], .i = 0 };
+        var cursor = strings.CodepointIterator.Cursor{};
+        var crossed_line_break = false;
+
+        while (iterator.next(&cursor)) {
+            switch (cursor.c) {
+                '\n' => {
+                    state.column_number = 1;
+                    state.line_start = from + cursor.width + cursor.i;
+                    if (state.prev_code_point != '\r') state.line_count += 1;
+                    crossed_line_break = true;
+                },
+                '\r' => {
+                    state.column_number = 0;
+                    state.line_start = from + cursor.width + cursor.i;
+                    state.line_count += 1;
+                    crossed_line_break = true;
+                },
+                0x2028, 0x2029 => {
+                    state.line_start = from + cursor.width + cursor.i;
+                    state.line_count += 1;
+                    state.column_number = 1;
+                    crossed_line_break = true;
+                },
+                else => state.column_number += 1,
+            }
+            state.prev_code_point = cursor.c;
+        }
+
+        return crossed_line_break;
+    }
+
+    fn toErrorPosition(state: ErrorPositionState, line_end: usize) Source.ErrorPosition {
+        return .{
+            .line_start = if (state.line_start > 0) state.line_start - 1 else state.line_start,
+            .line_end = line_end,
+            .line_count = state.line_count,
+            .column_count = state.column_number,
+        };
+    }
+};
+
+const ScanCursor = struct {
+    offset: usize = 0,
+    state: ErrorPositionState = .{},
+    line_end: ?usize = null,
+};
+
+pub const LineColumnTracker = struct {
+    contents_ptr: usize = 0,
+    contents_len: usize = 0,
+    path_ptr: usize = 0,
+    path_len: usize = 0,
+    cursors: [4]ScanCursor = @splat(.{}),
+
+    fn matches(tracker: *const LineColumnTracker, source: *const Source) bool {
+        return tracker.contents_ptr == @intFromPtr(source.contents.ptr) and
+            tracker.contents_len == source.contents.len and
+            tracker.path_ptr == @intFromPtr(source.path.text.ptr) and
+            tracker.path_len == source.path.text.len;
+    }
+
+    fn resetFor(tracker: *LineColumnTracker, source: *const Source) void {
+        tracker.* = .{
+            .contents_ptr = @intFromPtr(source.contents.ptr),
+            .contents_len = source.contents.len,
+            .path_ptr = @intFromPtr(source.path.text.ptr),
+            .path_len = source.path.text.len,
+        };
+    }
+
+    pub fn errorPosition(tracker: *LineColumnTracker, source: *const Source, offset_loc: Loc) Source.ErrorPosition {
+        bun.assert(!offset_loc.isEmpty());
+        const contents = source.contents;
+        const offset = @min(@as(usize, @intCast(offset_loc.start)), @max(contents.len, 1) - 1);
+
+        if (!tracker.matches(source)) tracker.resetFor(source);
+
+        if (offset < contents.len and contents[offset] & 0xC0 == 0x80) {
+            return source.initErrorPosition(offset_loc);
+        }
+
+        var cursor: ?*ScanCursor = null;
+        for (&tracker.cursors) |*candidate| {
+            if (candidate.offset <= offset) {
+                cursor = candidate;
+                break;
+            }
+        }
+        const selected = cursor orelse return source.initErrorPosition(offset_loc);
+
+        if (selected.state.advance(contents, selected.offset, offset)) selected.line_end = null;
+        selected.offset = offset;
+        const line_end = selected.line_end orelse scanLineEnd(contents, offset);
+        selected.line_end = line_end;
+        return selected.state.toErrorPosition(line_end);
+    }
+
+    fn scanLineEnd(contents: []const u8, offset: usize) usize {
+        var iterator = strings.CodepointIterator{ .bytes = contents[offset..], .i = 0 };
+        var cursor = strings.CodepointIterator.Cursor{};
+        while (iterator.next(&cursor)) {
+            switch (cursor.c) {
+                '\r', '\n', 0x2028, 0x2029 => return offset + cursor.i,
+                else => {},
+            }
+        }
+        return contents.len;
+    }
+};
+
 pub const Log = struct {
     warnings: u32 = 0,
     errors: u32 = 0,
@@ -584,6 +713,17 @@ pub const Log = struct {
     level: Level = if (Environment.isDebug) Level.info else Level.warn,
 
     clone_line_text: bool = false,
+    line_column_tracker: LineColumnTracker = .{},
+
+    pub fn trackedRangeData(log: *Log, source: ?*const Source, r: Range, text: string) Data {
+        return .{
+            .text = text,
+            .location = if (source != null)
+                Location.initOrNullTracked(source, r, &log.line_column_tracker)
+            else
+                Location.initOrNull(source, r),
+        };
+    }
 
     pub fn memoryCost(this: *const Log) usize {
         var cost: usize = 0;
@@ -601,6 +741,7 @@ pub const Log = struct {
         this.msgs.clearRetainingCapacity();
         this.warnings = 0;
         this.errors = 0;
+        this.line_column_tracker = .{};
     }
 
     pub var default_log_level = Level.warn;
@@ -805,7 +946,7 @@ pub const Log = struct {
             .warn => log.warnings += 1,
             else => {},
         }
-        var data = rangeData(source, r, text);
+        var data = log.trackedRangeData(source, r, text);
         if (clone) data = try data.cloneLineText(log.clone_line_text, log.msgs.allocator);
         try log.addMsg(.{
             .kind = kind,
@@ -902,7 +1043,7 @@ pub const Log = struct {
         log.errors += 1;
         try log.addMsg(.{
             .kind = .err,
-            .data = rangeData(source, r, text),
+            .data = log.trackedRangeData(source, r, text),
         });
     }
 
@@ -1185,7 +1326,7 @@ pub const Log = struct {
 
     pub fn addSymbolAlreadyDeclaredError(self: *Log, allocator: std.mem.Allocator, source: *const Source, name: string, new_loc: Loc, old_loc: Loc) OOM!void {
         var notes = try allocator.alloc(Data, 1);
-        notes[0] = rangeData(
+        notes[0] = self.trackedRangeData(
             source,
             source.rangeOfIdentifier(old_loc),
             try std.fmt.allocPrint(allocator, "\"{s}\" was originally declared here", .{name}),
