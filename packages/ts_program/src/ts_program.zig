@@ -9262,6 +9262,62 @@ test "Program: qualified interface assertions project declared array members" {
     try expectCompilationHasDiagnosticCode(compilation, 2322);
 }
 
+test "Program: qualified indexed assertions project destructured array members" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver };
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+
+    const util =
+        \\export type MimeTypes = "text/plain" | (string & {});
+        \\export type InexactPartial<T> = { [K in keyof T]?: T[K] | undefined };
+        \\export type PartialBag<T extends object> = InexactPartial<T> & {
+        \\  [key: string]: unknown;
+        \\};
+    ;
+    const shapes =
+        \\import type * as util from "./util.js";
+        \\export interface Base<Out = unknown, In = unknown> { opaque: Set<string>; output: Out; input: In; }
+        \\export interface Internals extends Base<File, File> {
+        \\  bag: util.PartialBag<{ values: util.MimeTypes[] }>;
+        \\}
+        \\export interface File { readonly type: string; }
+        \\export interface FileSchema { internals: Internals; }
+    ;
+    const consumer =
+        \\import type * as Shapes from "./shapes.js";
+        \\type Processor<T> = (schema: T) => void;
+        \\export const processor: Processor<Shapes.FileSchema> = (schema) => {
+        \\  const { values: mime } = schema.internals.bag as Shapes.Internals["bag"];
+        \\  if (mime) {
+        \\    mime.map((value) => {
+        \\      const exact: string = value;
+        \\      const wrong: boolean = value;
+        \\      return value;
+        \\    });
+        \\  }
+        \\};
+    ;
+    try vfs.addFile("/proj/util.ts", util);
+    try vfs.addFile("/proj/shapes.ts", shapes);
+    try vfs.addFile("/proj/consumer.ts", consumer);
+    _ = try p.add("/proj/util.ts", util);
+    _ = try p.add("/proj/shapes.ts", shapes);
+    const consumer_id = try p.add("/proj/consumer.ts", consumer);
+
+    try p.compileAll(.{
+        .no_emit = true,
+        .strict_flags = .{ .no_implicit_any = true, .strict_null_checks = true },
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    });
+    const compilation = p.fileById(consumer_id).compilation.?;
+    try expectCompilationLacksDiagnosticCode(compilation, 7006);
+    try expectCompilationHasDiagnosticCode(compilation, 2322);
+}
+
 test "Program: function schemas preserve readonly Record inputs and array results" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();

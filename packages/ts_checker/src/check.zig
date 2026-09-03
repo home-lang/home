@@ -32261,7 +32261,11 @@ pub const Checker = struct {
         if (is_sort and param_index > 1) return null;
         if (!is_sort and param_index > 2) return null;
         if (!isArrayCallbackMethodName(method)) return null;
-        const recv_t = try self.checkExpression(m.object);
+        var recv_t = try self.checkExpression(m.object);
+        if (!self.arrayCallbackReceiverIsArrayLike(recv_t) and self.hir.kindOf(m.object) == .identifier) {
+            const receiver_name = hir_mod.identifierOf(self.hir, m.object).name;
+            recv_t = (try self.programQualifiedIndexedAssertionDestructuredArrayType(m.object, receiver_name)) orelse recv_t;
+        }
         if (!self.arrayCallbackReceiverIsArrayLike(recv_t)) return null;
         const elem_t = try self.contextualArrayElementType(recv_t);
         if (elem_t == types.Primitive.none) return null;
@@ -106892,6 +106896,11 @@ pub const Checker = struct {
         object: NodeId,
         member_name: hir_mod.StringId,
     ) CheckError!?TypeId {
+        if (self.hir.kindOf(object) != .identifier) return null;
+        const object_name = hir_mod.identifierOf(self.hir, object).name;
+        if (try self.programQualifiedIndexedAssertionDestructuredArrayType(object, object_name)) |array_t| {
+            return try self.mappedArrayPrototypeMember(array_t, member_name);
+        }
         const name_node = self.visibleUnannotatedVariableIdentifierNode(object) orelse return null;
         const variable_node = self.hir.parentOf(name_node);
         if (variable_node == hir_mod.none_node_id) return null;
@@ -106908,6 +106917,99 @@ pub const Checker = struct {
         defer self.gpa.free(args);
         @memset(args, types.Primitive.unknown);
         return self.lowerProgramProjectedArray(member.type, declaration, args);
+    }
+
+    /// Recover one direct object-destructuring binding from an explicit
+    /// qualified indexed-access assertion, such as
+    /// `const { values } = source as Ns.Container["bag"]`. The indexed
+    /// member expression is lowered in isolation; the unsupported enclosing
+    /// declaration is never published as a whole type.
+    fn programQualifiedIndexedAssertionDestructuredArrayType(
+        self: *Checker,
+        anchor: NodeId,
+        name: hir_mod.StringId,
+    ) CheckError!?TypeId {
+        const anchor_start = self.hir.spanOf(anchor).start;
+        var node: NodeId = 0;
+        while (node < self.hir.nodeCount()) : (node += 1) {
+            const kind = self.hir.kindOf(node);
+            if (kind != .var_decl and kind != .let_decl and kind != .const_decl) continue;
+            if (self.hir.spanOf(node).start >= anchor_start) continue;
+            if (self.enclosingFunctionLike(node) != self.enclosingFunctionLike(anchor)) continue;
+            const declaration_block = self.nearestBlockForNode(node);
+            if (declaration_block != hir_mod.none_node_id and !self.nodeIsAncestorOf(declaration_block, anchor)) continue;
+            const variable = hir_mod.varDeclOf(self.hir, node);
+            if (variable.name == hir_mod.none_node_id or self.hir.kindOf(variable.name) != .object_pattern) continue;
+            if (!self.bindingPatternDeclaresName(variable.name, name)) continue;
+            if (variable.init == hir_mod.none_node_id) continue;
+            const initializer_kind = self.hir.kindOf(variable.init);
+            if (initializer_kind != .as_expr and initializer_kind != .type_assertion) continue;
+            const type_node = hir_mod.asExpressionOf(self.hir, variable.init).type_node;
+            if (type_node == hir_mod.none_node_id or self.hir.kindOf(type_node) != .indexed_access_type) continue;
+            const indexed = hir_mod.indexedAccessTypeOf(self.hir, type_node);
+            const index_literal = if (self.hir.kindOf(indexed.index) == .type_literal)
+                hir_mod.literalTypeOf(self.hir, indexed.index).literal
+            else
+                indexed.index;
+            if (self.hir.kindOf(index_literal) != .literal_string) continue;
+            const declaration = (try self.programDeclarationForQualifiedTypeRef(indexed.object)) orelse continue;
+            const container_member = self.programDeclarationOwnMember(
+                declaration,
+                hir_mod.literalStringOf(self.hir, index_literal).value,
+            ) orelse continue;
+            const args = try self.gpa.alloc(TypeId, declaration.parameters.len);
+            defer self.gpa.free(args);
+            @memset(args, types.Primitive.unknown);
+            var projection_declaration = declaration.*;
+            projection_declaration.contextual_only = true;
+            const container_t = self.resolveGenericType(
+                self.lowerProgramExpression(container_member.type, &projection_declaration, args) catch continue,
+            ) catch continue;
+            for (hir_mod.patternElements(self.hir, variable.name)) |element| {
+                if (self.hir.kindOf(element) != .parameter) continue;
+                const parameter = hir_mod.parameterOf(self.hir, element);
+                const target = self.bindingTargetIdentifierNode(parameter.name, name) orelse continue;
+                const key = (try self.objectBindingElementKeyName(element, target)) orelse name;
+                const projected = (try self.programProjectionPropertyType(container_t, key)) orelse continue;
+                const non_nullish = self.subtractNullUndefined(projected) catch projected;
+                if (non_nullish >= self.interner.pool.typeCount()) continue;
+                if (!self.interner.pool.flagsOf(non_nullish).is_object_type) continue;
+                if (self.interner.objectNumberIndex(non_nullish) == types.Primitive.none) continue;
+                return non_nullish;
+            }
+        }
+        return null;
+    }
+
+    /// Prefer an explicit mapped or named property over a broad index
+    /// signature while resolving a private projection container. This mirrors
+    /// normal property precedence without exposing the temporary approximate
+    /// container to general relation checks.
+    fn programProjectionPropertyType(
+        self: *Checker,
+        container_t: TypeId,
+        key: hir_mod.StringId,
+    ) CheckError!?TypeId {
+        const resolved = self.resolveGenericType(container_t) catch container_t;
+        if (resolved >= self.interner.pool.typeCount()) return null;
+        const flags = self.interner.pool.flagsOf(resolved);
+        if (flags.is_intersection) {
+            for (self.interner.intersectionMembers(resolved)) |raw_member| {
+                const member = self.resolveGenericType(raw_member) catch raw_member;
+                if (member >= self.interner.pool.typeCount()) continue;
+                const member_flags = self.interner.pool.flagsOf(member);
+                if (!member_flags.is_mapped or !try self.mappedTypeAcceptsPropertyName(member, key)) continue;
+                return self.resolveGenericType(try self.mappedPropertyTargetType(member, key)) catch types.Primitive.any;
+            }
+            for (self.interner.intersectionMembers(resolved)) |raw_member| {
+                const member = self.resolveGenericType(raw_member) catch raw_member;
+                const projected = self.objectPropertyTypeByName(member, key) orelse continue;
+                if (!self.typeIsAnyLike(projected)) return projected;
+            }
+        } else if (flags.is_mapped and try self.mappedTypeAcceptsPropertyName(resolved, key)) {
+            return self.resolveGenericType(try self.mappedPropertyTargetType(resolved, key)) catch types.Primitive.any;
+        }
+        return self.uncheckedDestructuringPropertyType(resolved, key);
     }
 
     fn programDeclarationForQualifiedTypeRef(
