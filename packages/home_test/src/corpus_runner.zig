@@ -100649,6 +100649,26 @@ fn isNativeWorkerCorpusFile(relative: []const u8) bool {
     return false;
 }
 
+fn isNativeWorkerScriptCorpusFile(relative: []const u8) bool {
+    inline for (.{
+        "test-async-hooks-worker-asyncfn-terminate-1.js",
+        "test-async-hooks-worker-asyncfn-terminate-2.js",
+        "test-async-hooks-worker-asyncfn-terminate-3.js",
+        "test-async-hooks-worker-asyncfn-terminate-4.js",
+        "test-worker-dns-terminate-during-query.js",
+        "test-worker-http2-generic-streams-terminate.js",
+        "test-worker-message-port-terminate-transfer-list.js",
+        "test-worker-message-port-transfer-terminate.js",
+        "test-worker-terminate-http2-respond-with-file.js",
+        "test-worker-terminate-nested.js",
+        "test-worker-terminate-null-handler.js",
+        "test-worker-terminate-timers.js",
+    }) |name| {
+        if (std.mem.eql(u8, relative, "js/node/test/parallel/" ++ name)) return true;
+    }
+    return false;
+}
+
 fn nativeCorpusDisabledReason(relative: []const u8) ?[]const u8 {
     if (std.mem.eql(u8, relative, "js/node/test/parallel/test-util-emit-experimental-warning.js")) {
         return "upstream test body is commented out: internal/util emitExperimentalWarning is not exercised";
@@ -100675,7 +100695,8 @@ fn isNativeHomeCorpusFile(relative: []const u8) bool {
         isNativeHttpPromiseCorpusFile(relative) or
         isNativeHttpProxyCorpusFile(relative) or
         isNativeS3CorpusFile(relative) or
-        isNativeWorkerCorpusFile(relative);
+        isNativeWorkerCorpusFile(relative) or
+        isNativeWorkerScriptCorpusFile(relative);
 }
 
 fn parseNativeCorpusFlags(allocator: std.mem.Allocator, source: []const u8) !OwnedFlags {
@@ -101043,7 +101064,7 @@ test "native fs disposable corpus predicate covers the exact vendored matrix" {
     }
 
     try std.testing.expectEqual(@as(usize, 2), count);
-    try std.testing.expectEqual(@as(usize, 220), native_count);
+    try std.testing.expectEqual(@as(usize, 232), native_count);
     try std.testing.expect(isNativeFsDisposableCorpusFile("js/node/test/parallel/test-fs-promises-mkdtempDisposable.js"));
     try std.testing.expect(isNativeFsDisposableCorpusFile("js/node/test/parallel/test-fs-mkdtempDisposableSync.js"));
     try std.testing.expect(!isNativeFsDisposableCorpusFile("js/node/test/parallel/test-fs-mkdtempDisposable.js"));
@@ -101379,6 +101400,36 @@ test "native worker corpus routing covers validated worker files" {
         "js/node/worker_threads/worker_threads.test.ts",
         "js/node/worker_threads/15787.fixture.ts",
     }) |non_match| try std.testing.expect(!isNativeWorkerCorpusFile(non_match));
+}
+
+test "native worker script corpus routing covers exact termination matrix" {
+    const parallel_root = "packages/runtime/test/bun-corpus/js/node/test/parallel";
+    inline for (.{
+        "test-async-hooks-worker-asyncfn-terminate-1.js",
+        "test-async-hooks-worker-asyncfn-terminate-2.js",
+        "test-async-hooks-worker-asyncfn-terminate-3.js",
+        "test-async-hooks-worker-asyncfn-terminate-4.js",
+        "test-worker-dns-terminate-during-query.js",
+        "test-worker-http2-generic-streams-terminate.js",
+        "test-worker-message-port-terminate-transfer-list.js",
+        "test-worker-message-port-transfer-terminate.js",
+        "test-worker-terminate-http2-respond-with-file.js",
+        "test-worker-terminate-nested.js",
+        "test-worker-terminate-null-handler.js",
+        "test-worker-terminate-timers.js",
+    }) |file| {
+        const relative = "js/node/test/parallel/" ++ file;
+        try Io.Dir.cwd().access(std.testing.io, parallel_root ++ "/" ++ file, .{});
+        try std.testing.expect(isNativeWorkerScriptCorpusFile(relative));
+        try std.testing.expect(isNativeHomeCorpusFile(relative));
+    }
+
+    inline for (.{
+        "js/node/test/parallel/test-worker.js",
+        "js/node/test/parallel/test-worker-terminate-null-handler.mjs",
+        "js/node/test/parallel/nested/test-worker-terminate-timers.js",
+        "js/node/worker_threads/test-worker-terminate-timers.js",
+    }) |non_match| try std.testing.expect(!isNativeWorkerScriptCorpusFile(non_match));
 }
 
 test "bootstrap addon guard precedes cached or fabricated module exports" {

@@ -29,8 +29,9 @@ async function naturalExit(code) {
   )
   assert.equal(observed, code)
 
-  assert.equal(await withDeadline(`first terminate after exit ${code}`, worker.terminate()), code)
-  assert.equal(await withDeadline(`second terminate after exit ${code}`, worker.terminate()), code)
+  const expected = code === 0 ? undefined : code
+  assert.equal(await withDeadline(`first terminate after exit ${code}`, worker.terminate()), expected)
+  assert.equal(await withDeadline(`second terminate after exit ${code}`, worker.terminate()), expected)
 }
 
 await naturalExit(0)
@@ -42,6 +43,9 @@ const second = running.terminate()
 assert.equal(first, second, 'concurrent terminate calls must share their completion promise')
 const terminatedCode = await withDeadline('concurrent terminate', first)
 assert.ok(terminatedCode === 0 || terminatedCode === 1)
-assert.equal(await withDeadline('terminate after forced exit', running.terminate()), terminatedCode)
+assert.equal(
+  await withDeadline('terminate after forced exit', running.terminate()),
+  terminatedCode === 0 ? undefined : terminatedCode,
+)
 
 console.log('native worker terminate-after-exit: PASS')

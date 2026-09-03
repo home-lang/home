@@ -6,27 +6,16 @@
 // The Zig wrapper allocates the C++ scope inline as a fixed-size byte buffer
 // and pins it via a debug-only location check.
 //
-// `JSGlobalObject`, `JSValue`, and `bun.JSTerminated` are not yet ported
-// (Phase 12.2). Local stubs preserve the C ABI:
-//   - `JSGlobalObject` stays opaque (only used as `*JSGlobalObject` extern arg).
-//   - `JSValue` stays `enum(i64)`; the upstream `isTerminationException()`
-//     helper isn't wrapped yet, so the few methods that ask the question are
-//     rerouted to the new `error{JSError} || error{JSTerminated}` set.
-//
-// Omitted (re-attach in Phase 12.2):
-//   - `assertNoExceptionExceptTermination` — calls
-//     `JSValue.fromCell(e).isTerminationException()`, which depends on the
-//     full JSValue surface that hasn't been ported. The hook is kept as a
-//     `noinline` stub returning `void` so callers compile; once the JSValue
-//     bridge lands the upstream body re-attaches verbatim.
+// The JSValue bridge now includes termination-exception identity, so the
+// upstream distinction between ordinary JavaScript errors and worker/process
+// termination is preserved at this translation boundary.
 
 const std = @import("std");
 const home_rt = @import("home");
 const Environment = home_rt.Environment;
 const Exception = home_rt.jsc.Exception;
+const JSValue = home_rt.jsc.JSValue;
 
-// JSC bridge stubs — re-attach in Phase 12.2.
-//
 // Import the canonical `JSGlobalObject` opaque from `./JSGlobalObject.zig`
 // so the extern `pinScope` / `unpinScope` argument types unify with the
 // rest of the JSC subtree. Without this, every caller that spells
@@ -133,14 +122,13 @@ pub const TopExceptionScope = struct {
 
     /// Asserts there has not been any exception thrown.
     ///
-    /// Upstream additionally consults
-    /// `JSValue.fromCell(e).isTerminationException()` to allow termination
-    /// exceptions to bubble silently — that branch re-attaches in Phase 12.2
-    /// once `JSValue.fromCell` is ported. For now we treat any pending
-    /// exception as a hard assertion failure.
     pub fn assertNoException(self: *TopExceptionScope) void {
         if (comptime ci_assert) {
             if (self.exception()) |e| {
+                // A termination exception can be raised at any safepoint,
+                // regardless of the host function's return value. Let the
+                // caller's safepoint observe it instead of asserting here.
+                if (JSValue.fromCell(e).isTerminationException()) return;
                 self.assertionFailure(e);
             }
         }
@@ -160,19 +148,16 @@ pub const TopExceptionScope = struct {
         }
     }
 
-    /// Upstream returns `bun.JSTerminated!void`. The
-    /// `error.JSTerminated` channel is part of the still-unported global
-    /// error set, so we re-route to a local `error{JSTerminated}` set and
-    /// drop the `isTerminationException` distinction.
-    pub fn assertNoExceptionExceptTermination(self: *TopExceptionScope) error{JSTerminated}!void {
-        if (self.exception() != null) {
-            // Without the `isTerminationException` predicate, we cannot
-            // distinguish between a termination exception (which upstream
-            // returns as `error.JSTerminated`) and an assertion failure.
-            // Conservatively treat every pending exception as termination —
-            // safer than panicking, and the production seam re-attaches in
-            // Phase 12.2.
-            return error.JSTerminated;
+    /// If no exception, returns. A termination exception becomes the Zig
+    /// termination error; any other exception remains an assertion failure in
+    /// assertion-enabled builds.
+    pub fn assertNoExceptionExceptTermination(self: *TopExceptionScope) home_rt.JSTerminated!void {
+        if (self.exception()) |e| {
+            if (JSValue.fromCell(e).isTerminationException()) {
+                return error.JSTerminated;
+            } else if (comptime ci_assert) {
+                self.assertionFailure(e);
+            }
         }
     }
 
@@ -230,7 +215,7 @@ pub const ExceptionValidationScope = struct {
     /// If no exception, returns.
     /// If termination exception, returns `error.JSTerminated` (so you can `try`)
     /// If non-termination exception, assertion failure.
-    pub fn assertNoExceptionExceptTermination(self: *ExceptionValidationScope) error{JSTerminated}!void {
+    pub fn assertNoExceptionExceptTermination(self: *ExceptionValidationScope) home_rt.JSTerminated!void {
         if (ci_assert) {
             return self.scope.assertNoExceptionExceptTermination();
         }

@@ -5840,8 +5840,16 @@ fn resolveCorpusArguments(allocator: std.mem.Allocator, argv: *std.ArrayList([]c
 }
 
 fn isHomeExecutableArg(value: []const u8) bool {
-    const basename = std.fs.path.basename(value);
-    return std.mem.eql(u8, basename, "home") or std.mem.eql(u8, basename, "home-debug");
+    const basename_with_extension = std.fs.path.basename(value);
+    const basename = if (std.mem.endsWith(u8, basename_with_extension, ".exe"))
+        basename_with_extension[0 .. basename_with_extension.len - ".exe".len]
+    else
+        basename_with_extension;
+    return std.mem.eql(u8, basename, "home") or
+        std.mem.eql(u8, basename, "home-debug") or
+        std.mem.eql(u8, basename, "home-release-safe") or
+        std.mem.eql(u8, basename, "home-release-small") or
+        std.mem.eql(u8, basename, "home-release-fast");
 }
 
 fn isHomeEvalInvocation(argv: []const []const u8) bool {
@@ -6561,6 +6569,10 @@ test "adapter recognizes release and debug Home executables" {
     try std.testing.expect(isHomeExecutableArg("home"));
     try std.testing.expect(isHomeExecutableArg("/tmp/zig-out/bin/home"));
     try std.testing.expect(isHomeExecutableArg("/tmp/zig-out/bin/home-debug"));
+    try std.testing.expect(isHomeExecutableArg("/tmp/zig-cache/home-release-safe"));
+    try std.testing.expect(isHomeExecutableArg("/tmp/zig-cache/home-release-small"));
+    try std.testing.expect(isHomeExecutableArg("/tmp/zig-cache/home-release-fast"));
+    try std.testing.expect(isHomeExecutableArg("/tmp/zig-out/bin/home-release-safe.exe"));
     try std.testing.expect(!isHomeExecutableArg("/tmp/zig-out/bin/home_test"));
 }
 

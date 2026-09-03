@@ -407,9 +407,10 @@ class Worker extends EventEmitter {
   #worker: WebWorker;
   #performance;
 
-  // this is used by terminate();
-  // either is the exit code if exited, a promise resolving to the exit code, or undefined if we haven't sent .terminate() yet
+  // This is used by terminate(); it is either the exit code after close, a
+  // promise resolving to the exit code, or undefined before either happens.
   #onExitPromise: Promise<number> | number | undefined = undefined;
+  #hasExited = false;
   #urlToRevoke = "";
 
   constructor(filename: string, options: NodeWorkerOptions = {}) {
@@ -515,8 +516,15 @@ class Worker extends EventEmitter {
     }
 
     const onExitPromise = this.#onExitPromise;
-    if (onExitPromise !== undefined) {
+    if (onExitPromise) {
       return $isPromise(onExitPromise) ? onExitPromise : Promise.$resolve(onExitPromise);
+    }
+
+    // Bun's empty/zero native worker handler has no termination result. Keep
+    // that distinction while settling immediately instead of installing a
+    // close listener after the close event has already fired.
+    if (this.#hasExited) {
+      return Promise.$resolve(undefined);
     }
 
     const { resolve, promise } = Promise.withResolvers();
@@ -542,6 +550,7 @@ class Worker extends EventEmitter {
   }
 
   #onClose(e) {
+    this.#hasExited = true;
     this.#onExitPromise = e.code;
     this.emit("exit", e.code);
   }

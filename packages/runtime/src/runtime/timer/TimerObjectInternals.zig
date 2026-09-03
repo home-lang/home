@@ -77,6 +77,7 @@ extern "c" fn Bun__JSTimeout__call(globalObject: *jsc.JSGlobalObject, timer: JSV
 pub fn runImmediateTask(this: *TimerObjectInternals, vm: *VirtualMachine) bool {
     if (this.flags.has_cleared_timer or
         this.generation != vm.test_isolation_generation or
+        vm.scriptExecutionStatus() != .running or
         // unref'd setImmediate callbacks should only run if there are things keeping the event
         // loop alive other than setImmediates
         (!this.flags.is_keeping_event_loop_alive and !vm.isEventLoopAliveExcludingImmediates()))
