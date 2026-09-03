@@ -28193,10 +28193,14 @@ const harness_prelude =
     \\  allocUnsafe(size) {
     \\    return new Uint8Array(Math.max(0, Number(size) || 0));
     \\  },
-    \\  deepEquals(left, right) {
-    \\    return __home_deep_equal(left, right, false, new Map());
+    \\  deepEquals(left, right, strict) {
+    \\    if (arguments.length < 2) throw new TypeError("Expected 2 values to compare");
+    \\    return __home_deep_equal(left, right, strict === true, new Map());
     \\  },
     \\  deepMatch(subset, value) {
+    \\    if (arguments.length < 2 || subset === null || value === null || (typeof subset !== "object" && typeof subset !== "function") || (typeof value !== "object" && typeof value !== "function")) {
+    \\      throw new TypeError("Expected 2 objects to match");
+    \\    }
     \\    return __home_match_object_subset(value, subset);
     \\  },
     \\  hash: __home_bun_hash,
@@ -29120,9 +29124,37 @@ const harness_prelude =
     \\    return __home_bun_build(options);
     \\  },
     \\  write(path, data, options) {
-    \\    const isStdioTarget = !!(path && path.__home_stdio);
-    \\    const targetSlice = path && path.__home_file_slice_ref ? path.__home_file_slice_ref : null;
-    \\    const targetPath = isStdioTarget ? path.__home_stdio : (targetSlice ? targetSlice.path : (path && path.__home_file_ref ? path.path : String(path)));
+    \\    const isNumericTarget = typeof path === "number";
+    \\    if (isNumericTarget && (!Number.isInteger(path) || path < 0 || path > 2147483647)) {
+    \\      const error = new RangeError('The value of "fd" is out of range. It must be >= 0 and <= 2147483647. Received ' + String(path));
+    \\      error.code = "ERR_OUT_OF_RANGE";
+    \\      throw error;
+    \\    }
+    \\    const isFileReference = !!(path && path.__home_file_ref);
+    \\    const isFileSlice = !!(path && path.__home_file_slice_ref);
+    \\    const isBlobTarget = typeof Blob === "function" && path instanceof Blob;
+    \\    const isUrlTarget = typeof URL === "function" && path instanceof URL;
+    \\    const pathBuffer = __home_array_buffer_view(path);
+    \\    const isStdioTarget = !!(path && path.__home_stdio) || path === 1 || path === 2;
+    \\    if (!isNumericTarget && typeof path !== "string" && !isUrlTarget && !pathBuffer && !isFileReference && !isFileSlice && !isBlobTarget && !isStdioTarget) {
+    \\      const error = new TypeError('The "destination" argument must be of type path, file descriptor, or Blob. Received ' + String(path));
+    \\      error.code = "ERR_INVALID_ARG_TYPE";
+    \\      throw error;
+    \\    }
+    \\    if (isBlobTarget && !isFileReference && !isFileSlice) {
+    \\      const error = path.size === 0 ? new Error("Cannot write to a detached Blob") : new TypeError("Cannot write to a Blob backed by bytes, which are always read-only");
+    \\      if (path.size !== 0) error.code = "ERR_INVALID_ARG_TYPE";
+    \\      throw error;
+    \\    }
+    \\    const targetSlice = isFileSlice ? path.__home_file_slice_ref : null;
+    \\    const targetPath = path && path.__home_stdio ? path.__home_stdio : (targetSlice ? targetSlice.path : (isFileReference ? path.path : (isNumericTarget ? __home_fd_path(path) : __home_fs_path(path))));
+    \\    if (isNumericTarget) {
+    \\      try {
+    \\        return __home_native_promise_resolve(__home_fs_write_bytes(path, __home_build_file_value_bytes(data), null));
+    \\      } catch (error) {
+    \\        return __home_native_promise_reject(error);
+    \\      }
+    \\    }
     \\    if (__home_fs_is_null_device(targetPath)) return Promise.resolve(__home_build_file_value_byte_length(data));
     \\    if (path && path.__home_file_ref && path.fd !== null && path.fd !== undefined && options && typeof options === "object" && options.createPath === true) {
     \\      return Promise.reject(new Error("Cannot create a directory for a file descriptor"));
@@ -33643,8 +33675,8 @@ const harness_prelude =
     \\  if (Object.is(received, expected)) return true;
     \\  if (received && typeof received.asymmetricMatch === "function") return !!received.asymmetricMatch(expected);
     \\  if (expected && (expected.__home_expect_any === true || expected.__home_expect_string_matching === true || expected.__home_expect_string_containing === true || typeof expected.asymmetricMatch === "function")) return __home_deep_equal(received, expected, false, new Map());
-    \\  if (expected === null || typeof expected !== "object") return __home_deep_equal(received, expected, false, new Map());
-    \\  if (received === null || typeof received !== "object") return false;
+    \\  if (expected === null || (typeof expected !== "object" && typeof expected !== "function")) return __home_deep_equal(received, expected, false, new Map());
+    \\  if (received === null || (typeof received !== "object" && typeof received !== "function")) return false;
     \\  if (Array.isArray(expected)) {
     \\    if (!Array.isArray(received) || received.length !== expected.length) return false;
     \\    for (let i = 0; i < expected.length; i++) {
@@ -33834,6 +33866,26 @@ const harness_prelude =
     \\  }
     \\  return keys;
     \\}
+    \\const __home_date_get_time = Date.prototype.getTime;
+    \\const __home_regexp_source_get = Object.getOwnPropertyDescriptor(RegExp.prototype, "source").get;
+    \\const __home_regexp_flags_get = Object.getOwnPropertyDescriptor(RegExp.prototype, "flags").get;
+    \\const __home_map_size_get = Object.getOwnPropertyDescriptor(Map.prototype, "size").get;
+    \\const __home_map_entries = Map.prototype.entries;
+    \\const __home_set_size_get = Object.getOwnPropertyDescriptor(Set.prototype, "size").get;
+    \\const __home_set_values = Set.prototype.values;
+    \\function __home_has_builtin_brand(value, operation) {
+    \\  if (value === null || (typeof value !== "object" && typeof value !== "function")) return false;
+    \\  try {
+    \\    operation(value);
+    \\    return true;
+    \\  } catch (error) {
+    \\    return false;
+    \\  }
+    \\}
+    \\function __home_is_date(value) { return __home_has_builtin_brand(value, candidate => __home_date_get_time.call(candidate)); }
+    \\function __home_is_regexp(value) { return __home_has_builtin_brand(value, candidate => __home_regexp_source_get.call(candidate)); }
+    \\function __home_is_map(value) { return __home_has_builtin_brand(value, candidate => __home_map_size_get.call(candidate)); }
+    \\function __home_is_set(value) { return __home_has_builtin_brand(value, candidate => __home_set_size_get.call(candidate)); }
     \\function __home_deep_equal(a, b, strict, seen) {
     \\  if (Object.is(a, b)) return true;
     \\  if (b && b.__home_expect_any === true) return __home_expect_any_matches(a, b.ctor);
@@ -33896,8 +33948,12 @@ const harness_prelude =
     \\  if (aBufferView || bBufferView) {
     \\    return __home_typed_array_equal(a, b, strict);
     \\  }
-    \\  if (a instanceof Date || b instanceof Date) return a instanceof Date && b instanceof Date && Object.is(a.getTime(), b.getTime());
-    \\  if (a instanceof RegExp || b instanceof RegExp) return a instanceof RegExp && b instanceof RegExp && a.source === b.source && a.flags === b.flags;
+    \\  const aDate = __home_is_date(a);
+    \\  const bDate = __home_is_date(b);
+    \\  if (aDate || bDate) return aDate && bDate && __home_date_get_time.call(a) === __home_date_get_time.call(b);
+    \\  const aRegExp = __home_is_regexp(a);
+    \\  const bRegExp = __home_is_regexp(b);
+    \\  if (aRegExp || bRegExp) return aRegExp && bRegExp && __home_regexp_source_get.call(a) === __home_regexp_source_get.call(b) && __home_regexp_flags_get.call(a) === __home_regexp_flags_get.call(b);
     \\  if (typeof Headers === "function" && (a instanceof Headers || b instanceof Headers)) {
     \\    return a instanceof Headers && b instanceof Headers && __home_deep_equal(Array.from(a.entries()), Array.from(b.entries()), strict, seen);
     \\  }
@@ -33910,13 +33966,15 @@ const harness_prelude =
     \\  if (a instanceof String || b instanceof String) {
     \\    return a instanceof String && b instanceof String && Object.is(a.valueOf(), b.valueOf()) && Object.getPrototypeOf(a) === Object.getPrototypeOf(b) && (!strict || __home_boxed_primitive_properties_equal(a, b, strict, seen));
     \\  }
-    \\  if (a instanceof Map || b instanceof Map) {
-    \\    if (!(a instanceof Map) || !(b instanceof Map) || a.size !== b.size) return false;
+    \\  const aMap = __home_is_map(a);
+    \\  const bMap = __home_is_map(b);
+    \\  if (aMap || bMap) {
+    \\    if (!aMap || !bMap || __home_map_size_get.call(a) !== __home_map_size_get.call(b)) return false;
     \\    if (seen.has(a)) return seen.get(a) === b;
     \\    for (const pair of seen) if (pair[1] === b) return false;
     \\    seen.set(a, b);
-    \\    const unmatched = Array.from(b);
-    \\    for (const aEntry of a) {
+    \\    const unmatched = Array.from(__home_map_entries.call(b));
+    \\    for (const aEntry of __home_map_entries.call(a)) {
     \\      let matchIndex = -1;
     \\      for (let i = 0; i < unmatched.length; i++) {
     \\        const candidateSeen = new Map(seen);
@@ -33935,13 +33993,15 @@ const harness_prelude =
     \\    seen.delete(a);
     \\    return true;
     \\  }
-    \\  if (a instanceof Set || b instanceof Set) {
-    \\    if (!(a instanceof Set) || !(b instanceof Set) || a.size !== b.size) return false;
+    \\  const aSet = __home_is_set(a);
+    \\  const bSet = __home_is_set(b);
+    \\  if (aSet || bSet) {
+    \\    if (!aSet || !bSet || __home_set_size_get.call(a) !== __home_set_size_get.call(b)) return false;
     \\    if (seen.has(a)) return seen.get(a) === b;
     \\    for (const pair of seen) if (pair[1] === b) return false;
     \\    seen.set(a, b);
-    \\    const unmatched = Array.from(b);
-    \\    for (const aValue of a) {
+    \\    const unmatched = Array.from(__home_set_values.call(b));
+    \\    for (const aValue of __home_set_values.call(a)) {
     \\      let matchIndex = -1;
     \\      for (let i = 0; i < unmatched.length; i++) {
     \\        const candidateSeen = new Map(seen);
@@ -35814,6 +35874,38 @@ const harness_prelude =
     \\      if (thrown === null) return;
     \\      if (typeof expected === "function") __home_assert(thrown instanceof expected, isNot, "Expected thrown value" + (isNot ? " not" : "") + " to be instance of " + expected.name);
     \\      __home_assert(Object.is(thrown && thrown.code, code), isNot, "Expected thrown code" + (isNot ? " not" : "") + " to be " + String(code));
+    \\    },
+    \\    toThrowWithCodeAsync(expected, code) {
+    \\      if (typeof value !== "function") return __home_native_promise_reject(new Error("Expected value to be a function"));
+    \\      const assertError = error => {
+    \\        let pass = true;
+    \\        if (typeof expected === "function") pass = error instanceof expected;
+    \\        pass = pass && Object.is(error && error.code, code);
+    \\        __home_assert(pass, isNot, "Expected thrown value" + (isNot ? " not" : "") + " to be instance of " + (expected && expected.name || "Error") + " with code " + String(code));
+    \\      };
+    \\      let result;
+    \\      try {
+    \\        result = value();
+    \\      } catch (error) {
+    \\        try {
+    \\          assertError(error);
+    \\          return __home_native_promise_resolve(undefined);
+    \\        } catch (assertionError) {
+    \\          return __home_native_promise_reject(assertionError);
+    \\        }
+    \\      }
+    \\      if (!__home_is_thenable(result)) {
+    \\        try {
+    \\          __home_assert(false, isNot, "Expected function" + (isNot ? " not" : "") + " to throw");
+    \\          return __home_native_promise_resolve(undefined);
+    \\        } catch (assertionError) {
+    \\          return __home_native_promise_reject(assertionError);
+    \\        }
+    \\      }
+    \\      return __home_then(result,
+    \\        function() { __home_assert(false, isNot, "Expected function" + (isNot ? " not" : "") + " to throw"); },
+    \\        function(error) { assertError(error); },
+    \\      );
     \\    },
     \\    toThrowErrorMatchingInlineSnapshot(expected) {
     \\      let snapshot = __home_dedent_snapshot(expected);
