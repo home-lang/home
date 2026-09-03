@@ -4150,7 +4150,25 @@ pub const HomeKernelCodegen = struct {
                     .BitOr => try self.emit().binOp(.bit_or),
                     .BitXor => try self.emit().binOp(.bit_xor),
                     .LeftShift => try self.emit().binOp(.shl),
-                    .RightShift => try self.emit().binOp(.shr_arith),
+                    .RightShift => {
+                        // `sarq` propagates the sign bit. On an unsigned value
+                        // with bit 63 set that fills the top with ones instead
+                        // of zeros, so `x >> n` returned a number larger than
+                        // `x` — wrong for every unsigned use, which is nearly
+                        // all of them in a kernel: field extraction, byte
+                        // splitting, and every checksum and hash.
+                        //
+                        // Arithmetic shift is correct only when the left
+                        // operand is known to be signed. When the type cannot
+                        // be recovered the logical shift is the safer default:
+                        // this tree's integers are overwhelmingly unsigned.
+                        const left_type = self.typeOfLValue(binary.left);
+                        const signed = if (left_type) |t| blk: {
+                            const bare = splitAlign(t).bare;
+                            break :blk bare.len > 1 and bare[0] == 'i';
+                        } else false;
+                        try self.emit().binOp(if (signed) .shr_arith else .shr_logical);
+                    },
                     .Power => {
                         // Integer exponentiation by repeated multiplication;
                         // %rax = base, %rcx = exponent.
