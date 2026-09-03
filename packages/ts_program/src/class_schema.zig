@@ -124,7 +124,7 @@ pub const Builder = struct {
         def.body = if (kind == .type_alias_decl)
             try self.lower(context, hir.typeAliasOf(&c.hir, key.node).aliased)
         else if (kind == .fn_decl)
-            try self.functionType(context, hir.fnParams(&c.hir, key.node), hir.fnDeclOf(&c.hir, key.node).return_type, false)
+            try self.functionType(context, &.{}, hir.fnParams(&c.hir, key.node), hir.fnDeclOf(&c.hir, key.node).return_type, false)
         else if (kind == .var_decl or kind == .let_decl or kind == .const_decl) blk: {
             const variable = hir.varDeclOf(&c.hir, key.node);
             const type_source = if (variable.type_annotation != 0)
@@ -185,9 +185,9 @@ pub const Builder = struct {
                         continue;
                     }
                     if (function.name == 0) return self.expression(.unsupported);
-                    if (function.type_params_len != 0 or function.flags.is_getter or function.flags.is_setter) return self.expression(.unsupported);
+                    if (function.flags.is_getter or function.flags.is_setter) return self.expression(.unsupported);
                     if (c.hir.kindOf(function.name) != .identifier) return self.expression(.unsupported);
-                    try members.append(self.arena, .{ .name = c.interner.get(hir.identifierOf(&c.hir, function.name).name), .type = try self.functionType(context, params, function.return_type, false), .method = true, .optional = function.flags.is_optional, .visibility = if (function.flags.is_private) .private else if (function.flags.is_protected) .protected else .public });
+                    try members.append(self.arena, .{ .name = c.interner.get(hir.identifierOf(&c.hir, function.name).name), .type = try self.functionType(context, hir.fnTypeParams(&c.hir, member), params, function.return_type, false), .method = true, .optional = function.flags.is_optional, .visibility = if (function.flags.is_private) .private else if (function.flags.is_protected) .protected else .public });
                 },
                 .index_signature => return self.expression(.unsupported),
                 else => {},
@@ -225,31 +225,53 @@ pub const Builder = struct {
         } });
     }
 
-    fn functionType(self: *Builder, context: Context, nodes: []const hir.NodeId, result: hir.NodeId, is_construct: bool) !*const schema.Expression {
+    fn functionType(
+        self: *Builder,
+        context: Context,
+        type_parameter_nodes: []const hir.NodeId,
+        nodes: []const hir.NodeId,
+        result: hir.NodeId,
+        is_construct: bool,
+    ) !*const schema.Expression {
         const c = self.sources[context.source].compilation;
+        const type_parameters = try self.arena.alloc(schema.Parameter, type_parameter_nodes.len);
+        const type_parameter_refs = try self.arena.alloc(*const schema.Parameter, type_parameter_nodes.len);
+        for (type_parameter_nodes, type_parameters, type_parameter_refs) |node, *parameter, *parameter_ref| {
+            parameter.* = .{ .name = c.interner.get(hir.typeParameterOf(&c.hir, node).name) };
+            parameter_ref.* = parameter;
+        }
+        const function_context = try self.extendContext(context, type_parameter_refs);
+        for (type_parameter_nodes, type_parameters) |node, *parameter| {
+            const value = hir.typeParameterOf(&c.hir, node);
+            parameter.variance = value.variance;
+            parameter.is_const = value.is_const;
+            if (value.constraint != 0) parameter.constraint = try self.lower(function_context, value.constraint);
+            if (value.default != 0) parameter.default = try self.lower(function_context, value.default);
+        }
         var params: std.ArrayListUnmanaged(schema.Element) = .empty;
         var this_type: ?*const schema.Expression = null;
         for (nodes, 0..) |node, i| {
             const value = hir.parameterOf(&c.hir, node);
             if (i == 0 and c.hir.kindOf(value.name) == .identifier and std.mem.eql(u8, c.interner.get(hir.identifierOf(&c.hir, value.name).name), "this")) {
-                this_type = try self.lower(context, value.type_annotation);
+                this_type = try self.lower(function_context, value.type_annotation);
                 continue;
             }
-            try params.append(self.arena, .{ .type = try self.lower(context, value.type_annotation), .optional = value.flags.is_optional or value.default_value != 0, .rest = value.flags.is_rest });
+            try params.append(self.arena, .{ .type = try self.lower(function_context, value.type_annotation), .optional = value.flags.is_optional or value.default_value != 0, .rest = value.flags.is_rest });
         }
         const predicate = if (result != 0 and c.hir.kindOf(result) == .type_predicate_type) blk: {
             const value = hir.typePredicateOf(&c.hir, result);
             break :blk schema.TypePredicate{
                 .param_index = value.param_index,
-                .target = try self.lower(context, value.target_type),
+                .target = try self.lower(function_context, value.target_type),
                 .is_asserts = value.is_asserts,
             };
         } else null;
         const result_type = if (predicate) |value|
             try self.expression(.{ .primitive = if (value.is_asserts) Primitive.void_t else Primitive.boolean_t })
         else
-            try self.lower(context, result);
+            try self.lower(function_context, result);
         return self.expression(.{ .function = .{
+            .type_parameters = type_parameters,
             .parameters = try params.toOwnedSlice(self.arena),
             .result = result_type,
             .this_type = this_type,
@@ -334,9 +356,9 @@ pub const Builder = struct {
             },
             .fn_type, .constructor_type => {
                 const value = hir.fnTypeOf(&c.hir, node);
-                if (value.type_params_len != 0) return self.expression(.unsupported);
                 return self.functionType(
                     context,
+                    c.hir.child_pool.items[value.type_params_start..][0..value.type_params_len],
                     c.hir.child_pool.items[value.params_start..][0..value.params_len],
                     value.return_type,
                     c.hir.kindOf(node) == .constructor_type,
@@ -704,7 +726,7 @@ test "class schema: local Array aliases are not replaced by builtin array shapes
     try T.expectEqualStrings("Array", result.declaration.body.?.object[0].type.reference.declaration.name);
 }
 
-test "class schema: unsupported type forms remain explicit instead of dropping structure" {
+test "class schema: unsupported type forms remain explicit beside generic functions" {
     const graph = try TestGraph.init(&.{.{ .path = "/owner.ts", .text =
         \\export declare class Box<T> { value: readonly [T]; generic: <T>(x: T) => T; }
         \\export declare class Derived<T> extends Box<T> { extra: T; }
@@ -713,7 +735,10 @@ test "class schema: unsupported type forms remain explicit instead of dropping s
     const box = try graph.class(0, "Box");
     defer box.deinit(T.allocator);
     try T.expect(box.declaration.body.?.object[0].type.* == .unsupported);
-    try T.expect(box.declaration.body.?.object[1].type.* == .unsupported);
+    const generic = box.declaration.body.?.object[1].type.function;
+    try T.expectEqual(@as(usize, 1), generic.type_parameters.len);
+    try T.expect(generic.parameters[0].type.parameter == &generic.type_parameters[0]);
+    try T.expect(generic.result.parameter == &generic.type_parameters[0]);
     const derived = try graph.class(0, "Derived");
     defer derived.deinit(T.allocator);
     try T.expect(derived.declaration.body.?.* == .unsupported);
@@ -817,4 +842,24 @@ test "class schema: mapped conditional aliases retain exported function signatur
     try T.expect(proto[0].mapped.constraint.keyof.parameter == &proto_reference.declaration.parameters[0]);
     try T.expect(proto[1].this_type.parameter == &proto_reference.declaration.parameters[0]);
     try T.expect(function.parameters[3].type.reference.declaration.body.?.object[0].type.* == .typeof_class);
+}
+
+test "class schema: generic interface methods retain local type parameters" {
+    const graph = try TestGraph.init(&.{.{ .path = "/owner.ts", .text =
+        \\export interface Memoizer {
+        \\  alloc<T extends object = { fallback: true }>(value: T, fallback?: T): T;
+        \\}
+    }});
+    defer graph.deinit();
+    const result = try graph.class(0, "Memoizer");
+    defer result.deinit(T.allocator);
+    try T.expect(try result.isSupported(T.allocator));
+    const function = result.declaration.body.?.object[0].type.function;
+    try T.expectEqual(@as(usize, 1), function.type_parameters.len);
+    try T.expectEqualStrings("T", function.type_parameters[0].name);
+    try T.expect(function.type_parameters[0].constraint.?.* == .primitive);
+    try T.expect(function.type_parameters[0].default.?.* == .object);
+    try T.expect(function.parameters[0].type.parameter == &function.type_parameters[0]);
+    try T.expect(function.parameters[1].type.parameter == &function.type_parameters[0]);
+    try T.expect(function.result.parameter == &function.type_parameters[0]);
 }

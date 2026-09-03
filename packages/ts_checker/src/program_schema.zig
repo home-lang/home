@@ -24,6 +24,7 @@ pub const Member = struct {
 pub const Element = struct { type: *const Expression, optional: bool = false, rest: bool = false };
 pub const TypePredicate = struct { param_index: u16, target: *const Expression, is_asserts: bool };
 pub const Function = struct {
+    type_parameters: []Parameter = &.{},
     parameters: []const Element,
     result: *const Expression,
     this_type: ?*const Expression = null,
@@ -132,6 +133,10 @@ pub const Schema = struct {
                 },
                 .union_type, .intersection => |members| try pending.appendSlice(gpa, members),
                 .function => |function| {
+                    for (function.type_parameters) |parameter| {
+                        if (parameter.constraint) |constraint| try pending.append(gpa, constraint);
+                        if (parameter.default) |default| try pending.append(gpa, default);
+                    }
                     if (function.this_type) |receiver| try pending.append(gpa, receiver);
                     for (function.parameters) |param| try pending.append(gpa, param.type);
                     try pending.append(gpa, function.result);

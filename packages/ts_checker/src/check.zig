@@ -107187,6 +107187,22 @@ pub const Checker = struct {
                 return if (expression.* == .union_type) self.interner.internUnion(result) else self.interner.internIntersection(result);
             },
             .function => |function| {
+                const type_parameters = try self.gpa.alloc(TypeId, function.type_parameters.len);
+                defer self.gpa.free(type_parameters);
+                for (function.type_parameters, type_parameters) |*parameter, *out| {
+                    out.* = try self.programExpressionParameter(parameter);
+                }
+                for (function.type_parameters, type_parameters) |*parameter, parameter_t| {
+                    const payload = &self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(parameter_t)];
+                    payload.constraint = if (parameter.constraint) |constraint|
+                        try self.lowerProgramExpression(constraint, declaration, args)
+                    else
+                        types.Primitive.none;
+                    payload.default = if (parameter.default) |default|
+                        try self.lowerProgramExpression(default, declaration, args)
+                    else
+                        types.Primitive.none;
+                }
                 const params = try self.gpa.alloc(TypeId, function.parameters.len);
                 defer self.gpa.free(params);
                 const optional = try self.gpa.alloc(bool, params.len);
@@ -107220,6 +107236,7 @@ pub const Checker = struct {
                     });
                 }
                 if (rest) try self.rest_signatures.put(self.gpa, sig, {});
+                if (type_parameters.len > 0) try self.recordGenericSignatureParams(sig, type_parameters);
                 return sig;
             },
             .reference => |ref| {

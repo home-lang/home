@@ -9180,6 +9180,46 @@ test "Program: namespace imports preserve generic callbacks without a default ex
     try expectCompilationLacksDiagnosticCode(compilation, 2322);
 }
 
+test "Program: named imports preserve generic interface method context" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver };
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+
+    const owner =
+        \\export interface Memoizer {
+        \\  alloc<T extends object>(value: T, fallback: T): T;
+        \\}
+    ;
+    const consumer =
+        \\import type { Memoizer } from "./owner.js";
+        \\const memo: Memoizer = {
+        \\  alloc(value, fallback) { return value ?? fallback; },
+        \\};
+        \\const result = memo.alloc({ name: "ok" }, { name: "fallback" });
+        \\const exact: string = result.name;
+        \\const wrong: number = result.name;
+        \\void exact; void wrong;
+    ;
+    try vfs.addFile("/proj/owner.ts", owner);
+    try vfs.addFile("/proj/consumer.ts", consumer);
+    _ = try p.add("/proj/owner.ts", owner);
+    const consumer_id = try p.add("/proj/consumer.ts", consumer);
+
+    try p.compileAll(.{
+        .no_emit = true,
+        .strict_flags = .{ .no_implicit_any = true, .strict_null_checks = true },
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    });
+    const compilation = p.fileById(consumer_id).compilation.?;
+    try expectCompilationLacksDiagnosticCode(compilation, 7006);
+    try T.expectEqual(@as(usize, 1), compilation.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 2322), compilation.diagnostics.items[0].code);
+}
+
 test "Program: namespace imports preserve defaulted indexed generic callbacks" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();
