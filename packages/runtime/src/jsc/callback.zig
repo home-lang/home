@@ -13,9 +13,10 @@
 // with the JS-visible name (used both as the property key on the global
 // and as the function's `.name`). The register helpers (a) build a
 // `*JSString` from `name`, (b) call
-// `JSObjectMakeFunctionWithCallback(ctx, name_str, fn_ptr)`, (c) attach
+// `JSObjectMakeFunctionWithCallback(ctx, name_str, trampoline)`, (c) attach
 // the result to `global` via `JSObjectSetProperty`, and (d) release the
-// transient `*JSString`.
+// transient `*JSString`. The per-function trampoline restores the raw
+// realm's AtomStringTable before dispatching `fn_ptr`.
 //
 // `registerHostFunction` is the lower-level entry: it returns the freshly
 // constructed `*JSValue` without attaching it anywhere, so callers can do
@@ -74,15 +75,15 @@ pub const Callback = struct {
 /// Build a host function from `fn_ptr` and attach it to `global` under
 /// `name`. The function's `.name` slot is also set to `name`.
 ///
-/// Forwards (M3) to `JSObjectMakeFunctionWithCallback` + `JSObjectSetProperty`,
-/// with `JSStringCreateWithUTF8CString` / `JSStringRelease` wrapping the
-/// name string. The transient `*JSString` is released before return; the
-/// installed function object is owned by `global`.
+/// `fn_ptr` is comptime so each registered callback gets a C-compatible
+/// trampoline that restores the realm's JSC atom-table invariant before
+/// dispatch. The transient `*JSString` is released before return; the installed
+/// function object is owned by `global`.
 pub fn registerCallback(
     ctx: *JSContextRef,
     global: *JSGlobalObject,
     name: []const u8,
-    fn_ptr: HostCallbackFn,
+    comptime fn_ptr: HostCallbackFn,
 ) void {
     const function = registerHostFunctionObject(ctx, name, fn_ptr);
     const name_string = makeNameString(name);
@@ -102,23 +103,49 @@ pub fn registerCallback(
 /// without attaching it anywhere. Callers do their own placement
 /// (property on a non-global object, strong-ref for later use, etc.).
 ///
-/// Forwards (M3) to `JSObjectMakeFunctionWithCallback` alone, casting
-/// the returned `*JSObject` up to `*JSValue` before returning.
+/// Like `registerCallback`, this installs the atom-table-safe trampoline and
+/// casts the resulting `*JSObject` up to `*JSValue` before returning.
 pub fn registerHostFunction(
     ctx: *JSContextRef,
     name: []const u8,
-    fn_ptr: HostCallbackFn,
+    comptime fn_ptr: HostCallbackFn,
 ) *JSValue {
     return @ptrCast(registerHostFunctionObject(ctx, name, fn_ptr));
 }
 
-fn registerHostFunctionObject(ctx: *JSContextRef, name: []const u8, fn_ptr: HostCallbackFn) *JSObject {
+fn registerHostFunctionObject(ctx: *JSContextRef, name: []const u8, comptime fn_ptr: HostCallbackFn) *JSObject {
     const name_string = makeNameString(name);
     defer extern_fns.JSStringRelease(name_string);
 
-    return extern_fns.JSObjectMakeFunctionWithCallback(ctx, name_string, fn_ptr) orelse
+    return extern_fns.JSObjectMakeFunctionWithCallback(ctx, name_string, atomTableSafeCallback(fn_ptr)) orelse
         @panic("JSC: failed to create host function");
 }
+
+/// A raw C-API realm does not own Bun's `VirtualMachine`, but it does execute
+/// against the same statically linked JavaScriptCore. Reassert the callback's
+/// realm-specific AtomStringTable before any Zig callback can allocate a JSC
+/// cell. This is normally maintained by the outer JSLock; the explicit host
+/// boundary also covers callbacks dispatched while that lock drains
+/// microtasks, where another Bun binding may have restored the thread table.
+fn atomTableSafeCallback(comptime fn_ptr: HostCallbackFn) HostCallbackFn {
+    return struct {
+        fn call(
+            ctx: ?*JSContextRef,
+            function: ?*JSObject,
+            this_object: ?*JSObject,
+            argument_count: usize,
+            arguments: [*c]const ?*JSValue,
+            exception: ExceptionRef,
+        ) callconv(.c) ?*JSValue {
+            if (ctx) |context| {
+                Home__JSC__ensureCurrentAtomStringTable(@ptrCast(context));
+            }
+            return fn_ptr(ctx, function, this_object, argument_count, arguments, exception);
+        }
+    }.call;
+}
+
+extern "c" fn Home__JSC__ensureCurrentAtomStringTable(*JSGlobalObject) void;
 
 fn makeNameString(name: []const u8) *JSString {
     const allocator = std.heap.smp_allocator;
