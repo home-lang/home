@@ -94819,34 +94819,6 @@ fn rewriteStreamsLeakCorpus(allocator: std.mem.Allocator, source: []const u8) ![
     return std.mem.replaceOwned(u8, allocator, pipe_bytes, "const rounds = 5000;", "const rounds = 32;");
 }
 
-fn rewriteRequestSubclassCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    const without_type_import = try std.mem.replaceOwned(
-        u8,
-        allocator,
-        source,
-        "import { RequestInit } from \"undici-types\";\n",
-        "",
-    );
-    defer allocator.free(without_type_import);
-    return std.mem.replaceOwned(
-        u8,
-        allocator,
-        without_type_import,
-        "constructor(input: string, init?: RequestInit, actual_url?: string)",
-        "constructor(input, init, actual_url)",
-    );
-}
-
-fn rewriteFetchPreconnectCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    return std.mem.replaceOwned(
-        u8,
-        allocator,
-        source,
-        "import \"harness\";",
-        "globalThis.__home_import(\"harness\");",
-    );
-}
-
 fn rewriteFileAttributeImports(
     allocator: std.mem.Allocator,
     source: []const u8,
@@ -98136,6 +98108,10 @@ fn moduleDefaultExportIsApi(name: []const u8) bool {
     return false;
 }
 
+fn moduleIsTypesOnly(name: []const u8) bool {
+    return std.mem.eql(u8, name, "undici-types");
+}
+
 fn skipJsWhitespace(source: []const u8, start: usize) usize {
     var i = start;
     while (i < source.len and isJsWhitespace(source[i])) i += 1;
@@ -98324,6 +98300,7 @@ fn supportedNamedImportModule(source: []const u8, start: usize, relative_path: [
         "source-map",
         "assert",
         "node:assert",
+        "undici-types",
         "path",
         "node:path",
         "fs/promises",
@@ -98380,8 +98357,12 @@ fn tryAppendBunTestImportRewrite(
 ) !?usize {
     if (start > 0 and isJsIdentifierContinue(source[start - 1])) return null;
     var i = consumeJsKeyword(source, start, "import") orelse return null;
-    if (i >= source.len or !isJsWhitespace(source[i])) return null;
-    i = skipJsWhitespace(source, i);
+    if (i >= source.len) return null;
+    if (isJsWhitespace(source[i])) {
+        i = skipJsWhitespace(source, i);
+    } else if (source[i] != '"' and source[i] != '\'') {
+        return null;
+    }
 
     var type_only = false;
     if (consumeJsKeyword(source, i, "type")) |after_type| {
@@ -98413,7 +98394,7 @@ fn tryAppendBunTestImportRewrite(
         i = skipJsHorizontalWhitespace(source, i);
         if (i < source.len and source[i] == ';') i += 1;
 
-        if (!type_only) {
+        if (!type_only and !moduleIsTypesOnly(module.name)) {
             try out.appendSlice(allocator, "const ");
             try out.appendSlice(allocator, alias);
             try out.appendSlice(allocator, " = globalThis.__home_import(\"");
@@ -98433,7 +98414,7 @@ fn tryAppendBunTestImportRewrite(
         i += 1;
         i = skipJsHorizontalWhitespace(source, i);
         if (i < source.len and source[i] == ';') i += 1;
-        if (!type_only) {
+        if (!type_only and !moduleIsTypesOnly(module.name)) {
             try out.appendSlice(allocator, "globalThis.__home_import(\"");
             try out.appendSlice(allocator, module.name);
             try out.appendSlice(allocator, "\");\n");
@@ -98476,7 +98457,7 @@ fn tryAppendBunTestImportRewrite(
             j += 1;
             j = skipJsHorizontalWhitespace(source, j);
             if (j < source.len and source[j] == ';') j += 1;
-            if (!type_only) {
+            if (!type_only and !moduleIsTypesOnly(module.name)) {
                 try out.appendSlice(allocator, "const ");
                 try out.appendSlice(allocator, ident);
                 try out.appendSlice(allocator, " = globalThis.__home_import(\"");
@@ -98502,7 +98483,7 @@ fn tryAppendBunTestImportRewrite(
         j += 1;
         j = skipJsHorizontalWhitespace(source, j);
         if (j < source.len and source[j] == ';') j += 1;
-        if (!type_only) {
+        if (!type_only and !moduleIsTypesOnly(module.name)) {
             try out.appendSlice(allocator, "const ");
             try out.appendSlice(allocator, ident);
             try out.appendSlice(allocator, " = globalThis.__home_import(\"");
@@ -98539,7 +98520,7 @@ fn tryAppendBunTestImportRewrite(
     i = skipJsHorizontalWhitespace(source, i);
     if (i < source.len and source[i] == ';') i += 1;
 
-    if (!type_only) {
+    if (!type_only and !moduleIsTypesOnly(module.name)) {
         _ = try appendBunTestImportBinding(out, allocator, specifiers, module.name);
     }
     return i;
@@ -99270,9 +99251,9 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/web/streams/streams-leak.test.ts"))
         try rewriteStreamsLeakCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/web/request/request-subclass.test.ts"))
-        try rewriteRequestSubclassCorpus(allocator, module_source)
+        null
     else if (std.mem.eql(u8, relative_path, "js/web/fetch/fetch-preconnect.test.ts"))
-        try rewriteFetchPreconnectCorpus(allocator, module_source)
+        null
     else if (std.mem.eql(u8, relative_path, "js/web/fetch/fetch.brotli.test.ts"))
         try rewriteFileAttributeImports(allocator, module_source, relative_path)
     else if (std.mem.eql(u8, relative_path, "js/web/encoding/text-encoder.test.js"))
@@ -117921,6 +117902,19 @@ test "Bun harness import rewrite lowers isWindows import" {
 
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { isWindows } = globalThis.__home_import(\"harness\");") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"harness\"") == null);
+}
+
+test "Bun harness import rewrite lowers compact side effect import" {
+    const source =
+        \\import"harness";
+        \\import { test } from "bun:test";
+        \\test("side effect", () => {});
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "js/web/fetch/fetch-preconnect.test.ts");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "globalThis.__home_import(\"harness\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "import\"harness\"") == null);
 }
 
 test "Bun harness import rewrite lowers gc import" {
