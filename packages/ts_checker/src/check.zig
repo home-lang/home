@@ -597,6 +597,7 @@ pub const ProgramExportedType = struct {
     export_name: []const u8,
     declaration: *const ProgramClassSchema.Declaration,
     contextual_only: bool = false,
+    projection_only: bool = false,
 };
 
 pub const ProgramAmbientModuleInterfaceExport = struct {
@@ -106846,7 +106847,7 @@ pub const Checker = struct {
         if (self.findVisibleNamedTypeDecl(anchor, name)) |local| {
             const position = self.hir.spanOf(local).start;
             for (self.program_exported_types) |entry| {
-                if (entry.contextual_only) continue;
+                if (entry.contextual_only or entry.projection_only) continue;
                 if (entry.declaration.position == position and std.mem.eql(u8, entry.declaration.path, self.importer_path))
                     return self.programDeclarationTypeReference(entry.declaration, anchor);
             }
@@ -106874,12 +106875,115 @@ pub const Checker = struct {
 
     fn programExportedTypeForImportPath(self: *Checker, import_node: NodeId, specifier: hir_mod.StringId, name: hir_mod.StringId, anchor: NodeId) CheckError!?TypeId {
         for (self.program_exported_types) |entry| {
-            if (entry.contextual_only) continue;
+            if (entry.contextual_only or entry.projection_only) continue;
             if (!std.mem.eql(u8, entry.export_name, self.string_interner.get(name))) continue;
             if (!try self.programImportTargetsPath(import_node, self.string_interner.get(specifier), entry.target_path)) continue;
             return self.programDeclarationTypeReference(entry.declaration, anchor);
         }
         return null;
+    }
+
+    /// Preserve a directly declared array member from an otherwise
+    /// untransferable qualified interface assertion. The receiver remains
+    /// `any`; only the explicitly accessed member is projected, so unrelated
+    /// structural relations never observe an approximate whole interface.
+    fn programQualifiedAssertionArrayMemberType(
+        self: *Checker,
+        object: NodeId,
+        member_name: hir_mod.StringId,
+    ) CheckError!?TypeId {
+        const name_node = self.visibleUnannotatedVariableIdentifierNode(object) orelse return null;
+        const variable_node = self.hir.parentOf(name_node);
+        if (variable_node == hir_mod.none_node_id) return null;
+        const kind = self.hir.kindOf(variable_node);
+        if (kind != .var_decl and kind != .let_decl and kind != .const_decl) return null;
+        const initializer = hir_mod.varDeclOf(self.hir, variable_node).init;
+        if (initializer == hir_mod.none_node_id) return null;
+        const initializer_kind = self.hir.kindOf(initializer);
+        if (initializer_kind != .as_expr and initializer_kind != .type_assertion) return null;
+        const type_node = hir_mod.asExpressionOf(self.hir, initializer).type_node;
+        const declaration = (try self.programDeclarationForQualifiedTypeRef(type_node)) orelse return null;
+        const member = self.programDeclarationOwnMember(declaration, member_name) orelse return null;
+        const args = try self.gpa.alloc(TypeId, declaration.parameters.len);
+        defer self.gpa.free(args);
+        @memset(args, types.Primitive.unknown);
+        return self.lowerProgramProjectedArray(member.type, declaration, args);
+    }
+
+    fn programDeclarationForQualifiedTypeRef(
+        self: *Checker,
+        type_node: NodeId,
+    ) CheckError!?*const ProgramClassSchema.Declaration {
+        if (type_node == hir_mod.none_node_id or self.hir.kindOf(type_node) != .type_ref) return null;
+        const reference = hir_mod.typeRefOf(self.hir, type_node);
+        if (reference.qualifier_len != 1 or reference.args_len != 0) return null;
+        const qualifiers = hir_mod.typeRefQualifier(self.hir, type_node);
+        if (self.hir.kindOf(qualifiers[0]) != .identifier) return null;
+        const root_name = hir_mod.identifierOf(self.hir, qualifiers[0]).name;
+        const import_info = (try self.localImportModuleInfo(root_name, type_node)) orelse return null;
+        if (import_info.exported_root != null) return null;
+        var matched: ?*const ProgramClassSchema.Declaration = null;
+        for (self.program_exported_types) |entry| {
+            if (!std.mem.eql(u8, entry.export_name, self.string_interner.get(reference.name))) continue;
+            if (!try self.programImportTargetsPath(import_info.import_node, self.string_interner.get(import_info.specifier), entry.target_path)) continue;
+            if (matched != null) return null;
+            matched = entry.declaration;
+        }
+        return matched;
+    }
+
+    fn programDeclarationOwnMember(
+        self: *Checker,
+        declaration: *const ProgramClassSchema.Declaration,
+        member_name: hir_mod.StringId,
+    ) ?ProgramClassSchema.Member {
+        const body = declaration.body orelse return null;
+        const members = switch (body.*) {
+            .object => |value| value,
+            .indexed_object => |value| value.members,
+            .intersection => |parts| blk: {
+                var index = parts.len;
+                while (index > 0) {
+                    index -= 1;
+                    switch (parts[index].*) {
+                        .object => |value| break :blk value,
+                        .indexed_object => |value| break :blk value.members,
+                        else => {},
+                    }
+                }
+                return null;
+            },
+            else => return null,
+        };
+        const name = self.string_interner.get(member_name);
+        for (members) |member| if (std.mem.eql(u8, member.name, name)) return member;
+        return null;
+    }
+
+    fn lowerProgramProjectedArray(
+        self: *Checker,
+        expression: *const ProgramClassSchema.Expression,
+        declaration: *const ProgramClassSchema.Declaration,
+        args: []const TypeId,
+    ) CheckError!?TypeId {
+        return switch (expression.*) {
+            .array => |element| self.interner.internArrayType(
+                self.string_interner,
+                self.lowerProgramExpression(element, declaration, args) catch types.Primitive.any,
+            ) catch error.OutOfMemory,
+            .readonly_array => |element| try self.internReadonlyArrayType(
+                self.lowerProgramExpression(element, declaration, args) catch types.Primitive.any,
+            ),
+            .parameter => |parameter| blk: {
+                for (declaration.parameters) |*candidate| {
+                    if (candidate != parameter) continue;
+                    const projected = candidate.default orelse candidate.constraint orelse return null;
+                    break :blk try self.lowerProgramProjectedArray(projected, declaration, args);
+                }
+                break :blk null;
+            },
+            else => null,
+        };
     }
 
     /// A callable type alias with an untransferable inner leaf must not become
@@ -106910,7 +107014,7 @@ pub const Checker = struct {
             }
             const name = imported_name orelse continue;
             for (self.program_exported_types) |entry| {
-                if (!entry.contextual_only or !std.mem.eql(u8, entry.export_name, self.string_interner.get(name))) continue;
+                if (entry.projection_only or !entry.contextual_only or !std.mem.eql(u8, entry.export_name, self.string_interner.get(name))) continue;
                 if (!try self.programImportTargetsPath(statement, self.string_interner.get(import.module), entry.target_path)) continue;
                 return self.programDeclarationTypeReference(entry.declaration, type_node);
             }
@@ -111337,6 +111441,9 @@ pub const Checker = struct {
                     }
                 }
                 obj_t = self.resolvedRecursiveInterfaceType(obj_t);
+                if (try self.programQualifiedAssertionArrayMemberType(m.object, m.name)) |member_t| {
+                    break :blk try self.optionalChainResult(member_t, m.optional or self.expressionIsOptionalChain(m.object));
+                }
                 if (!object_is_catch_binding and
                     obj_t == types.Primitive.any and
                     !self.nodeIsThisReference(m.object) and

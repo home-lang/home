@@ -99,15 +99,16 @@ pub fn collect(gpa: std.mem.Allocator, resolver: *resolver_mod.Resolver, sources
             const declaration = try builder.declaration(.{ .source = owner, .node = node });
             const entry = try supported.getOrPut(arena, declaration);
             if (!entry.found_existing) entry.value_ptr.* = try driver.ProgramClassSchema.Schema.declarationSupported(declaration, gpa);
-            if (!entry.value_ptr.*) continue;
             if (space == 0) {
                 try types.append(arena, .{
                     .target_path = sources[binding.source].path,
                     .export_name = binding.name,
                     .declaration = declaration,
                     .contextual_only = declaration.contextual_only,
+                    .projection_only = !entry.value_ptr.*,
                 });
             } else {
+                if (!entry.value_ptr.*) continue;
                 try values.append(arena, .{ .target_path = sources[binding.source].path, .export_name = binding.name, .kind = if (declaration.is_function) .function else .variable, .declaration = declaration });
             }
         }

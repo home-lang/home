@@ -4853,7 +4853,7 @@ test "Program: literal exports survive unrelated parse diagnostics" {
     try T.expectEqualStrings("~tag", graph.values[0].declaration.?.body.?.string);
 }
 
-test "Program: unsupported overload and merged interface graphs are not published as partial signatures" {
+test "Program: unsupported graphs are retained only for explicit projections" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();
     var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
@@ -4866,7 +4866,9 @@ test "Program: unsupported overload and merged interface graphs are not publishe
     var graph = try program.collectProgramDeclarations();
     defer graph.deinit();
     try T.expectEqual(@as(usize, 0), graph.values.len);
-    try T.expectEqual(@as(usize, 0), graph.types.len);
+    try T.expectEqual(@as(usize, 1), graph.types.len);
+    try T.expectEqualStrings("Box", graph.types[0].export_name);
+    try T.expect(graph.types[0].projection_only);
 }
 
 test "Program: bound class facts separate static members and ignore source trivia" {
@@ -9207,6 +9209,47 @@ test "Program: supported qualified interface members retain array callback conte
     try vfs.addFile("/proj/consumer.ts", consumer);
     _ = try p.add("/proj/shapes.ts", shapes);
     _ = try p.add("/proj/owner.ts", owner);
+    const consumer_id = try p.add("/proj/consumer.ts", consumer);
+
+    try p.compileAll(.{
+        .no_emit = true,
+        .strict_flags = .{ .no_implicit_any = true, .strict_null_checks = true },
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    });
+    const compilation = p.fileById(consumer_id).compilation.?;
+    try expectCompilationLacksDiagnosticCode(compilation, 7006);
+    try expectCompilationHasDiagnosticCode(compilation, 2322);
+}
+
+test "Program: qualified interface assertions project declared array members" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver };
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+
+    const shapes =
+        \\export interface Base { opaque: Set<string>; }
+        \\export interface Item { value: unknown; }
+        \\export interface Def<Options extends readonly Item[] = readonly Item[]> extends Base {
+        \\  options: Options;
+        \\}
+    ;
+    const consumer =
+        \\import type * as Shapes from "./shapes.js";
+        \\declare const source: unknown;
+        \\const def = source as Shapes.Def;
+        \\def.options.map((value, index) => {
+        \\  const exact: Shapes.Item = value;
+        \\  const wrong: boolean = value;
+        \\  return index;
+        \\});
+    ;
+    try vfs.addFile("/proj/shapes.ts", shapes);
+    try vfs.addFile("/proj/consumer.ts", consumer);
+    _ = try p.add("/proj/shapes.ts", shapes);
     const consumer_id = try p.add("/proj/consumer.ts", consumer);
 
     try p.compileAll(.{
