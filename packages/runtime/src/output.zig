@@ -6,13 +6,15 @@
 // file needs more.
 
 const std = @import("std");
+const builtin = @import("builtin");
+const core_output = @import("bun_core/output.zig");
 
 pub const LogFunction = fn (comptime fmt: []const u8, args: anytype) void;
-pub const Scoped = @import("bun_core/output.zig").Scoped;
-pub const synchronized_start = @import("bun_core/output.zig").synchronized_start;
-pub const synchronized_end = @import("bun_core/output.zig").synchronized_end;
-pub const disableScopedDebugWriter = @import("bun_core/output.zig").disableScopedDebugWriter;
-pub const enableScopedDebugWriter = @import("bun_core/output.zig").enableScopedDebugWriter;
+pub const Scoped = core_output.Scoped;
+pub const synchronized_start = core_output.synchronized_start;
+pub const synchronized_end = core_output.synchronized_end;
+pub const disableScopedDebugWriter = core_output.disableScopedDebugWriter;
+pub const enableScopedDebugWriter = core_output.enableScopedDebugWriter;
 
 pub var enable_ansi_colors_stderr = false;
 pub var enable_ansi_colors_stdout = false;
@@ -31,6 +33,38 @@ threadlocal var stdout_writer_buffer: [4096]u8 = undefined;
 threadlocal var stdout_file_writer: ?std.Io.File.Writer = null;
 threadlocal var raw_stdout_file_writer: ?std.Io.File.Writer = null;
 pub var enable_buffering = true;
+
+fn colorEnabled(force: ?bool, no_color: bool, is_tty: bool) bool {
+    if (force) |enabled| return enabled;
+    if (no_color) return false;
+    return is_tty;
+}
+
+/// Initialize Home's output facade with Bun's FORCE_COLOR/NO_COLOR and TTY
+/// precedence. Copied runtime code reads these facade variables directly, so
+/// they must be configured before the CLI creates a VM.
+pub fn configure() void {
+    const forced: ?bool = if (core_output.Source.getForceColorDepth()) |depth| depth != .none else null;
+    const no_color = core_output.Source.isNoColor();
+    const stdin_tty = if (builtin.os.tag == .windows)
+        core_output.bun_stdio_tty[0] != 0
+    else
+        @import("core/tty.zig").isatty(0);
+    const stdout_tty = if (builtin.os.tag == .windows)
+        core_output.bun_stdio_tty[1] != 0
+    else
+        @import("core/tty.zig").isatty(1);
+    const stderr_tty = if (builtin.os.tag == .windows)
+        core_output.bun_stdio_tty[2] != 0
+    else
+        @import("core/tty.zig").isatty(2);
+
+    enable_ansi_colors_stdout = colorEnabled(forced, no_color, stdout_tty);
+    enable_ansi_colors_stderr = colorEnabled(forced, no_color, stderr_tty);
+    stdout_descriptor_type = if (stdout_tty) .terminal else .pipe;
+    stderr_descriptor_type = if (stderr_tty) .terminal else .pipe;
+    stdin_is_tty = stdin_tty;
+}
 
 fn debugIo() std.Io {
     return std.Io.Threaded.global_single_threaded.io();
@@ -226,8 +260,7 @@ pub fn resetTerminal() void {}
 /// test runs so prettyfmt paths exercise the colored branch. Safe to call
 /// repeatedly (idempotent).
 pub fn initTest() void {
-    enable_ansi_colors_stderr = false;
-    enable_ansi_colors_stdout = false;
+    configure();
 }
 
 pub fn errorWriter() *std.Io.Writer {
@@ -408,8 +441,10 @@ pub fn rawErrorWriter() *std.Io.Writer {
     return errorWriter();
 }
 
+var stdin_is_tty = false;
+
 pub fn isStdinTTY() bool {
-    return false;
+    return stdin_is_tty;
 }
 
 pub var is_verbose: bool = false;
@@ -483,4 +518,12 @@ pub fn isAIAgent() bool {
 
 test "prettyln formats without crashing" {
     prettyln("hello {s}", .{"world"});
+}
+
+test "color precedence honors FORCE_COLOR before NO_COLOR and TTY state" {
+    try std.testing.expect(colorEnabled(true, true, false));
+    try std.testing.expect(!colorEnabled(false, false, true));
+    try std.testing.expect(!colorEnabled(null, true, true));
+    try std.testing.expect(colorEnabled(null, false, true));
+    try std.testing.expect(!colorEnabled(null, false, false));
 }

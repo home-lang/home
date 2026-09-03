@@ -347,8 +347,8 @@ pub fn double(number: f64) FormatDouble {
 pub const FormatLatin1 = struct {
     text: []const u8,
 
-    pub fn format(self: FormatLatin1, writer: *std.Io.Writer) std.Io.Writer.Error!void {
-        try writer.writeAll(self.text);
+    pub fn format(self: FormatLatin1, writer: *std.Io.Writer) !void {
+        try formatLatin1(self.text, writer);
     }
 };
 
@@ -356,8 +356,8 @@ pub fn latin1(text: []const u8) FormatLatin1 {
     return .{ .text = text };
 }
 
-pub fn formatLatin1(text: []const u8, writer: *std.Io.Writer) std.Io.Writer.Error!void {
-    try writer.writeAll(text);
+pub fn formatLatin1(text: []const u8, writer: *std.Io.Writer) !void {
+    try @import("bun_core/fmt.zig").formatLatin1(text, writer);
 }
 
 pub inline fn utf16(slice: []const u16) FormatUTF16 {
@@ -663,6 +663,13 @@ test "quote escapes embedded quotes and backslashes" {
     var writer = std.Io.Writer.fixed(&buf);
     try writer.print("{f}", .{quote("a\"b\\c")});
     try std.testing.expectEqualStrings("\"a\\\"b\\\\c\"", writer.buffered());
+}
+
+test "latin1 converts non-ASCII code units to UTF-8" {
+    var buf: [16]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    try writer.print("{f}", .{latin1(&.{ 0xA7, 0xE9 })});
+    try std.testing.expectEqualStrings("§é", writer.buffered());
 }
 
 test "fmtIdentifier folds invalid separators into gaps" {
