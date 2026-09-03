@@ -220,15 +220,43 @@ pub export fn TextEncoder__encodeInto16(
 ) u64 {
     const output = buf_ptr[0..buf_len];
     const input = input_ptr[0..input_len];
-    var result: strings.EncodeIntoResult = strings.copyUTF16IntoUTF8(output, input);
-    if (output.len >= 3 and (result.read == 0 or result.written == 0)) {
-        const replacement_char = [_]u8{ 239, 191, 189 };
-        @memcpy(buf_ptr[0..replacement_char.len], &replacement_char);
-        result.read = 1;
-        result.written = 3;
-    }
+    const result: strings.EncodeIntoResult = strings.copyUTF16IntoUTF8(output, input);
     const sized: [2]u32 = .{ result.read, result.written };
     return @bitCast(sized);
+}
+
+test "TextEncoder.encodeInto preserves UTF-16 scalar boundaries" {
+    const grinning_face = [_]u16{ 0xd83d, 0xde00 };
+    var short_output = [_]u8{ 0xaa, 0xaa, 0xaa };
+    const short_result: [2]u32 = @bitCast(TextEncoder__encodeInto16(
+        &grinning_face,
+        grinning_face.len,
+        &short_output,
+        short_output.len,
+    ));
+    try std.testing.expectEqual([2]u32{ 0, 0 }, short_result);
+    try std.testing.expectEqualSlices(u8, &.{ 0xaa, 0xaa, 0xaa }, &short_output);
+
+    var exact_output = [_]u8{ 0xaa, 0xaa, 0xaa, 0xaa };
+    const exact_result: [2]u32 = @bitCast(TextEncoder__encodeInto16(
+        &grinning_face,
+        grinning_face.len,
+        &exact_output,
+        exact_output.len,
+    ));
+    try std.testing.expectEqual([2]u32{ 2, 4 }, exact_result);
+    try std.testing.expectEqualSlices(u8, &.{ 0xf0, 0x9f, 0x98, 0x80 }, &exact_output);
+
+    const lone_lead = [_]u16{0xd800};
+    var replacement_output = [_]u8{ 0xaa, 0xaa, 0xaa };
+    const replacement_result: [2]u32 = @bitCast(TextEncoder__encodeInto16(
+        &lone_lead,
+        lone_lead.len,
+        &replacement_output,
+        replacement_output.len,
+    ));
+    try std.testing.expectEqual([2]u32{ 1, 3 }, replacement_result);
+    try std.testing.expectEqualSlices(u8, &.{ 0xef, 0xbf, 0xbd }, &replacement_output);
 }
 
 pub export fn TextEncoder__encodeInto8(

@@ -89226,7 +89226,9 @@ const harness_prelude =
     \\      currentTarget: null, target: null, cancelBubble: false, defaultPrevented: false, eventPhase: 0,
     \\      returnValue: true, timeStamp: Date.now(), path: [], dispatching: false, immediate: false,
     \\    });
+    \\    Object.defineProperty(this, "isTrusted", { enumerable: true, get: __home_event_is_trusted });
     \\  };
+    \\  function __home_event_is_trusted() { return false; }
     \\  const eventAccessors = {
     \\    type: { enumerable: true, get() { return __home_event_state(this).type; } },
     \\    bubbles: { enumerable: true, get() { return __home_event_state(this).bubbles; } },
@@ -89238,7 +89240,7 @@ const harness_prelude =
     \\    defaultPrevented: { enumerable: true, get() { return __home_event_state(this).defaultPrevented; } },
     \\    eventPhase: { enumerable: true, get() { return __home_event_state(this).eventPhase; } },
     \\    timeStamp: { enumerable: true, get() { return __home_event_state(this).timeStamp; } },
-    \\    isTrusted: { enumerable: true, get() { return false; } },
+    \\    isTrusted: { enumerable: true, get: __home_event_is_trusted },
     \\    cancelBubble: { enumerable: true, get() { return __home_event_state(this).cancelBubble; }, set(value) { if (value) __home_event_state(this).cancelBubble = true; } },
     \\    returnValue: { enumerable: true, get() { return __home_event_state(this).returnValue; }, set(value) { if (!value) this.preventDefault(); } },
     \\  };
@@ -95111,24 +95113,6 @@ fn rewriteTomlResolveCorpus(allocator: std.mem.Allocator, source: []const u8) ![
     );
 }
 
-fn rewriteDenoV8ErrorCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    return try std.mem.replaceOwned(u8, allocator, source, "test.ignore(", "test(");
-}
-
-fn rewriteDenoEncodingCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    return try std.mem.replaceOwned(u8, allocator, source, "test.ignore(", "test(");
-}
-
-fn rewriteTextEncoderCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    return try std.mem.replaceOwned(
-        u8,
-        allocator,
-        source,
-        "const str2 = String.fromCharCode(0xd800, 0xdc00);",
-        "const str2 = String.fromCharCode(0xd800, 0xd801);",
-    );
-}
-
 fn rewriteAbortSignalLeakCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     var threaded = std.Io.Threaded.init(allocator, .{});
     defer threaded.deinit();
@@ -95166,79 +95150,6 @@ fn rewriteAbortSignalLeakCorpus(allocator: std.mem.Allocator, source: []const u8
     defer allocator.free(test_without_fixture_import);
 
     return std.mem.concat(allocator, u8, &.{ fixture_without_main, "\n", test_without_fixture_import });
-}
-
-fn rewriteDenoEventCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    return try std.mem.replaceOwned(u8, allocator, source, "test.ignore(", "test(");
-}
-
-fn rewriteDenoEventTargetCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    return try std.mem.replaceOwned(
-        u8,
-        allocator,
-        source,
-        "test.ignore(function eventTargetThisShouldDefaultToWindow() {",
-        "test(function eventTargetThisShouldDefaultToWindow() {",
-    );
-}
-
-fn rewriteDenoFetchBlobCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    return try std.mem.replaceOwned(
-        u8,
-        allocator,
-        source,
-        "test.ignore(function blobCustomInspectFunction() {",
-        "test(function blobCustomInspectFunction() {",
-    );
-}
-
-fn rewriteDenoFetchRequestCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    const without_relative = try std.mem.replaceOwned(
-        u8,
-        allocator,
-        source,
-        "test.ignore(function requestRelativeUrl() {",
-        "test(function requestRelativeUrl() {",
-    );
-    defer allocator.free(without_relative);
-
-    return try std.mem.replaceOwned(
-        u8,
-        allocator,
-        without_relative,
-        "test.ignore(function customInspectFunction() {",
-        "test(function customInspectFunction() {",
-    );
-}
-
-fn rewriteDenoFetchBodyCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    return try std.mem.replaceOwned(
-        u8,
-        allocator,
-        source,
-        "ignore: true",
-        "ignore: false",
-    );
-}
-
-fn rewriteDenoFetchHeadersCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    return try std.mem.replaceOwned(
-        u8,
-        allocator,
-        source,
-        "test.ignore(function customInspectReturnsCorrectHeadersFormat() {",
-        "test(function customInspectReturnsCorrectHeadersFormat() {",
-    );
-}
-
-fn rewriteDenoFetchResponseCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    return try std.mem.replaceOwned(
-        u8,
-        allocator,
-        source,
-        "test.ignore(function customInspectFunction() {",
-        "test(function customInspectFunction() {",
-    );
 }
 
 fn rewriteMemfdDisabledCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
@@ -99335,7 +99246,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/node/buffer-resolveObjectURL.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/deno/encoding/encoding.test.ts"))
-        try rewriteDenoEncodingCorpus(allocator, module_source)
+        null
     else if (std.mem.eql(u8, relative_path, "js/web/fetch/abort-signal-leak.test.ts"))
         try rewriteAbortSignalLeakCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/web/fetch/fetch-leak.test.ts"))
@@ -99353,25 +99264,25 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/web/fetch/fetch.brotli.test.ts"))
         try rewriteFileAttributeImports(allocator, module_source, relative_path)
     else if (std.mem.eql(u8, relative_path, "js/web/encoding/text-encoder.test.js"))
-        try rewriteTextEncoderCorpus(allocator, module_source)
+        null
     else if (std.mem.eql(u8, relative_path, "js/web/broadcastchannel/broadcast-channel-worker-gc.test.ts"))
         try rewriteBroadcastChannelWorkerGcCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/deno/event/event.test.ts"))
-        try rewriteDenoEventCorpus(allocator, module_source)
+        null
     else if (std.mem.eql(u8, relative_path, "js/deno/event/event-target.test.ts"))
-        try rewriteDenoEventTargetCorpus(allocator, module_source)
+        null
     else if (std.mem.eql(u8, relative_path, "js/deno/fetch/request.test.ts"))
-        try rewriteDenoFetchRequestCorpus(allocator, module_source)
+        null
     else if (std.mem.eql(u8, relative_path, "js/deno/fetch/body.test.ts"))
-        try rewriteDenoFetchBodyCorpus(allocator, module_source)
+        null
     else if (std.mem.eql(u8, relative_path, "js/deno/fetch/blob.test.ts"))
-        try rewriteDenoFetchBlobCorpus(allocator, module_source)
+        null
     else if (std.mem.eql(u8, relative_path, "js/deno/fetch/headers.test.ts"))
-        try rewriteDenoFetchHeadersCorpus(allocator, module_source)
+        null
     else if (std.mem.eql(u8, relative_path, "js/deno/fetch/response.test.ts"))
-        try rewriteDenoFetchResponseCorpus(allocator, module_source)
+        null
     else if (std.mem.eql(u8, relative_path, "js/deno/v8/error.test.ts"))
-        try rewriteDenoV8ErrorCorpus(allocator, module_source)
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/http/async-iterator-stream.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-serve-cookies.test.ts"))
@@ -99780,7 +99691,9 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         null;
     defer if (owned_module_source) |buffer| allocator.free(buffer);
     const rewritten_module_source = owned_module_source orelse module_source;
-    const production_lowered_source = if (sourceHasExplicitResourceManagementSyntax(rewritten_module_source))
+    const production_lowered_source = if (sourceHasExplicitResourceManagementSyntax(rewritten_module_source) or
+        (std.mem.startsWith(u8, relative_path, "js/deno/") and
+            sourceNeedsBootstrapTypeScriptRewrite(rewritten_module_source, relative_path)))
         try jsc_bootstrap.transpileCorpusSourceWithBunParser(allocator, rewritten_module_source, relative_path)
     else
         null;
@@ -115717,8 +115630,8 @@ test "bootstrap runner mirrors Deno V8 error stack corpus" {
     defer file_run.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
-    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.todo);
 }
 
 test "bootstrap runner mirrors bake serve plugins dev server corpus" {
@@ -128697,7 +128610,7 @@ test "bootstrap runner mirrors expansion queue tail mini-suite" {
         .{ .path = "js/web/encoding/text-decoder.test.js", .passed = 77 },
         .{ .path = "js/web/encoding/text-decoder-cjk.test.ts", .passed = 30 },
         .{ .path = "js/web/encoding/text-decoder-single-byte.test.ts", .passed = 13 },
-        .{ .path = "js/deno/encoding/encoding.test.ts", .passed = 23 },
+        .{ .path = "js/deno/encoding/encoding.test.ts", .passed = 21, .todo = 2 },
         .{ .path = "regression/issue/fix-bindings-stack-trace.test.ts", .passed = 2 },
         .{ .path = "js/node/module/module-sourcemap.test.js", .passed = 3 },
         .{ .path = "js/node/console/console-constructor-exception.test.ts", .passed = 1 },
@@ -128866,7 +128779,7 @@ test "bootstrap runner mirrors Deno encoding corpus" {
     defer prepared.deinit(std.testing.allocator);
 
     try std.testing.expect(prepared.unsupported_reason == null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test.ignore(") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test.ignore(") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "op_encode_binary_string") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "The encoding label provided") != null);
 
@@ -128877,8 +128790,8 @@ test "bootstrap runner mirrors Deno encoding corpus" {
     defer file_run.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 23), file_run.result.passed);
-    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+    try std.testing.expectEqual(@as(usize, 21), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.todo);
 }
 
 test "bootstrap runner mirrors node util internal inspect corpus" {
@@ -131758,14 +131671,14 @@ test "bootstrap runner mirrors Deno web regression tail mini-suite" {
         todo: usize = 0,
     }{
         .{ .path = "js/deno/event/custom-event.test.ts", .passed = 2 },
-        .{ .path = "js/deno/event/event.test.ts", .passed = 10 },
+        .{ .path = "js/deno/event/event.test.ts", .passed = 8, .todo = 2 },
         .{ .path = "js/deno/abort/abort-controller.test.ts", .passed = 6 },
-        .{ .path = "js/deno/event/event-target.test.ts", .passed = 15 },
-        .{ .path = "js/deno/fetch/request.test.ts", .passed = 7 },
-        .{ .path = "js/deno/fetch/body.test.ts", .passed = 5 },
-        .{ .path = "js/deno/fetch/blob.test.ts", .passed = 10 },
-        .{ .path = "js/deno/fetch/headers.test.ts", .passed = 27 },
-        .{ .path = "js/deno/fetch/response.test.ts", .passed = 9 },
+        .{ .path = "js/deno/event/event-target.test.ts", .passed = 14, .todo = 1 },
+        .{ .path = "js/deno/fetch/request.test.ts", .passed = 5, .todo = 2 },
+        .{ .path = "js/deno/fetch/body.test.ts", .passed = 3, .todo = 2 },
+        .{ .path = "js/deno/fetch/blob.test.ts", .passed = 9, .todo = 1 },
+        .{ .path = "js/deno/fetch/headers.test.ts", .passed = 26, .todo = 1 },
+        .{ .path = "js/deno/fetch/response.test.ts", .passed = 8, .todo = 1 },
         .{ .path = "js/deno/url/urlsearchparams.test.ts", .passed = 32 },
         .{ .path = "js/deno/crypto/random.test.ts", .passed = 10 },
         .{ .path = "regression/issue/08040.test.ts", .passed = 1 },
@@ -131813,7 +131726,7 @@ test "bootstrap runner mirrors Deno event inspect corpus" {
     defer prepared.deinit(std.testing.allocator);
 
     try std.testing.expect(prepared.unsupported_reason == null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test.ignore(") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test.ignore(") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_deno_inspect_event") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "ProgressEvent") != null);
 
@@ -131824,8 +131737,8 @@ test "bootstrap runner mirrors Deno event inspect corpus" {
     defer file_run.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 10), file_run.result.passed);
-    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+    try std.testing.expectEqual(@as(usize, 8), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.todo);
 }
 
 test "bootstrap runner mirrors Deno event target window default corpus" {
@@ -131841,7 +131754,7 @@ test "bootstrap runner mirrors Deno event target window default corpus" {
     defer prepared.deinit(std.testing.allocator);
 
     try std.testing.expect(prepared.unsupported_reason == null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test.ignore(function eventTargetThisShouldDefaultToWindow") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test.ignore(function eventTargetThisShouldDefaultToWindow") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_default_window_target") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
@@ -131851,8 +131764,8 @@ test "bootstrap runner mirrors Deno event target window default corpus" {
     defer file_run.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 15), file_run.result.passed);
-    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+    try std.testing.expectEqual(@as(usize, 14), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.todo);
 }
 
 test "bootstrap runner mirrors Deno blob inspect corpus" {
@@ -131868,7 +131781,7 @@ test "bootstrap runner mirrors Deno blob inspect corpus" {
     defer prepared.deinit(std.testing.allocator);
 
     try std.testing.expect(prepared.unsupported_reason == null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test.ignore(function blobCustomInspectFunction") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test.ignore(function blobCustomInspectFunction") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_deno_inspect_blob") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
@@ -131878,8 +131791,8 @@ test "bootstrap runner mirrors Deno blob inspect corpus" {
     defer file_run.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 10), file_run.result.passed);
-    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+    try std.testing.expectEqual(@as(usize, 9), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.todo);
 }
 
 test "bootstrap runner mirrors Deno body form data corpus" {
@@ -131895,7 +131808,7 @@ test "bootstrap runner mirrors Deno body form data corpus" {
     defer prepared.deinit(std.testing.allocator);
 
     try std.testing.expect(prepared.unsupported_reason == null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "ignore: true") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "ignore: true") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "multipart_form_data.txt") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "form_urlencoded.txt") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.PORT") != null);
@@ -131910,8 +131823,8 @@ test "bootstrap runner mirrors Deno body form data corpus" {
         std.debug.print("Deno body form-data corpus failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 5), file_run.result.passed);
-    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.todo);
 }
 
 test "bootstrap runner mirrors Deno fetch inspect corpus" {
@@ -131926,17 +131839,20 @@ test "bootstrap runner mirrors Deno fetch inspect corpus" {
         .{
             .path = "js/deno/fetch/request.test.ts",
             .ignored_needle = "test.ignore(function requestRelativeUrl",
-            .passed = 7,
+            .passed = 5,
+            .todo = 2,
         },
         .{
             .path = "js/deno/fetch/headers.test.ts",
             .ignored_needle = "test.ignore(function customInspectReturnsCorrectHeadersFormat",
-            .passed = 27,
+            .passed = 26,
+            .todo = 1,
         },
         .{
             .path = "js/deno/fetch/response.test.ts",
             .ignored_needle = "test.ignore(function customInspectFunction",
-            .passed = 9,
+            .passed = 8,
+            .todo = 1,
         },
     };
 
@@ -131954,9 +131870,9 @@ test "bootstrap runner mirrors Deno fetch inspect corpus" {
         defer prepared.deinit(std.testing.allocator);
 
         try std.testing.expect(prepared.unsupported_reason == null);
-        try std.testing.expect(std.mem.indexOf(u8, prepared.source, case.ignored_needle) == null);
+        try std.testing.expect(std.mem.indexOf(u8, prepared.source, case.ignored_needle) != null);
         if (std.mem.eql(u8, case.path, "js/deno/fetch/request.test.ts")) {
-            try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test.ignore(function customInspectFunction") == null);
+            try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test.ignore(function customInspectFunction") != null);
         }
         try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_deno_inspect_headers") != null);
         try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_deno_inspect_request") != null);
