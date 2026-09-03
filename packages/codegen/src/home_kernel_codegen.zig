@@ -3294,6 +3294,25 @@ pub const HomeKernelCodegen = struct {
         try self.emit().narrow(size, signed);
     }
 
+    /// Narrow the accumulator to `type_name` when that names a primitive
+    /// integer narrower than a word.
+    ///
+    /// Home's arithmetic runs in 64-bit registers, so a u32 addition that
+    /// carries past bit 31 keeps the carry. Storing it into a u32 without
+    /// truncating leaves a value the type cannot represent, and every later
+    /// read of that variable sees it. That is what made SHA-256 wrong here:
+    /// the algorithm is defined modulo 2^32 and nothing was reducing it.
+    ///
+    /// Restricted to primitives on purpose. Pointers and aggregates are held
+    /// as addresses, and narrowing one would corrupt it.
+    fn narrowToDeclared(self: *HomeKernelCodegen, type_name: []const u8) !void {
+        const bare = splitAlign(type_name).bare;
+        if (bare.len == 0) return;
+        if (!std.mem.eql(u8, bare, "bool") and bare[0] != 'u' and bare[0] != 'i') return;
+        if (bitWidthOfType(bare) == null) return;
+        try self.emitNarrowTo(bare);
+    }
+
     /// Emit a comparison of the accumulator against `tmp`, leaving 0 or 1 in
     /// the accumulator.
     fn emitCompare(self: *HomeKernelCodegen, cond: Cond) !void {
@@ -3707,6 +3726,7 @@ pub const HomeKernelCodegen = struct {
                 }
                 if (decl.value) |value| {
                     try self.generateExpr(value);
+                    if (decl.type_name) |tn| try self.narrowToDeclared(tn);
                     if (self.locals.get(decl.name)) |slot| {
                         try self.emit().storeLocal(.acc, @intCast(slot));
                     } else {
@@ -3829,6 +3849,14 @@ pub const HomeKernelCodegen = struct {
                         }
                     }
                     try self.generateExpr(value);
+                    // A function declared to return a narrow integer returns
+                    // one. Without this a u32-returning helper handed its
+                    // caller the full 64-bit accumulator — which is how
+                    // `rotr()` leaked bits above 31 into every round of
+                    // SHA-256.
+                    if (self.current_return_type.len > 0) {
+                        try self.narrowToDeclared(self.current_return_type);
+                    }
                 }
                 if (self.current_fn.len > 0) {
                     try self.emit().jump(try self.labelText2("epilogue", self.current_fn));
@@ -4339,6 +4367,9 @@ pub const HomeKernelCodegen = struct {
                             return;
                         }
                         if (self.locals.get(target.name)) |offset| {
+                            if (self.local_types.get(target.name)) |tn| {
+                                try self.narrowToDeclared(tn);
+                            }
                             try self.emit().storeLocal(.acc, @intCast(offset));
                         } else if (self.global_vars.get(target.name)) |g| {
                             if (g.is_array) {
