@@ -93265,37 +93265,6 @@ fn rewriteFuzzilliReprlCorpus(allocator: std.mem.Allocator, source: []const u8) 
     );
 }
 
-fn rewriteBunWriteCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    const without_fs = try std.mem.replaceOwned(
-        u8,
-        allocator,
-        source,
-        "import fs, { mkdirSync } from \"fs\";",
-        "const fs = globalThis.__home_import(\"fs\").default;\nconst { mkdirSync, unlinkSync } = fs;",
-    );
-    defer allocator.free(without_fs);
-
-    const without_harness = try std.mem.replaceOwned(
-        u8,
-        allocator,
-        without_fs,
-        "import { bunEnv, bunExe, exampleHtml, exampleSite, gcTick, isWindows, tempDir, withoutAggressiveGC } from \"harness\";",
-        "const { bunEnv, bunExe, exampleHtml, exampleSite, gcTick, isWindows, tempDir, withoutAggressiveGC } = globalThis.__home_import(\"harness\");",
-    );
-    defer allocator.free(without_harness);
-
-    const without_path = try std.mem.replaceOwned(
-        u8,
-        allocator,
-        without_harness,
-        "import path, { join } from \"path\";",
-        "const path = globalThis.__home_import(\"path\");\nconst { join } = path;",
-    );
-    defer allocator.free(without_path);
-
-    return allocator.dupe(u8, without_path);
-}
-
 fn rewriteInstallLifecycleCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     return try std.mem.replaceOwned(u8, allocator, source, "const MAX_CONCURRENT = 12;", "const MAX_CONCURRENT = 100000;");
 }
@@ -93310,10 +93279,6 @@ fn rewriteConfigVersionCorpus(allocator: std.mem.Allocator, source: []const u8) 
     try out.appendSlice(allocator, "let registryCanServe = true;\nregistry.start().catch(() => {});\n");
     try out.appendSlice(allocator, source[after..]);
     return out.toOwnedSlice(allocator);
-}
-
-fn rewriteSymlinkPathTraversalCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    return try std.mem.replaceOwned(u8, allocator, source, "using dir = tempDir(", "const dir = tempDir(");
 }
 
 fn rewriteSmallListGrowCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
@@ -99173,8 +99138,6 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteInstallLifecycleCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "cli/install/config-version.test.ts"))
         try rewriteConfigVersionCorpus(allocator, module_source)
-    else if (std.mem.eql(u8, relative_path, "cli/install/symlink-path-traversal.test.ts"))
-        try rewriteSymlinkPathTraversalCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/css/small-list-grow.test.ts"))
         try rewriteSmallListGrowCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/glob/match.test.ts"))
@@ -99283,8 +99246,6 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/import-attributes/import-attributes.test.ts"))
         null
-    else if (std.mem.eql(u8, relative_path, "js/bun/io/bun-write.test.js"))
-        try rewriteBunWriteCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/io/fetch/fetch-abort-slow-connect.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/jsc-stress/fixtures/simd-baseline.test.ts"))
