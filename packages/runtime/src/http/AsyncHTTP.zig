@@ -239,14 +239,14 @@ pub fn init(
                 defer allocator.free(auth);
                 const size = std.base64.standard.Encoder.calcSize(auth.len);
                 var buf = this.allocator.alloc(u8, size + "Basic ".len) catch unreachable;
-                const encoded = std.base64.url_safe.Encoder.encode(buf["Basic ".len..], auth);
+                const encoded = std.base64.standard.Encoder.encode(buf["Basic ".len..], auth);
                 buf[0.."Basic ".len].* = "Basic ".*;
                 this.client.proxy_authorization = buf[0 .. "Basic ".len + encoded.len];
             } else {
                 // only use user
                 const size = std.base64.standard.Encoder.calcSize(username.len);
                 var buf = allocator.alloc(u8, size + "Basic ".len) catch unreachable;
-                const encoded = std.base64.url_safe.Encoder.encode(buf["Basic ".len..], username);
+                const encoded = std.base64.standard.Encoder.encode(buf["Basic ".len..], username);
                 buf[0.."Basic ".len].* = "Basic ".*;
                 this.client.proxy_authorization = buf[0 .. "Basic ".len + encoded.len];
             }
@@ -316,14 +316,14 @@ fn reset(this: *AsyncHTTP) !void {
                 defer this.allocator.free(auth);
                 const size = std.base64.standard.Encoder.calcSize(auth.len);
                 var buf = this.allocator.alloc(u8, size + "Basic ".len) catch unreachable;
-                const encoded = std.base64.url_safe.Encoder.encode(buf["Basic ".len..], auth);
+                const encoded = std.base64.standard.Encoder.encode(buf["Basic ".len..], auth);
                 buf[0.."Basic ".len].* = "Basic ".*;
                 this.client.proxy_authorization = buf[0 .. "Basic ".len + encoded.len];
             } else {
                 // only use user
                 const size = std.base64.standard.Encoder.calcSize(username.len);
                 var buf = this.allocator.alloc(u8, size + "Basic ".len) catch unreachable;
-                const encoded = std.base64.url_safe.Encoder.encode(buf["Basic ".len..], username);
+                const encoded = std.base64.standard.Encoder.encode(buf["Basic ".len..], username);
                 buf[0.."Basic ".len].* = "Basic ".*;
                 this.client.proxy_authorization = buf[0 .. "Basic ".len + encoded.len];
             }

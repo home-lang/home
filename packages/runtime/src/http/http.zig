@@ -3092,6 +3092,11 @@ pub fn handleResponseMetadata(
         }
     }
 
+    // RFC 9110 section 9.3.6: a non-200 response to CONNECT means the
+    // tunnel was not established. Surface the proxy response, but never
+    // follow a Location header from it: that would resend the original
+    // request and credentials to a proxy-selected plaintext origin.
+    var is_proxy_connect_failure = false;
     if (this.flags.proxy_tunneling and this.proxy_tunnel == null) {
         if (response.status_code == 200) {
             // signal to continue the proxing
@@ -3101,6 +3106,7 @@ pub fn handleResponseMetadata(
         // proxy denied connection so return proxy result (407, 403 etc)
         this.flags.proxy_tunneling = false;
         this.flags.disable_keepalive = true;
+        is_proxy_connect_failure = true;
     }
 
     const status_code = response.status_code;
@@ -3113,7 +3119,7 @@ pub fn handleResponseMetadata(
     // if is no redirect or if is redirect == "manual" just proceed
     const is_redirect = status_code >= 300 and status_code <= 399;
     if (is_redirect) {
-        if (this.redirect_type == FetchRedirect.follow and location.len > 0 and this.remaining_redirect_count > 0) {
+        if (!is_proxy_connect_failure and this.redirect_type == FetchRedirect.follow and location.len > 0 and this.remaining_redirect_count > 0) {
             switch (status_code) {
                 302, 301, 307, 308, 303 => {
                     // https://fetch.spec.whatwg.org/#http-redirect-fetch step 11:
@@ -3351,7 +3357,7 @@ pub fn handleResponseMetadata(
                 },
                 else => {},
             }
-        } else if (this.redirect_type == FetchRedirect.@"error") {
+        } else if (!is_proxy_connect_failure and this.redirect_type == FetchRedirect.@"error") {
             // error out if redirect is not allowed
             return error.UnexpectedRedirect;
         }

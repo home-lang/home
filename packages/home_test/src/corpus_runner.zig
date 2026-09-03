@@ -99702,8 +99702,6 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteHspecCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/http/http-server-chunking.test.ts"))
         null
-    else if (std.mem.eql(u8, relative_path, "js/bun/http/proxy.test.js"))
-        try rewriteNativeTodoCorpus(allocator, "fetch proxy server integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/http/proxy.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "fetch TLS proxy server integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/http/req-url-leak.test.ts"))
@@ -100604,6 +100602,10 @@ fn isNativeHttpPromiseCorpusFile(relative: []const u8) bool {
     return std.mem.eql(u8, relative, "js/bun/http/serve-pending-promise-abort-leak.test.ts");
 }
 
+fn isNativeHttpProxyCorpusFile(relative: []const u8) bool {
+    return std.mem.eql(u8, relative, "js/bun/http/proxy.test.js");
+}
+
 fn nativeCorpusDisabledReason(relative: []const u8) ?[]const u8 {
     if (std.mem.eql(u8, relative, "js/node/test/parallel/test-util-emit-experimental-warning.js")) {
         return "upstream test body is commented out: internal/util emitExperimentalWarning is not exercised";
@@ -100627,7 +100629,8 @@ fn isNativeHomeCorpusFile(relative: []const u8) bool {
         isNativeImageCorpusFile(relative) or
         isNativeWebSocketCorpusFile(relative) or
         isNativeHttpTlsCorpusFile(relative) or
-        isNativeHttpPromiseCorpusFile(relative);
+        isNativeHttpPromiseCorpusFile(relative) or
+        isNativeHttpProxyCorpusFile(relative);
 }
 
 fn parseNativeCorpusFlags(allocator: std.mem.Allocator, source: []const u8) !OwnedFlags {
@@ -100791,7 +100794,8 @@ fn runRelativeFile(
             isNativeImageCorpusFile(relative) or
             isNativeWebSocketCorpusFile(relative) or
             isNativeHttpTlsCorpusFile(relative) or
-            isNativeHttpPromiseCorpusFile(relative)) .test_runner else .script;
+            isNativeHttpPromiseCorpusFile(relative) or
+            isNativeHttpProxyCorpusFile(relative)) .test_runner else .script;
         const args_tail = try buildNativeCorpusArgs(
             allocator,
             flags.values.items,
@@ -101238,6 +101242,19 @@ test "native HTTP promise corpus routing covers aborted request cleanup" {
         "js/bun/http/nested/serve-pending-promise-abort-leak.test.ts",
         "js/bun/https/serve-pending-promise-abort-leak.test.ts",
     }) |non_match| try std.testing.expect(!isNativeHttpPromiseCorpusFile(non_match));
+}
+
+test "native HTTP proxy corpus routing covers the exact local integration file" {
+    const relative = "js/bun/http/proxy.test.js";
+    try std.testing.expect(isNativeHttpProxyCorpusFile(relative));
+    try std.testing.expect(isNativeHomeCorpusFile(relative));
+
+    inline for (.{
+        "js/bun/http/proxy.test.ts",
+        "js/bun/http/proxy-fixture.test.js",
+        "js/bun/http/nested/proxy.test.js",
+        "js/bun/https/proxy.test.js",
+    }) |non_match| try std.testing.expect(!isNativeHttpProxyCorpusFile(non_match));
 }
 
 test "bootstrap addon guard precedes cached or fabricated module exports" {
