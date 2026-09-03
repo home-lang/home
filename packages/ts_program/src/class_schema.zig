@@ -397,6 +397,16 @@ pub const Builder = struct {
                         // consumer materialize the same canonical shape.
                         if (args.len == 0 and std.mem.eql(u8, name, "Error"))
                             return self.expression(.{ .builtin_object = name });
+                        if (args.len == 2 and std.mem.eql(u8, name, "Record"))
+                            return self.expression(.{ .record = .{ .key = args[0], .value = args[1] } });
+                        if (args.len == 1 and std.mem.eql(u8, name, "Readonly")) switch (args[0].*) {
+                            .record => |record| return self.expression(.{ .record = .{
+                                .key = record.key,
+                                .value = record.value,
+                                .readonly = true,
+                            } }),
+                            else => {},
+                        };
                     },
                     .external => {},
                 }
@@ -847,6 +857,25 @@ test "class schema: qualified references become concrete only for supported decl
     try T.expect(callback.parameters[1].type.* == .opaque_leaf);
     try T.expectEqualStrings("Value", callback.result.reference.declaration.name);
     try T.expect(callback_result.declaration.contextual_only);
+}
+
+test "class schema: function signatures retain readonly record domains" {
+    const graph = try TestGraph.init(&.{.{ .path = "/owner.ts", .text =
+        \\export type Value = string | number;
+        \\export type ValueMap = Readonly<Record<string, Value>>;
+        \\export function values(entries: ValueMap): Value[] { void entries; return []; }
+    }});
+    defer graph.deinit();
+
+    const result = try graph.class(0, "values");
+    defer result.deinit(T.allocator);
+    const function = result.declaration.body.?.function;
+    const map = function.parameters[0].type.reference.declaration.body.?.record;
+    try T.expect(map.readonly);
+    try T.expectEqual(Primitive.string_t, map.key.primitive);
+    try T.expectEqualStrings("Value", map.value.reference.declaration.name);
+    try T.expectEqualStrings("Value", function.result.array.reference.declaration.name);
+    try T.expect(try result.isSupported(T.allocator));
 }
 
 test "class schema: built-in Error heritage retains its checker-owned shape" {

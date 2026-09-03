@@ -107228,6 +107228,17 @@ pub const Checker = struct {
     fn programDeclarationReference(self: *Checker, declaration: *const ProgramClassSchema.Declaration, supplied: []const TypeId, arg_nodes: []const NodeId) ProgramTypeError!TypeId {
         const params = declaration.parameters;
         if (supplied.len > params.len) return error.UnsupportedProgramType;
+        // Reserve the declaration before resolving omitted defaults. A cycle
+        // through another declaration may return here while this definition
+        // is incomplete; explicit arguments can retain that symbolic edge,
+        // but an omitted default cannot be evaluated until its owner finishes.
+        const existing_definition = self.program_generic_definitions.get(declaration);
+        if (existing_definition) |definition| {
+            const payload = self.interner.genericDefinition(definition) orelse return error.UnsupportedProgramType;
+            if (payload.body == types.Primitive.none and supplied.len < params.len)
+                return error.UnsupportedProgramType;
+        }
+        const definition = try self.programGenericDefinition(declaration);
         const args = try self.gpa.alloc(TypeId, params.len);
         defer self.gpa.free(args);
         @memset(args, types.Primitive.unknown);
@@ -107252,7 +107263,7 @@ pub const Checker = struct {
             const parameter = try self.interner.internTypeParameterWithFlags(name, constraint, types.Primitive.none, types.Variance.fromHirBits(param.variance), param.is_const);
             try self.checkTypeArgSatisfiesConstraintImpl(arg_nodes[i], parameter, args[i], !self.typeNodeHasResolutionError(arg_nodes[i]));
         }
-        return self.interner.internInstantiation(try self.programGenericDefinition(declaration), args);
+        return self.interner.internInstantiation(definition, args);
     }
 
     fn programSchemaDeclarationOrigin(self: *Checker, declaration: *const ProgramClassSchema.Declaration) CheckError!hir_mod.StringId {
@@ -107315,6 +107326,32 @@ pub const Checker = struct {
                     }
                 }
                 return self.interner.internObjectTypeWithIndex(members, string_index, number_index);
+            },
+            .record => |record| {
+                if (declaration.contextual_only) return types.Primitive.any;
+                const key_t = try self.lowerProgramExpression(record.key, declaration, args);
+                const value_t = try self.lowerProgramExpression(record.value, declaration, args);
+                var singleton = [_]TypeId{key_t};
+                const keys = if (key_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(key_t).is_union)
+                    self.interner.unionMembers(key_t)
+                else
+                    singleton[0..];
+                var string_index = types.Primitive.none;
+                var number_index = types.Primitive.none;
+                var symbol_index = types.Primitive.none;
+                for (keys) |key| {
+                    if (key == types.Primitive.string_t)
+                        string_index = value_t
+                    else if (key == types.Primitive.number_t)
+                        number_index = value_t
+                    else if (key == types.Primitive.symbol_t)
+                        symbol_index = value_t
+                    else
+                        return error.UnsupportedProgramType;
+                }
+                const result = try self.interner.internObjectTypeWithIndexAndSymbol(&.{}, string_index, number_index, symbol_index);
+                if (record.readonly) try self.readonly_index_types.put(self.gpa, result, {});
+                return result;
             },
             .tuple => |elements| {
                 const result = try self.gpa.alloc(types.TupleElement, elements.len);
@@ -107386,6 +107423,9 @@ pub const Checker = struct {
                 return sig;
             },
             .reference => |ref| {
+                if (declaration.contextual_only and
+                    !try ProgramClassSchema.Schema.declarationSupported(ref.declaration, self.gpa))
+                    return types.Primitive.any;
                 const values = try self.gpa.alloc(TypeId, ref.arguments.len);
                 defer self.gpa.free(values);
                 for (ref.arguments, values) |arg, *out| out.* = try self.lowerProgramExpression(arg, declaration, args);
