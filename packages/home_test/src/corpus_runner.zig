@@ -749,7 +749,7 @@ const harness_prelude =
     \\  const text = String(path || "");
     \\  if (text.startsWith("/") || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(text)) return text;
     \\  const normalized = __home_build_normalize(text);
-    \\  const cwd = __home_build_normalize(process.cwd());
+    \\  const cwd = __home_build_normalize(__home_process_cwd_internal());
     \\  if (cwd && cwd !== "." && !cwd.startsWith("/") && (normalized === cwd || normalized.startsWith(cwd + "/"))) return normalized;
     \\  return __home_build_normalize(__home_build_join(cwd, normalized));
     \\}
@@ -32793,6 +32793,10 @@ const harness_prelude =
     \\  globalThis.__home_process_cwd = String(path || "/");
     \\};
     \\globalThis.__home_process_cwd_function = process.cwd;
+    \\function __home_process_cwd_internal() {
+    \\  const cwd = process.cwd;
+    \\  return typeof cwd === "function" ? String(cwd.call(process)) : String(cwd || globalThis.__home_process_cwd || "/");
+    \\}
     \\process.memoryUsage = function() {
     \\  return { rss: 1024 * 1024, heapTotal: 1024 * 1024, heapUsed: 512 * 1024, external: 0, arrayBuffers: 0 };
     \\};
@@ -53634,11 +53638,16 @@ const harness_prelude =
     \\globalThis.__home_modules["../common/tmpdir"] = __home_node_test_common_tmpdir;
     \\globalThis.__home_modules["js/node/test/common/tmpdir"] = __home_node_test_common_tmpdir;
     \\globalThis.__home_modules["js/node/test/common/tmpdir.js"] = __home_node_test_common_tmpdir;
+    \\let __home_node_test_common_esm_cache = null;
+    \\function __home_node_test_common_esm_source() {
+    \\  if (__home_node_test_common_esm_cache === null) __home_node_test_common_esm_cache = globalThis.require("packages/runtime/test/bun-corpus/js/node/test/common/index.js");
+    \\  return __home_node_test_common_esm_cache;
+    \\}
     \\const __home_node_test_common_esm = new Proxy({}, {
-    \\  get(_target, property) { return globalThis.require("../common")[property]; },
-    \\  has(_target, property) { return property in globalThis.require("../common"); },
-    \\  ownKeys() { return Reflect.ownKeys(globalThis.require("../common")); },
-    \\  getOwnPropertyDescriptor(_target, property) { return Object.getOwnPropertyDescriptor(globalThis.require("../common"), property) || { configurable: true, enumerable: true }; },
+    \\  get(_target, property) { return __home_node_test_common_esm_source()[property]; },
+    \\  has(_target, property) { return property in __home_node_test_common_esm_source(); },
+    \\  ownKeys() { return __home_node_test_common_esm_cache === null ? [] : Reflect.ownKeys(__home_node_test_common_esm_cache); },
+    \\  getOwnPropertyDescriptor(_target, property) { return __home_node_test_common_esm_cache === null ? undefined : Object.getOwnPropertyDescriptor(__home_node_test_common_esm_cache, property) || { configurable: true, enumerable: true }; },
     \\});
     \\globalThis.__home_modules["js/node/test/common/index.mjs"] = __home_node_test_common_esm;
     \\globalThis.__home_modules["packages/runtime/test/bun-corpus/js/node/test/common/index.mjs"] = __home_node_test_common_esm;
@@ -79329,7 +79338,8 @@ const harness_prelude =
     \\function __home_blob_module_error(blobURL, phase, cause) {
     \\  const underlying = cause instanceof Error ? cause : new Error(String(cause === undefined ? "Unknown Blob module failure" : cause));
     \\  const operation = "blob.module.import";
-    \\  const failure = new Error("Unable to import Blob module " + String(blobURL) + " during " + String(phase));
+    \\  const message = "Unable to import Blob module " + String(blobURL) + " during " + String(phase);
+    \\  const failure = phase === "transpile" || underlying instanceof SyntaxError ? new BuildMessage(message, "error", null) : new Error(message);
     \\  failure.code = "ERR_BLOB_MODULE";
     \\  failure.operation = operation;
     \\  failure.phase = String(phase);
