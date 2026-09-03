@@ -91668,7 +91668,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "describe.each([\n  { name: \"http/1.1\", http3: false },\n  { name: \"http/3\", http3: true },\n])", .replacement = "describe.each([\n  { name: \"http/1.1\", http3: false },\n])" },
         .{ .needle = "describe.concurrent(\"Bun.cron (in-process) — firing\",", .replacement = "describe.skip.concurrent(\"Bun.cron (in-process) — firing\"," },
         .{ .needle = "registeredAlgorithmNames.forEach(name => {\n  run_test_success([name]);\n  run_test_failure([name]);\n});", .replacement = "test.todo(\"webcrypto generateKey WPT vectors\");" },
-        .{ .needle = "import { color } from \"bun\";", .replacement = "const color = globalThis.__home_bun_color;" },
+        .{ .needle = "import { color } from \"bun\";", .replacement = "const { color } = globalThis.__home_import(\"bun\");" },
         .{ .needle = "import { Hono } from \"hono\";", .replacement = "const { Hono } = globalThis.__home_import(\"hono\");" },
         .{ .needle = "import { getSecret } from \"harness\";", .replacement = "const { getSecret } = globalThis.__home_import(\"harness\");" },
         .{ .needle = "import { MongoClient } from \"mongodb\";", .replacement = "const { MongoClient } = globalThis.__home_import(\"mongodb\");" },
@@ -91729,7 +91729,6 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "(response: http.IncomingMessage) =>", .replacement = "response =>" },
         .{ .needle = "const body: Array<Buffer> = [];", .replacement = "const body = [];" },
         .{ .needle = "const body = (await promise) as string;", .replacement = "const body = await promise;" },
-        .{ .needle = "const { color } = globalThis.__home_import(\"bun\");", .replacement = "const color = globalThis.__home_bun_color;" },
         .{ .needle = "// TODO:\nif (!isCI) {", .replacement = "test.todo(\"CSS Parser Invalid Input Fuzzing\");\nif (false) {" },
         .{ .needle = "const BodyMixin = [\n      Request.prototype.arrayBuffer,\n      Request.prototype.bytes,\n      Request.prototype.blob,\n      Request.prototype.text,\n      Request.prototype.json,\n    ];", .replacement = "const BodyMixin = [\n      Request.prototype.text,\n    ];" },
         .{ .needle = "const useRequestObjectValues = [true, false];", .replacement = "const useRequestObjectValues = [false];" },
@@ -93329,38 +93328,6 @@ fn rewriteConfigVersionCorpus(allocator: std.mem.Allocator, source: []const u8) 
 
 fn rewriteSymlinkPathTraversalCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     return try std.mem.replaceOwned(u8, allocator, source, "using dir = tempDir(", "const dir = tempDir(");
-}
-
-fn rewriteBunColorCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    return try std.mem.replaceOwned(
-        u8,
-        allocator,
-        source,
-        \\test("fuzz ansi256", () => {
-        \\  withoutAggressiveGC(() => {
-        \\    for (let i = 0; i < 256; i++) {
-        \\      const iShifted = i << 16;
-        \\      for (let j = 0; j < 256; j++) {
-        \\        const jShifted = j << 8;
-        \\        for (let k = 0; k < 256; k++) {
-        \\          const int = iShifted | jShifted | k;
-        \\          if (color(int, "ansi256") === null) {
-        \\            throw new Error(`color(${i}, ${j}, ${k}, "ansi256") is null`);
-        \\          }
-        \\        }
-        \\      }
-        \\    }
-        \\  });
-        \\});
-    ,
-        \\test.todo("Bun.color ansi256 exhaustive fuzz");
-        \\test("Bun.color ansi256 boundary samples", () => {
-        \\  for (const int of [0x000000, 0x000001, 0x070707, 0x080808, 0x2f0000, 0x300000, 0x730000, 0x740000, 0xff0000, 0x00ff00, 0x0000ff, 0xffffff]) {
-        \\    expect(color(int, "ansi256")).not.toBeNull();
-        \\  }
-        \\});
-        ,
-    );
 }
 
 fn rewriteSmallListGrowCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
@@ -96436,7 +96403,7 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         },
         .{
             .needle = "import { color } from \"bun\";",
-            .replacement = "const color = globalThis.__home_bun_color;",
+            .replacement = "const { color } = globalThis.__home_import(\"bun\");",
         },
         .{
             .needle = "import { dns } from \"bun\";",
@@ -99649,8 +99616,6 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteSymlinkPathTraversalCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/css/small-list-grow.test.ts"))
         try rewriteSmallListGrowCorpus(allocator, module_source)
-    else if (std.mem.eql(u8, relative_path, "js/bun/css/color.test.ts"))
-        try rewriteBunColorCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/glob/match.test.ts"))
         try rewriteGlobMatchCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/shell/commands/which.test.ts"))
@@ -105744,7 +105709,7 @@ test "Bun test import rewrite embeds copied snapshot files" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "Bun.Transpiler using statements work right 1") != null);
 }
 
-test "bootstrap runner mirrors Bun.color invalid input corpus" {
+test "bootstrap runner runs the unchanged Bun.color corpus through the native callback" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
@@ -105765,9 +105730,9 @@ test "bootstrap runner mirrors Bun.color invalid input corpus" {
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun.color formatted outputs") == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun.color argument validation") == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun.color ansi256 fuzz") == null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test(\"fuzz ansi256\"") == null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test.todo(\"Bun.color ansi256 exhaustive fuzz\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun.color ansi256 boundary samples") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test(\"fuzz ansi256\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun.color ansi256 exhaustive fuzz") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun.color ansi256 boundary samples") == null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
@@ -105779,7 +105744,7 @@ test "bootstrap runner mirrors Bun.color invalid input corpus" {
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 917), file_run.result.passed);
-    try std.testing.expectEqual(@as(usize, 1), file_run.result.todo);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
 }
 

@@ -963,7 +963,18 @@ pub fn install(allocator: std.mem.Allocator, ctx: *JSContextRef, global: *JSGlob
     if (result.exception_message) |message| {
         std.log.err("failed to install Bun globals: {s}", .{message});
     }
+    installNativeColor(ctx);
 }
+
+/// Bind the production `Bun.color` Zig callback into a reduced C-API realm.
+/// The full Bun global receives this callback from GeneratedBunObject; plain
+/// JSGlobalObject realms call this after constructing their `Bun` namespace.
+pub fn installNativeColor(ctx: *JSContextRef) void {
+    if (comptime !build_options.enable_jsc) return;
+    Home__BunObject__installColor(@ptrCast(ctx));
+}
+
+extern fn Home__BunObject__installColor(*JSGlobalObject) void;
 
 fn evalBool(allocator: std.mem.Allocator, ctx: *JSContextRef, source: []const u8) !bool {
     const value = (try evaluate.evaluateUtf8(allocator, ctx, source, "home:bun-probe", 1, null)) orelse

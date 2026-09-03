@@ -56,7 +56,7 @@ JSC_DEFINE_HOST_FUNCTION(NodeError_proto_toString, (JSC::JSGlobalObject * global
 
     auto name = thisVal.get(globalObject, vm.propertyNames->name);
     RETURN_IF_EXCEPTION(scope, {});
-    auto code = thisVal.get(globalObject, WebCore::builtinNames(vm).codePublicName());
+    auto code = thisVal.get(globalObject, JSC::Identifier::fromString(vm, "code"_s));
     RETURN_IF_EXCEPTION(scope, {});
     auto message = thisVal.get(globalObject, vm.propertyNames->message);
     RETURN_IF_EXCEPTION(scope, {});
@@ -136,7 +136,7 @@ static JSC::JSObject* createErrorPrototype(JSC::VM& vm, JSC::JSGlobalObject* glo
     }
 
     prototype->putDirect(vm, vm.propertyNames->name, jsString(vm, String(name)), 0);
-    prototype->putDirect(vm, WebCore::builtinNames(vm).codePublicName(), jsString(vm, String(code)), 0);
+    prototype->putDirect(vm, JSC::Identifier::fromString(vm, "code"_s), jsString(vm, String(code)), 0);
     prototype->putDirect(vm, vm.propertyNames->toString, JSC::JSFunction::create(vm, globalObject, 0, "toString"_s, NodeError_proto_toString, JSC::ImplementationVisibility::Private), 0);
 
     return prototype;
@@ -227,9 +227,14 @@ JSObject* createError(Zig::GlobalObject* globalObject, ErrorCode code, const Str
     return createError(globalObject->vm(), globalObject, code, message);
 }
 
+JSObject* createError(VM& vm, JSC::JSGlobalObject* globalObject, ErrorCode code, JSValue message);
+
 JSObject* createError(VM& vm, JSC::JSGlobalObject* globalObject, ErrorCode code, const String& message)
 {
-    return createError(vm, defaultGlobalObject(globalObject), code, message);
+    // Keep string-message errors on the realm-generic path below. Reduced
+    // C-API realms use a plain JSGlobalObject and cannot be treated as Bun's
+    // Zig::GlobalObject merely because the caller supplied a WTF::String.
+    return createError(vm, globalObject, code, jsString(vm, message));
 }
 
 JSObject* createError(VM& vm, JSC::JSGlobalObject* globalObject, ErrorCode code, JSValue message)

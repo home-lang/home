@@ -128,6 +128,7 @@ pub const Runtime = struct {
             self.engine.currentGlobalObject(),
         );
         try self.installHarness(allocator, harness_source);
+        home_rt.jsc.bun_global.installNativeColor(self.engine.currentContext());
         return self;
     }
 

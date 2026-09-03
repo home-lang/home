@@ -204,6 +204,7 @@ fn nativeModules(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
         "packages/runtime/upstream/src/codegen/replacements.ts",
         "packages/runtime/upstream/src/api/schema.js",
         "packages/runtime/upstream/src/jsc/bindings/ErrorCode.ts",
+        "packages/runtime/upstream/src/jsc/bindings/ErrorCode.cpp",
         "packages/runtime/upstream/src/jsc/bindings/js_classes.ts",
         "packages/runtime/upstream/src/jsc/bindings/InternalModuleRegistry.cpp",
         "packages/runtime/upstream/src/jsc/bindings/EventLoopTaskNoContext.cpp",
