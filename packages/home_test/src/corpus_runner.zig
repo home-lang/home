@@ -5098,16 +5098,6 @@ const harness_prelude =
     \\  child[Symbol.asyncDispose] = function() { return child.exited.then(() => undefined); };
     \\  return child;
     \\}
-    \\function __home_spawn_memfd_disabled_fixture(options) {
-    \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/memfd-disabled.test.ts")) return null;
-    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
-    \\  const evalIndex = cmd.indexOf("-e");
-    \\  const script = evalIndex >= 0 ? String(cmd[evalIndex + 1] || "") : "";
-    \\  if (evalIndex < 0) return null;
-    \\  if (script.includes("process.stdin.pipe(process.stdout)") && script.includes("Buffer.alloc(64 * 1024")) return __home_spawn_completed("65536 true\n", "", 0);
-    \\  if (script.includes("Buffer.alloc(8 * 1024 * 1024") && script.includes("new Response(body).blob()")) return __home_spawn_completed("ok 8388608\n", "", 0);
-    \\  return null;
-    \\}
     \\function __home_spawn_blob_utf16_bom_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("js/web/fetch/blob.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -28922,8 +28912,6 @@ const harness_prelude =
     \\    if (messagePortContextFixture) return messagePortContextFixture;
     \\    const performanceObserverLeakFixture = __home_spawn_performance_observer_leak_fixture(options || {});
     \\    if (performanceObserverLeakFixture) return performanceObserverLeakFixture;
-    \\    const memfdDisabledFixture = __home_spawn_memfd_disabled_fixture(options || {});
-    \\    if (memfdDisabledFixture) return memfdDisabledFixture;
     \\    const blobUtf16BomFixture = __home_spawn_blob_utf16_bom_fixture(options || {});
     \\    if (blobUtf16BomFixture) return blobUtf16BomFixture;
     \\    const fetchAbortQueuedFixture = __home_spawn_fetch_abort_queued_fixture(options || {});
@@ -94722,10 +94710,6 @@ fn rewriteGlobStressCorpus(allocator: std.mem.Allocator, source: []const u8) ![]
     );
 }
 
-fn rewriteShellWhichCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    return try std.mem.replaceOwned(u8, allocator, source, ".repeat(100000)", ".repeat(2048)");
-}
-
 fn rewriteAsyncLocalStorageCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     return try std.mem.replaceOwned(
         u8,
@@ -95061,36 +95045,6 @@ fn rewriteAbortSignalLeakCorpus(allocator: std.mem.Allocator, source: []const u8
     defer allocator.free(test_without_fixture_import);
 
     return std.mem.concat(allocator, u8, &.{ fixture_without_main, "\n", test_without_fixture_import });
-}
-
-fn rewriteMemfdDisabledCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    return try std.mem.replaceOwned(
-        u8,
-        allocator,
-        source,
-        "test.skipIf(process.platform !== \"linux\")",
-        "test",
-    );
-}
-
-fn rewriteRuntimeErrorCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    return try std.mem.replaceOwned(
-        u8,
-        allocator,
-        source,
-        "import RuntimeError from \"../../../packages/bun-error/runtime-error\";",
-        "const RuntimeError = globalThis.__home_import(\"../../../packages/bun-error/runtime-error\").default;",
-    );
-}
-
-fn rewriteDifferentDirectorySnapshotCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    return try std.mem.replaceOwned(
-        u8,
-        allocator,
-        source,
-        "test.todo(\"snapshots in different directory\", () => {",
-        "test(\"snapshots in different directory\", () => {",
-    );
 }
 
 fn rewriteChildProcessNodeCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
@@ -98023,11 +97977,12 @@ fn isJsIdentifierStart(byte: u8) bool {
 /// namespace object directly. Matches the per-file hardcoded `.default` patches.
 fn moduleDefaultExportIsApi(name: []const u8) bool {
     const defaulted = [_][]const u8{
-        "fs",          "node:fs",
-        "fs/promises", "node:fs/promises",
-        "zlib",        "node:zlib",
-        "ws",          "fastify",
-        "express",     "@fastify/websocket",
+        "fs",                                        "node:fs",
+        "fs/promises",                               "node:fs/promises",
+        "zlib",                                      "node:zlib",
+        "ws",                                        "fastify",
+        "express",                                   "@fastify/websocket",
+        "../../../packages/bun-error/runtime-error",
     };
     for (defaulted) |m| {
         if (std.mem.eql(u8, name, m)) return true;
@@ -98265,6 +98220,7 @@ fn supportedNamedImportModule(source: []const u8, start: usize, relative_path: [
         "./simple-dummy-registry",
         "./semver-fixture.js",
         "./fixtures/sign.fixture.ts",
+        "../../../packages/bun-error/runtime-error",
         "./wire-frames",
         "./chooses-ts",
         "harness",
@@ -99231,8 +99187,6 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteSmallListGrowCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/glob/match.test.ts"))
         null
-    else if (std.mem.eql(u8, relative_path, "js/bun/shell/commands/which.test.ts"))
-        try rewriteShellWhichCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/node/url/url-parse-query.test.js"))
         null
     else if (std.mem.eql(u8, relative_path, "js/node/url/url-canParse-whatwg.test.js"))
@@ -99375,8 +99329,6 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/md/gfm-compat.test.ts"))
         null
-    else if (std.mem.eql(u8, relative_path, "js/bun/memfd-disabled.test.ts"))
-        try rewriteMemfdDisabledCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/net/named-pipe-listen-error.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/net/socket-retention.test.ts"))
@@ -99445,8 +99397,6 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/resolve.test.ts"))
         null
-    else if (std.mem.eql(u8, relative_path, "js/bun/runtime-error.test.ts"))
-        try rewriteRuntimeErrorCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/s3/s3-stream-cancel-leak.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/s3/s3.test.ts"))
@@ -99520,8 +99470,6 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/shell/commands/seq.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/shell/commands/true.test.ts"))
-        null
-    else if (std.mem.eql(u8, relative_path, "js/bun/shell/commands/which.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/shell/commands/yes.test.ts"))
         null
@@ -99687,8 +99635,6 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteNativeTodoCorpus(allocator, "bun test diff printer subprocess snapshot")
     else if (std.mem.eql(u8, relative_path, "js/bun/test/snapshot-tests/new-snapshot.test.ts"))
         null
-    else if (std.mem.eql(u8, relative_path, "js/bun/test/snapshot-tests/snapshots/more-snapshots/different-directory.test.ts"))
-        try rewriteDifferentDirectorySnapshotCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/test/snapshot-tests/snapshots/snapshot.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/spyMatchers.test.ts"))
@@ -106634,7 +106580,7 @@ test "bootstrap runner mirrors Bun shell which command corpus" {
     defer prepared.deinit(std.testing.allocator);
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun shell command lookup error integration") == null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, ".repeat(2048)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, ".repeat(100000)") != null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const { $ } = globalThis.__home_import(\"bun\");") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_bun_shell_lookup_error") != null);
 
@@ -115171,7 +115117,7 @@ test "bootstrap runner mirrors different-directory snapshot corpus" {
     defer prepared.deinit(std.testing.allocator);
 
     try std.testing.expect(prepared.unsupported_reason == null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test.todo(\"snapshots in different directory\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test.todo(\"snapshots in different directory\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "snapshots in different directory 14") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
@@ -115184,8 +115130,8 @@ test "bootstrap runner mirrors different-directory snapshot corpus" {
         std.debug.print("Different-directory snapshot corpus failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
-    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.todo);
 }
 
 test "bootstrap runner mirrors Node HTTP early hints CRLF corpus" {
@@ -123670,16 +123616,16 @@ test "bootstrap runner mirrors memfd disabled fallback corpus" {
     var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/memfd-disabled.test.ts");
     defer summary.deinit(std.testing.allocator);
 
-    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 2 or summary.todo != 0) {
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 0 or summary.todo != 2) {
         std.debug.print(
             "memfd disabled corpus mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
-            .{ summary.passed, @as(usize, 2), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+            .{ summary.passed, @as(usize, 0), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
         );
     }
     try std.testing.expectEqual(@as(usize, 1), summary.files);
-    try std.testing.expectEqual(@as(usize, 2), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
-    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 2), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
@@ -128479,7 +128425,7 @@ test "bootstrap runner mirrors mixed runtime regression mini-suite" {
         .{ .path = "regression/issue/012039.test.ts", .passed = 3 },
         .{ .path = "js/web/html/html-rewriter-doctype.test.ts", .passed = 1 },
         .{ .path = "js/bun/jsonc/jsonc.test.ts", .passed = 14 },
-        .{ .path = "js/bun/test/snapshot-tests/snapshots/more-snapshots/different-directory.test.ts", .passed = 1 },
+        .{ .path = "js/bun/test/snapshot-tests/snapshots/more-snapshots/different-directory.test.ts", .passed = 0, .todo = 1 },
         .{ .path = "js/bun/test/jest-each.test.ts", .passed = 25 },
         .{ .path = "regression/issue/htmlrewriter-additional-bugs.test.ts", .passed = 7 },
         .{ .path = "regression/issue/24191.test.ts", .passed = 2 },
