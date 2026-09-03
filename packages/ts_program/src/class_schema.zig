@@ -67,6 +67,42 @@ pub const Builder = struct {
         return self.expression(.opaque_leaf);
     }
 
+    /// Interface schemas may safely retain qualified aliases whose complete
+    /// declaration graph is value-like.  This deliberately excludes object,
+    /// mapped, conditional, and indexed-access projections: those require the
+    /// consumer checker to reproduce source-owned relation semantics, while a
+    /// scalar union is identical in every type pool.
+    fn qualifiedValueAliasSupported(self: *Builder, target: *const schema.Declaration) !bool {
+        if (target.contextual_only or target.is_class or target.is_function) return false;
+        var pending: std.ArrayListUnmanaged(*const schema.Expression) = .empty;
+        defer pending.deinit(self.gpa);
+        var visited: std.AutoHashMapUnmanaged(*const schema.Expression, void) = .empty;
+        defer visited.deinit(self.gpa);
+        if (target.body) |body| try pending.append(self.gpa, body) else return false;
+        for (target.parameters) |parameter| {
+            if (parameter.constraint) |constraint| try pending.append(self.gpa, constraint);
+            if (parameter.default) |default| try pending.append(self.gpa, default);
+        }
+        while (pending.pop()) |expr| {
+            const entry = try visited.getOrPut(self.gpa, expr);
+            if (entry.found_existing) continue;
+            switch (expr.*) {
+                .primitive, .parameter, .string, .number, .boolean => {},
+                .union_type => |members| try pending.appendSlice(self.gpa, members),
+                .reference => |reference| {
+                    if (reference.declaration.contextual_only or
+                        reference.declaration.is_class or
+                        reference.declaration.is_function)
+                        return false;
+                    if (reference.declaration.body) |body| try pending.append(self.gpa, body) else return false;
+                    try pending.appendSlice(self.gpa, reference.arguments);
+                },
+                else => return false,
+            }
+        }
+        return true;
+    }
+
     fn lowerTransferable(self: *Builder, context: Context, node: hir.NodeId) !*const schema.Expression {
         const lowered = try self.lower(context, node);
         if (!context.allow_opaque) return lowered;
@@ -314,14 +350,16 @@ pub const Builder = struct {
             .type_ref => {
                 const ref = hir.typeRefOf(&c.hir, node);
                 const name = c.interner.get(ref.name);
+                var qualified_unresolved = ref.qualifier_len != 0;
+                defer if (qualified_unresolved and context.allow_opaque) {
+                    context.declaration.contextual_only = true;
+                };
                 if (ref.qualifier_len == 0) {
                     if (localParameter(context, name)) |parameter| return self.expression(.{ .parameter = parameter });
                     for (context.declaration.parameters) |*param| {
                         if (std.mem.eql(u8, param.name, name)) return self.expression(.{ .parameter = param });
                     }
                 } else {
-                    if (!context.allow_opaque) return self.expression(.unsupported);
-                    context.declaration.contextual_only = true;
                     const qualifiers = hir.typeRefQualifier(&c.hir, node);
                     if (qualifiers.len > 0 and c.hir.kindOf(qualifiers[0]) == .identifier) {
                         const root_name = c.interner.get(hir.identifierOf(&c.hir, qualifiers[0]).name);
@@ -341,7 +379,17 @@ pub const Builder = struct {
                 const args = try self.arena.alloc(*const schema.Expression, ref.args_len);
                 for (hir.typeRefArgs(&c.hir, node), args) |arg, *out| out.* = try self.lower(context, arg);
                 switch (if (ref.qualifier_len == 0) try self.resolve(context.source, node, ref.name) else try self.resolveQualified(context.source, node, ref)) {
-                    .declaration => |key| return self.expression(.{ .reference = .{ .declaration = try self.declaration(key), .arguments = args } }),
+                    .declaration => |key| {
+                        const target = try self.declaration(key);
+                        if (ref.qualifier_len != 0) {
+                            if (context.allow_opaque)
+                                context.declaration.contextual_only = true
+                            else if (!try self.qualifiedValueAliasSupported(target))
+                                return self.expression(.unsupported);
+                        }
+                        qualified_unresolved = false;
+                        return self.expression(.{ .reference = .{ .declaration = target, .arguments = args } });
+                    },
                     .unsupported => return self.expression(.unsupported),
                     .missing => {
                         // Built-in object shapes live in each checker's local
@@ -764,6 +812,41 @@ test "class schema: imported aliases use the defining file through reexports" {
     try T.expectEqualStrings("item", ref.declaration.body.?.object[0].name);
     try T.expect(ref.arguments[0].parameter == &result.declaration.parameters[0]);
     try T.expect(ref.declaration.body.?.object[0].type.parameter == &ref.declaration.parameters[0]);
+}
+
+test "class schema: qualified references become concrete only for supported declarations" {
+    const graph = try TestGraph.init(&.{
+        .{ .path = "/shapes.ts", .text =
+        \\export type Value = string | number;
+        \\export type Structured = { label: string };
+        \\export type Opaque = Set<string>;
+        },
+        .{ .path = "/owner.ts", .text =
+        \\import type * as Shapes from "./shapes";
+        \\export interface Box { items: Shapes.Value[]; }
+        \\export interface StructuredBox { details: Shapes.Structured; }
+        \\export type Callback = (value: Shapes.Value, opaque: Shapes.Opaque) => Shapes.Value;
+        },
+    });
+    defer graph.deinit();
+
+    const box_result = try graph.class(1, "Box");
+    defer box_result.deinit(T.allocator);
+    const item = box_result.declaration.body.?.object[0].type.array.reference;
+    try T.expectEqualStrings("Value", item.declaration.name);
+    try T.expect(!box_result.declaration.contextual_only);
+
+    const structured_result = try graph.class(1, "StructuredBox");
+    defer structured_result.deinit(T.allocator);
+    try T.expect(structured_result.declaration.body.?.object[0].type.* == .unsupported);
+
+    const callback_result = try graph.class(1, "Callback");
+    defer callback_result.deinit(T.allocator);
+    const callback = callback_result.declaration.body.?.function;
+    try T.expectEqualStrings("Value", callback.parameters[0].type.reference.declaration.name);
+    try T.expect(callback.parameters[1].type.* == .opaque_leaf);
+    try T.expectEqualStrings("Value", callback.result.reference.declaration.name);
+    try T.expect(callback_result.declaration.contextual_only);
 }
 
 test "class schema: built-in Error heritage retains its checker-owned shape" {
