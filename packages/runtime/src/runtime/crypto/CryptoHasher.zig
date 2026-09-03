@@ -496,8 +496,10 @@ const CryptoHasherZig = struct {
     }
 
     pub fn hashByName(globalThis: *JSGlobalObject, algorithm: ZigString, input: jsc.Node.BlobOrStringOrBuffer, output: ?jsc.Node.StringOrBuffer) bun.JSError!?jsc.JSValue {
+        var algorithm_slice = algorithm.toSlice(bun.default_allocator);
+        defer algorithm_slice.deinit();
         inline for (algo_map) |item| {
-            if (bun.strings.eqlComptime(algorithm.slice(), item[0])) {
+            if (bun.strings.eqlComptime(algorithm_slice.slice(), item[0])) {
                 return try hashByNameInner(globalThis, item[1], input, output);
             }
         }
@@ -573,8 +575,10 @@ const CryptoHasherZig = struct {
     }
 
     fn constructor(algorithm: ZigString) ?*CryptoHasher {
+        var algorithm_slice = algorithm.toSlice(bun.default_allocator);
+        defer algorithm_slice.deinit();
         inline for (algo_map) |item| {
-            if (bun.strings.eqlComptime(algorithm.slice(), item[0])) {
+            if (bun.strings.eqlComptime(algorithm_slice.slice(), item[0])) {
                 return CryptoHasher.new(.{ .zig = .{
                     .algorithm = @field(EVP.Algorithm, item[0]),
                     .state = bun.new(item[1], item[1].init(.{})),
@@ -856,6 +860,7 @@ fn StaticCryptoHasher(comptime Hasher: type, comptime name: [:0]const u8) type {
         }
 
         pub fn finalize(this: *@This()) void {
+            this.hashing.deinit();
             VirtualMachine.get().allocator.destroy(this);
         }
     };
