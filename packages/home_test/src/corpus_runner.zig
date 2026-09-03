@@ -93296,12 +93296,6 @@ fn rewriteBunWriteCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8
     return allocator.dupe(u8, without_path);
 }
 
-fn rewriteArchiveCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    const without_await_using = try std.mem.replaceOwned(u8, allocator, source, "await using ", "const ");
-    defer allocator.free(without_await_using);
-    return try std.mem.replaceOwned(u8, allocator, without_await_using, "using ", "const ");
-}
-
 fn rewriteInstallLifecycleCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     return try std.mem.replaceOwned(u8, allocator, source, "const MAX_CONCURRENT = 12;", "const MAX_CONCURRENT = 100000;");
 }
@@ -99175,8 +99169,6 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
             " as typeof import(\"bun:internal-for-testing\")",
             "",
         )
-    else if (std.mem.eql(u8, relative_path, "js/bun/archive.test.ts"))
-        try rewriteArchiveCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "cli/install/bun-install-lifecycle-scripts.test.ts"))
         try rewriteInstallLifecycleCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "cli/install/config-version.test.ts"))
@@ -124419,14 +124411,14 @@ test "bootstrap runner mirrors sparse archive extraction corpus" {
     var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
     defer summary.deinit(std.testing.allocator);
 
-    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 100 or summary.todo != 1) {
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 101 or summary.todo != 1) {
         std.debug.print(
             "archive corpus mismatch: passed={} expected={} failed={} todo={} expected_todo={} unsupported={} message={s}\n",
-            .{ summary.passed, @as(usize, 100), summary.failed, summary.todo, @as(usize, 1), summary.unsupported, summary.first_failure_message },
+            .{ summary.passed, @as(usize, 101), summary.failed, summary.todo, @as(usize, 1), summary.unsupported, summary.first_failure_message },
         );
     }
     try std.testing.expectEqual(@as(usize, 1), summary.files);
-    try std.testing.expectEqual(@as(usize, 100), summary.passed);
+    try std.testing.expectEqual(@as(usize, 101), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 1), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
