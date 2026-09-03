@@ -32264,6 +32264,34 @@ pub const Checker = struct {
         return recv_t;
     }
 
+    /// The lightweight JSON lib surface stays permissive for overload
+    /// checking, while its reviver/replacer callbacks still have the stable
+    /// `(key: string, value: any)` parameter contract. Match only the cached
+    /// built-in object so a user binding named `JSON` keeps its own semantics.
+    fn jsonTransformCallbackParameterType(
+        self: *Checker,
+        fn_node: NodeId,
+        param_index: usize,
+    ) CheckError!?TypeId {
+        if (param_index > 1) return null;
+        const parent = self.hir.parentOf(fn_node);
+        if (parent == hir_mod.none_node_id or self.hir.kindOf(parent) != .call_expr) return null;
+        const call = hir_mod.callOf(self.hir, parent);
+        const args = hir_mod.callArgs(self.hir, parent);
+        if (args.len < 2 or args[1] != fn_node) return null;
+        if (call.callee == hir_mod.none_node_id or self.hir.kindOf(call.callee) != .member_access) return null;
+        const member = hir_mod.memberOf(self.hir, call.callee);
+        const method = self.string_interner.get(member.name);
+        if (!std.mem.eql(u8, method, "parse") and !std.mem.eql(u8, method, "stringify")) return null;
+        if (member.object == hir_mod.none_node_id or self.hir.kindOf(member.object) != .identifier) return null;
+        const object = hir_mod.identifierOf(self.hir, member.object);
+        if (!std.mem.eql(u8, self.string_interner.get(object.name), "JSON")) return null;
+        const receiver_t = try self.checkExpression(member.object);
+        const builtin_t = lib.jsonGlobal(&self.lib_cache, self.interner, self.string_interner) catch return error.OutOfMemory;
+        if (receiver_t != builtin_t) return null;
+        return if (param_index == 0) types.Primitive.string_t else types.Primitive.any;
+    }
+
     fn iifeParameterTypeFromCallArgument(
         self: *Checker,
         fn_node: NodeId,
@@ -36414,6 +36442,11 @@ pub const Checker = struct {
                 try self.arrayCallbackParameterType(node, param_index)
             else
                 null;
+            const json_callback_context_t: ?TypeId = if (!has_anno and !is_this_param and
+                !pp.flags.is_rest and pp.default_value == hir_mod.none_node_id)
+                try self.jsonTransformCallbackParameterType(node, param_index)
+            else
+                null;
             var inferred_object_binding_pattern = false;
             const t: TypeId = if (has_anno) blk: {
                 const lowered_annotation_t = try self.lowererLowerWithTypeParams(pp.type_annotation);
@@ -36486,6 +36519,8 @@ pub const Checker = struct {
             } else if (iife_context_t) |context_t|
                 context_t
             else if (array_callback_context_t) |context_t|
+                context_t
+            else if (json_callback_context_t) |context_t|
                 context_t
             else
                 types.Primitive.any;
@@ -36654,6 +36689,7 @@ pub const Checker = struct {
                 contextual_tuple_param_t == null and
                 contextual_param_t == null and
                 array_callback_context_t == null and
+                json_callback_context_t == null and
                 !inferred_from_default and param_implicit_any_report and
                 !default_is_await_error_placeholder and
                 !default_is_yield_in_param_initializer and
@@ -258715,6 +258751,37 @@ test "checker: JSON global exposes parse + stringify with optional args" {
         try T.expect(d.code != 2339);
         try T.expect(d.code != 2554);
     }
+}
+
+test "checker: built-in JSON transform callbacks receive contextual parameters" {
+    const s = try newSetup(
+        \\JSON.parse('{"x":1}', (key, value) => {
+        \\  const exact: string = key;
+        \\  const wrong: number = key;
+        \\  return value;
+        \\});
+        \\JSON.stringify({ x: 1 }, (key, value) => {
+        \\  const exact: string = key;
+        \\  const wrong: number = key;
+        \\  return value;
+        \\});
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.parameter_implicitly_any));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: shadowed JSON does not receive built-in callback context" {
+    const s = try newSetup(
+        \\const JSON: { stringify(value: any, replacer: any): string } = null as any;
+        \\JSON.stringify({}, (key, value) => value);
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.parameter_implicitly_any));
 }
 
 test "checker: console global exposes debug/trace/group/time/count/clear etc" {
