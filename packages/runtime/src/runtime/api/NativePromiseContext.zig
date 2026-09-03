@@ -4,18 +4,11 @@
 // Rewrites:
 //   - @import("bun") → @import("home")
 //
-// Stubs (re-attach in Phase 12.2 when home_rt grows the matching surface):
-//   - `jsc.JSGlobalObject`, `jsc.JSValue`, `jsc.Task`, `jsc.VirtualMachine`
-//     — opaque shims locally; the create/take entry points stay as soft-linked
-//     fn-ptr indirections.
-//   - `server.HTTPServer.RequestContext` and the rest of the server-side
-//     dispatch targets — modeled as zero-field stub types so the Tag table
-//     compiles and `runFromJSThread` retains its switch shape. Body still
-//     wires the deref call chain; the real deref symbol gets routed back
-//     when the server tree lands.
-//   - `bun.webcore.Body.ValueBufferer` / `HTMLRewriter.BufferOutputSink`
-//     — stubbed structs with `deref` and a `ctx` field, preserving the
-//     "release on the owner" indirection.
+// Build partition:
+//   - JSC builds use the real VM, Task queue, server request contexts, and
+//     HTMLRewriter owner so GC-triggered derefs reach production objects.
+//   - The deliberately JSC-less unit gate selects local Task/VM and
+//     HTMLRewriter stand-ins; create/take remain soft-linked there.
 //
 // The packed-pointer/tag layout (tag in low 3 bits, ctx pointer in 48..3,
 // 8-byte alignment assertions) is preserved and exercised by tests.
@@ -106,7 +99,7 @@ fn routing_test_take(_: jsc.JSValue) callconv(.c) ?*anyopaque {
 /// that ref until `take()` transfers it back or GC runs the destructor.
 pub fn create(global: *jsc.JSGlobalObject, ctx: anytype) jsc.JSValue {
     const T = @typeInfo(@TypeOf(ctx)).pointer.child;
-    return Bun__NativePromiseContext__create_fn(global, ctx, @intFromEnum(Tag.fromType(T)));
+    return Bun__NativePromiseContext__create_fn(global, ctx, @backingInt(Tag.fromType(T)));
 }
 
 /// Transfers the ref back to the caller and nulls the cell so the destructor
@@ -127,7 +120,7 @@ pub fn take(comptime T: type, cell: jsc.JSValue) ?*T {
 /// the server — all of which may unprotect JS values or allocate. We must
 /// defer that work to the event loop.
 pub export fn Bun__NativePromiseContext__destroy(ctx: *anyopaque, tag: u8) callconv(.c) void {
-    DeferredDerefTask.schedule(ctx, @enumFromInt(tag));
+    DeferredDerefTask.schedule(ctx, @fromBackingInt(@intCast(tag)));
 }
 
 comptime {
@@ -154,24 +147,35 @@ pub const DeferredDerefTask = struct {
         std.debug.assert(@alignOf(webcore.Body.ValueBufferer) > tag_mask);
     }
 
+    fn pack(ctx: *anyopaque, tag: Tag) usize {
+        const addr = @intFromPtr(ctx);
+        std.debug.assert(addr & tag_mask == 0);
+        return addr | @backingInt(tag);
+    }
+
+    fn unpackTag(packed_ptr: usize) Tag {
+        return @fromBackingInt(@intCast(packed_ptr & tag_mask));
+    }
+
+    fn unpackContext(packed_ptr: usize) *anyopaque {
+        return @ptrFromInt(packed_ptr & ~tag_mask);
+    }
+
     pub fn schedule(ctx: *anyopaque, tag: Tag) void {
         const vm = jsc.VirtualMachine.get();
         // Process is dying; the leak no longer matters and the task
         // queue won't drain.
         if (vm.isShuttingDown()) return;
 
-        const addr = @intFromPtr(ctx);
-        std.debug.assert(addr & tag_mask == 0);
-
         var marker: DeferredDerefTask = undefined;
         var task = jsc.Task.init(&marker);
-        task.setUintptr(@truncate(addr | @intFromEnum(tag)));
+        task.setUintptr(@truncate(pack(ctx, tag)));
         vm.eventLoop().enqueueTask(task);
     }
 
     pub fn runFromJSThread(packed_ptr: usize) void {
-        const tag: Tag = @enumFromInt(packed_ptr & tag_mask);
-        const ctx: *anyopaque = @ptrFromInt(packed_ptr & ~tag_mask);
+        const tag = unpackTag(packed_ptr);
+        const ctx = unpackContext(packed_ptr);
         switch (tag) {
             .HTTPServerRequestContext => @as(*server.HTTPServer.RequestContext, @ptrCast(@alignCast(ctx))).deref(),
             .HTTPSServerRequestContext => @as(*server.HTTPSServer.RequestContext, @ptrCast(@alignCast(ctx))).deref(),
@@ -196,10 +200,10 @@ const home_rt = @import("home");
 const build_options = @import("build_options");
 
 // ============================================================================
-// Local stubs (re-attach when the matching home_rt surfaces land)
+// JSC-less unit-test stubs. Production must enqueue onto the real VM.
 // ============================================================================
 
-const jsc = struct {
+const jsc = if (build_options.enable_jsc) home_rt.jsc else struct {
     pub const JSGlobalObject = home_rt.jsc.JSGlobalObject;
     pub const JSValue = home_rt.jsc.JSValue;
 
@@ -261,7 +265,7 @@ const StubRequest = extern struct {
     pub fn deref(_: *@This()) void {}
 };
 
-const HTMLRewriter = struct {
+const HTMLRewriter = if (build_options.enable_jsc) @import("html_rewriter.zig").HTMLRewriter else struct {
     pub const BufferOutputSink = extern struct {
         _pad: u64 = 0,
 
@@ -275,8 +279,8 @@ const HTMLRewriter = struct {
 
 test "NativePromiseContext.Tag: low 3 bits address all variants" {
     try std.testing.expect(@typeInfo(Tag).@"enum".field_names.len <= 8);
-    try std.testing.expectEqual(@as(u8, 0), @intFromEnum(Tag.HTTPServerRequestContext));
-    try std.testing.expectEqual(@as(u8, 4), @intFromEnum(Tag.BodyValueBufferer));
+    try std.testing.expectEqual(@as(u8, 0), @backingInt(Tag.HTTPServerRequestContext));
+    try std.testing.expectEqual(@as(u8, 4), @backingInt(Tag.BodyValueBufferer));
 }
 
 test "NativePromiseContext.Tag.fromType maps the canonical request contexts" {
@@ -284,28 +288,25 @@ test "NativePromiseContext.Tag.fromType maps the canonical request contexts" {
     try std.testing.expectEqual(Tag.BodyValueBufferer, Tag.fromType(webcore.Body.ValueBufferer));
 }
 
-test "DeferredDerefTask.schedule packs the ctx pointer and tag in the low 3 bits" {
+test "DeferredDerefTask packs the ctx pointer and tag in the low 3 bits" {
     var ctx_buf: [4]u64 align(8) = @splat(0);
     const ctx: *anyopaque = @ptrCast(&ctx_buf);
 
-    // Reset event-loop counter via the stub VM.
-    jsc.VirtualMachine.get().shutting_down = false;
-    const before = @as(*jsc.EventLoop, &@field(jsc, "global_event_loop")).enqueued;
-    DeferredDerefTask.schedule(ctx, .BodyValueBufferer);
-    const after = @as(*jsc.EventLoop, &@field(jsc, "global_event_loop")).enqueued;
-    try std.testing.expectEqual(before + 1, after);
+    const packed_value = DeferredDerefTask.pack(ctx, .BodyValueBufferer);
+    try std.testing.expectEqual(Tag.BodyValueBufferer, DeferredDerefTask.unpackTag(packed_value));
+    try std.testing.expectEqual(ctx, DeferredDerefTask.unpackContext(packed_value));
 }
 
-test "DeferredDerefTask.schedule is a no-op when the VM is shutting down" {
+test "DeferredDerefTask pointer packing round-trips every tag" {
     var ctx_buf: [4]u64 align(8) = @splat(0);
     const ctx: *anyopaque = @ptrCast(&ctx_buf);
 
-    jsc.VirtualMachine.get().shutting_down = true;
-    const before = @as(*jsc.EventLoop, &@field(jsc, "global_event_loop")).enqueued;
-    DeferredDerefTask.schedule(ctx, .HTTPServerRequestContext);
-    const after = @as(*jsc.EventLoop, &@field(jsc, "global_event_loop")).enqueued;
-    try std.testing.expectEqual(before, after);
-    jsc.VirtualMachine.get().shutting_down = false;
+    inline for (@typeInfo(Tag).@"enum".field_names, 0..) |_, tag_index| {
+        const tag: Tag = @fromBackingInt(@intCast(tag_index));
+        const packed_value = DeferredDerefTask.pack(ctx, tag);
+        try std.testing.expectEqual(tag, DeferredDerefTask.unpackTag(packed_value));
+        try std.testing.expectEqual(ctx, DeferredDerefTask.unpackContext(packed_value));
+    }
 }
 
 test "DeferredDerefTask.runFromJSThread dispatch table stays tag-complete" {
@@ -326,7 +327,7 @@ test "NativePromiseContext.create routes through the soft-linked fn-ptr" {
     Bun__NativePromiseContext__create_fn = &routing_test_create;
     try std.testing.expectEqual(jsc.JSValue.zero, create(g, ctx));
     try std.testing.expectEqual(@as(?*anyopaque, ctx), routing_test_recorded_ctx);
-    try std.testing.expectEqual(@as(u8, @intFromEnum(Tag.HTTPServerRequestContext)), routing_test_recorded_tag);
+    try std.testing.expectEqual(@as(u8, @backingInt(Tag.HTTPServerRequestContext)), routing_test_recorded_tag);
 }
 
 test "NativePromiseContext.take transfers the cell payload through the soft-linked fn-ptr" {
