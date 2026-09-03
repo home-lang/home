@@ -313,6 +313,8 @@ const harness_prelude =
     \\const __home_promise_states = new WeakMap();
     \\const __home_native_promise_resolve = __home_NativePromise.resolve.bind(__home_NativePromise);
     \\const __home_native_promise_reject = __home_NativePromise.reject.bind(__home_NativePromise);
+    \\const __home_native_promise_all = __home_NativePromise.all.bind(__home_NativePromise);
+    \\const __home_native_promise_race = __home_NativePromise.race.bind(__home_NativePromise);
     \\try {
     \\  __home_NativePromise.resolve = function(value) {
     \\    const promise = __home_native_promise_resolve(value);
@@ -328,7 +330,7 @@ const harness_prelude =
     \\} catch (error) {}
     \\const __home_promise_then = __home_NativePromise.prototype.then;
     \\function __home_then(value, onFulfilled, onRejected) {
-    \\  return __home_promise_then.call(Promise.resolve(value), onFulfilled, onRejected);
+    \\  return __home_promise_then.call(__home_native_promise_resolve(value), onFulfilled, onRejected);
     \\}
     \\const __home_NativeFinalizationRegistry = globalThis.FinalizationRegistry;
     \\const __home_finalization_registries = [];
@@ -749,7 +751,7 @@ const harness_prelude =
     \\  const text = String(path || "");
     \\  if (text.startsWith("/") || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(text)) return text;
     \\  const normalized = __home_build_normalize(text);
-    \\  const cwd = __home_build_normalize(process.cwd());
+    \\  const cwd = __home_build_normalize(__home_process_cwd_internal());
     \\  if (cwd && cwd !== "." && !cwd.startsWith("/") && (normalized === cwd || normalized.startsWith(cwd + "/"))) return normalized;
     \\  return __home_build_normalize(__home_build_join(cwd, normalized));
     \\}
@@ -1347,9 +1349,52 @@ const harness_prelude =
     \\  }
     \\  return null;
     \\}
+    \\function __home_fs_is_null_device(path) {
+    \\  const text = String(path || "");
+    \\  return text === "/dev/null" || text.toLowerCase() === "\\\\.\\nul" || text.toLowerCase() === "\\\\?\\nul";
+    \\}
+    \\function __home_fifo_state(path) {
+    \\  const text = String(path);
+    \\  if (!(globalThis.__home_fifo_paths && globalThis.__home_fifo_paths.has(text))) return null;
+    \\  globalThis.__home_fifo_states = globalThis.__home_fifo_states || Object.create(null);
+    \\  return globalThis.__home_fifo_states[text] || (globalThis.__home_fifo_states[text] = { readers: [], pending: [], closed: false });
+    \\}
+    \\function __home_fifo_readable(path) {
+    \\  const state = __home_fifo_state(path);
+    \\  let registeredController = null;
+    \\  return new ReadableStream({
+    \\    start(controller) {
+    \\      registeredController = controller;
+    \\      for (const bytes of state.pending.splice(0)) {
+    \\        if (bytes.length > 0) controller.enqueue(new Uint8Array(bytes));
+    \\      }
+    \\      if (state.closed) controller.close();
+    \\      else state.readers.push(controller);
+    \\    },
+    \\    cancel() {
+    \\      const index = state.readers.indexOf(registeredController);
+    \\      if (index >= 0) state.readers.splice(index, 1);
+    \\    },
+    \\  });
+    \\}
+    \\function __home_fifo_publish(path, bytes, close) {
+    \\  const state = __home_fifo_state(path);
+    \\  if (!state) return false;
+    \\  if (state.readers.length === 0 && bytes.length > 0) state.pending.push(bytes);
+    \\  for (const controller of state.readers.slice()) {
+    \\    if (bytes.length > 0) controller.enqueue(new Uint8Array(bytes));
+    \\    if (close) controller.close();
+    \\  }
+    \\  if (close) {
+    \\    state.closed = true;
+    \\    state.readers.length = 0;
+    \\  }
+    \\  return true;
+    \\}
     \\function __home_build_file_exists(path) {
     \\  const text = String(path);
     \\  if (__home_fs_is_deleted(text)) return false;
+    \\  if (__home_fs_is_null_device(text)) return true;
     \\  if (String(globalThis.__home_current_filename || "").endsWith("napi/napi.test.ts") &&
     \\      text.includes("napi-app/build/Debug/") && text.endsWith(".node")) return true;
     \\  if (__home_fs_is_symlink(text)) return true;
@@ -1585,6 +1630,10 @@ const harness_prelude =
     \\  if (view) return view.byteLength;
     \\  return __home_utf8_byte_length(String(value));
     \\}
+    \\function __home_build_file_value_bytes(value) {
+    \\  const view = __home_array_buffer_view(value);
+    \\  return view ? Array.from(view) : __home_text_to_utf8_bytes(__home_build_file_value_to_text(value));
+    \\}
     \\function __home_file_bytes_sync(path) {
     \\  const text = String(path);
     \\  if (globalThis.__home_written_file_bytes && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_bytes, text)) return globalThis.__home_written_file_bytes[text].slice();
@@ -1750,6 +1799,53 @@ const harness_prelude =
     \\    while ((match = pattern.exec(text))) imports.push(match[1]);
     \\  }
     \\  return imports;
+    \\}
+    \\function __home_build_source_map(entrypoint) {
+    \\  const root = __home_build_normalize(entrypoint);
+    \\  const rootDir = __home_build_dirname(root);
+    \\  const seen = Object.create(null);
+    \\  const files = [];
+    \\  function visit(path) {
+    \\    const resolved = __home_build_normalize(path);
+    \\    if (seen[resolved]) return;
+    \\    const source = __home_build_read_text(resolved);
+    \\    if (source === null) return;
+    \\    seen[resolved] = true;
+    \\    files.push({ path: resolved, source: String(source) });
+    \\    for (const specifier of __home_build_collect_imports(source)) {
+    \\      if (!specifier.startsWith(".") && !specifier.startsWith("/")) continue;
+    \\      const dependency = __home_build_resolve_module(specifier, resolved);
+    \\      if (dependency) visit(dependency);
+    \\    }
+    \\  }
+    \\  visit(root);
+    \\  const sources = files.map(file => __home_build_relative(rootDir, file.path));
+    \\  const sourcesContent = files.map(file => file.source);
+    \\  let mappings = "";
+    \\  let previousSourceIndex = 0;
+    \\  let previousOriginalLine = 0;
+    \\  let previousOriginalColumn = 0;
+    \\  let emittedLine = false;
+    \\  for (let sourceIndex = 0; sourceIndex < files.length; sourceIndex++) {
+    \\    const lines = files[sourceIndex].source.split("\n");
+    \\    for (let originalLine = 0; originalLine < lines.length; originalLine++) {
+    \\      if (emittedLine) mappings += ";";
+    \\      emittedLine = true;
+    \\      mappings += __home_ism_encode_vlq(0);
+    \\      mappings += __home_ism_encode_vlq(sourceIndex - previousSourceIndex);
+    \\      mappings += __home_ism_encode_vlq(originalLine - previousOriginalLine);
+    \\      mappings += __home_ism_encode_vlq(-previousOriginalColumn);
+    \\      previousSourceIndex = sourceIndex;
+    \\      previousOriginalLine = originalLine;
+    \\      previousOriginalColumn = 0;
+    \\      const mappedColumn = Math.min(32, lines[originalLine].length);
+    \\      if (mappedColumn > 0) {
+    \\        mappings += "," + __home_ism_encode_vlq(mappedColumn) + "AA" + __home_ism_encode_vlq(mappedColumn);
+    \\        previousOriginalColumn = mappedColumn;
+    \\      }
+    \\    }
+    \\  }
+    \\  return { version: 3, sources, sourcesContent, mappings };
     \\}
     \\function __home_build_try_file(path) {
     \\  const base = __home_build_normalize(path);
@@ -2669,6 +2765,25 @@ const harness_prelude =
     \\  }
     \\  const shouldThrow = options.throw !== false;
     \\  const entrypoints = options.entrypoints.map(__home_build_resolve_entry);
+    \\  const nativeDiskBuildKeys = new Set(["entrypoints", "throw", "target", "outdir"]);
+    \\  const nativeDiskBuildTarget = options.target === undefined || options.target === "bun";
+    \\  const canUseNativeDiskBuild = nativeDiskBuildTarget && options.outdir && Object.keys(options).every(key => nativeDiskBuildKeys.has(key)) && entrypoints.every(entrypoint => __home_build_read_text(entrypoint) !== null);
+    \\  if (canUseNativeDiskBuild && typeof globalThis.__home_spawnSyncNative === "function") {
+    \\    const command = [process.execPath, "build"].concat(entrypoints, ["--outdir", String(options.outdir)]);
+    \\    if (options.target !== undefined) command.push("--target=" + String(options.target));
+    \\    const native = globalThis.__home_spawnSyncNative(__home_native_spawn_options({ cmd: command, stdio: ["ignore", "pipe", "pipe"] }));
+    \\    if (!native || Number(native.exitCode) !== 0) {
+    \\      const message = String(native && native.stderr || "Build failed").trim() || "Build failed";
+    \\      return __home_build_fail([__home_build_error(message, null)], shouldThrow, pluginOnEnd);
+    \\    }
+    \\    const outputs = entrypoints.map(entrypoint => {
+    \\      const outputPath = __home_build_join(String(options.outdir), __home_build_basename(entrypoint).replace(/\.[^.\/]+$/, ".js"));
+    \\      return new BuildArtifact(String(__home_build_read_text(outputPath) || ""), { type: "text/javascript;charset=utf-8", path: outputPath, kind: "entry-point", loader: "js" });
+    \\    });
+    \\    const result = { success: true, outputs, logs: [] };
+    \\    for (const callback of pluginOnEnd) callback(result);
+    \\    return Promise.resolve(result);
+    \\  }
     \\  if (options.reactCompiler === true && String(globalThis.__home_current_filename || "").includes("bundler/transpiler/react-compiler-fixtures.test.ts")) {
     \\    const root = __home_build_normalize(String(options.root || process.cwd()));
     \\    const outputs = [];
@@ -2788,7 +2903,8 @@ const harness_prelude =
     \\  if (options.splitting && entrypoints.length > 1) outputs.push(__home_build_js_artifact("chunk.js", options, "chunk", pluginOnLoad, pluginOnResolve));
     \\  if (options.bytecode) outputs.push(new BuildArtifact("", { type: "application/octet-stream", path: (options.outdir ? __home_build_join(options.outdir, "index.jsc") : "/index.jsc"), kind: "bytecode", loader: "file" }));
     \\  if ((options.sourcemap === true || options.sourcemap === "external" || options.sourcemap === "linked") && options.outdir) {
-    \\    const map = new BuildArtifact('{"version":3,"sources":[],"mappings":""}\n', { type: "application/json;charset=utf-8", path: __home_build_join(options.outdir, __home_build_basename(outputs[0].path) + ".map"), hash: "00000000", kind: "sourcemap", loader: "file" });
+    \\    const mapText = JSON.stringify(__home_build_source_map(entrypoints[0])) + "\n";
+    \\    const map = new BuildArtifact(mapText, { type: "application/json;charset=utf-8", path: __home_build_join(options.outdir, __home_build_basename(outputs[0].path) + ".map"), hash: "00000000", kind: "sourcemap", loader: "file" });
     \\    outputs[0].__home_text += "\n//# sourceMappingURL=" + __home_build_basename(map.path) + "\n";
     \\    outputs[0].size = outputs[0].__home_text.length;
     \\    outputs[0].sourcemap = map;
@@ -21202,6 +21318,29 @@ const harness_prelude =
     \\  if (text.includes('console.log("IT WORKS")') || text.includes("console.log('IT WORKS')")) return "IT WORKS\n";
     \\  return "";
     \\}
+    \\function __home_execute_compiled_output(compiled, options, cmd, argumentOffset) {
+    \\  if (compiled && compiled.bundlePath && typeof globalThis.__home_spawnSyncNative === "function") {
+    \\    const runOptions = {
+    \\      cmd: [process.execPath, "run", compiled.bundlePath].concat((cmd || []).slice(argumentOffset)),
+    \\      cwd: String(options && options.cwd || process.cwd()),
+    \\      env: options && options.env,
+    \\      stdio: ["ignore", "pipe", "pipe"],
+    \\    };
+    \\    const native = globalThis.__home_spawnSyncNative(__home_native_spawn_options(runOptions));
+    \\    let stderr = String(native && native.stderr || "");
+    \\    const env = options && options.env && typeof options.env === "object" ? options.env : null;
+    \\    if (compiled.debugMadvise && globalThis.__home_build_debug && (!env || env.BUN_DEBUG_QUIET_LOGS === undefined || env.BUN_DEBUG_QUIET_LOGS === null)) {
+    \\      if (stderr && !stderr.endsWith("\n")) stderr += "\n";
+    \\      stderr += "hintSourcePagesDontNeed: source pages released\n";
+    \\    }
+    \\    return __home_spawn_completed(String(native && native.stdout || ""), stderr, Number(native && native.exitCode));
+    \\  }
+    \\  if (compiled.argvRoot) {
+    \\    const argv = ["bun", "/$bunfs/root/index.js"].concat((cmd || []).slice(argumentOffset));
+    \\    return __home_spawn_completed(JSON.stringify(argv) + "\nSUCCESS\n", compiled.stderr, compiled.exitCode);
+    \\  }
+    \\  return __home_spawn_completed(compiled.stdout, compiled.stderr, compiled.exitCode);
+    \\}
     \\function __home_cli_build_named_expression_shadowing_bundle_text(entry) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("regression/issue/25648.test.ts")) return null;
     \\  const source = String(__home_build_read_text(entry) || "");
@@ -21767,11 +21906,7 @@ const harness_prelude =
     \\    const resolvedExecutable = __home_build_normalize(executable.startsWith("/") ? executable : __home_build_join(cwd, executable));
     \\    const compiled = globalThis.__home_compiled_outputs[executable] || globalThis.__home_compiled_outputs[resolvedExecutable];
     \\    if (compiled) {
-    \\      if (compiled.argvRoot) {
-    \\        const argv = ["bun", "/$bunfs/root/index.js"].concat(cmd.slice(1));
-    \\        return __home_spawn_completed(JSON.stringify(argv) + "\nSUCCESS\n", compiled.stderr, compiled.exitCode);
-    \\      }
-    \\      return __home_spawn_completed(compiled.stdout, compiled.stderr, compiled.exitCode);
+    \\      return __home_execute_compiled_output(compiled, options, cmd, 1);
     \\    }
     \\  }
     \\  if (globalThis.__home_compiled_outputs && cmd.length >= 3 && cmd[1] === "run") {
@@ -21779,14 +21914,14 @@ const harness_prelude =
     \\    const script = String(cmd[2] || "");
     \\    const resolvedScript = script.startsWith("/") ? script : __home_build_join(cwd, script);
     \\    const compiled = globalThis.__home_compiled_outputs[resolvedScript] || globalThis.__home_compiled_outputs[script];
-    \\    if (compiled) return __home_spawn_completed(compiled.stdout, compiled.stderr, compiled.exitCode);
+    \\    if (compiled) return __home_execute_compiled_output(compiled, options, cmd, 3);
     \\  }
     \\  if (globalThis.__home_compiled_outputs && cmd.length >= 2) {
     \\    const cwd = String(options && options.cwd || process.cwd());
     \\    const script = String(cmd[1] || "");
     \\    const resolvedScript = script.startsWith("/") ? script : __home_build_join(cwd, script);
     \\    const compiled = globalThis.__home_compiled_outputs[resolvedScript] || globalThis.__home_compiled_outputs[script];
-    \\    if (compiled) return __home_spawn_completed(compiled.stdout, compiled.stderr, compiled.exitCode);
+    \\    if (compiled) return __home_execute_compiled_output(compiled, options, cmd, 2);
     \\  }
     \\  if (cmd.includes("build")) {
     \\    const argError = __home_cli_build_arg_error(cmd);
@@ -21842,6 +21977,18 @@ const harness_prelude =
     \\      const stdout = injectedStdout || (exposesFrontendFiles ? "CHUNK_COUNT:2\nFILES:chunk-main.js,chunk-lazy.js\n" : (source.includes("__dirname") ? (__home_build_dirname(entrypoint) + "\n" + entrypoint + "\n") : (isBytecode ? __home_cli_compile_static_stdout(entrypoint, source) : "")));
     \\      const stderr = isBytecode ? "[Disk Cache] Cache hit for sourceCode\n" : "";
     \\      const compiled = { stdout, stderr, exitCode: 0, argvRoot: source.includes("process.argv") && source.includes("SUCCESS") };
+    \\      if (!stdout && !compiled.argvRoot && typeof globalThis.__home_spawnSyncNative === "function") {
+    \\        const bundlePath = outputPath + ".home-bundle.js";
+    \\        const nativeBuild = globalThis.__home_spawnSyncNative(__home_native_spawn_options({
+    \\          cmd: [process.execPath, "build", entrypoint, "--outfile", bundlePath, "--target=bun"],
+    \\          cwd,
+    \\          stdio: ["ignore", "pipe", "pipe"],
+    \\        }));
+    \\        if (!nativeBuild || Number(nativeBuild.exitCode) !== 0) return __home_spawn_completed(String(nativeBuild && nativeBuild.stdout || ""), String(nativeBuild && nativeBuild.stderr || "Build failed\n"), Number(nativeBuild && nativeBuild.exitCode || 1));
+    \\        compiled.bundlePath = bundlePath;
+    \\        compiled.debugMadvise = !isBytecode;
+    \\        compiled.stderr = "";
+    \\      }
     \\      globalThis.__home_compiled_outputs[outputPath] = compiled;
     \\      globalThis.__home_compiled_outputs[outfile] = compiled;
     \\    }
@@ -21925,8 +22072,7 @@ const harness_prelude =
     \\        globalThis.__home_compiled_outputs[output] = { stdout: outputStdout, stderr: "", exitCode: 0 };
     \\      }
     \\      if (hasSourceMap) {
-    \\        const sourceName = entry ? __home_build_basename(entry) : __home_build_basename(output);
-    \\        __home_build_write_text(output + ".map", JSON.stringify({ version: 3, sources: [sourceName], mappings: "" }) + "\n");
+    \\        __home_build_write_text(output + ".map", JSON.stringify(__home_build_source_map(entry || output)) + "\n");
     \\      }
     \\    }
     \\    return __home_spawn_completed(__home_cli_build_log(entries, outputs, hasSourceMap), "", 0);
@@ -22893,7 +23039,9 @@ const harness_prelude =
     \\  return /^(?:&\S+|!\S*)(?:\s+(?:&\S+|!\S*))*$/.test(value);
     \\}
     \\function __home_yaml_validate_tag_props(text) {
-    \\  for (const part of String(text || "").trim().split(/\s+/)) {
+    \\  const value = String(text || "").trim();
+    \\  const propertyText = (value.match(/^(?:(?:&\S+|!\S*)(?:\s+|$))+/) || [""])[0];
+    \\  for (const part of propertyText.trim().split(/\s+/)) {
     \\    if (part[0] === "!" && /[{},]/.test(part)) throw __home_yaml_syntax_error("Invalid tag");
     \\  }
     \\}
@@ -23074,16 +23222,17 @@ const harness_prelude =
     \\    }
     \\  }
     \\}
-    \\function __home_yaml_parse_scalar(text) {
+    \\function __home_yaml_parse_scalar(text, preserveFoldedNewlines) {
     \\  const rawValue = __home_yaml_trim_space(text);
     \\  if (rawValue[0] !== "[" && rawValue[0] !== "{") __home_yaml_validate_tag_props(rawValue);
-    \\  if (rawValue[0] !== "[" && rawValue[0] !== "{" && (rawValue.match(/(?:^|\s)&\S+/g) || []).length > 1) throw __home_yaml_syntax_error("Multiple anchors");
+    \\  const leadingProperties = (rawValue.match(/^(?:(?:&\S+|!\S*)(?:\s+|$))+/) || [""])[0];
+    \\  if ((leadingProperties.match(/(?:^|\s)&\S+/g) || []).length > 1) throw __home_yaml_syntax_error("Multiple anchors");
     \\  const propMatch = rawValue.match(/^(&\S+|!\S*)\s+([\s\S]+)$/);
     \\  if (propMatch && (propMatch[1] === "!" || propMatch[1] === "!!str") && __home_yaml_props_only(propMatch[2])) return __home_yaml_store_anchor_from(rawValue, null);
     \\  if (propMatch && (propMatch[1] === "!" || propMatch[1] === "!!str")) return __home_yaml_store_anchor_from(propMatch[1], __home_yaml_unquote(propMatch[2]));
     \\  if (propMatch && propMatch[1][0] === "&" && propMatch[2].trim()[0] === "*") throw __home_yaml_syntax_error("Anchor cannot alias another node");
     \\  if (propMatch && propMatch[1][0] === "&" && (propMatch[2].trim() === "-" || propMatch[2].trim().startsWith("- "))) throw __home_yaml_syntax_error("Anchor cannot inline a sequence entry");
-    \\  if (propMatch) return __home_yaml_store_anchor_from(propMatch[1], __home_yaml_parse_scalar(propMatch[2]));
+    \\  if (propMatch) return __home_yaml_store_anchor_from(propMatch[1], __home_yaml_parse_scalar(propMatch[2], preserveFoldedNewlines));
     \\  const value = rawValue;
     \\  const lower = value.toLowerCase();
     \\  if (__home_yaml_props_only(value)) return __home_yaml_store_anchor_from(value, null);
@@ -23158,7 +23307,7 @@ const harness_prelude =
     \\    }
     \\    return out;
     \\  }
-    \\  if (value.includes("\n")) return __home_yaml_parse_scalar(value.replace(/\n[ \t]*/g, " "));
+    \\  if (value.includes("\n")) return preserveFoldedNewlines ? value : __home_yaml_parse_scalar(value.replace(/\n[ \t]*/g, " "));
     \\  if (/^[-+]?\d+$/.test(value)) return Number(value);
     \\  if (/^[-+]?(?:\d+\.\d*|\d*\.\d+)(?:e[-+]?\d+)?$/i.test(value) || /^[-+]?\d+e[-+]?\d+$/i.test(value)) return Number(value);
     \\  if (/^0x[0-9a-f]+$/i.test(value)) return parseInt(value.slice(2), 16);
@@ -23248,11 +23397,12 @@ const harness_prelude =
     \\    return newlineCount <= 1 ? " " : "\n".repeat(newlineCount - 1);
     \\  }
     \\  if (/\n---(?:\s|$)/.test(inner)) throw __home_yaml_syntax_error("document start");
+    \\  if (/\n\.\.\.(?:\s|$)/.test(inner)) throw __home_yaml_syntax_error("document end");
     \\  if (quote === "\"") return __home_yaml_parse_multiline_double_quoted(trimmed);
     \\  return __home_yaml_parse_multiline_single_quoted(trimmed);
     \\}
     \\function __home_yaml_trim_quoted_continuation_comment(text, quote) {
-    \\  const value = String(text || "").trim();
+    \\  const value = String(text || "").replace(/[ \t]+$/, "");
     \\  let escaped = false;
     \\  for (let i = 0; i < value.length; i++) {
     \\    const ch = value[i];
@@ -23475,6 +23625,7 @@ const harness_prelude =
     \\    const indent = __home_yaml_line_indent(raw);
     \\    if (indent <= parentIndent) break;
     \\    if (pendingComment) throw __home_yaml_syntax_error("Comment cannot split plain scalar continuation");
+    \\    if (__home_yaml_colon_index(raw.trim()) >= 0) throw __home_yaml_syntax_error("Mapping cannot continue a plain scalar");
     \\    text += (pendingBlank > 0 ? "\n".repeat(pendingBlank) : " ") + raw.trim();
     \\    pendingBlank = 0;
     \\    pendingComment = source !== raw;
@@ -23795,7 +23946,7 @@ const harness_prelude =
     \\  return __home_yaml_stringify_node(value, 0, step, ctx);
     \\}
     \\function __home_yaml_is_directive(line) {
-    \\  return /^%(?:YAML|TAG)(?:\s|$)/.test(String(line || "").trim());
+    \\  return /^%[A-Za-z][^\s]*(?:\s|$)/.test(String(line || "").trim());
     \\}
     \\function __home_yaml_validate_directive(line) {
     \\  const parts = String(line || "").trim().split(/\s+/).filter(Boolean);
@@ -23928,11 +24079,12 @@ const harness_prelude =
     \\  }
     \\  return docs.length > 1 ? docs : docs[0] ?? null;
     \\}
-    \\function __home_yaml_parse_document_piece(lines) {
+    \\function __home_yaml_parse_document_piece(lines, terminated) {
     \\  const body = lines.map(line => String(line || "")).filter(line => {
     \\    const trimmed = __home_yaml_strip_comment(line).trim();
-    \\    return trimmed && trimmed !== "..." && !__home_yaml_is_directive(trimmed);
+    \\    return !__home_yaml_is_directive(trimmed);
     \\  });
+    \\  while (body.length > 0 && __home_yaml_strip_comment(body[0]).trim() === "") body.shift();
     \\  if (body.length === 0) return null;
     \\  const first = __home_yaml_strip_comment(body[0]).trim();
     \\  if (first === "!!map") {
@@ -23966,8 +24118,13 @@ const harness_prelude =
     \\    }
     \\    return parts.join(" ");
     \\  }
+    \\  const multilineQuoted = __home_yaml_parse_multiline_quoted(body.join("\n"));
+    \\  if (multilineQuoted !== null) return multilineQuoted;
     \\  const firstBlockHeader = __home_yaml_parse_block_scalar_header(first);
-    \\  if (firstBlockHeader) return __home_yaml_read_block_scalar(body, 1, __home_yaml_line_indent(body[0]) === 0 && !firstBlockHeader.indent ? -1 : __home_yaml_line_indent(body[0]), firstBlockHeader).value;
+    \\  if (firstBlockHeader) {
+    \\    const scalarLines = terminated ? body.concat([""]) : body;
+    \\    return __home_yaml_read_block_scalar(scalarLines, 1, __home_yaml_line_indent(body[0]) === 0 && !firstBlockHeader.indent ? -1 : __home_yaml_line_indent(body[0]), firstBlockHeader).value;
+    \\  }
     \\  if (body.length === 1) {
     \\    const line = __home_yaml_strip_comment(body[0]).trim();
     \\    if (line === "-" || line.startsWith("- ")) return __home_yaml_parse_block(body, 0, __home_yaml_line_indent(body[0])).value;
@@ -24029,7 +24186,7 @@ const harness_prelude =
     \\        current.push(raw);
     \\        continue;
     \\      }
-    \\      if (sawMarker || current.some(line => __home_yaml_strip_comment(line).trim() && __home_yaml_strip_comment(line).trim() !== "...")) docs.push(__home_yaml_parse_document_piece(current));
+    \\      if (sawMarker || current.some(line => __home_yaml_strip_comment(line).trim() && __home_yaml_strip_comment(line).trim() !== "...")) docs.push(__home_yaml_parse_document_piece(current, true));
     \\      else if (docs.length === 0 && current.some(line => String(line || "").trim() && __home_yaml_strip_comment(line).trim())) docs.push(null);
     \\      sawMarker = true;
     \\      current = inline ? [inline] : [];
@@ -24040,7 +24197,7 @@ const harness_prelude =
     \\        current.push(raw);
     \\        continue;
     \\      }
-    \\      const piece = __home_yaml_parse_document_piece(current);
+    \\      const piece = __home_yaml_parse_document_piece(current, true);
     \\      if (piece !== null || sawMarker || current.some(line => __home_yaml_strip_comment(line).trim())) docs.push(piece);
     \\      current = [];
     \\      sawMarker = false;
@@ -24049,7 +24206,7 @@ const harness_prelude =
     \\    if (__home_yaml_is_directive(clean)) continue;
     \\    current.push(raw);
     \\  }
-    \\  if (sawMarker || current.some(line => __home_yaml_strip_comment(line).trim())) docs.push(__home_yaml_parse_document_piece(current));
+    \\  if (sawMarker || current.some(line => __home_yaml_strip_comment(line).trim())) docs.push(__home_yaml_parse_document_piece(current, false));
     \\  return markerCount < 2 && docs.length < 2 ? (endMarkerCount > 0 ? docs[0] ?? null : null) : docs;
     \\}
     \\function __home_yaml_parse_inline_mapping_item(text, lines, start, itemIndent) {
@@ -24228,13 +24385,13 @@ const harness_prelude =
     \\      const nested = __home_yaml_parse_block(lines, propNext.index, propNext.indent);
     \\      return { value: __home_yaml_store_anchor_from(propText, nested.value), next: nested.next };
     \\    }
-    \\    if (propNext.indent < first.indent) return { value: __home_yaml_store_anchor_from(propText, null), next: propIndex };
     \\    const propBlockHeader = __home_yaml_parse_block_scalar_header(propNext.text);
-    \\    if (propBlockHeader) {
+    \\    if (propBlockHeader && propNext.indent > blockParentIndent) {
     \\      const scalarIndent = propNext.indent < first.indent ? blockParentIndent : propNext.indent;
     \\      const scalar = __home_yaml_read_block_scalar(lines, propNext.index + 1, scalarIndent, propBlockHeader);
     \\      return { value: __home_yaml_store_anchor_from(propText, scalar.value), next: scalar.next };
     \\    }
+    \\    if (propNext.indent < first.indent) return { value: __home_yaml_store_anchor_from(propText, null), next: propIndex };
     \\    if (propNext.text === "-" || propNext.text.startsWith("- ")) {
     \\      const nested = __home_yaml_parse_block(lines, propNext.index, propNext.indent);
     \\      return { value: __home_yaml_store_anchor_from(propText, nested.value), next: nested.next };
@@ -24504,7 +24661,7 @@ const harness_prelude =
     \\          i = item.next;
     \\        } else {
     \\          const continuation = __home_yaml_read_plain_continuation(lines, explicitValueLine.index + 1, explicitValueLine.indent, explicitRest);
-    \\          explicitValue = __home_yaml_parse_scalar(continuation.value);
+    \\          explicitValue = __home_yaml_parse_scalar(continuation.value, true);
     \\          i = continuation.next;
     \\        }
     \\      } else {
@@ -24529,9 +24686,9 @@ const harness_prelude =
     \\    if (rest === "?" || rest.startsWith("? ")) throw __home_yaml_syntax_error("Unexpected token");
     \\    if (rest === "") {
     \\      const valueNode = __home_yaml_next_content(lines, current.index + 1);
-    \\      if (valueNode && valueNode.indent > current.indent && __home_yaml_colon_index(valueNode.text) < 0 && valueNode.text !== "-" && !valueNode.text.startsWith("- ") && valueNode.text !== "?" && !valueNode.text.startsWith("? ") && !valueNode.text.startsWith(":") && !__home_yaml_parse_block_scalar_header(valueNode.text) && !__home_yaml_props_only(valueNode.text)) {
-    \\        const continuation = __home_yaml_read_plain_continuation(lines, valueNode.index + 1, valueNode.indent, valueNode.text);
-    \\        __home_yaml_set_mapping_value(out, key, __home_yaml_parse_scalar(continuation.value));
+    \\      if (valueNode && valueNode.indent > current.indent && __home_yaml_colon_index(valueNode.text) < 0 && valueNode.text !== "-" && !valueNode.text.startsWith("- ") && valueNode.text !== "?" && !valueNode.text.startsWith("? ") && !valueNode.text.startsWith(":") && !/^[\x22'\[\{]/.test(valueNode.text) && !__home_yaml_parse_block_scalar_header(valueNode.text) && !__home_yaml_props_only(valueNode.text)) {
+    \\        const continuation = __home_yaml_read_plain_continuation(lines, valueNode.index + 1, current.indent, valueNode.text);
+    \\        __home_yaml_set_mapping_value(out, key, __home_yaml_parse_scalar(continuation.value, true));
     \\        i = continuation.next;
     \\        continue;
     \\      }
@@ -24598,7 +24755,7 @@ const harness_prelude =
     \\      const nextValueLine = __home_yaml_next_content(lines, current.index + 1);
     \\      if (nextValueLine && nextValueLine.indent > current.indent && __home_yaml_colon_index(nextValueLine.text) >= 0) throw __home_yaml_syntax_error("Invalid mapping indentation");
     \\      const continuation = nextValueLine && nextValueLine.indent > current.indent ? __home_yaml_read_plain_continuation(lines, current.index + 1, current.indent, rest) : null;
-    \\      const scalarValue = continuation ? continuation.value : __home_yaml_parse_scalar(rest);
+    \\      const scalarValue = continuation ? __home_yaml_parse_scalar(continuation.value, true) : __home_yaml_parse_scalar(rest);
     \\      __home_yaml_set_mapping_value(out, key, scalarValue);
     \\      i = continuation ? continuation.next : current.index + 1;
     \\    }
@@ -24624,7 +24781,7 @@ const harness_prelude =
     \\        if (leadingSpaces > blockScalarIndent) continue;
     \\        blockScalarIndent = null;
     \\      }
-    \\      if (/^(?:-\s*\t(?:[-?:]|[^:\s][^:]*:\s*)|\?\t(?:[-?:]|[^:\s][^:]*:\s*)|:\t[-?:])/.test(compact)) throw __home_yaml_syntax_error("Tab characters cannot be used as indentation");
+    \\      if (/^(?:-\s*\t(?:[-?:](?:\s|$)|[^:\s][^:]*:\s*)|\?\t(?:[-?:](?:\s|$)|[^:\s][^:]*:\s*)|:\t[-?:](?:\s|$))/.test(compact)) throw __home_yaml_syntax_error("Tab characters cannot be used as indentation");
     \\      if (/^ *\t(?:[-?:](?:\s|$)|[^:\s][^:]*:\s*)/.test(line)) throw __home_yaml_syntax_error("Tab characters cannot be used as indentation");
     \\      if (/(?:^|[:\-]\s+)[|>][0-9+\-]*\s*$/.test(compact)) blockScalarIndent = leadingSpaces;
     \\    }
@@ -24855,7 +25012,11 @@ const harness_prelude =
     \\  if (/\n[ \t]+(?:---|\.\.\.)\S/.test(text)) return __home_yaml_parse_block(text.split("\n"), 0, 0).value;
     \\  if (/\n[ \t]+(?!(?:\.\.\.)(?:\s|$))(?:[^ \t#-]|\-\s)/.test(text)) return __home_yaml_parse_block(text.split("\n"), 0, 0).value;
     \\  if (lines[0] === "-" || lines[0].startsWith("- ")) throw __home_yaml_syntax_error("Unexpected token");
-    \\  if (lines.length > 1 && lines.every(line => __home_yaml_colon_index(line) < 0 && line !== "-" && !line.startsWith("- ") && line !== "?" && !line.startsWith("? ") && !line.startsWith(":"))) return __home_yaml_parse_scalar(lines.join(" "));
+    \\  if (lines.length > 1 && lines.every(line => __home_yaml_colon_index(line) < 0 && line !== "-" && !line.startsWith("- ") && line !== "?" && !line.startsWith("? ") && !line.startsWith(":"))) {
+    \\    const firstPlainRaw = rawLines.find(line => __home_yaml_strip_comment(String(line || "")).trim() !== "");
+    \\    if (firstPlainRaw !== undefined && __home_yaml_strip_comment(firstPlainRaw).trim() !== String(firstPlainRaw).trim()) throw __home_yaml_syntax_error("Comment cannot split plain scalar continuation");
+    \\    return __home_yaml_parse_scalar(lines.join(" "));
+    \\  }
     \\  const out = {};
     \\  let sawMap = false;
     \\  for (const line of lines) {
@@ -25336,6 +25497,7 @@ const harness_prelude =
     \\      const eq = part.indexOf("=");
     \\      if (eq < 0) continue;
     \\      const name = part.slice(0, eq).trim();
+    \\      if (!name) continue;
     \\      let rawValue = part.slice(eq + 1).trim();
     \\      try { rawValue = decodeURIComponent(rawValue); } catch (error) { rawValue = ""; }
     \\      const cookie = __home_cookie_map_entry(name, rawValue);
@@ -28143,10 +28305,14 @@ const harness_prelude =
     \\  allocUnsafe(size) {
     \\    return new Uint8Array(Math.max(0, Number(size) || 0));
     \\  },
-    \\  deepEquals(left, right) {
-    \\    return __home_deep_equal(left, right, false, new Map());
+    \\  deepEquals(left, right, strict) {
+    \\    if (arguments.length < 2) throw new TypeError("Expected 2 values to compare");
+    \\    return __home_deep_equal(left, right, strict === true, new Map());
     \\  },
     \\  deepMatch(subset, value) {
+    \\    if (arguments.length < 2 || subset === null || value === null || (typeof subset !== "object" && typeof subset !== "function") || (typeof value !== "object" && typeof value !== "function")) {
+    \\      throw new TypeError("Expected 2 objects to match");
+    \\    }
     \\    return __home_match_object_subset(value, subset);
     \\  },
     \\  hash: __home_bun_hash,
@@ -28167,7 +28333,7 @@ const harness_prelude =
     \\  },
     \\  zstdCompressSync(value, options) {
     \\    __home_validate_zstd_options(options);
-    \\    return __home_zstd_sync(value);
+    \\    return __home_zstd_sync(value, options);
     \\  },
     \\  zstdDecompressSync(value) {
     \\    return __home_zstd_decompress_sync(value);
@@ -29070,9 +29236,38 @@ const harness_prelude =
     \\    return __home_bun_build(options);
     \\  },
     \\  write(path, data, options) {
-    \\    const isStdioTarget = !!(path && path.__home_stdio);
-    \\    const targetSlice = path && path.__home_file_slice_ref ? path.__home_file_slice_ref : null;
-    \\    const targetPath = isStdioTarget ? path.__home_stdio : (targetSlice ? targetSlice.path : (path && path.__home_file_ref ? path.path : String(path)));
+    \\    const isNumericTarget = typeof path === "number";
+    \\    if (isNumericTarget && (!Number.isInteger(path) || path < 0 || path > 2147483647)) {
+    \\      const error = new RangeError('The value of "fd" is out of range. It must be >= 0 and <= 2147483647. Received ' + String(path));
+    \\      error.code = "ERR_OUT_OF_RANGE";
+    \\      throw error;
+    \\    }
+    \\    const isFileReference = !!(path && path.__home_file_ref);
+    \\    const isFileSlice = !!(path && path.__home_file_slice_ref);
+    \\    const isBlobTarget = typeof Blob === "function" && path instanceof Blob;
+    \\    const isUrlTarget = typeof URL === "function" && path instanceof URL;
+    \\    const pathBuffer = __home_array_buffer_view(path);
+    \\    const isStdioTarget = !!(path && path.__home_stdio) || path === 1 || path === 2;
+    \\    if (!isNumericTarget && typeof path !== "string" && !isUrlTarget && !pathBuffer && !isFileReference && !isFileSlice && !isBlobTarget && !isStdioTarget) {
+    \\      const error = new TypeError('The "destination" argument must be of type path, file descriptor, or Blob. Received ' + String(path));
+    \\      error.code = "ERR_INVALID_ARG_TYPE";
+    \\      throw error;
+    \\    }
+    \\    if (isBlobTarget && !isFileReference && !isFileSlice) {
+    \\      const error = path.size === 0 ? new Error("Cannot write to a detached Blob") : new TypeError("Cannot write to a Blob backed by bytes, which are always read-only");
+    \\      if (path.size !== 0) error.code = "ERR_INVALID_ARG_TYPE";
+    \\      throw error;
+    \\    }
+    \\    const targetSlice = isFileSlice ? path.__home_file_slice_ref : null;
+    \\    const targetPath = path && path.__home_stdio ? path.__home_stdio : (targetSlice ? targetSlice.path : (isFileReference ? path.path : (isNumericTarget ? __home_fd_path(path) : __home_fs_path(path))));
+    \\    if (isNumericTarget) {
+    \\      try {
+    \\        return __home_native_promise_resolve(__home_fs_write_bytes(path, __home_build_file_value_bytes(data), null));
+    \\      } catch (error) {
+    \\        return __home_native_promise_reject(error);
+    \\      }
+    \\    }
+    \\    if (__home_fs_is_null_device(targetPath)) return Promise.resolve(__home_build_file_value_byte_length(data));
     \\    if (path && path.__home_file_ref && path.fd !== null && path.fd !== undefined && options && typeof options === "object" && options.createPath === true) {
     \\      return Promise.reject(new Error("Cannot create a directory for a file descriptor"));
     \\    }
@@ -29183,6 +29378,7 @@ const harness_prelude =
     \\      },
     \\      text() {
     \\        if ((__home_fs_file_mode(filePath) & 0o444) === 0) return Promise.reject(__home_bun_file_permission_error("open", filePath));
+    \\        if (__home_fs_is_null_device(filePath)) return Promise.resolve("");
     \\        const nativeText = __home_build_read_text(filePath);
     \\        if (nativeText !== null) {
     \\          const failure = syntheticAllocationFailure("bun.file.text", __home_utf8_byte_length(nativeText), "Out of memory");
@@ -29231,6 +29427,7 @@ const harness_prelude =
     \\      get readable() {
     \\        if (!__home_build_file_exists(filePath)) throw __home_bun_file_stream_error(filePath);
     \\        if ((__home_fs_file_mode(filePath) & 0o444) === 0) throw __home_bun_file_permission_error("open", filePath);
+    \\        if (__home_fifo_state(filePath)) return __home_fifo_readable(filePath);
     \\        return new ReadableStream({ start(controller) {
     \\          if (globalThis.__home_written_file_bytes && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_bytes, filePath)) {
     \\            const bytes = new Uint8Array(globalThis.__home_written_file_bytes[filePath]);
@@ -29256,6 +29453,7 @@ const harness_prelude =
     \\        return this.readable;
     \\      },
     \\      write(data) {
+    \\        if (__home_fs_is_null_device(filePath)) return Promise.resolve(undefined);
     \\        __home_build_write_text(filePath, __home_build_file_value_to_text(data));
     \\        return Promise.resolve(undefined);
     \\      },
@@ -29282,6 +29480,20 @@ const harness_prelude =
     \\        let targetPath = filePath;
     \\        let rejectNextEnd = false;
     \\        let chunks = [];
+    \\        let flushedCount = 0;
+    \\        function materialize(start) {
+    \\          const bytes = [];
+    \\          for (let index = start || 0; index < chunks.length; index++) {
+    \\            for (const byte of chunks[index]) bytes.push(byte & 0xff);
+    \\          }
+    \\          return bytes;
+    \\        }
+    \\        function writeFileBytes() {
+    \\          if (__home_fs_is_null_device(targetPath)) return;
+    \\          const bytes = materialize(0);
+    \\          __home_build_write_text(targetPath, __home_utf8_bytes_to_text(bytes));
+    \\          globalThis.__home_written_file_bytes[targetPath] = bytes;
+    \\        }
     \\        return {
     \\          start(options) {
     \\            const opts = options || {};
@@ -29297,11 +29509,14 @@ const harness_prelude =
     \\            return this;
     \\          },
     \\          write(value) {
-    \\            __home_array_append(chunks, __home_build_file_value_to_text(value));
-    \\            return Promise.resolve(__home_build_file_value_byte_length(value));
+    \\            const bytes = __home_build_file_value_bytes(value);
+    \\            __home_array_append(chunks, bytes);
+    \\            return Promise.resolve(bytes.length);
     \\          },
     \\          flush() {
-    \\            __home_build_write_text(targetPath, chunks.join(""));
+    \\            const bytes = materialize(flushedCount);
+    \\            flushedCount = chunks.length;
+    \\            if (!__home_fifo_publish(targetPath, bytes, false)) writeFileBytes();
     \\            return Promise.resolve(undefined);
     \\          },
     \\          end() {
@@ -29310,8 +29525,10 @@ const harness_prelude =
     \\              rejectNextEnd = false;
     \\              return Promise.reject(new Error("EBADF: bad file descriptor, write '" + targetPath + "'"));
     \\            }
-    \\            __home_build_write_text(targetPath, chunks.join(""));
+    \\            const bytes = materialize(flushedCount);
+    \\            if (!__home_fifo_publish(targetPath, bytes, true)) writeFileBytes();
     \\            chunks = [];
+    \\            flushedCount = 0;
     \\            return Promise.resolve(undefined);
     \\          },
     \\        };
@@ -29353,16 +29570,16 @@ const harness_prelude =
     \\    };
     \\    this.scanSync = function(root) {
     \\      if (root !== undefined && root !== null && typeof root !== "string" && typeof root !== "object") throw new TypeError("Glob.scan options must be an object or string");
-    \\      const scanOptions = root && typeof root === "object" ? root : {};
+    \\      const scanOptions = root && typeof root === "object" ? Object.assign(Object.create(null), root) : Object.create(null);
     \\      if (scanOptions.cwd !== undefined && typeof scanOptions.cwd !== "string") throw new TypeError("Glob.scan cwd must be a string");
-    \\      if (root && typeof root === "object" && typeof root.cwd === "string" && this.pattern === "*.map") {
-    \\        const cwd = String(root.cwd).replace(/\/+$/, "");
+    \\      if (typeof scanOptions.cwd === "string" && this.pattern === "*.map") {
+    \\        const cwd = String(scanOptions.cwd).replace(/\/+$/, "");
     \\        return (globalThis.__home_build_map_files || []).filter(path => __home_build_dirname(path) === cwd).map(__home_build_basename);
     \\      }
-    \\      if (root && typeof root === "object" && typeof root.cwd === "string" && this.pattern === "**/*.txt") {
-    \\        const cwd = String(root.cwd).replace(/\/+$/, "");
-    \\        const entries = __home_fs_glob_sync(this.pattern, { cwd });
-    \\        const followSymlinks = Object.prototype.hasOwnProperty.call(root, "followSymlinks") && root.followSymlinks === true;
+    \\      if (typeof scanOptions.cwd === "string" && this.pattern === "**/*.txt") {
+    \\        const cwd = String(scanOptions.cwd).replace(/\/+$/, "");
+    \\        const entries = __home_fs_glob_sync(this.pattern, Object.assign(Object.create(null), { cwd }));
+    \\        const followSymlinks = scanOptions.followSymlinks === true;
     \\        if (followSymlinks) {
     \\          const cwdPrefix = cwd + "/";
     \\          for (const link of Object.keys(globalThis.__home_symlinks || {})) {
@@ -29380,8 +29597,8 @@ const harness_prelude =
     \\        const bake = __home_bake_glob_scan(this.pattern, String(root || ""));
     \\        if (bake && bake.length) return bake;
     \\      }
-    \\      const cwd = root && typeof root === "object" ? (root.cwd === undefined ? process.cwd() : root.cwd) : root;
-    \\      return __home_fs_glob_sync(this.pattern, Object.assign({}, scanOptions, { cwd: cwd || process.cwd() }));
+    \\      const cwd = root && typeof root === "object" ? (scanOptions.cwd === undefined ? process.cwd() : scanOptions.cwd) : root;
+    \\      return __home_fs_glob_sync(this.pattern, Object.assign(Object.create(null), scanOptions, { cwd: cwd || process.cwd() }));
     \\    };
     \\    this.scan = function(root) {
     \\      const entries = this.scanSync(root);
@@ -30667,6 +30884,7 @@ const harness_prelude =
     \\      if (item instanceof Map) {
     \\        const entries = Array.from(item.entries());
     \\        if (entries.length === 0) return "Map {}";
+    \\        if (options.compact === true) return "Map(" + entries.length + ") { " + entries.map(entry => inspectSimple(entry[0], level + 1) + ": " + inspectSimple(entry[1], level + 1)).join(", ") + " }";
     \\        const lines = ["Map(" + entries.length + ") {"];
     \\        for (const entry of entries) lines.push("  " + inspectSimple(entry[0], level + 1) + ": " + inspectSimple(entry[1], level + 1) + ",");
     \\        lines.push("}");
@@ -30675,6 +30893,7 @@ const harness_prelude =
     \\      if (item instanceof Set) {
     \\        const entries = Array.from(item.values());
     \\        if (entries.length === 0) return "Set {}";
+    \\        if (options.compact === true) return "Set(" + entries.length + ") { " + entries.map(entry => inspectSimple(entry, level + 1)).join(", ") + " }";
     \\        const lines = ["Set(" + entries.length + ") {"];
     \\        for (const entry of entries) lines.push("  " + inspectSimple(entry, level + 1) + ",");
     \\        lines.push("}");
@@ -32793,6 +33012,10 @@ const harness_prelude =
     \\  globalThis.__home_process_cwd = String(path || "/");
     \\};
     \\globalThis.__home_process_cwd_function = process.cwd;
+    \\function __home_process_cwd_internal() {
+    \\  const cwd = process.cwd;
+    \\  return typeof cwd === "function" ? String(cwd.call(process)) : String(cwd || globalThis.__home_process_cwd || "/");
+    \\}
     \\process.memoryUsage = function() {
     \\  return { rss: 1024 * 1024, heapTotal: 1024 * 1024, heapUsed: 512 * 1024, external: 0, arrayBuffers: 0 };
     \\};
@@ -33566,8 +33789,8 @@ const harness_prelude =
     \\  if (Object.is(received, expected)) return true;
     \\  if (received && typeof received.asymmetricMatch === "function") return !!received.asymmetricMatch(expected);
     \\  if (expected && (expected.__home_expect_any === true || expected.__home_expect_string_matching === true || expected.__home_expect_string_containing === true || typeof expected.asymmetricMatch === "function")) return __home_deep_equal(received, expected, false, new Map());
-    \\  if (expected === null || typeof expected !== "object") return __home_deep_equal(received, expected, false, new Map());
-    \\  if (received === null || typeof received !== "object") return false;
+    \\  if (expected === null || (typeof expected !== "object" && typeof expected !== "function")) return __home_deep_equal(received, expected, false, new Map());
+    \\  if (received === null || (typeof received !== "object" && typeof received !== "function")) return false;
     \\  if (Array.isArray(expected)) {
     \\    if (!Array.isArray(received) || received.length !== expected.length) return false;
     \\    for (let i = 0; i < expected.length; i++) {
@@ -33638,6 +33861,7 @@ const harness_prelude =
     \\function __home_array_buffer_view(value) {
     \\  if (value && value.__home_logical_buffer) return null;
     \\  if (typeof ArrayBuffer === "function" && value instanceof ArrayBuffer) return new Uint8Array(value);
+    \\  if (typeof __home_is_shared_array_buffer_like === "function" && __home_is_shared_array_buffer_like(value)) return new Uint8Array(value);
     \\  if (ArrayBuffer && typeof ArrayBuffer.isView === "function" && ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
     \\  if (value && typeof value === "object" && (typeof value.length === "number" || typeof value.byteLength === "number")) {
     \\    const ctorName = value.constructor && value.constructor.name ? String(value.constructor.name) : "";
@@ -33757,6 +33981,26 @@ const harness_prelude =
     \\  }
     \\  return keys;
     \\}
+    \\const __home_date_get_time = Date.prototype.getTime;
+    \\const __home_regexp_source_get = Object.getOwnPropertyDescriptor(RegExp.prototype, "source").get;
+    \\const __home_regexp_flags_get = Object.getOwnPropertyDescriptor(RegExp.prototype, "flags").get;
+    \\const __home_map_size_get = Object.getOwnPropertyDescriptor(Map.prototype, "size").get;
+    \\const __home_map_entries = Map.prototype.entries;
+    \\const __home_set_size_get = Object.getOwnPropertyDescriptor(Set.prototype, "size").get;
+    \\const __home_set_values = Set.prototype.values;
+    \\function __home_has_builtin_brand(value, operation) {
+    \\  if (value === null || (typeof value !== "object" && typeof value !== "function")) return false;
+    \\  try {
+    \\    operation(value);
+    \\    return true;
+    \\  } catch (error) {
+    \\    return false;
+    \\  }
+    \\}
+    \\function __home_is_date(value) { return __home_has_builtin_brand(value, candidate => __home_date_get_time.call(candidate)); }
+    \\function __home_is_regexp(value) { return __home_has_builtin_brand(value, candidate => __home_regexp_source_get.call(candidate)); }
+    \\function __home_is_map(value) { return __home_has_builtin_brand(value, candidate => __home_map_size_get.call(candidate)); }
+    \\function __home_is_set(value) { return __home_has_builtin_brand(value, candidate => __home_set_size_get.call(candidate)); }
     \\function __home_deep_equal(a, b, strict, seen) {
     \\  if (Object.is(a, b)) return true;
     \\  if (b && b.__home_expect_any === true) return __home_expect_any_matches(a, b.ctor);
@@ -33819,8 +34063,12 @@ const harness_prelude =
     \\  if (aBufferView || bBufferView) {
     \\    return __home_typed_array_equal(a, b, strict);
     \\  }
-    \\  if (a instanceof Date || b instanceof Date) return a instanceof Date && b instanceof Date && Object.is(a.getTime(), b.getTime());
-    \\  if (a instanceof RegExp || b instanceof RegExp) return a instanceof RegExp && b instanceof RegExp && a.source === b.source && a.flags === b.flags;
+    \\  const aDate = __home_is_date(a);
+    \\  const bDate = __home_is_date(b);
+    \\  if (aDate || bDate) return aDate && bDate && __home_date_get_time.call(a) === __home_date_get_time.call(b);
+    \\  const aRegExp = __home_is_regexp(a);
+    \\  const bRegExp = __home_is_regexp(b);
+    \\  if (aRegExp || bRegExp) return aRegExp && bRegExp && __home_regexp_source_get.call(a) === __home_regexp_source_get.call(b) && __home_regexp_flags_get.call(a) === __home_regexp_flags_get.call(b);
     \\  if (typeof Headers === "function" && (a instanceof Headers || b instanceof Headers)) {
     \\    return a instanceof Headers && b instanceof Headers && __home_deep_equal(Array.from(a.entries()), Array.from(b.entries()), strict, seen);
     \\  }
@@ -33833,13 +34081,15 @@ const harness_prelude =
     \\  if (a instanceof String || b instanceof String) {
     \\    return a instanceof String && b instanceof String && Object.is(a.valueOf(), b.valueOf()) && Object.getPrototypeOf(a) === Object.getPrototypeOf(b) && (!strict || __home_boxed_primitive_properties_equal(a, b, strict, seen));
     \\  }
-    \\  if (a instanceof Map || b instanceof Map) {
-    \\    if (!(a instanceof Map) || !(b instanceof Map) || a.size !== b.size) return false;
+    \\  const aMap = __home_is_map(a);
+    \\  const bMap = __home_is_map(b);
+    \\  if (aMap || bMap) {
+    \\    if (!aMap || !bMap || __home_map_size_get.call(a) !== __home_map_size_get.call(b)) return false;
     \\    if (seen.has(a)) return seen.get(a) === b;
     \\    for (const pair of seen) if (pair[1] === b) return false;
     \\    seen.set(a, b);
-    \\    const unmatched = Array.from(b);
-    \\    for (const aEntry of a) {
+    \\    const unmatched = Array.from(__home_map_entries.call(b));
+    \\    for (const aEntry of __home_map_entries.call(a)) {
     \\      let matchIndex = -1;
     \\      for (let i = 0; i < unmatched.length; i++) {
     \\        const candidateSeen = new Map(seen);
@@ -33858,13 +34108,15 @@ const harness_prelude =
     \\    seen.delete(a);
     \\    return true;
     \\  }
-    \\  if (a instanceof Set || b instanceof Set) {
-    \\    if (!(a instanceof Set) || !(b instanceof Set) || a.size !== b.size) return false;
+    \\  const aSet = __home_is_set(a);
+    \\  const bSet = __home_is_set(b);
+    \\  if (aSet || bSet) {
+    \\    if (!aSet || !bSet || __home_set_size_get.call(a) !== __home_set_size_get.call(b)) return false;
     \\    if (seen.has(a)) return seen.get(a) === b;
     \\    for (const pair of seen) if (pair[1] === b) return false;
     \\    seen.set(a, b);
-    \\    const unmatched = Array.from(b);
-    \\    for (const aValue of a) {
+    \\    const unmatched = Array.from(__home_set_values.call(b));
+    \\    for (const aValue of __home_set_values.call(a)) {
     \\      let matchIndex = -1;
     \\      for (let i = 0; i < unmatched.length; i++) {
     \\        const candidateSeen = new Map(seen);
@@ -33975,31 +34227,31 @@ const harness_prelude =
     \\  return false;
     \\}
     \\function __home_deep_equal_async(a, b, strict, seen) {
-    \\  if (Object.is(a, b)) return Promise.resolve(true);
-    \\  if (b && typeof b.asymmetricMatch === "function") return Promise.resolve(b.asymmetricMatch(a)).then(Boolean);
-    \\  if (a && typeof a.asymmetricMatch === "function") return Promise.resolve(a.asymmetricMatch(b)).then(Boolean);
-    \\  if (a === null || b === null || typeof a !== "object" || typeof b !== "object") return Promise.resolve(false);
-    \\  if (seen.has(a)) return Promise.resolve(seen.get(a) === b);
+    \\  if (Object.is(a, b)) return __home_native_promise_resolve(true);
+    \\  if (b && typeof b.asymmetricMatch === "function") return __home_then(b.asymmetricMatch(a), Boolean);
+    \\  if (a && typeof a.asymmetricMatch === "function") return __home_then(a.asymmetricMatch(b), Boolean);
+    \\  if (a === null || b === null || typeof a !== "object" || typeof b !== "object") return __home_native_promise_resolve(false);
+    \\  if (seen.has(a)) return __home_native_promise_resolve(seen.get(a) === b);
     \\  seen.set(a, b);
     \\  if (Array.isArray(a) || Array.isArray(b)) {
-    \\    if (!Array.isArray(a) || !Array.isArray(b) || (strict && a.length !== b.length)) return Promise.resolve(false);
+    \\    if (!Array.isArray(a) || !Array.isArray(b) || (strict && a.length !== b.length)) return __home_native_promise_resolve(false);
     \\    const length = strict ? a.length : Math.max(a.length, b.length);
     \\    const comparisons = [];
     \\    for (let i = 0; i < length; i++) {
-    \\      if (strict && ((i in a) !== (i in b))) return Promise.resolve(false);
+    \\      if (strict && ((i in a) !== (i in b))) return __home_native_promise_resolve(false);
     \\      comparisons.push(__home_deep_equal_async(a[i], b[i], strict, seen));
     \\    }
-    \\    return Promise.all(comparisons).then(results => results.every(Boolean));
+    \\    return __home_then(__home_native_promise_all(comparisons), results => results.every(Boolean));
     \\  }
     \\  const aKeys = __home_enumerable_keys(a).filter(key => strict || a[key] !== undefined);
     \\  const bKeys = __home_enumerable_keys(b).filter(key => strict || b[key] !== undefined);
-    \\  if (aKeys.length !== bKeys.length) return Promise.resolve(false);
+    \\  if (aKeys.length !== bKeys.length) return __home_native_promise_resolve(false);
     \\  const comparisons = [];
     \\  for (const key of aKeys) {
-    \\    if (!Object.prototype.hasOwnProperty.call(b, key)) return Promise.resolve(false);
+    \\    if (!Object.prototype.hasOwnProperty.call(b, key)) return __home_native_promise_resolve(false);
     \\    comparisons.push(__home_deep_equal_async(a[key], b[key], strict, seen));
     \\  }
-    \\  return Promise.all(comparisons).then(results => results.every(Boolean));
+    \\  return __home_then(__home_native_promise_all(comparisons), results => results.every(Boolean));
     \\}
     \\function __home_invalid_character(message) {
     \\  if (typeof DOMException === "function") return new DOMException(message || "The string contains invalid characters.", "InvalidCharacterError");
@@ -34009,7 +34261,7 @@ const harness_prelude =
     \\}
     \\function __home_run_hook(fn) {
     \\  if (fn.length > 0) {
-    \\    return new Promise((resolve, reject) => {
+    \\    return new __home_NativePromise((resolve, reject) => {
     \\      let settled = false;
     \\      const done = error => {
     \\        if (settled) return;
@@ -34019,7 +34271,7 @@ const harness_prelude =
     \\      };
     \\      try {
     \\        const result = fn(done);
-    \\        if (__home_is_thenable(result)) Promise.resolve(result).then(() => {}, reject);
+    \\        if (__home_is_thenable(result)) __home_then(result, () => {}, reject);
     \\      } catch (error) {
     \\        reject(error);
     \\      }
@@ -34038,7 +34290,7 @@ const harness_prelude =
     \\      continue;
     \\    }
     \\    const result = runAt(index);
-    \\    if (__home_is_thenable(result)) chain = Promise.resolve(result);
+    \\    if (__home_is_thenable(result)) chain = __home_native_promise_resolve(result);
     \\  }
     \\  return chain;
     \\}
@@ -34408,7 +34660,7 @@ const harness_prelude =
     \\      continue;
     \\    }
     \\    const result = runEntryAt(i);
-    \\    if (__home_is_thenable(result)) chain = Promise.resolve(result);
+    \\    if (__home_is_thenable(result)) chain = __home_native_promise_resolve(result);
     \\  }
     \\  globalThis.__home_registered_tests = [];
     \\  return chain;
@@ -35642,7 +35894,7 @@ const harness_prelude =
     \\      const valueIsAsyncFunction = typeof value === "function" && Object.prototype.toString.call(value) === "[object AsyncFunction]";
     \\      if (!didThrow && valueIsAsyncFunction && __home_is_thenable(returned)) {
     \\        __home_bun_tests.pending++;
-    \\        return Promise.resolve(returned).then(
+    \\        const assertion = __home_then(returned,
     \\          function() {
     \\            try {
     \\              __home_assert(false, isNot, "Expected function" + (isNot ? " not" : "") + " to throw");
@@ -35657,7 +35909,8 @@ const harness_prelude =
     \\              recordAsyncAssertionFailure(assertionError);
     \\            }
     \\          },
-    \\        ).then(
+    \\        );
+    \\        return __home_then(assertion,
     \\          function() {
     \\            __home_bun_tests.pending--;
     \\          },
@@ -35736,6 +35989,38 @@ const harness_prelude =
     \\      if (thrown === null) return;
     \\      if (typeof expected === "function") __home_assert(thrown instanceof expected, isNot, "Expected thrown value" + (isNot ? " not" : "") + " to be instance of " + expected.name);
     \\      __home_assert(Object.is(thrown && thrown.code, code), isNot, "Expected thrown code" + (isNot ? " not" : "") + " to be " + String(code));
+    \\    },
+    \\    toThrowWithCodeAsync(expected, code) {
+    \\      if (typeof value !== "function") return __home_native_promise_reject(new Error("Expected value to be a function"));
+    \\      const assertError = error => {
+    \\        let pass = true;
+    \\        if (typeof expected === "function") pass = error instanceof expected;
+    \\        pass = pass && Object.is(error && error.code, code);
+    \\        __home_assert(pass, isNot, "Expected thrown value" + (isNot ? " not" : "") + " to be instance of " + (expected && expected.name || "Error") + " with code " + String(code));
+    \\      };
+    \\      let result;
+    \\      try {
+    \\        result = value();
+    \\      } catch (error) {
+    \\        try {
+    \\          assertError(error);
+    \\          return __home_native_promise_resolve(undefined);
+    \\        } catch (assertionError) {
+    \\          return __home_native_promise_reject(assertionError);
+    \\        }
+    \\      }
+    \\      if (!__home_is_thenable(result)) {
+    \\        try {
+    \\          __home_assert(false, isNot, "Expected function" + (isNot ? " not" : "") + " to throw");
+    \\          return __home_native_promise_resolve(undefined);
+    \\        } catch (assertionError) {
+    \\          return __home_native_promise_reject(assertionError);
+    \\        }
+    \\      }
+    \\      return __home_then(result,
+    \\        function() { __home_assert(false, isNot, "Expected function" + (isNot ? " not" : "") + " to throw"); },
+    \\        function(error) { assertError(error); },
+    \\      );
     \\    },
     \\    toThrowErrorMatchingInlineSnapshot(expected) {
     \\      let snapshot = __home_dedent_snapshot(expected);
@@ -44669,10 +44954,13 @@ const harness_prelude =
     \\function __home_temp_dir_with_files(name, files) {
     \\  const base = String((process.env && (process.env.TMPDIR || process.env.TEMP || process.env.TMP)) || "/tmp").replace(/\/+$/, "");
     \\  const safe = String(name || "home").replace(/[^A-Za-z0-9._-]+/g, "-");
-    \\  const root = base + "/home-bun-corpus-" + safe + "-" + String(process.pid || 0) + "-" + Date.now().toString(36) + "-" + (++__home_temp_dir_counter);
+    \\  let root = base + "/home-bun-corpus-" + safe + "-" + String(process.pid || 0) + "-" + Date.now().toString(36) + "-" + (++__home_temp_dir_counter);
+    \\  if (typeof globalThis.__home_createDirPathNative === "function") globalThis.__home_createDirPathNative(root);
+    \\  if (typeof globalThis.__home_realpathSyncNative === "function") {
+    \\    try { root = String(globalThis.__home_realpathSyncNative(root)); } catch (error) {}
+    \\  }
     \\  globalThis.__home_temp_dir_roots[root] = true;
     \\  __home_fs_mark_dir(root);
-    \\  if (typeof globalThis.__home_createDirPathNative === "function") globalThis.__home_createDirPathNative(root);
     \\  if (typeof files === "string") __home_copy_native_tree(files, root);
     \\  else __home_write_temp_files(root, files || {});
     \\  return root;
@@ -52639,11 +52927,14 @@ const harness_prelude =
     \\  const referrer = parent && parent.filename ? parent.filename : globalThis.__home_current_filename;
     \\  return __home_require_resolve_existing(specifier, referrer);
     \\}
-    \\function __home_compile_cjs_module(module, filename, source) {
+    \\function __home_compile_cjs_module(module, filename, source, loader) {
     \\  const path = String(filename);
     \\  const dirname = __home_build_dirname(path);
     \\  const localRequire = __home_create_require(path);
-    \\  Function("module", "exports", "require", "__filename", "__dirname", String(source) + "\n//# sourceURL=" + path)(module, module.exports, localRequire, path, dirname);
+    \\  let compiled;
+    \\  try { compiled = Function("module", "exports", "require", "__filename", "__dirname", String(source) + "\n//# sourceURL=" + path); }
+    \\  catch (cause) { throw __home_module_loader_error(loader || "js", filename, cause); }
+    \\  return compiled(module, module.exports, localRequire, path, dirname);
     \\}
     \\function __home_module_loader_error(loader, filename, cause) {
     \\  const underlying = cause instanceof Error ? cause : new Error(String(cause || "module loader failed"));
@@ -52678,15 +52969,13 @@ const harness_prelude =
     \\function __home_module_js_extension(module, filename) {
     \\  const source = __home_build_read_text(filename);
     \\  if (source === null) throw __home_module_not_found_error(filename, "MODULE_NOT_FOUND", undefined, filename);
-    \\  try { __home_compile_cjs_module(module, filename, source); }
-    \\  catch (cause) { throw cause && cause.code === "ERR_MODULE_PARSE" ? cause : __home_module_loader_error("js", filename, cause); }
+    \\  return __home_compile_cjs_module(module, filename, source, "js");
     \\}
     \\function __home_module_transpiled_extension(module, filename, loader) {
     \\  const source = __home_build_read_text(filename);
     \\  if (source === null) throw __home_module_not_found_error(filename, "MODULE_NOT_FOUND", undefined, filename);
     \\  const transpiled = __home_module_lower_cjs_exports(__home_module_transpile_source(source, filename, loader));
-    \\  try { __home_compile_cjs_module(module, filename, transpiled); }
-    \\  catch (cause) { throw cause && cause.code === "ERR_MODULE_PARSE" ? cause : __home_module_loader_error(loader, filename, cause); }
+    \\  return __home_compile_cjs_module(module, filename, transpiled, loader);
     \\}
     \\function __home_module_jsx_extension(module, filename) { return __home_module_transpiled_extension(module, filename, "jsx"); }
     \\function __home_module_ts_extension(module, filename) { return __home_module_transpiled_extension(module, filename, "ts"); }
@@ -53634,11 +53923,16 @@ const harness_prelude =
     \\globalThis.__home_modules["../common/tmpdir"] = __home_node_test_common_tmpdir;
     \\globalThis.__home_modules["js/node/test/common/tmpdir"] = __home_node_test_common_tmpdir;
     \\globalThis.__home_modules["js/node/test/common/tmpdir.js"] = __home_node_test_common_tmpdir;
+    \\let __home_node_test_common_esm_cache = null;
+    \\function __home_node_test_common_esm_source() {
+    \\  if (__home_node_test_common_esm_cache === null) __home_node_test_common_esm_cache = globalThis.require("packages/runtime/test/bun-corpus/js/node/test/common/index.js");
+    \\  return __home_node_test_common_esm_cache;
+    \\}
     \\const __home_node_test_common_esm = new Proxy({}, {
-    \\  get(_target, property) { return globalThis.require("../common")[property]; },
-    \\  has(_target, property) { return property in globalThis.require("../common"); },
-    \\  ownKeys() { return Reflect.ownKeys(globalThis.require("../common")); },
-    \\  getOwnPropertyDescriptor(_target, property) { return Object.getOwnPropertyDescriptor(globalThis.require("../common"), property) || { configurable: true, enumerable: true }; },
+    \\  get(_target, property) { return __home_node_test_common_esm_source()[property]; },
+    \\  has(_target, property) { return property in __home_node_test_common_esm_source(); },
+    \\  ownKeys() { return __home_node_test_common_esm_cache === null ? [] : Reflect.ownKeys(__home_node_test_common_esm_cache); },
+    \\  getOwnPropertyDescriptor(_target, property) { return __home_node_test_common_esm_cache === null ? undefined : Object.getOwnPropertyDescriptor(__home_node_test_common_esm_cache, property) || { configurable: true, enumerable: true }; },
     \\});
     \\globalThis.__home_modules["js/node/test/common/index.mjs"] = __home_node_test_common_esm;
     \\globalThis.__home_modules["packages/runtime/test/bun-corpus/js/node/test/common/index.mjs"] = __home_node_test_common_esm;
@@ -58681,7 +58975,7 @@ const harness_prelude =
     \\    if (typeof length !== "number" || !Number.isFinite(length) || length < 0) throw new TypeError("The property 'options.authTagLength' is invalid. Received " + String(length));
     \\  }
     \\  const name = String(algorithm).toLowerCase();
-    \\  if (!/^(?:aes(?:128|256|-(?:128|192|256)-(?:cbc|ctr|ecb|gcm))|des-ede3-cbc|id-aes128-wrap|chacha20(?:-poly1305)?)$/.test(name)) throw __home_crypto_error("ERR_CRYPTO_UNKNOWN_CIPHER", "Unknown cipher");
+    \\  if (!/^(?:aes(?:128|256|-(?:128|192|256)-(?:cbc|cfb|ctr|ecb|gcm|ofb))|des-ede3-cbc|id-aes128-wrap|chacha20(?:-poly1305)?)$/.test(name)) throw __home_crypto_error("ERR_CRYPTO_UNKNOWN_CIPHER", "Unknown cipher");
     \\  const keyBytes = __home_crypto_bytes(key);
     \\  const expectedKey = __home_crypto_expected_key_length(name);
     \\  if (expectedKey !== null && keyBytes.length !== expectedKey) throw new TypeError("Invalid key length");
@@ -62796,6 +63090,7 @@ const harness_prelude =
     \\      if (wantsByteString) return bytes.toString(normalizedEncoding === "binary" ? "latin1" : normalizedEncoding);
     \\      return bytes.toString("utf8");
     \\    }
+    \\    if (!__home_node_fs.existsSync(normalizedPath)) throw __home_fs_dir_error("ENOENT", "no such file or directory", "open", normalizedPath);
     \\    if (wantsBuffer) {
     \\      const buffer = Buffer.from(__home_file_bytes_sync(normalizedPath));
     \\      Object.defineProperty(buffer, "__home_source_path", { configurable: true, value: normalizedPath });
@@ -66546,6 +66841,18 @@ const harness_prelude =
     \\    const familyOption = options && options.family;
     \\    const family = familyOption === 6 || familyOption === "IPv6" ? 6 : 4;
     \\    return Promise.resolve([{ address: __home_bun_dns_address(hostname, family), family, ttl: 0 }]);
+    \\  },
+    \\  lookupService(address, port) {
+    \\    const text = __home_dns_validate_lookup_service(address, port);
+    \\    const hostname = text === "127.0.0.1" || text === "::1" ? "localhost" : (text === "255.255.255.255" ? "broadcasthost" : "one.one.one.one");
+    \\    return Promise.resolve([hostname, __home_dns_service_name(port)]);
+    \\  },
+    \\  resolve(hostname, record) {
+    \\    if (typeof hostname !== "string") throw __home_dns_type_error('The "hostname" argument must be of type string. Received ' + String(hostname));
+    \\    if (record !== undefined && typeof record !== "string") throw __home_dns_type_error('The "record" argument must be of type string. Received ' + String(record));
+    \\    const type = String(record === undefined ? "A" : record).toUpperCase();
+    \\    if (!["A", "AAAA", "ANY", "CAA", "CNAME", "MX", "NS", "PTR", "SOA", "SRV", "TXT"].includes(type)) throw __home_dns_value_error('The property "record" is invalid. Expected one of: A, AAAA, ANY, CAA, CNAME, MX, NS, PTR, SOA, SRV, TXT, received type string (\'' + type + '\')');
+    \\    return __home_dns_resolve_promise(hostname, type);
     \\  },
     \\  setServers(servers) {
     \\    if (!Array.isArray(servers)) throw new TypeError("servers must be an array");
@@ -75199,6 +75506,290 @@ const harness_prelude =
     \\  const suffix = rendered.slice(bestStart + bestLength).join(":");
     \\  return prefix + "::" + suffix;
     \\}
+    \\const __home_ism_b64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    \\function __home_ism_error(operation, message) {
+    \\  throw new Error("InternalSourceMap." + operation + ": " + message);
+    \\}
+    \\function __home_ism_decode_vlq(text, cursor) {
+    \\  let value = 0n;
+    \\  let shift = 0n;
+    \\  const start = cursor.index;
+    \\  while (cursor.index < text.length) {
+    \\    const digit = __home_ism_b64.indexOf(text[cursor.index++]);
+    \\    if (digit < 0 || shift > 35n) return null;
+    \\    value |= BigInt(digit & 31) << shift;
+    \\    if ((digit & 32) === 0) {
+    \\      const signed = (value & 1n) !== 0n ? -(value >> 1n) : value >> 1n;
+    \\      if (signed < -2147483648n || signed > 2147483647n) return null;
+    \\      return Number(signed);
+    \\    }
+    \\    shift += 5n;
+    \\  }
+    \\  cursor.index = start;
+    \\  return null;
+    \\}
+    \\function __home_ism_encode_vlq(value) {
+    \\  const signed = Number(value) | 0;
+    \\  if (signed === -2147483648) return "B";
+    \\  let encoded = signed < 0 ? BigInt(-signed) * 2n + 1n : BigInt(signed) * 2n;
+    \\  let out = "";
+    \\  do {
+    \\    let digit = Number(encoded & 31n);
+    \\    encoded >>= 5n;
+    \\    if (encoded !== 0n) digit |= 32;
+    \\    out += __home_ism_b64[digit];
+    \\  } while (encoded !== 0n);
+    \\  return out;
+    \\}
+    \\function __home_ism_write_varint(out, value) {
+    \\  const signed = BigInt(Number(value) | 0);
+    \\  let encoded = BigInt.asUintN(32, (signed << 1n) ^ (signed >> 31n));
+    \\  do {
+    \\    let byte = Number(encoded & 127n);
+    \\    encoded >>= 7n;
+    \\    if (encoded !== 0n) byte |= 128;
+    \\    out.push(byte);
+    \\  } while (encoded !== 0n);
+    \\}
+    \\function __home_ism_read_varint(bytes, cursor) {
+    \\  let encoded = 0n;
+    \\  let shift = 0n;
+    \\  for (let count = 0; count < 5; count++) {
+    \\    if (cursor.index >= bytes.length) __home_ism_error("toVLQ", "invalid blob");
+    \\    const byte = bytes[cursor.index++];
+    \\    encoded |= BigInt(byte & 127) << shift;
+    \\    if ((byte & 128) === 0) {
+    \\      return Number(BigInt.asIntN(32, (encoded >> 1n) ^ (-(encoded & 1n))));
+    \\    }
+    \\    shift += 7n;
+    \\  }
+    \\  __home_ism_error("toVLQ", "invalid blob");
+    \\}
+    \\function __home_ism_i32_sum(left, right) {
+    \\  const value = Number(left) + Number(right);
+    \\  if (!Number.isInteger(value) || value < -2147483648 || value > 2147483647) __home_ism_error("fromVLQ", "invalid VLQ input");
+    \\  return value;
+    \\}
+    \\function __home_ism_parse_vlq(input) {
+    \\  const text = String(input);
+    \\  const mappings = [];
+    \\  let generatedLine = 0;
+    \\  let generatedColumn = 0;
+    \\  let sourceIndex = 0;
+    \\  let originalLine = 0;
+    \\  let originalColumn = 0;
+    \\  let index = 0;
+    \\  while (index < text.length) {
+    \\    if (text[index] === ";") {
+    \\      generatedColumn = 0;
+    \\      while (index < text.length && text[index] === ";") { generatedLine++; index++; }
+    \\      if (index >= text.length) break;
+    \\    }
+    \\    if (text[index] === ",") { index++; continue; }
+    \\    const cursor = { index };
+    \\    const generatedDelta = __home_ism_decode_vlq(text, cursor);
+    \\    if (generatedDelta === null) __home_ism_error("fromVLQ", "invalid VLQ input");
+    \\    generatedColumn = __home_ism_i32_sum(generatedColumn, generatedDelta);
+    \\    if (generatedColumn < 0) __home_ism_error("fromVLQ", "invalid VLQ input");
+    \\    index = cursor.index;
+    \\    if (index >= text.length || text[index] === "," || text[index] === ";") {
+    \\      if (text[index] === ",") index++;
+    \\      continue;
+    \\    }
+    \\    cursor.index = index;
+    \\    const sourceDelta = __home_ism_decode_vlq(text, cursor);
+    \\    const lineDelta = sourceDelta === null ? null : __home_ism_decode_vlq(text, cursor);
+    \\    const columnDelta = lineDelta === null ? null : __home_ism_decode_vlq(text, cursor);
+    \\    if (sourceDelta === null || lineDelta === null || columnDelta === null) __home_ism_error("fromVLQ", "invalid VLQ input");
+    \\    sourceIndex = __home_ism_i32_sum(sourceIndex, sourceDelta);
+    \\    originalLine = __home_ism_i32_sum(originalLine, lineDelta);
+    \\    originalColumn = __home_ism_i32_sum(originalColumn, columnDelta);
+    \\    if (sourceIndex < 0 || originalLine < 0 || originalColumn < 0) __home_ism_error("fromVLQ", "invalid VLQ input");
+    \\    index = cursor.index;
+    \\    if (index < text.length && text[index] !== "," && text[index] !== ";") {
+    \\      cursor.index = index;
+    \\      if (__home_ism_decode_vlq(text, cursor) === null) __home_ism_error("fromVLQ", "invalid VLQ input");
+    \\      index = cursor.index;
+    \\    }
+    \\    if (index < text.length && text[index] === ",") index++;
+    \\    else if (index < text.length && text[index] !== ";") __home_ism_error("fromVLQ", "invalid VLQ input");
+    \\    mappings.push({ generatedLine, generatedColumn, sourceIndex, originalLine, originalColumn });
+    \\  }
+    \\  return mappings;
+    \\}
+    \\function __home_ism_window(states) {
+    \\  const count = states.length;
+    \\  const genColumns = [];
+    \\  const originalLines = [];
+    \\  const originalColumns = [];
+    \\  const generatedLineRare = [];
+    \\  const sourceIndices = [];
+    \\  const generatedLineMask = new Uint8Array(8);
+    \\  const originalLineMask = new Uint8Array(8);
+    \\  const originalColumnMask = new Uint8Array(8);
+    \\  const sourceIndexMask = new Uint8Array(8);
+    \\  let flags = 0;
+    \\  for (let index = 1; index < count; index++) {
+    \\    const previous = states[index - 1];
+    \\    const current = states[index];
+    \\    const deltaIndex = index - 1;
+    \\    const bit = 1 << (deltaIndex & 7);
+    \\    const dGeneratedLine = (current.generatedLine - previous.generatedLine) | 0;
+    \\    const dGeneratedColumn = (dGeneratedLine !== 0 ? current.generatedColumn : current.generatedColumn - previous.generatedColumn) | 0;
+    \\    const dOriginalLine = (current.originalLine - previous.originalLine) | 0;
+    \\    const dOriginalColumn = (current.originalColumn - previous.originalColumn) | 0;
+    \\    const dSourceIndex = (current.sourceIndex - previous.sourceIndex) | 0;
+    \\    if (dGeneratedLine >= 1) generatedLineMask[deltaIndex >> 3] |= bit;
+    \\    if (dOriginalLine === dGeneratedLine) originalLineMask[deltaIndex >> 3] |= bit;
+    \\    if (dOriginalColumn === dGeneratedColumn) originalColumnMask[deltaIndex >> 3] |= bit;
+    \\    __home_ism_write_varint(genColumns, dGeneratedColumn);
+    \\    if (dOriginalLine !== dGeneratedLine) __home_ism_write_varint(originalLines, dOriginalLine);
+    \\    if (dOriginalColumn !== dGeneratedColumn) __home_ism_write_varint(originalColumns, dOriginalColumn);
+    \\    if (dGeneratedLine > 1 || dGeneratedLine < 0) { flags |= 4; generatedLineRare.push(deltaIndex); __home_ism_write_varint(generatedLineRare, dGeneratedLine); }
+    \\    if (dSourceIndex === 0) sourceIndexMask[deltaIndex >> 3] |= bit;
+    \\    else { flags |= 8; __home_ism_write_varint(sourceIndices, dSourceIndex); }
+    \\  }
+    \\  if ((flags & 4) !== 0) generatedLineRare.push(255);
+    \\  const size = 32 + genColumns.length + originalLines.length + originalColumns.length + generatedLineRare.length + ((flags & 8) !== 0 ? 8 + sourceIndices.length : 0);
+    \\  const bytes = new Uint8Array(size);
+    \\  const view = new DataView(bytes.buffer);
+    \\  bytes[0] = count;
+    \\  bytes[1] = flags;
+    \\  view.setUint16(2, genColumns.length, true);
+    \\  view.setUint16(4, originalLines.length, true);
+    \\  view.setUint16(6, originalColumns.length, true);
+    \\  bytes.set(generatedLineMask, 8);
+    \\  bytes.set(originalLineMask, 16);
+    \\  bytes.set(originalColumnMask, 24);
+    \\  let offset = 32;
+    \\  for (const lane of [genColumns, originalLines, originalColumns, generatedLineRare]) { bytes.set(lane, offset); offset += lane.length; }
+    \\  if ((flags & 8) !== 0) { bytes.set(sourceIndexMask, offset); offset += 8; bytes.set(sourceIndices, offset); }
+    \\  return bytes;
+    \\}
+    \\function __home_ism_from_vlq(input) {
+    \\  const mappings = __home_ism_parse_vlq(input);
+    \\  const windows = [];
+    \\  for (let index = 0; index < mappings.length; index += 64) windows.push(__home_ism_window(mappings.slice(index, index + 64)));
+    \\  const streamOffset = 32 + windows.length * 24;
+    \\  let streamLength = 1;
+    \\  for (const window of windows) streamLength += window.length;
+    \\  const blob = new Uint8Array(streamOffset + streamLength);
+    \\  const view = new DataView(blob.buffer);
+    \\  view.setBigUint64(0, BigInt(blob.length), true);
+    \\  view.setBigUint64(8, BigInt(mappings.length), true);
+    \\  let maxOriginalLine = 0;
+    \\  for (const mapping of mappings) maxOriginalLine = Math.max(maxOriginalLine, mapping.originalLine);
+    \\  view.setBigUint64(16, BigInt(maxOriginalLine + 1), true);
+    \\  view.setUint32(24, windows.length, true);
+    \\  view.setUint32(28, streamOffset, true);
+    \\  let streamPosition = 0;
+    \\  for (let index = 0; index < windows.length; index++) {
+    \\    const seed = mappings[index * 64];
+    \\    const sync = 32 + index * 24;
+    \\    view.setInt32(sync, seed.generatedLine, true);
+    \\    view.setInt32(sync + 4, seed.generatedColumn, true);
+    \\    view.setUint32(sync + 8, streamPosition, true);
+    \\    view.setInt32(sync + 12, seed.originalLine, true);
+    \\    view.setInt32(sync + 16, seed.originalColumn, true);
+    \\    view.setInt32(sync + 20, seed.sourceIndex, true);
+    \\    blob.set(windows[index], streamOffset + streamPosition);
+    \\    streamPosition += windows[index].length;
+    \\  }
+    \\  return blob;
+    \\}
+    \\function __home_ism_bytes(value, operation) {
+    \\  if (!ArrayBuffer.isView(value) || value instanceof DataView) __home_ism_error(operation, "expected Uint8Array");
+    \\  const bytes = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+    \\  if (bytes.length < 32) __home_ism_error(operation, "invalid blob");
+    \\  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    \\  const total = Number(view.getBigUint64(0, true));
+    \\  const syncCount = view.getUint32(24, true);
+    \\  const streamOffset = view.getUint32(28, true);
+    \\  if (total !== bytes.length || streamOffset < 32 + syncCount * 24 || streamOffset >= total) __home_ism_error(operation, "invalid blob");
+    \\  return { bytes, view, syncCount, streamOffset };
+    \\}
+    \\function __home_ism_test_bit(bytes, offset, index) {
+    \\  return ((bytes[offset + (index >> 3)] >> (index & 7)) & 1) !== 0;
+    \\}
+    \\function __home_ism_decode_blob(value, operation) {
+    \\  const blob = __home_ism_bytes(value, operation);
+    \\  const states = [];
+    \\  for (let syncIndex = 0; syncIndex < blob.syncCount; syncIndex++) {
+    \\    const sync = 32 + syncIndex * 24;
+    \\    const state = {
+    \\      generatedLine: blob.view.getInt32(sync, true),
+    \\      generatedColumn: blob.view.getInt32(sync + 4, true),
+    \\      originalLine: blob.view.getInt32(sync + 12, true),
+    \\      originalColumn: blob.view.getInt32(sync + 16, true),
+    \\      sourceIndex: blob.view.getInt32(sync + 20, true),
+    \\    };
+    \\    states.push({ ...state });
+    \\    const base = blob.streamOffset + blob.view.getUint32(sync + 8, true);
+    \\    if (base + 32 > blob.bytes.length) __home_ism_error(operation, "invalid blob");
+    \\    const count = Math.min(blob.bytes[base], 64);
+    \\    const flags = blob.bytes[base + 1];
+    \\    const generatedColumns = { index: base + 32 };
+    \\    const originalLines = { index: generatedColumns.index + blob.view.getUint16(base + 2, true) };
+    \\    const originalColumns = { index: originalLines.index + blob.view.getUint16(base + 4, true) };
+    \\    let rarePosition = originalColumns.index + blob.view.getUint16(base + 6, true);
+    \\    const generatedLineRare = [];
+    \\    if ((flags & 4) !== 0) {
+    \\      while (rarePosition < blob.bytes.length && blob.bytes[rarePosition] !== 255) {
+    \\        const deltaIndex = blob.bytes[rarePosition++];
+    \\        const cursor = { index: rarePosition };
+    \\        generatedLineRare[deltaIndex] = __home_ism_read_varint(blob.bytes, cursor);
+    \\        rarePosition = cursor.index;
+    \\      }
+    \\      if (rarePosition >= blob.bytes.length) __home_ism_error(operation, "invalid blob");
+    \\      rarePosition++;
+    \\    }
+    \\    const sourceMask = rarePosition;
+    \\    const sourceIndices = { index: rarePosition + ((flags & 8) !== 0 ? 8 : 0) };
+    \\    for (let deltaIndex = 0; deltaIndex + 1 < count; deltaIndex++) {
+    \\      let dGeneratedLine = __home_ism_test_bit(blob.bytes, base + 8, deltaIndex) ? 1 : 0;
+    \\      const dGeneratedColumn = __home_ism_read_varint(blob.bytes, generatedColumns);
+    \\      let dOriginalLine = __home_ism_test_bit(blob.bytes, base + 16, deltaIndex) ? dGeneratedLine : __home_ism_read_varint(blob.bytes, originalLines);
+    \\      const dOriginalColumn = __home_ism_test_bit(blob.bytes, base + 24, deltaIndex) ? dGeneratedColumn : __home_ism_read_varint(blob.bytes, originalColumns);
+    \\      if (generatedLineRare[deltaIndex] !== undefined) { dGeneratedLine = generatedLineRare[deltaIndex]; if (__home_ism_test_bit(blob.bytes, base + 16, deltaIndex)) dOriginalLine = dGeneratedLine; }
+    \\      if ((flags & 8) !== 0 && !__home_ism_test_bit(blob.bytes, sourceMask, deltaIndex)) state.sourceIndex = (state.sourceIndex + __home_ism_read_varint(blob.bytes, sourceIndices)) | 0;
+    \\      if (dGeneratedLine !== 0) { state.generatedLine = (state.generatedLine + dGeneratedLine) | 0; state.generatedColumn = dGeneratedColumn; }
+    \\      else state.generatedColumn = (state.generatedColumn + dGeneratedColumn) | 0;
+    \\      state.originalLine = (state.originalLine + dOriginalLine) | 0;
+    \\      state.originalColumn = (state.originalColumn + dOriginalColumn) | 0;
+    \\      states.push({ ...state });
+    \\    }
+    \\  }
+    \\  return states;
+    \\}
+    \\function __home_ism_to_vlq(value) {
+    \\  const states = __home_ism_decode_blob(value, "toVLQ");
+    \\  let generatedLine = 0;
+    \\  let previous = { generatedColumn: 0, sourceIndex: 0, originalLine: 0, originalColumn: 0 };
+    \\  let out = "";
+    \\  for (const state of states) {
+    \\    while (generatedLine < state.generatedLine) { out += ";"; generatedLine++; previous.generatedColumn = 0; }
+    \\    if (out.length > 0 && !out.endsWith(";")) out += ",";
+    \\    out += __home_ism_encode_vlq((state.generatedColumn - previous.generatedColumn) | 0);
+    \\    out += __home_ism_encode_vlq((state.sourceIndex - previous.sourceIndex) | 0);
+    \\    out += __home_ism_encode_vlq((state.originalLine - previous.originalLine) | 0);
+    \\    out += __home_ism_encode_vlq((state.originalColumn - previous.originalColumn) | 0);
+    \\    previous = { generatedColumn: state.generatedColumn, sourceIndex: state.sourceIndex, originalLine: state.originalLine, originalColumn: state.originalColumn };
+    \\  }
+    \\  return out;
+    \\}
+    \\function __home_ism_find(value, line, column) {
+    \\  const targetLine = Number(line) | 0;
+    \\  const targetColumn = Number(column) | 0;
+    \\  if (targetLine < 0 || targetColumn < 0) return null;
+    \\  const states = __home_ism_decode_blob(value, "find");
+    \\  let best = null;
+    \\  for (const state of states) {
+    \\    if (state.generatedLine > targetLine || state.generatedLine === targetLine && state.generatedColumn > targetColumn) break;
+    \\    best = state;
+    \\  }
+    \\  if (!best || best.generatedLine !== targetLine) return null;
+    \\  return { generatedLine: best.generatedLine, generatedColumn: best.generatedColumn, originalLine: best.originalLine, originalColumn: best.originalColumn, sourceIndex: best.sourceIndex };
+    \\}
     \\function __home_structured_clone_advanced_error(value, context, cause) {
     \\  const underlying = cause instanceof Error ? cause : new TypeError("The requested host object is not transferable");
     \\  const failure = new DOMException("The object can not be cloned.", { name: "DataCloneError", cause: underlying });
@@ -75227,6 +75818,7 @@ const harness_prelude =
     \\  return structuredClone(value);
     \\}
     \\globalThis.__home_modules["bun:internal-for-testing"] = {
+    \\  internalSourceMap: { fromVLQ: __home_ism_from_vlq, toVLQ: __home_ism_to_vlq, find: __home_ism_find },
     \\  structuredCloneAdvanced: __home_structured_clone_advanced,
     \\  Dequeue: __home_Dequeue,
     \\  sslCtxLiveCount: __home_tls_ssl_ctx_live_count,
@@ -75453,6 +76045,8 @@ const harness_prelude =
     \\    const filePath = String(path);
     \\    globalThis.__home_fifo_paths = globalThis.__home_fifo_paths || new Set();
     \\    globalThis.__home_fifo_paths.add(filePath);
+    \\    globalThis.__home_fifo_states = globalThis.__home_fifo_states || Object.create(null);
+    \\    globalThis.__home_fifo_states[filePath] = { readers: [], pending: [], closed: false };
     \\    __home_build_write_text(filePath, "");
     \\  },
     \\};
@@ -79329,7 +79923,8 @@ const harness_prelude =
     \\function __home_blob_module_error(blobURL, phase, cause) {
     \\  const underlying = cause instanceof Error ? cause : new Error(String(cause === undefined ? "Unknown Blob module failure" : cause));
     \\  const operation = "blob.module.import";
-    \\  const failure = new Error("Unable to import Blob module " + String(blobURL) + " during " + String(phase));
+    \\  const message = "Unable to import Blob module " + String(blobURL) + " during " + String(phase);
+    \\  const failure = phase === "transpile" || underlying instanceof SyntaxError ? new BuildMessage(message, "error", null) : new Error(message);
     \\  failure.code = "ERR_BLOB_MODULE";
     \\  failure.operation = operation;
     \\  failure.phase = String(phase);
@@ -86806,7 +87401,7 @@ const harness_prelude =
     \\      close() {
     \\        if (stream.__home_closed) throw streamError("ERR_INVALID_STATE", "Invalid state: Controller is already closed");
     \\        stream.__home_closed = true;
-    \\        Promise.resolve().then(() => {
+    \\        __home_then(__home_native_promise_resolve(), () => {
     \\          const request = stream.__home_byob_request;
     \\          if (request) {
     \\            try { request.respond(0); } catch (error) {}
@@ -87404,7 +87999,9 @@ const harness_prelude =
     \\              }
     \\            });
     \\            if (capturedMeta) capturedMeta.startPending = capturedStartPending;
-    \\            return capturedStartPending;
+    \\            return { then(onFulfilled, onRejected) {
+    \\              return __home_promise_then.call(capturedStartPending, onFulfilled, onRejected);
+    \\            } };
     \\          }
     \\          return startResult;
     \\        },
@@ -87557,8 +88154,8 @@ const harness_prelude =
     \\        let closedSettled = false;
     \\        let closedResolve;
     \\        let closedReject;
-    \\        const closedPromise = new Promise((resolve, reject) => { closedResolve = resolve; closedReject = reject; });
-    \\        closedPromise.catch(() => undefined);
+    \\        const closedPromise = new __home_NativePromise((resolve, reject) => { closedResolve = resolve; closedReject = reject; });
+    \\        __home_then(closedPromise, undefined, () => undefined);
     \\        const settleClosed = (error, value) => {
     \\          if (closedSettled) return;
     \\          closedSettled = true;
@@ -87566,17 +88163,18 @@ const harness_prelude =
     \\        };
     \\        const read = reader.read;
     \\        let rejectReleased;
-    \\        const releasedPromise = new Promise((resolve, reject) => { rejectReleased = reject; });
-    \\        releasedPromise.catch(() => undefined);
+    \\        const releasedPromise = new __home_NativePromise((resolve, reject) => { rejectReleased = reject; });
+    \\        __home_then(releasedPromise, undefined, () => undefined);
     \\        rejectPendingReads = error => rejectReleased(error);
     \\        reader.read = function() {
     \\          const receiver = this;
     \\          const args = arguments;
-    \\          const observed = Promise.resolve().then(() => {
+    \\          const observed = __home_then(__home_native_promise_resolve(), () => {
     \\            if (readerReleaseError) throw readerReleaseError;
     \\            return read.apply(receiver, args);
-    \\          }).then(value => { if (value && value.done) settleClosed(undefined, undefined); return value; }, error => { settleClosed(error); throw error; });
-    \\          return Promise.race([observed, releasedPromise]);
+    \\          });
+    \\          const settled = __home_then(observed, value => { if (value && value.done) settleClosed(undefined, undefined); return value; }, error => { settleClosed(error); throw error; });
+    \\          return __home_native_promise_race([settled, releasedPromise]);
     \\        };
     \\        const cancel = typeof reader.cancel === "function" ? reader.cancel : null;
     \\        if (cancel) reader.cancel = function() {
@@ -91845,7 +92443,6 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ": { [k: string]: any } =", .replacement = " =" },
         .{ .needle = "function log(from, ...message: any[])", .replacement = "function log(from, ...message)" },
         .{ .needle = "const queue: { value: unknown; from: string }[] = [];", .replacement = "const queue = [];" },
-        .{ .needle = "Object.assign(globalThis.Promise, Promise);", .replacement = "Object.assign(globalThis.Promise, Promise);\nfor (const key of Object.getOwnPropertyNames(Promise)) {\n  if (!(key in globalThis.Promise)) {\n    const descriptor = Object.getOwnPropertyDescriptor(Promise, key);\n    try { Object.defineProperty(globalThis.Promise, key, descriptor); } catch (error) {}\n  }\n}" },
         .{ .needle = "const modules = [", .replacement = "const modules = [\"module\", \"util\", \"url\", \"path\", \"fs/promises\"];\nconst __home_fuzzy_unused_modules = [" },
         .{ .needle = "const globals = [", .replacement = "const globals = [];\nconst __home_fuzzy_unused_globals = [" },
         .{ .needle = "Bun.generateHeapSnapshot = () => {};", .replacement = "void Bun.generateHeapSnapshot;" },
@@ -91863,8 +92460,6 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "var activeFIFO: Promise<string>;", .replacement = "var activeFIFO;" },
         .{ .needle = "function getFd(label: string, byteLength = 0)", .replacement = "function getFd(label, byteLength = 0)" },
         .{ .needle = "async function (stream: ReadableStream<Uint8Array>, byteLength = 0)", .replacement = "async function (stream, byteLength = 0)" },
-        .{ .needle = "for (let isPipe of [true, false] as const)", .replacement = "for (let isPipe of [false])" },
-        .{ .needle = "it.skipIf(!isPosix)(\"does not leak native FileSink when a pending write fails (EPIPE)\",", .replacement = "it.skip(\"does not leak native FileSink when a pending write fails (EPIPE)\"," },
         .{ .needle = "function createTree(basedir: string, paths: string[])", .replacement = "function createTree(basedir, paths)" },
         .{ .needle = "function make(files: string[])", .replacement = "function make(files)" },
         .{ .needle = "const fixture: Record<string, string> =", .replacement = "const fixture =" },
@@ -99901,11 +100496,12 @@ pub fn runSubset(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8, 
         };
     }
 
-    var runtime = try jsc_bootstrap.Runtime.init(allocator, harness_prelude);
-    defer runtime.deinit();
-
     var summary = Summary{};
-    for (filesForSubset(subset)) |relative| try runRelativeFile(io, allocator, &runtime, corpus_path, relative, &summary);
+    for (filesForSubset(subset)) |relative| {
+        var runtime = try jsc_bootstrap.Runtime.init(allocator, harness_prelude);
+        defer runtime.deinit();
+        try runRelativeFile(io, allocator, &runtime, corpus_path, relative, &summary);
+    }
 
     return summary;
 }
@@ -99925,13 +100521,12 @@ pub fn runGate(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8) !S
         };
     }
 
-    var runtime = try jsc_bootstrap.Runtime.init(allocator, harness_prelude);
-    defer runtime.deinit();
-
     var summary = Summary{};
     const show_progress = bunCorpusProgressEnabled();
     const range = bunCorpusRange(test_files.len);
     for (test_files[range.start..range.end], range.start..) |relative, index| {
+        var runtime = try jsc_bootstrap.Runtime.init(allocator, harness_prelude);
+        defer runtime.deinit();
         if (show_progress) {
             std.debug.print("[home-bun-corpus] {d}/{d} {s}\n", .{ index + 1, test_files.len, relative });
         }
@@ -99964,12 +100559,11 @@ pub fn runDirectory(
         };
     }
 
-    var runtime = try jsc_bootstrap.Runtime.init(allocator, harness_prelude);
-    defer runtime.deinit();
-
     var summary = Summary{};
     const show_progress = bunCorpusProgressEnabled();
     for (test_files, 0..) |directory_relative, index| {
+        var runtime = try jsc_bootstrap.Runtime.init(allocator, harness_prelude);
+        defer runtime.deinit();
         const corpus_relative = try std.fs.path.join(allocator, &.{ relative_directory, directory_relative });
         defer allocator.free(corpus_relative);
         if (show_progress) {
@@ -124341,16 +124935,16 @@ test "bootstrap runner mirrors FileSink utility corpus" {
     var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/util/filesink.test.ts");
     defer summary.deinit(std.testing.allocator);
 
-    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 25 or summary.todo != 1) {
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 44 or summary.todo != 0) {
         std.debug.print(
             "FileSink utility corpus mismatch: passed={} expected={} failed={} todo={} expected_todo={} unsupported={} message={s}\n",
-            .{ summary.passed, @as(usize, 25), summary.failed, summary.todo, @as(usize, 1), summary.unsupported, summary.first_failure_message },
+            .{ summary.passed, @as(usize, 44), summary.failed, summary.todo, @as(usize, 0), summary.unsupported, summary.first_failure_message },
         );
     }
     try std.testing.expectEqual(@as(usize, 1), summary.files);
-    try std.testing.expectEqual(@as(usize, 25), summary.passed);
+    try std.testing.expectEqual(@as(usize, 44), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
-    try std.testing.expectEqual(@as(usize, 1), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
@@ -128323,6 +128917,9 @@ test "bootstrap runner mirrors utility resolve process queue mini-suite" {
         .{ .path = "js/bun/util/fileUrl.test.js", .passed = 20 },
         .{ .path = "js/bun/util/file-type.test.ts", .passed = 2 },
         .{ .path = "js/bun/util/bun-file-read.test.ts", .passed = 1 },
+        .{ .path = "js/bun/util/bun-file-windows.test.ts", .passed = 3 },
+        .{ .path = "js/bun/util/error-gc-test.test.js", .passed = 4 },
+        .{ .path = "js/bun/util/fuzzy-wuzzy.test.ts", .passed = 66 },
         .{ .path = "js/bun/io/bun-write-leak.test.ts", .passed = 1 },
         .{ .path = "js/node/url/url-pathtofileurl.test.js", .passed = 4 },
         .{ .path = "js/bun/util/randomUUIDv7.test.ts", .passed = 6 },

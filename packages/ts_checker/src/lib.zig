@@ -472,36 +472,33 @@ pub fn arrayProto(
     const u_arr = try ti.internArrayType(sint, u_tp);
 
     // Callback signatures.
-    // `(value: T) => U` — used by map. The callback's return
+    // `(value: T, index: number, array: T[]) => U` — used by map. The callback's return
     // type drives inference of `U`: a string-returning callback makes
     // `arr.map(...)` resolve to `string[]` instead of `any[]`.
-    const cb_t_u = try ti.internSignature(&[_]TypeId{elem}, u_tp, false);
-    // `(value: T) => U | U[]` — used by flatMap. The callback can
+    const cb_t_u = try ti.internSignature(&[_]TypeId{ elem, number_t, arr_t }, u_tp, false);
+    // `(value: T, index: number, array: T[]) => U | U[]` — used by flatMap. The callback can
     // return either a single value or an array of values; flatMap
     // flattens the result by one level. Upstream signature is
     // `(value: T) => U | readonly U[]`; we accept the non-readonly
     // form which subsumes most call sites.
     const u_or_u_arr = try ti.internUnion(&[_]TypeId{ u_tp, u_arr });
-    const cb_t_u_or_arr = try ti.internSignature(&[_]TypeId{elem}, u_or_u_arr, false);
-    // `(x: T) => boolean` — used by every / some.
-    const cb_t_bool = try ti.internSignature(&[_]TypeId{elem}, boolean_t, false);
-    // `(x: T) => unknown` — used by filter / find, matching lib.d.ts
+    const cb_t_u_or_arr = try ti.internSignature(&[_]TypeId{ elem, number_t, arr_t }, u_or_u_arr, false);
+    // `(value: T, index: number, array: T[]) => boolean` — used by every / some.
+    const cb_t_bool = try ti.internSignature(&[_]TypeId{ elem, number_t, arr_t }, boolean_t, false);
+    // `(value: T, index: number, array: T[]) => unknown` — used by filter / find, matching lib.d.ts
     // predicate overloads that accept truthy non-boolean returns.
-    const cb_t_unknown = try ti.internSignature(&[_]TypeId{elem}, unknown_t, false);
-    // `(x: T) => void` — used by forEach.
-    const cb_t_void = try ti.internSignature(&[_]TypeId{elem}, void_t, false);
+    const cb_t_unknown = try ti.internSignature(&[_]TypeId{ elem, number_t, arr_t }, unknown_t, false);
+    // `(value: T, index: number, array: T[]) => void` — used by forEach.
+    const cb_t_void = try ti.internSignature(&[_]TypeId{ elem, number_t, arr_t }, void_t, false);
     // `(a: T, b: T) => number` — used by sort.
     const cb_tt_num = try ti.internSignature(&[_]TypeId{ elem, elem }, number_t, false);
-    // `(prev: T, cur: T) => T` — no-initial-value reducer callback
+    // `(prev: T, cur: T, index: number, array: T[]) => T` — no-initial-value reducer callback
     // for reduce / reduceRight. This overload returns the array element
     // type, matching lib.d.ts and the compiler corpus' `genericReduce`.
-    const cb_reduce_no_init = try ti.internSignature(&[_]TypeId{ elem, elem }, elem, false);
-    // `(prev: U, cur: T) => U` — reducer callback for reduce /
-    // reduceRight. lib.d.ts declares 4 params (prev, cur, idx, arr); we
-    // model the loose 2-param head — callbacks with more params remain
-    // assignable (contravariant), matching how map / filter callbacks
-    // are modeled here.
-    const cb_reduce = try ti.internSignature(&[_]TypeId{ u_tp, elem }, u_tp, false);
+    const cb_reduce_no_init = try ti.internSignature(&[_]TypeId{ elem, elem, number_t, arr_t }, elem, false);
+    // `(prev: U, cur: T, index: number, array: T[]) => U` — reducer
+    // callback for reduce / reduceRight.
+    const cb_reduce = try ti.internSignature(&[_]TypeId{ u_tp, elem, number_t, arr_t }, u_tp, false);
 
     // Method signatures.
     // `push(...items: T[]): number` accepts both zero/multiple scalar

@@ -596,6 +596,7 @@ pub const ProgramExportedType = struct {
     target_path: []const u8,
     export_name: []const u8,
     declaration: *const ProgramClassSchema.Declaration,
+    contextual_only: bool = false,
 };
 
 pub const ProgramAmbientModuleInterfaceExport = struct {
@@ -30577,6 +30578,9 @@ pub const Checker = struct {
                 const v = hir_mod.varDeclOf(self.hir, parent);
                 if (v.init != fn_node) return null;
                 target_t = self.hir.typeOf(parent);
+                if (v.type_annotation != hir_mod.none_node_id) {
+                    target_t = (self.programContextualExportedType(v.type_annotation) catch null) orelse target_t;
+                }
             },
             .assignment => {
                 const a = hir_mod.assignmentOf(self.hir, parent);
@@ -61784,7 +61788,7 @@ pub const Checker = struct {
                 if (imported.local != local_name) continue;
                 if (self.external_resolver) |resolver| {
                     if (resolver.moduleExport(spec_text, self.importer_path, self.string_interner.get(imported.imported))) |info| {
-                        if (info.namespace_module_path.len != 0) return self.programModuleNamespaceType(info.namespace_module_path, anchor);
+                        if (info.namespace_module_path.len != 0) return self.programModuleNamespaceTypeForPath(info.namespace_module_path, anchor);
                     }
                 }
             }
@@ -77985,7 +77989,8 @@ pub const Checker = struct {
             const r = hir_mod.typeRefOf(self.hir, arg);
             if (r.qualifier_len == 0) {
                 const name_str = self.string_interner.get(r.name);
-                if (self.visibleValueOnlyDeclarationExistsAt(arg, r.name) and
+                if (!isPrimitiveTypeNameText(name_str) and
+                    self.visibleValueOnlyDeclarationExistsAt(arg, r.name) and
                     !self.visibleTypeDeclarationExistsAt(arg, r.name))
                 {
                     try self.reportValueUsedAsTypeDidYouMeanTypeofOnce(arg, r.name);
@@ -106748,6 +106753,7 @@ pub const Checker = struct {
         if (self.findVisibleNamedTypeDecl(anchor, name)) |local| {
             const position = self.hir.spanOf(local).start;
             for (self.program_exported_types) |entry| {
+                if (entry.contextual_only) continue;
                 if (entry.declaration.position == position and std.mem.eql(u8, entry.declaration.path, self.importer_path))
                     return self.programDeclarationTypeReference(entry.declaration, anchor);
             }
@@ -106775,9 +106781,46 @@ pub const Checker = struct {
 
     fn programExportedTypeForImportPath(self: *Checker, import_node: NodeId, specifier: hir_mod.StringId, name: hir_mod.StringId, anchor: NodeId) CheckError!?TypeId {
         for (self.program_exported_types) |entry| {
+            if (entry.contextual_only) continue;
             if (!std.mem.eql(u8, entry.export_name, self.string_interner.get(name))) continue;
             if (!try self.programImportTargetsPath(import_node, self.string_interner.get(specifier), entry.target_path)) continue;
             return self.programDeclarationTypeReference(entry.declaration, anchor);
+        }
+        return null;
+    }
+
+    /// A callable type alias with an untransferable inner leaf must not become
+    /// the variable's general-purpose type. It can still provide exact outer
+    /// contextual parameter slots to that variable's function initializer.
+    fn programContextualExportedType(self: *Checker, type_node: NodeId) CheckError!?TypeId {
+        if (type_node == hir_mod.none_node_id or self.hir.kindOf(type_node) != .type_ref) return null;
+        const reference = hir_mod.typeRefOf(self.hir, type_node);
+        if (reference.qualifier_len != 0) return null;
+        const root = self.rootBlockFor(type_node);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        for (hir_mod.blockStmts(self.hir, root)) |statement| {
+            if (self.hir.kindOf(statement) != .import_decl) continue;
+            const import = hir_mod.importOf(self.hir, statement);
+            var imported_name: ?hir_mod.StringId = null;
+            if (import.default_binding != hir_mod.none_node_id and
+                self.hir.kindOf(import.default_binding) == .identifier and
+                hir_mod.identifierOf(self.hir, import.default_binding).name == reference.name)
+            {
+                imported_name = self.string_interner.intern("default") catch return error.OutOfMemory;
+            }
+            for (hir_mod.importNamed(self.hir, statement)) |specifier| {
+                const item = hir_mod.importSpecifierOf(self.hir, specifier);
+                if (item.local == reference.name) {
+                    imported_name = item.imported;
+                    break;
+                }
+            }
+            const name = imported_name orelse continue;
+            for (self.program_exported_types) |entry| {
+                if (!entry.contextual_only or !std.mem.eql(u8, entry.export_name, self.string_interner.get(name))) continue;
+                if (!try self.programImportTargetsPath(statement, self.string_interner.get(import.module), entry.target_path)) continue;
+                return self.programDeclarationTypeReference(entry.declaration, type_node);
+            }
         }
         return null;
     }
@@ -106790,7 +106833,16 @@ pub const Checker = struct {
         const resolver = self.external_resolver orelse return null;
         if (resolver.vtable.moduleExportNames == null or resolver.vtable.moduleExport == null) return null;
         const resolved = resolver.resolve(spec, self.importer_path) orelse return null;
-        const root_path = self.string_interner.intern(resolved.path) catch return error.OutOfMemory;
+        return self.programModuleNamespaceTypeForPath(resolved.path, anchor);
+    }
+
+    /// Build a namespace from a canonical owner path already supplied by the
+    /// resolver. Re-resolving that path as source-written module text would
+    /// reinterpret relative program paths as package specifiers.
+    fn programModuleNamespaceTypeForPath(self: *Checker, resolved_path: []const u8, anchor: NodeId) CheckError!?TypeId {
+        const resolver = self.external_resolver orelse return null;
+        if (resolver.vtable.moduleExportNames == null or resolver.vtable.moduleExport == null) return null;
+        const root_path = self.string_interner.intern(resolved_path) catch return error.OutOfMemory;
         if (self.program_module_namespace_types.get(root_path)) |cached| return if (cached == types.Primitive.none) null else cached;
         const Pending = struct { path: hir_mod.StringId, type: TypeId };
         var pending: std.ArrayListUnmanaged(Pending) = .empty;
@@ -107132,9 +107184,10 @@ pub const Checker = struct {
 
     fn lowerProgramExpression(self: *Checker, expression: *const ProgramClassSchema.Expression, declaration: *const ProgramClassSchema.Declaration, args: []const TypeId) ProgramTypeError!TypeId {
         switch (expression.*) {
-            .unsupported => return error.UnsupportedProgramType,
+            .unsupported => return if (declaration.contextual_only) types.Primitive.any else error.UnsupportedProgramType,
+            .opaque_leaf => return types.Primitive.any,
             .primitive => |type_id| return type_id,
-            .builtin_object => |name| return self.lowerBuiltinObjectType(name) orelse error.UnsupportedProgramType,
+            .builtin_object => |name| return self.lowerBuiltinObjectType(name) orelse if (declaration.contextual_only) types.Primitive.any else error.UnsupportedProgramType,
             .parameter => |parameter| {
                 for (declaration.parameters, args) |*param, arg| if (param == parameter) return arg;
                 return self.programExpressionParameter(parameter);
@@ -107187,6 +107240,22 @@ pub const Checker = struct {
                 return if (expression.* == .union_type) self.interner.internUnion(result) else self.interner.internIntersection(result);
             },
             .function => |function| {
+                const type_parameters = try self.gpa.alloc(TypeId, function.type_parameters.len);
+                defer self.gpa.free(type_parameters);
+                for (function.type_parameters, type_parameters) |*parameter, *out| {
+                    out.* = try self.programExpressionParameter(parameter);
+                }
+                for (function.type_parameters, type_parameters) |*parameter, parameter_t| {
+                    const payload = &self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(parameter_t)];
+                    payload.constraint = if (parameter.constraint) |constraint|
+                        try self.lowerProgramExpression(constraint, declaration, args)
+                    else
+                        types.Primitive.none;
+                    payload.default = if (parameter.default) |default|
+                        try self.lowerProgramExpression(default, declaration, args)
+                    else
+                        types.Primitive.none;
+                }
                 const params = try self.gpa.alloc(TypeId, function.parameters.len);
                 defer self.gpa.free(params);
                 const optional = try self.gpa.alloc(bool, params.len);
@@ -107220,13 +107289,17 @@ pub const Checker = struct {
                     });
                 }
                 if (rest) try self.rest_signatures.put(self.gpa, sig, {});
+                if (type_parameters.len > 0) try self.recordGenericSignatureParams(sig, type_parameters);
                 return sig;
             },
             .reference => |ref| {
                 const values = try self.gpa.alloc(TypeId, ref.arguments.len);
                 defer self.gpa.free(values);
                 for (ref.arguments, values) |arg, *out| out.* = try self.lowerProgramExpression(arg, declaration, args);
-                return self.programDeclarationReference(ref.declaration, values, &.{});
+                return self.programDeclarationReference(ref.declaration, values, &.{}) catch |err| switch (err) {
+                    error.UnsupportedProgramType => if (declaration.contextual_only) types.Primitive.any else error.UnsupportedProgramType,
+                    error.OutOfMemory => error.OutOfMemory,
+                };
             },
             .indexed_access => |indexed| {
                 const object_t = try self.lowerProgramExpression(indexed.object, declaration, args);
@@ -210761,6 +210834,9 @@ const StaticValueModuleResolver = struct {
     const vtable = ExternalResolver.VTable{ .resolve = resolve, .moduleExport = moduleExport, .moduleExportNames = names };
 
     fn resolve(_: *anyopaque, spec: []const u8, _: []const u8) ?ExternalResolver.Resolution {
+        // Canonical paths returned by moduleExport are query results, not
+        // source-written specifiers, and must not be resolved a second time.
+        if (std.mem.startsWith(u8, spec, "/")) return null;
         const path = if (std.mem.eql(u8, spec, "./a")) "/a.ts" else if (std.mem.eql(u8, spec, "./b")) "/b.ts" else spec;
         return .{ .path = path, .is_declaration = true };
     }
@@ -210911,10 +210987,13 @@ test "checker: this type parameter queries traverse cycles once" {
 test "checker: program static values survive namespace consumption without leaking names" {
     const s = try newSetup(
         \\import { Secret as Named } from './a';
+        \\import { peer as Peer } from './a';
         \\import * as ns from './a';
         \\class Secret { local!: number; }
         \\const count: number = Named.count;
         \\Named.missing;
+        \\const peerLabel: string = Peer.label;
+        \\const badPeerLabel: number = Peer.label;
         \\const copy = ns;
         \\const badCopy: string = copy.Secret.count;
         \\const { Secret: Alias } = ns;
@@ -210941,9 +211020,9 @@ test "checker: program static values survive namespace consumption without leaki
     s.checker.setProgramExportedClasses(&classes);
     s.checker.setProgramExportedValues(&values);
     try s.checker.checkSourceFile(s.root);
-    try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 5), checkerCountCode(s, TsCodes.type_not_assignable));
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.property_does_not_exist));
-    try T.expectEqual(@as(usize, 6), s.checker.diagnostics.items.len);
+    try T.expectEqual(@as(usize, 7), s.checker.diagnostics.items.len);
 }
 
 test "checker: keyof exposes only public class members through mapped types" {
@@ -229447,6 +229526,21 @@ test "checker: value bindings do not shadow primitive type refs in unions" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.value_used_as_type_did_you_mean_typeof));
+}
+
+test "checker: unresolved generic owners do not reinterpret primitive type arguments as values" {
+    const s = try newSetup(
+        \\declare namespace Types {}
+        \\function number() { return 1; }
+        \\function ValueOnly() {}
+        \\type PrimitiveArg = Types.Missing<number>;
+        \\type ValueArg = Types.Missing<ValueOnly>;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.value_used_as_type_did_you_mean_typeof));
+    const msg = checkerFirstMessageForCode(s, TsCodes.value_used_as_type_did_you_mean_typeof) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings("'ValueOnly' refers to a value, but is being used as a type here. Did you mean 'typeof ValueOnly'?", msg);
 }
 
 test "checker: value-only generic-looking type reference emits TS2749" {
@@ -264070,6 +264164,23 @@ test "checker: recursive tuple array map contextually types every callback param
     try b.base.checker.checkSourceFile(b.base.root);
     try T.expect(!checkerHasCode(b, TsCodes.binding_element_implicitly_any));
     try T.expect(!checkerHasCode(b, TsCodes.parameter_implicitly_any));
+    try T.expect(!checkerHasCode(b, TsCodes.argument_type_mismatch));
+}
+
+test "checker: array callbacks accept complete lib parameter lists" {
+    const s = try newSetup(
+        \\const values: number[] = [1, 2, 3];
+        \\values.map((value, index, array) => value + index + array.length);
+        \\values.every((value, index, array) => value >= index - array.length);
+        \\values.reduce((sum, value, index, array) => sum + value + index + array.length, 0);
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true, .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.parameter_implicitly_any);
+        try T.expect(d.code != TsCodes.argument_type_mismatch);
+    }
 }
 
 test "checker: Array.prototype.reduce<U> infers result type from the initial value" {

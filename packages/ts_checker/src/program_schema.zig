@@ -24,6 +24,7 @@ pub const Member = struct {
 pub const Element = struct { type: *const Expression, optional: bool = false, rest: bool = false };
 pub const TypePredicate = struct { param_index: u16, target: *const Expression, is_asserts: bool };
 pub const Function = struct {
+    type_parameters: []Parameter = &.{},
     parameters: []const Element,
     result: *const Expression,
     this_type: ?*const Expression = null,
@@ -49,6 +50,10 @@ pub const IndexSignature = struct { key: *const Expression, value: *const Expres
 pub const IndexedObject = struct { members: []const Member, indices: []const IndexSignature };
 pub const Expression = union(enum) {
     primitive: types.TypeId,
+    /// A deliberately opaque leaf in an otherwise transferable declaration.
+    /// Consumers lower it to `any`, retaining safe outer structure such as a
+    /// contextual function signature without inventing the leaf shape.
+    opaque_leaf,
     /// A standard-library object type whose concrete shape is owned by the
     /// consuming checker. Keeping the symbolic name avoids copying checker
     /// TypeIds across source-file type pools.
@@ -84,6 +89,9 @@ pub const Declaration = struct {
     body: ?*const Expression = null,
     is_class: bool = false,
     is_function: bool = false,
+    /// This declaration preserves a callable shell by degrading at least one
+    /// untransferable leaf. It is valid only as contextual function input.
+    contextual_only: bool = false,
 };
 
 pub const Schema = struct {
@@ -110,11 +118,32 @@ pub const Schema = struct {
         var visited: std.AutoHashMapUnmanaged(*const Expression, void) = .empty;
         defer visited.deinit(gpa);
         try appendDeclaration(gpa, &pending, declaration);
+        return pendingSupported(gpa, &pending, &visited, declaration.contextual_only);
+    }
+
+    /// Check one prospective leaf before it is embedded in a larger schema.
+    /// This uses the same identity-aware traversal as whole declarations.
+    pub fn expressionSupported(expression: *const Expression, gpa: std.mem.Allocator) !bool {
+        var pending: std.ArrayListUnmanaged(*const Expression) = .empty;
+        defer pending.deinit(gpa);
+        var visited: std.AutoHashMapUnmanaged(*const Expression, void) = .empty;
+        defer visited.deinit(gpa);
+        try pending.append(gpa, expression);
+        return pendingSupported(gpa, &pending, &visited, false);
+    }
+
+    fn pendingSupported(
+        gpa: std.mem.Allocator,
+        pending: *std.ArrayListUnmanaged(*const Expression),
+        visited: *std.AutoHashMapUnmanaged(*const Expression, void),
+        allow_opaque: bool,
+    ) !bool {
         while (pending.pop()) |expr| {
             const entry = try visited.getOrPut(gpa, expr);
             if (entry.found_existing) continue;
             switch (expr.*) {
-                .unsupported => return false,
+                .unsupported => if (!allow_opaque) return false,
+                .opaque_leaf => if (!allow_opaque) return false,
                 .primitive, .builtin_object, .parameter, .string, .number, .boolean => {},
                 .array, .readonly_array, .keyof, .this_type => |element| try pending.append(gpa, element),
                 .object => |members| for (members) |member| {
@@ -132,13 +161,17 @@ pub const Schema = struct {
                 },
                 .union_type, .intersection => |members| try pending.appendSlice(gpa, members),
                 .function => |function| {
+                    for (function.type_parameters) |parameter| {
+                        if (parameter.constraint) |constraint| try pending.append(gpa, constraint);
+                        if (parameter.default) |default| try pending.append(gpa, default);
+                    }
                     if (function.this_type) |receiver| try pending.append(gpa, receiver);
                     for (function.parameters) |param| try pending.append(gpa, param.type);
                     try pending.append(gpa, function.result);
                     if (function.predicate) |predicate| try pending.append(gpa, predicate.target);
                 },
                 .reference => |ref| {
-                    try appendDeclaration(gpa, &pending, ref.declaration);
+                    try appendDeclaration(gpa, pending, ref.declaration);
                     try pending.appendSlice(gpa, ref.arguments);
                 },
                 .indexed_access => |indexed| {
@@ -158,7 +191,7 @@ pub const Schema = struct {
                 .infer => |parameter| {
                     if (parameter.constraint) |constraint| try pending.append(gpa, constraint);
                 },
-                .typeof_class => |class_declaration| try appendDeclaration(gpa, &pending, class_declaration),
+                .typeof_class => |class_declaration| try appendDeclaration(gpa, pending, class_declaration),
             }
         }
         return true;

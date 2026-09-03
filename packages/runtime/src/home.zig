@@ -3134,10 +3134,26 @@ pub const jsc = struct {
                 // object (`Bun.listen/connect({ socket: { open, data, ... } })`,
                 // and node:net via that). The vendored bindgen codegen isn't
                 // present, so hand-mirror it. JS name → Zig field; the JSValues
-                // are borrowed (fromGenerated protects them). binary_type stays
-                // `.buffer` (the node:net default).
+                // are borrowed (fromGenerated protects them).
                 var result: SocketConfigHandlers = .{};
                 if (!value.isObject()) return result;
+                if (try value.get(globalObject, "binaryType")) |binary_type| {
+                    if (!binary_type.isUndefinedOrNull()) {
+                        if (!binary_type.isString()) {
+                            return globalObject.throwInvalidArguments("Expected \"socket.binaryType\" to be a string", .{});
+                        }
+                        const BinaryTypeMap = ComptimeStringMap(BinaryType, .{
+                            .{ "arraybuffer", .arraybuffer },
+                            .{ "buffer", .buffer },
+                            .{ "uint8array", .uint8array },
+                        });
+                        const name = try binary_type.toBunString(globalObject);
+                        defer name.deref();
+                        result.binary_type = BinaryTypeMap.getWithEql(name, String.eqlComptime) orelse {
+                            return globalObject.throwInvalidArguments("Expected \"socket.binaryType\" to be 'arraybuffer', 'uint8array', or 'buffer'", .{});
+                        };
+                    }
+                }
                 const pairs = .{
                     .{ "open", "onOpen" },                 .{ "close", "onClose" },
                     .{ "data", "onData" },                 .{ "drain", "onWritable" },
@@ -3213,6 +3229,8 @@ pub const jsc = struct {
                         result.tls = .{ .boolean = tls_val.toBoolean() };
                     } else if (tls_val.isObject()) {
                         result.tls = .{ .object = try SSLConfig.fromJS(globalObject, tls_val) };
+                    } else if (!tls_val.isUndefinedOrNull()) {
+                        return globalObject.throwInvalidArguments("TLSOptions must be an object", .{});
                     }
                 }
                 return result;
