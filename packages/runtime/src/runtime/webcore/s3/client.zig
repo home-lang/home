@@ -40,13 +40,11 @@ pub fn download(
     path: []const u8,
     callback: *const fn (S3DownloadResult, *anyopaque) bun.JSTerminated!void,
     callback_context: *anyopaque,
-    proxy_url: ?[]const u8,
     request_payer: bool,
 ) bun.JSTerminated!void {
     try S3SimpleRequest.executeSimpleS3Request(this, .{
         .path = path,
         .method = .GET,
-        .proxy_url = proxy_url,
         .body = "",
         .request_payer = request_payer,
     }, .{ .download = callback }, callback_context);
@@ -59,7 +57,6 @@ pub fn downloadSlice(
     size: ?usize,
     callback: *const fn (S3DownloadResult, *anyopaque) bun.JSTerminated!void,
     callback_context: *anyopaque,
-    proxy_url: ?[]const u8,
     request_payer: bool,
 ) bun.JSTerminated!void {
     const range = brk: {
@@ -77,7 +74,6 @@ pub fn downloadSlice(
     try S3SimpleRequest.executeSimpleS3Request(this, .{
         .path = path,
         .method = .GET,
-        .proxy_url = proxy_url,
         .body = "",
         .range = range,
         .request_payer = request_payer,
@@ -89,13 +85,11 @@ pub fn delete(
     path: []const u8,
     callback: *const fn (S3DeleteResult, *anyopaque) bun.JSTerminated!void,
     callback_context: *anyopaque,
-    proxy_url: ?[]const u8,
     request_payer: bool,
 ) bun.JSTerminated!void {
     try S3SimpleRequest.executeSimpleS3Request(this, .{
         .path = path,
         .method = .DELETE,
-        .proxy_url = proxy_url,
         .body = "",
         .request_payer = request_payer,
     }, .{ .delete = callback }, callback_context);
@@ -106,7 +100,6 @@ pub fn listObjects(
     listOptions: S3ListObjectsOptions,
     callback: *const fn (S3ListObjectsResult, *anyopaque) bun.JSTerminated!void,
     callback_context: *anyopaque,
-    proxy_url: ?[]const u8,
 ) bun.JSTerminated!void {
     var search_params: bun.ByteList = .{};
 
@@ -201,8 +194,7 @@ pub fn listObjects(
     task.poll_ref.ref(task.vm);
 
     const url = bun.URL.parse(result.url);
-    const proxy = proxy_url orelse "";
-    task.proxy_url = if (proxy.len > 0) bun.handleOom(bun.default_allocator.dupe(u8, proxy)) else "";
+    task.proxy_url = S3SimpleRequest.resolveProxyUrl(url, null);
 
     task.http = bun.http.AsyncHTTP.init(
         bun.default_allocator,
@@ -239,7 +231,6 @@ pub fn upload(
     content_disposition: ?[]const u8,
     content_encoding: ?[]const u8,
     acl: ?ACL,
-    proxy_url: ?[]const u8,
     storage_class: ?StorageClass,
     request_payer: bool,
     callback: *const fn (S3UploadResult, *anyopaque) bun.JSTerminated!void,
@@ -248,7 +239,6 @@ pub fn upload(
     try S3SimpleRequest.executeSimpleS3Request(this, .{
         .path = path,
         .method = .PUT,
-        .proxy_url = proxy_url,
         .body = content,
         .content_type = content_type,
         .content_disposition = content_disposition,
@@ -267,7 +257,6 @@ pub fn writableStream(
     content_type: ?[]const u8,
     content_disposition: ?[]const u8,
     content_encoding: ?[]const u8,
-    proxy: ?[]const u8,
     storage_class: ?StorageClass,
     request_payer: bool,
 ) bun.JSError!jsc.JSValue {
@@ -303,13 +292,12 @@ pub fn writableStream(
             sink.finalize();
         }
     };
-    const proxy_url = (proxy orelse "");
     this.ref(); // ref the credentials
     const task = bun.new(MultiPartUpload, .{
         .ref_count = .initExactRefs(2), // +1 for the stream
         .credentials = this,
         .path = bun.handleOom(bun.default_allocator.dupe(u8, path)),
-        .proxy = if (proxy_url.len > 0) bun.handleOom(bun.default_allocator.dupe(u8, proxy_url)) else "",
+        .proxy = "",
         .content_type = if (content_type) |ct| bun.handleOom(bun.default_allocator.dupe(u8, ct)) else null,
         .content_disposition = if (content_disposition) |cd| bun.handleOom(bun.default_allocator.dupe(u8, cd)) else null,
         .content_encoding = if (content_encoding) |ce| bun.handleOom(bun.default_allocator.dupe(u8, ce)) else null,
@@ -455,6 +443,8 @@ pub fn uploadStream(
     content_type: ?[]const u8,
     content_disposition: ?[]const u8,
     content_encoding: ?[]const u8,
+    // Explicit proxy override (`fetch("s3://…", { proxy })`). Null/empty
+    // resolves HTTP_PROXY/HTTPS_PROXY from the environment per request.
     proxy: ?[]const u8,
     request_payer: bool,
     callback: ?*const fn (S3UploadResult, *anyopaque) void,
@@ -529,7 +519,6 @@ pub fn downloadStream(
     path: []const u8,
     offset: usize,
     size: ?usize,
-    proxy_url: ?[]const u8,
     request_payer: bool,
     callback: *const fn (chunk: bun.MutableString, has_more: bool, err: ?Error.S3Error, *anyopaque) void,
     callback_context: *anyopaque,
@@ -569,8 +558,8 @@ pub fn downloadStream(
             break :brk bun.handleOom(bun.http.Headers.fromPicoHttpHeaders(result.headers(), bun.default_allocator));
         }
     };
-    const proxy = proxy_url orelse "";
-    const owned_proxy = if (proxy.len > 0) bun.handleOom(bun.default_allocator.dupe(u8, proxy)) else "";
+    const url = bun.URL.parse(result.url);
+    const owned_proxy = S3SimpleRequest.resolveProxyUrl(url, null);
     const task = S3HttpDownloadStreamingTask.new(.{
         .http = undefined,
         .sign_result = result,
@@ -582,8 +571,6 @@ pub fn downloadStream(
         .vm = jsc.VirtualMachine.get(),
     });
     task.poll_ref.ref(task.vm);
-
-    const url = bun.URL.parse(result.url);
 
     task.signals = task.signal_store.to();
 
@@ -622,7 +609,6 @@ pub fn readableStream(
     path: []const u8,
     offset: usize,
     size: ?usize,
-    proxy_url: ?[]const u8,
     request_payer: bool,
     globalThis: *jsc.JSGlobalObject,
 ) bun.JSError!jsc.JSValue {
@@ -722,7 +708,6 @@ pub fn readableStream(
         path,
         offset,
         size,
-        proxy_url,
         request_payer,
         S3DownloadStreamWrapper.opaqueCallback,
         wrapper,

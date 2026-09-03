@@ -356,8 +356,6 @@ pub const S3 = struct {
         };
         const promise = jsc.JSPromise.Strong.init(globalThis);
         const value = promise.value();
-        const proxy_url = globalThis.bunVM().transpiler.env.getHttpProxy(true, null, null);
-        const proxy = if (proxy_url) |url| url.href else null;
         var aws_options = try this.getCredentialsWithOptions(extra_options, globalThis);
         defer aws_options.deinit();
         store.ref();
@@ -366,7 +364,7 @@ pub const S3 = struct {
             .promise = promise,
             .store = store, // store is needed in case of not found error
             .global = globalThis,
-        }), proxy, aws_options.request_payer);
+        }), aws_options.request_payer);
 
         return value;
     }
@@ -414,8 +412,6 @@ pub const S3 = struct {
 
         const promise = jsc.JSPromise.Strong.init(globalThis);
         const value = promise.value();
-        const proxy_url = globalThis.bunVM().transpiler.env.getHttpProxy(true, null, null);
-        const proxy = if (proxy_url) |url| url.href else null;
         var aws_options = try this.getCredentialsWithOptions(extra_options, globalThis);
         defer aws_options.deinit();
 
@@ -427,7 +423,7 @@ pub const S3 = struct {
             .store = store, // store is needed in case of not found error
             .resolvedlistOptions = options,
             .global = globalThis,
-        }), proxy);
+        }));
 
         return value;
     }

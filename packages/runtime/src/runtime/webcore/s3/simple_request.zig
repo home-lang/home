@@ -362,6 +362,8 @@ pub const S3SimpleRequestOptions = struct {
 
     // http request options
     body: []const u8,
+    /// Explicit proxy override (`fetch("s3://…", { proxy })`). Null/empty
+    /// resolves HTTP_PROXY/HTTPS_PROXY from the environment against the signed URL.
     proxy_url: ?[]const u8 = null,
     range: ?[]const u8 = null,
     acl: ?ACL = null,

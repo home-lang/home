@@ -239,16 +239,14 @@ pub fn readBytesToHandler(this: *Blob, comptime Handler: type, ctx: *Handler, gl
         };
         var t = bun.new(Task, .{ .ctx = ctx, .blob = this.dupe(), .vm = global.bunVM() });
         t.poll.ref(t.vm);
-        const env = t.vm.transpiler.env;
         const cred = t.blob.store.?.data.s3.getCredentials();
         const path = t.blob.store.?.data.s3.path();
-        const proxy = if (env.getHttpProxy(true, null, null)) |p| p.href else null;
         const payer = t.blob.store.?.data.s3.request_payer;
         if (this.offset > 0 or this.size != Blob.max_size) {
             const len: ?usize = if (this.size != Blob.max_size) @intCast(this.size) else null;
-            try S3.downloadSlice(cred, path, @intCast(this.offset), len, @ptrCast(&Task.cb), t, proxy, payer);
+            try S3.downloadSlice(cred, path, @intCast(this.offset), len, @ptrCast(&Task.cb), t, payer);
         } else {
-            try S3.download(cred, path, @ptrCast(&Task.cb), t, proxy, payer);
+            try S3.download(cred, path, @ptrCast(&Task.cb), t, payer);
         }
         return;
     }
@@ -1193,8 +1191,6 @@ fn writeFileWithEmptySourceToDestination(ctx: *jsc.JSGlobalObject, destination_b
 
             const promise = jsc.JSPromise.Strong.init(ctx);
             const promise_value = promise.value();
-            const proxy = ctx.bunVM().transpiler.env.getHttpProxy(true, null, null);
-            const proxy_url = if (proxy) |p| p.href else null;
             destination_store.ref();
             try S3.upload(
                 &aws_options.credentials,
@@ -1204,7 +1200,6 @@ fn writeFileWithEmptySourceToDestination(ctx: *jsc.JSGlobalObject, destination_b
                 aws_options.content_disposition,
                 aws_options.content_encoding,
                 aws_options.acl,
-                proxy_url,
                 aws_options.storage_class,
                 aws_options.request_payer,
                 Wrapper.resolve,
@@ -1336,8 +1331,6 @@ pub fn writeFileWithSourceDestination(ctx: *jsc.JSGlobalObject, source_blob: *Bl
             return jsc.JSPromise.dangerouslyCreateRejectedPromiseValueWithoutNotifyingVM(ctx, ctx.takeException(err));
         };
         defer aws_options.deinit();
-        const proxy = ctx.bunVM().transpiler.env.getHttpProxy(true, null, null);
-        const proxy_url = if (proxy) |p| p.href else null;
         switch (source_store.data) {
             .bytes => |bytes| {
                 if (bytes.len > S3.MultiPartUploadOptions.MAX_SINGLE_UPLOAD_SIZE) {
@@ -1357,7 +1350,7 @@ pub fn writeFileWithSourceDestination(ctx: *jsc.JSGlobalObject, source_blob: *Bl
                             destination_blob.contentTypeOrMimeType(),
                             aws_options.content_disposition,
                             aws_options.content_encoding,
-                            proxy_url,
+                            null,
                             aws_options.request_payer,
                             null,
                             undefined,
@@ -1401,7 +1394,6 @@ pub fn writeFileWithSourceDestination(ctx: *jsc.JSGlobalObject, source_blob: *Bl
                         aws_options.content_disposition,
                         aws_options.content_encoding,
                         aws_options.acl,
-                        proxy_url,
                         aws_options.storage_class,
                         aws_options.request_payer,
                         Wrapper.resolve,
@@ -1432,7 +1424,7 @@ pub fn writeFileWithSourceDestination(ctx: *jsc.JSGlobalObject, source_blob: *Bl
                         destination_blob.contentTypeOrMimeType(),
                         aws_options.content_disposition,
                         aws_options.content_encoding,
-                        proxy_url,
+                        null,
                         aws_options.request_payer,
                         null,
                         undefined,
@@ -1626,9 +1618,6 @@ pub fn writeFileInternal(globalThis: *jsc.JSGlobalObject, path_or_blob_: *PathOr
                                 destination_blob.detach();
                                 return globalThis.throwInvalidArguments("ReadableStream has already been used", .{});
                             }
-                            const proxy = globalThis.bunVM().transpiler.env.getHttpProxy(true, null, null);
-                            const proxy_url = if (proxy) |p| p.href else null;
-
                             return S3.uploadStream(
                                 (if (options.extra_options != null) aws_options.credentials.dupe() else s3.getCredentials()),
                                 s3.path(),
@@ -1640,7 +1629,7 @@ pub fn writeFileInternal(globalThis: *jsc.JSGlobalObject, path_or_blob_: *PathOr
                                 destination_blob.contentTypeOrMimeType(),
                                 aws_options.content_disposition,
                                 aws_options.content_encoding,
-                                proxy_url,
+                                null,
                                 aws_options.request_payer,
                                 null,
                                 undefined,
@@ -1690,8 +1679,6 @@ pub fn writeFileInternal(globalThis: *jsc.JSGlobalObject, path_or_blob_: *PathOr
                                 destination_blob.detach();
                                 return globalThis.throwInvalidArguments("ReadableStream has already been used", .{});
                             }
-                            const proxy = globalThis.bunVM().transpiler.env.getHttpProxy(true, null, null);
-                            const proxy_url = if (proxy) |p| p.href else null;
                             return S3.uploadStream(
                                 (if (options.extra_options != null) aws_options.credentials.dupe() else s3.getCredentials()),
                                 s3.path(),
@@ -1703,7 +1690,7 @@ pub fn writeFileInternal(globalThis: *jsc.JSGlobalObject, path_or_blob_: *PathOr
                                 destination_blob.contentTypeOrMimeType(),
                                 aws_options.content_disposition,
                                 aws_options.content_encoding,
-                                proxy_url,
+                                null,
                                 aws_options.request_payer,
                                 null,
                                 undefined,
@@ -2494,7 +2481,6 @@ const S3BlobDownloadTask = struct {
             .handler = handler,
         });
         const promise = this.promise.value();
-        const env = this.globalThis.bunVM().transpiler.env;
         const credentials = this.blob.store.?.data.s3.getCredentials();
         const path = this.blob.store.?.data.s3.path();
 
@@ -2503,13 +2489,13 @@ const S3BlobDownloadTask = struct {
         if (blob.offset > 0) {
             const len: ?usize = if (blob.size != Blob.max_size) @intCast(blob.size) else null;
             const offset: usize = @intCast(blob.offset);
-            try S3.downloadSlice(credentials, path, offset, len, @ptrCast(&S3BlobDownloadTask.onS3DownloadResolved), this, if (env.getHttpProxy(true, null, null)) |proxy| proxy.href else null, s3_store.request_payer);
+            try S3.downloadSlice(credentials, path, offset, len, @ptrCast(&S3BlobDownloadTask.onS3DownloadResolved), this, s3_store.request_payer);
         } else if (blob.size == Blob.max_size) {
-            try S3.download(credentials, path, @ptrCast(&S3BlobDownloadTask.onS3DownloadResolved), this, if (env.getHttpProxy(true, null, null)) |proxy| proxy.href else null, s3_store.request_payer);
+            try S3.download(credentials, path, @ptrCast(&S3BlobDownloadTask.onS3DownloadResolved), this, s3_store.request_payer);
         } else {
             const len: usize = @intCast(blob.size);
             const offset: usize = @intCast(blob.offset);
-            try S3.downloadSlice(credentials, path, offset, len, @ptrCast(&S3BlobDownloadTask.onS3DownloadResolved), this, if (env.getHttpProxy(true, null, null)) |proxy| proxy.href else null, s3_store.request_payer);
+            try S3.downloadSlice(credentials, path, offset, len, @ptrCast(&S3BlobDownloadTask.onS3DownloadResolved), this, s3_store.request_payer);
         }
         return promise;
     }
@@ -2670,9 +2656,6 @@ pub fn pipeReadableStreamToBlob(this: *Blob, globalThis: *jsc.JSGlobalObject, re
         defer aws_options.deinit();
 
         const path = s3.path();
-        const proxy = globalThis.bunVM().transpiler.env.getHttpProxy(true, null, null);
-        const proxy_url = if (proxy) |p| p.href else null;
-
         return S3.uploadStream(
             (if (extra_options != null) aws_options.credentials.dupe() else s3.getCredentials()),
             path,
@@ -2684,7 +2667,7 @@ pub fn pipeReadableStreamToBlob(this: *Blob, globalThis: *jsc.JSGlobalObject, re
             this.contentTypeOrMimeType(),
             aws_options.content_disposition,
             aws_options.content_encoding,
-            proxy_url,
+            null,
             aws_options.request_payer,
             null,
             undefined,
@@ -2884,8 +2867,6 @@ pub fn getWriter(
     if (this.isS3()) {
         const s3 = &this.store.?.data.s3;
         const path = s3.path();
-        const proxy = globalThis.bunVM().transpiler.env.getHttpProxy(true, null, null);
-        const proxy_url = if (proxy) |p| p.href else null;
         if (arguments.len > 0) {
             const options = arguments.ptr[0];
             if (options.isObject()) {
@@ -2939,7 +2920,6 @@ pub fn getWriter(
                     this.contentTypeOrMimeType(),
                     if (content_disposition_str) |cd| cd.slice() else null,
                     if (content_encoding_str) |ce| ce.slice() else null,
-                    proxy_url,
                     credentialsWithOptions.storage_class,
                     credentialsWithOptions.request_payer,
                 );
@@ -2953,7 +2933,6 @@ pub fn getWriter(
             this.contentTypeOrMimeType(),
             null,
             null,
-            proxy_url,
             null,
             s3.request_payer,
         );

@@ -115,6 +115,8 @@ pub const MultiPartUpload = struct {
     buffered: bun.io.StreamBuffer = .{},
 
     path: []const u8,
+    /// Explicit proxy override; empty resolves HTTP_PROXY/HTTPS_PROXY from the
+    /// environment against each part's signed URL.
     proxy: []const u8,
     content_type: ?[]const u8 = null,
     content_disposition: ?[]const u8 = null,
@@ -688,7 +690,7 @@ pub const MultiPartUpload = struct {
     }
 
     pub fn proxyUrl(this: *@This()) ?[]const u8 {
-        return this.proxy;
+        return if (this.proxy.len > 0) this.proxy else null;
     }
     fn processBuffered(this: *@This(), part_size: usize) void {
         if (this.ended and this.buffered.size() < this.partSizeInBytes() and this.state == .not_started) {

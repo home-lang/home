@@ -6537,24 +6537,24 @@ pub const S3 = struct {
         }
     };
 
-    pub fn download(this: *S3Credentials, s3_path: []const u8, callback: *const fn (S3DownloadResult, *anyopaque) JSTerminated!void, callback_context: *anyopaque, proxy_url: ?[]const u8, request_payer: bool) JSTerminated!void {
-        return @import("runtime/webcore/s3/client.zig").download(this, s3_path, callback, callback_context, proxy_url, request_payer);
+    pub fn download(this: *S3Credentials, s3_path: []const u8, callback: *const fn (S3DownloadResult, *anyopaque) JSTerminated!void, callback_context: *anyopaque, request_payer: bool) JSTerminated!void {
+        return @import("runtime/webcore/s3/client.zig").download(this, s3_path, callback, callback_context, request_payer);
     }
 
-    pub fn downloadSlice(this: *S3Credentials, s3_path: []const u8, offset: usize, size: ?usize, callback: *const fn (S3DownloadResult, *anyopaque) JSTerminated!void, callback_context: *anyopaque, proxy_url: ?[]const u8, request_payer: bool) JSTerminated!void {
-        return @import("runtime/webcore/s3/client.zig").downloadSlice(this, s3_path, offset, size, callback, callback_context, proxy_url, request_payer);
+    pub fn downloadSlice(this: *S3Credentials, s3_path: []const u8, offset: usize, size: ?usize, callback: *const fn (S3DownloadResult, *anyopaque) JSTerminated!void, callback_context: *anyopaque, request_payer: bool) JSTerminated!void {
+        return @import("runtime/webcore/s3/client.zig").downloadSlice(this, s3_path, offset, size, callback, callback_context, request_payer);
     }
 
-    pub fn upload(this: *S3Credentials, s3_path: []const u8, content: []const u8, content_type: ?[]const u8, content_disposition: ?[]const u8, content_encoding: ?[]const u8, acl: ?ACL, proxy_url: ?[]const u8, storage_class: ?StorageClass, request_payer: bool, cb: *const fn (S3UploadResult, *anyopaque) JSTerminated!void, cb_ctx: *anyopaque) JSTerminated!void {
-        return @import("runtime/webcore/s3/client.zig").upload(this, s3_path, content, content_type, content_disposition, content_encoding, acl, proxy_url, storage_class, request_payer, cb, cb_ctx);
+    pub fn upload(this: *S3Credentials, s3_path: []const u8, content: []const u8, content_type: ?[]const u8, content_disposition: ?[]const u8, content_encoding: ?[]const u8, acl: ?ACL, storage_class: ?StorageClass, request_payer: bool, cb: *const fn (S3UploadResult, *anyopaque) JSTerminated!void, cb_ctx: *anyopaque) JSTerminated!void {
+        return @import("runtime/webcore/s3/client.zig").upload(this, s3_path, content, content_type, content_disposition, content_encoding, acl, storage_class, request_payer, cb, cb_ctx);
     }
 
     pub fn uploadStream(this: *S3Credentials, s3_path: []const u8, readable_stream: jsc.WebCore.ReadableStream, globalThis: *jsc.JSGlobalObject, opts: MultiPartUploadOptions, acl: ?ACL, storage_class: ?StorageClass, content_type: ?[]const u8, content_disposition: ?[]const u8, content_encoding: ?[]const u8, proxy: ?[]const u8, request_payer: bool, cb: ?*const fn (S3UploadResult, *anyopaque) void, cb_ctx: *anyopaque) JSError!jsc.JSValue {
         return @import("runtime/webcore/s3/client.zig").uploadStream(this, s3_path, readable_stream, globalThis, opts, acl, storage_class, content_type, content_disposition, content_encoding, proxy, request_payer, cb, cb_ctx);
     }
 
-    pub fn writableStream(this: *S3Credentials, s3_path: []const u8, globalThis: *jsc.JSGlobalObject, opts: MultiPartUploadOptions, content_type: ?[]const u8, content_disposition: ?[]const u8, content_encoding: ?[]const u8, proxy: ?[]const u8, storage_class: ?StorageClass, request_payer: bool) JSError!jsc.JSValue {
-        return @import("runtime/webcore/s3/client.zig").writableStream(this, s3_path, globalThis, opts, content_type, content_disposition, content_encoding, proxy, storage_class, request_payer);
+    pub fn writableStream(this: *S3Credentials, s3_path: []const u8, globalThis: *jsc.JSGlobalObject, opts: MultiPartUploadOptions, content_type: ?[]const u8, content_disposition: ?[]const u8, content_encoding: ?[]const u8, storage_class: ?StorageClass, request_payer: bool) JSError!jsc.JSValue {
+        return @import("runtime/webcore/s3/client.zig").writableStream(this, s3_path, globalThis, opts, content_type, content_disposition, content_encoding, storage_class, request_payer);
     }
 
     // Delegate to the real client (this `S3` namespace is otherwise a
@@ -6563,8 +6563,8 @@ pub const S3 = struct {
     // `assertExceptionPresenceMatches` in the host-fn wrapper. For the
     // missing-credentials path the real impl rejects cleanly before any HMAC
     // signing (which is still stubbed), so no other S3 wiring is required.
-    pub fn readableStream(this: *S3Credentials, s3_path: []const u8, offset: usize, size: ?usize, proxy_url: ?[]const u8, request_payer: bool, globalThis: *jsc.JSGlobalObject) JSError!jsc.JSValue {
-        return @import("runtime/webcore/s3/client.zig").readableStream(this, s3_path, offset, size, proxy_url, request_payer, globalThis);
+    pub fn readableStream(this: *S3Credentials, s3_path: []const u8, offset: usize, size: ?usize, request_payer: bool, globalThis: *jsc.JSGlobalObject) JSError!jsc.JSValue {
+        return @import("runtime/webcore/s3/client.zig").readableStream(this, s3_path, offset, size, request_payer, globalThis);
     }
 
     pub fn stat(
@@ -6577,16 +6577,16 @@ pub const S3 = struct {
         return @import("runtime/webcore/s3/client.zig").stat(this, s3_path, callback, callback_context, request_payer);
     }
 
-    pub fn delete(this: *S3Credentials, s3_path: []const u8, callback: *const fn (S3DeleteResult, *anyopaque) JSTerminated!void, callback_context: *anyopaque, proxy_url: ?[]const u8, request_payer: bool) JSTerminated!void {
-        return @import("runtime/webcore/s3/client.zig").delete(this, s3_path, callback, callback_context, proxy_url, request_payer);
+    pub fn delete(this: *S3Credentials, s3_path: []const u8, callback: *const fn (S3DeleteResult, *anyopaque) JSTerminated!void, callback_context: *anyopaque, request_payer: bool) JSTerminated!void {
+        return @import("runtime/webcore/s3/client.zig").delete(this, s3_path, callback, callback_context, request_payer);
     }
 
     pub fn getListObjectsOptionsFromJS(globalThis: *jsc.JSGlobalObject, list_options: jsc.JSValue) JSError!S3ListObjectsOptions {
         return @import("runtime/webcore/s3/client.zig").getListObjectsOptionsFromJS(globalThis, list_options);
     }
 
-    pub fn listObjects(this: *S3Credentials, list_options: S3ListObjectsOptions, callback: *const fn (S3ListObjectsResult, *anyopaque) JSTerminated!void, callback_context: *anyopaque, proxy_url: ?[]const u8) JSTerminated!void {
-        return @import("runtime/webcore/s3/client.zig").listObjects(this, list_options, callback, callback_context, proxy_url);
+    pub fn listObjects(this: *S3Credentials, list_options: S3ListObjectsOptions, callback: *const fn (S3ListObjectsResult, *anyopaque) JSTerminated!void, callback_context: *anyopaque) JSTerminated!void {
+        return @import("runtime/webcore/s3/client.zig").listObjects(this, list_options, callback, callback_context);
     }
 
     pub fn throwSignError(err: anyerror, globalThis: *jsc.JSGlobalObject) JSError {
