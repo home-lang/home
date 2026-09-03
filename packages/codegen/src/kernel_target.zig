@@ -1598,6 +1598,127 @@ pub const Emitter = struct {
         }
     }
 
+    /// Set the stack pointer from the accumulator, and read it into one.
+    ///
+    /// Used by the context switch, which is the one place a kernel legitimately
+    /// changes stacks underneath itself.
+    pub fn writeStackPtr(self: Self) !void {
+        switch (self.arch) {
+            .x86_64 => try self.insn("movq %rax, %rsp", .{}),
+            .aarch64 => try self.insn("mov sp, x0", .{}),
+        }
+    }
+
+    /// Invalidate the TLB entry covering the address in the accumulator.
+    pub fn invalidateTlbPage(self: Self) !void {
+        switch (self.arch) {
+            .x86_64 => try self.insn("invlpg (%rax)", .{}),
+            .aarch64 => {
+                // TLBI takes a virtual address shifted right by 12, and needs
+                // the surrounding barriers: `dsb ishst` so earlier page-table
+                // writes are visible to the table walker, `dsb ish` so the
+                // invalidation completes, and `isb` so following instructions
+                // see the new translation. Omitting them leaves the old
+                // mapping live for an unbounded time.
+                try self.insn("dsb ishst", .{});
+                try self.insn("lsr x0, x0, #12", .{});
+                try self.insn("tlbi vaae1is, x0", .{});
+                try self.insn("dsb ish", .{});
+                try self.insn("isb", .{});
+            },
+        }
+    }
+
+    /// A barrier against the *compiler* reordering, with no instruction of its
+    /// own. This backend performs no reordering across a call, so it emits
+    /// nothing on either target — said out loud rather than left as an
+    /// unexplained empty case.
+    pub fn compilerBarrier(self: Self) !void {
+        try self.raw("    # compiler barrier: this backend does not reorder across it\n");
+    }
+
+    /// Atomic 32-bit compare-and-exchange.
+    ///
+    /// Contract: address in `tmp3`, expected value in `acc`, desired value in
+    /// `tmp`. Leaves the value the location actually held in `acc`, so a
+    /// caller compares it against what it expected to learn whether the swap
+    /// happened.
+    pub fn atomicCompareExchange32(self: Self, label_id: usize) !void {
+        switch (self.arch) {
+            .x86_64 => try self.insn("lock cmpxchgl %ecx, (%rdx)", .{}),
+            .aarch64 => {
+                try self.insn("mov w2, w0", .{});
+                try self.print(".L_cas_{d}:\n", .{label_id});
+                try self.insn("ldaxr w0, [x3]", .{});
+                try self.insn("cmp w0, w2", .{});
+                try self.print("    b.ne .L_cas_fail_{d}\n", .{label_id});
+                try self.insn("stlxr w9, w1, [x3]", .{});
+                try self.print("    cbnz w9, .L_cas_{d}\n", .{label_id});
+                try self.print("    b .L_cas_done_{d}\n", .{label_id});
+                try self.print(".L_cas_fail_{d}:\n", .{label_id});
+                // The exclusive monitor is still armed after a failed compare;
+                // leaving it so can make an unrelated store-exclusive succeed
+                // when it should not.
+                try self.insn("clrex", .{});
+                try self.print(".L_cas_done_{d}:\n", .{label_id});
+            },
+        }
+    }
+
+    /// Atomic 32-bit exchange: address in `tmp3`, new value in `tmp`, previous
+    /// value left in `acc`.
+    pub fn atomicExchange32(self: Self, label_id: usize) !void {
+        switch (self.arch) {
+            .x86_64 => {
+                // `xchg` is implicitly locked on x86.
+                try self.insn("xchgl %ecx, (%rdx)", .{});
+                try self.insn("movl %ecx, %eax", .{});
+            },
+            .aarch64 => {
+                try self.print(".L_xchg_{d}:\n", .{label_id});
+                try self.insn("ldaxr w0, [x3]", .{});
+                try self.insn("stlxr w9, w1, [x3]", .{});
+                try self.print("    cbnz w9, .L_xchg_{d}\n", .{label_id});
+            },
+        }
+    }
+
+    /// Atomic 32-bit add: address in `tmp3`, addend in `tmp`, previous value
+    /// left in `acc`.
+    pub fn atomicAdd32(self: Self, label_id: usize) !void {
+        switch (self.arch) {
+            .x86_64 => {
+                try self.insn("movl %ecx, %eax", .{});
+                try self.insn("lock xaddl %eax, (%rdx)", .{});
+            },
+            .aarch64 => {
+                try self.print(".L_xadd_{d}:\n", .{label_id});
+                try self.insn("ldaxr w0, [x3]", .{});
+                try self.insn("add w10, w0, w1", .{});
+                try self.insn("stlxr w9, w10, [x3]", .{});
+                try self.print("    cbnz w9, .L_xadd_{d}\n", .{label_id});
+            },
+        }
+    }
+
+    /// Acquire-load of a 32-bit location addressed by `tmp3`, into `acc`.
+    pub fn atomicLoad32(self: Self) !void {
+        switch (self.arch) {
+            // A plain load is already acquire-ordered under x86's memory model.
+            .x86_64 => try self.insn("movl (%rdx), %eax", .{}),
+            .aarch64 => try self.insn("ldar w0, [x3]", .{}),
+        }
+    }
+
+    /// Release-store of `tmp` into the 32-bit location addressed by `tmp3`.
+    pub fn atomicStore32(self: Self) !void {
+        switch (self.arch) {
+            // A plain store is already release-ordered under x86's memory model.
+            .x86_64 => try self.insn("movl %ecx, (%rdx)", .{}),
+            .aarch64 => try self.insn("stlr w1, [x3]", .{}),
+        }
+    }
+
     /// A memory barrier of the requested strength.
     ///
     /// x86-64's memory model already orders loads with loads and stores with

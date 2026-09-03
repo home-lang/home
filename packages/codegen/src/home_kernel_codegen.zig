@@ -2898,7 +2898,11 @@ pub const HomeKernelCodegen = struct {
         // Operations both architectures genuinely have, but spell differently
         // enough that a caller cannot write one form and expect the other to
         // work (home-lang/home#584).
-        const SysOp = enum { save_irq, restore_irq, timestamp, atomic_add, read_sysreg, write_sysreg };
+        const SysOp = enum {
+            save_irq, restore_irq, timestamp, atomic_add, read_sysreg, write_sysreg,
+            read_sp, write_sp, invlpg, compiler_barrier,
+            cas32, xchg32, add32, load32, store32,
+        };
         var sys_op: SysOp = .timestamp;
         // What the CPU-state intrinsics do, named for the effect rather than
         // for one architecture's mnemonic.
@@ -2947,6 +2951,15 @@ pub const HomeKernelCodegen = struct {
         else if (std.mem.eql(u8, name, "arch_atomic_add64")) { kind = .sys; sys_op = .atomic_add; }
         else if (std.mem.eql(u8, name, "arch_read_sysreg")) { kind = .sys; sys_op = .read_sysreg; }
         else if (std.mem.eql(u8, name, "arch_write_sysreg")) { kind = .sys; sys_op = .write_sysreg; }
+        else if (std.mem.eql(u8, name, "arch_read_stack_pointer")) { kind = .sys; sys_op = .read_sp; }
+        else if (std.mem.eql(u8, name, "arch_write_stack_pointer")) { kind = .sys; sys_op = .write_sp; }
+        else if (std.mem.eql(u8, name, "arch_invalidate_tlb_page")) { kind = .sys; sys_op = .invlpg; }
+        else if (std.mem.eql(u8, name, "arch_compiler_barrier")) { kind = .sys; sys_op = .compiler_barrier; }
+        else if (std.mem.eql(u8, name, "arch_atomic_cmpxchg32")) { kind = .sys; sys_op = .cas32; }
+        else if (std.mem.eql(u8, name, "arch_atomic_xchg32")) { kind = .sys; sys_op = .xchg32; }
+        else if (std.mem.eql(u8, name, "arch_atomic_add32")) { kind = .sys; sys_op = .add32; }
+        else if (std.mem.eql(u8, name, "arch_atomic_load32")) { kind = .sys; sys_op = .load32; }
+        else if (std.mem.eql(u8, name, "arch_atomic_store32")) { kind = .sys; sys_op = .store32; }
         else if (std.mem.eql(u8, name, "hlt")) { kind = .cpu; cpu_op = .halt; }
         else if (std.mem.eql(u8, name, "cli")) { kind = .cpu; cpu_op = .disable_irq; }
         else if (std.mem.eql(u8, name, "sti")) { kind = .cpu; cpu_op = .enable_irq; }
@@ -3031,6 +3044,75 @@ pub const HomeKernelCodegen = struct {
                     try self.emit().movReg(.tmp3, .acc);
                     try self.emit().pop(.tmp);
                     try self.emit().atomicAdd64(self.freshLabel());
+                },
+                .read_sp => {
+                    if (args.len != 0) {
+                        try self.print("    # {s}() takes no arguments, {d} given\n", .{ name, args.len });
+                        return false;
+                    }
+                    try self.emit().movFromStackPtr(.acc);
+                },
+                .write_sp, .invlpg => {
+                    if (args.len != 1) {
+                        try self.print("    # {s} needs 1 argument, {d} given\n", .{ name, args.len });
+                        return false;
+                    }
+                    try self.generateExpr(args[0]);
+                    if (sys_op == .write_sp) {
+                        try self.emit().writeStackPtr();
+                    } else {
+                        try self.emit().invalidateTlbPage();
+                    }
+                },
+                .compiler_barrier => {
+                    if (args.len != 0) {
+                        try self.print("    # {s}() takes no arguments, {d} given\n", .{ name, args.len });
+                        return false;
+                    }
+                    try self.emit().compilerBarrier();
+                },
+                .load32 => {
+                    if (args.len != 1) {
+                        try self.print("    # {s}(addr) needs 1 argument, {d} given\n", .{ name, args.len });
+                        return false;
+                    }
+                    try self.generateExpr(args[0]);
+                    try self.emit().movReg(.tmp3, .acc);
+                    try self.emit().atomicLoad32();
+                },
+                .store32, .xchg32, .add32 => {
+                    if (args.len != 2) {
+                        try self.print("    # {s}(addr, value) needs 2 arguments, {d} given\n", .{ name, args.len });
+                        return false;
+                    }
+                    // Value first, parked, then the address — so a nested call
+                    // in either argument cannot clobber the other.
+                    try self.generateExpr(args[1]);
+                    try self.emit().push(.acc);
+                    try self.generateExpr(args[0]);
+                    try self.emit().movReg(.tmp3, .acc);
+                    try self.emit().pop(.tmp);
+                    switch (sys_op) {
+                        .store32 => try self.emit().atomicStore32(),
+                        .xchg32 => try self.emit().atomicExchange32(self.freshLabel()),
+                        else => try self.emit().atomicAdd32(self.freshLabel()),
+                    }
+                },
+                .cas32 => {
+                    if (args.len != 3) {
+                        try self.print("    # {s}(addr, expected, desired) needs 3 arguments, {d} given\n", .{ name, args.len });
+                        return false;
+                    }
+                    // desired -> tmp, expected -> acc, addr -> tmp3.
+                    try self.generateExpr(args[2]);
+                    try self.emit().push(.acc);
+                    try self.generateExpr(args[1]);
+                    try self.emit().push(.acc);
+                    try self.generateExpr(args[0]);
+                    try self.emit().movReg(.tmp3, .acc);
+                    try self.emit().pop(.acc);
+                    try self.emit().pop(.tmp);
+                    try self.emit().atomicCompareExchange32(self.freshLabel());
                 },
                 .read_sysreg, .write_sysreg => {
                     const want: usize = if (sys_op == .read_sysreg) 1 else 2;
