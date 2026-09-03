@@ -5,8 +5,8 @@ pub const MultiPartUpload = @import("./multipart.zig").MultiPartUpload;
 pub const StorageClass = @import("../../../s3_signing/storage_class.zig").StorageClass;
 
 pub const Error = @import("../../../s3_signing/error.zig");
-pub const throwSignError = Error.throwSignError;
-pub const getJSSignError = Error.getJSSignError;
+pub const throwSignError = @import("./error_jsc.zig").throwSignError;
+pub const getJSSignError = @import("./error_jsc.zig").getJSSignError;
 
 pub const S3Credentials = Credentials.S3Credentials;
 pub const S3CredentialsWithOptions = Credentials.S3CredentialsWithOptions;

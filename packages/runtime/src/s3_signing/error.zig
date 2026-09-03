@@ -2,12 +2,9 @@
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
 // Imports rewritten: @import("bun") → @import("home").
 //
-// Stubs vs. upstream: the JSC-facing helpers (`getJSSignError`, `throwSignError`,
-// `S3Error.toJS`, `S3Error.toJSWithAsyncStack`) live in
-// `runtime/webcore/s3/error_jsc.zig` upstream — that file is not yet ported.
-// We keep the pure-data parts (`ErrorCodeAndMessage`, `S3Error`, message/code
-// lookup) which are useful to the signer + transport layers. The JSC bindings
-// can be re-attached when webcore is wired up.
+// The JSC-facing helpers (`getJSSignError`, `throwSignError`, `S3Error.toJS`,
+// `S3Error.toJSWithAsyncStack`) live in `runtime/webcore/s3/error_jsc.zig` so
+// this layer remains usable by the signer and transport without importing JSC.
 
 //! S3 signer error code + message lookup. Pure data, no JSC.
 pub const ErrorCodeAndMessage = struct {

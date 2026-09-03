@@ -6537,9 +6537,13 @@ pub const S3 = struct {
         }
     };
 
-    pub fn download(_: *S3Credentials, _: []const u8, _: *const fn (S3DownloadResult, *anyopaque) JSTerminated!void, _: *anyopaque, _: ?[]const u8, _: bool) JSTerminated!void {}
+    pub fn download(this: *S3Credentials, s3_path: []const u8, callback: *const fn (S3DownloadResult, *anyopaque) JSTerminated!void, callback_context: *anyopaque, proxy_url: ?[]const u8, request_payer: bool) JSTerminated!void {
+        return @import("runtime/webcore/s3/client.zig").download(this, s3_path, callback, callback_context, proxy_url, request_payer);
+    }
 
-    pub fn downloadSlice(_: *S3Credentials, _: []const u8, _: usize, _: ?usize, _: *const fn (S3DownloadResult, *anyopaque) JSTerminated!void, _: *anyopaque, _: ?[]const u8, _: bool) JSTerminated!void {}
+    pub fn downloadSlice(this: *S3Credentials, s3_path: []const u8, offset: usize, size: ?usize, callback: *const fn (S3DownloadResult, *anyopaque) JSTerminated!void, callback_context: *anyopaque, proxy_url: ?[]const u8, request_payer: bool) JSTerminated!void {
+        return @import("runtime/webcore/s3/client.zig").downloadSlice(this, s3_path, offset, size, callback, callback_context, proxy_url, request_payer);
+    }
 
     pub fn upload(this: *S3Credentials, s3_path: []const u8, content: []const u8, content_type: ?[]const u8, content_disposition: ?[]const u8, content_encoding: ?[]const u8, acl: ?ACL, proxy_url: ?[]const u8, storage_class: ?StorageClass, request_payer: bool, cb: *const fn (S3UploadResult, *anyopaque) JSTerminated!void, cb_ctx: *anyopaque) JSTerminated!void {
         return @import("runtime/webcore/s3/client.zig").upload(this, s3_path, content, content_type, content_disposition, content_encoding, acl, proxy_url, storage_class, request_payer, cb, cb_ctx);
@@ -6573,33 +6577,24 @@ pub const S3 = struct {
         return @import("runtime/webcore/s3/client.zig").stat(this, s3_path, callback, callback_context, request_payer);
     }
 
-    pub fn delete(_: *S3Credentials, _: []const u8, _: *const fn (S3DeleteResult, *anyopaque) JSTerminated!void, _: *anyopaque, _: ?[]const u8, _: bool) JSTerminated!void {}
-
-    pub fn getListObjectsOptionsFromJS(_: *jsc.JSGlobalObject, _: jsc.JSValue) JSError!S3ListObjectsOptions {
-        return .{
-            .continuation_token = null,
-            .delimiter = null,
-            .encoding_type = null,
-            .fetch_owner = null,
-            .max_keys = null,
-            .prefix = null,
-            .start_after = null,
-            ._continuation_token = null,
-            ._delimiter = null,
-            ._encoding_type = null,
-            ._prefix = null,
-            ._start_after = null,
-        };
+    pub fn delete(this: *S3Credentials, s3_path: []const u8, callback: *const fn (S3DeleteResult, *anyopaque) JSTerminated!void, callback_context: *anyopaque, proxy_url: ?[]const u8, request_payer: bool) JSTerminated!void {
+        return @import("runtime/webcore/s3/client.zig").delete(this, s3_path, callback, callback_context, proxy_url, request_payer);
     }
 
-    pub fn listObjects(_: *S3Credentials, _: S3ListObjectsOptions, _: *const fn (S3ListObjectsResult, *anyopaque) JSTerminated!void, _: *anyopaque, _: ?[]const u8) JSTerminated!void {}
-
-    pub fn throwSignError(_: anyerror, globalThis: *jsc.JSGlobalObject) JSError {
-        return globalThis.throw("S3 signing failed", .{});
+    pub fn getListObjectsOptionsFromJS(globalThis: *jsc.JSGlobalObject, list_options: jsc.JSValue) JSError!S3ListObjectsOptions {
+        return @import("runtime/webcore/s3/client.zig").getListObjectsOptionsFromJS(globalThis, list_options);
     }
 
-    pub fn getJSSignError(_: anyerror, _: *jsc.JSGlobalObject) jsc.JSValue {
-        return .zero;
+    pub fn listObjects(this: *S3Credentials, list_options: S3ListObjectsOptions, callback: *const fn (S3ListObjectsResult, *anyopaque) JSTerminated!void, callback_context: *anyopaque, proxy_url: ?[]const u8) JSTerminated!void {
+        return @import("runtime/webcore/s3/client.zig").listObjects(this, list_options, callback, callback_context, proxy_url);
+    }
+
+    pub fn throwSignError(err: anyerror, globalThis: *jsc.JSGlobalObject) JSError {
+        return @import("runtime/webcore/s3/client.zig").throwSignError(err, globalThis);
+    }
+
+    pub fn getJSSignError(err: anyerror, globalThis: *jsc.JSGlobalObject) jsc.JSValue {
+        return @import("runtime/webcore/s3/client.zig").getJSSignError(err, globalThis);
     }
 };
 
