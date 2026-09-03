@@ -175874,8 +175874,13 @@ pub const Checker = struct {
         if (try self.tryReportContextualFunctionPropertyReturnMismatch(init_node, resolved_target)) return true;
         if (try self.typeContainsMappedType(resolved_target)) return true;
         if (try self.typeContainsConditionalType(resolved_target)) return true;
+        // Checking a property may intern contextual or diagnostic types and
+        // relocate the object-member pool. Keep the target view stable across
+        // those calls instead of retaining a borrowed pool slice.
+        const target_members = try self.gpa.dupe(types.ObjectMember, self.interner.objectMembers(resolved_target));
+        defer self.gpa.free(target_members);
         var emitted = false;
-        for (self.interner.objectMembers(resolved_target)) |tm| {
+        for (target_members) |tm| {
             const prop_node = (try self.findObjectLiteralPropNodeForTargetMember(init_node, tm.name)) orelse continue;
             const op = hir_mod.objectPropertyOf(self.hir, prop_node);
             if (op.value == hir_mod.none_node_id) continue;
