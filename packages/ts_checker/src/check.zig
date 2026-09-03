@@ -264164,6 +264164,23 @@ test "checker: recursive tuple array map contextually types every callback param
     try b.base.checker.checkSourceFile(b.base.root);
     try T.expect(!checkerHasCode(b, TsCodes.binding_element_implicitly_any));
     try T.expect(!checkerHasCode(b, TsCodes.parameter_implicitly_any));
+    try T.expect(!checkerHasCode(b, TsCodes.argument_type_mismatch));
+}
+
+test "checker: array callbacks accept complete lib parameter lists" {
+    const s = try newSetup(
+        \\const values: number[] = [1, 2, 3];
+        \\values.map((value, index, array) => value + index + array.length);
+        \\values.every((value, index, array) => value >= index - array.length);
+        \\values.reduce((sum, value, index, array) => sum + value + index + array.length, 0);
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true, .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.parameter_implicitly_any);
+        try T.expect(d.code != TsCodes.argument_type_mismatch);
+    }
 }
 
 test "checker: Array.prototype.reduce<U> infers result type from the initial value" {
