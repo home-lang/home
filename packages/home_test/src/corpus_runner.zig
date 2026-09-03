@@ -95406,72 +95406,6 @@ fn rewriteSinonIssue347Corpus(allocator: std.mem.Allocator, source: []const u8) 
     return try std.mem.replaceOwned(u8, allocator, source, "it.failing(", "it(");
 }
 
-fn rewriteMockModuleLiveReexportCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    const replacements = [_]struct {
-        needle: []const u8,
-        replacement: []const u8,
-    }{
-        .{
-            .needle = "import { foo } from \"./second\";",
-            .replacement = "const __home_second = globalThis.__home_live_import(\"./second\");",
-        },
-        .{
-            .needle = "import { bar } from \"./third\";",
-            .replacement = "const __home_third = globalThis.__home_live_import(\"./third\");",
-        },
-        .{ .needle = "expect(foo)", .replacement = "expect(__home_second.foo)" },
-        .{ .needle = "expect(bar)", .replacement = "expect(__home_third.bar)" },
-    };
-
-    var current = try allocator.dupe(u8, source);
-    errdefer allocator.free(current);
-    for (replacements) |replacement| {
-        const next = try std.mem.replaceOwned(u8, allocator, current, replacement.needle, replacement.replacement);
-        allocator.free(current);
-        current = next;
-    }
-    return current;
-}
-
-fn rewriteMockModuleCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    const replacements = [_]struct {
-        needle: []const u8,
-        replacement: []const u8,
-    }{
-        .{
-            .needle = "import { default as defaultValue, fn, iCallFn, rexported, rexportedAs, variable } from \"./mock-module-fixture\";",
-            .replacement = "const __home_mock_module_fixture = globalThis.__home_live_import(\"./mock-module-fixture\");",
-        },
-        .{
-            .needle = "import * as spyFixture from \"./spymodule-fixture\";",
-            .replacement = "const spyFixture = globalThis.__home_import(\"./spymodule-fixture\");",
-        },
-        .{ .needle = "expect(fn())", .replacement = "expect(__home_mock_module_fixture.fn())" },
-        .{ .needle = "expect(variable)", .replacement = "expect(__home_mock_module_fixture.variable)" },
-        .{ .needle = "expect(defaultValue)", .replacement = "expect(__home_mock_module_fixture.default)" },
-        .{ .needle = "expect(rexported)", .replacement = "expect(__home_mock_module_fixture.rexported)" },
-        .{ .needle = "expect(rexportedAs)", .replacement = "expect(__home_mock_module_fixture.rexportedAs)" },
-        .{ .needle = "expect(iCallFn())", .replacement = "expect(__home_mock_module_fixture.iCallFn())" },
-        .{
-            .needle = "import.meta.resolveSync(\"./hey-hey-you-you2.ts\")",
-            .replacement = "__home_import_meta_resolve(\"./hey-hey-you-you2.ts\", __home_import_meta_path)",
-        },
-        .{
-            .needle = "import.meta.resolveSync(\"./hey-hey-you-you.ts\")",
-            .replacement = "__home_import_meta_resolve(\"./hey-hey-you-you.ts\", __home_import_meta_path)",
-        },
-    };
-
-    var current = try allocator.dupe(u8, source);
-    errdefer allocator.free(current);
-    for (replacements) |replacement| {
-        const next = try std.mem.replaceOwned(u8, allocator, current, replacement.needle, replacement.replacement);
-        allocator.free(current);
-        current = next;
-    }
-    return current;
-}
-
 fn rewriteDifferentDirectorySnapshotCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     return try std.mem.replaceOwned(
         u8,
@@ -99960,11 +99894,11 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/test/mock/6874/B.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/mock/6879/6879.test.ts"))
-        try rewriteMockModuleLiveReexportCorpus(allocator, module_source)
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/mock/mock-module-resolve-log.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/mock/mock-module.test.ts"))
-        try rewriteMockModuleCorpus(allocator, module_source)
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/only-failures.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/only-inside-only.test.ts"))
@@ -100502,6 +100436,8 @@ fn isNativeHttpProxyCorpusFile(relative: []const u8) bool {
 
 fn isNativeBunTestCorpusFile(relative: []const u8) bool {
     return std.mem.eql(u8, relative, "js/bun/resolve/require.test.ts") or
+        std.mem.eql(u8, relative, "js/bun/test/mock/6879/6879.test.ts") or
+        std.mem.eql(u8, relative, "js/bun/test/mock/mock-module.test.ts") or
         std.mem.eql(u8, relative, "js/bun/test/snapshot-tests/snapshots/snapshot.test.ts") or
         std.mem.eql(u8, relative, "js/bun/test/test-failing.test.ts");
 }
@@ -101324,9 +101260,11 @@ test "native HTTP proxy corpus routing covers the exact local integration file" 
     }) |non_match| try std.testing.expect(!isNativeHttpProxyCorpusFile(non_match));
 }
 
-test "native Bun test corpus routing covers require, snapshots, and test.failing workflows" {
+test "native Bun test corpus routing covers require, mocks, snapshots, and test.failing workflows" {
     inline for (.{
         "js/bun/resolve/require.test.ts",
+        "js/bun/test/mock/6879/6879.test.ts",
+        "js/bun/test/mock/mock-module.test.ts",
         "js/bun/test/snapshot-tests/snapshots/snapshot.test.ts",
         "js/bun/test/test-failing.test.ts",
     }) |relative| {
@@ -101337,6 +101275,8 @@ test "native Bun test corpus routing covers require, snapshots, and test.failing
 
     inline for (.{
         "js/bun/resolve/require.test.js",
+        "js/bun/test/mock/6879/6879.test.js",
+        "js/bun/test/mock/mock-module.test.js",
         "js/bun/test/snapshot-tests/snapshots/snapshot.test.js",
         "js/bun/test/test-failing.test.js",
         "js/bun/test/test-failing-fixture.ts",
