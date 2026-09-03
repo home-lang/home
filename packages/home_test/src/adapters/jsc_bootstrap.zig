@@ -5433,8 +5433,13 @@ fn runSpawnSyncNative(
     defer threaded.deinit();
     const io = threaded.io();
 
+    const cwd_raw = try readOptionalStringProperty(allocator, ctx, options, "cwd", exception);
+    defer if (cwd_raw) |path| allocator.free(path);
+    const cwd = try resolveSpawnCwd(allocator, cwd_raw);
+    defer if (cwd.owned) allocator.free(cwd.path.?);
+
     const eval_script_path = if (is_home_invocation and isHomeEvalInvocation(argv_storage.items))
-        try rewriteHomeEvalInvocation(allocator, io, &argv_storage)
+        try rewriteHomeEvalInvocation(allocator, io, &argv_storage, cwd.path)
     else
         null;
     defer if (eval_script_path) |path| Io.Dir.cwd().deleteFile(io, path) catch {};
@@ -5446,11 +5451,6 @@ fn runSpawnSyncNative(
         std.mem.eql(u8, argv_storage.items[1], "pm") and
         std.mem.eql(u8, argv_storage.items[2], "pkg");
     if (is_home_invocation and !is_pm_pkg) try resolveCorpusArguments(allocator, &argv_storage);
-
-    const cwd_raw = try readOptionalStringProperty(allocator, ctx, options, "cwd", exception);
-    defer if (cwd_raw) |path| allocator.free(path);
-    const cwd = try resolveSpawnCwd(allocator, cwd_raw);
-    defer if (cwd.owned) allocator.free(cwd.path.?);
 
     var env_storage = std.ArrayList([]const u8).empty;
     defer {
@@ -5851,22 +5851,31 @@ fn rewriteHomeEvalInvocation(
     allocator: std.mem.Allocator,
     io: Io,
     argv: *std.ArrayList([]const u8),
+    spawn_cwd: ?[]const u8,
 ) ![]const u8 {
     if (argv.items.len < 3) return error.MissingEvalSource;
 
     const pid: i32 = @intCast(std.c.getpid());
     home_eval_counter += 1;
-    const relative_script_path = try std.fmt.allocPrint(
+    const script_basename = try std.fmt.allocPrint(
         allocator,
-        ".zig-cache/home-corpus-eval-{d}-{d}.tsx",
+        ".home-corpus-eval-{d}-{d}.tsx",
         .{ pid, home_eval_counter },
     );
-    defer allocator.free(relative_script_path);
+    defer allocator.free(script_basename);
 
-    const cwd = try currentWorkingDirectoryAlloc(allocator);
-    defer allocator.free(cwd);
+    const process_cwd = try currentWorkingDirectoryAlloc(allocator);
+    defer allocator.free(process_cwd);
+    const eval_cwd = if (spawn_cwd) |path|
+        if (std.fs.path.isAbsolute(path))
+            try allocator.dupe(u8, path)
+        else
+            try std.fs.path.join(allocator, &.{ process_cwd, path })
+    else
+        try allocator.dupe(u8, process_cwd);
+    defer allocator.free(eval_cwd);
 
-    const script_path = try std.fs.path.join(allocator, &.{ cwd, relative_script_path });
+    const script_path = try std.fs.path.join(allocator, &.{ eval_cwd, script_basename });
     errdefer allocator.free(script_path);
 
     try Io.Dir.cwd().writeFile(io, .{

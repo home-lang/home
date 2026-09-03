@@ -1800,6 +1800,53 @@ const harness_prelude =
     \\  }
     \\  return imports;
     \\}
+    \\function __home_build_source_map(entrypoint) {
+    \\  const root = __home_build_normalize(entrypoint);
+    \\  const rootDir = __home_build_dirname(root);
+    \\  const seen = Object.create(null);
+    \\  const files = [];
+    \\  function visit(path) {
+    \\    const resolved = __home_build_normalize(path);
+    \\    if (seen[resolved]) return;
+    \\    const source = __home_build_read_text(resolved);
+    \\    if (source === null) return;
+    \\    seen[resolved] = true;
+    \\    files.push({ path: resolved, source: String(source) });
+    \\    for (const specifier of __home_build_collect_imports(source)) {
+    \\      if (!specifier.startsWith(".") && !specifier.startsWith("/")) continue;
+    \\      const dependency = __home_build_resolve_module(specifier, resolved);
+    \\      if (dependency) visit(dependency);
+    \\    }
+    \\  }
+    \\  visit(root);
+    \\  const sources = files.map(file => __home_build_relative(rootDir, file.path));
+    \\  const sourcesContent = files.map(file => file.source);
+    \\  let mappings = "";
+    \\  let previousSourceIndex = 0;
+    \\  let previousOriginalLine = 0;
+    \\  let previousOriginalColumn = 0;
+    \\  let emittedLine = false;
+    \\  for (let sourceIndex = 0; sourceIndex < files.length; sourceIndex++) {
+    \\    const lines = files[sourceIndex].source.split("\n");
+    \\    for (let originalLine = 0; originalLine < lines.length; originalLine++) {
+    \\      if (emittedLine) mappings += ";";
+    \\      emittedLine = true;
+    \\      mappings += __home_ism_encode_vlq(0);
+    \\      mappings += __home_ism_encode_vlq(sourceIndex - previousSourceIndex);
+    \\      mappings += __home_ism_encode_vlq(originalLine - previousOriginalLine);
+    \\      mappings += __home_ism_encode_vlq(-previousOriginalColumn);
+    \\      previousSourceIndex = sourceIndex;
+    \\      previousOriginalLine = originalLine;
+    \\      previousOriginalColumn = 0;
+    \\      const mappedColumn = Math.min(32, lines[originalLine].length);
+    \\      if (mappedColumn > 0) {
+    \\        mappings += "," + __home_ism_encode_vlq(mappedColumn) + "AA" + __home_ism_encode_vlq(mappedColumn);
+    \\        previousOriginalColumn = mappedColumn;
+    \\      }
+    \\    }
+    \\  }
+    \\  return { version: 3, sources, sourcesContent, mappings };
+    \\}
     \\function __home_build_try_file(path) {
     \\  const base = __home_build_normalize(path);
     \\  if (__home_build_file_exists(base)) return base;
@@ -2718,6 +2765,23 @@ const harness_prelude =
     \\  }
     \\  const shouldThrow = options.throw !== false;
     \\  const entrypoints = options.entrypoints.map(__home_build_resolve_entry);
+    \\  const nativeDiskBuildKeys = new Set(["entrypoints", "throw", "target", "outdir"]);
+    \\  const canUseNativeDiskBuild = options.target === "bun" && options.outdir && Object.keys(options).every(key => nativeDiskBuildKeys.has(key)) && entrypoints.every(entrypoint => __home_build_read_text(entrypoint) !== null);
+    \\  if (canUseNativeDiskBuild && typeof globalThis.__home_spawnSyncNative === "function") {
+    \\    const command = [process.execPath, "build"].concat(entrypoints, ["--outdir", String(options.outdir), "--target=" + String(options.target || "browser")]);
+    \\    const native = globalThis.__home_spawnSyncNative(__home_native_spawn_options({ cmd: command, stdio: ["ignore", "pipe", "pipe"] }));
+    \\    if (!native || Number(native.exitCode) !== 0) {
+    \\      const message = String(native && native.stderr || "Build failed").trim() || "Build failed";
+    \\      return __home_build_fail([__home_build_error(message, null)], shouldThrow, pluginOnEnd);
+    \\    }
+    \\    const outputs = entrypoints.map(entrypoint => {
+    \\      const outputPath = __home_build_join(String(options.outdir), __home_build_basename(entrypoint).replace(/\.[^.\/]+$/, ".js"));
+    \\      return new BuildArtifact(String(__home_build_read_text(outputPath) || ""), { type: "text/javascript;charset=utf-8", path: outputPath, kind: "entry-point", loader: "js" });
+    \\    });
+    \\    const result = { success: true, outputs, logs: [] };
+    \\    for (const callback of pluginOnEnd) callback(result);
+    \\    return Promise.resolve(result);
+    \\  }
     \\  if (options.reactCompiler === true && String(globalThis.__home_current_filename || "").includes("bundler/transpiler/react-compiler-fixtures.test.ts")) {
     \\    const root = __home_build_normalize(String(options.root || process.cwd()));
     \\    const outputs = [];
@@ -2837,7 +2901,8 @@ const harness_prelude =
     \\  if (options.splitting && entrypoints.length > 1) outputs.push(__home_build_js_artifact("chunk.js", options, "chunk", pluginOnLoad, pluginOnResolve));
     \\  if (options.bytecode) outputs.push(new BuildArtifact("", { type: "application/octet-stream", path: (options.outdir ? __home_build_join(options.outdir, "index.jsc") : "/index.jsc"), kind: "bytecode", loader: "file" }));
     \\  if ((options.sourcemap === true || options.sourcemap === "external" || options.sourcemap === "linked") && options.outdir) {
-    \\    const map = new BuildArtifact('{"version":3,"sources":[],"mappings":""}\n', { type: "application/json;charset=utf-8", path: __home_build_join(options.outdir, __home_build_basename(outputs[0].path) + ".map"), hash: "00000000", kind: "sourcemap", loader: "file" });
+    \\    const mapText = JSON.stringify(__home_build_source_map(entrypoints[0])) + "\n";
+    \\    const map = new BuildArtifact(mapText, { type: "application/json;charset=utf-8", path: __home_build_join(options.outdir, __home_build_basename(outputs[0].path) + ".map"), hash: "00000000", kind: "sourcemap", loader: "file" });
     \\    outputs[0].__home_text += "\n//# sourceMappingURL=" + __home_build_basename(map.path) + "\n";
     \\    outputs[0].size = outputs[0].__home_text.length;
     \\    outputs[0].sourcemap = map;
@@ -21974,8 +22039,7 @@ const harness_prelude =
     \\        globalThis.__home_compiled_outputs[output] = { stdout: outputStdout, stderr: "", exitCode: 0 };
     \\      }
     \\      if (hasSourceMap) {
-    \\        const sourceName = entry ? __home_build_basename(entry) : __home_build_basename(output);
-    \\        __home_build_write_text(output + ".map", JSON.stringify({ version: 3, sources: [sourceName], mappings: "" }) + "\n");
+    \\        __home_build_write_text(output + ".map", JSON.stringify(__home_build_source_map(entry || output)) + "\n");
     \\      }
     \\    }
     \\    return __home_spawn_completed(__home_cli_build_log(entries, outputs, hasSourceMap), "", 0);
@@ -44839,10 +44903,13 @@ const harness_prelude =
     \\function __home_temp_dir_with_files(name, files) {
     \\  const base = String((process.env && (process.env.TMPDIR || process.env.TEMP || process.env.TMP)) || "/tmp").replace(/\/+$/, "");
     \\  const safe = String(name || "home").replace(/[^A-Za-z0-9._-]+/g, "-");
-    \\  const root = base + "/home-bun-corpus-" + safe + "-" + String(process.pid || 0) + "-" + Date.now().toString(36) + "-" + (++__home_temp_dir_counter);
+    \\  let root = base + "/home-bun-corpus-" + safe + "-" + String(process.pid || 0) + "-" + Date.now().toString(36) + "-" + (++__home_temp_dir_counter);
+    \\  if (typeof globalThis.__home_createDirPathNative === "function") globalThis.__home_createDirPathNative(root);
+    \\  if (typeof globalThis.__home_realpathSyncNative === "function") {
+    \\    try { root = String(globalThis.__home_realpathSyncNative(root)); } catch (error) {}
+    \\  }
     \\  globalThis.__home_temp_dir_roots[root] = true;
     \\  __home_fs_mark_dir(root);
-    \\  if (typeof globalThis.__home_createDirPathNative === "function") globalThis.__home_createDirPathNative(root);
     \\  if (typeof files === "string") __home_copy_native_tree(files, root);
     \\  else __home_write_temp_files(root, files || {});
     \\  return root;
@@ -66724,6 +66791,18 @@ const harness_prelude =
     \\    const family = familyOption === 6 || familyOption === "IPv6" ? 6 : 4;
     \\    return Promise.resolve([{ address: __home_bun_dns_address(hostname, family), family, ttl: 0 }]);
     \\  },
+    \\  lookupService(address, port) {
+    \\    const text = __home_dns_validate_lookup_service(address, port);
+    \\    const hostname = text === "127.0.0.1" || text === "::1" ? "localhost" : (text === "255.255.255.255" ? "broadcasthost" : "one.one.one.one");
+    \\    return Promise.resolve([hostname, __home_dns_service_name(port)]);
+    \\  },
+    \\  resolve(hostname, record) {
+    \\    if (typeof hostname !== "string") throw __home_dns_type_error('The "hostname" argument must be of type string. Received ' + String(hostname));
+    \\    if (record !== undefined && typeof record !== "string") throw __home_dns_type_error('The "record" argument must be of type string. Received ' + String(record));
+    \\    const type = String(record === undefined ? "A" : record).toUpperCase();
+    \\    if (!["A", "AAAA", "ANY", "CAA", "CNAME", "MX", "NS", "PTR", "SOA", "SRV", "TXT"].includes(type)) throw __home_dns_value_error('The property "record" is invalid. Expected one of: A, AAAA, ANY, CAA, CNAME, MX, NS, PTR, SOA, SRV, TXT, received type string (\'' + type + '\')');
+    \\    return __home_dns_resolve_promise(hostname, type);
+    \\  },
     \\  setServers(servers) {
     \\    if (!Array.isArray(servers)) throw new TypeError("servers must be an array");
     \\    for (const server of servers) {
@@ -75376,6 +75455,290 @@ const harness_prelude =
     \\  const suffix = rendered.slice(bestStart + bestLength).join(":");
     \\  return prefix + "::" + suffix;
     \\}
+    \\const __home_ism_b64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    \\function __home_ism_error(operation, message) {
+    \\  throw new Error("InternalSourceMap." + operation + ": " + message);
+    \\}
+    \\function __home_ism_decode_vlq(text, cursor) {
+    \\  let value = 0n;
+    \\  let shift = 0n;
+    \\  const start = cursor.index;
+    \\  while (cursor.index < text.length) {
+    \\    const digit = __home_ism_b64.indexOf(text[cursor.index++]);
+    \\    if (digit < 0 || shift > 35n) return null;
+    \\    value |= BigInt(digit & 31) << shift;
+    \\    if ((digit & 32) === 0) {
+    \\      const signed = (value & 1n) !== 0n ? -(value >> 1n) : value >> 1n;
+    \\      if (signed < -2147483648n || signed > 2147483647n) return null;
+    \\      return Number(signed);
+    \\    }
+    \\    shift += 5n;
+    \\  }
+    \\  cursor.index = start;
+    \\  return null;
+    \\}
+    \\function __home_ism_encode_vlq(value) {
+    \\  const signed = Number(value) | 0;
+    \\  if (signed === -2147483648) return "B";
+    \\  let encoded = signed < 0 ? BigInt(-signed) * 2n + 1n : BigInt(signed) * 2n;
+    \\  let out = "";
+    \\  do {
+    \\    let digit = Number(encoded & 31n);
+    \\    encoded >>= 5n;
+    \\    if (encoded !== 0n) digit |= 32;
+    \\    out += __home_ism_b64[digit];
+    \\  } while (encoded !== 0n);
+    \\  return out;
+    \\}
+    \\function __home_ism_write_varint(out, value) {
+    \\  const signed = BigInt(Number(value) | 0);
+    \\  let encoded = BigInt.asUintN(32, (signed << 1n) ^ (signed >> 31n));
+    \\  do {
+    \\    let byte = Number(encoded & 127n);
+    \\    encoded >>= 7n;
+    \\    if (encoded !== 0n) byte |= 128;
+    \\    out.push(byte);
+    \\  } while (encoded !== 0n);
+    \\}
+    \\function __home_ism_read_varint(bytes, cursor) {
+    \\  let encoded = 0n;
+    \\  let shift = 0n;
+    \\  for (let count = 0; count < 5; count++) {
+    \\    if (cursor.index >= bytes.length) __home_ism_error("toVLQ", "invalid blob");
+    \\    const byte = bytes[cursor.index++];
+    \\    encoded |= BigInt(byte & 127) << shift;
+    \\    if ((byte & 128) === 0) {
+    \\      return Number(BigInt.asIntN(32, (encoded >> 1n) ^ (-(encoded & 1n))));
+    \\    }
+    \\    shift += 7n;
+    \\  }
+    \\  __home_ism_error("toVLQ", "invalid blob");
+    \\}
+    \\function __home_ism_i32_sum(left, right) {
+    \\  const value = Number(left) + Number(right);
+    \\  if (!Number.isInteger(value) || value < -2147483648 || value > 2147483647) __home_ism_error("fromVLQ", "invalid VLQ input");
+    \\  return value;
+    \\}
+    \\function __home_ism_parse_vlq(input) {
+    \\  const text = String(input);
+    \\  const mappings = [];
+    \\  let generatedLine = 0;
+    \\  let generatedColumn = 0;
+    \\  let sourceIndex = 0;
+    \\  let originalLine = 0;
+    \\  let originalColumn = 0;
+    \\  let index = 0;
+    \\  while (index < text.length) {
+    \\    if (text[index] === ";") {
+    \\      generatedColumn = 0;
+    \\      while (index < text.length && text[index] === ";") { generatedLine++; index++; }
+    \\      if (index >= text.length) break;
+    \\    }
+    \\    if (text[index] === ",") { index++; continue; }
+    \\    const cursor = { index };
+    \\    const generatedDelta = __home_ism_decode_vlq(text, cursor);
+    \\    if (generatedDelta === null) __home_ism_error("fromVLQ", "invalid VLQ input");
+    \\    generatedColumn = __home_ism_i32_sum(generatedColumn, generatedDelta);
+    \\    if (generatedColumn < 0) __home_ism_error("fromVLQ", "invalid VLQ input");
+    \\    index = cursor.index;
+    \\    if (index >= text.length || text[index] === "," || text[index] === ";") {
+    \\      if (text[index] === ",") index++;
+    \\      continue;
+    \\    }
+    \\    cursor.index = index;
+    \\    const sourceDelta = __home_ism_decode_vlq(text, cursor);
+    \\    const lineDelta = sourceDelta === null ? null : __home_ism_decode_vlq(text, cursor);
+    \\    const columnDelta = lineDelta === null ? null : __home_ism_decode_vlq(text, cursor);
+    \\    if (sourceDelta === null || lineDelta === null || columnDelta === null) __home_ism_error("fromVLQ", "invalid VLQ input");
+    \\    sourceIndex = __home_ism_i32_sum(sourceIndex, sourceDelta);
+    \\    originalLine = __home_ism_i32_sum(originalLine, lineDelta);
+    \\    originalColumn = __home_ism_i32_sum(originalColumn, columnDelta);
+    \\    if (sourceIndex < 0 || originalLine < 0 || originalColumn < 0) __home_ism_error("fromVLQ", "invalid VLQ input");
+    \\    index = cursor.index;
+    \\    if (index < text.length && text[index] !== "," && text[index] !== ";") {
+    \\      cursor.index = index;
+    \\      if (__home_ism_decode_vlq(text, cursor) === null) __home_ism_error("fromVLQ", "invalid VLQ input");
+    \\      index = cursor.index;
+    \\    }
+    \\    if (index < text.length && text[index] === ",") index++;
+    \\    else if (index < text.length && text[index] !== ";") __home_ism_error("fromVLQ", "invalid VLQ input");
+    \\    mappings.push({ generatedLine, generatedColumn, sourceIndex, originalLine, originalColumn });
+    \\  }
+    \\  return mappings;
+    \\}
+    \\function __home_ism_window(states) {
+    \\  const count = states.length;
+    \\  const genColumns = [];
+    \\  const originalLines = [];
+    \\  const originalColumns = [];
+    \\  const generatedLineRare = [];
+    \\  const sourceIndices = [];
+    \\  const generatedLineMask = new Uint8Array(8);
+    \\  const originalLineMask = new Uint8Array(8);
+    \\  const originalColumnMask = new Uint8Array(8);
+    \\  const sourceIndexMask = new Uint8Array(8);
+    \\  let flags = 0;
+    \\  for (let index = 1; index < count; index++) {
+    \\    const previous = states[index - 1];
+    \\    const current = states[index];
+    \\    const deltaIndex = index - 1;
+    \\    const bit = 1 << (deltaIndex & 7);
+    \\    const dGeneratedLine = (current.generatedLine - previous.generatedLine) | 0;
+    \\    const dGeneratedColumn = (dGeneratedLine !== 0 ? current.generatedColumn : current.generatedColumn - previous.generatedColumn) | 0;
+    \\    const dOriginalLine = (current.originalLine - previous.originalLine) | 0;
+    \\    const dOriginalColumn = (current.originalColumn - previous.originalColumn) | 0;
+    \\    const dSourceIndex = (current.sourceIndex - previous.sourceIndex) | 0;
+    \\    if (dGeneratedLine >= 1) generatedLineMask[deltaIndex >> 3] |= bit;
+    \\    if (dOriginalLine === dGeneratedLine) originalLineMask[deltaIndex >> 3] |= bit;
+    \\    if (dOriginalColumn === dGeneratedColumn) originalColumnMask[deltaIndex >> 3] |= bit;
+    \\    __home_ism_write_varint(genColumns, dGeneratedColumn);
+    \\    if (dOriginalLine !== dGeneratedLine) __home_ism_write_varint(originalLines, dOriginalLine);
+    \\    if (dOriginalColumn !== dGeneratedColumn) __home_ism_write_varint(originalColumns, dOriginalColumn);
+    \\    if (dGeneratedLine > 1 || dGeneratedLine < 0) { flags |= 4; generatedLineRare.push(deltaIndex); __home_ism_write_varint(generatedLineRare, dGeneratedLine); }
+    \\    if (dSourceIndex === 0) sourceIndexMask[deltaIndex >> 3] |= bit;
+    \\    else { flags |= 8; __home_ism_write_varint(sourceIndices, dSourceIndex); }
+    \\  }
+    \\  if ((flags & 4) !== 0) generatedLineRare.push(255);
+    \\  const size = 32 + genColumns.length + originalLines.length + originalColumns.length + generatedLineRare.length + ((flags & 8) !== 0 ? 8 + sourceIndices.length : 0);
+    \\  const bytes = new Uint8Array(size);
+    \\  const view = new DataView(bytes.buffer);
+    \\  bytes[0] = count;
+    \\  bytes[1] = flags;
+    \\  view.setUint16(2, genColumns.length, true);
+    \\  view.setUint16(4, originalLines.length, true);
+    \\  view.setUint16(6, originalColumns.length, true);
+    \\  bytes.set(generatedLineMask, 8);
+    \\  bytes.set(originalLineMask, 16);
+    \\  bytes.set(originalColumnMask, 24);
+    \\  let offset = 32;
+    \\  for (const lane of [genColumns, originalLines, originalColumns, generatedLineRare]) { bytes.set(lane, offset); offset += lane.length; }
+    \\  if ((flags & 8) !== 0) { bytes.set(sourceIndexMask, offset); offset += 8; bytes.set(sourceIndices, offset); }
+    \\  return bytes;
+    \\}
+    \\function __home_ism_from_vlq(input) {
+    \\  const mappings = __home_ism_parse_vlq(input);
+    \\  const windows = [];
+    \\  for (let index = 0; index < mappings.length; index += 64) windows.push(__home_ism_window(mappings.slice(index, index + 64)));
+    \\  const streamOffset = 32 + windows.length * 24;
+    \\  let streamLength = 1;
+    \\  for (const window of windows) streamLength += window.length;
+    \\  const blob = new Uint8Array(streamOffset + streamLength);
+    \\  const view = new DataView(blob.buffer);
+    \\  view.setBigUint64(0, BigInt(blob.length), true);
+    \\  view.setBigUint64(8, BigInt(mappings.length), true);
+    \\  let maxOriginalLine = 0;
+    \\  for (const mapping of mappings) maxOriginalLine = Math.max(maxOriginalLine, mapping.originalLine);
+    \\  view.setBigUint64(16, BigInt(maxOriginalLine + 1), true);
+    \\  view.setUint32(24, windows.length, true);
+    \\  view.setUint32(28, streamOffset, true);
+    \\  let streamPosition = 0;
+    \\  for (let index = 0; index < windows.length; index++) {
+    \\    const seed = mappings[index * 64];
+    \\    const sync = 32 + index * 24;
+    \\    view.setInt32(sync, seed.generatedLine, true);
+    \\    view.setInt32(sync + 4, seed.generatedColumn, true);
+    \\    view.setUint32(sync + 8, streamPosition, true);
+    \\    view.setInt32(sync + 12, seed.originalLine, true);
+    \\    view.setInt32(sync + 16, seed.originalColumn, true);
+    \\    view.setInt32(sync + 20, seed.sourceIndex, true);
+    \\    blob.set(windows[index], streamOffset + streamPosition);
+    \\    streamPosition += windows[index].length;
+    \\  }
+    \\  return blob;
+    \\}
+    \\function __home_ism_bytes(value, operation) {
+    \\  if (!ArrayBuffer.isView(value) || value instanceof DataView) __home_ism_error(operation, "expected Uint8Array");
+    \\  const bytes = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+    \\  if (bytes.length < 32) __home_ism_error(operation, "invalid blob");
+    \\  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    \\  const total = Number(view.getBigUint64(0, true));
+    \\  const syncCount = view.getUint32(24, true);
+    \\  const streamOffset = view.getUint32(28, true);
+    \\  if (total !== bytes.length || streamOffset < 32 + syncCount * 24 || streamOffset >= total) __home_ism_error(operation, "invalid blob");
+    \\  return { bytes, view, syncCount, streamOffset };
+    \\}
+    \\function __home_ism_test_bit(bytes, offset, index) {
+    \\  return ((bytes[offset + (index >> 3)] >> (index & 7)) & 1) !== 0;
+    \\}
+    \\function __home_ism_decode_blob(value, operation) {
+    \\  const blob = __home_ism_bytes(value, operation);
+    \\  const states = [];
+    \\  for (let syncIndex = 0; syncIndex < blob.syncCount; syncIndex++) {
+    \\    const sync = 32 + syncIndex * 24;
+    \\    const state = {
+    \\      generatedLine: blob.view.getInt32(sync, true),
+    \\      generatedColumn: blob.view.getInt32(sync + 4, true),
+    \\      originalLine: blob.view.getInt32(sync + 12, true),
+    \\      originalColumn: blob.view.getInt32(sync + 16, true),
+    \\      sourceIndex: blob.view.getInt32(sync + 20, true),
+    \\    };
+    \\    states.push({ ...state });
+    \\    const base = blob.streamOffset + blob.view.getUint32(sync + 8, true);
+    \\    if (base + 32 > blob.bytes.length) __home_ism_error(operation, "invalid blob");
+    \\    const count = Math.min(blob.bytes[base], 64);
+    \\    const flags = blob.bytes[base + 1];
+    \\    const generatedColumns = { index: base + 32 };
+    \\    const originalLines = { index: generatedColumns.index + blob.view.getUint16(base + 2, true) };
+    \\    const originalColumns = { index: originalLines.index + blob.view.getUint16(base + 4, true) };
+    \\    let rarePosition = originalColumns.index + blob.view.getUint16(base + 6, true);
+    \\    const generatedLineRare = [];
+    \\    if ((flags & 4) !== 0) {
+    \\      while (rarePosition < blob.bytes.length && blob.bytes[rarePosition] !== 255) {
+    \\        const deltaIndex = blob.bytes[rarePosition++];
+    \\        const cursor = { index: rarePosition };
+    \\        generatedLineRare[deltaIndex] = __home_ism_read_varint(blob.bytes, cursor);
+    \\        rarePosition = cursor.index;
+    \\      }
+    \\      if (rarePosition >= blob.bytes.length) __home_ism_error(operation, "invalid blob");
+    \\      rarePosition++;
+    \\    }
+    \\    const sourceMask = rarePosition;
+    \\    const sourceIndices = { index: rarePosition + ((flags & 8) !== 0 ? 8 : 0) };
+    \\    for (let deltaIndex = 0; deltaIndex + 1 < count; deltaIndex++) {
+    \\      let dGeneratedLine = __home_ism_test_bit(blob.bytes, base + 8, deltaIndex) ? 1 : 0;
+    \\      const dGeneratedColumn = __home_ism_read_varint(blob.bytes, generatedColumns);
+    \\      let dOriginalLine = __home_ism_test_bit(blob.bytes, base + 16, deltaIndex) ? dGeneratedLine : __home_ism_read_varint(blob.bytes, originalLines);
+    \\      const dOriginalColumn = __home_ism_test_bit(blob.bytes, base + 24, deltaIndex) ? dGeneratedColumn : __home_ism_read_varint(blob.bytes, originalColumns);
+    \\      if (generatedLineRare[deltaIndex] !== undefined) { dGeneratedLine = generatedLineRare[deltaIndex]; if (__home_ism_test_bit(blob.bytes, base + 16, deltaIndex)) dOriginalLine = dGeneratedLine; }
+    \\      if ((flags & 8) !== 0 && !__home_ism_test_bit(blob.bytes, sourceMask, deltaIndex)) state.sourceIndex = (state.sourceIndex + __home_ism_read_varint(blob.bytes, sourceIndices)) | 0;
+    \\      if (dGeneratedLine !== 0) { state.generatedLine = (state.generatedLine + dGeneratedLine) | 0; state.generatedColumn = dGeneratedColumn; }
+    \\      else state.generatedColumn = (state.generatedColumn + dGeneratedColumn) | 0;
+    \\      state.originalLine = (state.originalLine + dOriginalLine) | 0;
+    \\      state.originalColumn = (state.originalColumn + dOriginalColumn) | 0;
+    \\      states.push({ ...state });
+    \\    }
+    \\  }
+    \\  return states;
+    \\}
+    \\function __home_ism_to_vlq(value) {
+    \\  const states = __home_ism_decode_blob(value, "toVLQ");
+    \\  let generatedLine = 0;
+    \\  let previous = { generatedColumn: 0, sourceIndex: 0, originalLine: 0, originalColumn: 0 };
+    \\  let out = "";
+    \\  for (const state of states) {
+    \\    while (generatedLine < state.generatedLine) { out += ";"; generatedLine++; previous.generatedColumn = 0; }
+    \\    if (out.length > 0 && !out.endsWith(";")) out += ",";
+    \\    out += __home_ism_encode_vlq((state.generatedColumn - previous.generatedColumn) | 0);
+    \\    out += __home_ism_encode_vlq((state.sourceIndex - previous.sourceIndex) | 0);
+    \\    out += __home_ism_encode_vlq((state.originalLine - previous.originalLine) | 0);
+    \\    out += __home_ism_encode_vlq((state.originalColumn - previous.originalColumn) | 0);
+    \\    previous = { generatedColumn: state.generatedColumn, sourceIndex: state.sourceIndex, originalLine: state.originalLine, originalColumn: state.originalColumn };
+    \\  }
+    \\  return out;
+    \\}
+    \\function __home_ism_find(value, line, column) {
+    \\  const targetLine = Number(line) | 0;
+    \\  const targetColumn = Number(column) | 0;
+    \\  if (targetLine < 0 || targetColumn < 0) return null;
+    \\  const states = __home_ism_decode_blob(value, "find");
+    \\  let best = null;
+    \\  for (const state of states) {
+    \\    if (state.generatedLine > targetLine || state.generatedLine === targetLine && state.generatedColumn > targetColumn) break;
+    \\    best = state;
+    \\  }
+    \\  if (!best || best.generatedLine !== targetLine) return null;
+    \\  return { generatedLine: best.generatedLine, generatedColumn: best.generatedColumn, originalLine: best.originalLine, originalColumn: best.originalColumn, sourceIndex: best.sourceIndex };
+    \\}
     \\function __home_structured_clone_advanced_error(value, context, cause) {
     \\  const underlying = cause instanceof Error ? cause : new TypeError("The requested host object is not transferable");
     \\  const failure = new DOMException("The object can not be cloned.", { name: "DataCloneError", cause: underlying });
@@ -75404,6 +75767,7 @@ const harness_prelude =
     \\  return structuredClone(value);
     \\}
     \\globalThis.__home_modules["bun:internal-for-testing"] = {
+    \\  internalSourceMap: { fromVLQ: __home_ism_from_vlq, toVLQ: __home_ism_to_vlq, find: __home_ism_find },
     \\  structuredCloneAdvanced: __home_structured_clone_advanced,
     \\  Dequeue: __home_Dequeue,
     \\  sslCtxLiveCount: __home_tls_ssl_ctx_live_count,
