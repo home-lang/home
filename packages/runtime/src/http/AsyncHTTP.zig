@@ -151,6 +151,36 @@ pub fn preconnect(
     HTTPClient.http_thread.schedule(Batch.from(&this.async_http.task));
 }
 
+/// Validate and schedule the URLs supplied by the runtime's
+/// `--fetch-preconnect` option. Both Bun's CLI boot path and Home's direct VM
+/// boot path use this entry point so the option has identical startup
+/// semantics regardless of which executable dispatcher created the VM.
+pub fn preconnectFromCli(urls: []const []const u8) void {
+    if (urls.len == 0) return;
+    bun.HTTPThread.init(&.{});
+
+    for (urls) |url_str| {
+        const url = bun.URL.parse(url_str);
+
+        if (!url.isHTTP() and !url.isHTTPS()) {
+            bun.Output.errGeneric("preconnect URL must be HTTP or HTTPS: {f}", .{bun.fmt.quote(url_str)});
+            bun.Global.exit(1);
+        }
+
+        if (url.hostname.len == 0) {
+            bun.Output.errGeneric("preconnect URL must have a hostname: {f}", .{bun.fmt.quote(url_str)});
+            bun.Global.exit(1);
+        }
+
+        if (!url.hasValidPort()) {
+            bun.Output.errGeneric("preconnect URL must have a valid port: {f}", .{bun.fmt.quote(url_str)});
+            bun.Global.exit(1);
+        }
+
+        preconnect(url, false);
+    }
+}
+
 pub fn init(
     allocator: std.mem.Allocator,
     method: Method,
