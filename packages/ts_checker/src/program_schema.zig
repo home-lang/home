@@ -31,7 +31,11 @@ pub const Function = struct {
     predicate: ?TypePredicate = null,
     is_construct: bool = false,
 };
-pub const Reference = struct { declaration: *const Declaration, arguments: []const *const Expression };
+pub const Reference = struct {
+    declaration: *const Declaration,
+    arguments: []const *const Expression,
+    projection_only: bool = false,
+};
 pub const IndexedAccess = struct { object: *const Expression, index: *const Expression };
 pub const Conditional = struct {
     check: *const Expression,
@@ -182,6 +186,7 @@ pub const Schema = struct {
                     if (function.predicate) |predicate| try pending.append(gpa, predicate.target);
                 },
                 .reference => |ref| {
+                    if (ref.projection_only and !allow_opaque) return false;
                     try appendDeclaration(gpa, pending, ref.declaration);
                     try pending.appendSlice(gpa, ref.arguments);
                 },

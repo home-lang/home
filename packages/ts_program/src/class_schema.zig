@@ -381,14 +381,16 @@ pub const Builder = struct {
                 switch (if (ref.qualifier_len == 0) try self.resolve(context.source, node, ref.name) else try self.resolveQualified(context.source, node, ref)) {
                     .declaration => |key| {
                         const target = try self.declaration(key);
-                        if (ref.qualifier_len != 0) {
-                            if (context.allow_opaque)
-                                context.declaration.contextual_only = true
-                            else if (!try self.qualifiedValueAliasSupported(target))
-                                return self.expression(.unsupported);
-                        }
+                        const projection_only = ref.qualifier_len != 0 and
+                            !context.allow_opaque and
+                            !try self.qualifiedValueAliasSupported(target);
+                        if (ref.qualifier_len != 0 and context.allow_opaque) context.declaration.contextual_only = true;
                         qualified_unresolved = false;
-                        return self.expression(.{ .reference = .{ .declaration = target, .arguments = args } });
+                        return self.expression(.{ .reference = .{
+                            .declaration = target,
+                            .arguments = args,
+                            .projection_only = projection_only,
+                        } });
                     },
                     .unsupported => return self.expression(.unsupported),
                     .missing => {
@@ -848,7 +850,9 @@ test "class schema: qualified references become concrete only for supported decl
 
     const structured_result = try graph.class(1, "StructuredBox");
     defer structured_result.deinit(T.allocator);
-    try T.expect(structured_result.declaration.body.?.object[0].type.* == .unsupported);
+    const structured = structured_result.declaration.body.?.object[0].type.reference;
+    try T.expect(structured.projection_only);
+    try T.expectEqualStrings("Structured", structured.declaration.name);
 
     const callback_result = try graph.class(1, "Callback");
     defer callback_result.deinit(T.allocator);
