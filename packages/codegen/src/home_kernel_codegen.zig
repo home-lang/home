@@ -2374,12 +2374,34 @@ pub const HomeKernelCodegen = struct {
     /// a constant. Handles literals, references to already-folded module
     /// constants, and the arithmetic and bitwise operators over them — enough
     /// for the register addresses and bit masks a kernel declares.
+    /// Whether an expression mentions `@targetIs` anywhere inside it, so that
+    /// `if (@targetIs("x86_64") and SOMETHING)` is still recognised as a
+    /// target test rather than only the bare form.
+    fn exprMentionsTargetIs(expr: *const ast.Expr) bool {
+        return switch (expr.*) {
+            .ReflectExpr => |r| r.kind == .TargetIs,
+            .UnaryExpr => |u| exprMentionsTargetIs(u.operand),
+            .BinaryExpr => |b| exprMentionsTargetIs(b.left) or exprMentionsTargetIs(b.right),
+            else => false,
+        };
+    }
+
     fn foldConst(self: *HomeKernelCodegen, expr: *const ast.Expr) ?i64 {
         switch (expr.*) {
             // Literals are parsed as i128; anything outside i64 cannot become
             // a 64-bit immediate, so it is simply not a constant here.
             .IntegerLiteral => |lit| return std.math.cast(i64, lit.value),
             .BooleanLiteral => |lit| return if (lit.value) @as(i64, 1) else @as(i64, 0),
+            .ReflectExpr => |r| {
+                // `@targetIs("aarch64")` is the one builtin whose value is
+                // known before any code is generated, which is what lets an
+                // `if` on it drop the branch it does not take.
+                if (r.kind != .TargetIs) return null;
+                if (r.target.* != .StringLiteral) return null;
+                const named = kernel_target.Arch.parse(r.target.StringLiteral.value) orelse
+                    return null;
+                return if (named == self.arch) @as(i64, 1) else @as(i64, 0);
+            },
             .Identifier => |id| return self.globals.get(id.name),
             .MemberExpr => |m| {
                 if (m.object.* != .Identifier) return null;
@@ -2872,7 +2894,12 @@ pub const HomeKernelCodegen = struct {
         name: []const u8,
         args: []const *const ast.Expr,
     ) !bool {
-        const Kind = enum { none, out, in, cpu, mmio_read, mmio_write, barrier };
+        const Kind = enum { none, out, in, cpu, mmio_read, mmio_write, barrier, sys };
+        // Operations both architectures genuinely have, but spell differently
+        // enough that a caller cannot write one form and expect the other to
+        // work (home-lang/home#584).
+        const SysOp = enum { save_irq, restore_irq, timestamp, atomic_add, read_sysreg, write_sysreg };
+        var sys_op: SysOp = .timestamp;
         // What the CPU-state intrinsics do, named for the effect rather than
         // for one architecture's mnemonic.
         const CpuOp = enum { halt, disable_irq, enable_irq, nop, spin_hint };
@@ -2901,6 +2928,12 @@ pub const HomeKernelCodegen = struct {
         else if (std.mem.eql(u8, name, "arch_enable_interrupts")) { kind = .cpu; cpu_op = .enable_irq; }
         else if (std.mem.eql(u8, name, "arch_nop")) { kind = .cpu; cpu_op = .nop; }
         else if (std.mem.eql(u8, name, "arch_spin_hint")) { kind = .cpu; cpu_op = .spin_hint; }
+        else if (std.mem.eql(u8, name, "arch_save_interrupts")) { kind = .sys; sys_op = .save_irq; }
+        else if (std.mem.eql(u8, name, "arch_restore_interrupts")) { kind = .sys; sys_op = .restore_irq; }
+        else if (std.mem.eql(u8, name, "arch_read_timestamp")) { kind = .sys; sys_op = .timestamp; }
+        else if (std.mem.eql(u8, name, "arch_atomic_add64")) { kind = .sys; sys_op = .atomic_add; }
+        else if (std.mem.eql(u8, name, "arch_read_sysreg")) { kind = .sys; sys_op = .read_sysreg; }
+        else if (std.mem.eql(u8, name, "arch_write_sysreg")) { kind = .sys; sys_op = .write_sysreg; }
         else if (std.mem.eql(u8, name, "hlt")) { kind = .cpu; cpu_op = .halt; }
         else if (std.mem.eql(u8, name, "cli")) { kind = .cpu; cpu_op = .disable_irq; }
         else if (std.mem.eql(u8, name, "sti")) { kind = .cpu; cpu_op = .enable_irq; }
@@ -2950,6 +2983,66 @@ pub const HomeKernelCodegen = struct {
                     .nop => try self.emit().nop(),
                     .spin_hint => try self.emit().spinHint(),
                 }
+            },
+            .sys => switch (sys_op) {
+                .save_irq, .timestamp => {
+                    if (args.len != 0) {
+                        try self.print("    # {s}() takes no arguments, {d} given\n", .{ name, args.len });
+                        return false;
+                    }
+                    if (sys_op == .save_irq) {
+                        try self.emit().saveInterrupts();
+                    } else {
+                        try self.emit().readTimestamp();
+                    }
+                },
+                .restore_irq => {
+                    if (args.len != 1) {
+                        try self.print("    # {s}(flags) needs 1 argument, {d} given\n", .{ name, args.len });
+                        return false;
+                    }
+                    try self.generateExpr(args[0]);
+                    try self.emit().restoreInterrupts();
+                },
+                .atomic_add => {
+                    if (args.len != 2) {
+                        try self.print("    # {s}(addr, value) needs 2 arguments, {d} given\n", .{ name, args.len });
+                        return false;
+                    }
+                    // Value first, parked; then the address, so a nested call
+                    // in either argument cannot clobber the other.
+                    try self.generateExpr(args[1]);
+                    try self.emit().push(.acc);
+                    try self.generateExpr(args[0]);
+                    try self.emit().movReg(.tmp3, .acc);
+                    try self.emit().pop(.tmp);
+                    try self.emit().atomicAdd64(self.freshLabel());
+                },
+                .read_sysreg, .write_sysreg => {
+                    const want: usize = if (sys_op == .read_sysreg) 1 else 2;
+                    if (args.len != want) {
+                        try self.print("    # {s} needs {d} argument(s), {d} given\n", .{ name, want, args.len });
+                        return false;
+                    }
+                    if (args[0].* != .StringLiteral) {
+                        try self.print("    # ERROR: {s} names its register with a string literal\n", .{name});
+                        return false;
+                    }
+                    const regname = args[0].StringLiteral.value;
+                    if (!self.emit().knowsSysreg(regname)) {
+                        try self.print(
+                            "    # ERROR: {s} is not a system register this backend can reach on {s}\n",
+                            .{ regname, @tagName(self.arch) },
+                        );
+                        return false;
+                    }
+                    if (sys_op == .read_sysreg) {
+                        try self.emit().readSysreg(regname);
+                    } else {
+                        try self.generateExpr(args[1]);
+                        try self.emit().writeSysreg(regname);
+                    }
+                },
             },
             .barrier => {
                 if (args.len != 0) {
@@ -3461,6 +3554,32 @@ pub const HomeKernelCodegen = struct {
                 }
             },
             .IfStmt => |if_stmt| {
+                // A condition known at compile time selects one branch, and
+                // the other is not emitted at all. This is what makes
+                // `@targetIs` usable for architecture-specific code: the
+                // branch not taken holds inline assembly for the other
+                // machine, and emitting it — even behind a jump that is never
+                // taken — would hand x86 text to the ARM assembler.
+                //
+                // Restricted to conditions that mention `@targetIs`. Folding
+                // every constant condition would also silently delete a
+                // `if (DEBUG) { ... }` block, which is a much bigger change in
+                // behaviour than this issue is asking for.
+                if (exprMentionsTargetIs(if_stmt.condition)) {
+                    if (self.foldConst(if_stmt.condition)) |value| {
+                        if (value != 0) {
+                            for (if_stmt.then_block.statements) |then_stmt| {
+                                try self.generateStmt(then_stmt);
+                            }
+                        } else if (if_stmt.else_block) |else_block| {
+                            for (else_block.statements) |else_stmt| {
+                                try self.generateStmt(else_stmt);
+                            }
+                        }
+                        return;
+                    }
+                }
+
                 // Generate if statement
                 try self.generateExpr(if_stmt.condition);
 
@@ -4240,6 +4359,13 @@ pub const HomeKernelCodegen = struct {
                         }
                         try self.writeAll("    # ERROR: @sizeOf of an unknown type\n");
                         try self.emit().movImm(0);
+                    },
+                    .TargetIs => {
+                        try self.emit().movImm(self.foldConst(expr) orelse {
+                            try self.writeAll("    # ERROR: @targetIs takes a string naming an architecture\n");
+                            try self.emit().movImm(0);
+                            return;
+                        });
                     },
                     .AlignOf => {
                         if (r.target_type orelse self.typeArgOf(r.target)) |t| {

@@ -8021,6 +8021,7 @@ pub const Parser = struct {
             const kind: ast.ReflectExpr.ReflectKind = blk: {
                 if (std.mem.eql(u8, name, "TypeOf")) break :blk .TypeOf;
                 if (std.mem.eql(u8, name, "sizeOf")) break :blk .SizeOf;
+                if (std.mem.eql(u8, name, "targetIs")) break :blk .TargetIs;
                 if (std.mem.eql(u8, name, "alignOf")) break :blk .AlignOf;
                 if (std.mem.eql(u8, name, "offsetOf")) break :blk .OffsetOf;
                 if (std.mem.eql(u8, name, "typeInfo")) break :blk .TypeInfo;

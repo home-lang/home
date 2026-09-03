@@ -1281,6 +1281,11 @@ pub const ReflectExpr = struct {
     pub const ReflectKind = enum {
         TypeOf, // @TypeOf(expr) - returns type of expression
         SizeOf, // @sizeOf(Type) - returns size in bytes
+        /// @targetIs("aarch64") - true when compiling for that architecture.
+        /// Folded at compile time so the branch not taken is never emitted,
+        /// which is the whole point: a dead branch holding inline assembly
+        /// for the other architecture must not reach the assembler.
+        TargetIs,
         AlignOf, // @alignOf(Type) - returns alignment in bytes
         OffsetOf, // @offsetOf(Type, "field") - returns field offset
         TypeInfo, // @typeInfo(Type) - returns type metadata

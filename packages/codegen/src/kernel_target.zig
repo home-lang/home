@@ -1469,6 +1469,122 @@ pub const Emitter = struct {
         }
     }
 
+    /// Read the interrupt-enable state and then mask interrupts, leaving the
+    /// previous state in the accumulator. Paired with `restoreInterrupts`,
+    /// this is what makes a critical section nestable: an inner section must
+    /// not switch interrupts back on underneath an outer one.
+    pub fn saveInterrupts(self: Self) !void {
+        switch (self.arch) {
+            .x86_64 => {
+                try self.insn("pushfq", .{});
+                try self.insn("popq %rax", .{});
+                try self.insn("cli", .{});
+            },
+            .aarch64 => {
+                // DAIF holds the four mask bits; `daifset, #2` sets I alone.
+                try self.insn("mrs x0, daif", .{});
+                try self.insn("msr daifset, #2", .{});
+            },
+        }
+    }
+
+    /// Restore the interrupt state saved by `saveInterrupts`, taken from the
+    /// accumulator.
+    pub fn restoreInterrupts(self: Self) !void {
+        switch (self.arch) {
+            .x86_64 => {
+                try self.insn("pushq %rax", .{});
+                try self.insn("popfq", .{});
+            },
+            .aarch64 => try self.insn("msr daif, x0", .{}),
+        }
+    }
+
+    /// A monotonically increasing counter, into the accumulator.
+    ///
+    /// The two are not the same clock and must not be compared across
+    /// architectures: x86's counts core cycles, ARM's counts at a fixed
+    /// frequency given by `CNTFRQ_EL0`. Callers converting to wall time have
+    /// to ask for the frequency either way.
+    pub fn readTimestamp(self: Self) !void {
+        switch (self.arch) {
+            .x86_64 => {
+                // rdtsc splits the 64-bit value across edx:eax.
+                try self.insn("rdtsc", .{});
+                try self.insn("shlq $32, %rdx", .{});
+                try self.insn("orq %rdx, %rax", .{});
+            },
+            .aarch64 => try self.insn("mrs x0, cntvct_el0", .{}),
+        }
+    }
+
+    /// Atomically add `tmp` to the 64-bit location addressed by `tmp3`,
+    /// leaving the value it held before in the accumulator.
+    ///
+    /// `label_id` must be unique within the translation unit; the caller takes
+    /// it from the codegen's label counter so the output stays deterministic.
+    pub fn atomicAdd64(self: Self, label_id: usize) !void {
+        switch (self.arch) {
+            .x86_64 => {
+                // `lock xadd` is the whole operation: it needs no retry loop,
+                // so it cannot livelock under contention.
+                try self.insn("movq %rcx, %rax", .{});
+                try self.insn("lock xaddq %rax, (%rdx)", .{});
+            },
+            .aarch64 => {
+                // The exclusive-monitor loop rather than the single-instruction
+                // LSE form (`ldaddal`), because LSE arrived in ARMv8.1 and the
+                // Pi 3's Cortex-A53 is ARMv8.0 — the LSE form assembles only
+                // with `.arch armv8.1-a` and faults as undefined on that core.
+                // Acquire on the load and release on the store give this the
+                // same ordering as the x86 instruction.
+                try self.print(".L_atomic_add_{d}:\n", .{label_id});
+                try self.insn("ldaxr x0, [x3]", .{});
+                try self.insn("add x9, x0, x1", .{});
+                try self.insn("stlxr w10, x9, [x3]", .{});
+                try self.print("    cbnz w10, .L_atomic_add_{d}\n", .{label_id});
+            },
+        }
+    }
+
+    /// Whether `name` is a system register this target can read or write.
+    /// x86 has no general system-register space, so only the control
+    /// registers the kernel actually touches are accepted.
+    pub fn knowsSysreg(self: Self, name: []const u8) bool {
+        return switch (self.arch) {
+            .x86_64 => std.mem.eql(u8, name, "cr0") or std.mem.eql(u8, name, "cr2") or
+                std.mem.eql(u8, name, "cr3") or std.mem.eql(u8, name, "cr4"),
+            // aarch64 register names are validated by the assembler, which
+            // knows the whole encoding space; repeating that list here would
+            // only go stale. Reject anything that is not plausibly a name so a
+            // typo cannot become an assembler error with no Home location.
+            .aarch64 => name.len > 0 and name.len < 32 and for (name) |c| {
+                if (!std.ascii.isAlphanumeric(c) and c != '_') break false;
+            } else true,
+        };
+    }
+
+    /// Read a system register into the accumulator.
+    pub fn readSysreg(self: Self, name: []const u8) !void {
+        switch (self.arch) {
+            .x86_64 => try self.insn("mov %{s}, %rax", .{name}),
+            .aarch64 => try self.insn("mrs x0, {s}", .{name}),
+        }
+    }
+
+    /// Write the accumulator to a system register.
+    pub fn writeSysreg(self: Self, name: []const u8) !void {
+        switch (self.arch) {
+            .x86_64 => try self.insn("mov %rax, %{s}", .{name}),
+            .aarch64 => {
+                try self.insn("msr {s}, x0", .{name});
+                // A system-register write does not take effect for following
+                // instructions until the pipeline is resynchronised.
+                try self.insn("isb", .{});
+            },
+        }
+    }
+
     /// A memory barrier of the requested strength.
     ///
     /// x86-64's memory model already orders loads with loads and stores with
