@@ -100641,6 +100641,7 @@ fn isNativeWorkerCorpusFile(relative: []const u8) bool {
     inline for (.{
         "15787.test.ts",
         "worker-async-dispose.test.ts",
+        "worker_destruction.test.ts",
         "worker_heap_snapshot_gc.test.ts",
     }) |name| {
         if (std.mem.eql(u8, relative, "js/node/worker_threads/" ++ name)) return true;
@@ -100849,7 +100850,7 @@ fn runRelativeFile(
             isNativeS3CorpusFile(relative) or
             isNativeWorkerCorpusFile(relative)) .test_runner else .script;
 
-        var absolute_preload_path: ?[]u8 = null;
+        var absolute_preload_path: ?[:0]u8 = null;
         defer if (absolute_preload_path) |path| allocator.free(path);
         if (mode == .test_runner) {
             const preload_path = try std.fs.path.join(allocator, &.{ corpus_path, "preload.ts" });
@@ -101365,6 +101366,7 @@ test "native worker corpus routing covers validated worker files" {
         "js/web/workers/worker_blob.test.ts",
         "js/node/worker_threads/15787.test.ts",
         "js/node/worker_threads/worker-async-dispose.test.ts",
+        "js/node/worker_threads/worker_destruction.test.ts",
         "js/node/worker_threads/worker_heap_snapshot_gc.test.ts",
     }) |relative| {
         try std.testing.expect(isNativeWorkerCorpusFile(relative));
@@ -101374,7 +101376,6 @@ test "native worker corpus routing covers validated worker files" {
     inline for (.{
         "js/web/workers/worker-fixture.js",
         "js/web/workers/nested/worker.test.ts",
-        "js/node/worker_threads/worker_destruction.test.ts",
         "js/node/worker_threads/worker_threads.test.ts",
         "js/node/worker_threads/15787.fixture.ts",
     }) |non_match| try std.testing.expect(!isNativeWorkerCorpusFile(non_match));

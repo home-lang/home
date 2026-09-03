@@ -515,7 +515,7 @@ class Worker extends EventEmitter {
     }
 
     const onExitPromise = this.#onExitPromise;
-    if (onExitPromise) {
+    if (onExitPromise !== undefined) {
       return $isPromise(onExitPromise) ? onExitPromise : Promise.$resolve(onExitPromise);
     }
 
