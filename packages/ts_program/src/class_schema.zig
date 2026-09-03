@@ -314,26 +314,14 @@ pub const Builder = struct {
             .type_ref => {
                 const ref = hir.typeRefOf(&c.hir, node);
                 const name = c.interner.get(ref.name);
-                // A qualified reference — `NS.Member` through a namespace
-                // import — makes the declaration contextual-only *if it cannot
-                // be followed*. Marking it up front instead meant a reference
-                // that resolved perfectly well still poisoned its declaration,
-                // and check.zig skips contextual-only entries outright, so the
-                // member's type never reached the consumer. Clear the flag on
-                // the path that resolves; every other exit leaves it set.
-                var qualified_unresolved = ref.qualifier_len != 0;
-                defer if (qualified_unresolved and context.allow_opaque) {
-                    context.declaration.contextual_only = true;
-                };
                 if (ref.qualifier_len == 0) {
                     if (localParameter(context, name)) |parameter| return self.expression(.{ .parameter = parameter });
                     for (context.declaration.parameters) |*param| {
                         if (std.mem.eql(u8, param.name, name)) return self.expression(.{ .parameter = param });
                     }
                 } else {
-                    // A qualified reference rooted in a type parameter cannot be
-                    // followed to a declaration — the root is a placeholder, not
-                    // a namespace — so it stays opaque.
+                    if (!context.allow_opaque) return self.expression(.unsupported);
+                    context.declaration.contextual_only = true;
                     const qualifiers = hir.typeRefQualifier(&c.hir, node);
                     if (qualifiers.len > 0 and c.hir.kindOf(qualifiers[0]) == .identifier) {
                         const root_name = c.interner.get(hir.identifierOf(&c.hir, qualifiers[0]).name);
@@ -352,33 +340,8 @@ pub const Builder = struct {
                 if (primitive) |value| return self.expression(.{ .primitive = value });
                 const args = try self.arena.alloc(*const schema.Expression, ref.args_len);
                 for (hir.typeRefArgs(&c.hir, node), args) |arg, *out| out.* = try self.lower(context, arg);
-                // Global utility aliases are intentionally not copied as
-                // declaration graphs. Preserve the semantic operation and
-                // let each consumer materialize it in its own type pool.
-                // A lexical/import binding always wins, including a user
-                // alias that shadows the standard utility spelling.
-                if (false and ref.qualifier_len == 0 and self.scopedSymbol(context.source, node, ref.name) == null) {
-                    const record_key = args.len == 2 and switch (args[0].*) {
-                        .primitive => |value| value == Primitive.string_t or value == Primitive.number_t or value == Primitive.symbol_t,
-                        else => false,
-                    };
-                    const readonly_record = args.len == 1 and switch (args[0].*) {
-                        .builtin_utility => |utility| utility.kind == .record,
-                        else => false,
-                    };
-                    const utility: ?schema.BuiltinUtilityKind = if (record_key and std.mem.eql(u8, name, "Record"))
-                        .record
-                    else if (readonly_record and std.mem.eql(u8, name, "Readonly"))
-                        .readonly
-                    else
-                        null;
-                    if (utility) |kind| return self.expression(.{ .builtin_utility = .{ .kind = kind, .arguments = args } });
-                }
                 switch (if (ref.qualifier_len == 0) try self.resolve(context.source, node, ref.name) else try self.resolveQualified(context.source, node, ref)) {
-                    .declaration => |key| {
-                        qualified_unresolved = false;
-                        return self.expression(.{ .reference = .{ .declaration = try self.declaration(key), .arguments = args } });
-                    },
+                    .declaration => |key| return self.expression(.{ .reference = .{ .declaration = try self.declaration(key), .arguments = args } }),
                     .unsupported => return self.expression(.unsupported),
                     .missing => {
                         // Built-in object shapes live in each checker's local
