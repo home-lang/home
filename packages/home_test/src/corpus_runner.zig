@@ -99730,14 +99730,6 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/http/tls-keepalive.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "fetch TLS keepalive native integration")
-    else if (std.mem.eql(u8, relative_path, "js/bun/image/image-adversarial.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun.Image adversarial codec hardening")
-    else if (std.mem.eql(u8, relative_path, "js/bun/image/image-kernels.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun.Image resize kernel parity")
-    else if (std.mem.eql(u8, relative_path, "js/bun/image/image-vs-sharp.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun.Image Sharp/libvips pixel parity")
-    else if (std.mem.eql(u8, relative_path, "js/bun/image/image.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun.Image codec pipeline integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/import-attributes/import-attributes.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/io/bun-write.test.js"))
@@ -100600,6 +100592,13 @@ fn isNativeTerminalCorpusFile(relative: []const u8) bool {
         std.mem.eql(u8, relative, "js/bun/terminal/terminal.test.ts");
 }
 
+fn isNativeImageCorpusFile(relative: []const u8) bool {
+    return std.mem.eql(u8, relative, "js/bun/image/image-adversarial.test.ts") or
+        std.mem.eql(u8, relative, "js/bun/image/image-kernels.test.ts") or
+        std.mem.eql(u8, relative, "js/bun/image/image-vs-sharp.test.ts") or
+        std.mem.eql(u8, relative, "js/bun/image/image.test.ts");
+}
+
 fn nativeCorpusDisabledReason(relative: []const u8) ?[]const u8 {
     if (std.mem.eql(u8, relative, "js/node/test/parallel/test-util-emit-experimental-warning.js")) {
         return "upstream test body is commented out: internal/util emitExperimentalWarning is not exercised";
@@ -100619,7 +100618,8 @@ fn isNativeHomeCorpusFile(relative: []const u8) bool {
         isNativeQuerystringCorpusFile(relative) or
         isNativeNodeCoreCorpusFile(relative) or
         isNativeAddonTestCorpusFile(relative) or
-        isNativeTerminalCorpusFile(relative);
+        isNativeTerminalCorpusFile(relative) or
+        isNativeImageCorpusFile(relative);
 }
 
 fn parseNativeCorpusFlags(allocator: std.mem.Allocator, source: []const u8) !OwnedFlags {
@@ -100779,7 +100779,8 @@ fn runRelativeFile(
         defer flags.deinit(allocator);
         const mode: NativeCorpusMode = if (isNativeNodeTestCorpusFile(relative) or
             isNativeAddonTestCorpusFile(relative) or
-            isNativeTerminalCorpusFile(relative)) .test_runner else .script;
+            isNativeTerminalCorpusFile(relative) or
+            isNativeImageCorpusFile(relative)) .test_runner else .script;
         const args_tail = try buildNativeCorpusArgs(
             allocator,
             flags.values.items,
@@ -101165,6 +101166,24 @@ test "native terminal corpus routing covers the exact PTY matrix" {
         "js/bun/terminal/nested/terminal.test.ts",
         "js/bun/terminal-other/terminal.test.ts",
     }) |relative| try std.testing.expect(!isNativeTerminalCorpusFile(relative));
+}
+
+test "native image corpus routing covers the exact codec matrix" {
+    inline for (.{
+        "js/bun/image/image-adversarial.test.ts",
+        "js/bun/image/image-kernels.test.ts",
+        "js/bun/image/image-vs-sharp.test.ts",
+        "js/bun/image/image.test.ts",
+    }) |relative| {
+        try std.testing.expect(isNativeImageCorpusFile(relative));
+        try std.testing.expect(isNativeHomeCorpusFile(relative));
+    }
+    inline for (.{
+        "js/bun/image/image.test.js",
+        "js/bun/image/image-fixture.ts",
+        "js/bun/image/nested/image.test.ts",
+        "js/bun/image-other/image.test.ts",
+    }) |relative| try std.testing.expect(!isNativeImageCorpusFile(relative));
 }
 
 test "bootstrap addon guard precedes cached or fabricated module exports" {
