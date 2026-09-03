@@ -8,6 +8,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const build_options = @import("build_options");
 const corpus = @import("corpus.zig");
+const home_rt = @import("home_rt");
 const jsc_bootstrap = @import("adapters/jsc_bootstrap.zig");
 const runner = @import("runner.zig");
 const test_result = @import("result.zig");
@@ -128,6 +129,7 @@ pub const bundler_transpiler_bootstrap_files = [_][]const u8{
 };
 
 const harness_prelude =
+    home_rt.jsc.bun_global.jsonl_factory_source ++ "\n" ++
     "(function() {\n" ++ @embedFile("urlpattern_polyfill.js") ++ "\n})();\n" ++
     "globalThis.__home_process_platform = \"" ++ js_process_platform ++ "\";\n" ++
     "globalThis.__home_process_arch = \"" ++ js_process_arch ++ "\";\n" ++
@@ -30149,103 +30151,7 @@ const harness_prelude =
     \\      return JSON.parse(stripTrailingCommas(stripComments(value)));
     \\    },
     \\  },
-    \\  JSONL: Object.defineProperty({
-    \\    __home_sanitize(value) {
-    \\      if (!value || typeof value !== "object") return value;
-    \\      if (Array.isArray(value)) return value.map(item => Bun.JSONL.__home_sanitize(item));
-    \\      const out = {};
-    \\      for (const key of Object.keys(value)) {
-    \\        const item = Bun.JSONL.__home_sanitize(value[key]);
-    \\        if (key === "__proto__") Object.defineProperty(out, "__proto__", { value: item, enumerable: true, configurable: true, writable: true });
-    \\        else out[key] = item;
-    \\      }
-    \\      return out;
-    \\    },
-    \\    __home_parse_chunk(value, start, end) {
-    \\      if (value === undefined || value === null) throw new TypeError("Bun.JSONL.parse expects input");
-    \\      if (ArrayBuffer.isView(value) && value.buffer && value.buffer.__home_detached) throw new TypeError("ArrayBuffer is detached");
-    \\      if (ArrayBuffer.isView(value) && value.byteLength > 1024 * 1024 * 1024) throw new RangeError("JSONL input is too large");
-    \\      const inputIsBytes = ArrayBuffer.isView(value);
-    \\      const sourceLength = inputIsBytes ? value.byteLength : String(value).length;
-    \\      function offset(value, fallback) {
-    \\        if (value === undefined) return fallback;
-    \\        const number = Number(value);
-    \\        if (Number.isNaN(number)) return fallback;
-    \\        if (!Number.isFinite(number)) return fallback === 0 ? (number < 0 ? 0 : sourceLength) : fallback;
-    \\        if (fallback !== 0 && number < 0) return fallback;
-    \\        return Math.min(sourceLength, Math.max(0, Math.trunc(number)));
-    \\      }
-    \\      let first = offset(start, 0);
-    \\      const last = offset(end, sourceLength);
-    \\      if (first > last) first = last;
-    \\      let bomBytePrefix = 0;
-    \\      if (inputIsBytes && first === 0 && value.byteLength >= 3 && value[0] === 0xef && value[1] === 0xbb && value[2] === 0xbf) bomBytePrefix = 3;
-    \\      const text = inputIsBytes ? new TextDecoder().decode(value.subarray(first, last)) : String(value).slice(first, last);
-    \\      const values = [];
-    \\      let cursor = 0;
-    \\      let read = first;
-    \\      let error = null;
-    \\      let done = true;
-    \\      function isIncomplete(line) {
-    \\        const trimmed = String(line || "").trim();
-    \\        if (!trimmed) return false;
-    \\        if (/^["']/.test(trimmed) && !/[^\\]\\s*["']$/.test(trimmed)) return true;
-    \\        if (/[\[{:,]\s*$/.test(trimmed)) return true;
-    \\        let depth = 0;
-    \\        let quote = "";
-    \\        let escaped = false;
-    \\        for (let i = 0; i < trimmed.length; i++) {
-    \\          const ch = trimmed[i];
-    \\          if (quote) {
-    \\            if (escaped) escaped = false;
-    \\            else if (ch === "\\") escaped = true;
-    \\            else if (ch === quote) quote = "";
-    \\            continue;
-    \\          }
-    \\          if (ch === "\"" || ch === "'") quote = ch;
-    \\          else if (ch === "{" || ch === "[") depth++;
-    \\          else if (ch === "}" || ch === "]") depth--;
-    \\        }
-    \\        return !!quote || depth > 0;
-    \\      }
-    \\      while (cursor <= text.length) {
-    \\        let lineEnd = text.indexOf("\n", cursor);
-    \\        const hasNewline = lineEnd !== -1;
-    \\        if (!hasNewline) lineEnd = text.length;
-    \\        const rawLine = text.slice(cursor, lineEnd).replace(/\r$/, "");
-    \\        const trimmed = rawLine.trim();
-    \\        if (trimmed.length === 0) {
-    \\          if (!hasNewline) break;
-    \\          cursor = lineEnd + 1;
-    \\          continue;
-    \\        }
-    \\        try {
-    \\          values.push(Bun.JSONL.__home_sanitize(JSON.parse(trimmed)));
-    \\          const charRead = cursor + rawLine.search(/\S/) + trimmed.length;
-    \\          read = first + (inputIsBytes ? bomBytePrefix + new TextEncoder().encode(text.slice(0, charRead)).byteLength : charRead);
-    \\        } catch (cause) {
-    \\          if (!hasNewline && isIncomplete(rawLine)) {
-    \\            done = false;
-    \\          } else {
-    \\            error = cause instanceof SyntaxError ? cause : new SyntaxError(String(cause && cause.message || cause));
-    \\            done = false;
-    \\          }
-    \\          break;
-    \\        }
-    \\        if (!hasNewline) break;
-    \\        cursor = lineEnd + 1;
-    \\      }
-    \\      return { values, read, done, error };
-    \\    },
-    \\    parse(value) {
-    \\      const result = Bun.JSONL.__home_parse_chunk(value);
-    \\      if (result.error && result.values.length === 0) throw result.error;
-    \\      return result.values;
-    \\    },
-    \\    parseChunk(value, start, end) {
-    \\      return Bun.JSONL.__home_parse_chunk(value, start, end);
-    \\    },
-    \\  }, Symbol.toStringTag, { value: "JSONL" }),
+    \\  JSONL: __home_create_jsonl(),
     \\  password: (() => {
     \\    const argonAlgorithms = new Set(["argon2i", "argon2id", "argon2d"]);
     \\    function valueText(value, required) {
@@ -95518,35 +95424,6 @@ fn rewriteAsyncIteratorStreamCorpus(allocator: std.mem.Allocator, source: []cons
     );
 }
 
-fn rewriteJsonlParseCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    const replacements = [_]struct {
-        needle: []const u8,
-        replacement: []const u8,
-    }{
-        .{ .needle = "      test(\"4 GB Uint8Array of null bytes\", () => {", .replacement = "      test.skip(\"JSONL 4 GB Uint8Array null-byte stress\", () => {" },
-        .{ .needle = "      test(\"4 GB Uint8Array with first byte 0xFF (non-ASCII path)\", () => {", .replacement = "      test.skip(\"JSONL 4 GB Uint8Array non-ASCII stress\", () => {" },
-        .{ .needle = "    describe(\"stack depth\", () => {", .replacement = "    describe.skip(\"JSONL stack-depth stress parser hardening\", () => {" },
-        .{ .needle = "    describe(\"OOM resistance\", () => {", .replacement = "    describe.skip(\"JSONL OOM-resistance stress parser hardening\", () => {" },
-        .{ .needle = "    describe(\"garbage input\", () => {", .replacement = "    describe.skip(\"JSONL garbage-input stress parser hardening\", () => {" },
-        .{ .needle = "    describe(\"number edge cases\", () => {", .replacement = "    describe.skip(\"JSONL number edge-case stress parser hardening\", () => {" },
-        .{ .needle = "    describe(\"UTF-8 boundary conditions\", () => {", .replacement = "    describe.skip(\"JSONL UTF-8 boundary stress parser hardening\", () => {" },
-        .{ .needle = "    describe(\"streaming correctness\", () => {", .replacement = "    describe.skip(\"JSONL streaming stress parser hardening\", () => {" },
-        .{ .needle = "      test(\"duplicate keys - last value wins\", () => {", .replacement = "      describe.skip(\"JSONL adversarial parser hardening tail\", () => {\n      test(\"duplicate keys - last value wins\", () => {" },
-        .{ .needle = "      describe(\"start/end boundary security\", () => {", .replacement = "      });\n      describe.skip(\"JSONL start/end boundary security hardening\", () => {" },
-        .{ .needle = "      test(\"TypedArray subclass with overridden properties\", () => {", .replacement = "      test.skip(\"JSONL TypedArray subclass overridden properties hardening\", () => {" },
-        .{ .needle = "    describe(\"session history attack vectors\", () => {", .replacement = "    describe.skip(\"JSONL session-history attack vectors\", () => {" },
-    };
-
-    var current = try allocator.dupe(u8, source);
-    errdefer allocator.free(current);
-    for (replacements) |replacement| {
-        const next = try std.mem.replaceOwned(u8, allocator, current, replacement.needle, replacement.replacement);
-        allocator.free(current);
-        current = next;
-    }
-    return current;
-}
-
 fn rewriteMemfdDisabledCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     return try std.mem.replaceOwned(
         u8,
@@ -99922,7 +99799,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/json5/json5.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/jsonl/jsonl-parse.test.ts"))
-        try rewriteJsonlParseCorpus(allocator, source)
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/md/md-edge-cases.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/md/md-heading-ids.test.ts"))
@@ -125411,26 +125288,23 @@ test "bootstrap runner mirrors JSONL parse API corpus" {
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "JSONL __proto__ prototype shape parity") == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test.skip(\"__proto__ keys don't pollute Object.prototype\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "__proto__ keys don't pollute Object.prototype") != null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test.skip(\"JSONL 4 GB Uint8Array null-byte stress\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "describe.skip(\"JSONL fuzz and adversarial stress parser hardening\"") == null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "describe.skip(\"JSONL stack-depth stress parser hardening\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "describe.skip(\"JSONL adversarial parser hardening tail\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test.skip(\"JSONL TypedArray subclass overridden properties hardening\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "describe.skip(\"JSONL session-history attack vectors\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "JSONL 4 GB Uint8Array null-byte stress") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "describe.skip(\"JSONL") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test.skip(\"JSONL") == null);
 
     var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/jsonl/jsonl-parse.test.ts");
     defer summary.deinit(std.testing.allocator);
 
-    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 150 or summary.todo != 12) {
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 269 or summary.todo != 0) {
         std.debug.print(
             "JSONL parse API corpus mismatch: passed={} expected={} failed={} todo={} expected_todo={} unsupported={} message={s}\n",
-            .{ summary.passed, @as(usize, 150), summary.failed, summary.todo, @as(usize, 12), summary.unsupported, summary.first_failure_message },
+            .{ summary.passed, @as(usize, 269), summary.failed, summary.todo, @as(usize, 0), summary.unsupported, summary.first_failure_message },
         );
     }
     try std.testing.expectEqual(@as(usize, 1), summary.files);
-    try std.testing.expectEqual(@as(usize, 150), summary.passed);
+    try std.testing.expectEqual(@as(usize, 269), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
-    try std.testing.expectEqual(@as(usize, 12), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 

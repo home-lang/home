@@ -22,6 +22,7 @@ const evaluate = @import("evaluate.zig");
 const callback = @import("callback.zig");
 const extern_fns = @import("extern_fns.zig");
 const opaques = @import("opaques.zig");
+pub const jsonl_factory_source = @import("jsonl_global.zig").factory_source;
 // Native string-width (East Asian Width + emoji grapheme clustering via ICU),
 // shared with `bun.String.visibleWidth`. Far more faithful than a JS polyfill.
 const visible_mod = @import("../string/immutable/visible.zig");
@@ -350,7 +351,7 @@ fn setValue(ctx: *JSContextRef, object: *JSObject, key: []const u8, value: ?*JSV
     extern_fns.JSObjectSetProperty(ctx, object, name, value, 0, null);
 }
 
-const install_glue =
+const install_glue = jsonl_factory_source ++ "\n" ++
     \\(function() {
     \\  var readFn = globalThis.__home_bun_read_file;
     \\  var statFn = globalThis.__home_bun_stat;
@@ -417,6 +418,7 @@ const install_glue =
     \\  var htmlEsc = { "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#x27;" };
     \\  globalThis.Bun = {
     \\    version: __HOME_BUN_VERSION__,
+    \\    JSONL: __home_create_jsonl(),
     \\    file: function(path, options) { return __nbFile ? __nbFile(path, options) : new BunFile(path, options); },
     \\    write: function(path, data) {
     \\      if (__nbWrite) return __nbWrite(path, data);
@@ -986,6 +988,40 @@ fn installRealmFull(allocator: std.mem.Allocator, ctx: *JSContextRef, global: *J
     @import("misc_globals.zig").install(allocator, ctx, global);
     install(allocator, ctx, global);
     @import("node_modules.zig").install(allocator, ctx, global);
+}
+
+test "Bun.JSONL preserves streaming values, offsets, and input invariants" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+    installRealm(std.testing.allocator, engine.currentContext(), engine.currentGlobalObject());
+
+    try std.testing.expect(try evalBool(std.testing.allocator, engine.currentContext(),
+        \\(function() {
+        \\  if (Object.prototype.toString.call(Bun.JSONL) !== "[object JSONL]") return false;
+        \\  if (Object.keys(Bun.JSONL).join(",") !== "parse,parseChunk") return false;
+        \\  var parsed = Bun.JSONL.parse('{"a":1}\n{"b":2}\n');
+        \\  if (parsed.length !== 2 || parsed[0].a !== 1 || parsed[1].b !== 2) return false;
+        \\  var partial = Bun.JSONL.parseChunk('{"a":1}\n{"b":');
+        \\  if (partial.values.length !== 1 || partial.read !== 7 || partial.done || partial.error !== null) return false;
+        \\  var adjacent = Bun.JSONL.parseChunk('{"a":1}{"b":2}\n');
+        \\  if (adjacent.values.length !== 1 || adjacent.values[0].a !== 1 || adjacent.done || !(adjacent.error instanceof SyntaxError)) return false;
+        \\  var calls = 0;
+        \\  var coercible = { toString: function() { calls++; return '{"once":true}\n'; } };
+        \\  if (!Bun.JSONL.parse(coercible)[0].once || calls !== 1) return false;
+        \\  class LengthTrap extends Uint8Array { get byteLength() { return 999999; } }
+        \\  var trapped = new LengthTrap(new TextEncoder().encode('{"safe":true}\n'));
+        \\  if (!Bun.JSONL.parse(trapped)[0].safe) return false;
+        \\  var first = new TextEncoder().encode('{"a":1}\n');
+        \\  var second = new TextEncoder().encode('{"b":2}\n');
+        \\  var bytes = new Uint8Array(first.length + 3 + second.length);
+        \\  bytes.set(first); bytes.set([0xef, 0xbb, 0xbf], first.length); bytes.set(second, first.length + 3);
+        \\  var bom = Bun.JSONL.parseChunk(bytes);
+        \\  return bom.values.length === 1 && bom.values[0].a === 1 && bom.error instanceof SyntaxError;
+        \\})()
+    ));
 }
 
 test "Bun utility batch: deepEquals/escapeHTML/stringWidth" {
