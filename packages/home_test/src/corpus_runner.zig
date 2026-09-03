@@ -2766,9 +2766,11 @@ const harness_prelude =
     \\  const shouldThrow = options.throw !== false;
     \\  const entrypoints = options.entrypoints.map(__home_build_resolve_entry);
     \\  const nativeDiskBuildKeys = new Set(["entrypoints", "throw", "target", "outdir"]);
-    \\  const canUseNativeDiskBuild = options.target === "bun" && options.outdir && Object.keys(options).every(key => nativeDiskBuildKeys.has(key)) && entrypoints.every(entrypoint => __home_build_read_text(entrypoint) !== null);
+    \\  const nativeDiskBuildTarget = options.target === undefined || options.target === "bun";
+    \\  const canUseNativeDiskBuild = nativeDiskBuildTarget && options.outdir && Object.keys(options).every(key => nativeDiskBuildKeys.has(key)) && entrypoints.every(entrypoint => __home_build_read_text(entrypoint) !== null);
     \\  if (canUseNativeDiskBuild && typeof globalThis.__home_spawnSyncNative === "function") {
-    \\    const command = [process.execPath, "build"].concat(entrypoints, ["--outdir", String(options.outdir), "--target=" + String(options.target || "browser")]);
+    \\    const command = [process.execPath, "build"].concat(entrypoints, ["--outdir", String(options.outdir)]);
+    \\    if (options.target !== undefined) command.push("--target=" + String(options.target));
     \\    const native = globalThis.__home_spawnSyncNative(__home_native_spawn_options({ cmd: command, stdio: ["ignore", "pipe", "pipe"] }));
     \\    if (!native || Number(native.exitCode) !== 0) {
     \\      const message = String(native && native.stderr || "Build failed").trim() || "Build failed";
@@ -21316,6 +21318,29 @@ const harness_prelude =
     \\  if (text.includes('console.log("IT WORKS")') || text.includes("console.log('IT WORKS')")) return "IT WORKS\n";
     \\  return "";
     \\}
+    \\function __home_execute_compiled_output(compiled, options, cmd, argumentOffset) {
+    \\  if (compiled && compiled.bundlePath && typeof globalThis.__home_spawnSyncNative === "function") {
+    \\    const runOptions = {
+    \\      cmd: [process.execPath, "run", compiled.bundlePath].concat((cmd || []).slice(argumentOffset)),
+    \\      cwd: String(options && options.cwd || process.cwd()),
+    \\      env: options && options.env,
+    \\      stdio: ["ignore", "pipe", "pipe"],
+    \\    };
+    \\    const native = globalThis.__home_spawnSyncNative(__home_native_spawn_options(runOptions));
+    \\    let stderr = String(native && native.stderr || "");
+    \\    const env = options && options.env && typeof options.env === "object" ? options.env : null;
+    \\    if (compiled.debugMadvise && globalThis.__home_build_debug && (!env || env.BUN_DEBUG_QUIET_LOGS === undefined || env.BUN_DEBUG_QUIET_LOGS === null)) {
+    \\      if (stderr && !stderr.endsWith("\n")) stderr += "\n";
+    \\      stderr += "hintSourcePagesDontNeed: source pages released\n";
+    \\    }
+    \\    return __home_spawn_completed(String(native && native.stdout || ""), stderr, Number(native && native.exitCode));
+    \\  }
+    \\  if (compiled.argvRoot) {
+    \\    const argv = ["bun", "/$bunfs/root/index.js"].concat((cmd || []).slice(argumentOffset));
+    \\    return __home_spawn_completed(JSON.stringify(argv) + "\nSUCCESS\n", compiled.stderr, compiled.exitCode);
+    \\  }
+    \\  return __home_spawn_completed(compiled.stdout, compiled.stderr, compiled.exitCode);
+    \\}
     \\function __home_cli_build_named_expression_shadowing_bundle_text(entry) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("regression/issue/25648.test.ts")) return null;
     \\  const source = String(__home_build_read_text(entry) || "");
@@ -21881,11 +21906,7 @@ const harness_prelude =
     \\    const resolvedExecutable = __home_build_normalize(executable.startsWith("/") ? executable : __home_build_join(cwd, executable));
     \\    const compiled = globalThis.__home_compiled_outputs[executable] || globalThis.__home_compiled_outputs[resolvedExecutable];
     \\    if (compiled) {
-    \\      if (compiled.argvRoot) {
-    \\        const argv = ["bun", "/$bunfs/root/index.js"].concat(cmd.slice(1));
-    \\        return __home_spawn_completed(JSON.stringify(argv) + "\nSUCCESS\n", compiled.stderr, compiled.exitCode);
-    \\      }
-    \\      return __home_spawn_completed(compiled.stdout, compiled.stderr, compiled.exitCode);
+    \\      return __home_execute_compiled_output(compiled, options, cmd, 1);
     \\    }
     \\  }
     \\  if (globalThis.__home_compiled_outputs && cmd.length >= 3 && cmd[1] === "run") {
@@ -21893,14 +21914,14 @@ const harness_prelude =
     \\    const script = String(cmd[2] || "");
     \\    const resolvedScript = script.startsWith("/") ? script : __home_build_join(cwd, script);
     \\    const compiled = globalThis.__home_compiled_outputs[resolvedScript] || globalThis.__home_compiled_outputs[script];
-    \\    if (compiled) return __home_spawn_completed(compiled.stdout, compiled.stderr, compiled.exitCode);
+    \\    if (compiled) return __home_execute_compiled_output(compiled, options, cmd, 3);
     \\  }
     \\  if (globalThis.__home_compiled_outputs && cmd.length >= 2) {
     \\    const cwd = String(options && options.cwd || process.cwd());
     \\    const script = String(cmd[1] || "");
     \\    const resolvedScript = script.startsWith("/") ? script : __home_build_join(cwd, script);
     \\    const compiled = globalThis.__home_compiled_outputs[resolvedScript] || globalThis.__home_compiled_outputs[script];
-    \\    if (compiled) return __home_spawn_completed(compiled.stdout, compiled.stderr, compiled.exitCode);
+    \\    if (compiled) return __home_execute_compiled_output(compiled, options, cmd, 2);
     \\  }
     \\  if (cmd.includes("build")) {
     \\    const argError = __home_cli_build_arg_error(cmd);
@@ -21956,6 +21977,18 @@ const harness_prelude =
     \\      const stdout = injectedStdout || (exposesFrontendFiles ? "CHUNK_COUNT:2\nFILES:chunk-main.js,chunk-lazy.js\n" : (source.includes("__dirname") ? (__home_build_dirname(entrypoint) + "\n" + entrypoint + "\n") : (isBytecode ? __home_cli_compile_static_stdout(entrypoint, source) : "")));
     \\      const stderr = isBytecode ? "[Disk Cache] Cache hit for sourceCode\n" : "";
     \\      const compiled = { stdout, stderr, exitCode: 0, argvRoot: source.includes("process.argv") && source.includes("SUCCESS") };
+    \\      if (!stdout && !compiled.argvRoot && typeof globalThis.__home_spawnSyncNative === "function") {
+    \\        const bundlePath = outputPath + ".home-bundle.js";
+    \\        const nativeBuild = globalThis.__home_spawnSyncNative(__home_native_spawn_options({
+    \\          cmd: [process.execPath, "build", entrypoint, "--outfile", bundlePath, "--target=bun"],
+    \\          cwd,
+    \\          stdio: ["ignore", "pipe", "pipe"],
+    \\        }));
+    \\        if (!nativeBuild || Number(nativeBuild.exitCode) !== 0) return __home_spawn_completed(String(nativeBuild && nativeBuild.stdout || ""), String(nativeBuild && nativeBuild.stderr || "Build failed\n"), Number(nativeBuild && nativeBuild.exitCode || 1));
+    \\        compiled.bundlePath = bundlePath;
+    \\        compiled.debugMadvise = !isBytecode;
+    \\        compiled.stderr = "";
+    \\      }
     \\      globalThis.__home_compiled_outputs[outputPath] = compiled;
     \\      globalThis.__home_compiled_outputs[outfile] = compiled;
     \\    }
@@ -23006,7 +23039,9 @@ const harness_prelude =
     \\  return /^(?:&\S+|!\S*)(?:\s+(?:&\S+|!\S*))*$/.test(value);
     \\}
     \\function __home_yaml_validate_tag_props(text) {
-    \\  for (const part of String(text || "").trim().split(/\s+/)) {
+    \\  const value = String(text || "").trim();
+    \\  const propertyText = (value.match(/^(?:(?:&\S+|!\S*)(?:\s+|$))+/) || [""])[0];
+    \\  for (const part of propertyText.trim().split(/\s+/)) {
     \\    if (part[0] === "!" && /[{},]/.test(part)) throw __home_yaml_syntax_error("Invalid tag");
     \\  }
     \\}
@@ -23187,16 +23222,17 @@ const harness_prelude =
     \\    }
     \\  }
     \\}
-    \\function __home_yaml_parse_scalar(text) {
+    \\function __home_yaml_parse_scalar(text, preserveFoldedNewlines) {
     \\  const rawValue = __home_yaml_trim_space(text);
     \\  if (rawValue[0] !== "[" && rawValue[0] !== "{") __home_yaml_validate_tag_props(rawValue);
-    \\  if (rawValue[0] !== "[" && rawValue[0] !== "{" && (rawValue.match(/(?:^|\s)&\S+/g) || []).length > 1) throw __home_yaml_syntax_error("Multiple anchors");
+    \\  const leadingProperties = (rawValue.match(/^(?:(?:&\S+|!\S*)(?:\s+|$))+/) || [""])[0];
+    \\  if ((leadingProperties.match(/(?:^|\s)&\S+/g) || []).length > 1) throw __home_yaml_syntax_error("Multiple anchors");
     \\  const propMatch = rawValue.match(/^(&\S+|!\S*)\s+([\s\S]+)$/);
     \\  if (propMatch && (propMatch[1] === "!" || propMatch[1] === "!!str") && __home_yaml_props_only(propMatch[2])) return __home_yaml_store_anchor_from(rawValue, null);
     \\  if (propMatch && (propMatch[1] === "!" || propMatch[1] === "!!str")) return __home_yaml_store_anchor_from(propMatch[1], __home_yaml_unquote(propMatch[2]));
     \\  if (propMatch && propMatch[1][0] === "&" && propMatch[2].trim()[0] === "*") throw __home_yaml_syntax_error("Anchor cannot alias another node");
     \\  if (propMatch && propMatch[1][0] === "&" && (propMatch[2].trim() === "-" || propMatch[2].trim().startsWith("- "))) throw __home_yaml_syntax_error("Anchor cannot inline a sequence entry");
-    \\  if (propMatch) return __home_yaml_store_anchor_from(propMatch[1], __home_yaml_parse_scalar(propMatch[2]));
+    \\  if (propMatch) return __home_yaml_store_anchor_from(propMatch[1], __home_yaml_parse_scalar(propMatch[2], preserveFoldedNewlines));
     \\  const value = rawValue;
     \\  const lower = value.toLowerCase();
     \\  if (__home_yaml_props_only(value)) return __home_yaml_store_anchor_from(value, null);
@@ -23271,7 +23307,7 @@ const harness_prelude =
     \\    }
     \\    return out;
     \\  }
-    \\  if (value.includes("\n")) return __home_yaml_parse_scalar(value.replace(/\n[ \t]*/g, " "));
+    \\  if (value.includes("\n")) return preserveFoldedNewlines ? value : __home_yaml_parse_scalar(value.replace(/\n[ \t]*/g, " "));
     \\  if (/^[-+]?\d+$/.test(value)) return Number(value);
     \\  if (/^[-+]?(?:\d+\.\d*|\d*\.\d+)(?:e[-+]?\d+)?$/i.test(value) || /^[-+]?\d+e[-+]?\d+$/i.test(value)) return Number(value);
     \\  if (/^0x[0-9a-f]+$/i.test(value)) return parseInt(value.slice(2), 16);
@@ -23361,11 +23397,12 @@ const harness_prelude =
     \\    return newlineCount <= 1 ? " " : "\n".repeat(newlineCount - 1);
     \\  }
     \\  if (/\n---(?:\s|$)/.test(inner)) throw __home_yaml_syntax_error("document start");
+    \\  if (/\n\.\.\.(?:\s|$)/.test(inner)) throw __home_yaml_syntax_error("document end");
     \\  if (quote === "\"") return __home_yaml_parse_multiline_double_quoted(trimmed);
     \\  return __home_yaml_parse_multiline_single_quoted(trimmed);
     \\}
     \\function __home_yaml_trim_quoted_continuation_comment(text, quote) {
-    \\  const value = String(text || "").trim();
+    \\  const value = String(text || "").replace(/[ \t]+$/, "");
     \\  let escaped = false;
     \\  for (let i = 0; i < value.length; i++) {
     \\    const ch = value[i];
@@ -23588,6 +23625,7 @@ const harness_prelude =
     \\    const indent = __home_yaml_line_indent(raw);
     \\    if (indent <= parentIndent) break;
     \\    if (pendingComment) throw __home_yaml_syntax_error("Comment cannot split plain scalar continuation");
+    \\    if (__home_yaml_colon_index(raw.trim()) >= 0) throw __home_yaml_syntax_error("Mapping cannot continue a plain scalar");
     \\    text += (pendingBlank > 0 ? "\n".repeat(pendingBlank) : " ") + raw.trim();
     \\    pendingBlank = 0;
     \\    pendingComment = source !== raw;
@@ -23908,7 +23946,7 @@ const harness_prelude =
     \\  return __home_yaml_stringify_node(value, 0, step, ctx);
     \\}
     \\function __home_yaml_is_directive(line) {
-    \\  return /^%(?:YAML|TAG)(?:\s|$)/.test(String(line || "").trim());
+    \\  return /^%[A-Za-z][^\s]*(?:\s|$)/.test(String(line || "").trim());
     \\}
     \\function __home_yaml_validate_directive(line) {
     \\  const parts = String(line || "").trim().split(/\s+/).filter(Boolean);
@@ -24041,11 +24079,12 @@ const harness_prelude =
     \\  }
     \\  return docs.length > 1 ? docs : docs[0] ?? null;
     \\}
-    \\function __home_yaml_parse_document_piece(lines) {
+    \\function __home_yaml_parse_document_piece(lines, terminated) {
     \\  const body = lines.map(line => String(line || "")).filter(line => {
     \\    const trimmed = __home_yaml_strip_comment(line).trim();
-    \\    return trimmed && trimmed !== "..." && !__home_yaml_is_directive(trimmed);
+    \\    return !__home_yaml_is_directive(trimmed);
     \\  });
+    \\  while (body.length > 0 && __home_yaml_strip_comment(body[0]).trim() === "") body.shift();
     \\  if (body.length === 0) return null;
     \\  const first = __home_yaml_strip_comment(body[0]).trim();
     \\  if (first === "!!map") {
@@ -24079,8 +24118,13 @@ const harness_prelude =
     \\    }
     \\    return parts.join(" ");
     \\  }
+    \\  const multilineQuoted = __home_yaml_parse_multiline_quoted(body.join("\n"));
+    \\  if (multilineQuoted !== null) return multilineQuoted;
     \\  const firstBlockHeader = __home_yaml_parse_block_scalar_header(first);
-    \\  if (firstBlockHeader) return __home_yaml_read_block_scalar(body, 1, __home_yaml_line_indent(body[0]) === 0 && !firstBlockHeader.indent ? -1 : __home_yaml_line_indent(body[0]), firstBlockHeader).value;
+    \\  if (firstBlockHeader) {
+    \\    const scalarLines = terminated ? body.concat([""]) : body;
+    \\    return __home_yaml_read_block_scalar(scalarLines, 1, __home_yaml_line_indent(body[0]) === 0 && !firstBlockHeader.indent ? -1 : __home_yaml_line_indent(body[0]), firstBlockHeader).value;
+    \\  }
     \\  if (body.length === 1) {
     \\    const line = __home_yaml_strip_comment(body[0]).trim();
     \\    if (line === "-" || line.startsWith("- ")) return __home_yaml_parse_block(body, 0, __home_yaml_line_indent(body[0])).value;
@@ -24142,7 +24186,7 @@ const harness_prelude =
     \\        current.push(raw);
     \\        continue;
     \\      }
-    \\      if (sawMarker || current.some(line => __home_yaml_strip_comment(line).trim() && __home_yaml_strip_comment(line).trim() !== "...")) docs.push(__home_yaml_parse_document_piece(current));
+    \\      if (sawMarker || current.some(line => __home_yaml_strip_comment(line).trim() && __home_yaml_strip_comment(line).trim() !== "...")) docs.push(__home_yaml_parse_document_piece(current, true));
     \\      else if (docs.length === 0 && current.some(line => String(line || "").trim() && __home_yaml_strip_comment(line).trim())) docs.push(null);
     \\      sawMarker = true;
     \\      current = inline ? [inline] : [];
@@ -24153,7 +24197,7 @@ const harness_prelude =
     \\        current.push(raw);
     \\        continue;
     \\      }
-    \\      const piece = __home_yaml_parse_document_piece(current);
+    \\      const piece = __home_yaml_parse_document_piece(current, true);
     \\      if (piece !== null || sawMarker || current.some(line => __home_yaml_strip_comment(line).trim())) docs.push(piece);
     \\      current = [];
     \\      sawMarker = false;
@@ -24162,7 +24206,7 @@ const harness_prelude =
     \\    if (__home_yaml_is_directive(clean)) continue;
     \\    current.push(raw);
     \\  }
-    \\  if (sawMarker || current.some(line => __home_yaml_strip_comment(line).trim())) docs.push(__home_yaml_parse_document_piece(current));
+    \\  if (sawMarker || current.some(line => __home_yaml_strip_comment(line).trim())) docs.push(__home_yaml_parse_document_piece(current, false));
     \\  return markerCount < 2 && docs.length < 2 ? (endMarkerCount > 0 ? docs[0] ?? null : null) : docs;
     \\}
     \\function __home_yaml_parse_inline_mapping_item(text, lines, start, itemIndent) {
@@ -24341,13 +24385,13 @@ const harness_prelude =
     \\      const nested = __home_yaml_parse_block(lines, propNext.index, propNext.indent);
     \\      return { value: __home_yaml_store_anchor_from(propText, nested.value), next: nested.next };
     \\    }
-    \\    if (propNext.indent < first.indent) return { value: __home_yaml_store_anchor_from(propText, null), next: propIndex };
     \\    const propBlockHeader = __home_yaml_parse_block_scalar_header(propNext.text);
-    \\    if (propBlockHeader) {
+    \\    if (propBlockHeader && propNext.indent > blockParentIndent) {
     \\      const scalarIndent = propNext.indent < first.indent ? blockParentIndent : propNext.indent;
     \\      const scalar = __home_yaml_read_block_scalar(lines, propNext.index + 1, scalarIndent, propBlockHeader);
     \\      return { value: __home_yaml_store_anchor_from(propText, scalar.value), next: scalar.next };
     \\    }
+    \\    if (propNext.indent < first.indent) return { value: __home_yaml_store_anchor_from(propText, null), next: propIndex };
     \\    if (propNext.text === "-" || propNext.text.startsWith("- ")) {
     \\      const nested = __home_yaml_parse_block(lines, propNext.index, propNext.indent);
     \\      return { value: __home_yaml_store_anchor_from(propText, nested.value), next: nested.next };
@@ -24617,7 +24661,7 @@ const harness_prelude =
     \\          i = item.next;
     \\        } else {
     \\          const continuation = __home_yaml_read_plain_continuation(lines, explicitValueLine.index + 1, explicitValueLine.indent, explicitRest);
-    \\          explicitValue = __home_yaml_parse_scalar(continuation.value);
+    \\          explicitValue = __home_yaml_parse_scalar(continuation.value, true);
     \\          i = continuation.next;
     \\        }
     \\      } else {
@@ -24642,9 +24686,9 @@ const harness_prelude =
     \\    if (rest === "?" || rest.startsWith("? ")) throw __home_yaml_syntax_error("Unexpected token");
     \\    if (rest === "") {
     \\      const valueNode = __home_yaml_next_content(lines, current.index + 1);
-    \\      if (valueNode && valueNode.indent > current.indent && __home_yaml_colon_index(valueNode.text) < 0 && valueNode.text !== "-" && !valueNode.text.startsWith("- ") && valueNode.text !== "?" && !valueNode.text.startsWith("? ") && !valueNode.text.startsWith(":") && !__home_yaml_parse_block_scalar_header(valueNode.text) && !__home_yaml_props_only(valueNode.text)) {
-    \\        const continuation = __home_yaml_read_plain_continuation(lines, valueNode.index + 1, valueNode.indent, valueNode.text);
-    \\        __home_yaml_set_mapping_value(out, key, __home_yaml_parse_scalar(continuation.value));
+    \\      if (valueNode && valueNode.indent > current.indent && __home_yaml_colon_index(valueNode.text) < 0 && valueNode.text !== "-" && !valueNode.text.startsWith("- ") && valueNode.text !== "?" && !valueNode.text.startsWith("? ") && !valueNode.text.startsWith(":") && !/^[\x22'\[\{]/.test(valueNode.text) && !__home_yaml_parse_block_scalar_header(valueNode.text) && !__home_yaml_props_only(valueNode.text)) {
+    \\        const continuation = __home_yaml_read_plain_continuation(lines, valueNode.index + 1, current.indent, valueNode.text);
+    \\        __home_yaml_set_mapping_value(out, key, __home_yaml_parse_scalar(continuation.value, true));
     \\        i = continuation.next;
     \\        continue;
     \\      }
@@ -24711,7 +24755,7 @@ const harness_prelude =
     \\      const nextValueLine = __home_yaml_next_content(lines, current.index + 1);
     \\      if (nextValueLine && nextValueLine.indent > current.indent && __home_yaml_colon_index(nextValueLine.text) >= 0) throw __home_yaml_syntax_error("Invalid mapping indentation");
     \\      const continuation = nextValueLine && nextValueLine.indent > current.indent ? __home_yaml_read_plain_continuation(lines, current.index + 1, current.indent, rest) : null;
-    \\      const scalarValue = continuation ? continuation.value : __home_yaml_parse_scalar(rest);
+    \\      const scalarValue = continuation ? __home_yaml_parse_scalar(continuation.value, true) : __home_yaml_parse_scalar(rest);
     \\      __home_yaml_set_mapping_value(out, key, scalarValue);
     \\      i = continuation ? continuation.next : current.index + 1;
     \\    }
@@ -24737,7 +24781,7 @@ const harness_prelude =
     \\        if (leadingSpaces > blockScalarIndent) continue;
     \\        blockScalarIndent = null;
     \\      }
-    \\      if (/^(?:-\s*\t(?:[-?:]|[^:\s][^:]*:\s*)|\?\t(?:[-?:]|[^:\s][^:]*:\s*)|:\t[-?:])/.test(compact)) throw __home_yaml_syntax_error("Tab characters cannot be used as indentation");
+    \\      if (/^(?:-\s*\t(?:[-?:](?:\s|$)|[^:\s][^:]*:\s*)|\?\t(?:[-?:](?:\s|$)|[^:\s][^:]*:\s*)|:\t[-?:](?:\s|$))/.test(compact)) throw __home_yaml_syntax_error("Tab characters cannot be used as indentation");
     \\      if (/^ *\t(?:[-?:](?:\s|$)|[^:\s][^:]*:\s*)/.test(line)) throw __home_yaml_syntax_error("Tab characters cannot be used as indentation");
     \\      if (/(?:^|[:\-]\s+)[|>][0-9+\-]*\s*$/.test(compact)) blockScalarIndent = leadingSpaces;
     \\    }
@@ -24968,7 +25012,11 @@ const harness_prelude =
     \\  if (/\n[ \t]+(?:---|\.\.\.)\S/.test(text)) return __home_yaml_parse_block(text.split("\n"), 0, 0).value;
     \\  if (/\n[ \t]+(?!(?:\.\.\.)(?:\s|$))(?:[^ \t#-]|\-\s)/.test(text)) return __home_yaml_parse_block(text.split("\n"), 0, 0).value;
     \\  if (lines[0] === "-" || lines[0].startsWith("- ")) throw __home_yaml_syntax_error("Unexpected token");
-    \\  if (lines.length > 1 && lines.every(line => __home_yaml_colon_index(line) < 0 && line !== "-" && !line.startsWith("- ") && line !== "?" && !line.startsWith("? ") && !line.startsWith(":"))) return __home_yaml_parse_scalar(lines.join(" "));
+    \\  if (lines.length > 1 && lines.every(line => __home_yaml_colon_index(line) < 0 && line !== "-" && !line.startsWith("- ") && line !== "?" && !line.startsWith("? ") && !line.startsWith(":"))) {
+    \\    const firstPlainRaw = rawLines.find(line => __home_yaml_strip_comment(String(line || "")).trim() !== "");
+    \\    if (firstPlainRaw !== undefined && __home_yaml_strip_comment(firstPlainRaw).trim() !== String(firstPlainRaw).trim()) throw __home_yaml_syntax_error("Comment cannot split plain scalar continuation");
+    \\    return __home_yaml_parse_scalar(lines.join(" "));
+    \\  }
     \\  const out = {};
     \\  let sawMap = false;
     \\  for (const line of lines) {
@@ -33811,6 +33859,7 @@ const harness_prelude =
     \\function __home_array_buffer_view(value) {
     \\  if (value && value.__home_logical_buffer) return null;
     \\  if (typeof ArrayBuffer === "function" && value instanceof ArrayBuffer) return new Uint8Array(value);
+    \\  if (typeof __home_is_shared_array_buffer_like === "function" && __home_is_shared_array_buffer_like(value)) return new Uint8Array(value);
     \\  if (ArrayBuffer && typeof ArrayBuffer.isView === "function" && ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
     \\  if (value && typeof value === "object" && (typeof value.length === "number" || typeof value.byteLength === "number")) {
     \\    const ctorName = value.constructor && value.constructor.name ? String(value.constructor.name) : "";
