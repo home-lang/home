@@ -2211,6 +2211,18 @@ pub const HomeKernelCodegen = struct {
 
         if (self.arrayType(type_name)) |arr| {
             const elem = self.sizeOf(arr.elem_type) orelse return false;
+            // An annotated array with a literal initializer is data, exactly
+            // as an unannotated one is. Without this the initializer was
+            // dropped and the symbol became zero-filled .bss — so every
+            // constant table in a kernel (SHA-256's round constants, AES's
+            // S-boxes, BLAKE2s's message schedule) silently read as zeros,
+            // and the algorithms built on them computed confidently wrong
+            // answers.
+            const table_elements: ?[]const *ast.Expr = blk: {
+                const value = decl.value orelse break :blk null;
+                if (value.* != .ArrayLiteral) break :blk null;
+                break :blk value.ArrayLiteral.elements;
+            };
             try self.global_vars.put(decl.name, .{
                 .name = decl.name,
                 .symbol = symbol,
@@ -2219,6 +2231,7 @@ pub const HomeKernelCodegen = struct {
                 .elem_size = elem,
                 .is_array = true,
                 .init_value = null,
+                .init_elements = table_elements,
             });
             try self.global_order.append(self.allocator, decl.name);
             return true;
@@ -2317,22 +2330,41 @@ pub const HomeKernelCodegen = struct {
             for (self.global_order.items) |name| {
                 const g = self.global_vars.get(name) orelse continue;
                 const elements = g.init_elements orelse continue;
+                // Each element is emitted at the array's element width. A
+                // `.quad` per element of a [u32; N] would lay the table out at
+                // twice its stride, so every indexed read but the first landed
+                // between two entries.
+                const directive = switch (g.elem_size) {
+                    1 => ".byte",
+                    2 => ".short",
+                    4 => ".long",
+                    else => ".quad",
+                };
                 try self.print(".align {d}\n", .{@min(g.elem_size, @as(usize, 8))});
                 try self.print("{s}:\n", .{g.symbol});
                 for (elements) |e| {
                     switch (e.*) {
                         .StringLiteral => |lit| {
+                            // A string element is a pointer, whatever the
+                            // array's nominal element width.
                             const label = try self.internStringLiteral(lit.value);
                             try self.print("    .quad .L_str_{d}\n", .{label});
                         },
-                        .IntegerLiteral => |lit| try self.print("    .quad {d}\n", .{lit.value}),
-                        .BooleanLiteral => |lit| try self.print("    .quad {d}\n", .{@as(i64, if (lit.value) 1 else 0)}),
+                        .IntegerLiteral => |lit| try self.print("    {s} {d}\n", .{ directive, lit.value }),
+                        .BooleanLiteral => |lit| try self.print("    {s} {d}\n", .{ directive, @as(i64, if (lit.value) 1 else 0) }),
                         .Identifier => |id| {
                             const v = self.globals.get(id.name) orelse 0;
-                            try self.print("    .quad {d}\n", .{v});
+                            try self.print("    {s} {d}\n", .{ directive, v });
                         },
-                        else => try self.writeAll("    .quad 0\n"),
+                        else => try self.print("    {s} 0\n", .{directive}),
                     }
+                }
+                // A declared array longer than its initializer keeps its full
+                // length, zero-filled, rather than running into whatever
+                // symbol the assembler places next.
+                const written = elements.len * g.elem_size;
+                if (g.size > written) {
+                    try self.print("    .zero {d}\n", .{g.size - written});
                 }
             }
         }
