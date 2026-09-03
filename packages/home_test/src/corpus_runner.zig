@@ -93337,10 +93337,6 @@ fn rewriteSmallListGrowCorpus(allocator: std.mem.Allocator, source: []const u8) 
     );
 }
 
-fn rewriteGlobMatchCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    return try allocator.dupe(u8, source);
-}
-
 fn rewriteGlobScanCorpus(allocator: std.mem.Allocator, _: []const u8) ![]u8 {
     return try allocator.dupe(u8,
         \\import { Glob } from "bun";
@@ -94715,104 +94711,6 @@ fn rewriteShellWhichCorpus(allocator: std.mem.Allocator, source: []const u8) ![]
     return try std.mem.replaceOwned(u8, allocator, source, ".repeat(100000)", ".repeat(2048)");
 }
 
-fn rewriteUrlParseQueryCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    return try std.mem.replaceOwned(
-        u8,
-        allocator,
-        source,
-        "test.todo(\"with query string\", () => {",
-        "test(\"with query string\", () => {",
-    );
-}
-
-fn rewriteNodeUrlCanParseCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    return try std.mem.replaceOwned(
-        u8,
-        allocator,
-        source,
-        "test.todo(\"invalid input\", () => {",
-        "test(\"invalid input\", () => {",
-    );
-}
-
-fn rewriteNodeUrlFormatInvalidInputCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    return try std.mem.replaceOwned(
-        u8,
-        allocator,
-        source,
-        "test.todo(\"invalid input\", () => {",
-        "test(\"invalid input\", () => {",
-    );
-}
-
-fn rewriteNodeUrlPathToFileUrlCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    const with_unc_paths = try std.mem.replaceOwned(
-        u8,
-        allocator,
-        source,
-        "test.todo(\"UNC paths\", () => {",
-        "test(\"UNC paths\", () => {",
-    );
-    defer allocator.free(with_unc_paths);
-    return try std.mem.replaceOwned(
-        u8,
-        allocator,
-        with_unc_paths,
-        "test.todo(\"non-string parameter\", () => {",
-        "test(\"non-string parameter\", () => {",
-    );
-}
-
-fn rewriteNodeUrlFileUrlToPathCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    return try std.mem.replaceOwned(
-        u8,
-        allocator,
-        source,
-        "test.todo(\"invalid input\", () => {",
-        "test(\"invalid input\", () => {",
-    );
-}
-
-fn rewriteNodeUrlRevokeObjectUrlCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    return try std.mem.replaceOwned(
-        u8,
-        allocator,
-        source,
-        "describe.todo(\"URL.revokeObjectURL\", () => {",
-        "describe(\"URL.revokeObjectURL\", () => {",
-    );
-}
-
-fn rewriteNodeUrlNullCharCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    return try std.mem.replaceOwned(
-        u8,
-        allocator,
-        source,
-        "test.skip(\"null character\", () => {",
-        "test(\"null character\", () => {",
-    );
-}
-
-fn rewriteNodeUrlIsUrlCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    return try std.mem.replaceOwned(
-        u8,
-        allocator,
-        source,
-        "test.skip(\"isURL\", () => {",
-        "test(\"isURL\", () => {",
-    );
-}
-
-fn rewriteNodeInternalInspectCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    return try std.mem.replaceOwned(
-        u8,
-        allocator,
-        source,
-        "test.skip(\"util.stylizeWithHTML\", () => {",
-        "test(\"util.stylizeWithHTML\", () => {",
-    );
-}
-
 fn rewriteAsyncLocalStorageCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     return try std.mem.replaceOwned(
         u8,
@@ -94821,14 +94719,6 @@ fn rewriteAsyncLocalStorageCorpus(allocator: std.mem.Allocator, source: []const 
         "new ReadableStream(",
         "new globalThis.ReadableStream(",
     );
-}
-
-fn rewriteAsyncLocalStorageThenableCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    const without_callable = try std.mem.replaceOwned(u8, allocator, source, "then(handle: CallableFunction)", "then(handle)");
-    defer allocator.free(without_callable);
-    const without_as_any = try std.mem.replaceOwned(u8, allocator, without_callable, "await (thenable() as any);", "await thenable();");
-    defer allocator.free(without_as_any);
-    return try std.mem.replaceOwned(u8, allocator, without_as_any, "const then: Function =", "const then =");
 }
 
 fn rewriteFetchLeakCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
@@ -95000,16 +94890,6 @@ fn rewriteFileAttributeImports(
         cursor = if (newline) |index| index + 1 else source.len;
     }
     return out.toOwnedSlice(allocator);
-}
-
-fn rewriteBufferResolveObjectURLCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    return try std.mem.replaceOwned(
-        u8,
-        allocator,
-        source,
-        "const otherBlob = resolveObjectURL(id)!;",
-        "const otherBlob = resolveObjectURL(id);",
-    );
 }
 
 fn rewriteImportQueryCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
@@ -99421,39 +99301,39 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/css/small-list-grow.test.ts"))
         try rewriteSmallListGrowCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/glob/match.test.ts"))
-        try rewriteGlobMatchCorpus(allocator, module_source)
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/shell/commands/which.test.ts"))
         try rewriteShellWhichCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/node/url/url-parse-query.test.js"))
-        try rewriteUrlParseQueryCorpus(allocator, module_source)
+        null
     else if (std.mem.eql(u8, relative_path, "js/node/url/url-canParse-whatwg.test.js"))
-        try rewriteNodeUrlCanParseCorpus(allocator, module_source)
+        null
     else if (std.mem.eql(u8, relative_path, "js/node/url/url-format-invalid-input.test.js"))
-        try rewriteNodeUrlFormatInvalidInputCorpus(allocator, module_source)
+        null
     else if (std.mem.eql(u8, relative_path, "js/node/url/url-pathtofileurl.test.js"))
-        try rewriteNodeUrlPathToFileUrlCorpus(allocator, module_source)
+        null
     else if (std.mem.eql(u8, relative_path, "js/node/url/url-fileurltopath.test.js"))
-        try rewriteNodeUrlFileUrlToPathCorpus(allocator, module_source)
+        null
     else if (std.mem.eql(u8, relative_path, "js/node/url/url-revokeobjecturl.test.js"))
-        try rewriteNodeUrlRevokeObjectUrlCorpus(allocator, module_source)
+        null
     else if (std.mem.eql(u8, relative_path, "js/node/url/url-null-char.test.js"))
-        try rewriteNodeUrlNullCharCorpus(allocator, module_source)
+        null
     else if (std.mem.eql(u8, relative_path, "js/node/url/url-is-url.test.js"))
-        try rewriteNodeUrlIsUrlCorpus(allocator, module_source)
+        null
     else if (std.mem.eql(u8, relative_path, "js/node/vm/vm-sourceUrl.test.ts"))
         try rewriteVmSourceUrlCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/node/util/node-inspect-tests/internal-inspect.test.js"))
-        try rewriteNodeInternalInspectCorpus(allocator, module_source)
+        null
     else if (std.mem.eql(u8, relative_path, "js/node/async_hooks/AsyncLocalStorage.test.ts"))
         try rewriteAsyncLocalStorageCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/node/async_hooks/async-local-storage-thenable.test.ts"))
-        try rewriteAsyncLocalStorageThenableCorpus(allocator, module_source)
+        null
     else if (std.mem.eql(u8, relative_path, "js/node/child_process/child_process-node.test.js"))
         try rewriteChildProcessNodeCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/node/child_process/child_process.test.ts"))
         try rewriteChildProcessCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/node/buffer-resolveObjectURL.test.ts"))
-        try rewriteBufferResolveObjectURLCorpus(allocator, module_source)
+        null
     else if (std.mem.eql(u8, relative_path, "js/deno/encoding/encoding.test.ts"))
         try rewriteDenoEncodingCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/web/fetch/abort-signal-leak.test.ts"))
@@ -100325,7 +100205,16 @@ fn isNativeModuleRegistryCorpusFile(relative: []const u8) bool {
 
 fn isNativeBufferPrimitiveCorpusFile(relative: []const u8) bool {
     return std.mem.eql(u8, relative, "js/node/test/parallel/test-buffer-isencoding.js") or
-        std.mem.eql(u8, relative, "js/node/test/parallel/test-buffer-tojson.js");
+        std.mem.eql(u8, relative, "js/node/test/parallel/test-buffer-tojson.js") or
+        std.mem.eql(u8, relative, "js/node/buffer-resolveObjectURL.test.ts");
+}
+
+fn isNativeAsyncHooksCorpusFile(relative: []const u8) bool {
+    return std.mem.eql(u8, relative, "js/node/async_hooks/async-local-storage-thenable.test.ts");
+}
+
+fn isNativeGlobCorpusFile(relative: []const u8) bool {
+    return std.mem.eql(u8, relative, "js/bun/glob/match.test.ts");
 }
 
 fn isNativeQuerystringCorpusFile(relative: []const u8) bool {
@@ -100555,6 +100444,8 @@ fn isNativeHomeCorpusFile(relative: []const u8) bool {
         isNativeReadableFromCorpusFile(relative) or
         isNativeModuleRegistryCorpusFile(relative) or
         isNativeBufferPrimitiveCorpusFile(relative) or
+        isNativeAsyncHooksCorpusFile(relative) or
+        isNativeGlobCorpusFile(relative) or
         isNativeQuerystringCorpusFile(relative) or
         isNativeNodeCoreCorpusFile(relative) or
         isNativeAddonTestCorpusFile(relative) or
@@ -100593,6 +100484,24 @@ fn parseNativeCorpusFlags(allocator: std.mem.Allocator, source: []const u8) !Own
 }
 
 const NativeCorpusMode = enum { script, test_runner };
+
+fn nativeCorpusMode(relative: []const u8) NativeCorpusMode {
+    return if (isNativeNodeTestCorpusFile(relative) or
+        isNativeAddonTestCorpusFile(relative) or
+        isNativeTerminalCorpusFile(relative) or
+        isNativeImageCorpusFile(relative) or
+        isNativeWebSocketCorpusFile(relative) or
+        isNativeHttpTlsCorpusFile(relative) or
+        isNativeHttpPromiseCorpusFile(relative) or
+        isNativeHttpServerCorpusFile(relative) or
+        isNativeHttpProxyCorpusFile(relative) or
+        isNativeBunTestCorpusFile(relative) or
+        isNativeBufferPrimitiveCorpusFile(relative) or
+        isNativeAsyncHooksCorpusFile(relative) or
+        isNativeGlobCorpusFile(relative) or
+        isNativeS3CorpusFile(relative) or
+        isNativeWorkerCorpusFile(relative)) .test_runner else .script;
+}
 
 fn buildNativeCorpusArgs(
     allocator: std.mem.Allocator,
@@ -100754,18 +100663,7 @@ fn runRelativeFile(
 
         var flags = try parseNativeCorpusFlags(allocator, source);
         defer flags.deinit(allocator);
-        const mode: NativeCorpusMode = if (isNativeNodeTestCorpusFile(relative) or
-            isNativeAddonTestCorpusFile(relative) or
-            isNativeTerminalCorpusFile(relative) or
-            isNativeImageCorpusFile(relative) or
-            isNativeWebSocketCorpusFile(relative) or
-            isNativeHttpTlsCorpusFile(relative) or
-            isNativeHttpPromiseCorpusFile(relative) or
-            isNativeHttpServerCorpusFile(relative) or
-            isNativeHttpProxyCorpusFile(relative) or
-            isNativeBunTestCorpusFile(relative) or
-            isNativeS3CorpusFile(relative) or
-            isNativeWorkerCorpusFile(relative)) .test_runner else .script;
+        const mode = nativeCorpusMode(relative);
 
         var absolute_preload_path: ?[:0]u8 = null;
         defer if (absolute_preload_path) |path| allocator.free(path);
@@ -101063,7 +100961,7 @@ test "native module registry corpus predicate covers the exact vendored matrix" 
     try std.testing.expect(!isNativeModuleRegistryCorpusFile("js/node/test/parallel/nested/test-module-isBuiltin.js"));
 }
 
-test "native buffer primitive corpus predicate covers the exact vendored matrix" {
+test "native buffer corpus predicate covers primitives and object URL resolution" {
     const parallel_root = "packages/runtime/test/bun-corpus/js/node/test/parallel";
     const files = try corpus.collectTestFiles(std.testing.io, std.testing.allocator, parallel_root);
     defer corpus.freeTestFiles(std.testing.allocator, files);
@@ -101078,9 +100976,41 @@ test "native buffer primitive corpus predicate covers the exact vendored matrix"
     try std.testing.expectEqual(@as(usize, 2), count);
     try std.testing.expect(isNativeBufferPrimitiveCorpusFile("js/node/test/parallel/test-buffer-isencoding.js"));
     try std.testing.expect(isNativeBufferPrimitiveCorpusFile("js/node/test/parallel/test-buffer-tojson.js"));
+    try std.testing.expect(isNativeBufferPrimitiveCorpusFile("js/node/buffer-resolveObjectURL.test.ts"));
     try std.testing.expect(!isNativeBufferPrimitiveCorpusFile("js/node/test/parallel/test-buffer-isencoding.mjs"));
     try std.testing.expect(!isNativeBufferPrimitiveCorpusFile("js/node/test/parallel/nested/test-buffer-tojson.js"));
     try std.testing.expect(!isNativeBufferPrimitiveCorpusFile("js/node/test/parallel/test-buffer-encoding.js"));
+    try std.testing.expect(!isNativeBufferPrimitiveCorpusFile("js/node/buffer-resolveObjectURL.test.js"));
+    try std.testing.expectEqual(.test_runner, nativeCorpusMode("js/node/buffer-resolveObjectURL.test.ts"));
+}
+
+test "native async hooks corpus routing covers typed thenables" {
+    const relative = "js/node/async_hooks/async-local-storage-thenable.test.ts";
+    try Io.Dir.cwd().access(std.testing.io, "packages/runtime/test/bun-corpus/" ++ relative, .{});
+    try std.testing.expect(isNativeAsyncHooksCorpusFile(relative));
+    try std.testing.expect(isNativeHomeCorpusFile(relative));
+    try std.testing.expectEqual(.test_runner, nativeCorpusMode(relative));
+
+    inline for (.{
+        "js/node/async_hooks/async-local-storage-thenable.test.js",
+        "js/node/async_hooks/async-local-storage-thenable-fixture.test.ts",
+        "js/node/async_hooks/nested/async-local-storage-thenable.test.ts",
+    }) |non_match| try std.testing.expect(!isNativeAsyncHooksCorpusFile(non_match));
+}
+
+test "native glob corpus routing covers the exact match matrix" {
+    const relative = "js/bun/glob/match.test.ts";
+    try Io.Dir.cwd().access(std.testing.io, "packages/runtime/test/bun-corpus/" ++ relative, .{});
+    try std.testing.expect(isNativeGlobCorpusFile(relative));
+    try std.testing.expect(isNativeHomeCorpusFile(relative));
+    try std.testing.expectEqual(.test_runner, nativeCorpusMode(relative));
+
+    inline for (.{
+        "js/bun/glob/match.test.js",
+        "js/bun/glob/match-fixture.test.ts",
+        "js/bun/glob/nested/match.test.ts",
+        "js/bun/globs/match.test.ts",
+    }) |non_match| try std.testing.expect(!isNativeGlobCorpusFile(non_match));
 }
 
 test "native querystring corpus predicate covers the exact vendored matrix" {
@@ -114866,7 +114796,7 @@ test "bootstrap runner mirrors issue 26632 missing Bun.file corpus" {
     try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
 }
 
-test "bootstrap runner mirrors node url parse query corpus" {
+test "bootstrap runner preserves node url parse query TODO" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
@@ -114877,6 +114807,7 @@ test "bootstrap runner mirrors node url parse query corpus" {
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/url/url-parse-query.test.js");
     defer prepared.deinit(std.testing.allocator);
     try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test.todo(\"with query string\"") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
@@ -114884,8 +114815,8 @@ test "bootstrap runner mirrors node url parse query corpus" {
     defer file_run.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
-    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.todo);
 }
 
 test "bootstrap runner mirrors node url parse ipv6 corpus" {
@@ -121522,21 +121453,21 @@ test "bootstrap runner preserves node URL contracts" {
 
     const cases = [_]struct { path: []const u8, passed: usize, todo: usize }{
         .{ .path = "js/node/url/pathToFileURL.test.ts", .passed = 2, .todo = 0 },
-        .{ .path = "js/node/url/url-canParse-whatwg.test.js", .passed = 2, .todo = 0 },
+        .{ .path = "js/node/url/url-canParse-whatwg.test.js", .passed = 1, .todo = 1 },
         .{ .path = "js/node/url/url-domain-ascii-unicode.test.js", .passed = 130, .todo = 0 },
-        .{ .path = "js/node/url/url-fileurltopath.test.js", .passed = 2, .todo = 0 },
-        .{ .path = "js/node/url/url-format-invalid-input.test.js", .passed = 2, .todo = 0 },
+        .{ .path = "js/node/url/url-fileurltopath.test.js", .passed = 1, .todo = 1 },
+        .{ .path = "js/node/url/url-format-invalid-input.test.js", .passed = 1, .todo = 1 },
         .{ .path = "js/node/url/url-format-whatwg.test.js", .passed = 1, .todo = 0 },
         .{ .path = "js/node/url/url-format.test.js", .passed = 2, .todo = 0 },
-        .{ .path = "js/node/url/url-is-url.test.js", .passed = 1, .todo = 0 },
-        .{ .path = "js/node/url/url-null-char.test.js", .passed = 1, .todo = 0 },
+        .{ .path = "js/node/url/url-is-url.test.js", .passed = 0, .todo = 1 },
+        .{ .path = "js/node/url/url-null-char.test.js", .passed = 0, .todo = 1 },
         .{ .path = "js/node/url/url-parse-format.test.js", .passed = 2, .todo = 1 },
         .{ .path = "js/node/url/url-parse-invalid-input.test.js", .passed = 0, .todo = 1 },
         .{ .path = "js/node/url/url-parse-ipv6.test.ts", .passed = 34, .todo = 0 },
-        .{ .path = "js/node/url/url-parse-query.test.js", .passed = 1, .todo = 0 },
-        .{ .path = "js/node/url/url-pathtofileurl.test.js", .passed = 4, .todo = 0 },
+        .{ .path = "js/node/url/url-parse-query.test.js", .passed = 0, .todo = 1 },
+        .{ .path = "js/node/url/url-pathtofileurl.test.js", .passed = 2, .todo = 2 },
         .{ .path = "js/node/url/url-relative.test.js", .passed = 5, .todo = 0 },
-        .{ .path = "js/node/url/url-revokeobjecturl.test.js", .passed = 1, .todo = 0 },
+        .{ .path = "js/node/url/url-revokeobjecturl.test.js", .passed = 0, .todo = 1 },
         .{ .path = "js/node/url/url.test.ts", .passed = 6, .todo = 0 },
     };
 
@@ -121567,7 +121498,7 @@ test "bootstrap runner preserves node util foundation contracts" {
         .{ .path = "js/node/util/custom-inspect.test.js", .passed = 25, .todo = 0 },
         .{ .path = "js/node/util/mime-api.test.ts", .passed = 8, .todo = 0 },
         .{ .path = "js/node/util/node-inspect-tests/import.test.mjs", .passed = 1, .todo = 0 },
-        .{ .path = "js/node/util/node-inspect-tests/internal-inspect.test.js", .passed = 2, .todo = 0 },
+        .{ .path = "js/node/util/node-inspect-tests/internal-inspect.test.js", .passed = 1, .todo = 1 },
         .{ .path = "js/node/util/node-inspect-tests/parallel/util-format.test.js", .passed = 1, .todo = 0 },
         .{ .path = "js/node/util/node-inspect-tests/parallel/util-inspect-getters-accessing-this.test.js", .passed = 1, .todo = 0 },
         .{ .path = "js/node/util/node-inspect-tests/parallel/util-inspect-long-running.test.mjs", .passed = 1, .todo = 0 },
@@ -128771,7 +128702,7 @@ test "bootstrap runner mirrors expansion queue tail mini-suite" {
         .{ .path = "js/node/module/module-sourcemap.test.js", .passed = 3 },
         .{ .path = "js/node/console/console-constructor-exception.test.ts", .passed = 1 },
         .{ .path = "js/node/util/node-inspect-tests/import.test.mjs", .passed = 1 },
-        .{ .path = "js/node/util/node-inspect-tests/internal-inspect.test.js", .passed = 2 },
+        .{ .path = "js/node/util/node-inspect-tests/internal-inspect.test.js", .passed = 1, .todo = 1 },
         .{ .path = "js/node/util/node-inspect-tests/parallel/util-inspect-long-running.test.mjs", .passed = 1 },
         .{ .path = "js/node/watch/fs.watch.deadlock.test.ts", .passed = 1 },
         .{ .path = "js/node/worker_threads/15787.test.ts", .passed = 1 },
@@ -128963,7 +128894,7 @@ test "bootstrap runner mirrors node util internal inspect corpus" {
     defer prepared.deinit(std.testing.allocator);
 
     try std.testing.expect(prepared.unsupported_reason == null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test.skip(\"util.stylizeWithHTML\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test.skip(\"util.stylizeWithHTML\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "stylizeWithHTML: __home_util_stylize_with_html") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
@@ -128973,8 +128904,8 @@ test "bootstrap runner mirrors node util internal inspect corpus" {
     defer file_run.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
-    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.todo);
 }
 
 test "bootstrap runner mirrors utility resolve process queue mini-suite" {
@@ -129002,7 +128933,7 @@ test "bootstrap runner mirrors utility resolve process queue mini-suite" {
         .{ .path = "js/bun/util/error-gc-test.test.js", .passed = 4 },
         .{ .path = "js/bun/util/fuzzy-wuzzy.test.ts", .passed = 66 },
         .{ .path = "js/bun/io/bun-write-leak.test.ts", .passed = 1 },
-        .{ .path = "js/node/url/url-pathtofileurl.test.js", .passed = 4 },
+        .{ .path = "js/node/url/url-pathtofileurl.test.js", .passed = 2, .todo = 2 },
         .{ .path = "js/bun/util/randomUUIDv7.test.ts", .passed = 6 },
         .{ .path = "js/bun/util/sleepSync.test.ts", .passed = 5 },
         .{ .path = "js/bun/util/readablestreamtoarraybuffer.test.ts", .passed = 1 },
@@ -131783,8 +131714,8 @@ test "bootstrap runner mirrors minimal core tail utility mini-suite" {
         .{ .path = "js/node/path/posix-exists.test.js", .passed = 1 },
         .{ .path = "js/node/path/win32-exists.test.js", .passed = 1 },
         .{ .path = "js/node/path/15704.test.js", .passed = 1 },
-        .{ .path = "js/node/url/url-canParse-whatwg.test.js", .passed = 2 },
-        .{ .path = "js/node/url/url-format-invalid-input.test.js", .passed = 2 },
+        .{ .path = "js/node/url/url-canParse-whatwg.test.js", .passed = 1, .todo = 1 },
+        .{ .path = "js/node/url/url-format-invalid-input.test.js", .passed = 1, .todo = 1 },
         .{ .path = "integration/bun-types/fixture/23347.test.ts", .passed = 6 },
         .{ .path = "js/bun/resolve/toml/toml-parse.test.ts", .passed = 8 },
         .{ .path = "js/bun/resolve/toml/crash/toml-crash.test.ts", .passed = 1 },
@@ -132366,7 +132297,7 @@ test "bootstrap runner covers Node url bootstrap smokes" {
     try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
 }
 
-test "bootstrap runner mirrors node url invalid argument corpora" {
+test "bootstrap runner preserves node url invalid argument TODOs" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
     const cases = [_]struct {
@@ -132394,15 +132325,15 @@ test "bootstrap runner mirrors node url invalid argument corpora" {
         defer prepared.deinit(std.testing.allocator);
 
         try std.testing.expect(prepared.unsupported_reason == null);
-        try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test.todo(\"invalid input\"") == null);
+        try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test.todo(\"invalid input\"") != null);
         try std.testing.expect(std.mem.indexOf(u8, harness_prelude, case.error_code) != null);
 
         var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
         defer file_run.deinit(std.testing.allocator);
 
         try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-        try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
-        try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+        try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+        try std.testing.expectEqual(@as(usize, 1), file_run.result.todo);
     }
 }
 
@@ -132567,15 +132498,15 @@ test "bootstrap runner mirrors node URL and path utility tranche" {
         passed: usize,
         todo: usize = 0,
     }{
-        .{ .path = "js/node/url/url-revokeobjecturl.test.js", .passed = 1 },
-        .{ .path = "js/node/url/url-null-char.test.js", .passed = 1 },
-        .{ .path = "js/node/url/url-is-url.test.js", .passed = 1 },
+        .{ .path = "js/node/url/url-revokeobjecturl.test.js", .passed = 0, .todo = 1 },
+        .{ .path = "js/node/url/url-null-char.test.js", .passed = 0, .todo = 1 },
+        .{ .path = "js/node/url/url-is-url.test.js", .passed = 0, .todo = 1 },
         .{ .path = "js/node/path/basename.test.js", .passed = 4 },
         .{ .path = "js/node/path/extname.test.js", .passed = 3 },
         .{ .path = "js/node/url/url-format-whatwg.test.js", .passed = 1 },
         .{ .path = "js/node/url/url-domain-ascii-unicode.test.js", .passed = 130 },
         .{ .path = "js/node/url/url-format.test.js", .passed = 2 },
-        .{ .path = "js/node/url/url-fileurltopath.test.js", .passed = 2 },
+        .{ .path = "js/node/url/url-fileurltopath.test.js", .passed = 1, .todo = 1 },
     };
 
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
@@ -132600,7 +132531,7 @@ test "bootstrap runner mirrors node URL and path utility tranche" {
     }
 }
 
-test "bootstrap runner mirrors node url object and internal utility corpora" {
+test "bootstrap runner preserves node url object TODO and skip registrations" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
     const cases = [_]struct {
@@ -132642,15 +132573,15 @@ test "bootstrap runner mirrors node url object and internal utility corpora" {
         defer prepared.deinit(std.testing.allocator);
 
         try std.testing.expect(prepared.unsupported_reason == null);
-        try std.testing.expect(std.mem.indexOf(u8, prepared.source, case.disabled_needle) == null);
+        try std.testing.expect(std.mem.indexOf(u8, prepared.source, case.disabled_needle) != null);
         try std.testing.expect(std.mem.indexOf(u8, harness_prelude, case.harness_needle) != null);
 
         var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
         defer file_run.deinit(std.testing.allocator);
 
         try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-        try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
-        try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+        try std.testing.expectEqual(@as(usize, 0), file_run.result.passed);
+        try std.testing.expectEqual(@as(usize, 1), file_run.result.todo);
     }
 }
 
@@ -132680,7 +132611,7 @@ test "bootstrap node url pathToFileURL handles POSIX path encoding" {
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
-test "bootstrap runner mirrors node url pathToFileURL corpus" {
+test "bootstrap runner preserves node url pathToFileURL TODOs" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
@@ -132693,8 +132624,8 @@ test "bootstrap runner mirrors node url pathToFileURL corpus" {
     defer prepared.deinit(std.testing.allocator);
 
     try std.testing.expect(prepared.unsupported_reason == null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test.todo(\"UNC paths\"") == null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test.todo(\"non-string parameter\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test.todo(\"UNC paths\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test.todo(\"non-string parameter\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "error.code = \"ERR_INVALID_ARG_TYPE\"") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
@@ -132704,10 +132635,11 @@ test "bootstrap runner mirrors node url pathToFileURL corpus" {
     defer file_run.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 4), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.todo);
 }
 
-test "bootstrap runner mirrors node url fileURLToPath corpus" {
+test "bootstrap runner preserves node url fileURLToPath TODO" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
@@ -132720,7 +132652,7 @@ test "bootstrap runner mirrors node url fileURLToPath corpus" {
     defer prepared.deinit(std.testing.allocator);
 
     try std.testing.expect(prepared.unsupported_reason == null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test.todo(\"invalid input\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test.todo(\"invalid input\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "ERR_INVALID_URL_SCHEME") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "ERR_INVALID_FILE_URL_HOST") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "ERR_INVALID_FILE_URL_PATH") != null);
@@ -132732,7 +132664,8 @@ test "bootstrap runner mirrors node url fileURLToPath corpus" {
     defer file_run.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.todo);
 }
 
 test "bootstrap matcher toBeEmpty accepts strings and collections" {

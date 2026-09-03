@@ -350,7 +350,7 @@ fn matchBrace(state: *State, glob: []const u8, path: []const u8, brace_stack: *B
                     break;
                 }
             },
-            ',' => if (brace_depth == 1) {
+            ',' => if (brace_depth == 1 and !in_brackets) {
                 if (matchBraceBranch(state, glob, path, open_brace_index, branch_index, brace_stack, brace_budget)) {
                     return true;
                 }
@@ -595,6 +595,11 @@ test "matcher: brace alternation" {
     // nested braces
     try expectMatch("a{b,c{d,e}}f", "acef");
     try expectMatch("a{b,c{d,e}}f", "abf");
+}
+
+test "matcher: brace alternation ignores commas inside character classes" {
+    try expectMatch("x.{ts,[,]foo}", "x.,foo");
+    try expectNoMatch("x.{ts,[,]foo}", "x.]foo");
 }
 
 test "matcher: leading negation" {
