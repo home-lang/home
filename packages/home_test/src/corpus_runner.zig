@@ -100649,21 +100649,69 @@ fn isNativeWorkerCorpusFile(relative: []const u8) bool {
     return false;
 }
 
+const native_worker_script_corpus_files = [_][]const u8{
+    "test-async-hooks-worker-asyncfn-terminate-1.js",
+    "test-async-hooks-worker-asyncfn-terminate-2.js",
+    "test-async-hooks-worker-asyncfn-terminate-3.js",
+    "test-async-hooks-worker-asyncfn-terminate-4.js",
+    "test-worker-abort-on-uncaught-exception.js",
+    "test-worker-arraybuffer-zerofill.js",
+    "test-worker-cjs-workerdata.js",
+    "test-worker-cleanexit-with-js.js",
+    "test-worker-cleanexit-with-moduleload.js",
+    "test-worker-console-listeners.js",
+    "test-worker-dns-terminate-during-query.js",
+    "test-worker-environmentdata.js",
+    "test-worker-esm-exit.js",
+    "test-worker-esm-missing-main.js",
+    "test-worker-esmodule.js",
+    "test-worker-event.js",
+    "test-worker-exit-event-error.js",
+    "test-worker-exit-from-uncaught-exception.js",
+    "test-worker-exit-heapsnapshot.js",
+    "test-worker-fs-stat-watcher.js",
+    "test-worker-heap-snapshot.js",
+    "test-worker-http2-generic-streams-terminate.js",
+    "test-worker-invalid-workerdata.js",
+    "test-worker-load-file-with-extension-other-than-js.js",
+    "test-worker-message-channel-sharedarraybuffer.js",
+    "test-worker-message-event.js",
+    "test-worker-message-port-constructor.js",
+    "test-worker-message-port-receive-message.js",
+    "test-worker-message-port-terminate-transfer-list.js",
+    "test-worker-message-port-transfer-duplicate.js",
+    "test-worker-message-port-transfer-terminate.js",
+    "test-worker-message-port-wasm-module.js",
+    "test-worker-message-port-wasm-threads.js",
+    "test-worker-mjs-workerdata.js",
+    "test-worker-nested-on-process-exit.js",
+    "test-worker-nested-uncaught.js",
+    "test-worker-no-sab.js",
+    "test-worker-non-fatal-uncaught-exception.js",
+    "test-worker-on-process-exit.js",
+    "test-worker-onmessage-not-a-function.js",
+    "test-worker-onmessage.js",
+    "test-worker-parent-port-ref.js",
+    "test-worker-process-argv.js",
+    "test-worker-ref-onexit.js",
+    "test-worker-ref.js",
+    "test-worker-relative-path-double-dot.js",
+    "test-worker-relative-path.js",
+    "test-worker-safe-getters.js",
+    "test-worker-sharedarraybuffer-from-worker-thread.js",
+    "test-worker-terminate-http2-respond-with-file.js",
+    "test-worker-terminate-nested.js",
+    "test-worker-terminate-null-handler.js",
+    "test-worker-terminate-timers.js",
+    "test-worker-type-check.js",
+    "test-worker-uncaught-exception-async.js",
+    "test-worker-unref-from-message-during-exit.js",
+    "test-worker-workerdata-sharedarraybuffer.js",
+    "test-worker.js",
+};
+
 fn isNativeWorkerScriptCorpusFile(relative: []const u8) bool {
-    inline for (.{
-        "test-async-hooks-worker-asyncfn-terminate-1.js",
-        "test-async-hooks-worker-asyncfn-terminate-2.js",
-        "test-async-hooks-worker-asyncfn-terminate-3.js",
-        "test-async-hooks-worker-asyncfn-terminate-4.js",
-        "test-worker-dns-terminate-during-query.js",
-        "test-worker-http2-generic-streams-terminate.js",
-        "test-worker-message-port-terminate-transfer-list.js",
-        "test-worker-message-port-transfer-terminate.js",
-        "test-worker-terminate-http2-respond-with-file.js",
-        "test-worker-terminate-nested.js",
-        "test-worker-terminate-null-handler.js",
-        "test-worker-terminate-timers.js",
-    }) |name| {
+    inline for (native_worker_script_corpus_files) |name| {
         if (std.mem.eql(u8, relative, "js/node/test/parallel/" ++ name)) return true;
     }
     return false;
@@ -101064,7 +101112,7 @@ test "native fs disposable corpus predicate covers the exact vendored matrix" {
     }
 
     try std.testing.expectEqual(@as(usize, 2), count);
-    try std.testing.expectEqual(@as(usize, 232), native_count);
+    try std.testing.expectEqual(@as(usize, 278), native_count);
     try std.testing.expect(isNativeFsDisposableCorpusFile("js/node/test/parallel/test-fs-promises-mkdtempDisposable.js"));
     try std.testing.expect(isNativeFsDisposableCorpusFile("js/node/test/parallel/test-fs-mkdtempDisposableSync.js"));
     try std.testing.expect(!isNativeFsDisposableCorpusFile("js/node/test/parallel/test-fs-mkdtempDisposable.js"));
@@ -101402,22 +101450,9 @@ test "native worker corpus routing covers validated worker files" {
     }) |non_match| try std.testing.expect(!isNativeWorkerCorpusFile(non_match));
 }
 
-test "native worker script corpus routing covers exact termination matrix" {
+test "native worker script corpus routing covers exact Node parallel matrix" {
     const parallel_root = "packages/runtime/test/bun-corpus/js/node/test/parallel";
-    inline for (.{
-        "test-async-hooks-worker-asyncfn-terminate-1.js",
-        "test-async-hooks-worker-asyncfn-terminate-2.js",
-        "test-async-hooks-worker-asyncfn-terminate-3.js",
-        "test-async-hooks-worker-asyncfn-terminate-4.js",
-        "test-worker-dns-terminate-during-query.js",
-        "test-worker-http2-generic-streams-terminate.js",
-        "test-worker-message-port-terminate-transfer-list.js",
-        "test-worker-message-port-transfer-terminate.js",
-        "test-worker-terminate-http2-respond-with-file.js",
-        "test-worker-terminate-nested.js",
-        "test-worker-terminate-null-handler.js",
-        "test-worker-terminate-timers.js",
-    }) |file| {
+    inline for (native_worker_script_corpus_files) |file| {
         const relative = "js/node/test/parallel/" ++ file;
         try Io.Dir.cwd().access(std.testing.io, parallel_root ++ "/" ++ file, .{});
         try std.testing.expect(isNativeWorkerScriptCorpusFile(relative));
