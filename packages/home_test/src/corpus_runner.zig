@@ -93337,10 +93337,6 @@ fn rewriteSmallListGrowCorpus(allocator: std.mem.Allocator, source: []const u8) 
     );
 }
 
-fn rewriteGlobMatchCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    return try allocator.dupe(u8, source);
-}
-
 fn rewriteGlobScanCorpus(allocator: std.mem.Allocator, _: []const u8) ![]u8 {
     return try allocator.dupe(u8,
         \\import { Glob } from "bun";
@@ -94823,14 +94819,6 @@ fn rewriteAsyncLocalStorageCorpus(allocator: std.mem.Allocator, source: []const 
     );
 }
 
-fn rewriteAsyncLocalStorageThenableCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    const without_callable = try std.mem.replaceOwned(u8, allocator, source, "then(handle: CallableFunction)", "then(handle)");
-    defer allocator.free(without_callable);
-    const without_as_any = try std.mem.replaceOwned(u8, allocator, without_callable, "await (thenable() as any);", "await thenable();");
-    defer allocator.free(without_as_any);
-    return try std.mem.replaceOwned(u8, allocator, without_as_any, "const then: Function =", "const then =");
-}
-
 fn rewriteFetchLeakCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     // Keep ternary colons away from the lightweight TypeScript eraser: these
     // expressions contain constructor calls and nested templates that are
@@ -95000,16 +94988,6 @@ fn rewriteFileAttributeImports(
         cursor = if (newline) |index| index + 1 else source.len;
     }
     return out.toOwnedSlice(allocator);
-}
-
-fn rewriteBufferResolveObjectURLCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    return try std.mem.replaceOwned(
-        u8,
-        allocator,
-        source,
-        "const otherBlob = resolveObjectURL(id)!;",
-        "const otherBlob = resolveObjectURL(id);",
-    );
 }
 
 fn rewriteImportQueryCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
@@ -99421,7 +99399,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/css/small-list-grow.test.ts"))
         try rewriteSmallListGrowCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/glob/match.test.ts"))
-        try rewriteGlobMatchCorpus(allocator, module_source)
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/shell/commands/which.test.ts"))
         try rewriteShellWhichCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/node/url/url-parse-query.test.js"))
@@ -99447,13 +99425,13 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/node/async_hooks/AsyncLocalStorage.test.ts"))
         try rewriteAsyncLocalStorageCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/node/async_hooks/async-local-storage-thenable.test.ts"))
-        try rewriteAsyncLocalStorageThenableCorpus(allocator, module_source)
+        null
     else if (std.mem.eql(u8, relative_path, "js/node/child_process/child_process-node.test.js"))
         try rewriteChildProcessNodeCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/node/child_process/child_process.test.ts"))
         try rewriteChildProcessCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/node/buffer-resolveObjectURL.test.ts"))
-        try rewriteBufferResolveObjectURLCorpus(allocator, module_source)
+        null
     else if (std.mem.eql(u8, relative_path, "js/deno/encoding/encoding.test.ts"))
         try rewriteDenoEncodingCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/web/fetch/abort-signal-leak.test.ts"))
@@ -100325,7 +100303,16 @@ fn isNativeModuleRegistryCorpusFile(relative: []const u8) bool {
 
 fn isNativeBufferPrimitiveCorpusFile(relative: []const u8) bool {
     return std.mem.eql(u8, relative, "js/node/test/parallel/test-buffer-isencoding.js") or
-        std.mem.eql(u8, relative, "js/node/test/parallel/test-buffer-tojson.js");
+        std.mem.eql(u8, relative, "js/node/test/parallel/test-buffer-tojson.js") or
+        std.mem.eql(u8, relative, "js/node/buffer-resolveObjectURL.test.ts");
+}
+
+fn isNativeAsyncHooksCorpusFile(relative: []const u8) bool {
+    return std.mem.eql(u8, relative, "js/node/async_hooks/async-local-storage-thenable.test.ts");
+}
+
+fn isNativeGlobCorpusFile(relative: []const u8) bool {
+    return std.mem.eql(u8, relative, "js/bun/glob/match.test.ts");
 }
 
 fn isNativeQuerystringCorpusFile(relative: []const u8) bool {
@@ -100555,6 +100542,8 @@ fn isNativeHomeCorpusFile(relative: []const u8) bool {
         isNativeReadableFromCorpusFile(relative) or
         isNativeModuleRegistryCorpusFile(relative) or
         isNativeBufferPrimitiveCorpusFile(relative) or
+        isNativeAsyncHooksCorpusFile(relative) or
+        isNativeGlobCorpusFile(relative) or
         isNativeQuerystringCorpusFile(relative) or
         isNativeNodeCoreCorpusFile(relative) or
         isNativeAddonTestCorpusFile(relative) or
@@ -100593,6 +100582,24 @@ fn parseNativeCorpusFlags(allocator: std.mem.Allocator, source: []const u8) !Own
 }
 
 const NativeCorpusMode = enum { script, test_runner };
+
+fn nativeCorpusMode(relative: []const u8) NativeCorpusMode {
+    return if (isNativeNodeTestCorpusFile(relative) or
+        isNativeAddonTestCorpusFile(relative) or
+        isNativeTerminalCorpusFile(relative) or
+        isNativeImageCorpusFile(relative) or
+        isNativeWebSocketCorpusFile(relative) or
+        isNativeHttpTlsCorpusFile(relative) or
+        isNativeHttpPromiseCorpusFile(relative) or
+        isNativeHttpServerCorpusFile(relative) or
+        isNativeHttpProxyCorpusFile(relative) or
+        isNativeBunTestCorpusFile(relative) or
+        isNativeBufferPrimitiveCorpusFile(relative) or
+        isNativeAsyncHooksCorpusFile(relative) or
+        isNativeGlobCorpusFile(relative) or
+        isNativeS3CorpusFile(relative) or
+        isNativeWorkerCorpusFile(relative)) .test_runner else .script;
+}
 
 fn buildNativeCorpusArgs(
     allocator: std.mem.Allocator,
@@ -100754,18 +100761,7 @@ fn runRelativeFile(
 
         var flags = try parseNativeCorpusFlags(allocator, source);
         defer flags.deinit(allocator);
-        const mode: NativeCorpusMode = if (isNativeNodeTestCorpusFile(relative) or
-            isNativeAddonTestCorpusFile(relative) or
-            isNativeTerminalCorpusFile(relative) or
-            isNativeImageCorpusFile(relative) or
-            isNativeWebSocketCorpusFile(relative) or
-            isNativeHttpTlsCorpusFile(relative) or
-            isNativeHttpPromiseCorpusFile(relative) or
-            isNativeHttpServerCorpusFile(relative) or
-            isNativeHttpProxyCorpusFile(relative) or
-            isNativeBunTestCorpusFile(relative) or
-            isNativeS3CorpusFile(relative) or
-            isNativeWorkerCorpusFile(relative)) .test_runner else .script;
+        const mode = nativeCorpusMode(relative);
 
         var absolute_preload_path: ?[:0]u8 = null;
         defer if (absolute_preload_path) |path| allocator.free(path);
@@ -101063,7 +101059,7 @@ test "native module registry corpus predicate covers the exact vendored matrix" 
     try std.testing.expect(!isNativeModuleRegistryCorpusFile("js/node/test/parallel/nested/test-module-isBuiltin.js"));
 }
 
-test "native buffer primitive corpus predicate covers the exact vendored matrix" {
+test "native buffer corpus predicate covers primitives and object URL resolution" {
     const parallel_root = "packages/runtime/test/bun-corpus/js/node/test/parallel";
     const files = try corpus.collectTestFiles(std.testing.io, std.testing.allocator, parallel_root);
     defer corpus.freeTestFiles(std.testing.allocator, files);
@@ -101078,9 +101074,41 @@ test "native buffer primitive corpus predicate covers the exact vendored matrix"
     try std.testing.expectEqual(@as(usize, 2), count);
     try std.testing.expect(isNativeBufferPrimitiveCorpusFile("js/node/test/parallel/test-buffer-isencoding.js"));
     try std.testing.expect(isNativeBufferPrimitiveCorpusFile("js/node/test/parallel/test-buffer-tojson.js"));
+    try std.testing.expect(isNativeBufferPrimitiveCorpusFile("js/node/buffer-resolveObjectURL.test.ts"));
     try std.testing.expect(!isNativeBufferPrimitiveCorpusFile("js/node/test/parallel/test-buffer-isencoding.mjs"));
     try std.testing.expect(!isNativeBufferPrimitiveCorpusFile("js/node/test/parallel/nested/test-buffer-tojson.js"));
     try std.testing.expect(!isNativeBufferPrimitiveCorpusFile("js/node/test/parallel/test-buffer-encoding.js"));
+    try std.testing.expect(!isNativeBufferPrimitiveCorpusFile("js/node/buffer-resolveObjectURL.test.js"));
+    try std.testing.expectEqual(.test_runner, nativeCorpusMode("js/node/buffer-resolveObjectURL.test.ts"));
+}
+
+test "native async hooks corpus routing covers typed thenables" {
+    const relative = "js/node/async_hooks/async-local-storage-thenable.test.ts";
+    try Io.Dir.cwd().access(std.testing.io, "packages/runtime/test/bun-corpus/" ++ relative, .{});
+    try std.testing.expect(isNativeAsyncHooksCorpusFile(relative));
+    try std.testing.expect(isNativeHomeCorpusFile(relative));
+    try std.testing.expectEqual(.test_runner, nativeCorpusMode(relative));
+
+    inline for (.{
+        "js/node/async_hooks/async-local-storage-thenable.test.js",
+        "js/node/async_hooks/async-local-storage-thenable-fixture.test.ts",
+        "js/node/async_hooks/nested/async-local-storage-thenable.test.ts",
+    }) |non_match| try std.testing.expect(!isNativeAsyncHooksCorpusFile(non_match));
+}
+
+test "native glob corpus routing covers the exact match matrix" {
+    const relative = "js/bun/glob/match.test.ts";
+    try Io.Dir.cwd().access(std.testing.io, "packages/runtime/test/bun-corpus/" ++ relative, .{});
+    try std.testing.expect(isNativeGlobCorpusFile(relative));
+    try std.testing.expect(isNativeHomeCorpusFile(relative));
+    try std.testing.expectEqual(.test_runner, nativeCorpusMode(relative));
+
+    inline for (.{
+        "js/bun/glob/match.test.js",
+        "js/bun/glob/match-fixture.test.ts",
+        "js/bun/glob/nested/match.test.ts",
+        "js/bun/globs/match.test.ts",
+    }) |non_match| try std.testing.expect(!isNativeGlobCorpusFile(non_match));
 }
 
 test "native querystring corpus predicate covers the exact vendored matrix" {
