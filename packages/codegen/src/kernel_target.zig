@@ -1581,7 +1581,13 @@ pub const Emitter = struct {
     pub fn readSysreg(self: Self, name: []const u8) !void {
         switch (self.arch) {
             .x86_64 => try self.insn("mov %{s}, %rax", .{name}),
-            .aarch64 => try self.insn("mrs x0, {s}", .{name}),
+            .aarch64 => {
+                // PAN is an ARMv8.1 addition, so the assembler will not accept
+                // the name at the armv8-a baseline until the extension is
+                // declared. The directive is idempotent.
+                if (std.mem.eql(u8, name, "pan")) try self.raw("    .arch_extension pan\n");
+                try self.insn("mrs x0, {s}", .{name});
+            },
         }
     }
 
@@ -1594,6 +1600,62 @@ pub const Emitter = struct {
                 // A system-register write does not take effect for following
                 // instructions until the pipeline is resynchronised.
                 try self.insn("isb", .{});
+            },
+        }
+    }
+
+    /// Open and close the window in which privileged code may touch user
+    /// memory.
+    ///
+    /// x86-64 spells this SMAP: STAC sets EFLAGS.AC to suppress the check,
+    /// CLAC clears it. ARM64 spells it PAN, and inverts the sense — PSTATE.PAN
+    /// *set* is the protected state, so opening the window clears it.
+    ///
+    /// Both are immediate-form writes with no register operand, which is why
+    /// they cannot go through writeSysreg.
+    pub fn allowUserAccess(self: Self) !void {
+        switch (self.arch) {
+            .x86_64 => try self.insn("stac", .{}),
+            .aarch64 => {
+                try self.raw("    .arch_extension pan\n");
+                try self.insn("msr pan, #0", .{});
+            },
+        }
+    }
+
+    pub fn forbidUserAccess(self: Self) !void {
+        switch (self.arch) {
+            .x86_64 => try self.insn("clac", .{}),
+            .aarch64 => {
+                try self.raw("    .arch_extension pan\n");
+                try self.insn("msr pan, #1", .{});
+            },
+        }
+    }
+
+    /// Whether privileged code may currently touch user memory: 1 if the
+    /// window is open, 0 if it is closed.
+    ///
+    /// The two architectures store the answer in opposite senses. x86-64 keeps
+    /// EFLAGS.AC, set to *permit* the access. ARM64 keeps PSTATE.PAN, set to
+    /// *forbid* it — so the ARM64 path inverts before returning, and both
+    /// targets answer the same question the same way.
+    ///
+    /// This exists so a boot test can observe the window actually change,
+    /// rather than trusting that two instructions were emitted.
+    pub fn userAccessAllowed(self: Self) !void {
+        switch (self.arch) {
+            .x86_64 => {
+                try self.insn("pushfq", .{});
+                try self.insn("popq %rax", .{});
+                try self.insn("shrq $18, %rax", .{});
+                try self.insn("andq $1, %rax", .{});
+            },
+            .aarch64 => {
+                try self.raw("    .arch_extension pan\n");
+                try self.insn("mrs x0, pan", .{});
+                try self.insn("ubfx x0, x0, #22, #1", .{});
+                try self.insn("eor x0, x0, #1", .{});
             },
         }
     }

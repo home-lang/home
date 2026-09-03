@@ -2901,6 +2901,7 @@ pub const HomeKernelCodegen = struct {
         const SysOp = enum {
             save_irq, restore_irq, timestamp, atomic_add, read_sysreg, write_sysreg,
             read_sp, write_sp, invlpg, compiler_barrier, memory_barrier,
+            allow_user_access, forbid_user_access, user_access_allowed,
             cas32, xchg32, add32, load32, store32,
         };
         var sys_op: SysOp = .timestamp;
@@ -2956,6 +2957,9 @@ pub const HomeKernelCodegen = struct {
         else if (std.mem.eql(u8, name, "arch_invalidate_tlb_page")) { kind = .sys; sys_op = .invlpg; }
         else if (std.mem.eql(u8, name, "arch_compiler_barrier")) { kind = .sys; sys_op = .compiler_barrier; }
         else if (std.mem.eql(u8, name, "arch_memory_barrier")) { kind = .sys; sys_op = .memory_barrier; }
+        else if (std.mem.eql(u8, name, "arch_allow_user_access")) { kind = .sys; sys_op = .allow_user_access; }
+        else if (std.mem.eql(u8, name, "arch_forbid_user_access")) { kind = .sys; sys_op = .forbid_user_access; }
+        else if (std.mem.eql(u8, name, "arch_user_access_allowed")) { kind = .sys; sys_op = .user_access_allowed; }
         else if (std.mem.eql(u8, name, "arch_atomic_cmpxchg32")) { kind = .sys; sys_op = .cas32; }
         else if (std.mem.eql(u8, name, "arch_atomic_xchg32")) { kind = .sys; sys_op = .xchg32; }
         else if (std.mem.eql(u8, name, "arch_atomic_add32")) { kind = .sys; sys_op = .add32; }
@@ -3078,6 +3082,27 @@ pub const HomeKernelCodegen = struct {
                         return false;
                     }
                     try self.emit().memoryBarrier();
+                },
+                .allow_user_access => {
+                    if (args.len != 0) {
+                        try self.print("    # {s}() takes no arguments, {d} given\n", .{ name, args.len });
+                        return false;
+                    }
+                    try self.emit().allowUserAccess();
+                },
+                .forbid_user_access => {
+                    if (args.len != 0) {
+                        try self.print("    # {s}() takes no arguments, {d} given\n", .{ name, args.len });
+                        return false;
+                    }
+                    try self.emit().forbidUserAccess();
+                },
+                .user_access_allowed => {
+                    if (args.len != 0) {
+                        try self.print("    # {s}() takes no arguments, {d} given\n", .{ name, args.len });
+                        return false;
+                    }
+                    try self.emit().userAccessAllowed();
                 },
                 .load32 => {
                     if (args.len != 1) {
