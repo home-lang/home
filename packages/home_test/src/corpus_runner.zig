@@ -64161,9 +64161,6 @@ const harness_prelude =
     \\    chunked: hasTransferEncoding,
     \\  };
     \\}
-    \\function __home_http_raw_request_status(requestText) {
-    \\  return __home_http_raw_request_metadata(requestText).status;
-    \\}
     \\function __home_net_connect_bun_serve(port, hostname, timeoutMs, connectCallback) {
     \\  const socket = __home_http_event_target();
     \\  const queuedWrites = [];
@@ -64708,14 +64705,6 @@ const harness_prelude =
     \\      }
     \\    }
     \\    socket.__home_h2c_pending = requestBytes.slice(headerEnd + 4 + consumedBodyBytes);
-    \\    if (String(globalThis.__home_current_filename || "").endsWith("js/bun/http/hspec.test.ts")) {
-    \\      const status = __home_http_raw_request_status(requestText);
-    \\      if (status !== 200) {
-    \\        Promise.resolve().then(() => socket.emit("data", Buffer.from("HTTP/1.1 " + String(status || 400) + " Bad Request\r\nContent-Length: 0\r\n\r\n")));
-    \\        if (typeof callback === "function") Promise.resolve().then(() => callback());
-    \\        return true;
-    \\      }
-    \\    }
     \\    const lines = requestText.slice(0, headerEnd).split("\r\n");
     \\    const requestLine = String(lines.shift() || "GET / HTTP/1.1").split(" ");
     \\    const method = requestLine[0] || "GET";
@@ -95372,16 +95361,6 @@ fn rewriteDenoFetchResponseCorpus(allocator: std.mem.Allocator, source: []const 
     );
 }
 
-fn rewriteHspecCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    return try std.mem.replaceOwned(
-        u8,
-        allocator,
-        source,
-        "import { runTests } from \"./http-spec.ts\";",
-        "const { runTests } = globalThis.__home_import(\"./http-spec.ts\");",
-    );
-}
-
 fn rewriteMemfdDisabledCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     return try std.mem.replaceOwned(
         u8,
@@ -95400,10 +95379,6 @@ fn rewriteRuntimeErrorCorpus(allocator: std.mem.Allocator, source: []const u8) !
         "import RuntimeError from \"../../../packages/bun-error/runtime-error\";",
         "const RuntimeError = globalThis.__home_import(\"../../../packages/bun-error/runtime-error\").default;",
     );
-}
-
-fn rewriteSinonIssue347Corpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    return try std.mem.replaceOwned(u8, allocator, source, "it.failing(", "it(");
 }
 
 fn rewriteDifferentDirectorySnapshotCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
@@ -99528,7 +99503,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/http/fetch-header-count-limit.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/http/hspec.test.ts"))
-        try rewriteHspecCorpus(allocator, module_source)
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/http/http-server-chunking.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/http/req-url-leak.test.ts"))
@@ -99882,7 +99857,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/test/fake-timers/sinonjs/fake-timers.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Sinon fake timers upstream matrix")
     else if (std.mem.eql(u8, relative_path, "js/bun/test/fake-timers/sinonjs/issue-347.test.ts"))
-        try rewriteSinonIssue347Corpus(allocator, module_source)
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/jest-each-gc-root.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/jest-extended.test.js"))
@@ -100429,6 +100404,10 @@ fn isNativeHttpPromiseCorpusFile(relative: []const u8) bool {
     return std.mem.eql(u8, relative, "js/bun/http/serve-pending-promise-abort-leak.test.ts");
 }
 
+fn isNativeHttpServerCorpusFile(relative: []const u8) bool {
+    return std.mem.eql(u8, relative, "js/bun/http/hspec.test.ts");
+}
+
 fn isNativeHttpProxyCorpusFile(relative: []const u8) bool {
     return std.mem.eql(u8, relative, "js/bun/http/proxy.test.js") or
         std.mem.eql(u8, relative, "js/bun/http/proxy.test.ts");
@@ -100436,6 +100415,7 @@ fn isNativeHttpProxyCorpusFile(relative: []const u8) bool {
 
 fn isNativeBunTestCorpusFile(relative: []const u8) bool {
     return std.mem.eql(u8, relative, "js/bun/resolve/require.test.ts") or
+        std.mem.eql(u8, relative, "js/bun/test/fake-timers/sinonjs/issue-347.test.ts") or
         std.mem.eql(u8, relative, "js/bun/test/mock/6879/6879.test.ts") or
         std.mem.eql(u8, relative, "js/bun/test/mock/mock-module.test.ts") or
         std.mem.eql(u8, relative, "js/bun/test/snapshot-tests/snapshots/snapshot.test.ts") or
@@ -100583,6 +100563,7 @@ fn isNativeHomeCorpusFile(relative: []const u8) bool {
         isNativeWebSocketCorpusFile(relative) or
         isNativeHttpTlsCorpusFile(relative) or
         isNativeHttpPromiseCorpusFile(relative) or
+        isNativeHttpServerCorpusFile(relative) or
         isNativeHttpProxyCorpusFile(relative) or
         isNativeBunTestCorpusFile(relative) or
         isNativeS3CorpusFile(relative) or
@@ -100780,6 +100761,7 @@ fn runRelativeFile(
             isNativeWebSocketCorpusFile(relative) or
             isNativeHttpTlsCorpusFile(relative) or
             isNativeHttpPromiseCorpusFile(relative) or
+            isNativeHttpServerCorpusFile(relative) or
             isNativeHttpProxyCorpusFile(relative) or
             isNativeBunTestCorpusFile(relative) or
             isNativeS3CorpusFile(relative) or
@@ -101243,6 +101225,20 @@ test "native HTTP promise corpus routing covers aborted request cleanup" {
     }) |non_match| try std.testing.expect(!isNativeHttpPromiseCorpusFile(non_match));
 }
 
+test "native HTTP server corpus routing covers the imported hspec matrix" {
+    const relative = "js/bun/http/hspec.test.ts";
+    try Io.Dir.cwd().access(std.testing.io, "packages/runtime/test/bun-corpus/" ++ relative, .{});
+    try std.testing.expect(isNativeHttpServerCorpusFile(relative));
+    try std.testing.expect(isNativeHomeCorpusFile(relative));
+
+    inline for (.{
+        "js/bun/http/hspec.test.js",
+        "js/bun/http/hspec-fixture.test.ts",
+        "js/bun/http/nested/hspec.test.ts",
+        "js/bun/https/hspec.test.ts",
+    }) |non_match| try std.testing.expect(!isNativeHttpServerCorpusFile(non_match));
+}
+
 test "native HTTP proxy corpus routing covers the exact local integration file" {
     inline for (.{
         "js/bun/http/proxy.test.js",
@@ -101260,9 +101256,10 @@ test "native HTTP proxy corpus routing covers the exact local integration file" 
     }) |non_match| try std.testing.expect(!isNativeHttpProxyCorpusFile(non_match));
 }
 
-test "native Bun test corpus routing covers require, mocks, snapshots, and test.failing workflows" {
+test "native Bun test corpus routing covers require, fake timers, mocks, snapshots, and test.failing workflows" {
     inline for (.{
         "js/bun/resolve/require.test.ts",
+        "js/bun/test/fake-timers/sinonjs/issue-347.test.ts",
         "js/bun/test/mock/6879/6879.test.ts",
         "js/bun/test/mock/mock-module.test.ts",
         "js/bun/test/snapshot-tests/snapshots/snapshot.test.ts",
@@ -101275,6 +101272,7 @@ test "native Bun test corpus routing covers require, mocks, snapshots, and test.
 
     inline for (.{
         "js/bun/resolve/require.test.js",
+        "js/bun/test/fake-timers/sinonjs/issue-347.test.js",
         "js/bun/test/mock/6879/6879.test.js",
         "js/bun/test/mock/mock-module.test.js",
         "js/bun/test/snapshot-tests/snapshots/snapshot.test.js",
@@ -131236,7 +131234,9 @@ test "bootstrap runner mirrors Bun h1spec raw HTTP compliance matrix" {
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "uNetworking h1spec HTTP compliance integration") == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_import(\"./http-spec.ts\")") != null);
-    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_http_raw_request_status") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_http_raw_request_metadata") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_http_raw_request_status") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "endsWith(\"js/bun/http/hspec.test.ts\")") == null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_modules[\"js/bun/http/http-spec.ts\"]") != null);
 
     var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
