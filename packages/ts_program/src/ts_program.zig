@@ -9180,6 +9180,54 @@ test "Program: namespace imports preserve generic callbacks without a default ex
     try expectCompilationLacksDiagnosticCode(compilation, 2322);
 }
 
+test "Program: qualified imported leaves retain contextual callback signatures" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver };
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+
+    const shapes =
+        \\export interface Base { value: unknown; }
+        \\export interface Context { nested: readonly [string]; }
+        \\export interface Params { path: string[]; }
+    ;
+    const owner =
+        \\import type * as Shapes from "./shapes.js";
+        \\export type Processor<T extends Shapes.Base = Shapes.Base> =
+        \\  (schema: T, context: Shapes.Context, params: Shapes.Params) => void;
+    ;
+    const consumer =
+        \\import type { Processor } from "./owner.js";
+        \\interface Schema { value: string; }
+        \\export const processor: Processor<Schema> = (schema, context, params) => {
+        \\  const value: string = schema.value;
+        \\  const wrong: number = schema.value;
+        \\  const path: string[] = params.path;
+        \\  const wrongPath: number[] = params.path;
+        \\  void value; void wrong; void path; void wrongPath; void context;
+        \\};
+    ;
+    try vfs.addFile("/proj/shapes.ts", shapes);
+    try vfs.addFile("/proj/owner.ts", owner);
+    try vfs.addFile("/proj/consumer.ts", consumer);
+    _ = try p.add("/proj/shapes.ts", shapes);
+    _ = try p.add("/proj/owner.ts", owner);
+    const consumer_id = try p.add("/proj/consumer.ts", consumer);
+
+    try p.compileAll(.{
+        .no_emit = true,
+        .strict_flags = .{ .no_implicit_any = true, .strict_null_checks = true },
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    });
+    const compilation = p.fileById(consumer_id).compilation.?;
+    try expectCompilationLacksDiagnosticCode(compilation, 7006);
+    try T.expectEqual(@as(usize, 2), compilation.diagnostics.items.len);
+    for (compilation.diagnostics.items) |diagnostic| try T.expectEqual(@as(u32, 2322), diagnostic.code);
+}
+
 test "Program: named imports preserve generic interface method context" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();

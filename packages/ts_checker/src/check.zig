@@ -596,6 +596,7 @@ pub const ProgramExportedType = struct {
     target_path: []const u8,
     export_name: []const u8,
     declaration: *const ProgramClassSchema.Declaration,
+    contextual_only: bool = false,
 };
 
 pub const ProgramAmbientModuleInterfaceExport = struct {
@@ -30577,6 +30578,9 @@ pub const Checker = struct {
                 const v = hir_mod.varDeclOf(self.hir, parent);
                 if (v.init != fn_node) return null;
                 target_t = self.hir.typeOf(parent);
+                if (v.type_annotation != hir_mod.none_node_id) {
+                    target_t = (self.programContextualExportedType(v.type_annotation) catch null) orelse target_t;
+                }
             },
             .assignment => {
                 const a = hir_mod.assignmentOf(self.hir, parent);
@@ -106749,6 +106753,7 @@ pub const Checker = struct {
         if (self.findVisibleNamedTypeDecl(anchor, name)) |local| {
             const position = self.hir.spanOf(local).start;
             for (self.program_exported_types) |entry| {
+                if (entry.contextual_only) continue;
                 if (entry.declaration.position == position and std.mem.eql(u8, entry.declaration.path, self.importer_path))
                     return self.programDeclarationTypeReference(entry.declaration, anchor);
             }
@@ -106776,9 +106781,46 @@ pub const Checker = struct {
 
     fn programExportedTypeForImportPath(self: *Checker, import_node: NodeId, specifier: hir_mod.StringId, name: hir_mod.StringId, anchor: NodeId) CheckError!?TypeId {
         for (self.program_exported_types) |entry| {
+            if (entry.contextual_only) continue;
             if (!std.mem.eql(u8, entry.export_name, self.string_interner.get(name))) continue;
             if (!try self.programImportTargetsPath(import_node, self.string_interner.get(specifier), entry.target_path)) continue;
             return self.programDeclarationTypeReference(entry.declaration, anchor);
+        }
+        return null;
+    }
+
+    /// A callable type alias with an untransferable inner leaf must not become
+    /// the variable's general-purpose type. It can still provide exact outer
+    /// contextual parameter slots to that variable's function initializer.
+    fn programContextualExportedType(self: *Checker, type_node: NodeId) CheckError!?TypeId {
+        if (type_node == hir_mod.none_node_id or self.hir.kindOf(type_node) != .type_ref) return null;
+        const reference = hir_mod.typeRefOf(self.hir, type_node);
+        if (reference.qualifier_len != 0) return null;
+        const root = self.rootBlockFor(type_node);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        for (hir_mod.blockStmts(self.hir, root)) |statement| {
+            if (self.hir.kindOf(statement) != .import_decl) continue;
+            const import = hir_mod.importOf(self.hir, statement);
+            var imported_name: ?hir_mod.StringId = null;
+            if (import.default_binding != hir_mod.none_node_id and
+                self.hir.kindOf(import.default_binding) == .identifier and
+                hir_mod.identifierOf(self.hir, import.default_binding).name == reference.name)
+            {
+                imported_name = self.string_interner.intern("default") catch return error.OutOfMemory;
+            }
+            for (hir_mod.importNamed(self.hir, statement)) |specifier| {
+                const item = hir_mod.importSpecifierOf(self.hir, specifier);
+                if (item.local == reference.name) {
+                    imported_name = item.imported;
+                    break;
+                }
+            }
+            const name = imported_name orelse continue;
+            for (self.program_exported_types) |entry| {
+                if (!entry.contextual_only or !std.mem.eql(u8, entry.export_name, self.string_interner.get(name))) continue;
+                if (!try self.programImportTargetsPath(statement, self.string_interner.get(import.module), entry.target_path)) continue;
+                return self.programDeclarationTypeReference(entry.declaration, type_node);
+            }
         }
         return null;
     }
@@ -107142,9 +107184,10 @@ pub const Checker = struct {
 
     fn lowerProgramExpression(self: *Checker, expression: *const ProgramClassSchema.Expression, declaration: *const ProgramClassSchema.Declaration, args: []const TypeId) ProgramTypeError!TypeId {
         switch (expression.*) {
-            .unsupported => return error.UnsupportedProgramType,
+            .unsupported => return if (declaration.contextual_only) types.Primitive.any else error.UnsupportedProgramType,
+            .opaque_leaf => return types.Primitive.any,
             .primitive => |type_id| return type_id,
-            .builtin_object => |name| return self.lowerBuiltinObjectType(name) orelse error.UnsupportedProgramType,
+            .builtin_object => |name| return self.lowerBuiltinObjectType(name) orelse if (declaration.contextual_only) types.Primitive.any else error.UnsupportedProgramType,
             .parameter => |parameter| {
                 for (declaration.parameters, args) |*param, arg| if (param == parameter) return arg;
                 return self.programExpressionParameter(parameter);
@@ -107253,7 +107296,10 @@ pub const Checker = struct {
                 const values = try self.gpa.alloc(TypeId, ref.arguments.len);
                 defer self.gpa.free(values);
                 for (ref.arguments, values) |arg, *out| out.* = try self.lowerProgramExpression(arg, declaration, args);
-                return self.programDeclarationReference(ref.declaration, values, &.{});
+                return self.programDeclarationReference(ref.declaration, values, &.{}) catch |err| switch (err) {
+                    error.UnsupportedProgramType => if (declaration.contextual_only) types.Primitive.any else error.UnsupportedProgramType,
+                    error.OutOfMemory => error.OutOfMemory,
+                };
             },
             .indexed_access => |indexed| {
                 const object_t = try self.lowerProgramExpression(indexed.object, declaration, args);

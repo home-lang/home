@@ -15,6 +15,7 @@ const Context = struct {
     source: usize,
     declaration: *schema.Declaration,
     locals: []const *const schema.Parameter = &.{},
+    allow_opaque: bool = false,
 };
 
 pub fn collect(gpa: std.mem.Allocator, resolver: *resolver_mod.Resolver, sources: []const Source, source: Source, node: hir.NodeId) !*const schema.Schema {
@@ -33,6 +34,7 @@ pub fn collect(gpa: std.mem.Allocator, resolver: *resolver_mod.Resolver, sources
 }
 
 pub const Builder = struct {
+    gpa: std.mem.Allocator,
     arena: std.mem.Allocator,
     sources: []const Source,
     resolver: *resolver_mod.Resolver,
@@ -40,7 +42,7 @@ pub const Builder = struct {
     declarations: std.AutoHashMapUnmanaged(Key, *schema.Declaration) = .empty,
 
     pub fn init(gpa: std.mem.Allocator, arena: std.mem.Allocator, resolver: *resolver_mod.Resolver, sources: []const Source) !Builder {
-        var result: Builder = .{ .arena = arena, .sources = sources, .resolver = resolver, .query = origins.Query.init(gpa, resolver) };
+        var result: Builder = .{ .gpa = gpa, .arena = arena, .sources = sources, .resolver = resolver, .query = origins.Query.init(gpa, resolver) };
         errdefer result.query.deinit();
         for (sources) |owner| try result.query.borrow(owner.path, owner.compilation);
         return result;
@@ -52,11 +54,32 @@ pub const Builder = struct {
         return node;
     }
 
+    fn transferable(self: *Builder, value: *const schema.Expression) !*const schema.Expression {
+        switch (value.*) {
+            .primitive, .opaque_leaf, .builtin_object, .parameter, .string, .number, .boolean => return value,
+            .unsupported => return self.expression(.opaque_leaf),
+            else => {},
+        }
+        if (try schema.Schema.expressionSupported(value, self.gpa)) return value;
+        // The surrounding declaration still carries exact arity, optionality,
+        // generic parameters, and every supported sibling. `any` is the only
+        // sound cross-pool representation for this one unprojectable leaf.
+        return self.expression(.opaque_leaf);
+    }
+
+    fn lowerTransferable(self: *Builder, context: Context, node: hir.NodeId) !*const schema.Expression {
+        const lowered = try self.lower(context, node);
+        if (!context.allow_opaque) return lowered;
+        const result = try self.transferable(lowered);
+        if (result != lowered) context.declaration.contextual_only = true;
+        return result;
+    }
+
     fn extendContext(self: *Builder, context: Context, parameters: []const *const schema.Parameter) !Context {
         const locals = try self.arena.alloc(*const schema.Parameter, context.locals.len + parameters.len);
         @memcpy(locals[0..context.locals.len], context.locals);
         @memcpy(locals[context.locals.len..], parameters);
-        return .{ .source = context.source, .declaration = context.declaration, .locals = locals };
+        return .{ .source = context.source, .declaration = context.declaration, .locals = locals, .allow_opaque = context.allow_opaque };
     }
 
     fn localParameter(context: Context, name: []const u8) ?*const schema.Parameter {
@@ -113,13 +136,17 @@ pub const Builder = struct {
         }
         def.parameters = try self.arena.alloc(schema.Parameter, info.params.len);
         for (info.params, def.parameters) |node, *param| param.* = .{ .name = c.interner.get(hir.typeParameterOf(&c.hir, node).name) };
-        const context: Context = .{ .source = key.source, .declaration = def };
+        const allow_opaque = kind == .type_alias_decl and switch (c.hir.kindOf(hir.typeAliasOf(&c.hir, key.node).aliased)) {
+            .fn_type, .constructor_type => true,
+            else => false,
+        };
+        const context: Context = .{ .source = key.source, .declaration = def, .allow_opaque = allow_opaque };
         for (info.params, def.parameters) |node, *param| {
             const value = hir.typeParameterOf(&c.hir, node);
             param.variance = value.variance;
             param.is_const = value.is_const;
-            if (value.constraint != 0) param.constraint = try self.lower(context, value.constraint);
-            if (value.default != 0) param.default = try self.lower(context, value.default);
+            if (value.constraint != 0) param.constraint = try self.lowerTransferable(context, value.constraint);
+            if (value.default != 0) param.default = try self.lowerTransferable(context, value.default);
         }
         def.body = if (kind == .type_alias_decl)
             try self.lower(context, hir.typeAliasOf(&c.hir, key.node).aliased)
@@ -245,31 +272,31 @@ pub const Builder = struct {
             const value = hir.typeParameterOf(&c.hir, node);
             parameter.variance = value.variance;
             parameter.is_const = value.is_const;
-            if (value.constraint != 0) parameter.constraint = try self.lower(function_context, value.constraint);
-            if (value.default != 0) parameter.default = try self.lower(function_context, value.default);
+            if (value.constraint != 0) parameter.constraint = try self.lowerTransferable(function_context, value.constraint);
+            if (value.default != 0) parameter.default = try self.lowerTransferable(function_context, value.default);
         }
         var params: std.ArrayListUnmanaged(schema.Element) = .empty;
         var this_type: ?*const schema.Expression = null;
         for (nodes, 0..) |node, i| {
             const value = hir.parameterOf(&c.hir, node);
             if (i == 0 and c.hir.kindOf(value.name) == .identifier and std.mem.eql(u8, c.interner.get(hir.identifierOf(&c.hir, value.name).name), "this")) {
-                this_type = try self.lower(function_context, value.type_annotation);
+                this_type = try self.lowerTransferable(function_context, value.type_annotation);
                 continue;
             }
-            try params.append(self.arena, .{ .type = try self.lower(function_context, value.type_annotation), .optional = value.flags.is_optional or value.default_value != 0, .rest = value.flags.is_rest });
+            try params.append(self.arena, .{ .type = try self.lowerTransferable(function_context, value.type_annotation), .optional = value.flags.is_optional or value.default_value != 0, .rest = value.flags.is_rest });
         }
         const predicate = if (result != 0 and c.hir.kindOf(result) == .type_predicate_type) blk: {
             const value = hir.typePredicateOf(&c.hir, result);
             break :blk schema.TypePredicate{
                 .param_index = value.param_index,
-                .target = try self.lower(function_context, value.target_type),
+                .target = try self.lowerTransferable(function_context, value.target_type),
                 .is_asserts = value.is_asserts,
             };
         } else null;
         const result_type = if (predicate) |value|
             try self.expression(.{ .primitive = if (value.is_asserts) Primitive.void_t else Primitive.boolean_t })
         else
-            try self.lower(function_context, result);
+            try self.lowerTransferable(function_context, result);
         return self.expression(.{ .function = .{
             .type_parameters = type_parameters,
             .parameters = try params.toOwnedSlice(self.arena),
@@ -287,21 +314,33 @@ pub const Builder = struct {
             .type_ref => {
                 const ref = hir.typeRefOf(&c.hir, node);
                 const name = c.interner.get(ref.name);
-                if (ref.qualifier_len != 0) return self.expression(.unsupported);
-                if (localParameter(context, name)) |parameter| return self.expression(.{ .parameter = parameter });
-                for (context.declaration.parameters) |*param| {
-                    if (std.mem.eql(u8, param.name, name)) return self.expression(.{ .parameter = param });
+                if (ref.qualifier_len == 0) {
+                    if (localParameter(context, name)) |parameter| return self.expression(.{ .parameter = parameter });
+                    for (context.declaration.parameters) |*param| {
+                        if (std.mem.eql(u8, param.name, name)) return self.expression(.{ .parameter = param });
+                    }
+                } else {
+                    if (!context.allow_opaque) return self.expression(.unsupported);
+                    context.declaration.contextual_only = true;
+                    const qualifiers = hir.typeRefQualifier(&c.hir, node);
+                    if (qualifiers.len > 0 and c.hir.kindOf(qualifiers[0]) == .identifier) {
+                        const root_name = c.interner.get(hir.identifierOf(&c.hir, qualifiers[0]).name);
+                        if (localParameter(context, root_name) != null) return self.expression(.unsupported);
+                        for (context.declaration.parameters) |*param| {
+                            if (std.mem.eql(u8, param.name, root_name)) return self.expression(.unsupported);
+                        }
+                    }
                 }
-                const primitive = std.StaticStringMap(u32).initComptime(.{
+                const primitive = if (ref.qualifier_len == 0) std.StaticStringMap(u32).initComptime(.{
                     .{ "any", Primitive.any },               .{ "unknown", Primitive.unknown }, .{ "never", Primitive.never },
                     .{ "string", Primitive.string_t },       .{ "number", Primitive.number_t }, .{ "boolean", Primitive.boolean_t },
                     .{ "undefined", Primitive.undefined_t }, .{ "null", Primitive.null_t },     .{ "void", Primitive.void_t },
                     .{ "object", Primitive.object_t },       .{ "bigint", Primitive.bigint_t }, .{ "symbol", Primitive.symbol_t },
-                }).get(name);
+                }).get(name) else null;
                 if (primitive) |value| return self.expression(.{ .primitive = value });
                 const args = try self.arena.alloc(*const schema.Expression, ref.args_len);
                 for (hir.typeRefArgs(&c.hir, node), args) |arg, *out| out.* = try self.lower(context, arg);
-                switch (try self.resolve(context.source, node, ref.name)) {
+                switch (if (ref.qualifier_len == 0) try self.resolve(context.source, node, ref.name) else try self.resolveQualified(context.source, node, ref)) {
                     .declaration => |key| return self.expression(.{ .reference = .{ .declaration = try self.declaration(key), .arguments = args } }),
                     .unsupported => return self.expression(.unsupported),
                     .missing => {
@@ -487,30 +526,7 @@ pub const Builder = struct {
 
     fn resolve(self: *Builder, source: usize, node: hir.NodeId, name: hir.StringId) error{OutOfMemory}!Resolution {
         const c = self.sources[source].compilation;
-        var current = node;
-        var scope = c.module.root;
-        while (current != 0) : (current = c.hir.parentOf(current)) {
-            var found = false;
-            for (c.module.scopes.items) |candidate| if (candidate.introducing_node == current) {
-                scope = candidate;
-                found = true;
-                break;
-            };
-            if (found) break;
-        }
-        var current_scope: ?*binder.Scope = scope;
-        var symbol: ?*binder.Symbol = null;
-        while (current_scope) |candidate| : (current_scope = candidate.parent) {
-            if (candidate.types.get(name)) |found| {
-                symbol = found;
-                break;
-            }
-            if (candidate.values.get(name)) |found| if (found.flags.is_import) {
-                symbol = found;
-                break;
-            };
-        }
-        const bound = symbol orelse return .missing;
+        const bound = self.scopedSymbol(source, node, name) orelse return .missing;
         if (!bound.flags.is_import) {
             var local_declaration: ?hir.NodeId = null;
             for (bound.decls.items) |declaration_node| {
@@ -534,6 +550,51 @@ pub const Builder = struct {
                 if (value.local != name) continue;
                 return self.resolveImported(source, c.interner.get(import.module), c.interner.get(value.imported));
             }
+        }
+        return .unsupported;
+    }
+
+    fn scopedSymbol(self: *Builder, source: usize, node: hir.NodeId, name: hir.StringId) ?*binder.Symbol {
+        const c = self.sources[source].compilation;
+        var current = node;
+        var scope = c.module.root;
+        while (current != 0) : (current = c.hir.parentOf(current)) {
+            var found = false;
+            for (c.module.scopes.items) |candidate| if (candidate.introducing_node == current) {
+                scope = candidate;
+                found = true;
+                break;
+            };
+            if (found) break;
+        }
+        var current_scope: ?*binder.Scope = scope;
+        var symbol: ?*binder.Symbol = null;
+        while (current_scope) |candidate| : (current_scope = candidate.parent) {
+            if (candidate.types.get(name)) |found| {
+                symbol = found;
+                break;
+            }
+            if (candidate.values.get(name)) |found| if (found.flags.is_import) {
+                symbol = found;
+                break;
+            };
+        }
+        return symbol;
+    }
+
+    fn resolveQualified(self: *Builder, source: usize, node: hir.NodeId, ref: hir.TypeRefPayload) error{OutOfMemory}!Resolution {
+        const c = self.sources[source].compilation;
+        const qualifiers = hir.typeRefQualifier(&c.hir, node);
+        if (qualifiers.len != 1 or c.hir.kindOf(qualifiers[0]) != .identifier) return .unsupported;
+        const namespace_name = hir.identifierOf(&c.hir, qualifiers[0]).name;
+        const bound = self.scopedSymbol(source, qualifiers[0], namespace_name) orelse return .unsupported;
+        if (!bound.flags.is_import) return .unsupported;
+        for (hir.blockStmts(&c.hir, c.root)) |statement| {
+            if (c.hir.kindOf(statement) != .import_decl) continue;
+            const import = hir.importOf(&c.hir, statement);
+            if (import.namespace_binding == 0 or c.hir.kindOf(import.namespace_binding) != .identifier) continue;
+            if (hir.identifierOf(&c.hir, import.namespace_binding).name != namespace_name) continue;
+            return self.resolveImported(source, c.interner.get(import.module), c.interner.get(ref.name));
         }
         return .unsupported;
     }
@@ -842,6 +903,36 @@ test "class schema: mapped conditional aliases retain exported function signatur
     try T.expect(proto[0].mapped.constraint.keyof.parameter == &proto_reference.declaration.parameters[0]);
     try T.expect(proto[1].this_type.parameter == &proto_reference.declaration.parameters[0]);
     try T.expect(function.parameters[3].type.reference.declaration.body.?.object[0].type.* == .typeof_class);
+}
+
+test "class schema: qualified imports retain callable shells around opaque leaves" {
+    const graph = try TestGraph.init(&.{
+        .{ .path = "/owner.ts", .text =
+        \\import type * as Shapes from "./shapes.js";
+        \\export type Processor<T extends Shapes.Base = Shapes.Base> =
+        \\  (schema: T, context: Shapes.Context, params: Shapes.Params) => void;
+        \\export type Shadowed<Shapes> = Shapes.Context;
+        },
+        .{ .path = "/shapes.ts", .text =
+        \\export interface Base { value: unknown; }
+        \\export interface Context { nested: readonly [string]; }
+        \\export interface Params { path: string[]; }
+        },
+    });
+    defer graph.deinit();
+    const result = try graph.class(0, "Processor");
+    defer result.deinit(T.allocator);
+    try T.expect(try result.isSupported(T.allocator));
+    try T.expect(result.declaration.parameters[0].constraint.?.* == .reference);
+    const function = result.declaration.body.?.function;
+    try T.expect(function.parameters[0].type.parameter == &result.declaration.parameters[0]);
+    try T.expect(function.parameters[1].type.* == .opaque_leaf);
+    const params = function.parameters[2].type.reference.declaration.body.?.object;
+    try T.expectEqualStrings("path", params[0].name);
+    try T.expect(params[0].type.* == .array);
+    const shadowed = try graph.class(0, "Shadowed");
+    defer shadowed.deinit(T.allocator);
+    try T.expect(shadowed.declaration.body.?.* == .unsupported);
 }
 
 test "class schema: generic interface methods retain local type parameters" {
