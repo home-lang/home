@@ -5156,6 +5156,10 @@ pub const Checker = struct {
     /// Checked-JS computed prototype replacement requires a computed access to
     /// `prototype` assigned an object literal. Avoid whole-HIR probes otherwise.
     source_may_have_computed_prototype_assignment: bool = false,
+    /// Namespace-object constructor recovery scans the source root for
+    /// `NS.Member.prototype` assignments. The HIR match cannot succeed when
+    /// the attached source has no `prototype` spelling at all.
+    source_may_have_prototype_name: bool = false,
     /// Legacy checked-JS constructor recovery walks assignments and source
     /// prefixes looking for `Ctor.prototype`. Files without that exact syntax
     /// cannot participate, so keep the negative path constant-time.
@@ -5655,6 +5659,7 @@ pub const Checker = struct {
         self.source_may_have_computed_prototype_assignment =
             markers.contains("prototype") and markers.contains("[") and
             markers.contains("=") and markers.contains("{");
+        self.source_may_have_prototype_name = markers.contains("prototype");
         self.source_may_have_prototype_assignment = markers.contains(".prototype");
         self.source_may_have_protected_member = markers.contains("protected");
         self.may_have_expando_property_assignments = null;
@@ -121904,6 +121909,7 @@ pub const Checker = struct {
         member_name: hir_mod.StringId,
         anchor: NodeId,
     ) bool {
+        if (self.source != null and !self.source_may_have_prototype_name) return false;
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
         const prototype_name = self.string_interner.intern("prototype") catch return false;
