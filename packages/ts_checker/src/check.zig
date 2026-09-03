@@ -66619,6 +66619,12 @@ pub const Checker = struct {
                     }
                     const optional_ok = pm.is_optional or !cm.is_optional;
                     if (optional_ok and self.interfaceSelfTypeMemberOverride(node, ext_node, cm, pm)) break;
+                    if (optional_ok and self.interfaceDeclaredMemberSubtypeOverride(cm, pm)) break;
+                    if (optional_ok) {
+                        if ((self.heritageGenericInstantiationAssignable(cm.type, pm.type, 0) catch null)) |assignable| {
+                            if (assignable) break;
+                        }
+                    }
                     const contextual_generic_relation = try self.contextualGenericHeritageSignatureAssignable(cm.type, pm.type);
                     const strict_property_signature_mismatch = contextual_generic_relation == null and
                         !cm.is_method and
@@ -66789,13 +66795,59 @@ pub const Checker = struct {
     }
 
     fn objectMemberDeclaredTypeRefName(self: *Checker, member: types.ObjectMember) ?hir_mod.StringId {
+        const annotation = self.objectMemberDeclaredTypeNode(member) orelse return null;
+        return self.unqualifiedTypeRefName(annotation);
+    }
+
+    fn objectMemberDeclaredTypeNode(self: *Checker, member: types.ObjectMember) ?NodeId {
         if (member.decl_node == hir_mod.none_node_id) return null;
-        const annotation = switch (self.hir.kindOf(member.decl_node)) {
+        return switch (self.hir.kindOf(member.decl_node)) {
             .interface_member => hir_mod.interfaceMemberOf(self.hir, member.decl_node).type_node,
             .object_property => hir_mod.objectPropertyOf(self.hir, member.decl_node).type_annotation,
             else => return null,
         };
-        return self.unqualifiedTypeRefName(annotation);
+    }
+
+    /// Accept an explicitly redeclared member whose named interface type
+    /// directly extends the base member's named interface type with the same
+    /// written generic arguments. This is a conservative syntactic proof for
+    /// covariant wrapper overrides when structural generic expansion has not
+    /// retained enough identity for the relation engine.
+    fn interfaceDeclaredMemberSubtypeOverride(
+        self: *Checker,
+        child_member: types.ObjectMember,
+        parent_member: types.ObjectMember,
+    ) bool {
+        const child_type = self.objectMemberDeclaredTypeNode(child_member) orelse return false;
+        const parent_type = self.objectMemberDeclaredTypeNode(parent_member) orelse return false;
+        if (self.hir.kindOf(child_type) != .type_ref or self.hir.kindOf(parent_type) != .type_ref) return false;
+        const child_ref = hir_mod.typeRefOf(self.hir, child_type);
+        const parent_ref = hir_mod.typeRefOf(self.hir, parent_type);
+        if (child_ref.qualifier_len != 0 or parent_ref.qualifier_len != 0) return false;
+        const child_args = hir_mod.typeRefArgs(self.hir, child_type);
+        const parent_args = hir_mod.typeRefArgs(self.hir, parent_type);
+        if (child_args.len != parent_args.len) return false;
+        for (child_args, parent_args) |child_arg, parent_arg| {
+            if (!std.mem.eql(u8, self.nodeSourceTextOrEmpty(child_arg), self.nodeSourceTextOrEmpty(parent_arg))) return false;
+        }
+        const child_decl = self.findVisibleNamedTypeDecl(child_type, child_ref.name) orelse return false;
+        if (self.hir.kindOf(child_decl) != .interface_decl) return false;
+        for (hir_mod.interfaceExtends(self.hir, child_decl)) |base| {
+            if (self.hir.kindOf(base) != .type_ref) continue;
+            const base_ref = hir_mod.typeRefOf(self.hir, base);
+            if (base_ref.qualifier_len != 0 or base_ref.name != parent_ref.name) continue;
+            const base_args = hir_mod.typeRefArgs(self.hir, base);
+            if (base_args.len != child_args.len) continue;
+            var arguments_match = true;
+            for (base_args, child_args) |base_arg, child_arg| {
+                if (!std.mem.eql(u8, self.nodeSourceTextOrEmpty(base_arg), self.nodeSourceTextOrEmpty(child_arg))) {
+                    arguments_match = false;
+                    break;
+                }
+            }
+            if (arguments_match) return true;
+        }
+        return false;
     }
 
     fn checkMergedInterfaceExtendsCompatibility(
@@ -208120,6 +208172,29 @@ test "checker: contextual generic signatures drive interface heritage" {
         if (d.code == TsCodes.interface_incorrectly_extends) heritage_errors += 1;
     }
     try T.expectEqual(@as(usize, 4), heritage_errors);
+}
+
+test "checker: generic interface heritage accepts exact and covariant wrapper overrides" {
+    const s = try newSetup(
+        \\interface Def<F> { format: F }
+        \\interface CustomDef<F> extends Def<F> { check(value: string): boolean }
+        \\interface Internals<F> { def: Def<F> }
+        \\interface CustomInternals<F> extends Internals<F> { def: CustomDef<F> }
+        \\interface Format<F> { slot: Internals<F> }
+        \\interface Custom<F> extends Format<F> { slot: CustomInternals<F> }
+        \\interface Pair<T> { value: T }
+        \\interface Pipe<A, B> { input: A; output: B }
+        \\interface Preprocess<B, I> extends Pipe<Pair<I>, B> { input: Pair<I>; output: B }
+        \\interface BadPreprocess<B, I> extends Pipe<Pair<I>, B> { input: Pair<B>; output: B }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.interface_incorrectly_extends));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.interface_incorrectly_extends,
+        "Interface 'BadPreprocess<B, I>' incorrectly extends interface 'Pipe<Pair<I>, B>'.",
+    ));
 }
 
 test "checker: interface heritage accepts covariant self members" {
