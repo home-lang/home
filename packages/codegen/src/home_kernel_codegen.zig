@@ -2887,11 +2887,38 @@ pub const HomeKernelCodegen = struct {
         else if (std.mem.eql(u8, name, "inb")) { kind = .in; width = 1; }
         else if (std.mem.eql(u8, name, "inw")) { kind = .in; width = 2; }
         else if (std.mem.eql(u8, name, "inl")) { kind = .in; width = 4; }
+        // Architecture-neutral names, so kernel source can stop wrapping an
+        // x86 mnemonic in inline assembly to say "halt" or "mask interrupts".
+        // The x86 spellings below stay accepted, because the whole kernel tree
+        // uses them today (home-lang/home-os#60).
+        //
+        // `arch_` rather than `cpu_`: HomeOS already defines `cpu_halt` and
+        // `cpu_pause` as Home functions, and a program's own definition wins
+        // over an intrinsic — so a `cpu_halt` intrinsic would turn that
+        // function's body into a call to itself.
+        else if (std.mem.eql(u8, name, "arch_halt")) { kind = .cpu; cpu_op = .halt; }
+        else if (std.mem.eql(u8, name, "arch_disable_interrupts")) { kind = .cpu; cpu_op = .disable_irq; }
+        else if (std.mem.eql(u8, name, "arch_enable_interrupts")) { kind = .cpu; cpu_op = .enable_irq; }
+        else if (std.mem.eql(u8, name, "arch_nop")) { kind = .cpu; cpu_op = .nop; }
+        else if (std.mem.eql(u8, name, "arch_spin_hint")) { kind = .cpu; cpu_op = .spin_hint; }
         else if (std.mem.eql(u8, name, "hlt")) { kind = .cpu; cpu_op = .halt; }
         else if (std.mem.eql(u8, name, "cli")) { kind = .cpu; cpu_op = .disable_irq; }
         else if (std.mem.eql(u8, name, "sti")) { kind = .cpu; cpu_op = .enable_irq; }
         else if (std.mem.eql(u8, name, "nop")) { kind = .cpu; cpu_op = .nop; }
         else if (std.mem.eql(u8, name, "pause")) { kind = .cpu; cpu_op = .spin_hint; }
+        // Architecture-neutral spellings of the same five operations.
+        //
+        // The x86 names above are also the names the kernel tree gives its own
+        // wrapper functions in `core/foundation.home`, and a program's own
+        // definition wins over an intrinsic — which is what makes those
+        // wrappers necessary today and what stops them from being written in
+        // terms of the intrinsic they shadow. These names do not collide, so a
+        // wrapper can call one and stop being inline assembly.
+        else if (std.mem.eql(u8, name, "cpu_halt")) { kind = .cpu; cpu_op = .halt; }
+        else if (std.mem.eql(u8, name, "cpu_disable_interrupts")) { kind = .cpu; cpu_op = .disable_irq; }
+        else if (std.mem.eql(u8, name, "cpu_enable_interrupts")) { kind = .cpu; cpu_op = .enable_irq; }
+        else if (std.mem.eql(u8, name, "cpu_nop")) { kind = .cpu; cpu_op = .nop; }
+        else if (std.mem.eql(u8, name, "cpu_spin_hint")) { kind = .cpu; cpu_op = .spin_hint; }
         else if (std.mem.eql(u8, name, "mfence")) { kind = .barrier; barrier_kind = .full; }
         // Architecture-neutral barrier names (home-lang/home#584). The x86
         // spellings above stay accepted so existing kernel source keeps
