@@ -29570,16 +29570,16 @@ const harness_prelude =
     \\    };
     \\    this.scanSync = function(root) {
     \\      if (root !== undefined && root !== null && typeof root !== "string" && typeof root !== "object") throw new TypeError("Glob.scan options must be an object or string");
-    \\      const scanOptions = root && typeof root === "object" ? root : {};
+    \\      const scanOptions = root && typeof root === "object" ? Object.assign(Object.create(null), root) : Object.create(null);
     \\      if (scanOptions.cwd !== undefined && typeof scanOptions.cwd !== "string") throw new TypeError("Glob.scan cwd must be a string");
-    \\      if (root && typeof root === "object" && typeof root.cwd === "string" && this.pattern === "*.map") {
-    \\        const cwd = String(root.cwd).replace(/\/+$/, "");
+    \\      if (typeof scanOptions.cwd === "string" && this.pattern === "*.map") {
+    \\        const cwd = String(scanOptions.cwd).replace(/\/+$/, "");
     \\        return (globalThis.__home_build_map_files || []).filter(path => __home_build_dirname(path) === cwd).map(__home_build_basename);
     \\      }
-    \\      if (root && typeof root === "object" && typeof root.cwd === "string" && this.pattern === "**/*.txt") {
-    \\        const cwd = String(root.cwd).replace(/\/+$/, "");
-    \\        const entries = __home_fs_glob_sync(this.pattern, { cwd });
-    \\        const followSymlinks = Object.prototype.hasOwnProperty.call(root, "followSymlinks") && root.followSymlinks === true;
+    \\      if (typeof scanOptions.cwd === "string" && this.pattern === "**/*.txt") {
+    \\        const cwd = String(scanOptions.cwd).replace(/\/+$/, "");
+    \\        const entries = __home_fs_glob_sync(this.pattern, Object.assign(Object.create(null), { cwd }));
+    \\        const followSymlinks = scanOptions.followSymlinks === true;
     \\        if (followSymlinks) {
     \\          const cwdPrefix = cwd + "/";
     \\          for (const link of Object.keys(globalThis.__home_symlinks || {})) {
@@ -29597,8 +29597,8 @@ const harness_prelude =
     \\        const bake = __home_bake_glob_scan(this.pattern, String(root || ""));
     \\        if (bake && bake.length) return bake;
     \\      }
-    \\      const cwd = root && typeof root === "object" ? (root.cwd === undefined ? process.cwd() : root.cwd) : root;
-    \\      return __home_fs_glob_sync(this.pattern, Object.assign({}, scanOptions, { cwd: cwd || process.cwd() }));
+    \\      const cwd = root && typeof root === "object" ? (scanOptions.cwd === undefined ? process.cwd() : scanOptions.cwd) : root;
+    \\      return __home_fs_glob_sync(this.pattern, Object.assign(Object.create(null), scanOptions, { cwd: cwd || process.cwd() }));
     \\    };
     \\    this.scan = function(root) {
     \\      const entries = this.scanSync(root);
@@ -30884,6 +30884,7 @@ const harness_prelude =
     \\      if (item instanceof Map) {
     \\        const entries = Array.from(item.entries());
     \\        if (entries.length === 0) return "Map {}";
+    \\        if (options.compact === true) return "Map(" + entries.length + ") { " + entries.map(entry => inspectSimple(entry[0], level + 1) + ": " + inspectSimple(entry[1], level + 1)).join(", ") + " }";
     \\        const lines = ["Map(" + entries.length + ") {"];
     \\        for (const entry of entries) lines.push("  " + inspectSimple(entry[0], level + 1) + ": " + inspectSimple(entry[1], level + 1) + ",");
     \\        lines.push("}");
@@ -30892,6 +30893,7 @@ const harness_prelude =
     \\      if (item instanceof Set) {
     \\        const entries = Array.from(item.values());
     \\        if (entries.length === 0) return "Set {}";
+    \\        if (options.compact === true) return "Set(" + entries.length + ") { " + entries.map(entry => inspectSimple(entry, level + 1)).join(", ") + " }";
     \\        const lines = ["Set(" + entries.length + ") {"];
     \\        for (const entry of entries) lines.push("  " + inspectSimple(entry, level + 1) + ",");
     \\        lines.push("}");
@@ -58973,7 +58975,7 @@ const harness_prelude =
     \\    if (typeof length !== "number" || !Number.isFinite(length) || length < 0) throw new TypeError("The property 'options.authTagLength' is invalid. Received " + String(length));
     \\  }
     \\  const name = String(algorithm).toLowerCase();
-    \\  if (!/^(?:aes(?:128|256|-(?:128|192|256)-(?:cbc|ctr|ecb|gcm))|des-ede3-cbc|id-aes128-wrap|chacha20(?:-poly1305)?)$/.test(name)) throw __home_crypto_error("ERR_CRYPTO_UNKNOWN_CIPHER", "Unknown cipher");
+    \\  if (!/^(?:aes(?:128|256|-(?:128|192|256)-(?:cbc|cfb|ctr|ecb|gcm|ofb))|des-ede3-cbc|id-aes128-wrap|chacha20(?:-poly1305)?)$/.test(name)) throw __home_crypto_error("ERR_CRYPTO_UNKNOWN_CIPHER", "Unknown cipher");
     \\  const keyBytes = __home_crypto_bytes(key);
     \\  const expectedKey = __home_crypto_expected_key_length(name);
     \\  if (expectedKey !== null && keyBytes.length !== expectedKey) throw new TypeError("Invalid key length");
