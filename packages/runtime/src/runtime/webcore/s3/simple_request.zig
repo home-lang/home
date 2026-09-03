@@ -78,6 +78,10 @@ pub const S3HttpSimpleTask = struct {
     /// by a concurrent process.env.HTTP_PROXY write while the HTTP thread is
     /// in flight, so we must own our copy for the task's lifetime.
     proxy_url: []const u8 = "",
+    /// Owned copy of the request body. The HTTP thread reads this slice
+    /// concurrently, so caller-owned multipart buffers cannot be released or
+    /// reused before `clearData()` detaches the request writer.
+    body: []const u8 = "",
     poll_ref: bun.Async.KeepAlive = bun.Async.KeepAlive.init(),
 
     pub const new = bun.TrivialNew(@This());
@@ -133,6 +137,9 @@ pub const S3HttpSimpleTask = struct {
         this.headers.deinit();
         this.sign_result.deinit();
         this.http.clearData();
+        if (this.body.len > 0) {
+            bun.default_allocator.free(this.body);
+        }
         if (this.range) |range| {
             bun.default_allocator.free(range);
         }
@@ -434,6 +441,7 @@ pub fn executeSimpleS3Request(
         .range = options.range,
         .headers = headers,
         .vm = jsc.VirtualMachine.get(),
+        .body = if (options.body.len > 0) bun.handleOom(bun.default_allocator.dupe(u8, options.body)) else "",
     });
     task.poll_ref.ref(task.vm);
 
@@ -446,7 +454,7 @@ pub fn executeSimpleS3Request(
         task.headers.entries,
         task.headers.buf.items,
         &task.response_buffer,
-        options.body,
+        task.body,
         bun.http.HTTPClientResult.Callback.New(
             *S3HttpSimpleTask,
             S3HttpSimpleTask.httpCallback,

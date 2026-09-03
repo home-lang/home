@@ -100605,6 +100605,22 @@ fn isNativeHttpProxyCorpusFile(relative: []const u8) bool {
         std.mem.eql(u8, relative, "js/bun/http/proxy.test.ts");
 }
 
+fn isNativeS3CorpusFile(relative: []const u8) bool {
+    inline for (.{
+        "s3-fd-validation.test.ts",
+        "s3-insecure.test.ts",
+        "s3-list-encode-overflow.test.ts",
+        "s3-list-objects.test.ts",
+        "s3-queueSize-validation.test.ts",
+        "s3-requester-pays.test.ts",
+        "s3-storage-class.test.ts",
+        "s3-stream-cancel-leak.test.ts",
+    }) |name| {
+        if (std.mem.eql(u8, relative, "js/bun/s3/" ++ name)) return true;
+    }
+    return false;
+}
+
 fn nativeCorpusDisabledReason(relative: []const u8) ?[]const u8 {
     if (std.mem.eql(u8, relative, "js/node/test/parallel/test-util-emit-experimental-warning.js")) {
         return "upstream test body is commented out: internal/util emitExperimentalWarning is not exercised";
@@ -100629,7 +100645,8 @@ fn isNativeHomeCorpusFile(relative: []const u8) bool {
         isNativeWebSocketCorpusFile(relative) or
         isNativeHttpTlsCorpusFile(relative) or
         isNativeHttpPromiseCorpusFile(relative) or
-        isNativeHttpProxyCorpusFile(relative);
+        isNativeHttpProxyCorpusFile(relative) or
+        isNativeS3CorpusFile(relative);
 }
 
 fn parseNativeCorpusFlags(allocator: std.mem.Allocator, source: []const u8) !OwnedFlags {
@@ -100794,7 +100811,8 @@ fn runRelativeFile(
             isNativeWebSocketCorpusFile(relative) or
             isNativeHttpTlsCorpusFile(relative) or
             isNativeHttpPromiseCorpusFile(relative) or
-            isNativeHttpProxyCorpusFile(relative)) .test_runner else .script;
+            isNativeHttpProxyCorpusFile(relative) or
+            isNativeS3CorpusFile(relative)) .test_runner else .script;
         const args_tail = try buildNativeCorpusArgs(
             allocator,
             flags.values.items,
@@ -101258,6 +101276,31 @@ test "native HTTP proxy corpus routing covers the exact local integration file" 
         "js/bun/http/nested/proxy.test.js",
         "js/bun/https/proxy.test.js",
     }) |non_match| try std.testing.expect(!isNativeHttpProxyCorpusFile(non_match));
+}
+
+test "native S3 corpus routing covers validated deterministic integration files" {
+    inline for (.{
+        "js/bun/s3/s3-fd-validation.test.ts",
+        "js/bun/s3/s3-insecure.test.ts",
+        "js/bun/s3/s3-list-encode-overflow.test.ts",
+        "js/bun/s3/s3-list-objects.test.ts",
+        "js/bun/s3/s3-queueSize-validation.test.ts",
+        "js/bun/s3/s3-requester-pays.test.ts",
+        "js/bun/s3/s3-storage-class.test.ts",
+        "js/bun/s3/s3-stream-cancel-leak.test.ts",
+    }) |relative| {
+        try std.testing.expect(isNativeS3CorpusFile(relative));
+        try std.testing.expect(isNativeHomeCorpusFile(relative));
+    }
+
+    inline for (.{
+        "js/bun/s3/s3.leak.test.ts",
+        "js/bun/s3/s3.test.ts",
+        "js/bun/s3/s3-storage-class.test.js",
+        "js/bun/s3/s3-storage-class-fixture.ts",
+        "js/bun/s3/nested/s3-storage-class.test.ts",
+        "js/bun/s3-other/s3-storage-class.test.ts",
+    }) |non_match| try std.testing.expect(!isNativeS3CorpusFile(non_match));
 }
 
 test "bootstrap addon guard precedes cached or fabricated module exports" {

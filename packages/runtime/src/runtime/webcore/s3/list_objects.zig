@@ -248,11 +248,15 @@ pub fn parseS3ListObjectsResult(xml: []const u8) !S3ListObjectsV2Result {
                                     if (strings.indexOf(xml[i..], "</Key>")) |__tag_end| {
                                         object_key = xml[i .. i + __tag_end];
                                         i = i + __tag_end + 6;
+                                    } else {
+                                        i = xml.len;
                                     }
                                 } else if (strings.eql(inner_tag_name_or_tag_end, "LastModified")) {
                                     if (strings.indexOf(xml[i..], "</LastModified>")) |__tag_end| {
                                         last_modified = xml[i .. i + __tag_end];
                                         i = i + __tag_end + 15;
+                                    } else {
+                                        i = xml.len;
                                     }
                                 } else if (strings.eql(inner_tag_name_or_tag_end, "Size")) {
                                     if (strings.indexOf(xml[i..], "</Size>")) |__tag_end| {
@@ -260,21 +264,29 @@ pub fn parseS3ListObjectsResult(xml: []const u8) !S3ListObjectsV2Result {
 
                                         object_size = std.fmt.parseInt(i64, size, 10) catch null;
                                         i = i + __tag_end + 7;
+                                    } else {
+                                        i = xml.len;
                                     }
                                 } else if (strings.eql(inner_tag_name_or_tag_end, "StorageClass")) {
                                     if (strings.indexOf(xml[i..], "</StorageClass>")) |__tag_end| {
                                         storage_class = xml[i .. i + __tag_end];
                                         i = i + __tag_end + 15;
+                                    } else {
+                                        i = xml.len;
                                     }
                                 } else if (strings.eql(inner_tag_name_or_tag_end, "ChecksumType")) {
                                     if (strings.indexOf(xml[i..], "</ChecksumType>")) |__tag_end| {
                                         checksum_type = xml[i .. i + __tag_end];
                                         i = i + __tag_end + 15;
+                                    } else {
+                                        i = xml.len;
                                     }
                                 } else if (strings.eql(inner_tag_name_or_tag_end, "ChecksumAlgorithm")) {
                                     if (strings.indexOf(xml[i..], "</ChecksumAlgorithm>")) |__tag_end| {
                                         checksum_algorithme = xml[i .. i + __tag_end];
                                         i = i + __tag_end + 20;
+                                    } else {
+                                        i = xml.len;
                                     }
                                 } else if (strings.eql(inner_tag_name_or_tag_end, "ETag")) {
                                     if (strings.indexOf(xml[i..], "</ETag>")) |__tag_end| {
@@ -294,6 +306,8 @@ pub fn parseS3ListObjectsResult(xml: []const u8) !S3ListObjectsV2Result {
                                         }
 
                                         i = i + __tag_end + 7;
+                                    } else {
+                                        i = xml.len;
                                     }
                                 } else if (strings.eql(inner_tag_name_or_tag_end, "Owner")) {
                                     if (strings.indexOf(xml[i..], "</Owner>")) |__tag_end| {
@@ -319,6 +333,8 @@ pub fn parseS3ListObjectsResult(xml: []const u8) !S3ListObjectsV2Result {
                                                 }
                                             }
                                         }
+                                    } else {
+                                        i = xml.len;
                                     }
                                 } else if (strings.eql(inner_tag_name_or_tag_end, "RestoreStatus")) {
                                     if (strings.indexOf(xml[i..], "</RestoreStatus>")) |__tag_end| {
@@ -350,6 +366,8 @@ pub fn parseS3ListObjectsResult(xml: []const u8) !S3ListObjectsV2Result {
                                                 }
                                             }
                                         }
+                                    } else {
+                                        i = xml.len;
                                     }
                                 }
                             } else { // no closing '>': the tag is truncated, so the
@@ -397,31 +415,43 @@ pub fn parseS3ListObjectsResult(xml: []const u8) !S3ListObjectsV2Result {
                     if (strings.indexOf(xml[i..], "</Name>")) |_end| {
                         result.name = xml[i .. i + _end];
                         i = i + _end;
+                    } else {
+                        break;
                     }
                 } else if (strings.eql(tagName, "Delimiter")) {
                     if (strings.indexOf(xml[i..], "</Delimiter>")) |_end| {
                         result.delimiter = xml[i .. i + _end];
                         i = i + _end;
+                    } else {
+                        break;
                     }
                 } else if (strings.eql(tagName, "NextContinuationToken")) {
                     if (strings.indexOf(xml[i..], "</NextContinuationToken>")) |_end| {
                         result.next_continuation_token = xml[i .. i + _end];
                         i = i + _end;
+                    } else {
+                        break;
                     }
                 } else if (strings.eql(tagName, "ContinuationToken")) {
                     if (strings.indexOf(xml[i..], "</ContinuationToken>")) |_end| {
                         result.continuation_token = xml[i .. i + _end];
                         i = i + _end;
+                    } else {
+                        break;
                     }
                 } else if (strings.eql(tagName, "StartAfter")) {
                     if (strings.indexOf(xml[i..], "</StartAfter>")) |_end| {
                         result.start_after = xml[i .. i + _end];
                         i = i + _end;
+                    } else {
+                        break;
                     }
                 } else if (strings.eql(tagName, "EncodingType")) {
                     if (strings.indexOf(xml[i..], "</EncodingType>")) |_end| {
                         result.encoding_type = xml[i .. i + _end];
                         i = i + _end;
+                    } else {
+                        break;
                     }
                 } else if (strings.eql(tagName, "KeyCount")) {
                     if (strings.indexOf(xml[i..], "</KeyCount>")) |_end| {
@@ -429,6 +459,8 @@ pub fn parseS3ListObjectsResult(xml: []const u8) !S3ListObjectsV2Result {
                         result.key_count = std.fmt.parseInt(i64, key_count, 10) catch null;
 
                         i = i + _end;
+                    } else {
+                        break;
                     }
                 } else if (strings.eql(tagName, "MaxKeys")) {
                     if (strings.indexOf(xml[i..], "</MaxKeys>")) |_end| {
@@ -436,6 +468,8 @@ pub fn parseS3ListObjectsResult(xml: []const u8) !S3ListObjectsV2Result {
                         result.max_keys = std.fmt.parseInt(i64, max_keys, 10) catch null;
 
                         i = i + _end;
+                    } else {
+                        break;
                     }
                 } else if (strings.eql(tagName, "Prefix")) {
                     if (strings.indexOf(xml[i..], "</Prefix>")) |_end| {
@@ -446,6 +480,8 @@ pub fn parseS3ListObjectsResult(xml: []const u8) !S3ListObjectsV2Result {
                         }
 
                         i = i + _end;
+                    } else {
+                        break;
                     }
                 } else if (strings.eql(tagName, "IsTruncated")) {
                     if (strings.indexOf(xml[i..], "</IsTruncated>")) |_end| {
@@ -458,6 +494,8 @@ pub fn parseS3ListObjectsResult(xml: []const u8) !S3ListObjectsV2Result {
                         }
 
                         i = i + _end;
+                    } else {
+                        break;
                     }
                 } else if (strings.eql(tagName, "CommonPrefixes")) {
                     if (strings.indexOf(xml[i..], "</CommonPrefixes>")) |_end| {
@@ -477,6 +515,8 @@ pub fn parseS3ListObjectsResult(xml: []const u8) !S3ListObjectsV2Result {
                                 break;
                             }
                         }
+                    } else {
+                        break;
                     }
                 }
             } else {

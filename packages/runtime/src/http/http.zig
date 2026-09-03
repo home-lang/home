@@ -2419,7 +2419,18 @@ fn sendProgressUpdateWithoutStageCheck(this: *HTTPClient, comptime is_ssl: bool,
         else
             true;
 
-        if (this.isKeepAlivePossible() and !socket.isClosedOrHasError() and tunnel_poolable) {
+        // The same early-reply hazard described above for tunnels applies to
+        // direct connections. A server may answer before a large request body
+        // has finished writing; pooling that socket would let the next
+        // request's bytes interleave with the previous body's tail. A fully
+        // sent byte-buffer body parks at `.body`, so inspect its unsent slice
+        // instead of relying on request_stage alone.
+        const request_side_drained = switch (this.state.original_request_body) {
+            .bytes => this.state.request_body.len == 0,
+            else => true,
+        };
+
+        if (this.isKeepAlivePossible() and !socket.isClosedOrHasError() and tunnel_poolable and request_side_drained) {
             log("release socket", .{});
             const tunnel = this.proxy_tunnel;
             this.proxy_tunnel = null;
