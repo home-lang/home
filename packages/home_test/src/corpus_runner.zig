@@ -100026,12 +100026,6 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/symbols.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun binary symbol import inspection")
-    else if (std.mem.eql(u8, relative_path, "js/bun/terminal/terminal-platform-gaps.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun.Terminal platform termios and ConPTY integration")
-    else if (std.mem.eql(u8, relative_path, "js/bun/terminal/terminal-spawn.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun.Terminal subprocess PTY integration")
-    else if (std.mem.eql(u8, relative_path, "js/bun/terminal/terminal.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun.Terminal PTY lifecycle integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/websocket/websocket-server.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun WebSocket server native event-loop matrix")
     else if (std.mem.eql(u8, relative_path, "js/bun/websocket/websocket-upgrade-signal-gc.test.ts"))
@@ -100600,6 +100594,12 @@ fn isNativeAddonTestCorpusFile(relative: []const u8) bool {
     return false;
 }
 
+fn isNativeTerminalCorpusFile(relative: []const u8) bool {
+    return std.mem.eql(u8, relative, "js/bun/terminal/terminal-platform-gaps.test.ts") or
+        std.mem.eql(u8, relative, "js/bun/terminal/terminal-spawn.test.ts") or
+        std.mem.eql(u8, relative, "js/bun/terminal/terminal.test.ts");
+}
+
 fn nativeCorpusDisabledReason(relative: []const u8) ?[]const u8 {
     if (std.mem.eql(u8, relative, "js/node/test/parallel/test-util-emit-experimental-warning.js")) {
         return "upstream test body is commented out: internal/util emitExperimentalWarning is not exercised";
@@ -100618,7 +100618,8 @@ fn isNativeHomeCorpusFile(relative: []const u8) bool {
         isNativeBufferPrimitiveCorpusFile(relative) or
         isNativeQuerystringCorpusFile(relative) or
         isNativeNodeCoreCorpusFile(relative) or
-        isNativeAddonTestCorpusFile(relative);
+        isNativeAddonTestCorpusFile(relative) or
+        isNativeTerminalCorpusFile(relative);
 }
 
 fn parseNativeCorpusFlags(allocator: std.mem.Allocator, source: []const u8) !OwnedFlags {
@@ -100776,7 +100777,9 @@ fn runRelativeFile(
 
         var flags = try parseNativeCorpusFlags(allocator, source);
         defer flags.deinit(allocator);
-        const mode: NativeCorpusMode = if (isNativeNodeTestCorpusFile(relative) or isNativeAddonTestCorpusFile(relative)) .test_runner else .script;
+        const mode: NativeCorpusMode = if (isNativeNodeTestCorpusFile(relative) or
+            isNativeAddonTestCorpusFile(relative) or
+            isNativeTerminalCorpusFile(relative)) .test_runner else .script;
         const args_tail = try buildNativeCorpusArgs(
             allocator,
             flags.values.items,
@@ -100810,10 +100813,14 @@ fn runRelativeFile(
                 } else {
                     file_result.passed = counts.passed;
                     file_result.failed = counts.failed;
-                    file_result.unsupported = counts.skipped;
-                    file_result.todo = counts.todo;
-                    if (counts.failed > 0 or counts.skipped > 0) {
-                        try recordFailure(allocator, summary, relative, "native Home test runner reported failed or skipped tests");
+                    // The reduced corpus runner represents both upstream
+                    // `test.skip` and `test.todo` registrations in the TODO
+                    // counter. Preserve that accounting when a production-VM
+                    // file is executed in a child instead of treating an
+                    // upstream platform/debug skip as missing Home support.
+                    file_result.todo = counts.todo + counts.skipped;
+                    if (counts.failed > 0) {
+                        try recordFailure(allocator, summary, relative, "native Home test runner reported failed tests");
                     }
                 }
             } else {
@@ -101141,6 +101148,23 @@ test "native addon corpus routing excludes helpers and uses real test files" {
         "js/bun/ffi-other/cc.test.ts",
         "napi-other/napi.test.ts",
     }) |relative| try std.testing.expect(!isNativeAddonTestCorpusFile(relative));
+}
+
+test "native terminal corpus routing covers the exact PTY matrix" {
+    inline for (.{
+        "js/bun/terminal/terminal-platform-gaps.test.ts",
+        "js/bun/terminal/terminal-spawn.test.ts",
+        "js/bun/terminal/terminal.test.ts",
+    }) |relative| {
+        try std.testing.expect(isNativeTerminalCorpusFile(relative));
+        try std.testing.expect(isNativeHomeCorpusFile(relative));
+    }
+    inline for (.{
+        "js/bun/terminal/terminal.test.js",
+        "js/bun/terminal/terminal-fixture.ts",
+        "js/bun/terminal/nested/terminal.test.ts",
+        "js/bun/terminal-other/terminal.test.ts",
+    }) |relative| try std.testing.expect(!isNativeTerminalCorpusFile(relative));
 }
 
 test "bootstrap addon guard precedes cached or fabricated module exports" {
