@@ -95382,16 +95382,6 @@ fn rewriteHspecCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     );
 }
 
-fn rewriteAsyncIteratorStreamCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    return try std.mem.replaceOwned(
-        u8,
-        allocator,
-        source,
-        "  test(\"async generator function throws an error but continues to send the headers\", async () => {",
-        "  test.todo(\"async generator subprocess IPC preserves headers after throw\");\n  test.skip(\"async generator function throws an error but continues to send the headers\", async () => {",
-    );
-}
-
 fn rewriteMemfdDisabledCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     return try std.mem.replaceOwned(
         u8,
@@ -95547,43 +95537,6 @@ fn rewriteDifferentDirectorySnapshotCorpus(allocator: std.mem.Allocator, source:
         source,
         "test.todo(\"snapshots in different directory\", () => {",
         "test(\"snapshots in different directory\", () => {",
-    );
-}
-
-fn rewriteTestFailingCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    const without_subprocess_pass = try std.mem.replaceOwned(
-        u8,
-        allocator,
-        source,
-        "  it(\"passes if an error is thrown or a promise rejects \", async () => {",
-        "  it.todo(\"test.failing subprocess pass reporter\");\n  it.skip(\"passes if an error is thrown or a promise rejects \", async () => {",
-    );
-    defer allocator.free(without_subprocess_pass);
-
-    const without_subprocess_fail = try std.mem.replaceOwned(
-        u8,
-        allocator,
-        without_subprocess_pass,
-        "  it(\"fails if no error is thrown or promise resolves\", async () => {",
-        "  it.todo(\"test.failing subprocess failure reporter\");\n  it.skip(\"fails if no error is thrown or promise resolves\", async () => {",
-    );
-    defer allocator.free(without_subprocess_fail);
-
-    const without_timeout = try std.mem.replaceOwned(
-        u8,
-        allocator,
-        without_subprocess_fail,
-        "  it(\"timeouts still count as failures\", async () => {",
-        "  it.todo(\"test.failing subprocess timeout reporter\");\n  it.skip(\"timeouts still count as failures\", async () => {",
-    );
-    defer allocator.free(without_timeout);
-
-    return try std.mem.replaceOwned(
-        u8,
-        allocator,
-        without_timeout,
-        "  describe(\"when using a done() callback\", () => {",
-        "  it.todo(\"test.failing done callback subprocess reporter\");\n  describe.skip(\"when using a done() callback\", () => {",
     );
 }
 
@@ -100037,7 +99990,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
             "replaceAll(\"/__home_absolute_test_dir__\", \"<dir>\")",
         )
     else if (std.mem.eql(u8, relative_path, "js/bun/test/test-failing.test.ts"))
-        try rewriteTestFailingCorpus(allocator, module_source)
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/test-fixture-diff-indexed-properties.js"))
         try rewriteNativeTodoCorpus(allocator, "bun test indexed property diff failure fixture")
     else if (std.mem.eql(u8, relative_path, "js/bun/test/test-interop.js"))
@@ -100605,6 +100558,10 @@ fn isNativeHttpProxyCorpusFile(relative: []const u8) bool {
         std.mem.eql(u8, relative, "js/bun/http/proxy.test.ts");
 }
 
+fn isNativeBunTestCorpusFile(relative: []const u8) bool {
+    return std.mem.eql(u8, relative, "js/bun/test/test-failing.test.ts");
+}
+
 fn isNativeS3CorpusFile(relative: []const u8) bool {
     inline for (.{
         "s3-fd-validation.test.ts",
@@ -100747,6 +100704,7 @@ fn isNativeHomeCorpusFile(relative: []const u8) bool {
         isNativeHttpTlsCorpusFile(relative) or
         isNativeHttpPromiseCorpusFile(relative) or
         isNativeHttpProxyCorpusFile(relative) or
+        isNativeBunTestCorpusFile(relative) or
         isNativeS3CorpusFile(relative) or
         isNativeWorkerCorpusFile(relative) or
         isNativeWorkerScriptCorpusFile(relative);
@@ -100921,6 +100879,7 @@ fn runRelativeFile(
             isNativeHttpTlsCorpusFile(relative) or
             isNativeHttpPromiseCorpusFile(relative) or
             isNativeHttpProxyCorpusFile(relative) or
+            isNativeBunTestCorpusFile(relative) or
             isNativeS3CorpusFile(relative) or
             isNativeWorkerCorpusFile(relative)) .test_runner else .script;
 
@@ -101117,7 +101076,7 @@ test "native fs disposable corpus predicate covers the exact vendored matrix" {
     }
 
     try std.testing.expectEqual(@as(usize, 2), count);
-    try std.testing.expectEqual(@as(usize, 279), native_count);
+    try std.testing.expectEqual(@as(usize, 280), native_count);
     try std.testing.expect(isNativeFsDisposableCorpusFile("js/node/test/parallel/test-fs-promises-mkdtempDisposable.js"));
     try std.testing.expect(isNativeFsDisposableCorpusFile("js/node/test/parallel/test-fs-mkdtempDisposableSync.js"));
     try std.testing.expect(!isNativeFsDisposableCorpusFile("js/node/test/parallel/test-fs-mkdtempDisposable.js"));
@@ -101397,6 +101356,20 @@ test "native HTTP proxy corpus routing covers the exact local integration file" 
         "js/bun/http/nested/proxy.test.js",
         "js/bun/https/proxy.test.js",
     }) |non_match| try std.testing.expect(!isNativeHttpProxyCorpusFile(non_match));
+}
+
+test "native Bun test corpus routing covers test.failing subprocess reporters" {
+    const relative = "js/bun/test/test-failing.test.ts";
+    try Io.Dir.cwd().access(std.testing.io, "packages/runtime/test/bun-corpus/" ++ relative, .{});
+    try std.testing.expect(isNativeBunTestCorpusFile(relative));
+    try std.testing.expect(isNativeHomeCorpusFile(relative));
+
+    inline for (.{
+        "js/bun/test/test-failing.test.js",
+        "js/bun/test/test-failing-fixture.ts",
+        "js/bun/test/nested/test-failing.test.ts",
+        "js/bun/tests/test-failing.test.ts",
+    }) |non_match| try std.testing.expect(!isNativeBunTestCorpusFile(non_match));
 }
 
 test "native S3 corpus routing covers validated deterministic integration files" {
