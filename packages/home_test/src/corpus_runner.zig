@@ -100621,6 +100621,33 @@ fn isNativeS3CorpusFile(relative: []const u8) bool {
     return false;
 }
 
+fn isNativeWorkerCorpusFile(relative: []const u8) bool {
+    inline for (.{
+        "message-channel.test.ts",
+        "message-event.test.ts",
+        "message-port-closed-leak.test.ts",
+        "message-port-context-destroy-leak.test.ts",
+        "message-port-pipe.test.ts",
+        "performance-observer-leak.test.ts",
+        "structured-clone.test.ts",
+        "structuredClone-classes.test.ts",
+        "worker-postmessage-transfer.test.ts",
+        "worker-terminate-lifetime.test.ts",
+        "worker.test.ts",
+        "worker_blob.test.ts",
+    }) |name| {
+        if (std.mem.eql(u8, relative, "js/web/workers/" ++ name)) return true;
+    }
+    inline for (.{
+        "15787.test.ts",
+        "worker-async-dispose.test.ts",
+        "worker_heap_snapshot_gc.test.ts",
+    }) |name| {
+        if (std.mem.eql(u8, relative, "js/node/worker_threads/" ++ name)) return true;
+    }
+    return false;
+}
+
 fn nativeCorpusDisabledReason(relative: []const u8) ?[]const u8 {
     if (std.mem.eql(u8, relative, "js/node/test/parallel/test-util-emit-experimental-warning.js")) {
         return "upstream test body is commented out: internal/util emitExperimentalWarning is not exercised";
@@ -100646,7 +100673,8 @@ fn isNativeHomeCorpusFile(relative: []const u8) bool {
         isNativeHttpTlsCorpusFile(relative) or
         isNativeHttpPromiseCorpusFile(relative) or
         isNativeHttpProxyCorpusFile(relative) or
-        isNativeS3CorpusFile(relative);
+        isNativeS3CorpusFile(relative) or
+        isNativeWorkerCorpusFile(relative);
 }
 
 fn parseNativeCorpusFlags(allocator: std.mem.Allocator, source: []const u8) !OwnedFlags {
@@ -100676,13 +100704,19 @@ fn buildNativeCorpusArgs(
     allocator: std.mem.Allocator,
     flags: []const []const u8,
     runner_flags: []const []const u8,
+    preload_path: ?[]const u8,
     absolute_fixture_path: []const u8,
     mode: NativeCorpusMode,
 ) ![][]const u8 {
-    const args = try allocator.alloc([]const u8, flags.len + runner_flags.len + 2);
+    const preload_arg_count: usize = if (preload_path != null) 2 else 0;
+    const args = try allocator.alloc([]const u8, flags.len + runner_flags.len + preload_arg_count + 2);
     args[0] = if (mode == .test_runner) "test" else "run";
     @memcpy(args[1 .. 1 + flags.len], flags);
     @memcpy(args[1 + flags.len .. 1 + flags.len + runner_flags.len], runner_flags);
+    if (preload_path) |path| {
+        args[1 + flags.len + runner_flags.len] = "--preload";
+        args[2 + flags.len + runner_flags.len] = path;
+    }
     args[args.len - 1] = absolute_fixture_path;
     return args;
 }
@@ -100812,11 +100846,21 @@ fn runRelativeFile(
             isNativeHttpTlsCorpusFile(relative) or
             isNativeHttpPromiseCorpusFile(relative) or
             isNativeHttpProxyCorpusFile(relative) or
-            isNativeS3CorpusFile(relative)) .test_runner else .script;
+            isNativeS3CorpusFile(relative) or
+            isNativeWorkerCorpusFile(relative)) .test_runner else .script;
+
+        var absolute_preload_path: ?[]u8 = null;
+        defer if (absolute_preload_path) |path| allocator.free(path);
+        if (mode == .test_runner) {
+            const preload_path = try std.fs.path.join(allocator, &.{ corpus_path, "preload.ts" });
+            defer allocator.free(preload_path);
+            absolute_preload_path = try Io.Dir.cwd().realPathFileAlloc(io, preload_path, allocator);
+        }
         const args_tail = try buildNativeCorpusArgs(
             allocator,
             flags.values.items,
             nativeCorpusRunnerFlags(relative),
+            absolute_preload_path,
             absolute_fixture_path,
             mode,
         );
@@ -100952,7 +100996,7 @@ test "native stream iterator flags are owned and ordered before the fixture" {
     try std.testing.expectEqualStrings("--experimental-stream-iter", flags.values.items[0]);
     try std.testing.expectEqualStrings("--second", flags.values.items[1]);
 
-    const args = try buildNativeCorpusArgs(allocator, flags.values.items, &.{}, "/absolute/fixture.js", .script);
+    const args = try buildNativeCorpusArgs(allocator, flags.values.items, &.{}, null, "/absolute/fixture.js", .script);
     defer allocator.free(args);
     try std.testing.expectEqual(@as(usize, 4), args.len);
     try std.testing.expectEqualStrings("run", args[0]);
@@ -100960,14 +101004,16 @@ test "native stream iterator flags are owned and ordered before the fixture" {
     try std.testing.expectEqualStrings("--second", args[2]);
     try std.testing.expectEqualStrings("/absolute/fixture.js", args[3]);
 
-    const test_args = try buildNativeCorpusArgs(allocator, &.{"--no-warnings"}, &.{ "--max-concurrency", "1" }, "/absolute/test-assert.js", .test_runner);
+    const test_args = try buildNativeCorpusArgs(allocator, &.{"--no-warnings"}, &.{ "--max-concurrency", "1" }, "/absolute/corpus/preload.ts", "/absolute/test-assert.js", .test_runner);
     defer allocator.free(test_args);
-    try std.testing.expectEqual(@as(usize, 5), test_args.len);
+    try std.testing.expectEqual(@as(usize, 7), test_args.len);
     try std.testing.expectEqualStrings("test", test_args[0]);
     try std.testing.expectEqualStrings("--no-warnings", test_args[1]);
     try std.testing.expectEqualStrings("--max-concurrency", test_args[2]);
     try std.testing.expectEqualStrings("1", test_args[3]);
-    try std.testing.expectEqualStrings("/absolute/test-assert.js", test_args[4]);
+    try std.testing.expectEqualStrings("--preload", test_args[4]);
+    try std.testing.expectEqualStrings("/absolute/corpus/preload.ts", test_args[5]);
+    try std.testing.expectEqualStrings("/absolute/test-assert.js", test_args[6]);
 
     try std.testing.expectEqual(@as(usize, 2), nativeCorpusRunnerFlags("napi/napi.test.ts").len);
     try std.testing.expectEqual(@as(usize, 0), nativeCorpusRunnerFlags("js/node/test/parallel/test-assert.js").len);
@@ -101301,6 +101347,37 @@ test "native S3 corpus routing covers validated deterministic integration files"
         "js/bun/s3/nested/s3-storage-class.test.ts",
         "js/bun/s3-other/s3-storage-class.test.ts",
     }) |non_match| try std.testing.expect(!isNativeS3CorpusFile(non_match));
+}
+
+test "native worker corpus routing covers validated worker files" {
+    inline for (.{
+        "js/web/workers/message-channel.test.ts",
+        "js/web/workers/message-event.test.ts",
+        "js/web/workers/message-port-closed-leak.test.ts",
+        "js/web/workers/message-port-context-destroy-leak.test.ts",
+        "js/web/workers/message-port-pipe.test.ts",
+        "js/web/workers/performance-observer-leak.test.ts",
+        "js/web/workers/structured-clone.test.ts",
+        "js/web/workers/structuredClone-classes.test.ts",
+        "js/web/workers/worker-postmessage-transfer.test.ts",
+        "js/web/workers/worker-terminate-lifetime.test.ts",
+        "js/web/workers/worker.test.ts",
+        "js/web/workers/worker_blob.test.ts",
+        "js/node/worker_threads/15787.test.ts",
+        "js/node/worker_threads/worker-async-dispose.test.ts",
+        "js/node/worker_threads/worker_heap_snapshot_gc.test.ts",
+    }) |relative| {
+        try std.testing.expect(isNativeWorkerCorpusFile(relative));
+        try std.testing.expect(isNativeHomeCorpusFile(relative));
+    }
+
+    inline for (.{
+        "js/web/workers/worker-fixture.js",
+        "js/web/workers/nested/worker.test.ts",
+        "js/node/worker_threads/worker_destruction.test.ts",
+        "js/node/worker_threads/worker_threads.test.ts",
+        "js/node/worker_threads/15787.fixture.ts",
+    }) |non_match| try std.testing.expect(!isNativeWorkerCorpusFile(non_match));
 }
 
 test "bootstrap addon guard precedes cached or fabricated module exports" {
