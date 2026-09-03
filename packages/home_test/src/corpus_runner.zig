@@ -77311,6 +77311,14 @@ const harness_prelude =
     \\}
     \\function __home_url_normalize_hostname(value) {
     \\  const text = __home_url_to_usv_string(value);
+    \\  if (text.startsWith("[") && text.endsWith("]") && typeof globalThis.__home_url_parse_whatwg_native === "function") {
+    \\    try {
+    \\      const parsed = globalThis.__home_url_parse_whatwg_native("http://" + text + "/");
+    \\      return parsed && parsed.hostname ? parsed.hostname : null;
+    \\    } catch (error) {
+    \\      return null;
+    \\    }
+    \\  }
     \\  if (typeof globalThis.__home_url_domain_to_ascii_native !== "function") return text;
     \\  try {
     \\    const ascii = globalThis.__home_url_domain_to_ascii_native(text);
@@ -77783,6 +77791,7 @@ const harness_prelude =
     \\    if (isDenoUrlCorpus && !["http:", "https:", "ws:", "wss:", "ftp:", "file:"].includes(protocolText) && url.host && pathnameText === "/" && /^[A-Za-z][A-Za-z0-9+.-]*:\/\/[^\/?#]*$/.test(String(source || ""))) pathnameText = "";
     \\    let hashText = isDenoUrlCorpus ? __home_url_normalize_hash(url.hash || "") : String(url.hash || "");
     \\    let searchText = isDenoUrlCorpus ? __home_url_normalize_search(url.search || "", protocolText) : String(url.search || "");
+    \\    let hasEmptyQuery = /\?(?:#.*)?$/.test(String(source || ""));
     \\    let usernameText = __home_url_auth_component(url.username || "");
     \\    let passwordText = __home_url_auth_component(url.password || "");
     \\    let portText = isDenoUrlCorpus ? __home_url_normalize_port(url.port || "", protocolText, "") : String(url.port || "");
@@ -77805,11 +77814,13 @@ const harness_prelude =
     \\        get() {
     \\          if (!protocolOverridden && !isDenoUrlCorpus && __home_native_url_href && __home_native_url_href.get) return __home_native_url_href.get.call(this);
     \\          const auth = this.username || this.password ? this.username + (this.password ? ":" + this.password : "") + "@" : "";
-    \\          if (this.host || ["http:", "https:", "ws:", "wss:", "ftp:", "file:"].includes(protocolText)) return protocolText + "//" + auth + this.host + this.pathname + this.search + this.hash;
-    \\          return protocolText + this.pathname + this.search + this.hash;
+    \\          const query = this.search || (hasEmptyQuery ? "?" : "");
+    \\          if (this.host || ["http:", "https:", "ws:", "wss:", "ftp:", "file:"].includes(protocolText)) return protocolText + "//" + auth + this.host + this.pathname + query + this.hash;
+    \\          return protocolText + this.pathname + query + this.hash;
     \\        },
     \\        set(value) {
     \\          if (__home_native_url_href && __home_native_url_href.set) __home_native_url_href.set.call(this, value);
+    \\          hasEmptyQuery = /\?(?:#.*)?$/.test(String(value));
     \\          protocolText = (__home_native_url_protocol && __home_native_url_protocol.get ? __home_native_url_protocol.get.call(this) : (String(value).match(/^[A-Za-z][A-Za-z0-9+.-]*:/) || [protocolText])[0]);
     \\          pathnameText = (__home_native_url_pathname && __home_native_url_pathname.get ? __home_native_url_pathname.get.call(this) : pathnameText);
     \\          if (isDenoUrlCorpus) {
@@ -77827,7 +77838,7 @@ const harness_prelude =
     \\              normalizedHostname = colon >= 0 && !(hostPort.startsWith("[") && hostPort.endsWith("]")) ? hostPort.slice(0, colon) : hostPort;
     \\              portText = colon >= 0 && !(hostPort.startsWith("[") && hostPort.endsWith("]")) ? __home_url_normalize_port(hostPort.slice(colon + 1), protocolText, "") : "";
     \\              pathnameText = __home_url_normalize_pathname(parsed[3] || "", protocolText);
-    \\              searchText = __home_url_normalize_search(parsed[4] || "", protocolText);
+    \\              searchText = hasEmptyQuery ? "" : __home_url_normalize_search(parsed[4] || "", protocolText);
     \\              hashText = __home_url_normalize_hash(parsed[5] || "");
     \\              if (searchParamsCache && searchParamsCache.__home_reload) searchParamsCache.__home_reload(searchText);
     \\            }
@@ -77848,7 +77859,7 @@ const harness_prelude =
     \\        Object.defineProperty(url, "search", {
     \\          configurable: true,
     \\          get() { return searchText; },
-    \\          set(value) { searchText = __home_url_normalize_search(value, protocolText); if (searchParamsCache && searchParamsCache.__home_reload) searchParamsCache.__home_reload(searchText); },
+    \\          set(value) { const text = String(value || ""); hasEmptyQuery = text === "?"; searchText = hasEmptyQuery ? "" : __home_url_normalize_search(text, protocolText); if (searchParamsCache && searchParamsCache.__home_reload) searchParamsCache.__home_reload(searchText); },
     \\        });
     \\        Object.defineProperty(url, "username", {
     \\          configurable: true,
@@ -85112,6 +85123,7 @@ const harness_prelude =
     \\    return json;
     \\  }
     \\  const __home_url_search_params_delete = URLSearchParams.prototype.delete;
+    \\  const __home_url_search_params_for_each = URLSearchParams.prototype.forEach;
     \\  const __home_url_search_params_has = URLSearchParams.prototype.has;
     \\  URLSearchParams.prototype.toJSON = function() {
     \\    return __home_url_search_params_json(this);
@@ -85122,7 +85134,7 @@ const harness_prelude =
     \\      error.code = "ERR_INVALID_ARG_TYPE";
     \\      throw error;
     \\    }
-    \\    for (const pair of this.entries()) callback.call(thisArg, pair[1], pair[0], this);
+    \\    return __home_url_search_params_for_each.call(this, callback, thisArg);
     \\  };
     \\  URLSearchParams.prototype.delete = function(name, value) {
     \\    if (arguments.length < 1) throw new TypeError("delete requires 1 argument");
