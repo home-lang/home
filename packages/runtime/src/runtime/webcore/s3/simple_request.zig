@@ -369,6 +369,23 @@ pub const S3SimpleRequestOptions = struct {
     request_payer: bool = false,
 };
 
+/// Resolve an S3 request's proxy against its signed HTTP URL. The returned
+/// slice is owned because process.env can replace the loader's backing bytes
+/// while the HTTP thread is still using them.
+pub fn resolveProxyUrl(url: bun.URL, explicit: ?[]const u8) []const u8 {
+    const env = jsc.VirtualMachine.get().transpiler.env;
+    if (explicit) |proxy| {
+        if (proxy.len > 0) {
+            if (env.isNoProxy(url.hostname, url.host)) return "";
+            return bun.handleOom(bun.default_allocator.dupe(u8, proxy));
+        }
+    }
+    if (env.getHttpProxyFor(url)) |proxy| {
+        return bun.handleOom(bun.default_allocator.dupe(u8, proxy.href));
+    }
+    return "";
+}
+
 pub fn executeSimpleS3Request(
     this: *const S3Credentials,
     options: S3SimpleRequestOptions,
@@ -419,8 +436,7 @@ pub fn executeSimpleS3Request(
     task.poll_ref.ref(task.vm);
 
     const url = bun.URL.parse(result.url);
-    const proxy = options.proxy_url orelse "";
-    task.proxy_url = if (proxy.len > 0) bun.handleOom(bun.default_allocator.dupe(u8, proxy)) else "";
+    task.proxy_url = resolveProxyUrl(url, options.proxy_url);
     task.http = bun.http.AsyncHTTP.init(
         bun.default_allocator,
         options.method,

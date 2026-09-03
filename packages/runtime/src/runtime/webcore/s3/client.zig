@@ -25,13 +25,11 @@ pub fn stat(
     path: []const u8,
     callback: *const fn (S3StatResult, *anyopaque) bun.JSTerminated!void,
     callback_context: *anyopaque,
-    proxy_url: ?[]const u8,
     request_payer: bool,
 ) bun.JSTerminated!void {
     try S3SimpleRequest.executeSimpleS3Request(this, .{
         .path = path,
         .method = .HEAD,
-        .proxy_url = proxy_url,
         .body = "",
         .request_payer = request_payer,
     }, .{ .stat = callback }, callback_context);

@@ -34,10 +34,12 @@ has_pending_queued_abort: bool = false,
 queued_shutdowns: std.ArrayListUnmanaged(ShutdownMessage) = std.ArrayListUnmanaged(ShutdownMessage).empty,
 queued_writes: std.ArrayListUnmanaged(WriteMessage) = std.ArrayListUnmanaged(WriteMessage).empty,
 queued_response_body_drains: std.ArrayListUnmanaged(DrainMessage) = std.ArrayListUnmanaged(DrainMessage).empty,
+queued_cert_check_resumes: std.ArrayListUnmanaged(CertCheckResumeMessage) = std.ArrayListUnmanaged(CertCheckResumeMessage).empty,
 
 queued_shutdowns_lock: bun.Mutex = .{},
 queued_writes_lock: bun.Mutex = .{},
 queued_response_body_drains_lock: bun.Mutex = .{},
+queued_cert_check_resumes_lock: bun.Mutex = .{},
 
 queued_threadlocal_proxy_derefs: std.ArrayListUnmanaged(*ProxyTunnel) = std.ArrayListUnmanaged(*ProxyTunnel).empty,
 
@@ -118,6 +120,9 @@ const DrainMessage = struct {
     async_http_id: u32,
 };
 const ShutdownMessage = struct {
+    async_http_id: u32,
+};
+const CertCheckResumeMessage = struct {
     async_http_id: u32,
 };
 
@@ -445,6 +450,37 @@ fn drainQueuedShutdowns(this: *@This()) void {
     }
 }
 
+fn drainQueuedCertCheckResumes(this: *@This()) void {
+    while (true) {
+        var queued_resumes = brk: {
+            this.queued_cert_check_resumes_lock.lock();
+            defer this.queued_cert_check_resumes_lock.unlock();
+            const resumes = this.queued_cert_check_resumes;
+            this.queued_cert_check_resumes = .empty;
+            break :brk resumes;
+        };
+        defer queued_resumes.deinit(bun.default_allocator);
+
+        for (queued_resumes.items) |resume_message| {
+            if (HTTPClient.socket_async_http_abort_tracker.get(resume_message.async_http_id)) |socket_ptr| {
+                switch (socket_ptr) {
+                    inline .SocketTLS, .SocketTCP => |socket, tag| {
+                        const is_tls = tag == .SocketTLS;
+                        if (socket.isClosed() or socket.isShutdown()) continue;
+                        const tagged = NewHTTPContext(comptime is_tls).getTaggedFromSocket(socket);
+                        if (tagged.get(HTTPClient)) |client| {
+                            // This may synchronously close and free the client.
+                            client.resumeAfterCertCheck(comptime is_tls, socket);
+                        }
+                    },
+                }
+            }
+        }
+        if (queued_resumes.items.len == 0) break;
+        threadlog("drained {d} queued cert check resumes", .{queued_resumes.items.len});
+    }
+}
+
 fn drainQueuedWrites(this: *@This()) void {
     while (true) {
         var queued_writes = brk: {
@@ -533,6 +569,9 @@ fn drainEvents(this: *@This()) void {
     this.drainQueuedHTTPResponseBodyDrains();
     this.drainQueuedWrites();
     this.drainQueuedShutdowns();
+    // Shutdown first so a same-turn rejection/abort removes the tracker entry
+    // and makes a stale approval resume a no-op.
+    this.drainQueuedCertCheckResumes();
     HTTPClient.H3.PendingConnect.drainResolved();
 
     for (this.queued_threadlocal_proxy_derefs.items) |http| {
@@ -688,6 +727,19 @@ pub fn scheduleShutdown(this: *@This(), http: *AsyncHTTP) void {
         this.queued_shutdowns_lock.lock();
         defer this.queued_shutdowns_lock.unlock();
         this.queued_shutdowns.append(bun.default_allocator, .{
+            .async_http_id = http.async_http_id,
+        }) catch |err| bun.handleOom(err);
+    }
+    if (this.has_awoken.load(.monotonic))
+        this.loop.loop.wakeup();
+}
+
+pub fn scheduleCertCheckResume(this: *@This(), http: *AsyncHTTP) void {
+    threadlog("scheduleCertCheckResume {d}", .{http.async_http_id});
+    {
+        this.queued_cert_check_resumes_lock.lock();
+        defer this.queued_cert_check_resumes_lock.unlock();
+        this.queued_cert_check_resumes.append(bun.default_allocator, .{
             .async_http_id = http.async_http_id,
         }) catch |err| bun.handleOom(err);
     }

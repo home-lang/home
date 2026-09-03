@@ -68,6 +68,12 @@ fn onData(this: *HTTPClient, decoded_data: []const u8) void {
     if (this.proxy_tunnel) |proxy| {
         proxy.ref();
         defer proxy.deref();
+        if (this.state.flags.is_waiting_for_cert_check) {
+            log("ProxyTunnel onData while parked", .{});
+            this.state.pending_response = null;
+            proxy.close(error.UnexpectedData);
+            return;
+        }
         switch (this.state.response_stage) {
             .body => {
                 log("ProxyTunnel onData body", .{});

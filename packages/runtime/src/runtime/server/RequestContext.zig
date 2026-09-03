@@ -917,7 +917,7 @@ pub fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, 
                 if (bun.S.ISDIR(@intCast(stat.mode))) {
                     if (auto_close) fd.close();
                     var sys = (bun.sys.Error{
-                        .errno = @intFromEnum(bun.sys.E.ISDIR),
+                        .errno = @backingInt(bun.sys.E.ISDIR),
                         .syscall = .read,
                     }).withPathLike(file.pathlike).toSystemError();
                     sys.message = bun.String.static("Cannot stream a directory as a response body");
@@ -1406,7 +1406,6 @@ pub fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, 
                 this.endWithoutBody(this.shouldCloseConnection());
                 return;
             };
-            const globalThis = server.globalThis;
             if (response.getFetchHeaders()) |headers| {
                 // first respect the headers
                 if (comptime !http3) if (headers.fastGet(.TransferEncoding)) |transfer_encoding| {
@@ -1461,9 +1460,13 @@ pub fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, 
 
                         const credentials = blob.store.?.data.s3.getCredentials();
                         const path = blob.store.?.data.s3.path();
-                        const env = globalThis.bunVM().transpiler.env;
-
-                        S3.stat(credentials, path, @ptrCast(&onS3SizeResolved), this, if (env.getHttpProxy(true, null, null)) |proxy| proxy.href else null, blob.store.?.data.s3.request_payer) catch {}; // TODO: properly propagate exception upwards
+                        S3.stat(
+                            credentials,
+                            path,
+                            @ptrCast(&onS3SizeResolved),
+                            this,
+                            blob.store.?.data.s3.request_payer,
+                        ) catch {}; // TODO: properly propagate exception upwards
                         return;
                     }
                     this.renderMetadata();

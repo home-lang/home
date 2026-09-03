@@ -99702,8 +99702,6 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteHspecCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/http/http-server-chunking.test.ts"))
         null
-    else if (std.mem.eql(u8, relative_path, "js/bun/http/proxy.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "fetch TLS proxy server integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/http/req-url-leak.test.ts"))
         try rewriteReqUrlLeakCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/node/process/stdin/process-stdin-stale-hup.test.ts"))
@@ -100603,7 +100601,8 @@ fn isNativeHttpPromiseCorpusFile(relative: []const u8) bool {
 }
 
 fn isNativeHttpProxyCorpusFile(relative: []const u8) bool {
-    return std.mem.eql(u8, relative, "js/bun/http/proxy.test.js");
+    return std.mem.eql(u8, relative, "js/bun/http/proxy.test.js") or
+        std.mem.eql(u8, relative, "js/bun/http/proxy.test.ts");
 }
 
 fn nativeCorpusDisabledReason(relative: []const u8) ?[]const u8 {
@@ -101245,13 +101244,17 @@ test "native HTTP promise corpus routing covers aborted request cleanup" {
 }
 
 test "native HTTP proxy corpus routing covers the exact local integration file" {
-    const relative = "js/bun/http/proxy.test.js";
-    try std.testing.expect(isNativeHttpProxyCorpusFile(relative));
-    try std.testing.expect(isNativeHomeCorpusFile(relative));
+    inline for (.{
+        "js/bun/http/proxy.test.js",
+        "js/bun/http/proxy.test.ts",
+    }) |relative| {
+        try std.testing.expect(isNativeHttpProxyCorpusFile(relative));
+        try std.testing.expect(isNativeHomeCorpusFile(relative));
+    }
 
     inline for (.{
-        "js/bun/http/proxy.test.ts",
         "js/bun/http/proxy-fixture.test.js",
+        "js/bun/http/proxy-fixture.test.ts",
         "js/bun/http/nested/proxy.test.js",
         "js/bun/https/proxy.test.js",
     }) |non_match| try std.testing.expect(!isNativeHttpProxyCorpusFile(non_match));

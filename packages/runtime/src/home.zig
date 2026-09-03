@@ -6525,10 +6525,16 @@ pub const S3 = struct {
     pub const S3ListObjectsOptions = S3ListObjects.S3ListObjectsOptions;
     pub const MultiPartUpload = @import("runtime/webcore/s3/multipart.zig").MultiPartUpload;
     pub const S3HttpDownloadStreamingTask = opaque {
-        pub fn onResponse(_: *S3HttpDownloadStreamingTask) void {}
+        pub fn onResponse(this: *S3HttpDownloadStreamingTask) void {
+            const task: *@import("runtime/webcore/s3/download_stream.zig").S3HttpDownloadStreamingTask = @ptrCast(@alignCast(this));
+            task.onResponse();
+        }
     };
     pub const S3HttpSimpleTask = opaque {
-        pub fn onResponse(_: *S3HttpSimpleTask) !void {}
+        pub fn onResponse(this: *S3HttpSimpleTask) !void {
+            const task: *S3SimpleRequest.S3HttpSimpleTask = @ptrCast(@alignCast(this));
+            try task.onResponse();
+        }
     };
 
     pub fn download(_: *S3Credentials, _: []const u8, _: *const fn (S3DownloadResult, *anyopaque) JSTerminated!void, _: *anyopaque, _: ?[]const u8, _: bool) JSTerminated!void {}
@@ -6557,7 +6563,15 @@ pub const S3 = struct {
         return @import("runtime/webcore/s3/client.zig").readableStream(this, s3_path, offset, size, proxy_url, request_payer, globalThis);
     }
 
-    pub fn stat(_: *S3Credentials, _: []const u8, _: *const fn (S3StatResult, *anyopaque) JSTerminated!void, _: *anyopaque, _: ?[]const u8, _: bool) JSTerminated!void {}
+    pub fn stat(
+        this: *S3Credentials,
+        s3_path: []const u8,
+        callback: *const fn (S3StatResult, *anyopaque) JSTerminated!void,
+        callback_context: *anyopaque,
+        request_payer: bool,
+    ) JSTerminated!void {
+        return @import("runtime/webcore/s3/client.zig").stat(this, s3_path, callback, callback_context, request_payer);
+    }
 
     pub fn delete(_: *S3Credentials, _: []const u8, _: *const fn (S3DeleteResult, *anyopaque) JSTerminated!void, _: *anyopaque, _: ?[]const u8, _: bool) JSTerminated!void {}
 

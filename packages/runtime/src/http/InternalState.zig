@@ -43,7 +43,10 @@ pub const InternalStateFlags = packed struct(u8) {
     is_libdeflate_fast_path_disabled: bool = false,
     resend_request_body_on_redirect: bool = false,
     body_compressed: bool = false,
-    _padding: u1 = 0,
+    /// The TLS handshake completed, but the user-supplied JavaScript
+    /// checkServerIdentity callback has not approved the peer certificate.
+    /// No HTTP application bytes may be written while this is set.
+    is_waiting_for_cert_check: bool = false,
 };
 
 pub fn init(body: HTTPRequestBody, body_out_str: *MutableString) InternalState {

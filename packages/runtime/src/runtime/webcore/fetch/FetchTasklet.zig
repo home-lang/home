@@ -468,6 +468,11 @@ pub const FetchTasklet = struct {
         const vm = this.javascript_vm;
         // vm is shutting down we cannot touch JS
         if (vm.isShuttingDown()) {
+            if (this.result.certificate_info) |*certificate| {
+                certificate.deinit(bun.default_allocator);
+                this.result.certificate_info = null;
+                if (this.http) |http_| http.http_thread.scheduleShutdown(http_);
+            }
             this.mutex.unlock();
             if (is_done) {
                 this.deref();
@@ -536,6 +541,37 @@ pub const FetchTasklet = struct {
             try this.onBodyReceived();
             return;
         }
+        if (this.result.certificate_info) |certificate_info| {
+            this.result.certificate_info = null;
+            defer certificate_info.deinit(bun.default_allocator);
+
+            // we receive some error
+            if (this.reject_unauthorized and !this.checkServerIdentity(certificate_info)) {
+                log("onProgressUpdate: aborted due certError", .{});
+                const promise_value = this.promise.valueOrEmpty();
+                if (promise_value.isEmptyOrUndefinedOrNull()) {
+                    log("onProgressUpdate: promise_value is null", .{});
+                    this.promise.deinit();
+                    return;
+                }
+                // we need to abort the request
+                const promise = promise_value.asAnyPromise().?;
+                const tracker = this.tracker;
+                var result = this.onReject();
+                defer result.deinit();
+
+                promise_value.ensureStillAlive();
+                try promise.rejectWithAsyncStack(globalThis, result.toJS(globalThis));
+
+                tracker.didDispatch(globalThis);
+                this.promise.deinit();
+                return;
+            }
+            if (this.http) |http_| http.http_thread.scheduleCertCheckResume(http_);
+            // The usual certificate-only update returns below. A coalesced
+            // failure still falls through to the common reject path.
+        }
+
         if (this.metadata == null and this.result.isSuccess()) return;
 
         // if we abort because of cert error
@@ -550,39 +586,6 @@ pub const FetchTasklet = struct {
             log("onProgressUpdate: promise_value is null", .{});
             this.promise.deinit();
             return;
-        }
-
-        if (this.result.certificate_info) |certificate_info| {
-            this.result.certificate_info = null;
-            defer certificate_info.deinit(bun.default_allocator);
-
-            // we receive some error
-            if (this.reject_unauthorized and !this.checkServerIdentity(certificate_info)) {
-                log("onProgressUpdate: aborted due certError", .{});
-                // we need to abort the request
-                const promise = promise_value.asAnyPromise().?;
-                const tracker = this.tracker;
-                var result = this.onReject();
-                defer result.deinit();
-
-                promise_value.ensureStillAlive();
-                try promise.rejectWithAsyncStack(globalThis, result.toJS(globalThis));
-
-                tracker.didDispatch(globalThis);
-                this.promise.deinit();
-                return;
-            }
-            // checkServerIdentity passed. Fall through to resolve/reject below.
-            //
-            // We can reach this point with `metadata == null` when the
-            // connection failed after the TLS handshake but before response
-            // headers arrived (e.g. an mTLS server closing the socket because
-            // the client didn't present a certificate) — the certificate_info
-            // from the first progress update is coalesced into the later
-            // failure result. The `metadata == null && isSuccess()` case is
-            // already handled by the early return above, so the fall-through
-            // here always has either metadata to resolve with or a failure to
-            // reject with.
         }
 
         const tracker = this.tracker;
@@ -724,6 +727,7 @@ pub const FetchTasklet = struct {
                 }
             }
         }
+        if (this.http) |http_| http.http_thread.scheduleShutdown(http_);
         this.result.fail = error.ERR_TLS_CERT_ALTNAME_INVALID;
         return false;
     }
@@ -1521,7 +1525,14 @@ pub const FetchTasklet = struct {
             }
         }
         // will deinit when done with the http client (when is_done = true)
-        if (task.javascript_vm.isShuttingDown()) return;
+        if (task.javascript_vm.isShuttingDown()) {
+            if (task.result.certificate_info) |*certificate| {
+                certificate.deinit(bun.default_allocator);
+                task.result.certificate_info = null;
+                if (task.http) |http_| http.http_thread.scheduleShutdown(http_);
+            }
+            return;
+        }
         task.javascript_vm.eventLoop().enqueueTaskConcurrent(task.concurrent_task.from(task, .manual_deinit));
     }
 };

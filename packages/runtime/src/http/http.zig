@@ -112,7 +112,8 @@ pub fn checkServerIdentity(
 
                 // check if we need to report the error (probably to `checkServerIdentity` was informed from JS side)
                 // this is the slow path
-                if (client.signals.get(.cert_errors)) {
+                const is_proxy_certificate = allowProxyUrl and client.http_proxy != null;
+                if (!is_proxy_certificate and client.signals.get(.cert_errors)) {
                     // clone the relevant data
                     const cert_size = BoringSSL.i2d_X509(x509, null);
                     const cert = bun.handleOom(bun.default_allocator.alloc(u8, @intCast(cert_size)));
@@ -129,6 +130,11 @@ pub fn checkServerIdentity(
                             .reason = bun.handleOom(bun.dupeZ(bun.default_allocator, u8, certError.reason)),
                         },
                     };
+
+                    // The JS callback owns the verdict. Park the connection
+                    // before reporting the certificate so no request bytes
+                    // can reach the peer until the callback approves it.
+                    client.state.flags.is_waiting_for_cert_check = true;
 
                     // we inform the user that the cert is invalid
                     client.progressUpdate(is_ssl, client.getSslCtx(is_ssl), socket);
@@ -259,6 +265,9 @@ pub fn onOpen(
 /// `BUN_FEATURE_FLAG_EXPERIMENTAL_HTTP2_CLIENT` env var, or
 /// `protocol: "http2"` on the fetch options.
 pub fn canOfferH2(client: *const HTTPClient) bool {
+    // The h2 session writes from attach() without consulting the HTTP/1.1
+    // certificate park gate.
+    if (client.signals.get(.cert_errors)) return false;
     if (client.flags.force_http1) return false;
     if (client.http_proxy != null) return false;
     if (client.flags.is_preconnect_only) return false;
@@ -1292,6 +1301,11 @@ fn start_(this: *HTTPClient, comptime is_ssl: bool) void {
         }
     }
 
+    if (this.flags.force_http2 and this.signals.get(.cert_errors)) {
+        this.fail(error.HTTP2Unsupported);
+        return;
+    }
+
     if (comptime is_ssl) {
         // Opportunistic Alt-Svc upgrade: a previous response from this origin
         // advertised `h3`, and the experimental flag is on. Don't touch
@@ -1708,6 +1722,10 @@ pub fn onWritable(this: *HTTPClient, comptime is_first_call: bool, comptime is_s
     if (this.proxy_tunnel) |proxy| {
         proxy.onWritable(is_ssl, socket);
     }
+
+    // Keep the tunnel's TLS handshake bytes flowing above, but never write
+    // HTTP application data before checkServerIdentity approves the peer.
+    if (this.state.flags.is_waiting_for_cert_check) return;
 
     switch (this.state.request_stage) {
         .pending, .headers, .opened => {
@@ -2144,6 +2162,12 @@ pub fn onData(
         return;
     }
 
+    if (this.state.flags.is_waiting_for_cert_check) {
+        this.state.pending_response = null;
+        this.closeAndFail(error.UnexpectedData, is_ssl, socket);
+        return;
+    }
+
     switch (this.state.response_stage) {
         .pending, .headers => {
             this.handleOnDataHeaders(is_ssl, incoming_data, ctx, socket);
@@ -2187,6 +2211,12 @@ pub fn onData(
 
 pub fn closeAndAbort(this: *HTTPClient, comptime is_ssl: bool, socket: NewHTTPContext(is_ssl).HTTPSocket) void {
     this.closeAndFail(error.Aborted, comptime is_ssl, socket);
+}
+
+pub fn resumeAfterCertCheck(this: *HTTPClient, comptime is_ssl: bool, socket: NewHTTPContext(is_ssl).HTTPSocket) void {
+    if (!this.state.flags.is_waiting_for_cert_check) return;
+    this.state.flags.is_waiting_for_cert_check = false;
+    this.onWritable(true, is_ssl, socket);
 }
 
 fn completeConnectingProcess(this: *HTTPClient) void {
