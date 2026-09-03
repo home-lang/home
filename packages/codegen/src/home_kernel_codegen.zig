@@ -2902,7 +2902,7 @@ pub const HomeKernelCodegen = struct {
         var sys_op: SysOp = .timestamp;
         // What the CPU-state intrinsics do, named for the effect rather than
         // for one architecture's mnemonic.
-        const CpuOp = enum { halt, disable_irq, enable_irq, nop, spin_hint };
+        const CpuOp = enum { halt, disable_irq, enable_irq, nop, spin_hint, wait_event };
         var kind: Kind = .none;
         var width: usize = 0;
         var cpu_op: CpuOp = .nop;
@@ -2928,6 +2928,19 @@ pub const HomeKernelCodegen = struct {
         else if (std.mem.eql(u8, name, "arch_enable_interrupts")) { kind = .cpu; cpu_op = .enable_irq; }
         else if (std.mem.eql(u8, name, "arch_nop")) { kind = .cpu; cpu_op = .nop; }
         else if (std.mem.eql(u8, name, "arch_spin_hint")) { kind = .cpu; cpu_op = .spin_hint; }
+        else if (std.mem.eql(u8, name, "arch_wait_event")) { kind = .cpu; cpu_op = .wait_event; }
+        // `arch_`-prefixed aliases for the MMIO intrinsics. A module that
+        // exports its own `mmio_read32` shadows the bare name — a program's
+        // definition wins over an intrinsic — so without these it could not
+        // call the intrinsic from inside that function without recursing.
+        else if (std.mem.eql(u8, name, "arch_mmio_read8")) { kind = .mmio_read; width = 1; }
+        else if (std.mem.eql(u8, name, "arch_mmio_read16")) { kind = .mmio_read; width = 2; }
+        else if (std.mem.eql(u8, name, "arch_mmio_read32")) { kind = .mmio_read; width = 4; }
+        else if (std.mem.eql(u8, name, "arch_mmio_read64")) { kind = .mmio_read; width = 8; }
+        else if (std.mem.eql(u8, name, "arch_mmio_write8")) { kind = .mmio_write; width = 1; }
+        else if (std.mem.eql(u8, name, "arch_mmio_write16")) { kind = .mmio_write; width = 2; }
+        else if (std.mem.eql(u8, name, "arch_mmio_write32")) { kind = .mmio_write; width = 4; }
+        else if (std.mem.eql(u8, name, "arch_mmio_write64")) { kind = .mmio_write; width = 8; }
         else if (std.mem.eql(u8, name, "arch_save_interrupts")) { kind = .sys; sys_op = .save_irq; }
         else if (std.mem.eql(u8, name, "arch_restore_interrupts")) { kind = .sys; sys_op = .restore_irq; }
         else if (std.mem.eql(u8, name, "arch_read_timestamp")) { kind = .sys; sys_op = .timestamp; }
@@ -2982,6 +2995,7 @@ pub const HomeKernelCodegen = struct {
                     .enable_irq => try self.emit().enableInterrupts(),
                     .nop => try self.emit().nop(),
                     .spin_hint => try self.emit().spinHint(),
+                    .wait_event => try self.emit().waitForEvent(),
                 }
             },
             .sys => switch (sys_op) {
@@ -3594,7 +3608,7 @@ pub const HomeKernelCodegen = struct {
                 }
 
                 if (if_stmt.else_block) |else_block| {
-                    try self.print("    jmp .L_endif_{d}\n", .{label_num});
+                    try self.emit().jump(try self.labelText("endif", label_num));
                     try self.print(".L_else_{d}:\n", .{label_num});
 
                     for (else_block.statements) |else_stmt| {
@@ -3739,7 +3753,11 @@ pub const HomeKernelCodegen = struct {
                     }
                 }
                 if (default_clause) |di| {
-                    try self.print("    jmp .L_switch_case_{d}_{d}\n", .{ label_num, di });
+                    try self.emit().jump(try std.fmt.allocPrint(
+                        self.import_arena.allocator(),
+                        ".L_switch_case_{d}_{d}",
+                        .{ label_num, di },
+                    ));
                 }
                 try self.emit().jump(end_label);
 
@@ -3997,7 +4015,7 @@ pub const HomeKernelCodegen = struct {
                         try self.emit().jumpCond(.le, try self.labelText("pow_end", lbl));
                         try self.emit().aluRegs(.mul, .acc, .tmp2);
                         try self.emit().addImm(.tmp, -1);
-                        try self.print("    jmp .L_pow_start_{d}\n", .{lbl});
+                        try self.emit().jump(try self.labelText("pow_start", lbl));
                         try self.print(".L_pow_end_{d}:\n", .{lbl});
                     },
                     .Equal => try self.emitCompare(.eq),
@@ -4428,7 +4446,7 @@ pub const HomeKernelCodegen = struct {
                 try self.generateExpr(if_expr.condition);
                 try self.emit().jumpIfZero(.acc, try self.labelText("ifexpr_else", label_num));
                 try self.generateExpr(if_expr.then_branch);
-                try self.print("    jmp .L_ifexpr_end_{d}\n", .{label_num});
+                try self.emit().jump(try self.labelText("ifexpr_end", label_num));
                 try self.print(".L_ifexpr_else_{d}:\n", .{label_num});
                 try self.generateExpr(if_expr.else_branch);
                 try self.print(".L_ifexpr_end_{d}:\n", .{label_num});
@@ -4438,7 +4456,7 @@ pub const HomeKernelCodegen = struct {
                 try self.generateExpr(t.condition);
                 try self.emit().jumpIfZero(.acc, try self.labelText("ternary_else", label_num));
                 try self.generateExpr(t.true_val);
-                try self.print("    jmp .L_ternary_end_{d}\n", .{label_num});
+                try self.emit().jump(try self.labelText("ternary_end", label_num));
                 try self.print(".L_ternary_else_{d}:\n", .{label_num});
                 try self.generateExpr(t.false_val);
                 try self.print(".L_ternary_end_{d}:\n", .{label_num});

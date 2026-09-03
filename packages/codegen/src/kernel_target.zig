@@ -1469,6 +1469,19 @@ pub const Emitter = struct {
         }
     }
 
+    /// Sleep until another core signals an event.
+    ///
+    /// x86 has no `sev`/`wfe` pair, so the closest honest lowering is the
+    /// spin-loop hint: a caller polling a flag still makes progress, it just
+    /// does not sleep. A caller that needs real cross-core wakeup wants a
+    /// proper synchronisation primitive on either architecture.
+    pub fn waitForEvent(self: Self) !void {
+        switch (self.arch) {
+            .x86_64 => try self.insn("pause", .{}),
+            .aarch64 => try self.insn("wfe", .{}),
+        }
+    }
+
     /// Read the interrupt-enable state and then mask interrupts, leaving the
     /// previous state in the accumulator. Paired with `restoreInterrupts`,
     /// this is what makes a critical section nestable: an inner section must
