@@ -2256,6 +2256,7 @@ fn runFileViaVMOpts(
     b.configureDefines() catch return error.ConfigureDefinesFailed;
 
     home_rt.http.AsyncHTTP.loadEnv(vm.allocator, vm.log, b.env);
+    home_rt.http.AsyncHTTP.preconnectFromCli(ctx.runtime_options.preconnect);
     vm.loadExtraEnvAndSourceCodePrinter();
     vm.is_main_thread = true;
     home_rt.jsc.VirtualMachine.is_main_thread_vm = true;

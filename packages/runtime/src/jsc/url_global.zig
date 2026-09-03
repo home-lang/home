@@ -77,6 +77,48 @@ fn nativeStringToOwnedUtf8(value: bun.String, allocator: std.mem.Allocator) ?[]u
     return value.toOwnedSlice(allocator) catch null;
 }
 
+fn canonicalAuthorityHost(href: []const u8) []const u8 {
+    const colon = std.mem.indexOfScalar(u8, href, ':') orelse return "";
+    if (!std.mem.startsWith(u8, href[colon + 1 ..], "//")) return "";
+    const authority_and_tail = href[colon + 3 ..];
+    const authority_end = std.mem.indexOfAny(u8, authority_and_tail, "/?#") orelse authority_and_tail.len;
+    const authority = authority_and_tail[0..authority_end];
+    const host_start = if (std.mem.lastIndexOfScalar(u8, authority, '@')) |at| at + 1 else 0;
+    return authority[host_start..];
+}
+
+fn nativeUrlHostAndPortToOwnedUtf8(parsed: *native_url.URL, allocator: std.mem.Allocator) ?[]u8 {
+    const host_and_port = nativeStringToOwnedUtf8(native_url.URL.hostname(parsed), allocator) orelse return null;
+    if (host_and_port.len > 0) return host_and_port;
+    allocator.free(host_and_port);
+
+    const href = nativeStringToOwnedUtf8(native_url.URL.href(parsed), allocator) orelse return null;
+    defer allocator.free(href);
+    return allocator.dupe(u8, canonicalAuthorityHost(href)) catch null;
+}
+
+fn nativeUrlHostnameToOwnedUtf8(parsed: *native_url.URL, allocator: std.mem.Allocator) ?[]u8 {
+    const host_and_port = nativeUrlHostAndPortToOwnedUtf8(parsed, allocator) orelse return null;
+    const port = native_url.URL.port(parsed);
+    if (port == std.math.maxInt(u32)) return host_and_port;
+
+    var port_buffer: [5]u8 = undefined;
+    const port_text = std.fmt.bufPrint(&port_buffer, "{d}", .{port}) catch return host_and_port;
+    const suffix_length = port_text.len + 1;
+    if (host_and_port.len >= suffix_length and
+        host_and_port[host_and_port.len - suffix_length] == ':' and
+        std.mem.eql(u8, host_and_port[host_and_port.len - port_text.len ..], port_text))
+    {
+        const hostname = allocator.dupe(u8, host_and_port[0 .. host_and_port.len - suffix_length]) catch {
+            allocator.free(host_and_port);
+            return null;
+        };
+        allocator.free(host_and_port);
+        return hostname;
+    }
+    return host_and_port;
+}
+
 fn hasAsciiScheme(input: []const u8) bool {
     if (input.len == 0 or !std.ascii.isAlphabetic(input[0])) return false;
     for (input[1..]) |byte| {
@@ -157,7 +199,7 @@ fn validateSpecialHost(parsed: *native_url.URL) bool {
         std.mem.eql(u8, protocol, "file");
     if (!special) return true;
 
-    const hostname = nativeStringToOwnedUtf8(native_url.URL.host(parsed), allocator) orelse return false;
+    const hostname = nativeUrlHostnameToOwnedUtf8(parsed, allocator) orelse return false;
     defer allocator.free(hostname);
     if (hostname.len == 0 or (hostname[0] == '[' and hostname[hostname.len - 1] == ']')) return true;
     if (hostname.len > std.math.maxInt(i32)) return false;
@@ -267,8 +309,12 @@ fn parseWhatwgUrlNative(
     setNativeUrlString(c, object, "protocol", native_url.URL.protocol(parsed));
     setNativeUrlString(c, object, "username", native_url.URL.username(parsed));
     setNativeUrlString(c, object, "password", native_url.URL.password(parsed));
-    setNativeUrlString(c, object, "hostname", native_url.URL.host(parsed));
-    setNativeUrlString(c, object, "host", native_url.URL.hostname(parsed));
+    const hostname = nativeUrlHostnameToOwnedUtf8(parsed, allocator) orelse return extern_fns.JSValueMakeNull(c);
+    defer allocator.free(hostname);
+    setStr(c, object, "hostname", hostname);
+    const host_and_port = nativeUrlHostAndPortToOwnedUtf8(parsed, allocator) orelse return extern_fns.JSValueMakeNull(c);
+    defer allocator.free(host_and_port);
+    setStr(c, object, "host", host_and_port);
     setNativeUrlString(c, object, "pathname", native_url.URL.pathname(parsed));
     setNativeUrlString(c, object, "search", native_url.URL.search(parsed));
     setNativeUrlString(c, object, "hash", native_url.URL.hash(parsed));
@@ -645,7 +691,9 @@ test "native WHATWG URL bridge canonicalizes and rejects invalid bases" {
 
     try std.testing.expect(try evalBool(std.testing.allocator, ctx, "(function() {" ++
         "  var parsed = __home_url_parse_whatwg_native('https://mañana.com/a b');" ++
+        "  var ipv6 = __home_url_parse_whatwg_native('http://[::1]:8080/');" ++
         "  return parsed !== null && parsed.href === 'https://xn--maana-pta.com/a%20b' &&" ++
+        "    ipv6 !== null && ipv6.hostname === '[::1]' && ipv6.host === '[::1]:8080' && ipv6.port === '8080' &&" ++
         "    __home_url_parse_whatwg_native('https://example.com:99999/') === null &&" ++
         "    __home_url_parse_whatwg_native('relative', 'mailto:test@example.com') === null &&" ++
         "    __home_url_parse_whatwg_native('relative', 'custom:/opaque') === null;" ++

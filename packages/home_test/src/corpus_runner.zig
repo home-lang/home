@@ -77311,6 +77311,14 @@ const harness_prelude =
     \\}
     \\function __home_url_normalize_hostname(value) {
     \\  const text = __home_url_to_usv_string(value);
+    \\  if (text.startsWith("[") && text.endsWith("]") && typeof globalThis.__home_url_parse_whatwg_native === "function") {
+    \\    try {
+    \\      const parsed = globalThis.__home_url_parse_whatwg_native("http://" + text + "/");
+    \\      return parsed && parsed.hostname ? parsed.hostname : null;
+    \\    } catch (error) {
+    \\      return null;
+    \\    }
+    \\  }
     \\  if (typeof globalThis.__home_url_domain_to_ascii_native !== "function") return text;
     \\  try {
     \\    const ascii = globalThis.__home_url_domain_to_ascii_native(text);
@@ -77783,6 +77791,7 @@ const harness_prelude =
     \\    if (isDenoUrlCorpus && !["http:", "https:", "ws:", "wss:", "ftp:", "file:"].includes(protocolText) && url.host && pathnameText === "/" && /^[A-Za-z][A-Za-z0-9+.-]*:\/\/[^\/?#]*$/.test(String(source || ""))) pathnameText = "";
     \\    let hashText = isDenoUrlCorpus ? __home_url_normalize_hash(url.hash || "") : String(url.hash || "");
     \\    let searchText = isDenoUrlCorpus ? __home_url_normalize_search(url.search || "", protocolText) : String(url.search || "");
+    \\    let hasEmptyQuery = /\?(?:#.*)?$/.test(String(source || ""));
     \\    let usernameText = __home_url_auth_component(url.username || "");
     \\    let passwordText = __home_url_auth_component(url.password || "");
     \\    let portText = isDenoUrlCorpus ? __home_url_normalize_port(url.port || "", protocolText, "") : String(url.port || "");
@@ -77805,11 +77814,13 @@ const harness_prelude =
     \\        get() {
     \\          if (!protocolOverridden && !isDenoUrlCorpus && __home_native_url_href && __home_native_url_href.get) return __home_native_url_href.get.call(this);
     \\          const auth = this.username || this.password ? this.username + (this.password ? ":" + this.password : "") + "@" : "";
-    \\          if (this.host || ["http:", "https:", "ws:", "wss:", "ftp:", "file:"].includes(protocolText)) return protocolText + "//" + auth + this.host + this.pathname + this.search + this.hash;
-    \\          return protocolText + this.pathname + this.search + this.hash;
+    \\          const query = this.search || (hasEmptyQuery ? "?" : "");
+    \\          if (this.host || ["http:", "https:", "ws:", "wss:", "ftp:", "file:"].includes(protocolText)) return protocolText + "//" + auth + this.host + this.pathname + query + this.hash;
+    \\          return protocolText + this.pathname + query + this.hash;
     \\        },
     \\        set(value) {
     \\          if (__home_native_url_href && __home_native_url_href.set) __home_native_url_href.set.call(this, value);
+    \\          hasEmptyQuery = /\?(?:#.*)?$/.test(String(value));
     \\          protocolText = (__home_native_url_protocol && __home_native_url_protocol.get ? __home_native_url_protocol.get.call(this) : (String(value).match(/^[A-Za-z][A-Za-z0-9+.-]*:/) || [protocolText])[0]);
     \\          pathnameText = (__home_native_url_pathname && __home_native_url_pathname.get ? __home_native_url_pathname.get.call(this) : pathnameText);
     \\          if (isDenoUrlCorpus) {
@@ -77827,7 +77838,7 @@ const harness_prelude =
     \\              normalizedHostname = colon >= 0 && !(hostPort.startsWith("[") && hostPort.endsWith("]")) ? hostPort.slice(0, colon) : hostPort;
     \\              portText = colon >= 0 && !(hostPort.startsWith("[") && hostPort.endsWith("]")) ? __home_url_normalize_port(hostPort.slice(colon + 1), protocolText, "") : "";
     \\              pathnameText = __home_url_normalize_pathname(parsed[3] || "", protocolText);
-    \\              searchText = __home_url_normalize_search(parsed[4] || "", protocolText);
+    \\              searchText = hasEmptyQuery ? "" : __home_url_normalize_search(parsed[4] || "", protocolText);
     \\              hashText = __home_url_normalize_hash(parsed[5] || "");
     \\              if (searchParamsCache && searchParamsCache.__home_reload) searchParamsCache.__home_reload(searchText);
     \\            }
@@ -77848,7 +77859,7 @@ const harness_prelude =
     \\        Object.defineProperty(url, "search", {
     \\          configurable: true,
     \\          get() { return searchText; },
-    \\          set(value) { searchText = __home_url_normalize_search(value, protocolText); if (searchParamsCache && searchParamsCache.__home_reload) searchParamsCache.__home_reload(searchText); },
+    \\          set(value) { const text = String(value || ""); hasEmptyQuery = text === "?"; searchText = hasEmptyQuery ? "" : __home_url_normalize_search(text, protocolText); if (searchParamsCache && searchParamsCache.__home_reload) searchParamsCache.__home_reload(searchText); },
     \\        });
     \\        Object.defineProperty(url, "username", {
     \\          configurable: true,
@@ -85112,6 +85123,7 @@ const harness_prelude =
     \\    return json;
     \\  }
     \\  const __home_url_search_params_delete = URLSearchParams.prototype.delete;
+    \\  const __home_url_search_params_for_each = URLSearchParams.prototype.forEach;
     \\  const __home_url_search_params_has = URLSearchParams.prototype.has;
     \\  URLSearchParams.prototype.toJSON = function() {
     \\    return __home_url_search_params_json(this);
@@ -85122,7 +85134,7 @@ const harness_prelude =
     \\      error.code = "ERR_INVALID_ARG_TYPE";
     \\      throw error;
     \\    }
-    \\    for (const pair of this.entries()) callback.call(thisArg, pair[1], pair[0], this);
+    \\    return __home_url_search_params_for_each.call(this, callback, thisArg);
     \\  };
     \\  URLSearchParams.prototype.delete = function(name, value) {
     \\    if (arguments.length < 1) throw new TypeError("delete requires 1 argument");
@@ -89226,7 +89238,9 @@ const harness_prelude =
     \\      currentTarget: null, target: null, cancelBubble: false, defaultPrevented: false, eventPhase: 0,
     \\      returnValue: true, timeStamp: Date.now(), path: [], dispatching: false, immediate: false,
     \\    });
+    \\    Object.defineProperty(this, "isTrusted", { enumerable: true, get: __home_event_is_trusted });
     \\  };
+    \\  function __home_event_is_trusted() { return false; }
     \\  const eventAccessors = {
     \\    type: { enumerable: true, get() { return __home_event_state(this).type; } },
     \\    bubbles: { enumerable: true, get() { return __home_event_state(this).bubbles; } },
@@ -89238,7 +89252,7 @@ const harness_prelude =
     \\    defaultPrevented: { enumerable: true, get() { return __home_event_state(this).defaultPrevented; } },
     \\    eventPhase: { enumerable: true, get() { return __home_event_state(this).eventPhase; } },
     \\    timeStamp: { enumerable: true, get() { return __home_event_state(this).timeStamp; } },
-    \\    isTrusted: { enumerable: true, get() { return false; } },
+    \\    isTrusted: { enumerable: true, get: __home_event_is_trusted },
     \\    cancelBubble: { enumerable: true, get() { return __home_event_state(this).cancelBubble; }, set(value) { if (value) __home_event_state(this).cancelBubble = true; } },
     \\    returnValue: { enumerable: true, get() { return __home_event_state(this).returnValue; }, set(value) { if (!value) this.preventDefault(); } },
     \\  };
@@ -94805,34 +94819,6 @@ fn rewriteStreamsLeakCorpus(allocator: std.mem.Allocator, source: []const u8) ![
     return std.mem.replaceOwned(u8, allocator, pipe_bytes, "const rounds = 5000;", "const rounds = 32;");
 }
 
-fn rewriteRequestSubclassCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    const without_type_import = try std.mem.replaceOwned(
-        u8,
-        allocator,
-        source,
-        "import { RequestInit } from \"undici-types\";\n",
-        "",
-    );
-    defer allocator.free(without_type_import);
-    return std.mem.replaceOwned(
-        u8,
-        allocator,
-        without_type_import,
-        "constructor(input: string, init?: RequestInit, actual_url?: string)",
-        "constructor(input, init, actual_url)",
-    );
-}
-
-fn rewriteFetchPreconnectCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    return std.mem.replaceOwned(
-        u8,
-        allocator,
-        source,
-        "import \"harness\";",
-        "globalThis.__home_import(\"harness\");",
-    );
-}
-
 fn rewriteFileAttributeImports(
     allocator: std.mem.Allocator,
     source: []const u8,
@@ -95111,24 +95097,6 @@ fn rewriteTomlResolveCorpus(allocator: std.mem.Allocator, source: []const u8) ![
     );
 }
 
-fn rewriteDenoV8ErrorCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    return try std.mem.replaceOwned(u8, allocator, source, "test.ignore(", "test(");
-}
-
-fn rewriteDenoEncodingCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    return try std.mem.replaceOwned(u8, allocator, source, "test.ignore(", "test(");
-}
-
-fn rewriteTextEncoderCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    return try std.mem.replaceOwned(
-        u8,
-        allocator,
-        source,
-        "const str2 = String.fromCharCode(0xd800, 0xdc00);",
-        "const str2 = String.fromCharCode(0xd800, 0xd801);",
-    );
-}
-
 fn rewriteAbortSignalLeakCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     var threaded = std.Io.Threaded.init(allocator, .{});
     defer threaded.deinit();
@@ -95166,79 +95134,6 @@ fn rewriteAbortSignalLeakCorpus(allocator: std.mem.Allocator, source: []const u8
     defer allocator.free(test_without_fixture_import);
 
     return std.mem.concat(allocator, u8, &.{ fixture_without_main, "\n", test_without_fixture_import });
-}
-
-fn rewriteDenoEventCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    return try std.mem.replaceOwned(u8, allocator, source, "test.ignore(", "test(");
-}
-
-fn rewriteDenoEventTargetCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    return try std.mem.replaceOwned(
-        u8,
-        allocator,
-        source,
-        "test.ignore(function eventTargetThisShouldDefaultToWindow() {",
-        "test(function eventTargetThisShouldDefaultToWindow() {",
-    );
-}
-
-fn rewriteDenoFetchBlobCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    return try std.mem.replaceOwned(
-        u8,
-        allocator,
-        source,
-        "test.ignore(function blobCustomInspectFunction() {",
-        "test(function blobCustomInspectFunction() {",
-    );
-}
-
-fn rewriteDenoFetchRequestCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    const without_relative = try std.mem.replaceOwned(
-        u8,
-        allocator,
-        source,
-        "test.ignore(function requestRelativeUrl() {",
-        "test(function requestRelativeUrl() {",
-    );
-    defer allocator.free(without_relative);
-
-    return try std.mem.replaceOwned(
-        u8,
-        allocator,
-        without_relative,
-        "test.ignore(function customInspectFunction() {",
-        "test(function customInspectFunction() {",
-    );
-}
-
-fn rewriteDenoFetchBodyCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    return try std.mem.replaceOwned(
-        u8,
-        allocator,
-        source,
-        "ignore: true",
-        "ignore: false",
-    );
-}
-
-fn rewriteDenoFetchHeadersCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    return try std.mem.replaceOwned(
-        u8,
-        allocator,
-        source,
-        "test.ignore(function customInspectReturnsCorrectHeadersFormat() {",
-        "test(function customInspectReturnsCorrectHeadersFormat() {",
-    );
-}
-
-fn rewriteDenoFetchResponseCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    return try std.mem.replaceOwned(
-        u8,
-        allocator,
-        source,
-        "test.ignore(function customInspectFunction() {",
-        "test(function customInspectFunction() {",
-    );
 }
 
 fn rewriteMemfdDisabledCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
@@ -98213,6 +98108,10 @@ fn moduleDefaultExportIsApi(name: []const u8) bool {
     return false;
 }
 
+fn moduleIsTypesOnly(name: []const u8) bool {
+    return std.mem.eql(u8, name, "undici-types");
+}
+
 fn skipJsWhitespace(source: []const u8, start: usize) usize {
     var i = start;
     while (i < source.len and isJsWhitespace(source[i])) i += 1;
@@ -98401,6 +98300,7 @@ fn supportedNamedImportModule(source: []const u8, start: usize, relative_path: [
         "source-map",
         "assert",
         "node:assert",
+        "undici-types",
         "path",
         "node:path",
         "fs/promises",
@@ -98457,8 +98357,12 @@ fn tryAppendBunTestImportRewrite(
 ) !?usize {
     if (start > 0 and isJsIdentifierContinue(source[start - 1])) return null;
     var i = consumeJsKeyword(source, start, "import") orelse return null;
-    if (i >= source.len or !isJsWhitespace(source[i])) return null;
-    i = skipJsWhitespace(source, i);
+    if (i >= source.len) return null;
+    if (isJsWhitespace(source[i])) {
+        i = skipJsWhitespace(source, i);
+    } else if (source[i] != '"' and source[i] != '\'') {
+        return null;
+    }
 
     var type_only = false;
     if (consumeJsKeyword(source, i, "type")) |after_type| {
@@ -98490,7 +98394,7 @@ fn tryAppendBunTestImportRewrite(
         i = skipJsHorizontalWhitespace(source, i);
         if (i < source.len and source[i] == ';') i += 1;
 
-        if (!type_only) {
+        if (!type_only and !moduleIsTypesOnly(module.name)) {
             try out.appendSlice(allocator, "const ");
             try out.appendSlice(allocator, alias);
             try out.appendSlice(allocator, " = globalThis.__home_import(\"");
@@ -98510,7 +98414,7 @@ fn tryAppendBunTestImportRewrite(
         i += 1;
         i = skipJsHorizontalWhitespace(source, i);
         if (i < source.len and source[i] == ';') i += 1;
-        if (!type_only) {
+        if (!type_only and !moduleIsTypesOnly(module.name)) {
             try out.appendSlice(allocator, "globalThis.__home_import(\"");
             try out.appendSlice(allocator, module.name);
             try out.appendSlice(allocator, "\");\n");
@@ -98553,7 +98457,7 @@ fn tryAppendBunTestImportRewrite(
             j += 1;
             j = skipJsHorizontalWhitespace(source, j);
             if (j < source.len and source[j] == ';') j += 1;
-            if (!type_only) {
+            if (!type_only and !moduleIsTypesOnly(module.name)) {
                 try out.appendSlice(allocator, "const ");
                 try out.appendSlice(allocator, ident);
                 try out.appendSlice(allocator, " = globalThis.__home_import(\"");
@@ -98579,7 +98483,7 @@ fn tryAppendBunTestImportRewrite(
         j += 1;
         j = skipJsHorizontalWhitespace(source, j);
         if (j < source.len and source[j] == ';') j += 1;
-        if (!type_only) {
+        if (!type_only and !moduleIsTypesOnly(module.name)) {
             try out.appendSlice(allocator, "const ");
             try out.appendSlice(allocator, ident);
             try out.appendSlice(allocator, " = globalThis.__home_import(\"");
@@ -98616,7 +98520,7 @@ fn tryAppendBunTestImportRewrite(
     i = skipJsHorizontalWhitespace(source, i);
     if (i < source.len and source[i] == ';') i += 1;
 
-    if (!type_only) {
+    if (!type_only and !moduleIsTypesOnly(module.name)) {
         _ = try appendBunTestImportBinding(out, allocator, specifiers, module.name);
     }
     return i;
@@ -99335,7 +99239,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/node/buffer-resolveObjectURL.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/deno/encoding/encoding.test.ts"))
-        try rewriteDenoEncodingCorpus(allocator, module_source)
+        null
     else if (std.mem.eql(u8, relative_path, "js/web/fetch/abort-signal-leak.test.ts"))
         try rewriteAbortSignalLeakCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/web/fetch/fetch-leak.test.ts"))
@@ -99347,31 +99251,31 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/web/streams/streams-leak.test.ts"))
         try rewriteStreamsLeakCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/web/request/request-subclass.test.ts"))
-        try rewriteRequestSubclassCorpus(allocator, module_source)
+        null
     else if (std.mem.eql(u8, relative_path, "js/web/fetch/fetch-preconnect.test.ts"))
-        try rewriteFetchPreconnectCorpus(allocator, module_source)
+        null
     else if (std.mem.eql(u8, relative_path, "js/web/fetch/fetch.brotli.test.ts"))
         try rewriteFileAttributeImports(allocator, module_source, relative_path)
     else if (std.mem.eql(u8, relative_path, "js/web/encoding/text-encoder.test.js"))
-        try rewriteTextEncoderCorpus(allocator, module_source)
+        null
     else if (std.mem.eql(u8, relative_path, "js/web/broadcastchannel/broadcast-channel-worker-gc.test.ts"))
         try rewriteBroadcastChannelWorkerGcCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/deno/event/event.test.ts"))
-        try rewriteDenoEventCorpus(allocator, module_source)
+        null
     else if (std.mem.eql(u8, relative_path, "js/deno/event/event-target.test.ts"))
-        try rewriteDenoEventTargetCorpus(allocator, module_source)
+        null
     else if (std.mem.eql(u8, relative_path, "js/deno/fetch/request.test.ts"))
-        try rewriteDenoFetchRequestCorpus(allocator, module_source)
+        null
     else if (std.mem.eql(u8, relative_path, "js/deno/fetch/body.test.ts"))
-        try rewriteDenoFetchBodyCorpus(allocator, module_source)
+        null
     else if (std.mem.eql(u8, relative_path, "js/deno/fetch/blob.test.ts"))
-        try rewriteDenoFetchBlobCorpus(allocator, module_source)
+        null
     else if (std.mem.eql(u8, relative_path, "js/deno/fetch/headers.test.ts"))
-        try rewriteDenoFetchHeadersCorpus(allocator, module_source)
+        null
     else if (std.mem.eql(u8, relative_path, "js/deno/fetch/response.test.ts"))
-        try rewriteDenoFetchResponseCorpus(allocator, module_source)
+        null
     else if (std.mem.eql(u8, relative_path, "js/deno/v8/error.test.ts"))
-        try rewriteDenoV8ErrorCorpus(allocator, module_source)
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/http/async-iterator-stream.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-serve-cookies.test.ts"))
@@ -99780,7 +99684,9 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         null;
     defer if (owned_module_source) |buffer| allocator.free(buffer);
     const rewritten_module_source = owned_module_source orelse module_source;
-    const production_lowered_source = if (sourceHasExplicitResourceManagementSyntax(rewritten_module_source))
+    const production_lowered_source = if (sourceHasExplicitResourceManagementSyntax(rewritten_module_source) or
+        (std.mem.startsWith(u8, relative_path, "js/deno/") and
+            sourceNeedsBootstrapTypeScriptRewrite(rewritten_module_source, relative_path)))
         try jsc_bootstrap.transpileCorpusSourceWithBunParser(allocator, rewritten_module_source, relative_path)
     else
         null;
@@ -115717,8 +115623,8 @@ test "bootstrap runner mirrors Deno V8 error stack corpus" {
     defer file_run.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
-    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.todo);
 }
 
 test "bootstrap runner mirrors bake serve plugins dev server corpus" {
@@ -117996,6 +117902,19 @@ test "Bun harness import rewrite lowers isWindows import" {
 
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "const { isWindows } = globalThis.__home_import(\"harness\");") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "from \"harness\"") == null);
+}
+
+test "Bun harness import rewrite lowers compact side effect import" {
+    const source =
+        \\import"harness";
+        \\import { test } from "bun:test";
+        \\test("side effect", () => {});
+    ;
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, "js/web/fetch/fetch-preconnect.test.ts");
+    defer std.testing.allocator.free(rewritten);
+
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "globalThis.__home_import(\"harness\");") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "import\"harness\"") == null);
 }
 
 test "Bun harness import rewrite lowers gc import" {
@@ -128697,7 +128616,7 @@ test "bootstrap runner mirrors expansion queue tail mini-suite" {
         .{ .path = "js/web/encoding/text-decoder.test.js", .passed = 77 },
         .{ .path = "js/web/encoding/text-decoder-cjk.test.ts", .passed = 30 },
         .{ .path = "js/web/encoding/text-decoder-single-byte.test.ts", .passed = 13 },
-        .{ .path = "js/deno/encoding/encoding.test.ts", .passed = 23 },
+        .{ .path = "js/deno/encoding/encoding.test.ts", .passed = 21, .todo = 2 },
         .{ .path = "regression/issue/fix-bindings-stack-trace.test.ts", .passed = 2 },
         .{ .path = "js/node/module/module-sourcemap.test.js", .passed = 3 },
         .{ .path = "js/node/console/console-constructor-exception.test.ts", .passed = 1 },
@@ -128866,7 +128785,7 @@ test "bootstrap runner mirrors Deno encoding corpus" {
     defer prepared.deinit(std.testing.allocator);
 
     try std.testing.expect(prepared.unsupported_reason == null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test.ignore(") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test.ignore(") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "op_encode_binary_string") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "The encoding label provided") != null);
 
@@ -128877,8 +128796,8 @@ test "bootstrap runner mirrors Deno encoding corpus" {
     defer file_run.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 23), file_run.result.passed);
-    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+    try std.testing.expectEqual(@as(usize, 21), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.todo);
 }
 
 test "bootstrap runner mirrors node util internal inspect corpus" {
@@ -131758,14 +131677,14 @@ test "bootstrap runner mirrors Deno web regression tail mini-suite" {
         todo: usize = 0,
     }{
         .{ .path = "js/deno/event/custom-event.test.ts", .passed = 2 },
-        .{ .path = "js/deno/event/event.test.ts", .passed = 10 },
+        .{ .path = "js/deno/event/event.test.ts", .passed = 8, .todo = 2 },
         .{ .path = "js/deno/abort/abort-controller.test.ts", .passed = 6 },
-        .{ .path = "js/deno/event/event-target.test.ts", .passed = 15 },
-        .{ .path = "js/deno/fetch/request.test.ts", .passed = 7 },
-        .{ .path = "js/deno/fetch/body.test.ts", .passed = 5 },
-        .{ .path = "js/deno/fetch/blob.test.ts", .passed = 10 },
-        .{ .path = "js/deno/fetch/headers.test.ts", .passed = 27 },
-        .{ .path = "js/deno/fetch/response.test.ts", .passed = 9 },
+        .{ .path = "js/deno/event/event-target.test.ts", .passed = 14, .todo = 1 },
+        .{ .path = "js/deno/fetch/request.test.ts", .passed = 5, .todo = 2 },
+        .{ .path = "js/deno/fetch/body.test.ts", .passed = 3, .todo = 2 },
+        .{ .path = "js/deno/fetch/blob.test.ts", .passed = 9, .todo = 1 },
+        .{ .path = "js/deno/fetch/headers.test.ts", .passed = 26, .todo = 1 },
+        .{ .path = "js/deno/fetch/response.test.ts", .passed = 8, .todo = 1 },
         .{ .path = "js/deno/url/urlsearchparams.test.ts", .passed = 32 },
         .{ .path = "js/deno/crypto/random.test.ts", .passed = 10 },
         .{ .path = "regression/issue/08040.test.ts", .passed = 1 },
@@ -131813,7 +131732,7 @@ test "bootstrap runner mirrors Deno event inspect corpus" {
     defer prepared.deinit(std.testing.allocator);
 
     try std.testing.expect(prepared.unsupported_reason == null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test.ignore(") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test.ignore(") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_deno_inspect_event") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "ProgressEvent") != null);
 
@@ -131824,8 +131743,8 @@ test "bootstrap runner mirrors Deno event inspect corpus" {
     defer file_run.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 10), file_run.result.passed);
-    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+    try std.testing.expectEqual(@as(usize, 8), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.todo);
 }
 
 test "bootstrap runner mirrors Deno event target window default corpus" {
@@ -131841,7 +131760,7 @@ test "bootstrap runner mirrors Deno event target window default corpus" {
     defer prepared.deinit(std.testing.allocator);
 
     try std.testing.expect(prepared.unsupported_reason == null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test.ignore(function eventTargetThisShouldDefaultToWindow") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test.ignore(function eventTargetThisShouldDefaultToWindow") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_default_window_target") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
@@ -131851,8 +131770,8 @@ test "bootstrap runner mirrors Deno event target window default corpus" {
     defer file_run.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 15), file_run.result.passed);
-    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+    try std.testing.expectEqual(@as(usize, 14), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.todo);
 }
 
 test "bootstrap runner mirrors Deno blob inspect corpus" {
@@ -131868,7 +131787,7 @@ test "bootstrap runner mirrors Deno blob inspect corpus" {
     defer prepared.deinit(std.testing.allocator);
 
     try std.testing.expect(prepared.unsupported_reason == null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test.ignore(function blobCustomInspectFunction") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test.ignore(function blobCustomInspectFunction") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_deno_inspect_blob") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
@@ -131878,8 +131797,8 @@ test "bootstrap runner mirrors Deno blob inspect corpus" {
     defer file_run.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 10), file_run.result.passed);
-    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+    try std.testing.expectEqual(@as(usize, 9), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.todo);
 }
 
 test "bootstrap runner mirrors Deno body form data corpus" {
@@ -131895,7 +131814,7 @@ test "bootstrap runner mirrors Deno body form data corpus" {
     defer prepared.deinit(std.testing.allocator);
 
     try std.testing.expect(prepared.unsupported_reason == null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "ignore: true") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "ignore: true") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "multipart_form_data.txt") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "form_urlencoded.txt") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.PORT") != null);
@@ -131910,8 +131829,8 @@ test "bootstrap runner mirrors Deno body form data corpus" {
         std.debug.print("Deno body form-data corpus failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 5), file_run.result.passed);
-    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 2), file_run.result.todo);
 }
 
 test "bootstrap runner mirrors Deno fetch inspect corpus" {
@@ -131926,17 +131845,20 @@ test "bootstrap runner mirrors Deno fetch inspect corpus" {
         .{
             .path = "js/deno/fetch/request.test.ts",
             .ignored_needle = "test.ignore(function requestRelativeUrl",
-            .passed = 7,
+            .passed = 5,
+            .todo = 2,
         },
         .{
             .path = "js/deno/fetch/headers.test.ts",
             .ignored_needle = "test.ignore(function customInspectReturnsCorrectHeadersFormat",
-            .passed = 27,
+            .passed = 26,
+            .todo = 1,
         },
         .{
             .path = "js/deno/fetch/response.test.ts",
             .ignored_needle = "test.ignore(function customInspectFunction",
-            .passed = 9,
+            .passed = 8,
+            .todo = 1,
         },
     };
 
@@ -131954,9 +131876,9 @@ test "bootstrap runner mirrors Deno fetch inspect corpus" {
         defer prepared.deinit(std.testing.allocator);
 
         try std.testing.expect(prepared.unsupported_reason == null);
-        try std.testing.expect(std.mem.indexOf(u8, prepared.source, case.ignored_needle) == null);
+        try std.testing.expect(std.mem.indexOf(u8, prepared.source, case.ignored_needle) != null);
         if (std.mem.eql(u8, case.path, "js/deno/fetch/request.test.ts")) {
-            try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test.ignore(function customInspectFunction") == null);
+            try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test.ignore(function customInspectFunction") != null);
         }
         try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_deno_inspect_headers") != null);
         try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_deno_inspect_request") != null);

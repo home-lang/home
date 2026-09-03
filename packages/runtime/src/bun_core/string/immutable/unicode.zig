@@ -1635,7 +1635,19 @@ pub fn cp1252ToCodepointBytesAssumeNotASCII16(char: u32) u16 {
 ///
 /// This may not encode everything if `buf` is not big enough.
 pub fn copyUTF16IntoUTF8(buf: []u8, utf16: []const u16) EncodeIntoResult {
-    return copyUTF16IntoUTF8Impl(buf, utf16, false);
+    if (utf16.len == 0 or buf.len == 0)
+        return .{ .read = 0, .written = 0 };
+
+    const worst_case = if (utf16.len > std.math.maxInt(usize) / 3)
+        std.math.maxInt(usize)
+    else
+        utf16.len * 3;
+    const utf8_len = if (worst_case <= buf.len)
+        worst_case
+    else
+        bun.simdutf.length.utf8.from.utf16.le(utf16);
+
+    return copyUTF16IntoUTF8WithBufferImpl(buf, utf16, utf8_len, false);
 }
 
 /// See comment on `copyUTF16IntoUTF8WithBufferImpl` on what `allow_truncated_utf8_sequence` should do

@@ -116,29 +116,7 @@ pub const Run = struct {
     }
 
     fn doPreconnect(preconnect: []const string) void {
-        if (preconnect.len == 0) return;
-        bun.HTTPThread.init(&.{});
-
-        for (preconnect) |url_str| {
-            const url = bun.URL.parse(url_str);
-
-            if (!url.isHTTP() and !url.isHTTPS()) {
-                Output.errGeneric("preconnect URL must be HTTP or HTTPS: {f}", .{bun.fmt.quote(url_str)});
-                Global.exit(1);
-            }
-
-            if (url.hostname.len == 0) {
-                Output.errGeneric("preconnect URL must have a hostname: {f}", .{bun.fmt.quote(url_str)});
-                Global.exit(1);
-            }
-
-            if (!url.hasValidPort()) {
-                Output.errGeneric("preconnect URL must have a valid port: {f}", .{bun.fmt.quote(url_str)});
-                Global.exit(1);
-            }
-
-            AsyncHTTP.preconnect(url, false);
-        }
+        AsyncHTTP.preconnectFromCli(preconnect);
     }
 
     fn bootBunShell(ctx: Command.Context, entry_path: []const u8) !bun.shell.ExitCode {
