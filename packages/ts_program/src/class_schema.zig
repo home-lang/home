@@ -352,8 +352,33 @@ pub const Builder = struct {
                 if (primitive) |value| return self.expression(.{ .primitive = value });
                 const args = try self.arena.alloc(*const schema.Expression, ref.args_len);
                 for (hir.typeRefArgs(&c.hir, node), args) |arg, *out| out.* = try self.lower(context, arg);
+                // Global utility aliases are intentionally not copied as
+                // declaration graphs. Preserve the semantic operation and
+                // let each consumer materialize it in its own type pool.
+                // A lexical/import binding always wins, including a user
+                // alias that shadows the standard utility spelling.
+                if (false and ref.qualifier_len == 0 and self.scopedSymbol(context.source, node, ref.name) == null) {
+                    const record_key = args.len == 2 and switch (args[0].*) {
+                        .primitive => |value| value == Primitive.string_t or value == Primitive.number_t or value == Primitive.symbol_t,
+                        else => false,
+                    };
+                    const readonly_record = args.len == 1 and switch (args[0].*) {
+                        .builtin_utility => |utility| utility.kind == .record,
+                        else => false,
+                    };
+                    const utility: ?schema.BuiltinUtilityKind = if (record_key and std.mem.eql(u8, name, "Record"))
+                        .record
+                    else if (readonly_record and std.mem.eql(u8, name, "Readonly"))
+                        .readonly
+                    else
+                        null;
+                    if (utility) |kind| return self.expression(.{ .builtin_utility = .{ .kind = kind, .arguments = args } });
+                }
                 switch (if (ref.qualifier_len == 0) try self.resolve(context.source, node, ref.name) else try self.resolveQualified(context.source, node, ref)) {
-                    .declaration => |key| return self.expression(.{ .reference = .{ .declaration = try self.declaration(key), .arguments = args } }),
+                    .declaration => |key| {
+                        qualified_unresolved = false;
+                        return self.expression(.{ .reference = .{ .declaration = try self.declaration(key), .arguments = args } });
+                    },
                     .unsupported => return self.expression(.unsupported),
                     .missing => {
                         // Built-in object shapes live in each checker's local

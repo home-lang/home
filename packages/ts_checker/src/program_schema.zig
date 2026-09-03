@@ -48,6 +48,11 @@ pub const Mapped = struct {
 };
 pub const IndexSignature = struct { key: *const Expression, value: *const Expression };
 pub const IndexedObject = struct { members: []const Member, indices: []const IndexSignature };
+pub const BuiltinUtilityKind = enum { record, readonly };
+pub const BuiltinUtility = struct {
+    kind: BuiltinUtilityKind,
+    arguments: []const *const Expression,
+};
 pub const Expression = union(enum) {
     primitive: types.TypeId,
     /// A deliberately opaque leaf in an otherwise transferable declaration.
@@ -66,6 +71,9 @@ pub const Expression = union(enum) {
     readonly_array: *const Expression,
     object: []const Member,
     indexed_object: IndexedObject,
+    /// An unshadowed standard utility whose arguments remain source-owned,
+    /// while its concrete mapped/object representation belongs to consumers.
+    builtin_utility: BuiltinUtility,
     tuple: []const Element,
     union_type: []const *const Expression,
     intersection: []const *const Expression,
@@ -156,6 +164,7 @@ pub const Schema = struct {
                         try pending.append(gpa, index.value);
                     }
                 },
+                .builtin_utility => |utility| try pending.appendSlice(gpa, utility.arguments),
                 .tuple => |elements| for (elements) |element| {
                     try pending.append(gpa, element.type);
                 },

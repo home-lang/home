@@ -107264,6 +107264,14 @@ pub const Checker = struct {
                 }
                 return self.interner.internObjectTypeWithIndex(members, string_index, number_index);
             },
+            .builtin_utility => |utility| {
+                const lowered = try self.gpa.alloc(TypeId, utility.arguments.len);
+                defer self.gpa.free(lowered);
+                for (utility.arguments, lowered) |argument, *out| {
+                    out.* = try self.lowerProgramExpression(argument, declaration, args);
+                }
+                return self.lowerProgramBuiltinUtility(utility.kind, lowered);
+            },
             .tuple => |elements| {
                 const result = try self.gpa.alloc(types.TupleElement, elements.len);
                 defer self.gpa.free(result);
@@ -107404,6 +107412,97 @@ pub const Checker = struct {
                     return self.syntheticProgramClassStaticType(exported_class, class_name, null, hir_mod.none_node_id);
                 }
                 return error.UnsupportedProgramType;
+            },
+        }
+    }
+
+    fn lowerProgramBuiltinUtility(
+        self: *Checker,
+        kind: ProgramClassSchema.BuiltinUtilityKind,
+        arguments: []const TypeId,
+    ) ProgramTypeError!TypeId {
+        switch (kind) {
+            .record => {
+                if (arguments.len != 2) return error.UnsupportedProgramType;
+                const key_t = try self.resolveGenericType(arguments[0]);
+                const value_t = try self.resolveGenericType(arguments[1]);
+                const result = if (key_t == types.Primitive.string_t)
+                    self.interner.internObjectTypeWithIndexAndSymbol(&.{}, value_t, types.Primitive.none, types.Primitive.none) catch return error.OutOfMemory
+                else if (key_t == types.Primitive.number_t)
+                    self.interner.internObjectTypeWithIndexAndSymbol(&.{}, types.Primitive.none, value_t, types.Primitive.none) catch return error.OutOfMemory
+                else if (key_t == types.Primitive.symbol_t)
+                    self.interner.internObjectTypeWithIndexAndSymbol(&.{}, types.Primitive.none, types.Primitive.none, value_t) catch return error.OutOfMemory
+                else if (self.containsFreeTypeParameter(key_t))
+                    self.interner.internMapped(key_t, value_t, .none, .none) catch return error.OutOfMemory
+                else blk: {
+                    var literal_keys: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+                    defer literal_keys.deinit(self.gpa);
+                    if (!self.collectStringLiteralKeys(key_t, &literal_keys) or literal_keys.items.len == 0)
+                        return error.UnsupportedProgramType;
+                    const members = try self.gpa.alloc(types.ObjectMember, literal_keys.items.len);
+                    defer self.gpa.free(members);
+                    for (literal_keys.items, members) |name, *member| member.* = .{
+                        .name = name,
+                        .type = value_t,
+                        .is_optional = false,
+                        .is_readonly = false,
+                        .is_method = false,
+                    };
+                    break :blk self.interner.internObjectType(members) catch return error.OutOfMemory;
+                };
+                const name = self.string_interner.intern("Record") catch return error.OutOfMemory;
+                try self.registerAliasDisplayName(result, name, arguments);
+                return result;
+            },
+            .readonly => {
+                if (arguments.len != 1) return error.UnsupportedProgramType;
+                const source_t = try self.resolveGenericType(arguments[0]);
+                if (source_t >= self.interner.pool.typeCount()) return error.UnsupportedProgramType;
+                const source_flags = self.interner.pool.flagsOf(source_t);
+                if (source_flags.is_object_type and !source_flags.is_mapped) {
+                    const members = try self.gpa.dupe(types.ObjectMember, self.interner.objectMembers(source_t));
+                    defer self.gpa.free(members);
+                    for (members) |*member| member.is_readonly = true;
+                    const string_index = self.interner.objectStringIndex(source_t);
+                    const number_index = self.interner.objectNumberIndex(source_t);
+                    const symbol_index = self.interner.objectSymbolIndex(source_t);
+                    const result = self.interner.internObjectTypeWithIndexAndSymbol(
+                        members,
+                        string_index,
+                        number_index,
+                        symbol_index,
+                    ) catch return error.OutOfMemory;
+                    if (string_index != types.Primitive.none or
+                        number_index != types.Primitive.none or
+                        symbol_index != types.Primitive.none)
+                    {
+                        try self.readonly_index_types.put(self.gpa, result, {});
+                    }
+                    const name = self.string_interner.intern("Readonly") catch return error.OutOfMemory;
+                    try self.registerAliasDisplayName(result, name, arguments);
+                    return result;
+                }
+                if (source_flags.is_mapped) {
+                    const mapped = self.interner.mappedPayload(source_t);
+                    const result = self.interner.internMapped(mapped.constraint, mapped.template, .add, mapped.optional) catch return error.OutOfMemory;
+                    const name = self.string_interner.intern("Readonly") catch return error.OutOfMemory;
+                    try self.registerAliasDisplayName(result, name, arguments);
+                    return result;
+                }
+                const key_name = self.string_interner.intern("__home_mapped_key") catch return error.OutOfMemory;
+                const key_t = self.interner.internFreshTypeParameterWithFlags(
+                    key_name,
+                    try self.propertyKeyUnionType(),
+                    types.Primitive.none,
+                    .bivariant,
+                    false,
+                ) catch return error.OutOfMemory;
+                const constraint = self.interner.internKeyof(source_t) catch return error.OutOfMemory;
+                const template = self.interner.internIndexedAccess(source_t, key_t) catch return error.OutOfMemory;
+                const result = self.interner.internMapped(constraint, template, .add, .none) catch return error.OutOfMemory;
+                const name = self.string_interner.intern("Readonly") catch return error.OutOfMemory;
+                try self.registerAliasDisplayName(result, name, arguments);
+                return result;
             },
         }
     }
