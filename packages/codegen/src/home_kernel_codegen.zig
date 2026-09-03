@@ -1781,6 +1781,95 @@ pub const HomeKernelCodegen = struct {
         try self.emit().loadIndirect(.acc, .tmp3, size, false);
     }
 
+    /// Assemble a bitfield literal whose container is wider than one machine
+    /// word, into the storage whose address is on top of the stack.
+    ///
+    /// Each field is masked to its width and OR-ed into the word that holds
+    /// it. A field that straddles a word boundary is written in two pieces —
+    /// the low bits into the first word, the remainder into the next — which
+    /// is the case an in-register build cannot express at all.
+    ///
+    /// The destination address is kept in `mem_dst` across the whole
+    /// operation, and pushed around each field's value expression, since that
+    /// expression is arbitrary Home code and may itself use every role.
+    fn emitWideBitfieldLiteral(
+        self: *HomeKernelCodegen,
+        info: StructInfo,
+        lit: *const ast.StructLiteralExpr,
+    ) !void {
+        try self.emit().pop(.mem_dst);
+
+        // Unmentioned bits read as zero, which is what a literal means.
+        try self.emit().push(.mem_dst);
+        try self.emit().movImmReg(.mem_len, @intCast(info.size));
+        try self.emit().zero(.acc);
+        try self.emit().memFill(self.freshLabel());
+        try self.emit().pop(.mem_dst);
+
+        const word_bits: usize = 64;
+        for (lit.fields) |fi| {
+            var found: ?FieldInfo = null;
+            for (info.fields) |f| {
+                if (std.mem.eql(u8, f.name, fi.name)) {
+                    found = f;
+                    break;
+                }
+            }
+            const field = found orelse {
+                try self.print("    # ERROR: {s} has no field {s}\n", .{ info.name, fi.name });
+                continue;
+            };
+            if (field.bit_width == 0 or field.bit_width > 64) {
+                try self.print(
+                    "    # ERROR: {s}.{s} is {d} bits; this backend places bitfields up to 64 bits wide\n",
+                    .{ info.name, field.name, field.bit_width },
+                );
+                continue;
+            }
+
+            try self.emit().push(.mem_dst);
+            try self.generateExpr(fi.value);
+            try self.emit().pop(.mem_dst);
+
+            // Mask the value to the field's width so a caller passing a wider
+            // number cannot corrupt a neighbouring field.
+            const mask: u64 = if (field.bit_width >= 64)
+                std.math.maxInt(u64)
+            else
+                (@as(u64, 1) << @intCast(field.bit_width)) - 1;
+            try self.emit().movImmReg(.tmp, @bitCast(mask));
+            try self.emit().binOp(.bit_and);
+
+            const word_index = field.bit_offset / word_bits;
+            const shift = field.bit_offset % word_bits;
+            const byte_offset: i64 = @intCast(word_index * 8);
+
+            // Low piece: the part of the field that fits in this word.
+            try self.emit().push(.acc);
+            if (shift > 0) try self.emit().shiftImm(.shl, @intCast(shift));
+            try self.emit().loadOffset(.tmp, .mem_dst, byte_offset);
+            try self.emit().binOp(.bit_or);
+            try self.emit().storeOffset(.acc, .mem_dst, byte_offset);
+            try self.emit().pop(.acc);
+
+            // High piece, only when the field straddles the boundary.
+            if (shift > 0 and shift + field.bit_width > word_bits) {
+                const next_offset = byte_offset + 8;
+                if (word_index + 1 < (info.size + 7) / 8) {
+                    try self.emit().shiftImm(.shr_logical, @intCast(word_bits - shift));
+                    try self.emit().loadOffset(.tmp, .mem_dst, next_offset);
+                    try self.emit().binOp(.bit_or);
+                    try self.emit().storeOffset(.acc, .mem_dst, next_offset);
+                } else {
+                    try self.print(
+                        "    # ERROR: {s}.{s} at bit {d} runs past the end of a {d}-byte container\n",
+                        .{ info.name, field.name, field.bit_offset, info.size },
+                    );
+                }
+            }
+        }
+    }
+
     /// Write a struct literal's fields directly into the struct storage whose
     /// address is on top of the stack (the caller pushes it). Bytes no field
     /// covers are zeroed first, which is what a literal means: fields you do
@@ -1798,14 +1887,26 @@ pub const HomeKernelCodegen = struct {
             return;
         };
         if (info.is_bitfield) {
-            // A bitfield literal IS an integer: build it in %rax via the
-            // expression path, then store over the destination.
+            if (info.size > 8) {
+                // A container wider than a machine word is assembled a word at
+                // a time in memory. The register path below cannot do it: it
+                // holds the whole value in one register, so every field at bit
+                // 64 or above would be shifted out. A 128-bit IDT entry is
+                // exactly this shape, and it used to emit `shlq $64, %rax`,
+                // which x86 masks to a shift of zero — the field landed on top
+                // of bit 0 and a descriptor the CPU rejects was written
+                // silently.
+                try self.emitWideBitfieldLiteral(info, lit);
+                return;
+            }
+            // A bitfield literal that fits in a register IS an integer: build
+            // it via the expression path, then store over the destination.
             // generateExpr takes a pointer, so the wrapper needs storage.
             // The union holds a mutable pointer; nothing here writes through it.
             var as_expr = ast.Expr{ .StructLiteral = @constCast(lit) };
             try self.generateExpr(&as_expr);
             try self.emit().pop(.tmp3);
-            try self.emit().storeIndirect(.acc, .tmp3, 8);
+            try self.emit().storeIndirect(.acc, .tmp3, info.size);
             return;
         }
 
@@ -2377,8 +2478,28 @@ pub const HomeKernelCodegen = struct {
     /// memory operand (the address is taken and the placeholder becomes
     /// `(%reg)`), and a digit for a matching constraint, which reuses the
     /// register of the operand it names.
+    /// Lower an `asm volatile` block.
+    ///
+    /// The assembly text is passed through verbatim, which is what inline
+    /// assembly means, so a block written for one architecture cannot work on
+    /// another — and the operand machinery below maps constraint letters to
+    /// x86 register names besides. On any other target the whole construct is
+    /// refused with a located marker rather than emitted as text the
+    /// assembler will reject with no reference to the Home source.
     fn emitInlineAsm(self: *HomeKernelCodegen, asm_node: ast.InlineAsm) anyerror!void {
         if (asm_node.instruction.len == 0) return;
+
+        // Inline assembly is architecture-specific by definition: the text is
+        // emitted verbatim. Passing an x86 block to the ARM assembler produces
+        // an error naming a temporary .s file and no Home source location, so
+        // refuse here instead, where the file and the construct are known.
+        if (self.arch != .x86_64) {
+            try self.print(
+                "    # ERROR: inline asm in {s} is written for x86-64 and cannot be emitted for {s}\n",
+                .{ self.current_fn, @tagName(self.arch) },
+            );
+            return;
+        }
 
         const arena = self.import_arena.allocator();
 
@@ -2545,7 +2666,14 @@ pub const HomeKernelCodegen = struct {
                 const dst = if (!signed and osize == 4) "eax" else "rax";
                 try self.print("    {s} %{s}, %{s}\n", .{ insn, sub, dst });
             } else {
-                try self.emit().movFromNamed(.acc, fullRegister(slot.reg));
+                // `fullRegister` returns a bare x86 name; the emitter's
+                // named-register operations take the name the assembler wants,
+                // sigil included.
+                try self.emit().movFromNamed(.acc, try std.fmt.allocPrint(
+                    self.import_arena.allocator(),
+                    "%{s}",
+                    .{fullRegister(slot.reg)},
+                ));
             }
             if (slot.op.expr.* == .Identifier) {
                 const name = slot.op.expr.Identifier.name;
@@ -3982,6 +4110,22 @@ pub const HomeKernelCodegen = struct {
                 // `PageFlags { present: true, address: n, ... }` means.
                 if (self.structs.get(splitAlign(lit.type_name).bare)) |info| {
                     if (info.is_bitfield) {
+                        // The value is assembled in one register, so a
+                        // container wider than a machine word cannot be built
+                        // this way: every field at bit 64 or above would be
+                        // shifted out. This used to emit `shlq $64, %rax`,
+                        // which x86 masks to a shift of zero — the field
+                        // landed on top of bit 0 and the wrong bits reached
+                        // the descriptor, silently. A 128-bit IDT entry is
+                        // exactly this shape. Refuse instead, and say why.
+                        if (info.size > 8) {
+                            try self.print(
+                                "    # ERROR: {s} is a {d}-byte bitfield; this backend builds a bitfield literal in one register and cannot place fields at or above bit 64\n",
+                                .{ info.name, info.size },
+                            );
+                            try self.emit().movImm(0);
+                            return;
+                        }
                         try self.emit().zero(.acc);
                         try self.emit().push(.acc);     // accumulator
                         for (lit.fields) |fi| {
