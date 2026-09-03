@@ -48,6 +48,7 @@ pub const Mapped = struct {
 };
 pub const IndexSignature = struct { key: *const Expression, value: *const Expression };
 pub const IndexedObject = struct { members: []const Member, indices: []const IndexSignature };
+pub const Record = struct { key: *const Expression, value: *const Expression, readonly: bool = false };
 pub const Expression = union(enum) {
     primitive: types.TypeId,
     /// A deliberately opaque leaf in an otherwise transferable declaration.
@@ -66,6 +67,7 @@ pub const Expression = union(enum) {
     readonly_array: *const Expression,
     object: []const Member,
     indexed_object: IndexedObject,
+    record: Record,
     tuple: []const Element,
     union_type: []const *const Expression,
     intersection: []const *const Expression,
@@ -118,7 +120,7 @@ pub const Schema = struct {
         var visited: std.AutoHashMapUnmanaged(*const Expression, void) = .empty;
         defer visited.deinit(gpa);
         try appendDeclaration(gpa, &pending, declaration);
-        return pendingSupported(gpa, &pending, &visited, declaration.contextual_only);
+        return pendingSupported(gpa, &pending, &visited, declaration.contextual_only, declaration.is_function);
     }
 
     /// Check one prospective leaf before it is embedded in a larger schema.
@@ -129,7 +131,7 @@ pub const Schema = struct {
         var visited: std.AutoHashMapUnmanaged(*const Expression, void) = .empty;
         defer visited.deinit(gpa);
         try pending.append(gpa, expression);
-        return pendingSupported(gpa, &pending, &visited, false);
+        return pendingSupported(gpa, &pending, &visited, false, false);
     }
 
     fn pendingSupported(
@@ -137,6 +139,7 @@ pub const Schema = struct {
         pending: *std.ArrayListUnmanaged(*const Expression),
         visited: *std.AutoHashMapUnmanaged(*const Expression, void),
         allow_opaque: bool,
+        allow_readonly_record: bool,
     ) !bool {
         while (pending.pop()) |expr| {
             const entry = try visited.getOrPut(gpa, expr);
@@ -154,6 +157,14 @@ pub const Schema = struct {
                     for (object.indices) |index| {
                         try pending.append(gpa, index.key);
                         try pending.append(gpa, index.value);
+                    }
+                },
+                .record => |record| {
+                    if (allow_readonly_record and record.readonly) {
+                        try pending.append(gpa, record.key);
+                        try pending.append(gpa, record.value);
+                    } else if (!allow_opaque) {
+                        return false;
                     }
                 },
                 .tuple => |elements| for (elements) |element| {

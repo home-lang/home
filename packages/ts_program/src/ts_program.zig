@@ -9219,6 +9219,79 @@ test "Program: supported qualified interface members retain array callback conte
     try expectCompilationHasDiagnosticCode(compilation, 2322);
 }
 
+test "Program: function schemas preserve readonly Record inputs and array results" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver };
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+
+    const util =
+        \\export type Value = string | number;
+        \\export type ValueMap = Readonly<Record<string, Value>>;
+        \\export function values(entries: ValueMap): Value[] { void entries; return []; }
+    ;
+    const consumer =
+        \\import { values } from "./util.js";
+        \\values({}).every((value, index) => {
+        \\  const exact: string | number = value;
+        \\  const wrong: boolean = value;
+        \\  return index >= 0;
+        \\});
+        \\values(1);
+    ;
+    try vfs.addFile("/proj/util.ts", util);
+    try vfs.addFile("/proj/consumer.ts", consumer);
+    _ = try p.add("/proj/util.ts", util);
+    const consumer_id = try p.add("/proj/consumer.ts", consumer);
+
+    try p.compileAll(.{
+        .no_emit = true,
+        .strict_flags = .{ .no_implicit_any = true, .strict_null_checks = true },
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    });
+    const compilation = p.fileById(consumer_id).compilation.?;
+    try expectCompilationLacksDiagnosticCode(compilation, 7006);
+    try T.expectEqual(@as(usize, 2), compilation.diagnostics.items.len);
+    try expectCompilationHasDiagnosticCode(compilation, 2322);
+    try expectCompilationHasDiagnosticCode(compilation, 2345);
+}
+
+test "Program: local Record aliases do not use the built-in function schema" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver };
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+
+    const owner =
+        \\type Record<K, V> = boolean;
+        \\export function accepts(value: Record<string, number>): void { void value; }
+    ;
+    const consumer =
+        \\import { accepts } from "./owner.js";
+        \\accepts({});
+        \\accepts(true);
+    ;
+    try vfs.addFile("/proj/owner.ts", owner);
+    try vfs.addFile("/proj/consumer.ts", consumer);
+    _ = try p.add("/proj/owner.ts", owner);
+    const consumer_id = try p.add("/proj/consumer.ts", consumer);
+
+    try p.compileAll(.{
+        .no_emit = true,
+        .strict_flags = .{ .no_implicit_any = true, .strict_null_checks = true },
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    });
+    const compilation = p.fileById(consumer_id).compilation.?;
+    try T.expectEqual(@as(usize, 1), compilation.diagnostics.items.len);
+    try expectCompilationHasDiagnosticCode(compilation, 2345);
+}
+
 test "Program: qualified imported leaves retain contextual callback signatures" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();
