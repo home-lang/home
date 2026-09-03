@@ -64,17 +64,27 @@ struct HomeParentPort {
     Ref<MessagePort> port;
     bool ready { false };
 };
-static Lock homeParentPortsLock;
-static NeverDestroyed<HashMap<Worker*, std::unique_ptr<HomeParentPort>>> homeParentPorts;
-static NeverDestroyed<HashMap<MessagePortPipe*, Worker*>> homeParentPortOwners;
+
+struct HomeParentPortRegistry {
+    Lock lock;
+    HashMap<Worker*, std::unique_ptr<HomeParentPort>> ports;
+    HashMap<MessagePortPipe*, Worker*> owners;
+};
+
+static HomeParentPortRegistry& homeParentPortRegistry()
+{
+    static NeverDestroyed<HomeParentPortRegistry> registry;
+    return registry.get();
+}
 
 bool WorkerParentPort::send(MessagePortPipe& pipe, uint8_t side, MessageWithMessagePorts&& message)
 {
     if (side != 1)
         return false;
-    Locker locker { homeParentPortsLock };
-    auto it = homeParentPortOwners->find(&pipe);
-    if (it == homeParentPortOwners->end())
+    auto& registry = homeParentPortRegistry();
+    Locker locker { registry.lock };
+    auto it = registry.owners.find(&pipe);
+    if (it == registry.owners.end())
         return false;
     // Registry removal precedes release of the worker's create-time reference.
     // Enqueue while holding that lifetime boundary; no JS executes here.
@@ -84,8 +94,9 @@ bool WorkerParentPort::send(MessagePortPipe& pipe, uint8_t side, MessageWithMess
 
 void WorkerParentPort::startForGlobalListener(ScriptExecutionContext& context)
 {
-    Locker locker { homeParentPortsLock };
-    for (auto& entry : homeParentPorts.get()) {
+    auto& registry = homeParentPortRegistry();
+    Locker locker { registry.lock };
+    for (auto& entry : registry.ports) {
         if (entry.key->clientIdentifier() == context.identifier()) {
             entry.value->port->start();
             return;
@@ -101,9 +112,10 @@ void WorkerParentPort::forwardGlobalEvent(MessagePort& port, ScriptExecutionCont
         || !global->globalEventScope->hasActiveEventListeners(event.type()))
         return;
     {
-        Locker locker { homeParentPortsLock };
-        auto it = homeParentPortOwners->find(port.pipe());
-        if (it == homeParentPortOwners->end() || it->value->clientIdentifier() != context.identifier())
+        auto& registry = homeParentPortRegistry();
+        Locker locker { registry.lock };
+        auto it = registry.owners.find(port.pipe());
+        if (it == registry.owners.end() || it->value->clientIdentifier() != context.identifier())
             return;
     }
     // MessageEvent::create already deserialized once and rooted its cached
@@ -121,10 +133,11 @@ extern "C" void Home__Worker__prepareParentPort(Worker* worker, Zig::GlobalObjec
     auto pipe = MessagePortPipe::create();
     auto port = MessagePort::entangle(*global->scriptExecutionContext(), TransferredMessagePort { pipe.copyRef(), 1 });
     {
-        Locker locker { homeParentPortsLock };
-        RELEASE_ASSERT(!homeParentPorts->contains(worker));
-        homeParentPortOwners->add(pipe.ptr(), worker);
-        homeParentPorts->add(worker, std::make_unique<HomeParentPort>(HomeParentPort { WTF::move(pipe), WTF::move(port) }));
+        auto& registry = homeParentPortRegistry();
+        Locker locker { registry.lock };
+        RELEASE_ASSERT(!registry.ports.contains(worker));
+        registry.owners.add(pipe.ptr(), worker);
+        registry.ports.add(worker, std::make_unique<HomeParentPort>(HomeParentPort { WTF::move(pipe), WTF::move(port) }));
     }
     // Atomically migrate pre-start messages before admitting direct pipe sends.
     worker->drainToWorker(*global->scriptExecutionContext());
@@ -134,10 +147,11 @@ extern "C" void Home__Worker__closeParentPort(Worker* worker)
 {
     std::unique_ptr<HomeParentPort> state;
     {
-        Locker locker { homeParentPortsLock };
-        state = homeParentPorts->take(worker);
+        auto& registry = homeParentPortRegistry();
+        Locker locker { registry.lock };
+        state = registry.ports.take(worker);
         if (state)
-            homeParentPortOwners->remove(state->pipe.ptr());
+            registry.owners.remove(state->pipe.ptr());
     }
     // Closing transferred endpoints can post other tasks. Destruct outside the
     // registry lock, on the worker's owning thread, while its VM is still alive.
@@ -147,22 +161,32 @@ extern "C" void Home__Worker__closeParentPort(Worker* worker)
 
 // A stopped parent drains only these native exit-cleanup tasks. Other C++
 // callbacks may own thread-affine resources and are not safe to execute here.
-static Lock homeWorkerExitTasksLock;
-static NeverDestroyed<HashSet<EventLoopTask*>> homeWorkerExitTasks;
+struct HomeWorkerExitTaskRegistry {
+    Lock lock;
+    HashSet<EventLoopTask*> tasks;
+};
+
+static HomeWorkerExitTaskRegistry& homeWorkerExitTaskRegistry()
+{
+    static NeverDestroyed<HomeWorkerExitTaskRegistry> registry;
+    return registry.get();
+}
 
 struct HomeWorkerExitTaskMarker {
     EventLoopTask* task { nullptr };
     ~HomeWorkerExitTaskMarker()
     {
-        Locker locker { homeWorkerExitTasksLock };
-        homeWorkerExitTasks->remove(task);
+        auto& registry = homeWorkerExitTaskRegistry();
+        Locker locker { registry.lock };
+        registry.tasks.remove(task);
     }
 };
 
 extern "C" bool Home__Worker__isExitTask(EventLoopTask* task)
 {
-    Locker locker { homeWorkerExitTasksLock };
-    return homeWorkerExitTasks->contains(task);
+    auto& registry = homeWorkerExitTaskRegistry();
+    Locker locker { registry.lock };
+    return registry.tasks.contains(task);
 }
 
 extern "C" void Home__Worker__performExitTask(Zig::GlobalObject* globalObject, EventLoopTask* task)
@@ -346,9 +370,10 @@ ExceptionOr<void> Worker::postMessage(JSC::JSGlobalObject& state, JSC::JSValue m
 void Worker::enqueueToWorker(MessageWithMessagePorts&& message)
 {
     {
-        Locker portLocker { homeParentPortsLock };
-        auto channel = homeParentPorts->find(this);
-        if (channel != homeParentPorts->end() && channel->value->ready) {
+        auto& registry = homeParentPortRegistry();
+        Locker portLocker { registry.lock };
+        auto channel = registry.ports.find(this);
+        if (channel != registry.ports.end() && channel->value->ready) {
             channel->value->pipe->send(0, WTF::move(message));
             return;
         }
@@ -464,9 +489,10 @@ static inline bool drainInbox(Worker::MessageInbox& inbox, Zig::GlobalObject* gl
 void Worker::drainToWorker(ScriptExecutionContext& context)
 {
     {
-        Locker portLocker { homeParentPortsLock };
-        auto channel = homeParentPorts->find(this);
-        if (channel != homeParentPorts->end()) {
+        auto& registry = homeParentPortRegistry();
+        Locker portLocker { registry.lock };
+        auto channel = registry.ports.find(this);
+        if (channel != registry.ports.end()) {
             Locker inboxLocker { m_toWorker.lock };
             while (!m_toWorker.queue.isEmpty())
                 channel->value->pipe->send(0, m_toWorker.queue.takeFirst());
@@ -707,8 +733,9 @@ bool Worker::dispatchExit(int32_t exitCode)
         });
         markerPointer->task = task;
         {
-            Locker locker { homeWorkerExitTasksLock };
-            homeWorkerExitTasks->add(task);
+            auto& registry = homeWorkerExitTaskRegistry();
+            Locker locker { registry.lock };
+            registry.tasks.add(task);
         }
         // Match postTaskTo's pre-enqueue hook: the task's captured Ref exists
         // before the create-time ref is released, and release happens before
@@ -875,9 +902,10 @@ JSValue createNodeWorkerThreadsBinding(Zig::GlobalObject* globalObject)
 
     if (auto* worker = WebWorker__getParentWorker(globalObject->bunVM())) {
         {
-            Locker locker { homeParentPortsLock };
-            auto channel = homeParentPorts->find(worker);
-            RELEASE_ASSERT(channel != homeParentPorts->end());
+            auto& registry = homeParentPortRegistry();
+            Locker locker { registry.lock };
+            auto channel = registry.ports.find(worker);
+            RELEASE_ASSERT(channel != registry.ports.end());
             parentPort = channel->value->port.ptr();
         }
         auto& options = worker->options();

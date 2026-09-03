@@ -669,20 +669,30 @@ struct HomeWorkerSnapshotRequest {
     Strong<JSPromise> promise;
     String snapshot; // moved under the lock; consumed/destroyed on the parent thread
 };
-static Lock homeWorkerSnapshotsLock;
-static NeverDestroyed<HashMap<uint64_t, std::unique_ptr<HomeWorkerSnapshotRequest>>> homeWorkerSnapshots;
-static std::atomic<uint64_t> homeWorkerSnapshotIdentifier { 1 };
+
+struct HomeWorkerSnapshotRegistry {
+    Lock lock;
+    HashMap<uint64_t, std::unique_ptr<HomeWorkerSnapshotRequest>> requests;
+    std::atomic<uint64_t> nextIdentifier { 1 };
+};
+
+static HomeWorkerSnapshotRegistry& homeWorkerSnapshotRegistry()
+{
+    static NeverDestroyed<HomeWorkerSnapshotRegistry> registry;
+    return registry.get();
+}
 
 static std::unique_ptr<HomeWorkerSnapshotRequest> takeWorkerSnapshot(uint64_t identifier, ScriptExecutionContext& context)
 {
     RELEASE_ASSERT(context.isContextThread());
-    Locker locker { homeWorkerSnapshotsLock };
-    auto it = homeWorkerSnapshots->find(identifier);
-    if (it == homeWorkerSnapshots->end())
+    auto& registry = homeWorkerSnapshotRegistry();
+    Locker locker { registry.lock };
+    auto it = registry.requests.find(identifier);
+    if (it == registry.requests.end())
         return nullptr;
     RELEASE_ASSERT(it->value->parentVM == &context.vm());
     RELEASE_ASSERT(it->value->parentId == context.identifier());
-    return homeWorkerSnapshots->take(identifier);
+    return registry.requests.take(identifier);
 }
 
 static void rejectWorkerSnapshot(HomeWorkerSnapshotRequest& request, ScriptExecutionContext& context)
@@ -704,16 +714,17 @@ void WorkerSnapshots::cancelForWorker(Worker& worker, ScriptExecutionContext& co
     RELEASE_ASSERT(context.isContextThread());
     Vector<std::unique_ptr<HomeWorkerSnapshotRequest>> cancelled;
     {
-        Locker locker { homeWorkerSnapshotsLock };
+        auto& registry = homeWorkerSnapshotRegistry();
+        Locker locker { registry.lock };
         Vector<uint64_t> identifiers;
-        for (auto& entry : homeWorkerSnapshots.get()) {
+        for (auto& entry : registry.requests) {
             if (entry.value->worker == &worker) {
                 RELEASE_ASSERT(entry.value->parentVM == &context.vm());
                 identifiers.append(entry.key);
             }
         }
         for (auto identifier : identifiers)
-            cancelled.append(homeWorkerSnapshots->take(identifier));
+            cancelled.append(registry.requests.take(identifier));
     }
     // Promise settlement and HandleSet mutation must not hold the registry
     // lock. A worker completing concurrently now finds no request and drops
@@ -728,14 +739,15 @@ extern "C" void Home__Worker__cancelSnapshotsForVM(Zig::GlobalObject* global)
     RELEASE_ASSERT(global->isShuttingDown());
     Vector<std::unique_ptr<HomeWorkerSnapshotRequest>> cancelled;
     {
-        Locker locker { homeWorkerSnapshotsLock };
+        auto& registry = homeWorkerSnapshotRegistry();
+        Locker locker { registry.lock };
         Vector<uint64_t> identifiers;
-        for (auto& entry : homeWorkerSnapshots.get()) {
+        for (auto& entry : registry.requests) {
             if (entry.value->parentVM == &global->vm())
                 identifiers.append(entry.key);
         }
         for (auto identifier : identifiers)
-            cancelled.append(homeWorkerSnapshots->take(identifier));
+            cancelled.append(registry.requests.take(identifier));
     }
     // Destruct the handles now, on their owning thread and before VM teardown.
     // This also covers a failed return post after the parent has stopped.
@@ -775,18 +787,20 @@ static inline JSC::EncodedJSValue jsWorkerPrototypeFunction_getHeapSnapshotBody(
         return JSValue::encode(promise);
     }
 
-    auto identifier = homeWorkerSnapshotIdentifier.fetch_add(1);
+    auto& registry = homeWorkerSnapshotRegistry();
+    auto identifier = registry.nextIdentifier.fetch_add(1);
     RELEASE_ASSERT(identifier && identifier != std::numeric_limits<uint64_t>::max());
     auto parentId = globalObject->scriptExecutionContext()->identifier();
     {
         auto request = std::make_unique<HomeWorkerSnapshotRequest>(worker, *globalObject, promise);
-        Locker locker { homeWorkerSnapshotsLock };
-        homeWorkerSnapshots->add(identifier, WTF::move(request));
+        Locker locker { registry.lock };
+        registry.requests.add(identifier, WTF::move(request));
     }
     bool accepted = worker.postTaskToWorkerGlobalScope([identifier, parentId](ScriptExecutionContext& workerCtx) {
         {
-            Locker locker { homeWorkerSnapshotsLock };
-            if (!homeWorkerSnapshots->contains(identifier))
+            auto& registry = homeWorkerSnapshotRegistry();
+            Locker locker { registry.lock };
+            if (!registry.requests.contains(identifier))
                 return;
         }
         auto& vm = workerCtx.vm();
@@ -798,9 +812,10 @@ static inline JSC::EncodedJSValue jsWorkerPrototypeFunction_getHeapSnapshotBody(
 
         auto isolated = snapshot.isolatedCopy();
         {
-            Locker locker { homeWorkerSnapshotsLock };
-            auto it = homeWorkerSnapshots->find(identifier);
-            if (it == homeWorkerSnapshots->end())
+            auto& registry = homeWorkerSnapshotRegistry();
+            Locker locker { registry.lock };
+            auto it = registry.requests.find(identifier);
+            if (it == registry.requests.end())
                 return;
             it->value->snapshot = WTF::move(isolated);
         }
