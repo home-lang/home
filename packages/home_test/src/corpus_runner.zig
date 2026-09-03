@@ -99728,8 +99728,6 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteNativeTodoCorpus(allocator, "Bun.serve pending Promise abort memory safety integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/http/tls-bunfile-leak.test.ts"))
         null
-    else if (std.mem.eql(u8, relative_path, "js/bun/http/tls-keepalive.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "fetch TLS keepalive native integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/import-attributes/import-attributes.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/io/bun-write.test.js"))
@@ -99870,8 +99868,6 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteNativeTodoCorpus(allocator, "Bun HTML manifest static server")
     else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-serve-html.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun HTML static server fixture")
-    else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-serve-ssl.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun.serve TLS SSL integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-serve-static.test.ts"))
         try rewriteBunServeStaticCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-server.test.ts"))
@@ -100601,6 +100597,11 @@ fn isNativeWebSocketCorpusFile(relative: []const u8) bool {
     return std.mem.eql(u8, relative, "js/bun/websocket/websocket-server.test.ts");
 }
 
+fn isNativeHttpTlsCorpusFile(relative: []const u8) bool {
+    return std.mem.eql(u8, relative, "js/bun/http/bun-serve-ssl.test.ts") or
+        std.mem.eql(u8, relative, "js/bun/http/tls-keepalive.test.ts");
+}
+
 fn nativeCorpusDisabledReason(relative: []const u8) ?[]const u8 {
     if (std.mem.eql(u8, relative, "js/node/test/parallel/test-util-emit-experimental-warning.js")) {
         return "upstream test body is commented out: internal/util emitExperimentalWarning is not exercised";
@@ -100622,7 +100623,8 @@ fn isNativeHomeCorpusFile(relative: []const u8) bool {
         isNativeAddonTestCorpusFile(relative) or
         isNativeTerminalCorpusFile(relative) or
         isNativeImageCorpusFile(relative) or
-        isNativeWebSocketCorpusFile(relative);
+        isNativeWebSocketCorpusFile(relative) or
+        isNativeHttpTlsCorpusFile(relative);
 }
 
 fn parseNativeCorpusFlags(allocator: std.mem.Allocator, source: []const u8) !OwnedFlags {
@@ -100784,7 +100786,8 @@ fn runRelativeFile(
             isNativeAddonTestCorpusFile(relative) or
             isNativeTerminalCorpusFile(relative) or
             isNativeImageCorpusFile(relative) or
-            isNativeWebSocketCorpusFile(relative)) .test_runner else .script;
+            isNativeWebSocketCorpusFile(relative) or
+            isNativeHttpTlsCorpusFile(relative)) .test_runner else .script;
         const args_tail = try buildNativeCorpusArgs(
             allocator,
             flags.values.items,
@@ -101201,6 +101204,23 @@ test "native websocket corpus routing covers the server event-loop matrix" {
         "js/bun/websocket/nested/websocket-server.test.ts",
         "js/bun/websocket-other/websocket-server.test.ts",
     }) |non_match| try std.testing.expect(!isNativeWebSocketCorpusFile(non_match));
+}
+
+test "native HTTP TLS corpus routing covers SSL validation and keepalive" {
+    inline for (.{
+        "js/bun/http/bun-serve-ssl.test.ts",
+        "js/bun/http/tls-keepalive.test.ts",
+    }) |relative| {
+        try std.testing.expect(isNativeHttpTlsCorpusFile(relative));
+        try std.testing.expect(isNativeHomeCorpusFile(relative));
+    }
+
+    inline for (.{
+        "js/bun/http/bun-serve-ssl.test.js",
+        "js/bun/http/tls-keepalive-fixture.ts",
+        "js/bun/http/nested/tls-keepalive.test.ts",
+        "js/bun/https/tls-keepalive.test.ts",
+    }) |non_match| try std.testing.expect(!isNativeHttpTlsCorpusFile(non_match));
 }
 
 test "bootstrap addon guard precedes cached or fabricated module exports" {
