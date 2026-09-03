@@ -61784,7 +61784,7 @@ pub const Checker = struct {
                 if (imported.local != local_name) continue;
                 if (self.external_resolver) |resolver| {
                     if (resolver.moduleExport(spec_text, self.importer_path, self.string_interner.get(imported.imported))) |info| {
-                        if (info.namespace_module_path.len != 0) return self.programModuleNamespaceType(info.namespace_module_path, anchor);
+                        if (info.namespace_module_path.len != 0) return self.programModuleNamespaceTypeForPath(info.namespace_module_path, anchor);
                     }
                 }
             }
@@ -106791,7 +106791,16 @@ pub const Checker = struct {
         const resolver = self.external_resolver orelse return null;
         if (resolver.vtable.moduleExportNames == null or resolver.vtable.moduleExport == null) return null;
         const resolved = resolver.resolve(spec, self.importer_path) orelse return null;
-        const root_path = self.string_interner.intern(resolved.path) catch return error.OutOfMemory;
+        return self.programModuleNamespaceTypeForPath(resolved.path, anchor);
+    }
+
+    /// Build a namespace from a canonical owner path already supplied by the
+    /// resolver. Re-resolving that path as source-written module text would
+    /// reinterpret relative program paths as package specifiers.
+    fn programModuleNamespaceTypeForPath(self: *Checker, resolved_path: []const u8, anchor: NodeId) CheckError!?TypeId {
+        const resolver = self.external_resolver orelse return null;
+        if (resolver.vtable.moduleExportNames == null or resolver.vtable.moduleExport == null) return null;
+        const root_path = self.string_interner.intern(resolved_path) catch return error.OutOfMemory;
         if (self.program_module_namespace_types.get(root_path)) |cached| return if (cached == types.Primitive.none) null else cached;
         const Pending = struct { path: hir_mod.StringId, type: TypeId };
         var pending: std.ArrayListUnmanaged(Pending) = .empty;
@@ -210779,6 +210788,9 @@ const StaticValueModuleResolver = struct {
     const vtable = ExternalResolver.VTable{ .resolve = resolve, .moduleExport = moduleExport, .moduleExportNames = names };
 
     fn resolve(_: *anyopaque, spec: []const u8, _: []const u8) ?ExternalResolver.Resolution {
+        // Canonical paths returned by moduleExport are query results, not
+        // source-written specifiers, and must not be resolved a second time.
+        if (std.mem.startsWith(u8, spec, "/")) return null;
         const path = if (std.mem.eql(u8, spec, "./a")) "/a.ts" else if (std.mem.eql(u8, spec, "./b")) "/b.ts" else spec;
         return .{ .path = path, .is_declaration = true };
     }
@@ -210929,10 +210941,13 @@ test "checker: this type parameter queries traverse cycles once" {
 test "checker: program static values survive namespace consumption without leaking names" {
     const s = try newSetup(
         \\import { Secret as Named } from './a';
+        \\import { peer as Peer } from './a';
         \\import * as ns from './a';
         \\class Secret { local!: number; }
         \\const count: number = Named.count;
         \\Named.missing;
+        \\const peerLabel: string = Peer.label;
+        \\const badPeerLabel: number = Peer.label;
         \\const copy = ns;
         \\const badCopy: string = copy.Secret.count;
         \\const { Secret: Alias } = ns;
@@ -210959,9 +210974,9 @@ test "checker: program static values survive namespace consumption without leaki
     s.checker.setProgramExportedClasses(&classes);
     s.checker.setProgramExportedValues(&values);
     try s.checker.checkSourceFile(s.root);
-    try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 5), checkerCountCode(s, TsCodes.type_not_assignable));
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.property_does_not_exist));
-    try T.expectEqual(@as(usize, 6), s.checker.diagnostics.items.len);
+    try T.expectEqual(@as(usize, 7), s.checker.diagnostics.items.len);
 }
 
 test "checker: keyof exposes only public class members through mapped types" {
