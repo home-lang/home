@@ -100621,29 +100621,34 @@ fn isNativeS3CorpusFile(relative: []const u8) bool {
     return false;
 }
 
+const native_web_worker_corpus_files = [_][]const u8{
+    "message-channel.test.ts",
+    "message-event.test.ts",
+    "message-port-closed-leak.test.ts",
+    "message-port-context-destroy-leak.test.ts",
+    "message-port-pipe.test.ts",
+    "performance-observer-leak.test.ts",
+    "structured-clone.test.ts",
+    "structuredClone-classes.test.ts",
+    "worker-postmessage-transfer.test.ts",
+    "worker-terminate-lifetime.test.ts",
+    "worker.test.ts",
+    "worker_blob.test.ts",
+};
+
+const native_node_worker_threads_corpus_files = [_][]const u8{
+    "15787.test.ts",
+    "worker-async-dispose.test.ts",
+    "worker_destruction.test.ts",
+    "worker_heap_snapshot_gc.test.ts",
+    "worker_threads.test.ts",
+};
+
 fn isNativeWorkerCorpusFile(relative: []const u8) bool {
-    inline for (.{
-        "message-channel.test.ts",
-        "message-event.test.ts",
-        "message-port-closed-leak.test.ts",
-        "message-port-context-destroy-leak.test.ts",
-        "message-port-pipe.test.ts",
-        "performance-observer-leak.test.ts",
-        "structured-clone.test.ts",
-        "structuredClone-classes.test.ts",
-        "worker-postmessage-transfer.test.ts",
-        "worker-terminate-lifetime.test.ts",
-        "worker.test.ts",
-        "worker_blob.test.ts",
-    }) |name| {
+    inline for (native_web_worker_corpus_files) |name| {
         if (std.mem.eql(u8, relative, "js/web/workers/" ++ name)) return true;
     }
-    inline for (.{
-        "15787.test.ts",
-        "worker-async-dispose.test.ts",
-        "worker_destruction.test.ts",
-        "worker_heap_snapshot_gc.test.ts",
-    }) |name| {
+    inline for (native_node_worker_threads_corpus_files) |name| {
         if (std.mem.eql(u8, relative, "js/node/worker_threads/" ++ name)) return true;
     }
     return false;
@@ -101112,7 +101117,7 @@ test "native fs disposable corpus predicate covers the exact vendored matrix" {
     }
 
     try std.testing.expectEqual(@as(usize, 2), count);
-    try std.testing.expectEqual(@as(usize, 278), native_count);
+    try std.testing.expectEqual(@as(usize, 279), native_count);
     try std.testing.expect(isNativeFsDisposableCorpusFile("js/node/test/parallel/test-fs-promises-mkdtempDisposable.js"));
     try std.testing.expect(isNativeFsDisposableCorpusFile("js/node/test/parallel/test-fs-mkdtempDisposableSync.js"));
     try std.testing.expect(!isNativeFsDisposableCorpusFile("js/node/test/parallel/test-fs-mkdtempDisposable.js"));
@@ -101419,25 +101424,16 @@ test "native S3 corpus routing covers validated deterministic integration files"
     }) |non_match| try std.testing.expect(!isNativeS3CorpusFile(non_match));
 }
 
-test "native worker corpus routing covers validated worker files" {
-    inline for (.{
-        "js/web/workers/message-channel.test.ts",
-        "js/web/workers/message-event.test.ts",
-        "js/web/workers/message-port-closed-leak.test.ts",
-        "js/web/workers/message-port-context-destroy-leak.test.ts",
-        "js/web/workers/message-port-pipe.test.ts",
-        "js/web/workers/performance-observer-leak.test.ts",
-        "js/web/workers/structured-clone.test.ts",
-        "js/web/workers/structuredClone-classes.test.ts",
-        "js/web/workers/worker-postmessage-transfer.test.ts",
-        "js/web/workers/worker-terminate-lifetime.test.ts",
-        "js/web/workers/worker.test.ts",
-        "js/web/workers/worker_blob.test.ts",
-        "js/node/worker_threads/15787.test.ts",
-        "js/node/worker_threads/worker-async-dispose.test.ts",
-        "js/node/worker_threads/worker_destruction.test.ts",
-        "js/node/worker_threads/worker_heap_snapshot_gc.test.ts",
-    }) |relative| {
+test "native worker corpus routing covers exact dedicated test directories" {
+    inline for (native_web_worker_corpus_files) |file| {
+        const relative = "js/web/workers/" ++ file;
+        try Io.Dir.cwd().access(std.testing.io, "packages/runtime/test/bun-corpus/" ++ relative, .{});
+        try std.testing.expect(isNativeWorkerCorpusFile(relative));
+        try std.testing.expect(isNativeHomeCorpusFile(relative));
+    }
+    inline for (native_node_worker_threads_corpus_files) |file| {
+        const relative = "js/node/worker_threads/" ++ file;
+        try Io.Dir.cwd().access(std.testing.io, "packages/runtime/test/bun-corpus/" ++ relative, .{});
         try std.testing.expect(isNativeWorkerCorpusFile(relative));
         try std.testing.expect(isNativeHomeCorpusFile(relative));
     }
@@ -101445,7 +101441,6 @@ test "native worker corpus routing covers validated worker files" {
     inline for (.{
         "js/web/workers/worker-fixture.js",
         "js/web/workers/nested/worker.test.ts",
-        "js/node/worker_threads/worker_threads.test.ts",
         "js/node/worker_threads/15787.fixture.ts",
     }) |non_match| try std.testing.expect(!isNativeWorkerCorpusFile(non_match));
 }

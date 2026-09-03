@@ -1786,12 +1786,54 @@ pub fn trimSpaces(slice: anytype) @TypeOf(slice) {
 }
 
 pub fn isAllWhitespace(slice: []const u8) bool {
-    var begin: usize = 0;
-    while (begin < slice.len and std.mem.indexOfScalar(u8, &whitespace_chars, slice[begin]) != null) : (begin += 1) {}
-    return begin == slice.len;
+    // `slice.len` establishes the only bound needed here. Raw alignment-1 vector loads
+    // avoid repeating bounds and overflow checks for every block in Debug.
+    @setRuntimeSafety(false);
+    const vector_len = 32;
+    const ByteVector = @Vector(vector_len, u8);
+    const vectors: [*]align(1) const ByteVector = @ptrCast(slice.ptr);
+    const vector_count = slice.len / vector_len;
+    const horizontal_tab: ByteVector = @splat('\t');
+    const carriage_return: ByteVector = @splat('\r');
+    const space: ByteVector = @splat(' ');
+
+    var vector_index: usize = 0;
+    while (vector_index < vector_count) : (vector_index += 1) {
+        const bytes = vectors[vector_index];
+        const matches = ((bytes >= horizontal_tab) & (bytes <= carriage_return)) | (bytes == space);
+        if (!@reduce(.And, matches)) return false;
+    }
+
+    var offset = vector_count * vector_len;
+    while (offset < slice.len) : (offset += 1) {
+        const byte = slice.ptr[offset];
+        if (byte != ' ' and (byte < '\t' or byte > '\r')) return false;
+    }
+    return true;
 }
 
 pub const whitespace_chars = [_]u8{ ' ', '\t', '\n', '\r', std.ascii.control_code.vt, std.ascii.control_code.ff };
+
+test "isAllWhitespace scans vector boundaries" {
+    var spaces: [65]u8 = undefined;
+    @memset(&spaces, ' ');
+    for ([_]usize{ 0, 1, 31, 32, 33, 63, 64, 65 }) |len| {
+        try std.testing.expect(isAllWhitespace(spaces[0..len]));
+    }
+
+    try std.testing.expect(isAllWhitespace(" \t\n\r\x0b\x0c"));
+    var mixed: [65]u8 = undefined;
+    for (&mixed, 0..) |*byte, index_| byte.* = whitespace_chars[index_ % whitespace_chars.len];
+    try std.testing.expect(isAllWhitespace(&mixed));
+    try std.testing.expect(isAllWhitespace(mixed[1..]));
+    for ([_]usize{ 0, 31, 32, 64 }) |position| {
+        spaces[position] = 'x';
+        try std.testing.expect(!isAllWhitespace(&spaces));
+        spaces[position] = ' ';
+    }
+    spaces[64] = 0;
+    try std.testing.expect(!isAllWhitespace(&spaces));
+}
 
 pub fn lengthOfLeadingWhitespaceASCII(slice: string) usize {
     brk: for (slice) |*c| {

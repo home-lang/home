@@ -857,7 +857,10 @@ pub const Transpiler = struct {
             return ParseResult{ .source = source.*, .input_fd = input_fd, .loader = loader, .empty = true, .ast = js_ast.Ast.empty };
         }
 
-        if (source.contents.len == 0 or (source.contents.len < 33 and std.mem.trim(u8, source.contents, "\n\r ").len == 0)) {
+        // Runtime virtual sources follow the same empty-module contract as
+        // ParseTask. Avoid sending arbitrarily large whitespace-only eval,
+        // stdin, data, or Blob sources through the full JavaScript parser.
+        if (strings.isAllWhitespace(source.contents)) {
             if (!loader.handlesEmptyFile()) {
                 return ParseResult{ .source = source.*, .input_fd = input_fd, .loader = loader, .empty = true, .ast = js_ast.Ast.empty };
             }
