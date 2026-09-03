@@ -314,14 +314,26 @@ pub const Builder = struct {
             .type_ref => {
                 const ref = hir.typeRefOf(&c.hir, node);
                 const name = c.interner.get(ref.name);
+                // A qualified reference — `NS.Member` through a namespace
+                // import — makes the declaration contextual-only *if it cannot
+                // be followed*. Marking it up front instead meant a reference
+                // that resolved perfectly well still poisoned its declaration,
+                // and check.zig skips contextual-only entries outright, so the
+                // member's type never reached the consumer. Clear the flag on
+                // the path that resolves; every other exit leaves it set.
+                var qualified_unresolved = ref.qualifier_len != 0;
+                defer if (qualified_unresolved and context.allow_opaque) {
+                    context.declaration.contextual_only = true;
+                };
                 if (ref.qualifier_len == 0) {
                     if (localParameter(context, name)) |parameter| return self.expression(.{ .parameter = parameter });
                     for (context.declaration.parameters) |*param| {
                         if (std.mem.eql(u8, param.name, name)) return self.expression(.{ .parameter = param });
                     }
                 } else {
-                    if (!context.allow_opaque) return self.expression(.unsupported);
-                    context.declaration.contextual_only = true;
+                    // A qualified reference rooted in a type parameter cannot be
+                    // followed to a declaration — the root is a placeholder, not
+                    // a namespace — so it stays opaque.
                     const qualifiers = hir.typeRefQualifier(&c.hir, node);
                     if (qualifiers.len > 0 and c.hir.kindOf(qualifiers[0]) == .identifier) {
                         const root_name = c.interner.get(hir.identifierOf(&c.hir, qualifiers[0]).name);
