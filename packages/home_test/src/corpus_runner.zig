@@ -313,6 +313,8 @@ const harness_prelude =
     \\const __home_promise_states = new WeakMap();
     \\const __home_native_promise_resolve = __home_NativePromise.resolve.bind(__home_NativePromise);
     \\const __home_native_promise_reject = __home_NativePromise.reject.bind(__home_NativePromise);
+    \\const __home_native_promise_all = __home_NativePromise.all.bind(__home_NativePromise);
+    \\const __home_native_promise_race = __home_NativePromise.race.bind(__home_NativePromise);
     \\try {
     \\  __home_NativePromise.resolve = function(value) {
     \\    const promise = __home_native_promise_resolve(value);
@@ -328,7 +330,7 @@ const harness_prelude =
     \\} catch (error) {}
     \\const __home_promise_then = __home_NativePromise.prototype.then;
     \\function __home_then(value, onFulfilled, onRejected) {
-    \\  return __home_promise_then.call(Promise.resolve(value), onFulfilled, onRejected);
+    \\  return __home_promise_then.call(__home_native_promise_resolve(value), onFulfilled, onRejected);
     \\}
     \\const __home_NativeFinalizationRegistry = globalThis.FinalizationRegistry;
     \\const __home_finalization_registries = [];
@@ -1347,9 +1349,52 @@ const harness_prelude =
     \\  }
     \\  return null;
     \\}
+    \\function __home_fs_is_null_device(path) {
+    \\  const text = String(path || "");
+    \\  return text === "/dev/null" || text.toLowerCase() === "\\\\.\\nul" || text.toLowerCase() === "\\\\?\\nul";
+    \\}
+    \\function __home_fifo_state(path) {
+    \\  const text = String(path);
+    \\  if (!(globalThis.__home_fifo_paths && globalThis.__home_fifo_paths.has(text))) return null;
+    \\  globalThis.__home_fifo_states = globalThis.__home_fifo_states || Object.create(null);
+    \\  return globalThis.__home_fifo_states[text] || (globalThis.__home_fifo_states[text] = { readers: [], pending: [], closed: false });
+    \\}
+    \\function __home_fifo_readable(path) {
+    \\  const state = __home_fifo_state(path);
+    \\  let registeredController = null;
+    \\  return new ReadableStream({
+    \\    start(controller) {
+    \\      registeredController = controller;
+    \\      for (const bytes of state.pending.splice(0)) {
+    \\        if (bytes.length > 0) controller.enqueue(new Uint8Array(bytes));
+    \\      }
+    \\      if (state.closed) controller.close();
+    \\      else state.readers.push(controller);
+    \\    },
+    \\    cancel() {
+    \\      const index = state.readers.indexOf(registeredController);
+    \\      if (index >= 0) state.readers.splice(index, 1);
+    \\    },
+    \\  });
+    \\}
+    \\function __home_fifo_publish(path, bytes, close) {
+    \\  const state = __home_fifo_state(path);
+    \\  if (!state) return false;
+    \\  if (state.readers.length === 0 && bytes.length > 0) state.pending.push(bytes);
+    \\  for (const controller of state.readers.slice()) {
+    \\    if (bytes.length > 0) controller.enqueue(new Uint8Array(bytes));
+    \\    if (close) controller.close();
+    \\  }
+    \\  if (close) {
+    \\    state.closed = true;
+    \\    state.readers.length = 0;
+    \\  }
+    \\  return true;
+    \\}
     \\function __home_build_file_exists(path) {
     \\  const text = String(path);
     \\  if (__home_fs_is_deleted(text)) return false;
+    \\  if (__home_fs_is_null_device(text)) return true;
     \\  if (String(globalThis.__home_current_filename || "").endsWith("napi/napi.test.ts") &&
     \\      text.includes("napi-app/build/Debug/") && text.endsWith(".node")) return true;
     \\  if (__home_fs_is_symlink(text)) return true;
@@ -1584,6 +1629,10 @@ const harness_prelude =
     \\  const view = __home_array_buffer_view(value);
     \\  if (view) return view.byteLength;
     \\  return __home_utf8_byte_length(String(value));
+    \\}
+    \\function __home_build_file_value_bytes(value) {
+    \\  const view = __home_array_buffer_view(value);
+    \\  return view ? Array.from(view) : __home_text_to_utf8_bytes(__home_build_file_value_to_text(value));
     \\}
     \\function __home_file_bytes_sync(path) {
     \\  const text = String(path);
@@ -25336,6 +25385,7 @@ const harness_prelude =
     \\      const eq = part.indexOf("=");
     \\      if (eq < 0) continue;
     \\      const name = part.slice(0, eq).trim();
+    \\      if (!name) continue;
     \\      let rawValue = part.slice(eq + 1).trim();
     \\      try { rawValue = decodeURIComponent(rawValue); } catch (error) { rawValue = ""; }
     \\      const cookie = __home_cookie_map_entry(name, rawValue);
@@ -28167,7 +28217,7 @@ const harness_prelude =
     \\  },
     \\  zstdCompressSync(value, options) {
     \\    __home_validate_zstd_options(options);
-    \\    return __home_zstd_sync(value);
+    \\    return __home_zstd_sync(value, options);
     \\  },
     \\  zstdDecompressSync(value) {
     \\    return __home_zstd_decompress_sync(value);
@@ -29073,6 +29123,7 @@ const harness_prelude =
     \\    const isStdioTarget = !!(path && path.__home_stdio);
     \\    const targetSlice = path && path.__home_file_slice_ref ? path.__home_file_slice_ref : null;
     \\    const targetPath = isStdioTarget ? path.__home_stdio : (targetSlice ? targetSlice.path : (path && path.__home_file_ref ? path.path : String(path)));
+    \\    if (__home_fs_is_null_device(targetPath)) return Promise.resolve(__home_build_file_value_byte_length(data));
     \\    if (path && path.__home_file_ref && path.fd !== null && path.fd !== undefined && options && typeof options === "object" && options.createPath === true) {
     \\      return Promise.reject(new Error("Cannot create a directory for a file descriptor"));
     \\    }
@@ -29183,6 +29234,7 @@ const harness_prelude =
     \\      },
     \\      text() {
     \\        if ((__home_fs_file_mode(filePath) & 0o444) === 0) return Promise.reject(__home_bun_file_permission_error("open", filePath));
+    \\        if (__home_fs_is_null_device(filePath)) return Promise.resolve("");
     \\        const nativeText = __home_build_read_text(filePath);
     \\        if (nativeText !== null) {
     \\          const failure = syntheticAllocationFailure("bun.file.text", __home_utf8_byte_length(nativeText), "Out of memory");
@@ -29231,6 +29283,7 @@ const harness_prelude =
     \\      get readable() {
     \\        if (!__home_build_file_exists(filePath)) throw __home_bun_file_stream_error(filePath);
     \\        if ((__home_fs_file_mode(filePath) & 0o444) === 0) throw __home_bun_file_permission_error("open", filePath);
+    \\        if (__home_fifo_state(filePath)) return __home_fifo_readable(filePath);
     \\        return new ReadableStream({ start(controller) {
     \\          if (globalThis.__home_written_file_bytes && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_bytes, filePath)) {
     \\            const bytes = new Uint8Array(globalThis.__home_written_file_bytes[filePath]);
@@ -29256,6 +29309,7 @@ const harness_prelude =
     \\        return this.readable;
     \\      },
     \\      write(data) {
+    \\        if (__home_fs_is_null_device(filePath)) return Promise.resolve(undefined);
     \\        __home_build_write_text(filePath, __home_build_file_value_to_text(data));
     \\        return Promise.resolve(undefined);
     \\      },
@@ -29282,6 +29336,20 @@ const harness_prelude =
     \\        let targetPath = filePath;
     \\        let rejectNextEnd = false;
     \\        let chunks = [];
+    \\        let flushedCount = 0;
+    \\        function materialize(start) {
+    \\          const bytes = [];
+    \\          for (let index = start || 0; index < chunks.length; index++) {
+    \\            for (const byte of chunks[index]) bytes.push(byte & 0xff);
+    \\          }
+    \\          return bytes;
+    \\        }
+    \\        function writeFileBytes() {
+    \\          if (__home_fs_is_null_device(targetPath)) return;
+    \\          const bytes = materialize(0);
+    \\          __home_build_write_text(targetPath, __home_utf8_bytes_to_text(bytes));
+    \\          globalThis.__home_written_file_bytes[targetPath] = bytes;
+    \\        }
     \\        return {
     \\          start(options) {
     \\            const opts = options || {};
@@ -29297,11 +29365,14 @@ const harness_prelude =
     \\            return this;
     \\          },
     \\          write(value) {
-    \\            __home_array_append(chunks, __home_build_file_value_to_text(value));
-    \\            return Promise.resolve(__home_build_file_value_byte_length(value));
+    \\            const bytes = __home_build_file_value_bytes(value);
+    \\            __home_array_append(chunks, bytes);
+    \\            return Promise.resolve(bytes.length);
     \\          },
     \\          flush() {
-    \\            __home_build_write_text(targetPath, chunks.join(""));
+    \\            const bytes = materialize(flushedCount);
+    \\            flushedCount = chunks.length;
+    \\            if (!__home_fifo_publish(targetPath, bytes, false)) writeFileBytes();
     \\            return Promise.resolve(undefined);
     \\          },
     \\          end() {
@@ -29310,8 +29381,10 @@ const harness_prelude =
     \\              rejectNextEnd = false;
     \\              return Promise.reject(new Error("EBADF: bad file descriptor, write '" + targetPath + "'"));
     \\            }
-    \\            __home_build_write_text(targetPath, chunks.join(""));
+    \\            const bytes = materialize(flushedCount);
+    \\            if (!__home_fifo_publish(targetPath, bytes, true)) writeFileBytes();
     \\            chunks = [];
+    \\            flushedCount = 0;
     \\            return Promise.resolve(undefined);
     \\          },
     \\        };
@@ -33979,31 +34052,31 @@ const harness_prelude =
     \\  return false;
     \\}
     \\function __home_deep_equal_async(a, b, strict, seen) {
-    \\  if (Object.is(a, b)) return Promise.resolve(true);
-    \\  if (b && typeof b.asymmetricMatch === "function") return Promise.resolve(b.asymmetricMatch(a)).then(Boolean);
-    \\  if (a && typeof a.asymmetricMatch === "function") return Promise.resolve(a.asymmetricMatch(b)).then(Boolean);
-    \\  if (a === null || b === null || typeof a !== "object" || typeof b !== "object") return Promise.resolve(false);
-    \\  if (seen.has(a)) return Promise.resolve(seen.get(a) === b);
+    \\  if (Object.is(a, b)) return __home_native_promise_resolve(true);
+    \\  if (b && typeof b.asymmetricMatch === "function") return __home_then(b.asymmetricMatch(a), Boolean);
+    \\  if (a && typeof a.asymmetricMatch === "function") return __home_then(a.asymmetricMatch(b), Boolean);
+    \\  if (a === null || b === null || typeof a !== "object" || typeof b !== "object") return __home_native_promise_resolve(false);
+    \\  if (seen.has(a)) return __home_native_promise_resolve(seen.get(a) === b);
     \\  seen.set(a, b);
     \\  if (Array.isArray(a) || Array.isArray(b)) {
-    \\    if (!Array.isArray(a) || !Array.isArray(b) || (strict && a.length !== b.length)) return Promise.resolve(false);
+    \\    if (!Array.isArray(a) || !Array.isArray(b) || (strict && a.length !== b.length)) return __home_native_promise_resolve(false);
     \\    const length = strict ? a.length : Math.max(a.length, b.length);
     \\    const comparisons = [];
     \\    for (let i = 0; i < length; i++) {
-    \\      if (strict && ((i in a) !== (i in b))) return Promise.resolve(false);
+    \\      if (strict && ((i in a) !== (i in b))) return __home_native_promise_resolve(false);
     \\      comparisons.push(__home_deep_equal_async(a[i], b[i], strict, seen));
     \\    }
-    \\    return Promise.all(comparisons).then(results => results.every(Boolean));
+    \\    return __home_then(__home_native_promise_all(comparisons), results => results.every(Boolean));
     \\  }
     \\  const aKeys = __home_enumerable_keys(a).filter(key => strict || a[key] !== undefined);
     \\  const bKeys = __home_enumerable_keys(b).filter(key => strict || b[key] !== undefined);
-    \\  if (aKeys.length !== bKeys.length) return Promise.resolve(false);
+    \\  if (aKeys.length !== bKeys.length) return __home_native_promise_resolve(false);
     \\  const comparisons = [];
     \\  for (const key of aKeys) {
-    \\    if (!Object.prototype.hasOwnProperty.call(b, key)) return Promise.resolve(false);
+    \\    if (!Object.prototype.hasOwnProperty.call(b, key)) return __home_native_promise_resolve(false);
     \\    comparisons.push(__home_deep_equal_async(a[key], b[key], strict, seen));
     \\  }
-    \\  return Promise.all(comparisons).then(results => results.every(Boolean));
+    \\  return __home_then(__home_native_promise_all(comparisons), results => results.every(Boolean));
     \\}
     \\function __home_invalid_character(message) {
     \\  if (typeof DOMException === "function") return new DOMException(message || "The string contains invalid characters.", "InvalidCharacterError");
@@ -34013,7 +34086,7 @@ const harness_prelude =
     \\}
     \\function __home_run_hook(fn) {
     \\  if (fn.length > 0) {
-    \\    return new Promise((resolve, reject) => {
+    \\    return new __home_NativePromise((resolve, reject) => {
     \\      let settled = false;
     \\      const done = error => {
     \\        if (settled) return;
@@ -34023,7 +34096,7 @@ const harness_prelude =
     \\      };
     \\      try {
     \\        const result = fn(done);
-    \\        if (__home_is_thenable(result)) Promise.resolve(result).then(() => {}, reject);
+    \\        if (__home_is_thenable(result)) __home_then(result, () => {}, reject);
     \\      } catch (error) {
     \\        reject(error);
     \\      }
@@ -34042,7 +34115,7 @@ const harness_prelude =
     \\      continue;
     \\    }
     \\    const result = runAt(index);
-    \\    if (__home_is_thenable(result)) chain = Promise.resolve(result);
+    \\    if (__home_is_thenable(result)) chain = __home_native_promise_resolve(result);
     \\  }
     \\  return chain;
     \\}
@@ -34412,7 +34485,7 @@ const harness_prelude =
     \\      continue;
     \\    }
     \\    const result = runEntryAt(i);
-    \\    if (__home_is_thenable(result)) chain = Promise.resolve(result);
+    \\    if (__home_is_thenable(result)) chain = __home_native_promise_resolve(result);
     \\  }
     \\  globalThis.__home_registered_tests = [];
     \\  return chain;
@@ -35646,7 +35719,7 @@ const harness_prelude =
     \\      const valueIsAsyncFunction = typeof value === "function" && Object.prototype.toString.call(value) === "[object AsyncFunction]";
     \\      if (!didThrow && valueIsAsyncFunction && __home_is_thenable(returned)) {
     \\        __home_bun_tests.pending++;
-    \\        return Promise.resolve(returned).then(
+    \\        const assertion = __home_then(returned,
     \\          function() {
     \\            try {
     \\              __home_assert(false, isNot, "Expected function" + (isNot ? " not" : "") + " to throw");
@@ -35661,7 +35734,8 @@ const harness_prelude =
     \\              recordAsyncAssertionFailure(assertionError);
     \\            }
     \\          },
-    \\        ).then(
+    \\        );
+    \\        return __home_then(assertion,
     \\          function() {
     \\            __home_bun_tests.pending--;
     \\          },
@@ -52643,11 +52717,14 @@ const harness_prelude =
     \\  const referrer = parent && parent.filename ? parent.filename : globalThis.__home_current_filename;
     \\  return __home_require_resolve_existing(specifier, referrer);
     \\}
-    \\function __home_compile_cjs_module(module, filename, source) {
+    \\function __home_compile_cjs_module(module, filename, source, loader) {
     \\  const path = String(filename);
     \\  const dirname = __home_build_dirname(path);
     \\  const localRequire = __home_create_require(path);
-    \\  Function("module", "exports", "require", "__filename", "__dirname", String(source) + "\n//# sourceURL=" + path)(module, module.exports, localRequire, path, dirname);
+    \\  let compiled;
+    \\  try { compiled = Function("module", "exports", "require", "__filename", "__dirname", String(source) + "\n//# sourceURL=" + path); }
+    \\  catch (cause) { throw __home_module_loader_error(loader || "js", filename, cause); }
+    \\  return compiled(module, module.exports, localRequire, path, dirname);
     \\}
     \\function __home_module_loader_error(loader, filename, cause) {
     \\  const underlying = cause instanceof Error ? cause : new Error(String(cause || "module loader failed"));
@@ -52682,15 +52759,13 @@ const harness_prelude =
     \\function __home_module_js_extension(module, filename) {
     \\  const source = __home_build_read_text(filename);
     \\  if (source === null) throw __home_module_not_found_error(filename, "MODULE_NOT_FOUND", undefined, filename);
-    \\  try { __home_compile_cjs_module(module, filename, source); }
-    \\  catch (cause) { throw cause && cause.code === "ERR_MODULE_PARSE" ? cause : __home_module_loader_error("js", filename, cause); }
+    \\  return __home_compile_cjs_module(module, filename, source, "js");
     \\}
     \\function __home_module_transpiled_extension(module, filename, loader) {
     \\  const source = __home_build_read_text(filename);
     \\  if (source === null) throw __home_module_not_found_error(filename, "MODULE_NOT_FOUND", undefined, filename);
     \\  const transpiled = __home_module_lower_cjs_exports(__home_module_transpile_source(source, filename, loader));
-    \\  try { __home_compile_cjs_module(module, filename, transpiled); }
-    \\  catch (cause) { throw cause && cause.code === "ERR_MODULE_PARSE" ? cause : __home_module_loader_error(loader, filename, cause); }
+    \\  return __home_compile_cjs_module(module, filename, transpiled, loader);
     \\}
     \\function __home_module_jsx_extension(module, filename) { return __home_module_transpiled_extension(module, filename, "jsx"); }
     \\function __home_module_ts_extension(module, filename) { return __home_module_transpiled_extension(module, filename, "ts"); }
@@ -62805,6 +62880,7 @@ const harness_prelude =
     \\      if (wantsByteString) return bytes.toString(normalizedEncoding === "binary" ? "latin1" : normalizedEncoding);
     \\      return bytes.toString("utf8");
     \\    }
+    \\    if (!__home_node_fs.existsSync(normalizedPath)) throw __home_fs_dir_error("ENOENT", "no such file or directory", "open", normalizedPath);
     \\    if (wantsBuffer) {
     \\      const buffer = Buffer.from(__home_file_bytes_sync(normalizedPath));
     \\      Object.defineProperty(buffer, "__home_source_path", { configurable: true, value: normalizedPath });
@@ -75462,6 +75538,8 @@ const harness_prelude =
     \\    const filePath = String(path);
     \\    globalThis.__home_fifo_paths = globalThis.__home_fifo_paths || new Set();
     \\    globalThis.__home_fifo_paths.add(filePath);
+    \\    globalThis.__home_fifo_states = globalThis.__home_fifo_states || Object.create(null);
+    \\    globalThis.__home_fifo_states[filePath] = { readers: [], pending: [], closed: false };
     \\    __home_build_write_text(filePath, "");
     \\  },
     \\};
@@ -86816,7 +86894,7 @@ const harness_prelude =
     \\      close() {
     \\        if (stream.__home_closed) throw streamError("ERR_INVALID_STATE", "Invalid state: Controller is already closed");
     \\        stream.__home_closed = true;
-    \\        Promise.resolve().then(() => {
+    \\        __home_then(__home_native_promise_resolve(), () => {
     \\          const request = stream.__home_byob_request;
     \\          if (request) {
     \\            try { request.respond(0); } catch (error) {}
@@ -87414,7 +87492,9 @@ const harness_prelude =
     \\              }
     \\            });
     \\            if (capturedMeta) capturedMeta.startPending = capturedStartPending;
-    \\            return capturedStartPending;
+    \\            return { then(onFulfilled, onRejected) {
+    \\              return __home_promise_then.call(capturedStartPending, onFulfilled, onRejected);
+    \\            } };
     \\          }
     \\          return startResult;
     \\        },
@@ -87567,8 +87647,8 @@ const harness_prelude =
     \\        let closedSettled = false;
     \\        let closedResolve;
     \\        let closedReject;
-    \\        const closedPromise = new Promise((resolve, reject) => { closedResolve = resolve; closedReject = reject; });
-    \\        closedPromise.catch(() => undefined);
+    \\        const closedPromise = new __home_NativePromise((resolve, reject) => { closedResolve = resolve; closedReject = reject; });
+    \\        __home_then(closedPromise, undefined, () => undefined);
     \\        const settleClosed = (error, value) => {
     \\          if (closedSettled) return;
     \\          closedSettled = true;
@@ -87576,17 +87656,18 @@ const harness_prelude =
     \\        };
     \\        const read = reader.read;
     \\        let rejectReleased;
-    \\        const releasedPromise = new Promise((resolve, reject) => { rejectReleased = reject; });
-    \\        releasedPromise.catch(() => undefined);
+    \\        const releasedPromise = new __home_NativePromise((resolve, reject) => { rejectReleased = reject; });
+    \\        __home_then(releasedPromise, undefined, () => undefined);
     \\        rejectPendingReads = error => rejectReleased(error);
     \\        reader.read = function() {
     \\          const receiver = this;
     \\          const args = arguments;
-    \\          const observed = Promise.resolve().then(() => {
+    \\          const observed = __home_then(__home_native_promise_resolve(), () => {
     \\            if (readerReleaseError) throw readerReleaseError;
     \\            return read.apply(receiver, args);
-    \\          }).then(value => { if (value && value.done) settleClosed(undefined, undefined); return value; }, error => { settleClosed(error); throw error; });
-    \\          return Promise.race([observed, releasedPromise]);
+    \\          });
+    \\          const settled = __home_then(observed, value => { if (value && value.done) settleClosed(undefined, undefined); return value; }, error => { settleClosed(error); throw error; });
+    \\          return __home_native_promise_race([settled, releasedPromise]);
     \\        };
     \\        const cancel = typeof reader.cancel === "function" ? reader.cancel : null;
     \\        if (cancel) reader.cancel = function() {
@@ -91855,7 +91936,6 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = ": { [k: string]: any } =", .replacement = " =" },
         .{ .needle = "function log(from, ...message: any[])", .replacement = "function log(from, ...message)" },
         .{ .needle = "const queue: { value: unknown; from: string }[] = [];", .replacement = "const queue = [];" },
-        .{ .needle = "Object.assign(globalThis.Promise, Promise);", .replacement = "Object.assign(globalThis.Promise, Promise);\nfor (const key of Object.getOwnPropertyNames(Promise)) {\n  if (!(key in globalThis.Promise)) {\n    const descriptor = Object.getOwnPropertyDescriptor(Promise, key);\n    try { Object.defineProperty(globalThis.Promise, key, descriptor); } catch (error) {}\n  }\n}" },
         .{ .needle = "const modules = [", .replacement = "const modules = [\"module\", \"util\", \"url\", \"path\", \"fs/promises\"];\nconst __home_fuzzy_unused_modules = [" },
         .{ .needle = "const globals = [", .replacement = "const globals = [];\nconst __home_fuzzy_unused_globals = [" },
         .{ .needle = "Bun.generateHeapSnapshot = () => {};", .replacement = "void Bun.generateHeapSnapshot;" },
@@ -91873,8 +91953,6 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "var activeFIFO: Promise<string>;", .replacement = "var activeFIFO;" },
         .{ .needle = "function getFd(label: string, byteLength = 0)", .replacement = "function getFd(label, byteLength = 0)" },
         .{ .needle = "async function (stream: ReadableStream<Uint8Array>, byteLength = 0)", .replacement = "async function (stream, byteLength = 0)" },
-        .{ .needle = "for (let isPipe of [true, false] as const)", .replacement = "for (let isPipe of [false])" },
-        .{ .needle = "it.skipIf(!isPosix)(\"does not leak native FileSink when a pending write fails (EPIPE)\",", .replacement = "it.skip(\"does not leak native FileSink when a pending write fails (EPIPE)\"," },
         .{ .needle = "function createTree(basedir: string, paths: string[])", .replacement = "function createTree(basedir, paths)" },
         .{ .needle = "function make(files: string[])", .replacement = "function make(files)" },
         .{ .needle = "const fixture: Record<string, string> =", .replacement = "const fixture =" },
@@ -99911,11 +99989,12 @@ pub fn runSubset(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8, 
         };
     }
 
-    var runtime = try jsc_bootstrap.Runtime.init(allocator, harness_prelude);
-    defer runtime.deinit();
-
     var summary = Summary{};
-    for (filesForSubset(subset)) |relative| try runRelativeFile(io, allocator, &runtime, corpus_path, relative, &summary);
+    for (filesForSubset(subset)) |relative| {
+        var runtime = try jsc_bootstrap.Runtime.init(allocator, harness_prelude);
+        defer runtime.deinit();
+        try runRelativeFile(io, allocator, &runtime, corpus_path, relative, &summary);
+    }
 
     return summary;
 }
@@ -99935,13 +100014,12 @@ pub fn runGate(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8) !S
         };
     }
 
-    var runtime = try jsc_bootstrap.Runtime.init(allocator, harness_prelude);
-    defer runtime.deinit();
-
     var summary = Summary{};
     const show_progress = bunCorpusProgressEnabled();
     const range = bunCorpusRange(test_files.len);
     for (test_files[range.start..range.end], range.start..) |relative, index| {
+        var runtime = try jsc_bootstrap.Runtime.init(allocator, harness_prelude);
+        defer runtime.deinit();
         if (show_progress) {
             std.debug.print("[home-bun-corpus] {d}/{d} {s}\n", .{ index + 1, test_files.len, relative });
         }
@@ -99974,12 +100052,11 @@ pub fn runDirectory(
         };
     }
 
-    var runtime = try jsc_bootstrap.Runtime.init(allocator, harness_prelude);
-    defer runtime.deinit();
-
     var summary = Summary{};
     const show_progress = bunCorpusProgressEnabled();
     for (test_files, 0..) |directory_relative, index| {
+        var runtime = try jsc_bootstrap.Runtime.init(allocator, harness_prelude);
+        defer runtime.deinit();
         const corpus_relative = try std.fs.path.join(allocator, &.{ relative_directory, directory_relative });
         defer allocator.free(corpus_relative);
         if (show_progress) {
@@ -124351,16 +124428,16 @@ test "bootstrap runner mirrors FileSink utility corpus" {
     var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/util/filesink.test.ts");
     defer summary.deinit(std.testing.allocator);
 
-    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 25 or summary.todo != 1) {
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 44 or summary.todo != 0) {
         std.debug.print(
             "FileSink utility corpus mismatch: passed={} expected={} failed={} todo={} expected_todo={} unsupported={} message={s}\n",
-            .{ summary.passed, @as(usize, 25), summary.failed, summary.todo, @as(usize, 1), summary.unsupported, summary.first_failure_message },
+            .{ summary.passed, @as(usize, 44), summary.failed, summary.todo, @as(usize, 0), summary.unsupported, summary.first_failure_message },
         );
     }
     try std.testing.expectEqual(@as(usize, 1), summary.files);
-    try std.testing.expectEqual(@as(usize, 25), summary.passed);
+    try std.testing.expectEqual(@as(usize, 44), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
-    try std.testing.expectEqual(@as(usize, 1), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
@@ -128333,6 +128410,9 @@ test "bootstrap runner mirrors utility resolve process queue mini-suite" {
         .{ .path = "js/bun/util/fileUrl.test.js", .passed = 20 },
         .{ .path = "js/bun/util/file-type.test.ts", .passed = 2 },
         .{ .path = "js/bun/util/bun-file-read.test.ts", .passed = 1 },
+        .{ .path = "js/bun/util/bun-file-windows.test.ts", .passed = 3 },
+        .{ .path = "js/bun/util/error-gc-test.test.js", .passed = 4 },
+        .{ .path = "js/bun/util/fuzzy-wuzzy.test.ts", .passed = 66 },
         .{ .path = "js/bun/io/bun-write-leak.test.ts", .passed = 1 },
         .{ .path = "js/node/url/url-pathtofileurl.test.js", .passed = 4 },
         .{ .path = "js/bun/util/randomUUIDv7.test.ts", .passed = 6 },
