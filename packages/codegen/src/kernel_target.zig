@@ -1637,6 +1637,21 @@ pub const Emitter = struct {
         try self.raw("    # compiler barrier: this backend does not reorder across it\n");
     }
 
+    /// A full hardware memory fence: every load and store issued before it is
+    /// observed before any issued after it. Unlike `compilerBarrier` this is a
+    /// real instruction — it constrains the CPU and the store buffer, not just
+    /// the compiler.
+    pub fn memoryBarrier(self: Self) !void {
+        switch (self.arch) {
+            .x86_64 => try self.insn("mfence", .{}),
+            // `dmb ish` orders against the inner-shareable domain, which is
+            // every core an SMP kernel shares memory with. `sy` would also
+            // cover device and outer-shareable traffic that a lock does not
+            // need to fence.
+            .aarch64 => try self.insn("dmb ish", .{}),
+        }
+    }
+
     /// Atomic 32-bit compare-and-exchange.
     ///
     /// Contract: address in `tmp3`, expected value in `acc`, desired value in
