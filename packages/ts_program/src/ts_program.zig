@@ -4788,6 +4788,84 @@ test "Program: exported type and factory aliases share a source-owned declaratio
     try T.expect(factory != null);
 }
 
+test "Program: imported callbacks retain unshadowed Record and Readonly utilities" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    const owner =
+        \\export type Value = string | number;
+        \\export type ValueMap = Readonly<Record<string, Value>>;
+        \\export function values(entries: ValueMap): Value[] { void entries; return []; }
+    ;
+    const shapes =
+        \\import type * as Util from "./owner.js";
+        \\export interface Box { items: Util.Value[]; }
+    ;
+    const consumer =
+        \\import { values } from "./owner.js";
+        \\import type * as Shapes from "./shapes.js";
+        \\values({}).every((value) => {
+        \\  const invalid: boolean = value;
+        \\  return typeof value === "string";
+        \\});
+        \\declare const box: Shapes.Box;
+        \\box.items.map((value, index) => {
+        \\  const invalid: boolean = value;
+        \\  return `${index}:${value}`;
+        \\});
+    ;
+    try vfs.addFile("/owner.ts", owner);
+    try vfs.addFile("/shapes.ts", shapes);
+    try vfs.addFile("/consumer.ts", consumer);
+    _ = try program.add("/owner.ts", owner);
+    _ = try program.add("/shapes.ts", shapes);
+    const consumer_id = try program.add("/consumer.ts", consumer);
+    var checker_resolver = PassThroughResolver{ .resolver = &resolver };
+    try program.compileAll(.{
+        .no_emit = true,
+        .strict = true,
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &PassThroughResolver.vtable },
+    });
+
+    const compilation = program.fileById(consumer_id).compilation.?;
+    try expectCompilationLacksDiagnosticCode(compilation, 7006);
+    try expectCompilationLacksDiagnosticCode(compilation, 2345);
+    try expectCompilationHasDiagnosticCode(compilation, 2322);
+}
+
+test "Program: source utility aliases shadow Record and Readonly transfer" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    const owner =
+        \\type Record<K, V> = { key: K; value: V };
+        \\type Readonly<T> = { wrapped: T };
+        \\export function inspect(value: Readonly<Record<string, number>>): string { return value.wrapped.key; }
+    ;
+    const consumer =
+        \\import { inspect } from "./owner.js";
+        \\inspect({ wrapped: { key: "ok", value: 1 } });
+        \\inspect({});
+    ;
+    try vfs.addFile("/owner.ts", owner);
+    try vfs.addFile("/consumer.ts", consumer);
+    _ = try program.add("/owner.ts", owner);
+    const consumer_id = try program.add("/consumer.ts", consumer);
+    try program.compileAll(.{ .no_emit = true, .strict = true });
+
+    const compilation = program.fileById(consumer_id).compilation.?;
+    try expectCompilationLacksDiagnosticCode(compilation, 7006);
+    try expectCompilationHasDiagnosticCode(compilation, 2345);
+}
+
 test "Program: namespace imports preserve inferred const literal keys" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();
@@ -7018,6 +7096,40 @@ fn expectCompilationLacksDiagnosticCode(c: *const ts_driver.Compilation, code: u
 fn expectCompilationHasDiagnosticCode(c: *const ts_driver.Compilation, code: u32) !void {
     try T.expect(compilationHasDiagnosticCode(c, code));
 }
+
+/// Exposes the program's own resolver to the checker and claims nothing about
+/// module exports. A test whose imports simply have to resolve — and whose
+/// exports should come from the real compilations — needs this and no more.
+/// Without it the checker has no resolver at all and reports TS2307 for every
+/// import, which leaves qualified type references unresolvable no matter what
+/// the schema transferred.
+const PassThroughResolver = struct {
+    resolver: *ts_resolver.Resolver,
+
+    const vtable = ts_driver.ExternalResolver.VTable{
+        .resolve = resolve,
+        .moduleExport = moduleExport,
+        .moduleExportNames = moduleExportNames,
+    };
+
+    fn resolve(
+        self_ptr: *anyopaque,
+        specifier: []const u8,
+        containing_file: []const u8,
+    ) ?ts_driver.ExternalResolver.Resolution {
+        const self: *PassThroughResolver = @ptrCast(@alignCast(self_ptr));
+        const result = self.resolver.resolve(specifier, containing_file) catch return null;
+        return .{ .path = result.path, .is_declaration = result.is_declaration };
+    }
+
+    fn moduleExport(_: *anyopaque, _: []const u8, _: []const u8, _: []const u8) ?ts_driver.ExternalResolver.ModuleExport {
+        return null;
+    }
+
+    fn moduleExportNames(_: *anyopaque, _: []const u8, _: []const u8) ?[]const []const u8 {
+        return null;
+    }
+};
 
 const NamespaceImportTestResolver = struct {
     resolver: *ts_resolver.Resolver,
