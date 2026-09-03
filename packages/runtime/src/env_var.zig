@@ -8,6 +8,8 @@ const std = @import("std");
 const Environment = @import("environment.zig");
 
 pub const feature_flag = @import("bun_core/env_var.zig").feature_flag;
+pub const FORCE_COLOR = @import("bun_core/env_var.zig").FORCE_COLOR;
+pub const NO_COLOR = @import("bun_core/env_var.zig").NO_COLOR;
 pub const NODE_USE_SYSTEM_CA = @import("bun_core/env_var.zig").NODE_USE_SYSTEM_CA;
 pub const NODE_PRESERVE_SYMLINKS_MAIN = @import("bun_core/env_var.zig").NODE_PRESERVE_SYMLINKS_MAIN;
 

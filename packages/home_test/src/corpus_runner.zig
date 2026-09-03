@@ -95382,16 +95382,6 @@ fn rewriteHspecCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     );
 }
 
-fn rewriteAsyncIteratorStreamCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    return try std.mem.replaceOwned(
-        u8,
-        allocator,
-        source,
-        "  test(\"async generator function throws an error but continues to send the headers\", async () => {",
-        "  test.todo(\"async generator subprocess IPC preserves headers after throw\");\n  test.skip(\"async generator function throws an error but continues to send the headers\", async () => {",
-    );
-}
-
 fn rewriteMemfdDisabledCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     return try std.mem.replaceOwned(
         u8,
@@ -95399,18 +95389,6 @@ fn rewriteMemfdDisabledCorpus(allocator: std.mem.Allocator, source: []const u8) 
         source,
         "test.skipIf(process.platform !== \"linux\")",
         "test",
-    );
-}
-
-fn rewriteRequireResolveCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    const without_failing = try std.mem.replaceOwned(u8, allocator, source, "it.failing(", "it.todo(");
-    defer allocator.free(without_failing);
-    return try std.mem.replaceOwned(
-        u8,
-        allocator,
-        without_failing,
-        "  describe(\"when specifier is a path to a non js/ts/etc file\", () => {",
-        "  it.todo(\"require non-JS resource loader parity\");\n  describe.skip(\"when specifier is a path to a non js/ts/etc file\", () => {",
     );
 }
 
@@ -95428,118 +95406,6 @@ fn rewriteSinonIssue347Corpus(allocator: std.mem.Allocator, source: []const u8) 
     return try std.mem.replaceOwned(u8, allocator, source, "it.failing(", "it(");
 }
 
-fn rewriteMockModuleLiveReexportCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    const replacements = [_]struct {
-        needle: []const u8,
-        replacement: []const u8,
-    }{
-        .{
-            .needle = "import { foo } from \"./second\";",
-            .replacement = "const __home_second = globalThis.__home_live_import(\"./second\");",
-        },
-        .{
-            .needle = "import { bar } from \"./third\";",
-            .replacement = "const __home_third = globalThis.__home_live_import(\"./third\");",
-        },
-        .{ .needle = "expect(foo)", .replacement = "expect(__home_second.foo)" },
-        .{ .needle = "expect(bar)", .replacement = "expect(__home_third.bar)" },
-    };
-
-    var current = try allocator.dupe(u8, source);
-    errdefer allocator.free(current);
-    for (replacements) |replacement| {
-        const next = try std.mem.replaceOwned(u8, allocator, current, replacement.needle, replacement.replacement);
-        allocator.free(current);
-        current = next;
-    }
-    return current;
-}
-
-fn rewriteMockModuleCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    const replacements = [_]struct {
-        needle: []const u8,
-        replacement: []const u8,
-    }{
-        .{
-            .needle = "import { default as defaultValue, fn, iCallFn, rexported, rexportedAs, variable } from \"./mock-module-fixture\";",
-            .replacement = "const __home_mock_module_fixture = globalThis.__home_live_import(\"./mock-module-fixture\");",
-        },
-        .{
-            .needle = "import * as spyFixture from \"./spymodule-fixture\";",
-            .replacement = "const spyFixture = globalThis.__home_import(\"./spymodule-fixture\");",
-        },
-        .{ .needle = "expect(fn())", .replacement = "expect(__home_mock_module_fixture.fn())" },
-        .{ .needle = "expect(variable)", .replacement = "expect(__home_mock_module_fixture.variable)" },
-        .{ .needle = "expect(defaultValue)", .replacement = "expect(__home_mock_module_fixture.default)" },
-        .{ .needle = "expect(rexported)", .replacement = "expect(__home_mock_module_fixture.rexported)" },
-        .{ .needle = "expect(rexportedAs)", .replacement = "expect(__home_mock_module_fixture.rexportedAs)" },
-        .{ .needle = "expect(iCallFn())", .replacement = "expect(__home_mock_module_fixture.iCallFn())" },
-        .{
-            .needle = "import.meta.resolveSync(\"./hey-hey-you-you2.ts\")",
-            .replacement = "__home_import_meta_resolve(\"./hey-hey-you-you2.ts\", __home_import_meta_path)",
-        },
-        .{
-            .needle = "import.meta.resolveSync(\"./hey-hey-you-you.ts\")",
-            .replacement = "__home_import_meta_resolve(\"./hey-hey-you-you.ts\", __home_import_meta_path)",
-        },
-    };
-
-    var current = try allocator.dupe(u8, source);
-    errdefer allocator.free(current);
-    for (replacements) |replacement| {
-        const next = try std.mem.replaceOwned(u8, allocator, current, replacement.needle, replacement.replacement);
-        allocator.free(current);
-        current = next;
-    }
-    return current;
-}
-
-fn rewriteSnapshotTestCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    const without_inline_update = try std.mem.replaceOwned(
-        u8,
-        allocator,
-        source,
-        "describe(\"inline snapshots\", () => {",
-        "test.todo(\"Bun inline snapshot source rewriting workflow\");\ndescribe.skip(\"inline snapshots\", () => {",
-    );
-    defer allocator.free(without_inline_update);
-
-    const without_error_inline = try std.mem.replaceOwned(
-        u8,
-        allocator,
-        without_inline_update,
-        "test(\"error snapshots\", () => {",
-        "test.todo(\"Bun error inline snapshot diagnostics\");\ntest.skip(\"error snapshots\", () => {",
-    );
-    defer allocator.free(without_error_inline);
-
-    const without_error_file = try std.mem.replaceOwned(
-        u8,
-        allocator,
-        without_error_inline,
-        "test(\"error inline snapshots\", () => {",
-        "test.todo(\"Bun error snapshot file serialization\");\ntest.skip(\"error inline snapshots\", () => {",
-    );
-    defer allocator.free(without_error_file);
-
-    const without_error_numbering = try std.mem.replaceOwned(
-        u8,
-        allocator,
-        without_error_file,
-        "test(\"snapshot numbering\", () => {",
-        "test.todo(\"Bun mixed error snapshot numbering\");\ntest.skip(\"snapshot numbering\", () => {",
-    );
-    defer allocator.free(without_error_numbering);
-
-    return try std.mem.replaceOwned(
-        u8,
-        allocator,
-        without_error_numbering,
-        "test(\"write snapshot from filter\", async () => {",
-        "test.todo(\"Bun filtered inline snapshot source rewriting\");\ntest.skip(\"write snapshot from filter\", async () => {",
-    );
-}
-
 fn rewriteDifferentDirectorySnapshotCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     return try std.mem.replaceOwned(
         u8,
@@ -95547,43 +95413,6 @@ fn rewriteDifferentDirectorySnapshotCorpus(allocator: std.mem.Allocator, source:
         source,
         "test.todo(\"snapshots in different directory\", () => {",
         "test(\"snapshots in different directory\", () => {",
-    );
-}
-
-fn rewriteTestFailingCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    const without_subprocess_pass = try std.mem.replaceOwned(
-        u8,
-        allocator,
-        source,
-        "  it(\"passes if an error is thrown or a promise rejects \", async () => {",
-        "  it.todo(\"test.failing subprocess pass reporter\");\n  it.skip(\"passes if an error is thrown or a promise rejects \", async () => {",
-    );
-    defer allocator.free(without_subprocess_pass);
-
-    const without_subprocess_fail = try std.mem.replaceOwned(
-        u8,
-        allocator,
-        without_subprocess_pass,
-        "  it(\"fails if no error is thrown or promise resolves\", async () => {",
-        "  it.todo(\"test.failing subprocess failure reporter\");\n  it.skip(\"fails if no error is thrown or promise resolves\", async () => {",
-    );
-    defer allocator.free(without_subprocess_fail);
-
-    const without_timeout = try std.mem.replaceOwned(
-        u8,
-        allocator,
-        without_subprocess_fail,
-        "  it(\"timeouts still count as failures\", async () => {",
-        "  it.todo(\"test.failing subprocess timeout reporter\");\n  it.skip(\"timeouts still count as failures\", async () => {",
-    );
-    defer allocator.free(without_timeout);
-
-    return try std.mem.replaceOwned(
-        u8,
-        allocator,
-        without_timeout,
-        "  describe(\"when using a done() callback\", () => {",
-        "  it.todo(\"test.failing done callback subprocess reporter\");\n  describe.skip(\"when using a done() callback\", () => {",
     );
 }
 
@@ -99827,7 +99656,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/require-esm-gc-roots.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/require.test.ts"))
-        try rewriteRequireResolveCorpus(allocator, module_source)
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/resolve-autoinstall-invalid-name.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/resolve-error.test.ts"))
@@ -100037,7 +99866,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
             "replaceAll(\"/__home_absolute_test_dir__\", \"<dir>\")",
         )
     else if (std.mem.eql(u8, relative_path, "js/bun/test/test-failing.test.ts"))
-        try rewriteTestFailingCorpus(allocator, module_source)
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/test-fixture-diff-indexed-properties.js"))
         try rewriteNativeTodoCorpus(allocator, "bun test indexed property diff failure fixture")
     else if (std.mem.eql(u8, relative_path, "js/bun/test/test-interop.js"))
@@ -100065,11 +99894,11 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/test/mock/6874/B.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/mock/6879/6879.test.ts"))
-        try rewriteMockModuleLiveReexportCorpus(allocator, module_source)
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/mock/mock-module-resolve-log.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/mock/mock-module.test.ts"))
-        try rewriteMockModuleCorpus(allocator, module_source)
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/only-failures.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/only-inside-only.test.ts"))
@@ -100087,7 +99916,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/test/snapshot-tests/snapshots/more-snapshots/different-directory.test.ts"))
         try rewriteDifferentDirectorySnapshotCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/test/snapshot-tests/snapshots/snapshot.test.ts"))
-        try rewriteSnapshotTestCorpus(allocator, module_source)
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/spyMatchers.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/stack.test.ts"))
@@ -100605,6 +100434,14 @@ fn isNativeHttpProxyCorpusFile(relative: []const u8) bool {
         std.mem.eql(u8, relative, "js/bun/http/proxy.test.ts");
 }
 
+fn isNativeBunTestCorpusFile(relative: []const u8) bool {
+    return std.mem.eql(u8, relative, "js/bun/resolve/require.test.ts") or
+        std.mem.eql(u8, relative, "js/bun/test/mock/6879/6879.test.ts") or
+        std.mem.eql(u8, relative, "js/bun/test/mock/mock-module.test.ts") or
+        std.mem.eql(u8, relative, "js/bun/test/snapshot-tests/snapshots/snapshot.test.ts") or
+        std.mem.eql(u8, relative, "js/bun/test/test-failing.test.ts");
+}
+
 fn isNativeS3CorpusFile(relative: []const u8) bool {
     inline for (.{
         "s3-fd-validation.test.ts",
@@ -100747,6 +100584,7 @@ fn isNativeHomeCorpusFile(relative: []const u8) bool {
         isNativeHttpTlsCorpusFile(relative) or
         isNativeHttpPromiseCorpusFile(relative) or
         isNativeHttpProxyCorpusFile(relative) or
+        isNativeBunTestCorpusFile(relative) or
         isNativeS3CorpusFile(relative) or
         isNativeWorkerCorpusFile(relative) or
         isNativeWorkerScriptCorpusFile(relative);
@@ -100839,25 +100677,47 @@ const NativeTestCounts = struct {
 fn nativeCorpusTestCounts(stdout: []const u8, stderr: []const u8) NativeTestCounts {
     var counts = NativeTestCounts{};
     for ([_][]const u8{ stdout, stderr }) |output| {
+        var pending = NativeTestCounts{};
         var lines = std.mem.splitScalar(u8, output, '\n');
         while (lines.next()) |raw_line| {
-            const line = std.mem.trim(u8, raw_line, " \t\r");
+            var plain_buf: [512]u8 = undefined;
+            const line = std.mem.trim(u8, stripAnsi(raw_line, &plain_buf), " \t\r");
             if (std.mem.startsWith(u8, line, "Ran ") and
                 std.mem.indexOf(u8, line, " across ") != null and
                 (std.mem.indexOf(u8, line, " test ") != null or std.mem.indexOf(u8, line, " tests ") != null))
             {
-                counts.observed = true;
+                pending.observed = true;
+                counts = pending;
+                pending = .{};
+                continue;
             }
             const space = std.mem.indexOfScalar(u8, line, ' ') orelse continue;
             const count = std.fmt.parseUnsigned(usize, line[0..space], 10) catch continue;
             const label = std.mem.trim(u8, line[space + 1 ..], " ");
-            if (std.mem.eql(u8, label, "pass")) counts.passed += count;
-            if (std.mem.eql(u8, label, "fail")) counts.failed += count;
-            if (std.mem.eql(u8, label, "skip")) counts.skipped += count;
-            if (std.mem.eql(u8, label, "todo")) counts.todo += count;
+            if (std.mem.eql(u8, label, "pass")) pending.passed = count;
+            if (std.mem.eql(u8, label, "fail")) pending.failed = count;
+            if (std.mem.eql(u8, label, "skip")) pending.skipped = count;
+            if (std.mem.eql(u8, label, "todo")) pending.todo = count;
         }
     }
     return counts;
+}
+
+fn stripAnsi(input: []const u8, buffer: []u8) []const u8 {
+    var read: usize = 0;
+    var written: usize = 0;
+    while (read < input.len and written < buffer.len) {
+        if (input[read] == 0x1b and read + 1 < input.len and input[read + 1] == '[') {
+            read += 2;
+            while (read < input.len and !(input[read] >= 0x40 and input[read] <= 0x7e)) : (read += 1) {}
+            if (read < input.len) read += 1;
+            continue;
+        }
+        buffer[written] = input[read];
+        written += 1;
+        read += 1;
+    }
+    return buffer[0..written];
 }
 
 fn nativeCorpusFailureDiagnostic(
@@ -100921,6 +100781,7 @@ fn runRelativeFile(
             isNativeHttpTlsCorpusFile(relative) or
             isNativeHttpPromiseCorpusFile(relative) or
             isNativeHttpProxyCorpusFile(relative) or
+            isNativeBunTestCorpusFile(relative) or
             isNativeS3CorpusFile(relative) or
             isNativeWorkerCorpusFile(relative)) .test_runner else .script;
 
@@ -101117,7 +100978,7 @@ test "native fs disposable corpus predicate covers the exact vendored matrix" {
     }
 
     try std.testing.expectEqual(@as(usize, 2), count);
-    try std.testing.expectEqual(@as(usize, 279), native_count);
+    try std.testing.expectEqual(@as(usize, 280), native_count);
     try std.testing.expect(isNativeFsDisposableCorpusFile("js/node/test/parallel/test-fs-promises-mkdtempDisposable.js"));
     try std.testing.expect(isNativeFsDisposableCorpusFile("js/node/test/parallel/test-fs-mkdtempDisposableSync.js"));
     try std.testing.expect(!isNativeFsDisposableCorpusFile("js/node/test/parallel/test-fs-mkdtempDisposable.js"));
@@ -101399,6 +101260,31 @@ test "native HTTP proxy corpus routing covers the exact local integration file" 
     }) |non_match| try std.testing.expect(!isNativeHttpProxyCorpusFile(non_match));
 }
 
+test "native Bun test corpus routing covers require, mocks, snapshots, and test.failing workflows" {
+    inline for (.{
+        "js/bun/resolve/require.test.ts",
+        "js/bun/test/mock/6879/6879.test.ts",
+        "js/bun/test/mock/mock-module.test.ts",
+        "js/bun/test/snapshot-tests/snapshots/snapshot.test.ts",
+        "js/bun/test/test-failing.test.ts",
+    }) |relative| {
+        try Io.Dir.cwd().access(std.testing.io, "packages/runtime/test/bun-corpus/" ++ relative, .{});
+        try std.testing.expect(isNativeBunTestCorpusFile(relative));
+        try std.testing.expect(isNativeHomeCorpusFile(relative));
+    }
+
+    inline for (.{
+        "js/bun/resolve/require.test.js",
+        "js/bun/test/mock/6879/6879.test.js",
+        "js/bun/test/mock/mock-module.test.js",
+        "js/bun/test/snapshot-tests/snapshots/snapshot.test.js",
+        "js/bun/test/test-failing.test.js",
+        "js/bun/test/test-failing-fixture.ts",
+        "js/bun/test/nested/test-failing.test.ts",
+        "js/bun/tests/test-failing.test.ts",
+    }) |non_match| try std.testing.expect(!isNativeBunTestCorpusFile(non_match));
+}
+
 test "native S3 corpus routing covers validated deterministic integration files" {
     inline for (.{
         "js/bun/s3/s3-fd-validation.test.ts",
@@ -101516,6 +101402,19 @@ test "native test runner counts require observed tests and retain skips" {
     try std.testing.expect(!nativeCorpusTestCounts("7 pass\n", "").observed);
     try std.testing.expect(!nativeCorpusTestCounts("", "").observed);
     try std.testing.expect(nativeCorpusTestCounts("", "1 pass\n0 fail\nRan 1 test across 1 file. [1ms]").observed);
+}
+
+test "native test runner counts use the final ANSI summary instead of nested runs" {
+    const output =
+        " 3 pass\n 0 fail\nRan 3 tests across 3 files. [1ms]\n" ++
+        "\x1b[2m 61 pass\x1b[0m\n\x1b[2m 0 fail\x1b[0m\n\x1b[2m 1 skip\x1b[0m\n" ++
+        "Ran 63 tests across 1 file. \x1b[2m[2ms]\x1b[0m\n";
+    const counts = nativeCorpusTestCounts("", output);
+    try std.testing.expect(counts.observed);
+    try std.testing.expectEqual(@as(usize, 61), counts.passed);
+    try std.testing.expectEqual(@as(usize, 0), counts.failed);
+    try std.testing.expectEqual(@as(usize, 1), counts.skipped);
+    try std.testing.expectEqual(@as(usize, 0), counts.todo);
 }
 
 test "native corpus skip markers are not accepted as passing coverage" {
