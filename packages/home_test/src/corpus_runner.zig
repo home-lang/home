@@ -100018,8 +100018,6 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/symbols.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun binary symbol import inspection")
-    else if (std.mem.eql(u8, relative_path, "js/bun/websocket/websocket-server.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun WebSocket server native event-loop matrix")
     else if (std.mem.eql(u8, relative_path, "js/bun/websocket/websocket-upgrade-signal-gc.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/webview/webview.test.ts"))
@@ -100599,6 +100597,10 @@ fn isNativeImageCorpusFile(relative: []const u8) bool {
         std.mem.eql(u8, relative, "js/bun/image/image.test.ts");
 }
 
+fn isNativeWebSocketCorpusFile(relative: []const u8) bool {
+    return std.mem.eql(u8, relative, "js/bun/websocket/websocket-server.test.ts");
+}
+
 fn nativeCorpusDisabledReason(relative: []const u8) ?[]const u8 {
     if (std.mem.eql(u8, relative, "js/node/test/parallel/test-util-emit-experimental-warning.js")) {
         return "upstream test body is commented out: internal/util emitExperimentalWarning is not exercised";
@@ -100619,7 +100621,8 @@ fn isNativeHomeCorpusFile(relative: []const u8) bool {
         isNativeNodeCoreCorpusFile(relative) or
         isNativeAddonTestCorpusFile(relative) or
         isNativeTerminalCorpusFile(relative) or
-        isNativeImageCorpusFile(relative);
+        isNativeImageCorpusFile(relative) or
+        isNativeWebSocketCorpusFile(relative);
 }
 
 fn parseNativeCorpusFlags(allocator: std.mem.Allocator, source: []const u8) !OwnedFlags {
@@ -100780,7 +100783,8 @@ fn runRelativeFile(
         const mode: NativeCorpusMode = if (isNativeNodeTestCorpusFile(relative) or
             isNativeAddonTestCorpusFile(relative) or
             isNativeTerminalCorpusFile(relative) or
-            isNativeImageCorpusFile(relative)) .test_runner else .script;
+            isNativeImageCorpusFile(relative) or
+            isNativeWebSocketCorpusFile(relative)) .test_runner else .script;
         const args_tail = try buildNativeCorpusArgs(
             allocator,
             flags.values.items,
@@ -101184,6 +101188,19 @@ test "native image corpus routing covers the exact codec matrix" {
         "js/bun/image/nested/image.test.ts",
         "js/bun/image-other/image.test.ts",
     }) |relative| try std.testing.expect(!isNativeImageCorpusFile(relative));
+}
+
+test "native websocket corpus routing covers the server event-loop matrix" {
+    const relative = "js/bun/websocket/websocket-server.test.ts";
+    try std.testing.expect(isNativeWebSocketCorpusFile(relative));
+    try std.testing.expect(isNativeHomeCorpusFile(relative));
+
+    inline for (.{
+        "js/bun/websocket/websocket-server.test.js",
+        "js/bun/websocket/websocket-server-fixture.ts",
+        "js/bun/websocket/nested/websocket-server.test.ts",
+        "js/bun/websocket-other/websocket-server.test.ts",
+    }) |non_match| try std.testing.expect(!isNativeWebSocketCorpusFile(non_match));
 }
 
 test "bootstrap addon guard precedes cached or fabricated module exports" {

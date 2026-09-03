@@ -679,7 +679,9 @@ pub fn cork(
         return .js_undefined;
     }
 
+    const callback_args = [_]JSValue{this_value};
     var corker = Corker{
+        .args = &callback_args,
         .globalObject = globalThis,
         .this_value = this_value,
         .callback = callback,
