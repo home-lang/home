@@ -4239,7 +4239,22 @@ pub const HomeKernelCodegen = struct {
                 try self.generateExpr(unary.operand);
                 switch (unary.op) {
                     .Neg => try self.emit().negate(),
-                    .BitNot => try self.emit().bitNot(),
+                    .BitNot => {
+                        try self.emit().bitNot();
+                        // `not` is a full-width instruction. Complementing a
+                        // value narrower than a word sets every bit above it
+                        // too, and those bits are part of the result unless
+                        // they are cleared: `~(x as u16)` for x = 0xFFFF must
+                        // be 0, not 0xFFFFFFFFFFFF0000.
+                        //
+                        // Every internet checksum in the tree is computed this
+                        // way, so the surviving high bits made a correct
+                        // checksum compare unequal to zero and the network
+                        // stack rejected every packet whose checksum was right.
+                        if (self.typeOfLValue(unary.operand)) |operand_type| {
+                            try self.emitNarrowTo(operand_type);
+                        }
+                    },
                     .Not => {
                         try self.emit().cmpImm(.acc, 0);
                         try self.emit().setFromFlags(.eq);
