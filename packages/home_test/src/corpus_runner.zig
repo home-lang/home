@@ -76623,6 +76623,7 @@ const harness_prelude =
     \\  }
     \\  return globalThis.__home_import(resolved);
     \\}
+    \\globalThis.__home_import_with_loader = __home_import_with_loader;
     \\function __home_import_query_fixture_module(specifier, query) {
     \\  const resolved = __home_resolve_require(specifier);
     \\  if (!String(resolved).endsWith("js/bun/resolve/import-query-fixture.ts")) return null;
@@ -94878,26 +94879,6 @@ fn rewriteFileAttributeImports(
     return out.toOwnedSlice(allocator);
 }
 
-fn rewriteImportQueryCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    return try std.mem.replaceOwned(
-        u8,
-        allocator,
-        source,
-        "await import(url);",
-        "await globalThis.__home_dynamic_import(url);",
-    );
-}
-
-fn rewriteTextLoaderCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    return try std.mem.replaceOwned(
-        u8,
-        allocator,
-        source,
-        "await import(src, { with: { type: \"text\" } })",
-        "await globalThis.__home_dynamic_import(src, { with: { type: \"text\" } })",
-    );
-}
-
 fn rewriteImportMetaResolveCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     return try std.mem.replaceOwned(
         u8,
@@ -95040,60 +95021,6 @@ fn rewriteLoadSameJsFileCorpus(allocator: std.mem.Allocator, source: []const u8)
         metadata_import,
         "await import(\"./load-same-empty-js-file-a-lot.js?i=\" + i)",
         "await globalThis.__home_dynamic_import(\"./load-same-empty-js-file-a-lot.js?i=\" + i)",
-    );
-}
-
-fn rewriteJson5ResolveCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    const empty_import = try std.mem.replaceOwned(
-        u8,
-        allocator,
-        source,
-        "import emptyJson5 from \"./json5-empty.json5\";",
-        "const emptyJson5 = globalThis.__home_import_json5(\"./json5-empty.json5\").default;",
-    );
-    defer allocator.free(empty_import);
-    return try std.mem.replaceOwned(
-        u8,
-        allocator,
-        empty_import,
-        "import json5FromCustomTypeAttribute from \"./json5-fixture.json5.txt\" with { type: \"json5\" };",
-        "const json5FromCustomTypeAttribute = globalThis.__home_import_json5(\"./json5-fixture.json5.txt\").default;",
-    );
-}
-
-fn rewriteYamlResolveCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    const empty_import = try std.mem.replaceOwned(
-        u8,
-        allocator,
-        source,
-        "import emptyYaml from \"./yaml-empty.yaml\";",
-        "const emptyYaml = globalThis.__home_import_yaml(\"./yaml-empty.yaml\").default;",
-    );
-    defer allocator.free(empty_import);
-    return try std.mem.replaceOwned(
-        u8,
-        allocator,
-        empty_import,
-        "import yamlFromCustomTypeAttribute from \"./yaml-fixture.yaml.txt\" with { type: \"yaml\" };",
-        "const yamlFromCustomTypeAttribute = globalThis.__home_import_yaml(\"./yaml-fixture.yaml.txt\").default;",
-    );
-}
-
-fn rewriteTomlResolveCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    const empty_import = try std.mem.replaceOwned(
-        u8,
-        allocator,
-        source,
-        "import emptyToml from \"./toml-empty.toml\";",
-        "const emptyToml = globalThis.__home_import_toml(\"./toml-empty.toml\").default;",
-    );
-    defer allocator.free(empty_import);
-    return try std.mem.replaceOwned(
-        u8,
-        allocator,
-        empty_import,
-        "import tomlFromCustomTypeAttribute from \"./toml-fixture.toml.txt\" with { type: \"toml\" };",
-        "const tomlFromCustomTypeAttribute = globalThis.__home_import_toml(\"./toml-fixture.toml.txt\").default;",
     );
 }
 
@@ -98112,6 +98039,37 @@ fn moduleIsTypesOnly(name: []const u8) bool {
     return std.mem.eql(u8, name, "undici-types");
 }
 
+fn loaderForModuleSpecifier(specifier: []const u8) ?[]const u8 {
+    const without_query = if (std.mem.indexOfScalar(u8, specifier, '?')) |index| specifier[0..index] else specifier;
+    if (std.mem.endsWith(u8, without_query, ".json5")) return "json5";
+    if (std.mem.endsWith(u8, without_query, ".yaml") or std.mem.endsWith(u8, without_query, ".yml")) return "yaml";
+    if (std.mem.endsWith(u8, without_query, ".toml")) return "toml";
+    return null;
+}
+
+fn supportedImportAttributeLoader(loader: []const u8) bool {
+    inline for (.{
+        "text", "file", "css", "wasm", "base64", "dataurl", "html", "js", "jsx", "ts", "tsx", "json", "jsonc", "json5", "yaml", "toml", "sqlite", "sqlite_embedded",
+    }) |supported| {
+        if (std.mem.eql(u8, loader, supported)) return true;
+    }
+    return false;
+}
+
+fn jsStringLiteralEnd(source: []const u8, start: usize) ?usize {
+    if (start >= source.len or (source[start] != '"' and source[start] != '\'')) return null;
+    const quote = source[start];
+    var i = start + 1;
+    while (i < source.len) : (i += 1) {
+        if (source[i] == '\\') {
+            i += 1;
+            continue;
+        }
+        if (source[i] == quote) return i;
+    }
+    return null;
+}
+
 fn skipJsWhitespace(source: []const u8, start: usize) usize {
     var i = start;
     while (i < source.len and isJsWhitespace(source[i])) i += 1;
@@ -98135,6 +98093,66 @@ fn readJsIdentifier(source: []const u8, start: usize) ?usize {
     if (start >= source.len or !isJsIdentifierContinue(source[start])) return null;
     var i = start + 1;
     while (i < source.len and isJsIdentifierContinue(source[i])) i += 1;
+    return i;
+}
+
+/// Lower a static default import whose extension or import attribute selects a
+/// data loader. The corpus realm cannot execute ESM declarations directly, but
+/// its loader bridge implements the same JSON/JSON5/YAML/TOML/text/file/etc.
+/// semantics. Keeping this syntax-driven avoids per-fixture source mutations.
+fn tryAppendStaticLoaderImportRewrite(
+    out: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    start: usize,
+) !?usize {
+    if (start > 0 and isJsIdentifierContinue(source[start - 1])) return null;
+    var i = consumeJsKeyword(source, start, "import") orelse return null;
+    if (i >= source.len or !isJsWhitespace(source[i])) return null;
+    i = skipJsWhitespace(source, i);
+    if (i >= source.len or !isJsIdentifierStart(source[i])) return null;
+    const binding_end = readJsIdentifier(source, i) orelse return null;
+    const binding = source[i..binding_end];
+    i = skipJsWhitespace(source, binding_end);
+    i = consumeJsKeyword(source, i, "from") orelse return null;
+    if (i >= source.len or !isJsWhitespace(source[i])) return null;
+    i = skipJsWhitespace(source, i);
+
+    const specifier_start = i;
+    const specifier_end = jsStringLiteralEnd(source, specifier_start) orelse return null;
+    const specifier = source[specifier_start + 1 .. specifier_end];
+    i = skipJsWhitespace(source, specifier_end + 1);
+    var loader = loaderForModuleSpecifier(specifier);
+
+    if (consumeJsKeyword(source, i, "with")) |after_with| {
+        i = skipJsWhitespace(source, after_with);
+        if (i >= source.len or source[i] != '{') return null;
+        i = skipJsWhitespace(source, i + 1);
+        i = consumeJsKeyword(source, i, "type") orelse return null;
+        i = skipJsWhitespace(source, i);
+        if (i >= source.len or source[i] != ':') return null;
+        i = skipJsWhitespace(source, i + 1);
+        const loader_start = i;
+        const loader_end = jsStringLiteralEnd(source, loader_start) orelse return null;
+        const explicit_loader = source[loader_start + 1 .. loader_end];
+        if (!supportedImportAttributeLoader(explicit_loader)) return null;
+        loader = explicit_loader;
+        i = skipJsWhitespace(source, loader_end + 1);
+        if (i < source.len and source[i] == ',') i = skipJsWhitespace(source, i + 1);
+        if (i >= source.len or source[i] != '}') return null;
+        i = skipJsHorizontalWhitespace(source, i + 1);
+    }
+
+    const selected_loader = loader orelse return null;
+    if (i < source.len and source[i] == ';') i += 1;
+
+    try out.appendSlice(allocator, "const ");
+    try out.appendSlice(allocator, binding);
+    try out.appendSlice(allocator, " = globalThis.__home_import_with_loader(");
+    try out.appendSlice(allocator, source[specifier_start .. specifier_end + 1]);
+    try out.appendSlice(allocator, ", \"");
+    try out.appendSlice(allocator, selected_loader);
+    try out.appendSlice(allocator, "\").default;\n");
     return i;
 }
 
@@ -98614,6 +98632,13 @@ fn appendSourceWithBunTestImportRewrites(
                 if (std.mem.startsWith(u8, source[i..], "import")) {
                     var replacement = std.ArrayList(u8).empty;
                     defer replacement.deinit(allocator);
+                    if (try tryAppendStaticLoaderImportRewrite(&replacement, allocator, source, i)) |end| {
+                        try out.appendSlice(allocator, source[segment_start..i]);
+                        try out.appendSlice(allocator, replacement.items);
+                        i = end;
+                        segment_start = i;
+                        continue;
+                    }
                     if (try tryAppendBunTestImportRewrite(&replacement, allocator, source, i, relative_path)) |end| {
                         try out.appendSlice(allocator, source[segment_start..i]);
                         try out.appendSlice(allocator, replacement.items);
@@ -99402,10 +99427,6 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteImportMetaResolveCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/import-meta.test.js"))
         try rewriteImportMetaCorpus(allocator, module_source)
-    else if (std.mem.eql(u8, relative_path, "js/bun/resolve/import-query.test.ts"))
-        try rewriteImportQueryCorpus(allocator, module_source)
-    else if (std.mem.eql(u8, relative_path, "js/bun/resolve/json5/json5.test.js"))
-        try rewriteJson5ResolveCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/load-same-js-file-a-lot.test.ts"))
         try rewriteLoadSameJsFileCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/lower-using-bun-target.test.ts"))
@@ -99424,10 +99445,6 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/resolve.test.ts"))
         null
-    else if (std.mem.eql(u8, relative_path, "js/bun/resolve/toml/toml.test.js"))
-        try rewriteTomlResolveCorpus(allocator, module_source)
-    else if (std.mem.eql(u8, relative_path, "js/bun/resolve/yaml/yaml.test.js"))
-        try rewriteYamlResolveCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/runtime-error.test.ts"))
         try rewriteRuntimeErrorCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/s3/s3-stream-cancel-leak.test.ts"))
@@ -99470,8 +99487,6 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteFilesystemRouterCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/util/fuzzilli-reprl.test.ts"))
         try rewriteFuzzilliReprlCorpus(allocator, module_source)
-    else if (std.mem.eql(u8, relative_path, "js/bun/util/text-loader.test.ts"))
-        try rewriteTextLoaderCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-connect-x509.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/shell/assignments-in-pipeline.test.ts"))
@@ -125257,7 +125272,7 @@ test "bootstrap runner mirrors JSON5 resolve import loader corpus" {
 
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "JSON5 import attribute loader resolution") == null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_import_json5(\"./json5-empty.json5\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_import_with_loader(\"./json5-empty.json5\", \"json5\")") != null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "with { type: \"json5\" }") == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_dynamic_import(\"./json5-fixture.json5\")") != null);
 
@@ -125379,7 +125394,7 @@ test "bootstrap runner mirrors YAML resolve import loader corpus" {
 
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "YAML import attribute loader resolution") == null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_import_yaml(\"./yaml-empty.yaml\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_import_with_loader(\"./yaml-empty.yaml\", \"yaml\")") != null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "with { type: \"yaml\" }") == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_dynamic_import(\"./yaml-fixture.yaml\")") != null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_dynamic_import(\"./yaml-fixture.yml\")") != null);
@@ -125408,7 +125423,7 @@ test "bootstrap runner mirrors TOML resolve import loader corpus" {
 
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "TOML import attribute loader resolution") == null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_import_toml(\"./toml-empty.toml\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_import_with_loader(\"./toml-empty.toml\", \"toml\")") != null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "with { type: \"toml\" }") == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_dynamic_import(\"./toml-fixture.toml\")") != null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun.TOML.parse(tomlContent)") != null);
@@ -133355,6 +133370,22 @@ test "corpus module preparation reports unsupported module syntax" {
     defer prepared.deinit(std.testing.allocator);
 
     try std.testing.expectEqualStrings("unsupported module syntax", prepared.unsupported_reason.?);
+}
+
+test "corpus module preparation lowers static data-loader imports generically" {
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import config from "./config.json5";
+        \\import raw from './fixture.data' with { type: 'text', };
+        \\test("works", () => expect([config, raw]).toHaveLength(2));
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/data-loader.test.js");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_import_with_loader(\"./config.json5\", \"json5\").default") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_import_with_loader('./fixture.data', \"text\").default") != null);
+    try std.testing.expect(!hasUnsupportedModuleSyntax(prepared.source));
 }
 
 test "UV N-API corpus imports use vendored constants and source assets" {
