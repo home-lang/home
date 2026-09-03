@@ -77985,7 +77985,8 @@ pub const Checker = struct {
             const r = hir_mod.typeRefOf(self.hir, arg);
             if (r.qualifier_len == 0) {
                 const name_str = self.string_interner.get(r.name);
-                if (self.visibleValueOnlyDeclarationExistsAt(arg, r.name) and
+                if (!isPrimitiveTypeNameText(name_str) and
+                    self.visibleValueOnlyDeclarationExistsAt(arg, r.name) and
                     !self.visibleTypeDeclarationExistsAt(arg, r.name))
                 {
                     try self.reportValueUsedAsTypeDidYouMeanTypeofOnce(arg, r.name);
@@ -229464,6 +229465,21 @@ test "checker: value bindings do not shadow primitive type refs in unions" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.value_used_as_type_did_you_mean_typeof));
+}
+
+test "checker: unresolved generic owners do not reinterpret primitive type arguments as values" {
+    const s = try newSetup(
+        \\declare namespace Types {}
+        \\function number() { return 1; }
+        \\function ValueOnly() {}
+        \\type PrimitiveArg = Types.Missing<number>;
+        \\type ValueArg = Types.Missing<ValueOnly>;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.value_used_as_type_did_you_mean_typeof));
+    const msg = checkerFirstMessageForCode(s, TsCodes.value_used_as_type_did_you_mean_typeof) orelse return error.MissingDiagnostic;
+    try T.expectEqualStrings("'ValueOnly' refers to a value, but is being used as a type here. Did you mean 'typeof ValueOnly'?", msg);
 }
 
 test "checker: value-only generic-looking type reference emits TS2749" {
