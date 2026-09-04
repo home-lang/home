@@ -221,6 +221,12 @@ pub fn onInternalMessagePrimary(globalThis: *jsc.JSGlobalObject, callframe: *jsc
 pub fn handleInternalMessagePrimary(globalThis: *jsc.JSGlobalObject, subprocess: *jsc.Subprocess, message: jsc.JSValue) bun.JSError!void {
     const ipc_data = subprocess.ipc() orelse return;
 
+    // A worker can send an internal message before the primary has attached its
+    // worker object and callback. Both unwraps below assume they are present, so
+    // drop the message while the holder is still incomplete rather than
+    // dereferencing an empty Strong.
+    if (!ipc_data.internal_msg_queue.isReady()) return;
+
     const event_loop = globalThis.bunVM().eventLoop();
 
     // TODO: investigate if "ack" and "seq" are observable and if they're not, remove them entirely.
