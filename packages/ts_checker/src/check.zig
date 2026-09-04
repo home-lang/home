@@ -36452,11 +36452,15 @@ pub const Checker = struct {
                         object_context_claimed = satisfies_target != null;
                         const object_target = satisfies_target orelse
                             self.contextualTargetTypeForExpression(object_node) orelse break :blk null;
-                        if (object_target >= self.interner.pool.typeCount()) break :blk null;
-                        const object_flags = self.interner.pool.flagsOf(object_target);
-                        if (object_flags.is_union or self.containsFreeTypeParameter(object_target)) break :blk null;
+                        // An optional object-literal argument is contextually
+                        // typed by `T | undefined`. Strip only the nullish
+                        // wrapper; a real union still requires merged member
+                        // context and is handled conservatively below.
+                        const narrowed_object_target = self.subtractNullUndefined(object_target) catch object_target;
+                        if (narrowed_object_target >= self.interner.pool.typeCount() or
+                            self.interner.pool.flagsOf(narrowed_object_target).is_union) break :blk null;
                         const member_name = self.propertyNameFromKeyNode(property.key) orelse break :blk null;
-                        object_member_target = try self.contextualObjectLiteralMemberTarget(object_target, member_name);
+                        object_member_target = try self.contextualObjectLiteralMemberTarget(narrowed_object_target, member_name);
                     },
                     else => break :blk null,
                 }
@@ -111237,7 +111241,10 @@ pub const Checker = struct {
                 // signature drives both arg-checking (so TS2345
                 // fires against the explicit-instantiated parameter
                 // types) and the return type.
-                var effective_callee_t = callee_t;
+                // Invocation uses a type parameter's apparent callable
+                // constraint (`C extends (...args) => R`) while retaining
+                // the original type for diagnostics and inference.
+                var effective_callee_t = self.typeParameterBaseConstraint(callee_t) orelse callee_t;
                 var recovered_declared_signature = false;
                 if (type_arg_nodes.len > 0) {
                     if (self.localFunctionValueSignatureForCall(c.callee)) |sig| {
@@ -149492,11 +149499,16 @@ pub const Checker = struct {
             }
             return null;
         }
+        if (try self.contextualCallableFromDeferredConditional(obj_t, 0)) |signature| return signature;
         if (self.typeIsMappedPayloadType(obj_t)) {
-            return try self.mappedPropertyTargetType(obj_t, name);
+            const target = try self.mappedPropertyTargetType(obj_t, name);
+            if (try self.contextualCallableFromDeferredConditional(target, 0)) |signature| return signature;
+            return target;
         }
-        return (try self.lookupObjectMember(obj_t, name)) orelse
-            (try self.patternIndexValueForStringKey(obj_t, name));
+        const target = (try self.lookupObjectMember(obj_t, name)) orelse
+            (try self.patternIndexValueForStringKey(obj_t, name)) orelse return null;
+        if (try self.contextualCallableFromDeferredConditional(target, 0)) |signature| return signature;
+        return target;
     }
 
     fn contextualObjectLiteralThisType(self: *Checker, t: TypeId) TypeId {
@@ -156836,6 +156848,28 @@ pub const Checker = struct {
         if (!self.interner.pool.flagsOf(rest_param_t).is_type_parameter) return;
         if (subs.contains(rest_param_t)) return;
         const fixed_count = param_params.len - 1;
+        // Inferring `A` in `(...args: A) => R` from a callable with an
+        // unbounded rest must preserve that tail. Treating the source rest
+        // array as one fixed tuple slot would turn `...checks: Check[]` into
+        // `[Check[]]` and contextually type each `check` as an array.
+        if (self.rest_signatures.contains(arg_sig) and arg_params.len > 0) {
+            const source_fixed_count = arg_params.len - 1;
+            const source_rest_t = arg_params[source_fixed_count];
+            if (fixed_count <= source_fixed_count and self.fixedTupleLength(source_rest_t) == null) {
+                const source_rest_element = self.interner.objectNumberIndex(source_rest_t);
+                if (source_rest_element != types.Primitive.none) {
+                    const source_min = self.signatureMinRequiredArgs(arg_sig, arg_params);
+                    const rest_min = if (source_min > fixed_count) source_min - fixed_count else 0;
+                    const tuple_t = try self.internTupleFromTypesWithTrailingRest(
+                        arg_params[fixed_count..source_fixed_count],
+                        rest_min,
+                        source_rest_element,
+                    );
+                    try subs.put(self.gpa, rest_param_t, tuple_t);
+                    return;
+                }
+            }
+        }
         var logical_args: std.ArrayListUnmanaged(TypeId) = .empty;
         defer logical_args.deinit(self.gpa);
         const source_min = try self.appendLogicalSignatureInferenceParams(arg_sig, arg_params, &logical_args);
@@ -156886,6 +156920,54 @@ pub const Checker = struct {
 
     fn internTupleFromTypes(self: *Checker, elem_types: []const TypeId, readonly: bool) CheckError!TypeId {
         return self.internTupleFromTypesWithMinRequired(elem_types, elem_types.len, readonly);
+    }
+
+    /// Build `[...fixed, ...Rest[]]` for signature inference, including a
+    /// numeric length and index domain that reflect the unbounded tail.
+    fn internTupleFromTypesWithTrailingRest(
+        self: *Checker,
+        elem_types: []const TypeId,
+        min_required: usize,
+        rest_element: TypeId,
+    ) CheckError!TypeId {
+        var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer members.deinit(self.gpa);
+        for (elem_types, 0..) |t, i| {
+            var nbuf: [12]u8 = undefined;
+            const name_str = std.fmt.bufPrint(&nbuf, "{d}", .{i}) catch continue;
+            const name = self.string_interner.intern(name_str) catch return error.OutOfMemory;
+            try members.append(self.gpa, .{
+                .name = name,
+                .type = t,
+                .is_optional = i >= min_required,
+                .is_readonly = false,
+                .is_method = false,
+            });
+        }
+        const length_id = self.string_interner.intern("length") catch return error.OutOfMemory;
+        try members.append(self.gpa, .{
+            .name = length_id,
+            .type = types.Primitive.number_t,
+            .is_optional = false,
+            .is_readonly = true,
+            .is_method = false,
+        });
+        var element_types: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer element_types.deinit(self.gpa);
+        try element_types.appendSlice(self.gpa, elem_types);
+        try element_types.append(self.gpa, rest_element);
+        const element_t = if (element_types.items.len == 1)
+            element_types.items[0]
+        else
+            self.interner.internUnion(element_types.items) catch return error.OutOfMemory;
+        const tuple_t = self.interner.internObjectTypeWithIndex(
+            members.items,
+            types.Primitive.none,
+            element_t,
+        ) catch return error.OutOfMemory;
+        try self.markTupleOrigin(tuple_t);
+        try self.tuple_trailing_rest_types.put(self.gpa, tuple_t, rest_element);
+        return tuple_t;
     }
 
     fn internTupleFromTypesWithMinRequired(
@@ -170120,6 +170202,51 @@ pub const Checker = struct {
         const member_t = (try self.directNamedMemberValueType(object_t, key)) orelse return null;
         if (self.containsThisTypeParameter(member_t)) return null;
         return self.resolveGenericType(member_t) catch member_t;
+    }
+
+    /// Resolve an exact indexed member for contextual typing. Unlike the
+    /// argument-relation variant, polymorphic `this` is valid here because
+    /// the containing object literal supplies the receiver context.
+    fn resolveExactIndexedAccessForContext(self: *Checker, t: TypeId, depth: usize) CheckError!?TypeId {
+        if (depth > 8 or t >= self.interner.pool.typeCount()) return null;
+        const flags = self.interner.pool.flagsOf(t);
+        if (!flags.is_indexed_access) return null;
+        const indexed = self.interner.pool.indexed_access_payloads.items[self.interner.pool.payloadOf(t)];
+        const key = self.stringLiteralValueFromType(indexed.index) orelse return null;
+        var object_t = (try self.resolveExactIndexedAccessForContext(indexed.object, depth + 1)) orelse indexed.object;
+        object_t = self.resolveGenericType(object_t) catch object_t;
+        if (object_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(object_t).is_type_parameter) {
+            object_t = self.typeParameterConstraint(object_t) orelse return null;
+            object_t = self.resolveGenericType(object_t) catch object_t;
+        }
+        return try self.directNamedMemberValueType(object_t, key);
+    }
+
+    /// Materialize callable context from a deferred mapped conditional such
+    /// as `T[K] extends (...args: infer A) => infer R ? (...args: A) => R : ...`.
+    fn contextualCallableFromDeferredConditional(self: *Checker, t: TypeId, depth: usize) CheckError!?TypeId {
+        if (depth > 8 or t >= self.interner.pool.typeCount()) return null;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_union) {
+            var selected: ?TypeId = null;
+            for (self.interner.unionMembers(t)) |member| {
+                if (member == types.Primitive.undefined_t or member == types.Primitive.null_t) continue;
+                const candidate = (try self.contextualCallableFromDeferredConditional(member, depth + 1)) orelse continue;
+                if (selected) |prior| {
+                    if (prior != candidate and !(self.engine.isIdenticalTo(prior, candidate) catch false)) return null;
+                }
+                selected = candidate;
+            }
+            return selected;
+        }
+        if (!flags.is_conditional) return null;
+        const conditional = self.interner.conditionalPayloadOrNull(t) orelse return null;
+        const check_t = (try self.resolveExactIndexedAccessForContext(conditional.check_type, depth + 1)) orelse conditional.check_type;
+        var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+        defer subs.deinit(self.gpa);
+        if (!try self.matchInfer(check_t, conditional.extends_type, &subs)) return null;
+        const resolved_true = self.substituteType(conditional.true_branch, &subs) catch return null;
+        return self.firstSignatureType(resolved_true);
     }
 
     fn isArgumentAssignableToParam(self: *Checker, arg_node: NodeId, arg_t: TypeId, param_t: TypeId) !bool {
