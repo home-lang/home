@@ -86659,7 +86659,9 @@ const harness_prelude =
     \\    fileName = position[1];
     \\    lineNumber = Number(position[2]);
     \\    columnNumber = Number(position[3]);
-    \\    if (String(globalThis.__home_current_filename || "").endsWith("js/node/v8/capture-stack-trace.test.js") && fileName.includes("capture-stack-trace.test.js") && lineNumber > 49) lineNumber -= 49;
+    \\    const currentFileName = String(globalThis.__home_current_filename || "");
+    \\    const sourceLineOffset = Math.max(0, Math.trunc(Number(globalThis.__home_current_source_line_offset) || 0));
+    \\    if (sourceLineOffset > 0 && lineNumber > sourceLineOffset && (fileName === currentFileName || fileName.endsWith("/" + currentFileName))) lineNumber -= sourceLineOffset;
     \\  }
     \\  const asyncFrame = functionName.startsWith("async ");
     \\  let bareName = asyncFrame ? functionName.slice(6) : functionName;
@@ -98302,7 +98304,7 @@ fn tryAppendStaticLoaderImportRewrite(
     try out.appendSlice(allocator, source[specifier_start .. specifier_end + 1]);
     try out.appendSlice(allocator, ", \"");
     try out.appendSlice(allocator, selected_loader);
-    try out.appendSlice(allocator, "\").default;\n");
+    try out.appendSlice(allocator, "\").default;");
     return i;
 }
 
@@ -98360,7 +98362,7 @@ fn appendBunTestImportBinding(
     if (count == 0) return false;
     try out.appendSlice(allocator, " } = globalThis.__home_import(\"");
     try out.appendSlice(allocator, module_name);
-    try out.appendSlice(allocator, "\");\n");
+    try out.appendSlice(allocator, "\");");
     return true;
 }
 
@@ -98568,7 +98570,7 @@ fn tryAppendBunTestImportRewrite(
             try out.appendSlice(allocator, alias);
             try out.appendSlice(allocator, " = globalThis.__home_import(\"");
             try out.appendSlice(allocator, module.name);
-            try out.appendSlice(allocator, "\");\n");
+            try out.appendSlice(allocator, "\");");
         }
         return i;
     }
@@ -98586,7 +98588,7 @@ fn tryAppendBunTestImportRewrite(
         if (!type_only and !moduleIsTypesOnly(module.name)) {
             try out.appendSlice(allocator, "globalThis.__home_import(\"");
             try out.appendSlice(allocator, module.name);
-            try out.appendSlice(allocator, "\");\n");
+            try out.appendSlice(allocator, "\");");
         }
         return i;
     }
@@ -98632,9 +98634,9 @@ fn tryAppendBunTestImportRewrite(
                 try out.appendSlice(allocator, " = globalThis.__home_import(\"");
                 try out.appendSlice(allocator, module.name);
                 if (moduleDefaultExportIsApi(module.name)) {
-                    try out.appendSlice(allocator, "\").default;\n");
+                    try out.appendSlice(allocator, "\").default;");
                 } else {
-                    try out.appendSlice(allocator, "\");\n");
+                    try out.appendSlice(allocator, "\");");
                 }
                 _ = try appendBunTestImportBinding(out, allocator, specifiers, module.name);
             }
@@ -98660,9 +98662,9 @@ fn tryAppendBunTestImportRewrite(
             // `fs`/`zlib` expose their API on the module's `default` export
             // rather than the namespace; everything else binds the namespace.
             if (moduleDefaultExportIsApi(module.name)) {
-                try out.appendSlice(allocator, "\").default;\n");
+                try out.appendSlice(allocator, "\").default;");
             } else {
-                try out.appendSlice(allocator, "\");\n");
+                try out.appendSlice(allocator, "\");");
             }
         }
         return j;
@@ -98748,6 +98750,19 @@ fn exportedDeclaration(source: []const u8, start: usize) ?ExportedDeclaration {
     return null;
 }
 
+fn appendLinePreservingModuleRewrite(
+    out: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    original: []const u8,
+    replacement: []const u8,
+) !void {
+    try out.appendSlice(allocator, replacement);
+    const original_newlines = std.mem.count(u8, original, "\n");
+    const replacement_newlines = std.mem.count(u8, replacement, "\n");
+    if (replacement_newlines >= original_newlines) return;
+    try out.appendNTimes(allocator, '\n', original_newlines - replacement_newlines);
+}
+
 fn appendSourceWithBunTestImportRewrites(
     out: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
@@ -98785,14 +98800,14 @@ fn appendSourceWithBunTestImportRewrites(
                     defer replacement.deinit(allocator);
                     if (try tryAppendStaticLoaderImportRewrite(&replacement, allocator, source, i)) |end| {
                         try out.appendSlice(allocator, source[segment_start..i]);
-                        try out.appendSlice(allocator, replacement.items);
+                        try appendLinePreservingModuleRewrite(out, allocator, source[i..end], replacement.items);
                         i = end;
                         segment_start = i;
                         continue;
                     }
                     if (try tryAppendBunTestImportRewrite(&replacement, allocator, source, i, relative_path)) |end| {
                         try out.appendSlice(allocator, source[segment_start..i]);
-                        try out.appendSlice(allocator, replacement.items);
+                        try appendLinePreservingModuleRewrite(out, allocator, source[i..end], replacement.items);
                         i = end;
                         segment_start = i;
                         continue;
@@ -99866,6 +99881,14 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     }
     try appendFileMetadataPrelude(&out, allocator, relative_path, diagnosed_module_source);
     try appendSnapshotPrelude(&out, allocator, relative_path);
+    const source_line_offset = std.mem.count(u8, out.items, "\n") + 1;
+    const source_line_offset_assignment = try std.fmt.allocPrint(
+        allocator,
+        "globalThis.__home_current_source_line_offset = {d};\n",
+        .{source_line_offset},
+    );
+    defer allocator.free(source_line_offset_assignment);
+    try out.appendSlice(allocator, source_line_offset_assignment);
     try appendSourceWithBunTestImportRewrites(&out, allocator, diagnosed_module_source, relative_path);
     try out.appendSlice(allocator,
         \\
@@ -105872,6 +105895,34 @@ test "Bun test import rewrite lowers to the virtual test module" {
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "globalThis.__home_current_filename = __filename") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "it(\"works\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "\n//# sourceURL=js/node/example.test.js\n") != null);
+}
+
+test "module import rewrites preserve original source line count" {
+    const source =
+        \\import {
+        \\  describe,
+        \\  expect,
+        \\  test,
+        \\} from "bun:test";
+        \\import { readFileSync } from "node:fs";
+        \\test("lines", () => expect(readFileSync).toBeDefined());
+    ;
+    var rewritten: std.ArrayList(u8) = .empty;
+    defer rewritten.deinit(std.testing.allocator);
+
+    try appendSourceWithBunTestImportRewrites(
+        &rewritten,
+        std.testing.allocator,
+        source,
+        "js/node/import-lines.test.js",
+    );
+
+    try std.testing.expectEqual(
+        std.mem.count(u8, source, "\n"),
+        std.mem.count(u8, rewritten.items, "\n"),
+    );
+    try std.testing.expect(std.mem.indexOf(u8, rewritten.items, "from \"bun:test\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten.items, "from \"node:fs\"") == null);
 }
 
 test "Bun test import rewrite preserves file strict mode through explicit directive" {
