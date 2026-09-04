@@ -2260,6 +2260,22 @@ pub const HomeKernelCodegen = struct {
         if (decl.value) |value| {
             if (self.foldConst(value)) |folded| {
                 if (folded != 0) init_value = folded;
+            } else if (size == 8) {
+                // foldConst casts to i64 and gives up above i64's maximum, so
+                // a u64 constant with the top bit set — a mask like
+                // 0xC000000000000000, a sentinel, an address above 2^63 —
+                // produced no initializer at all and the symbol was emitted
+                // zero-filled. The constant then silently read as 0.
+                //
+                // The bit pattern is what goes on disk either way: `.quad`
+                // emits the same eight bytes for the negative i64 as for the
+                // u64 it was written as.
+                if (value.* == .IntegerLiteral) {
+                    const raw = value.IntegerLiteral.value;
+                    if (raw > std.math.maxInt(i64) and raw <= std.math.maxInt(u64)) {
+                        init_value = @bitCast(@as(u64, @intCast(raw)));
+                    }
+                }
             }
         }
         try self.global_vars.put(decl.name, .{
