@@ -59065,8 +59065,51 @@ const harness_prelude =
     \\function __home_webcrypto_algorithm_name(algorithm) {
     \\  return typeof algorithm === "string" ? algorithm : String(algorithm && algorithm.name || "");
     \\}
+    \\function __home_webcrypto_canonical_algorithm_name(algorithm) {
+    \\  const name = __home_webcrypto_algorithm_name(algorithm).toUpperCase();
+    \\  if (name === "RSASSA-PKCS1-V1_5") return "RSASSA-PKCS1-v1_5";
+    \\  if (name === "ED25519") return "Ed25519";
+    \\  if (name === "X25519") return "X25519";
+    \\  return name;
+    \\}
     \\function __home_webcrypto_hash_name(hash) {
     \\  return typeof hash === "string" ? hash : String(hash && hash.name || "");
+    \\}
+    \\function __home_webcrypto_unique_usages(usages) {
+    \\  return [...new Set(Array.isArray(usages) ? usages : [])];
+    \\}
+    \\function __home_webcrypto_generate_key_usages(name) {
+    \\  if (name === "RSASSA-PKCS1-v1_5" || name === "RSA-PSS" || name === "ECDSA" || name === "Ed25519") return { allowed: ["sign", "verify"], public: ["verify"], private: ["sign"] };
+    \\  if (name === "RSA-OAEP") return { allowed: ["encrypt", "decrypt", "wrapKey", "unwrapKey"], public: ["encrypt", "wrapKey"], private: ["decrypt", "unwrapKey"] };
+    \\  if (name === "ECDH" || name === "X25519") return { allowed: ["deriveKey", "deriveBits"], public: [], private: ["deriveKey", "deriveBits"] };
+    \\  if (name === "HMAC") return { allowed: ["sign", "verify"] };
+    \\  if (name === "AES-KW") return { allowed: ["wrapKey", "unwrapKey"] };
+    \\  if (name === "AES-CTR" || name === "AES-CBC" || name === "AES-GCM") return { allowed: ["encrypt", "decrypt", "wrapKey", "unwrapKey"] };
+    \\  return null;
+    \\}
+    \\function __home_webcrypto_validate_generate_key(algorithm, usages) {
+    \\  const rawName = __home_webcrypto_algorithm_name(algorithm);
+    \\  if (!rawName) throw new TypeError("Algorithm name is required");
+    \\  const name = __home_webcrypto_canonical_algorithm_name(algorithm);
+    \\  const usageShape = __home_webcrypto_generate_key_usages(name);
+    \\  if (!usageShape) throw new DOMException("Algorithm is not supported", "NotSupportedError");
+    \\  const hashName = __home_webcrypto_hash_name(algorithm && algorithm.hash).toUpperCase();
+    \\  if ((name === "HMAC" || name.startsWith("RSA")) && !["SHA-1", "SHA-256", "SHA-384", "SHA-512"].includes(hashName)) throw new DOMException("Algorithm is not supported", "NotSupportedError");
+    \\  const requested = __home_webcrypto_unique_usages(usages);
+    \\  if (requested.some(usage => !usageShape.allowed.includes(usage))) throw new DOMException("Invalid key usage", "SyntaxError");
+    \\  if (name.startsWith("AES-")) {
+    \\    const length = Number(algorithm && algorithm.length);
+    \\    if (length !== 128 && length !== 192 && length !== 256) throw new DOMException("Invalid key length", "OperationError");
+    \\  }
+    \\  if (name.startsWith("RSA")) {
+    \\    const exponent = __home_webcrypto_public_exponent(algorithm && algorithm.publicExponent);
+    \\    let value = 0;
+    \\    for (const byte of exponent) value = value * 256 + byte;
+    \\    if (value <= 1 || value % 2 === 0) throw new DOMException("Invalid public exponent", "OperationError");
+    \\  }
+    \\  if (name === "ECDSA" || name === "ECDH") __home_webcrypto_curve_length(__home_webcrypto_named_curve(algorithm));
+    \\  if (requested.length === 0 || (usageShape.private && !requested.some(usage => usageShape.private.includes(usage)))) throw new DOMException("Invalid key usage", "SyntaxError");
+    \\  return { name, requested, usageShape };
     \\}
     \\function __home_webcrypto_named_curve(algorithm) {
     \\  return String(algorithm && algorithm.namedCurve || "");
@@ -59130,6 +59173,7 @@ const harness_prelude =
     \\    this.usages = Array.isArray(usages) ? usages.slice() : [];
     \\    this.__home_jwk = Object.assign({}, jwk || {});
     \\  }
+    \\  get [Symbol.toStringTag]() { return "CryptoKey"; }
     \\}
     \\if (!globalThis.CryptoKey) {
     \\  Object.defineProperty(__home_crypto_key, "name", { configurable: true, value: "CryptoKey" });
@@ -59142,7 +59186,7 @@ const harness_prelude =
     \\  return value ? new Uint8Array(value) : new Uint8Array([1, 0, 1]);
     \\}
     \\function __home_webcrypto_rsa_algorithm(algorithm, modulusLength) {
-    \\  return { name: __home_webcrypto_algorithm_name(algorithm).toUpperCase(), modulusLength: Number(modulusLength) || Number(algorithm && algorithm.modulusLength) || 2048, publicExponent: __home_webcrypto_public_exponent(algorithm && algorithm.publicExponent), hash: { name: __home_webcrypto_hash_name(algorithm && algorithm.hash) || "SHA-256" } };
+    \\  return { name: __home_webcrypto_canonical_algorithm_name(algorithm), modulusLength: Number(modulusLength) || Number(algorithm && algorithm.modulusLength) || 2048, publicExponent: __home_webcrypto_public_exponent(algorithm && algorithm.publicExponent), hash: { name: __home_webcrypto_hash_name(algorithm && algorithm.hash) || "SHA-256" } };
     \\}
     \\function __home_webcrypto_asn1_algorithm_identifier() {
     \\  return new Uint8Array([0x02, 0x01, 0x00, 0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01, 0x05, 0x00]);
@@ -59154,12 +59198,14 @@ const harness_prelude =
     \\function __home_webcrypto_x25519_key_pair(extractable, usages) {
     \\  const seed = ++__home_webcrypto_key_counter;
     \\  const algorithm = { name: "X25519" };
-    \\  const publicKey = __home_webcrypto_key("public", algorithm, extractable, [], { kty: "OKP", crv: "X25519", ext: !!extractable, key_ops: [] });
-    \\  const privateKey = __home_webcrypto_key("private", algorithm, extractable, usages, { kty: "OKP", crv: "X25519", ext: !!extractable, key_ops: Array.isArray(usages) ? usages.slice() : [] });
+    \\  const privateUsages = __home_webcrypto_unique_usages(usages).filter(usage => usage === "deriveKey" || usage === "deriveBits");
+    \\  const publicKey = __home_webcrypto_key("public", algorithm, true, [], { kty: "OKP", crv: "X25519", ext: true, key_ops: [] });
+    \\  const privateKey = __home_webcrypto_key("private", algorithm, extractable, privateUsages, { kty: "OKP", crv: "X25519", ext: !!extractable, key_ops: privateUsages });
     \\  publicKey.__home_x25519_seed = seed;
     \\  privateKey.__home_x25519_seed = seed;
     \\  publicKey.__home_pair_id = "x25519:" + seed;
     \\  privateKey.__home_pair_id = "x25519:" + seed;
+    \\  publicKey.__home_raw = __home_webcrypto_base64url_decode(__home_webcrypto_field(seed * 7 + 1, 43));
     \\  return { publicKey, privateKey };
     \\}
     \\function __home_webcrypto_ed25519_key_pair(extractable, usages) {
@@ -59168,7 +59214,7 @@ const harness_prelude =
     \\  const publicUsages = Array.isArray(usages) && usages.includes("verify") ? ["verify"] : [];
     \\  const privateUsages = Array.isArray(usages) && usages.includes("sign") ? ["sign"] : [];
     \\  const x = __home_webcrypto_field(seed * 7 + 1, 43);
-    \\  const publicKey = __home_webcrypto_key("public", algorithm, extractable, publicUsages, { kty: "OKP", crv: "Ed25519", x, ext: !!extractable, key_ops: publicUsages });
+    \\  const publicKey = __home_webcrypto_key("public", algorithm, true, publicUsages, { kty: "OKP", crv: "Ed25519", x, ext: true, key_ops: publicUsages });
     \\  const privateKey = __home_webcrypto_key("private", algorithm, extractable, privateUsages, { kty: "OKP", crv: "Ed25519", x, d: __home_webcrypto_field(seed * 7 + 2, 43), ext: !!extractable, key_ops: privateUsages });
     \\  publicKey.__home_pair_id = "ed25519:" + seed;
     \\  privateKey.__home_pair_id = "ed25519:" + seed;
@@ -59187,32 +59233,42 @@ const harness_prelude =
     \\    x: __home_webcrypto_field(seed * 3 + 1, length),
     \\    y: __home_webcrypto_field(seed * 3 + 2, length),
     \\    ext: !!extractable,
-    \\    key_ops: Array.isArray(usages) ? usages.slice() : [],
+    \\    key_ops: [],
     \\  };
-    \\  const privateJwk = Object.assign({}, publicJwk, { d: __home_webcrypto_field(seed * 3 + 3, length) });
+    \\  const usageShape = __home_webcrypto_generate_key_usages(name);
+    \\  const requested = __home_webcrypto_unique_usages(usages);
+    \\  const publicUsages = requested.filter(usage => usageShape.public.includes(usage));
+    \\  const privateUsages = requested.filter(usage => usageShape.private.includes(usage));
+    \\  publicJwk.key_ops = publicUsages;
+    \\  const privateJwk = Object.assign({}, publicJwk, { ext: !!extractable, key_ops: privateUsages, d: __home_webcrypto_field(seed * 3 + 3, length) });
     \\  const normalized = { name, namedCurve };
-    \\  const publicKey = __home_webcrypto_key("public", normalized, extractable, [], publicJwk);
-    \\  const privateKey = __home_webcrypto_key("private", normalized, extractable, usages, privateJwk);
+    \\  const publicKey = __home_webcrypto_key("public", normalized, true, publicUsages, publicJwk);
+    \\  const privateKey = __home_webcrypto_key("private", normalized, extractable, privateUsages, privateJwk);
     \\  publicKey.__home_pair_id = name + ":" + seed;
     \\  privateKey.__home_pair_id = name + ":" + seed;
+    \\  publicKey.__home_raw = __home_webcrypto_base64url_decode(publicJwk.x);
     \\  return { publicKey, privateKey };
     \\}
     \\function __home_webcrypto_rsa_key_pair(algorithm, extractable, usages) {
-    \\  const name = __home_webcrypto_algorithm_name(algorithm).toUpperCase();
-    \\  if (name !== "RSA-PSS" && name !== "RSASSA-PKCS1-V1_5" && name !== "RSA-OAEP") throw new DOMException("Algorithm is not supported", "NotSupportedError");
+    \\  const name = __home_webcrypto_canonical_algorithm_name(algorithm);
+    \\  if (name !== "RSA-PSS" && name !== "RSASSA-PKCS1-v1_5" && name !== "RSA-OAEP") throw new DOMException("Algorithm is not supported", "NotSupportedError");
     \\  const normalized = __home_webcrypto_rsa_algorithm(algorithm, algorithm && algorithm.modulusLength);
     \\  const seed = ++__home_webcrypto_key_counter;
-    \\  const publicJwk = { kty: "RSA", ext: !!extractable, key_ops: [], n: __home_webcrypto_field(seed * 5 + 1, 342), e: "AQAB" };
+    \\  const usageShape = __home_webcrypto_generate_key_usages(name);
+    \\  const requested = __home_webcrypto_unique_usages(usages);
+    \\  const publicUsages = requested.filter(usage => usageShape.public.includes(usage));
+    \\  const privateUsages = requested.filter(usage => usageShape.private.includes(usage));
+    \\  const publicJwk = { kty: "RSA", ext: true, key_ops: publicUsages, n: __home_webcrypto_field(seed * 5 + 1, 342), e: "AQAB" };
     \\  if (!String(normalized.hash && normalized.hash.name || "").toUpperCase().startsWith("SHA3-")) publicJwk.alg = name;
-    \\  const privateJwk = Object.assign({}, publicJwk, { key_ops: Array.isArray(usages) ? usages.slice() : [], d: __home_webcrypto_field(seed * 5 + 2, 342), p: __home_webcrypto_field(seed * 5 + 3, 171), q: __home_webcrypto_field(seed * 5 + 4, 171) });
-    \\  const publicKey = __home_webcrypto_key("public", normalized, extractable, [], publicJwk);
-    \\  const privateKey = __home_webcrypto_key("private", normalized, extractable, usages, privateJwk);
+    \\  const privateJwk = Object.assign({}, publicJwk, { ext: !!extractable, key_ops: privateUsages, d: __home_webcrypto_field(seed * 5 + 2, 342), p: __home_webcrypto_field(seed * 5 + 3, 171), q: __home_webcrypto_field(seed * 5 + 4, 171) });
+    \\  const publicKey = __home_webcrypto_key("public", normalized, true, publicUsages, publicJwk);
+    \\  const privateKey = __home_webcrypto_key("private", normalized, extractable, privateUsages, privateJwk);
     \\  publicKey.__home_pair_id = name + ":" + seed;
     \\  privateKey.__home_pair_id = name + ":" + seed;
     \\  return { publicKey, privateKey };
     \\}
     \\function __home_webcrypto_secret_key(algorithm, raw, extractable, usages) {
-    \\  const name = __home_webcrypto_algorithm_name(algorithm).toUpperCase();
+    \\  const name = __home_webcrypto_canonical_algorithm_name(algorithm);
     \\  const normalized = { name };
     \\  if (name === "HMAC") {
     \\    normalized.hash = { name: __home_webcrypto_hash_name(algorithm && algorithm.hash) || "SHA-256" };
@@ -59220,9 +59276,10 @@ const harness_prelude =
     \\  } else if (name.startsWith("AES-")) {
     \\    normalized.length = raw.length * 8;
     \\  }
-    \\  const jwk = { kty: "oct", k: __home_webcrypto_base64url_encode(raw), ext: !!extractable, key_ops: Array.isArray(usages) ? usages.slice() : [] };
+    \\  const normalizedUsages = __home_webcrypto_unique_usages(usages);
+    \\  const jwk = { kty: "oct", k: __home_webcrypto_base64url_encode(raw), ext: !!extractable, key_ops: normalizedUsages };
     \\  if (name === "HMAC") jwk.alg = "HS" + String((normalized.hash && normalized.hash.name || "SHA-256").replace(/^SHA-/, ""));
-    \\  const key = __home_webcrypto_key("secret", normalized, extractable, usages, jwk);
+    \\  const key = __home_webcrypto_key("secret", normalized, extractable, normalizedUsages, jwk);
     \\  key.__home_raw = new Uint8Array(raw);
     \\  return key;
     \\}
@@ -59268,17 +59325,20 @@ const harness_prelude =
     \\if (!globalThis.SubtleCrypto) globalThis.SubtleCrypto = class SubtleCrypto {};
     \\const __home_crypto_subtle = {
     \\  generateKey(algorithm, extractable, usages) {
-    \\    const algorithmName = __home_webcrypto_algorithm_name(algorithm).toUpperCase();
-    \\    if (algorithmName === "ED25519") return Promise.resolve(__home_webcrypto_ed25519_key_pair(extractable, usages));
-    \\    if (algorithmName === "X25519") return Promise.resolve(__home_webcrypto_x25519_key_pair(extractable, usages));
-    \\    if (/^RSA-(?:PSS|OAEP)$/.test(algorithmName) || algorithmName === "RSASSA-PKCS1-V1_5") return Promise.resolve(__home_webcrypto_rsa_key_pair(algorithm, extractable, usages));
-    \\    if (/^(?:HMAC|AES-(?:GCM|CBC|CTR|KW))$/.test(algorithmName)) {
-    \\      const length = Number(algorithm && algorithm.length) || (algorithmName === "HMAC" ? __home_webcrypto_hmac_default_length(__home_webcrypto_hash_name(algorithm && algorithm.hash)) : 128);
-    \\      const raw = new Uint8Array(Math.ceil(length / 8));
-    \\      for (let i = 0; i < raw.length; i++) raw[i] = (i * 31 + length) & 0xff;
-    \\      return Promise.resolve(__home_webcrypto_secret_key(algorithm, raw, extractable, usages));
-    \\    }
-    \\    return Promise.resolve(__home_webcrypto_ec_key_pair(algorithm, extractable, usages));
+    \\    return Promise.resolve().then(() => {
+    \\      const normalized = __home_webcrypto_validate_generate_key(algorithm, usages);
+    \\      const algorithmName = normalized.name.toUpperCase();
+    \\      if (algorithmName === "ED25519") return __home_webcrypto_ed25519_key_pair(extractable, normalized.requested);
+    \\      if (algorithmName === "X25519") return __home_webcrypto_x25519_key_pair(extractable, normalized.requested);
+    \\      if (/^RSA-(?:PSS|OAEP)$/.test(algorithmName) || algorithmName === "RSASSA-PKCS1-V1_5") return __home_webcrypto_rsa_key_pair(algorithm, extractable, normalized.requested);
+    \\      if (/^(?:HMAC|AES-(?:GCM|CBC|CTR|KW))$/.test(algorithmName)) {
+    \\        const length = Number(algorithm && algorithm.length) || (algorithmName === "HMAC" ? __home_webcrypto_hmac_default_length(__home_webcrypto_hash_name(algorithm && algorithm.hash)) : 128);
+    \\        const raw = new Uint8Array(Math.ceil(length / 8));
+    \\        for (let i = 0; i < raw.length; i++) raw[i] = (i * 31 + length) & 0xff;
+    \\        return __home_webcrypto_secret_key(algorithm, raw, extractable, normalized.requested);
+    \\      }
+    \\      return __home_webcrypto_ec_key_pair(algorithm, extractable, normalized.requested);
+    \\    });
     \\  },
     \\  exportKey(format, key) {
     \\    const keyFormat = String(format).toLowerCase();
@@ -59612,12 +59672,70 @@ const harness_prelude =
     \\globalThis.__home_modules["crypto"] = __home_crypto_module;
     \\globalThis.__home_modules["node:crypto"] = __home_crypto_module;
     \\globalThis.__home_modules["./fixtures/sign.fixture.ts"] = { get hashesFixture() { return __home_crypto_hashes_fixture(); } };
+    \\function __home_webcrypto_all_nonempty_subsets(values) {
+    \\  const results = [];
+    \\  for (let index = 0; index < values.length; index++) {
+    \\    const first = values[index];
+    \\    const remaining = values.slice(index + 1);
+    \\    results.push([first]);
+    \\    if (remaining.length > 0) {
+    \\      for (const combination of __home_webcrypto_all_nonempty_subsets(remaining)) {
+    \\        combination.push(first);
+    \\        results.push(combination);
+    \\      }
+    \\    }
+    \\  }
+    \\  return results;
+    \\}
+    \\function __home_webcrypto_object_to_string(value) {
+    \\  if (Array.isArray(value)) return "[" + value.map(__home_webcrypto_object_to_string).join(", ") + "]";
+    \\  if (typeof value === "object") {
+    \\    const pairs = [];
+    \\    for (const key of Object.keys(value).sort()) pairs.push(key + ": " + __home_webcrypto_object_to_string(value[key]));
+    \\    return "{" + pairs.join(", ") + "}";
+    \\  }
+    \\  if (typeof value === "undefined") return "undefined";
+    \\  return value.toString();
+    \\}
+    \\function __home_webcrypto_name_variants(name, slowTest) {
+    \\  const upper = name.toUpperCase();
+    \\  const lower = name.toLowerCase();
+    \\  const mixed = upper.substring(0, 1) + lower.substring(1);
+    \\  return slowTest ? [mixed] : [...new Set([upper, lower, mixed])];
+    \\}
+    \\function __home_webcrypto_algorithm_specifiers(name) {
+    \\  const results = [];
+    \\  const upper = name.toUpperCase();
+    \\  if (upper.substring(0, 3) === "AES") {
+    \\    for (const length of [128, 192, 256]) results.push({ name, length });
+    \\  } else if (upper === "HMAC") {
+    \\    for (const [hash, length] of [["SHA-1", 160], ["SHA-256", 256], ["SHA-384", 384], ["SHA-512", 512]]) results.push({ name, hash, length });
+    \\    for (const hash of ["SHA-1", "SHA-256", "SHA-384", "SHA-512"]) results.push({ name, hash });
+    \\  } else if (upper.substring(0, 3) === "RSA") {
+    \\    for (const hash of ["SHA-1", "SHA-256"]) results.push({ name, hash, modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]) });
+    \\  } else if (upper.substring(0, 2) === "EC") {
+    \\    for (const namedCurve of ["P-256", "P-384", "P-521"]) results.push({ name, namedCurve });
+    \\  } else if (upper.substring(0, 1) === "X" || upper.substring(0, 2) === "ED") {
+    \\    results.push({ name });
+    \\  }
+    \\  return results;
+    \\}
+    \\function __home_webcrypto_valid_usages(validUsages, emptyIsValid, mandatoryUsages) {
+    \\  mandatoryUsages = mandatoryUsages === undefined ? [] : mandatoryUsages;
+    \\  const results = [];
+    \\  for (const subset of __home_webcrypto_all_nonempty_subsets(validUsages)) {
+    \\    if (mandatoryUsages.length === 0 || mandatoryUsages.some(usage => subset.includes(usage))) results.push(subset);
+    \\  }
+    \\  if (emptyIsValid && validUsages.length !== 0) results.push([]);
+    \\  results.push(validUsages.concat(mandatoryUsages).concat(validUsages));
+    \\  return results;
+    \\}
     \\globalThis.__home_modules["./webcryptoTestHelpers"] = {
-    \\  registeredAlgorithmNames: [],
-    \\  allAlgorithmSpecifiersFor() { return []; },
-    \\  allNameVariants(name) { return [String(name)]; },
-    \\  allValidUsages() { return [[]]; },
-    \\  objectToString(value) { try { return JSON.stringify(value); } catch (error) { return String(value); } },
+    \\  registeredAlgorithmNames: ["RSASSA-PKCS1-v1_5", "RSA-PSS", "RSA-OAEP", "ECDSA", "ECDH", "AES-CTR", "AES-CBC", "AES-GCM", "AES-KW", "HMAC", "SHA-1", "SHA-256", "SHA-384", "SHA-512", "HKDF", "PBKDF2", "Ed25519", "X25519"],
+    \\  allAlgorithmSpecifiersFor: __home_webcrypto_algorithm_specifiers,
+    \\  allNameVariants: __home_webcrypto_name_variants,
+    \\  allValidUsages: __home_webcrypto_valid_usages,
+    \\  objectToString: __home_webcrypto_object_to_string,
     \\};
     \\function __home_stream_map(mapper) {
     \\  if (typeof mapper !== "function") throw new TypeError('The "mapper" argument must be a function');
@@ -91701,9 +91819,7 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "const N = 50;\nconst concurrency = 16;\nconst delay = isASAN ? 500 : 150;", .replacement = "const N = 4;\nconst concurrency = 2;\nconst delay = 0;" },
         .{ .needle = "let concurrency = 7;\n  const count = 100;", .replacement = "let concurrency = 2;\n  const count = 4;" },
         .{ .needle = "const REQUESTS_COUNT = isASAN ? 5_000 : 50_000;", .replacement = "const REQUESTS_COUNT = 50;" },
-        .{ .needle = "describe.each([\n  { name: \"http/1.1\", http3: false },\n  { name: \"http/3\", http3: true },\n])", .replacement = "describe.each([\n  { name: \"http/1.1\", http3: false },\n])" },
         .{ .needle = "describe.concurrent(\"Bun.cron (in-process) — firing\",", .replacement = "describe.skip.concurrent(\"Bun.cron (in-process) — firing\"," },
-        .{ .needle = "registeredAlgorithmNames.forEach(name => {\n  run_test_success([name]);\n  run_test_failure([name]);\n});", .replacement = "test.todo(\"webcrypto generateKey WPT vectors\");" },
         .{ .needle = "import { color } from \"bun\";", .replacement = "const { color } = globalThis.__home_import(\"bun\");" },
         .{ .needle = "import { Hono } from \"hono\";", .replacement = "const { Hono } = globalThis.__home_import(\"hono\");" },
         .{ .needle = "import { getSecret } from \"harness\";", .replacement = "const { getSecret } = globalThis.__home_import(\"harness\");" },
@@ -91766,14 +91882,6 @@ fn appendBootstrapTypeScriptReplacement(
         .{ .needle = "const body: Array<Buffer> = [];", .replacement = "const body = [];" },
         .{ .needle = "const body = (await promise) as string;", .replacement = "const body = await promise;" },
         .{ .needle = "// TODO:\nif (!isCI) {", .replacement = "test.todo(\"CSS Parser Invalid Input Fuzzing\");\nif (false) {" },
-        .{ .needle = "const BodyMixin = [\n      Request.prototype.arrayBuffer,\n      Request.prototype.bytes,\n      Request.prototype.blob,\n      Request.prototype.text,\n      Request.prototype.json,\n    ];", .replacement = "const BodyMixin = [\n      Request.prototype.text,\n    ];" },
-        .{ .needle = "const useRequestObjectValues = [true, false];", .replacement = "const useRequestObjectValues = [false];" },
-        .{ .needle = "for (let forceReadableStreamConversionFastPath of [true, false])", .replacement = "for (let forceReadableStreamConversionFastPath of [false])" },
-        .{ .needle = "const inputFixture = [\n              [JSON.stringify(\"Hello World\"), JSON.stringify(\"Hello World\")],\n              [JSON.stringify(\"Hello World 123\"), Buffer.from(JSON.stringify(\"Hello World 123\")).buffer],\n              [JSON.stringify(\"Hello World 456\"), Buffer.from(JSON.stringify(\"Hello World 456\"))],\n              [\n                JSON.stringify(\"EXTREMELY LONG VERY LONG STRING WOW SO LONG YOU WONT BELIEVE IT! \".repeat(100)),\n                Buffer.from(\n                  JSON.stringify(\"EXTREMELY LONG VERY LONG STRING WOW SO LONG YOU WONT BELIEVE IT! \".repeat(100)),\n                ),\n              ],\n              [\n                JSON.stringify(\n                  \"EXTREMELY LONG 🔥 UTF16 🔥 VERY LONG STRING WOW SO LONG YOU WONT BELIEVE IT! \".repeat(100),\n                ),\n                Buffer.from(\n                  JSON.stringify(\n                    \"EXTREMELY LONG 🔥 UTF16 🔥 VERY LONG STRING WOW SO LONG YOU WONT BELIEVE IT! \".repeat(100),\n                  ),\n                ),\n              ],\n            ];", .replacement = "const inputFixture = [\n              [JSON.stringify(\"Hello World\"), JSON.stringify(\"Hello World\")],\n            ];" },
-        .{ .needle = "for (let withDelay of [false, true])", .replacement = "for (let withDelay of [false])" },
-        .{ .needle = "const inputLengths = http3\n              ? [1, 2, 12, 95, 1024, 64 * 1024]\n              : [1, 2, 12, 95, 1024, 1024 * 1024, 1024 * 1024 * 2];", .replacement = "const inputLengths = [1, 1024];" },
-        .{ .needle = "for (const huge_ of [\n                bytes,\n                bytes.buffer,\n                new DataView(bytes.buffer),\n                new Int8Array(bytes),\n                new Blob([bytes]),\n                new Float64Array(bytes),\n\n                new Uint16Array(bytes),\n                new Uint32Array(bytes),\n                new Int16Array(bytes),\n                new Int32Array(bytes),\n\n                // make sure we handle subarray() as expected when reading\n                // typed arrays from native code\n                new Int16Array(bytes).subarray(1),\n                new Int16Array(bytes).subarray(0, new Int16Array(bytes).byteLength - 1),\n                new Int32Array(bytes).subarray(1),\n                new Int32Array(bytes).subarray(0, new Int32Array(bytes).byteLength - 1),\n                new Int16Array(bytes).subarray(0, 1),\n                new Int32Array(bytes).subarray(0, 1),\n                new Float32Array(bytes).subarray(0, 1),\n              ])", .replacement = "for (const huge_ of [\n                bytes,\n                bytes.buffer,\n                new Blob([bytes]),\n              ])" },
-        .{ .needle = "for (let isDirectStream of [true, false])", .replacement = "for (let isDirectStream of [])" },
         .{ .needle = "import.meta.dirname", .replacement = "__home_import_meta_dirname" },
         .{ .needle = "import.meta.dir", .replacement = "__home_import_meta_dir" },
         .{ .needle = "import.meta.main", .replacement = "false" },
@@ -159243,6 +159351,51 @@ test "bootstrap TypeScript return stripping preserves ternary call false branche
 
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "? await nodeExeMatchingAbi() : bunExe();") != null);
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "const cmd = [exe];") != null);
+}
+
+test "bootstrap runner preserves the full body stream matrix" {
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/web/fetch/body-stream.test.ts";
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    defer std.testing.allocator.free(source_path);
+    const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "{ name: \"http/3\", http3: true }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Request.prototype.arrayBuffer") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Request.prototype.json") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const useRequestObjectValues = [true, false]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "for (let forceReadableStreamConversionFastPath of [true, false])") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "for (let withDelay of [false, true])") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "1024 * 1024 * 2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "new DataView(bytes.buffer)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "for (let isDirectStream of [true, false])") != null);
+}
+
+test "bootstrap runner preserves the WebCrypto generateKey vectors" {
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "js/bun/crypto/wpt-webcrypto.generateKey.test.ts";
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    defer std.testing.allocator.free(source_path);
+    const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    defer std.testing.allocator.free(source);
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "registeredAlgorithmNames.forEach") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "webcrypto generateKey WPT vectors") == null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "registeredAlgorithmNames: [\"RSASSA-PKCS1-v1_5\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_webcrypto_all_nonempty_subsets") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "allAlgorithmSpecifiersFor: __home_webcrypto_algorithm_specifiers") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "allValidUsages: __home_webcrypto_valid_usages") != null);
 }
 
 test "failure recorder keeps the first failing file" {
