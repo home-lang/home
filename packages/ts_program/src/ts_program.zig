@@ -5227,6 +5227,42 @@ pub const ModuleExportFacts = struct {
     cannot_be_named: bool = false,
 };
 
+pub const ModuleLocalImportFacts = struct {
+    /// The queried name is bound in the prepared owner's module scope.
+    declares_local: bool = false,
+    /// Borrowed from the prepared owner's interner. Empty when the local is
+    /// not re-exported under a different public name.
+    exported_as: []const u8 = "",
+};
+
+/// Query the local provenance behind a missing named export without reopening
+/// source or checking the owner. The binder's module scope covers value, type,
+/// namespace, import, and destructured bindings; local export clauses provide
+/// the exact public alias used by TS2460.
+pub fn moduleLocalImportFactsFromCompilation(
+    compilation: *const ts_driver.Compilation,
+    name: []const u8,
+) ModuleLocalImportFacts {
+    const name_id = compilation.interner.lookup(name) orelse return .{};
+    if (compilation.module.root.lookupLocal(name_id) == null) return .{};
+    if (compilation.hir.kindOf(compilation.root) != .block_stmt) return .{ .declares_local = true };
+    for (hir_mod_ns.blockStmts(&compilation.hir, compilation.root)) |stmt| {
+        if (compilation.hir.kindOf(stmt) != .export_decl) continue;
+        const ex = hir_mod_ns.exportOf(&compilation.hir, stmt);
+        if (compilation.interner.get(ex.module).len != 0) continue;
+        for (hir_mod_ns.exportNamed(&compilation.hir, stmt)) |spec_node| {
+            if (compilation.hir.kindOf(spec_node) != .import_specifier) continue;
+            const export_spec = hir_mod_ns.importSpecifierOf(&compilation.hir, spec_node);
+            if (export_spec.imported != name_id or export_spec.local == name_id) continue;
+            return .{
+                .declares_local = true,
+                .exported_as = compilation.interner.get(export_spec.local),
+            };
+        }
+    }
+    return .{ .declares_local = true };
+}
+
 /// Source-only compatibility entry point. Prepare bindings, but never check
 /// the module merely to answer an export-shape query. The caller owns the name.
 pub fn moduleCommonJsExportAssignmentClassName(
@@ -6506,7 +6542,10 @@ fn moduleRootHasExportedRuntimeValue(hir: *const hir_mod_ns.Hir, root: hir_mod_n
         for (hir_mod_ns.exportNamed(hir, stmt)) |spec_node| {
             if (hir.kindOf(spec_node) != .import_specifier) continue;
             const sp = hir_mod_ns.importSpecifierOf(hir, spec_node);
-            if (sp.local == name or sp.imported == name) {
+            // `local` is the public export name; `imported` is the owner-local
+            // binding that supplies its value. A renamed clause must not make
+            // both names importable (`export { hidden as public }`).
+            if (sp.local == name) {
                 return moduleRootLocalNameCreatesRuntimeValue(hir, root, sp.imported);
             }
         }
@@ -10063,6 +10102,69 @@ test "renderModuleDisplayName quotes the module stem" {
     try T.expectEqualStrings("\"type\"", m2);
 }
 
+test "prepared module local import facts retain declarations aliases and scope" {
+    const compilation = try compileModuleForExportFacts(
+        T.allocator,
+        "/owner.ts",
+        \\const hidden = 1;
+        \\interface Shape { value: number }
+        \\import { source as imported } from "./source";
+        \\const { picked } = { picked: 1 };
+        \\function wrapper() { const nested = 1; }
+        \\export { hidden as public };
+        \\export const visible = 1;
+        ,
+    );
+    defer {
+        compilation.deinit();
+        T.allocator.destroy(compilation);
+    }
+
+    const hidden = moduleLocalImportFactsFromCompilation(compilation, "hidden");
+    try T.expect(hidden.declares_local);
+    try T.expectEqualStrings("public", hidden.exported_as);
+    try T.expect(moduleLocalImportFactsFromCompilation(compilation, "Shape").declares_local);
+    try T.expect(moduleLocalImportFactsFromCompilation(compilation, "imported").declares_local);
+    try T.expect(moduleLocalImportFactsFromCompilation(compilation, "picked").declares_local);
+    try T.expect(moduleLocalImportFactsFromCompilation(compilation, "visible").declares_local);
+    try T.expect(!moduleLocalImportFactsFromCompilation(compilation, "nested").declares_local);
+    try T.expect(!moduleLocalImportFactsFromCompilation(compilation, "missing").declares_local);
+}
+
+test "prepared barrel local import facts do not inherit hidden leaf declarations" {
+    const compilation = try compileModuleForExportFacts(T.allocator, "/barrel.ts", "export * from './leaf';");
+    defer {
+        compilation.deinit();
+        T.allocator.destroy(compilation);
+    }
+    try T.expect(!moduleLocalImportFactsFromCompilation(compilation, "hidden").declares_local);
+}
+
+test "prepared module local import facts never reopen source or check the owner" {
+    const compilation = try compileModuleForExportFacts(
+        T.allocator,
+        "/owner.ts",
+        "const hidden = 1; export { hidden as public };",
+    );
+    defer {
+        compilation.deinit();
+        T.allocator.destroy(compilation);
+    }
+    const node_count = compilation.hir.nodeCount();
+    const type_count = compilation.type_interner.pool.typeCount();
+    const diagnostics = compilation.diagnostics.items.len;
+    compilation.source = "";
+    for (0..128) |_| {
+        const facts = moduleLocalImportFactsFromCompilation(compilation, "hidden");
+        try T.expect(facts.declares_local);
+        try T.expectEqualStrings("public", facts.exported_as);
+    }
+    try T.expectEqual(node_count, compilation.hir.nodeCount());
+    try T.expectEqual(type_count, compilation.type_interner.pool.typeCount());
+    try T.expectEqual(diagnostics, compilation.diagnostics.items.len);
+    try T.expect(!compilation.checked_types_ready);
+}
+
 test "ambientModuleExportFacts distinguishes a missing wildcard export" {
     const source =
         \\declare module "*.foo" {
@@ -10192,6 +10294,19 @@ test "moduleExportsValueSpaceName: CommonJS void exports stay absent" {
     try T.expect(!moduleExportsValueSpaceName(T.allocator, source, "k", false));
     try T.expect(moduleExportsValueSpaceName(T.allocator, source, "m", false));
     try T.expect(moduleExportsValueSpaceName(T.allocator, source, "n", false));
+}
+
+test "module export facts expose only the public side of renamed value exports" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/owner.ts", "const hidden = 1; export { hidden as public };");
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+
+    const hidden = moduleExportFactsFromResolvedModule(T.allocator, &resolver, "/owner.ts", "hidden");
+    const public = moduleExportFactsFromResolvedModule(T.allocator, &resolver, "/owner.ts", "public");
+    try T.expect(!hidden.exported_value);
+    try T.expect(public.exported_value);
 }
 
 test "module export facts expose non-void CommonJS properties" {
