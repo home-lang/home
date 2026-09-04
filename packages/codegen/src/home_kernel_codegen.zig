@@ -687,8 +687,7 @@ pub const HomeKernelCodegen = struct {
         while (struct_it.next()) |info| self.allocator.free(info.fields);
         self.structs.deinit();
         self.enum_sizes.deinit();
-        var ev_it = self.enum_values.keyIterator();
-        while (ev_it.next()) |k| self.allocator.free(k.*);
+        // enum_values keys belong to import_arena, which is released below.
         self.enum_values.deinit();
         self.imported_files.deinit();
         self.module_aliases.deinit();
@@ -1138,12 +1137,14 @@ pub const HomeKernelCodegen = struct {
             for (decl.variants) |v| {
                 const value = v.value orelse next;
                 next = value + 1;
-                const key = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ decl.name, v.name });
-                // A duplicate key would leak the second allocation.
-                if (self.enum_values.contains(key)) {
-                    self.allocator.free(key);
-                    continue;
-                }
+                // Keys are owned by the import arena, which the imported-enum
+                // path above already uses. Splitting ownership between the
+                // arena and the general allocator meant deinit freed arena
+                // memory with the wrong allocator, which aborts the compiler
+                // after a successful compile — visible on any module whose
+                // import closure declares enums.
+                const key = try std.fmt.allocPrint(self.import_arena.allocator(), "{s}.{s}", .{ decl.name, v.name });
+                if (self.enum_values.contains(key)) continue;
                 try self.enum_values.put(key, value);
             }
         }
