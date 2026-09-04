@@ -4908,6 +4908,10 @@ pub const Checker = struct {
     /// optional/empty for assignment, while this side table preserves
     /// the contextual-this payload.
     this_type_markers: std.AutoHashMapUnmanaged(TypeId, TypeId),
+    /// Local interface declaration for a receiver with a syntactically
+    /// qualified base. Entries are validated against lexical visibility
+    /// before use because ordinary object TypeIds are structurally interned.
+    program_qualified_interface_decl: std.AutoHashMapUnmanaged(TypeId, NodeId),
     /// Synthetic wrapper TypeId from `NoInfer<T>` to T. A fresh brand in
     /// each wrapper keeps source-declared object shapes from colliding with
     /// the inference-control marker.
@@ -5549,6 +5553,7 @@ pub const Checker = struct {
             .var_decl_jsdoc_type_names = .empty,
             .var_decl_annotation_nodes = .empty,
             .this_type_markers = .empty,
+            .program_qualified_interface_decl = .empty,
             .no_infer_types = .empty,
             .readonly_index_types = .empty,
             .index_param_names = .empty,
@@ -6161,6 +6166,7 @@ pub const Checker = struct {
         self.var_decl_jsdoc_type_names.deinit(self.gpa);
         self.var_decl_annotation_nodes.deinit(self.gpa);
         self.this_type_markers.deinit(self.gpa);
+        self.program_qualified_interface_decl.deinit(self.gpa);
         self.no_infer_types.deinit(self.gpa);
         self.readonly_index_types.deinit(self.gpa);
         self.index_param_names.deinit(self.gpa);
@@ -17503,6 +17509,33 @@ pub const Checker = struct {
             });
         }
         if (count <= 1) return null;
+        return self.interner.internObjectType(members.items) catch return error.OutOfMemory;
+    }
+
+    fn directNamedMemberValueType(self: *Checker, obj_t: TypeId, name: hir_mod.StringId) CheckError!?TypeId {
+        var first = types.Primitive.none;
+        var signature_count: usize = 0;
+        for (self.interner.objectMembers(obj_t)) |member| {
+            if (member.name != name) continue;
+            if (first == types.Primitive.none) first = member.type;
+            if (self.interner.isSignature(member.type)) signature_count += 1;
+        }
+        if (first == types.Primitive.none) return null;
+        if (signature_count <= 1) return first;
+
+        const call_member_id = self.string_interner.intern("__call") catch return error.OutOfMemory;
+        var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer members.deinit(self.gpa);
+        for (self.interner.objectMembers(obj_t)) |member| {
+            if (member.name != name or !self.interner.isSignature(member.type)) continue;
+            try members.append(self.gpa, .{
+                .name = call_member_id,
+                .type = member.type,
+                .is_optional = false,
+                .is_readonly = true,
+                .is_method = true,
+            });
+        }
         return self.interner.internObjectType(members.items) catch return error.OutOfMemory;
     }
 
@@ -65581,6 +65614,12 @@ pub const Checker = struct {
             }
             if (has_readonly_index) try self.readonly_index_types.put(self.gpa, final_t, {});
             try self.putTypeName(id.name, final_t);
+            for (extends) |extends_node| {
+                if (self.hir.kindOf(extends_node) != .type_ref) continue;
+                if (hir_mod.typeRefOf(self.hir, extends_node).qualifier_len != 1) continue;
+                try self.program_qualified_interface_decl.put(self.gpa, final_t, node);
+                break;
+            }
             if (recursive_provisional_t != types.Primitive.none and recursive_provisional_t != final_t) {
                 try self.recursive_interface_targets.put(self.gpa, recursive_provisional_t, final_t);
             }
@@ -81871,6 +81910,17 @@ pub const Checker = struct {
         }
         const ef = self.interner.pool.flagsOf(ext);
         const cf = self.interner.pool.flagsOf(check);
+        if (ef.is_signature and cf.is_object_type) {
+            const call_member_id = self.string_interner.intern("__call") catch return error.OutOfMemory;
+            var signature_count: usize = 0;
+            var last_signature = types.Primitive.none;
+            for (self.interner.objectMembers(check)) |member| {
+                if (member.name != call_member_id or !self.interner.isSignature(member.type)) continue;
+                signature_count += 1;
+                last_signature = member.type;
+            }
+            if (signature_count > 1) return self.matchInfer(last_signature, ext, subs);
+        }
         if (ef.is_template_literal) {
             const sid = self.stringLiteralValueFromType(check) orelse return false;
             return self.matchTemplateLiteralInfer(sid, ext, subs);
@@ -107086,6 +107136,154 @@ pub const Checker = struct {
         return matched;
     }
 
+    fn programDeclarationForQualifiedInterfaceRef(
+        self: *Checker,
+        type_node: NodeId,
+    ) CheckError!?*const ProgramClassSchema.Declaration {
+        if (type_node == hir_mod.none_node_id or self.hir.kindOf(type_node) != .type_ref) return null;
+        const reference = hir_mod.typeRefOf(self.hir, type_node);
+        if (reference.qualifier_len != 1) return null;
+        const qualifiers = hir_mod.typeRefQualifier(self.hir, type_node);
+        if (self.hir.kindOf(qualifiers[0]) != .identifier) return null;
+        const root_name = hir_mod.identifierOf(self.hir, qualifiers[0]).name;
+        const import_info = (try self.localImportModuleInfo(root_name, type_node)) orelse return null;
+        if (import_info.exported_root != null) return null;
+        var matched: ?*const ProgramClassSchema.Declaration = null;
+        for (self.program_exported_types) |entry| {
+            if (!std.mem.eql(u8, entry.export_name, self.string_interner.get(reference.name))) continue;
+            if (!try self.programImportTargetsPath(import_info.import_node, self.string_interner.get(import_info.specifier), entry.target_path)) continue;
+            if (matched != null) return null;
+            matched = entry.declaration;
+        }
+        return matched;
+    }
+
+    fn programQualifiedInterfaceMemberType(
+        self: *Checker,
+        type_node: NodeId,
+        member_name: hir_mod.StringId,
+    ) CheckError!?TypeId {
+        const declaration = (try self.programDeclarationForQualifiedInterfaceRef(type_node)) orelse return null;
+        const arg_nodes = hir_mod.typeRefArgs(self.hir, type_node);
+        if (arg_nodes.len > declaration.parameters.len) return null;
+        const args = try self.gpa.alloc(TypeId, declaration.parameters.len);
+        defer self.gpa.free(args);
+        @memset(args, types.Primitive.unknown);
+        for (arg_nodes, args[0..arg_nodes.len]) |arg_node, *arg| {
+            const cached = self.hir.typeOf(arg_node);
+            if (cached == types.Primitive.none) return null;
+            arg.* = cached;
+        }
+        for (declaration.parameters[arg_nodes.len..], arg_nodes.len..) |parameter, index| {
+            const default = parameter.default orelse return null;
+            args[index] = self.lowerProgramExpression(default, declaration, args) catch return null;
+        }
+        var active: std.AutoHashMapUnmanaged(*const ProgramClassSchema.Declaration, void) = .empty;
+        defer active.deinit(self.gpa);
+        return self.programDeclarationInheritedMemberType(declaration, args, member_name, &active);
+    }
+
+    fn programDeclarationInheritedMemberType(
+        self: *Checker,
+        declaration: *const ProgramClassSchema.Declaration,
+        args: []const TypeId,
+        member_name: hir_mod.StringId,
+        active: *std.AutoHashMapUnmanaged(*const ProgramClassSchema.Declaration, void),
+    ) CheckError!?TypeId {
+        if (active.contains(declaration)) return null;
+        try active.put(self.gpa, declaration, {});
+        defer _ = active.remove(declaration);
+        const body = declaration.body orelse return null;
+        return self.programExpressionInheritedMemberType(body, declaration, args, member_name, active);
+    }
+
+    fn programExpressionInheritedMemberType(
+        self: *Checker,
+        expression: *const ProgramClassSchema.Expression,
+        declaration: *const ProgramClassSchema.Declaration,
+        args: []const TypeId,
+        member_name: hir_mod.StringId,
+        active: *std.AutoHashMapUnmanaged(*const ProgramClassSchema.Declaration, void),
+    ) CheckError!?TypeId {
+        switch (expression.*) {
+            .object => |members| {
+                for (members) |member| {
+                    if (!std.mem.eql(u8, member.name, self.string_interner.get(member_name))) continue;
+                    return self.lowerProgramExpression(member.type, declaration, args) catch null;
+                }
+            },
+            .indexed_object => |object| {
+                for (object.members) |member| {
+                    if (!std.mem.eql(u8, member.name, self.string_interner.get(member_name))) continue;
+                    return self.lowerProgramExpression(member.type, declaration, args) catch null;
+                }
+            },
+            .intersection => |parts| {
+                var index = parts.len;
+                while (index > 0) {
+                    index -= 1;
+                    if (try self.programExpressionInheritedMemberType(parts[index], declaration, args, member_name, active)) |member_t| return member_t;
+                }
+            },
+            .reference => |reference| {
+                if (reference.arguments.len > reference.declaration.parameters.len) return null;
+                const target_args = try self.gpa.alloc(TypeId, reference.declaration.parameters.len);
+                defer self.gpa.free(target_args);
+                @memset(target_args, types.Primitive.unknown);
+                for (reference.arguments, target_args[0..reference.arguments.len]) |argument, *target_arg| {
+                    target_arg.* = self.lowerProgramExpression(argument, declaration, args) catch return null;
+                }
+                for (reference.declaration.parameters[reference.arguments.len..], reference.arguments.len..) |parameter, target_index| {
+                    const default = parameter.default orelse return null;
+                    target_args[target_index] = self.lowerProgramExpression(default, reference.declaration, target_args) catch return null;
+                }
+                return self.programDeclarationInheritedMemberType(reference.declaration, target_args, member_name, active);
+            },
+            else => {},
+        }
+        return null;
+    }
+
+    fn programInheritedThisMemberType(
+        self: *Checker,
+        receiver_t: TypeId,
+        member_name: hir_mod.StringId,
+        anchor: NodeId,
+    ) CheckError!?TypeId {
+        var active: std.AutoHashMapUnmanaged(TypeId, void) = .empty;
+        defer active.deinit(self.gpa);
+        return self.programInheritedThisMemberTypeInner(receiver_t, member_name, anchor, &active);
+    }
+
+    fn programInheritedThisMemberTypeInner(
+        self: *Checker,
+        receiver_t: TypeId,
+        member_name: hir_mod.StringId,
+        anchor: NodeId,
+        active: *std.AutoHashMapUnmanaged(TypeId, void),
+    ) CheckError!?TypeId {
+        const receiver = self.resolvedRecursiveInterfaceType(receiver_t);
+        if (active.contains(receiver)) return null;
+        try active.put(self.gpa, receiver, {});
+        defer _ = active.remove(receiver);
+        const declaration = if (self.generic_interface_decl_by_instance.get(receiver)) |generic_decl|
+            generic_decl
+        else
+            self.program_qualified_interface_decl.get(receiver) orelse return null;
+        const interface = hir_mod.interfaceOf(self.hir, declaration);
+        if (interface.name == hir_mod.none_node_id or self.hir.kindOf(interface.name) != .identifier) return null;
+        const name = hir_mod.identifierOf(self.hir, interface.name).name;
+        if (self.findVisibleNamedTypeDecl(anchor, name) != declaration) return null;
+        const extends = hir_mod.interfaceExtends(self.hir, declaration);
+        for (extends) |extends_node| {
+            if (try self.programQualifiedInterfaceMemberType(extends_node, member_name)) |member_t| return member_t;
+            const parent_t = self.lowererLowerWithTypeParams(extends_node) catch continue;
+            if (self.interner.objectMember(parent_t, member_name)) |member_t| return member_t;
+            if (try self.programInheritedThisMemberTypeInner(parent_t, member_name, extends_node, active)) |member_t| return member_t;
+        }
+        return null;
+    }
+
     fn programDeclarationOwnMember(
         self: *Checker,
         declaration: *const ProgramClassSchema.Declaration,
@@ -112240,9 +112438,15 @@ pub const Checker = struct {
                         break :blk try self.optionalChainResult(t, member_is_optional_chain);
                     }
                 }
-                if ((try self.schemaStaticProjectionForKey(obj_t, m.name, 0)) orelse
-                    (try self.lookupObjectMember(obj_t, m.name))) |t|
-                {
+                const direct_member = (try self.schemaStaticProjectionForKey(obj_t, m.name, 0)) orelse
+                    (try self.lookupObjectMember(obj_t, m.name));
+                const member = direct_member orelse if (self.nodeIsThisReference(m.object) and
+                    self.thisInsideObjectLiteralMethod(m.object) and
+                    self.currentThisType() != null)
+                    try self.programInheritedThisMemberType(obj_t, m.name, m.object)
+                else
+                    null;
+                if (member) |t| {
                     if (self.hir.kindOf(m.object) == .identifier and
                         self.interner.pool.flagsOf(t).is_signature)
                     {
@@ -149232,21 +149436,7 @@ pub const Checker = struct {
             // intentionally node-based rather than positional.
             if (target_member_t) |target_t| {
                 if (self.firstSignatureType(target_t)) |target_sig| {
-                    const target_params = self.interner.signatureParams(target_sig);
-                    var value_index: usize = 0;
-                    for (hir_mod.fnParams(self.hir, op.value)) |param| {
-                        if (self.isThisParameter(param)) continue;
-                        if (value_index < target_params.len and
-                            target_params[value_index] != types.Primitive.any and
-                            target_params[value_index] != types.Primitive.unknown)
-                        {
-                            self.removePriorDiagnosticForNode(param, TsCodes.parameter_implicitly_any);
-                            self.removePriorDiagnosticForNode(param, TsCodes.rest_parameter_implicitly_any);
-                            self.removePriorDiagnosticForNode(param, TsCodes.parameter_implicitly_any_suggestion);
-                            self.removePriorDiagnosticForNode(param, TsCodes.rest_parameter_implicitly_any_suggestion);
-                        }
-                        value_index += 1;
-                    }
+                    self.removeContextualizedFunctionParameterDiagnostics(op.value, target_sig);
                 }
             }
             self.removePriorDiagnosticsInNodeSpan(op.value, TsCodes.property_does_not_exist);
@@ -149254,6 +149444,35 @@ pub const Checker = struct {
             try self.recordNarrow(this_id, method_this_t);
             try self.checkFnDecl(op.value);
             self.popNarrowScope();
+            if (target_member_t) |target_t| {
+                if (self.firstSignatureType(target_t)) |target_sig| {
+                    self.removeContextualizedFunctionParameterDiagnostics(op.value, target_sig);
+                }
+            }
+        }
+    }
+
+    fn removeContextualizedFunctionParameterDiagnostics(self: *Checker, function: NodeId, target_sig: TypeId) void {
+        const target_params = self.interner.signatureParams(target_sig);
+        var value_index: usize = 0;
+        for (hir_mod.fnParams(self.hir, function)) |param| {
+            if (self.isThisParameter(param)) continue;
+            if (value_index < target_params.len and
+                target_params[value_index] != types.Primitive.any and
+                target_params[value_index] != types.Primitive.unknown)
+            {
+                const payload = hir_mod.parameterOf(self.hir, param);
+                inline for (.{
+                    TsCodes.parameter_implicitly_any,
+                    TsCodes.rest_parameter_implicitly_any,
+                    TsCodes.parameter_implicitly_any_suggestion,
+                    TsCodes.rest_parameter_implicitly_any_suggestion,
+                }) |code| {
+                    self.removePriorDiagnosticForNode(param, code);
+                    if (payload.name != hir_mod.none_node_id) self.removePriorDiagnosticForNode(payload.name, code);
+                }
+            }
+            value_index += 1;
         }
     }
 
@@ -159775,15 +159994,17 @@ pub const Checker = struct {
             const ia = self.interner.pool.indexed_access_payloads.items[self.interner.pool.payloadOf(t)];
             const new_obj = try self.substituteType(ia.object, subs);
             const new_idx = try self.substituteType(ia.index, subs);
-            const new_obj_is_type_parameter = new_obj < self.interner.pool.typeCount() and
-                self.interner.pool.flagsOf(new_obj).is_type_parameter;
-            if (!new_obj_is_type_parameter and !self.containsFreeTypeParameter(new_idx)) {
-                if (try self.resolveObjectIndexedAccessType(new_obj, new_idx)) |resolved| {
-                    // An exact key that does not itself mention polymorphic
-                    // `this` is independent of another member that does. Keep
-                    // the indexed access only when resolving the selected
-                    // property would erase its own late-bound `this`.
-                    if (!self.containsThisTypeParameter(resolved)) return resolved;
+            if (!self.containsFreeTypeParameter(new_idx)) {
+                // A concrete exact member is independent of a sibling that
+                // uses polymorphic `this`. Read only that member so resolving
+                // `T[K]` cannot recursively expand the receiver's full graph.
+                if (self.stringLiteralValueFromType(new_idx)) |key| {
+                    if (try self.directNamedMemberValueType(new_obj, key)) |member_t| {
+                        if (!self.containsThisTypeParameter(member_t)) return member_t;
+                    }
+                }
+                if (!self.containsThisTypeParameter(new_obj)) {
+                    if (try self.resolveObjectIndexedAccessType(new_obj, new_idx)) |resolved| return resolved;
                 }
             }
             return self.interner.internIndexedAccess(new_obj, new_idx) catch return t;
@@ -169882,8 +170103,28 @@ pub const Checker = struct {
         return true;
     }
 
+    fn resolveExactIndexedAccessForArgument(self: *Checker, t: TypeId, depth: usize) CheckError!?TypeId {
+        if (depth > 8 or t >= self.interner.pool.typeCount()) return null;
+        const flags = self.interner.pool.flagsOf(t);
+        if (!flags.is_indexed_access) return null;
+        const indexed = self.interner.pool.indexed_access_payloads.items[self.interner.pool.payloadOf(t)];
+        const key = self.stringLiteralValueFromType(indexed.index) orelse return null;
+        var object_t = (try self.resolveExactIndexedAccessForArgument(indexed.object, depth + 1)) orelse indexed.object;
+        object_t = self.resolveGenericType(object_t) catch object_t;
+        if (object_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(object_t).is_type_parameter) {
+            object_t = self.typeParameterConstraint(object_t) orelse return null;
+            object_t = self.resolveGenericType(object_t) catch object_t;
+        }
+        const member_t = (try self.directNamedMemberValueType(object_t, key)) orelse return null;
+        if (self.containsThisTypeParameter(member_t)) return null;
+        return self.resolveGenericType(member_t) catch member_t;
+    }
+
     fn isArgumentAssignableToParam(self: *Checker, arg_node: NodeId, arg_t: TypeId, param_t: TypeId) !bool {
         if (self.noInferInnerType(param_t)) |inner| return self.isArgumentAssignableToParam(arg_node, arg_t, inner);
+        if (try self.resolveExactIndexedAccessForArgument(param_t, 0)) |resolved| {
+            if (resolved != param_t) return self.isArgumentAssignableToParam(arg_node, arg_t, resolved);
+        }
         if (self.isContextualFunctionExpressionLike(arg_node) and
             self.interner.isSignature(arg_t) and
             self.interner.isSignature(param_t) and
