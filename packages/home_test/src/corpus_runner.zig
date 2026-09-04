@@ -568,6 +568,28 @@ const harness_prelude =
     \\function clearImmediate(id) {
     \\  __home_clear_fake_timer(id, "immediate");
     \\}
+    \\function __home_fire_real_timeout(record, advanceClock) {
+    \\  if (!record || record.kind !== "timer" || record.interval || record.cleared || !record.active || __home_cancelled_timers.has(record.id)) return false;
+    \\  record.refreshed = false;
+    \\  record.executing = true;
+    \\  if (advanceClock) {
+    \\    if (typeof globalThis.__home_advance_performance_clock === "function") globalThis.__home_advance_performance_clock(record.delay);
+    \\    else globalThis.__home_performance_clock = (globalThis.__home_performance_clock || 0) + record.delay;
+    \\  }
+    \\  try {
+    \\    if (typeof record.callback === "function") record.callback.apply(record.handle, record.args || []);
+    \\  } finally {
+    \\    record.executing = false;
+    \\    if (!record.refreshed) record.active = false;
+    \\  }
+    \\  return true;
+    \\}
+    \\function __home_drain_due_real_timeouts(now) {
+    \\  const due = Array.from(__home_all_timer_records.values())
+    \\    .filter(record => record && record.kind === "timer" && !record.interval && record.active && !record.cleared && record.virtualDeadline <= now)
+    \\    .sort((left, right) => left.virtualDeadline - right.virtualDeadline || left.id - right.id);
+    \\  for (const record of due) __home_fire_real_timeout(record, false);
+    \\}
     \\function setTimeout(callback, delay) {
     \\  if (__home_fake_timers_active) return __home_schedule_fake_timer(callback, delay, Array.prototype.slice.call(arguments, 2), false);
     \\  const id = __home_next_timer_id++;
@@ -576,10 +598,11 @@ const harness_prelude =
     \\    Promise.resolve().then(() => process.emitWarning("Timeout duration was set to 1.", "TimeoutNaNWarning"));
     \\  }
     \\  const delayMs = Math.max(1, Number(delay) || 0);
-    \\  const record = { id, kind: "timer", delay: delayMs, interval: false, idleStart: Date.now(), cleared: false, active: true, generation: 0 };
+    \\  const record = { id, kind: "timer", callback, args, delay: delayMs, interval: false, idleStart: Date.now(), virtualDeadline: 0, cleared: false, active: true, generation: 0, handle: null };
     \\  __home_all_timer_records.set(id, record);
     \\  record.schedule = () => {
     \\    const generation = ++record.generation;
+    \\    record.virtualDeadline = __home_virtual_time_ms + record.delay;
     \\    let remainingTurns = Math.min(256, Math.max(16, Math.ceil(delayMs)));
     \\    const run = () => {
     \\      if (__home_cancelled_timers.has(id) || record.cleared || !record.active || generation !== record.generation) return;
@@ -588,11 +611,7 @@ const harness_prelude =
     \\        const started = Date.now();
     \\        while (Date.now() - started < delayMs) {}
     \\      }
-    \\      if (typeof globalThis.__home_advance_performance_clock === "function") globalThis.__home_advance_performance_clock(delayMs);
-    \\      else globalThis.__home_performance_clock = (globalThis.__home_performance_clock || 0) + delayMs;
-    \\      record.active = false;
-    \\      record.refreshed = false;
-    \\      if (typeof callback === "function") callback.apply(record.handle, args);
+    \\      __home_fire_real_timeout(record, true);
     \\    };
     \\    Promise.resolve().then(run);
     \\  };
@@ -28242,6 +28261,7 @@ const harness_prelude =
     \\      if (Array.isArray(records)) {
     \\        for (const record of records.slice()) if (record && !record.settled && record.deadline <= __home_virtual_time_ms) record.dispatch();
     \\      }
+    \\      __home_drain_due_real_timeouts(__home_virtual_time_ms);
     \\    }
     \\    return Promise.resolve().then(() => undefined).then(() => undefined);
     \\  },
@@ -89323,17 +89343,30 @@ const harness_prelude =
     \\    InvalidNodeTypeError: 24,
     \\    DataCloneError: 25,
     \\  };
+    \\  const states = new WeakMap();
+    \\  function stateFor(value, property) {
+    \\    const state = states.get(value);
+    \\    if (!state) throw new TypeError("The DOMException." + property + " getter can only be used on instances of DOMException");
+    \\    return state;
+    \\  }
     \\  class HomeDOMException extends Error {
     \\    constructor(message, nameOrOptions) {
     \\      const options = typeof nameOrOptions === "object" && nameOrOptions !== null ? nameOrOptions : null;
-    \\      const name = options ? (options.name || "Error") : (nameOrOptions || "Error");
-    \\      super(message === undefined ? "" : String(message));
-    \\      this.name = String(name);
-    \\      this.code = codes[this.name] || 0;
-    \\      if (options && "cause" in options) this.cause = options.cause;
+    \\      const normalizedMessage = message === undefined ? "" : String(message);
+    \\      const rawName = options ? (options.name === undefined ? "Error" : options.name) : (nameOrOptions === undefined ? "Error" : nameOrOptions);
+    \\      const name = String(rawName);
+    \\      super();
+    \\      states.set(this, { message: normalizedMessage, name, code: codes[name] || 0 });
+    \\      if (options && "cause" in options) Object.defineProperty(this, "cause", { configurable: true, enumerable: false, writable: true, value: options.cause });
     \\      delete this.stack;
     \\    }
     \\  }
+    \\  Object.defineProperties(HomeDOMException.prototype, {
+    \\    message: { configurable: true, enumerable: true, get() { return stateFor(this, "message").message; } },
+    \\    name: { configurable: true, enumerable: true, get() { return stateFor(this, "name").name; } },
+    \\    code: { configurable: true, enumerable: true, get() { return stateFor(this, "code").code; } },
+    \\    [Symbol.toStringTag]: { configurable: true, value: "DOMException" },
+    \\  });
     \\  const constants = {
     \\    INDEX_SIZE_ERR: 1,
     \\    DOMSTRING_SIZE_ERR: 2,
@@ -89362,8 +89395,8 @@ const harness_prelude =
     \\    DATA_CLONE_ERR: 25,
     \\  };
     \\  for (const key of Object.keys(constants)) {
-    \\    HomeDOMException[key] = constants[key];
-    \\    HomeDOMException.prototype[key] = constants[key];
+    \\    Object.defineProperty(HomeDOMException, key, { enumerable: true, value: constants[key] });
+    \\    Object.defineProperty(HomeDOMException.prototype, key, { enumerable: true, value: constants[key] });
     \\  }
     \\  Object.defineProperty(HomeDOMException, "name", { configurable: true, value: "DOMException" });
     \\  return HomeDOMException;
@@ -117855,6 +117888,20 @@ test "bootstrap runner preserves AbortSignal timeout delivery with weak ownershi
         \\  expect(Object.keys(signal.reason)).toEqual([]);
         \\});
         \\
+        \\test("DOMException keeps an explicit cause present but non-enumerable", () => {
+        \\  const withCause = new DOMException("failure", { name: "DataCloneError", cause: undefined });
+        \\  const withoutCause = new DOMException("failure", "DataCloneError");
+        \\  expect("cause" in withCause).toBe(true);
+        \\  expect(Object.prototype.propertyIsEnumerable.call(withCause, "cause")).toBe(false);
+        \\  expect(Object.keys(withCause)).toEqual([]);
+        \\  expect(Object.getOwnPropertyDescriptor(withCause, "name")).toBeUndefined();
+        \\  expect("cause" in withoutCause).toBe(false);
+        \\  expect(new DOMException("", "").name).toBe("");
+        \\  expect(Object.prototype.toString.call(withCause)).toBe("[object DOMException]");
+        \\  expect(Object.getOwnPropertyDescriptor(DOMException.prototype, "name").enumerable).toBe(true);
+        \\  expect(Object.getOwnPropertyDescriptor(DOMException, "ABORT_ERR")).toEqual({ configurable: false, enumerable: true, value: 20, writable: false });
+        \\});
+        \\
         \\test("removing listeners does not suppress an owned signal deadline", async () => {
         \\  const signal = AbortSignal.timeout(7);
         \\  const listener = () => {};
@@ -117878,7 +117925,7 @@ test "bootstrap runner preserves AbortSignal timeout delivery with weak ownershi
 
     if (file_run.result.status() != .passed) std.debug.print("AbortSignal timeout weak ownership regression failed: {s}\n", .{file_run.result.first_failure_message});
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 3), file_run.result.passed);
 }
 
 test "Node path import rewrite lowers path fixtures import" {
