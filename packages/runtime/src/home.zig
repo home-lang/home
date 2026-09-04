@@ -145,6 +145,12 @@ comptime {
         _ = server_module.HTTPSServer.H3RequestContext;
         _ = server_module.DebugHTTPSServer.H3RequestContext;
         _ = @import("jsc/js2native_workarounds.zig");
+        // process.release.sourceUrl reads C's `Bun__githubURL`. The real value
+        // is the platform's release download URL, built in upgrade_command.zig
+        // from the version and target triple; native_stubs defined the bare
+        // repository URL instead, which is what process.release reported.
+        // bun.zig's force-link block is not analyzed here, so force it.
+        @import("runtime/cli/upgrade_command.zig").@"export"();
     }
 }
 pub const heap_breakdown = struct {

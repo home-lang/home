@@ -31,6 +31,11 @@ pub const isAarch64 = builtin.cpu.arch == .aarch64;
 pub const isX64 = builtin.cpu.arch == .x86_64;
 pub const isMusl = false;
 pub const isAndroid = false; // Home does not currently target Android.
+/// Upstream ties this to `build_options.baseline`, the pre-AVX2 x64 variant
+/// published as a separate `-baseline` download. Home builds no such variant,
+/// so the release artifact naming in `upgrade_command.zig` (and through it
+/// `process.release.sourceUrl`) never carries the suffix.
+pub const baseline = false;
 pub const enable_fuzzilli = false; // Fuzzilli REPRL — re-attaches in a future phase.
 pub const isDebug = builtin.mode == .Debug;
 pub const isRelease = !isDebug;
