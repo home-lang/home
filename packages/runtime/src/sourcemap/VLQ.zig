@@ -120,8 +120,10 @@ pub fn decode(encoded: []const u8, start: usize) VLQResult {
     // hint to the compiler what the maximum value is
     const encoded_ = encoded[start..][0..@min(encoded.len - start, comptime (vlq_max_in_bytes + 1))];
 
-    // inlining helps for the 1 or 2 byte case, hurts a little for larger
-    inline for (0..vlq_max_in_bytes + 1) |i| {
+    // Bound the loop by the slice, not by the cap: a mapping that ends mid-VLQ
+    // leaves fewer than `vlq_max_in_bytes + 1` bytes, and a fixed trip count
+    // reads past the end of the input.
+    for (0..encoded_.len) |i| {
         const index = @as(u32, base64_lut[@as(u7, @truncate(encoded_[i]))]);
 
         // decode a byte
@@ -131,7 +133,7 @@ pub fn decode(encoded: []const u8, start: usize) VLQResult {
         // Stop if there's no continuation bit
         if ((index & 32) == 0) {
             return VLQResult{
-                .start = start + comptime (i + 1),
+                .start = start + i + 1,
                 .value = if ((vlq & 1) == 0)
                     @as(i32, @intCast(vlq >> 1))
                 else
@@ -140,7 +142,12 @@ pub fn decode(encoded: []const u8, start: usize) VLQResult {
         }
     }
 
-    return VLQResult{ .start = start + encoded_.len, .value = 0 };
+    // Reached when the input is empty or ends mid-VLQ (the last byte's
+    // continuation bit is set with no following byte, or every byte up to the
+    // cap has it set — both malformed). No value was decoded, so return `start`
+    // unchanged: callers test for no progress to turn a truncated mapping into
+    // a parse failure rather than silently accepting `value: 0`.
+    return .{ .start = start, .value = 0 };
 }
 
 pub fn decodeAssumeValid(encoded: []const u8, start: usize) VLQResult {
@@ -150,8 +157,8 @@ pub fn decodeAssumeValid(encoded: []const u8, start: usize) VLQResult {
     // hint to the compiler what the maximum value is
     const encoded_ = encoded[start..][0..@min(encoded.len - start, comptime (vlq_max_in_bytes + 1))];
 
-    // inlining helps for the 1 or 2 byte case, hurts a little for larger
-    inline for (0..vlq_max_in_bytes + 1) |i| {
+    // Same slice-bounded loop as `decode` above.
+    for (0..encoded_.len) |i| {
         home_rt.assert(encoded_[i] < std.math.maxInt(u7)); // invalid base64 character
         const index = @as(u32, base64_lut[@as(u7, @truncate(encoded_[i]))]);
         home_rt.assert(index != std.math.maxInt(u7)); // invalid base64 character
@@ -163,7 +170,7 @@ pub fn decodeAssumeValid(encoded: []const u8, start: usize) VLQResult {
         // Stop if there's no continuation bit
         if ((index & 32) == 0) {
             return VLQResult{
-                .start = start + comptime (i + 1),
+                .start = start + i + 1,
                 .value = if ((vlq & 1) == 0)
                     @as(i32, @intCast(vlq >> 1))
                 else
@@ -172,7 +179,12 @@ pub fn decodeAssumeValid(encoded: []const u8, start: usize) VLQResult {
         }
     }
 
-    return .{ .start = start + encoded_.len, .value = 0 };
+    // Reached when the input is empty or ends mid-VLQ (the last byte's
+    // continuation bit is set with no following byte, or every byte up to the
+    // cap has it set — both malformed). No value was decoded, so return `start`
+    // unchanged: callers test for no progress to turn a truncated mapping into
+    // a parse failure rather than silently accepting `value: 0`.
+    return .{ .start = start, .value = 0 };
 }
 
 const home_rt = @import("home");
