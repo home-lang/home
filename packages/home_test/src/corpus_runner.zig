@@ -265,6 +265,7 @@ const harness_prelude =
     \\  globalThis.__home_current_scope = globalThis.__home_root_scope;
     \\  globalThis.__home_scopes = [globalThis.__home_root_scope];
     \\  globalThis.__home_registered_tests = [];
+    \\  globalThis.__home_file_initialization = null;
     \\  globalThis.__home_current_finished_callbacks = null;
     \\  globalThis.__home_current_test_concurrent = false;
     \\  globalThis.__home_current_snapshot_name = null;
@@ -35166,7 +35167,7 @@ const harness_prelude =
     \\  },
     \\};
     \\globalThis.__home_finish_tests = function() {
-    \\  const testsResult = __home_run_registered_tests();
+    \\  const testsResult = __home_then_after(globalThis.__home_file_initialization, __home_run_registered_tests);
     \\  let cleanupChain = null;
     \\  const runAfterAll = function() {
     \\    for (let i = globalThis.__home_scopes.length - 1; i >= 0; --i) {
@@ -47366,12 +47367,59 @@ const harness_prelude =
     \\    this.packagesPath = options.packagesPath || __home_temp_dir_with_files("verdaccio-packages", {});
     \\    this.configPath = options.configPath || __home_build_join(this.packagesPath, "verdaccio.yaml");
     \\    this.verbose = !!options.verbose;
+    \\    this.handle = null;
     \\    globalThis.__home_active_verdaccio_registry = this;
     \\  }
     \\  start() {
+    \\    if (this.handle && !this.handle.stopped) return Promise.resolve(undefined);
+    \\    const origins = [this.url.slice(0, -1), "http://127.0.0.1:" + String(this.port), "http://[::1]:" + String(this.port)];
+    \\    for (const origin of origins) {
+    \\      const occupied = globalThis.__home_serve_handles_by_origin[origin];
+    \\      if (occupied && occupied !== this.handle && !occupied.stopped) {
+    \\        const error = new Error("listen EADDRINUSE: address already in use " + origin);
+    \\        error.code = "EADDRINUSE";
+    \\        return Promise.reject(error);
+    \\      }
+    \\    }
+    \\    const handle = {
+    \\      id: "verdaccio-" + String(this.port),
+    \\      port: this.port,
+    \\      hostname: "localhost",
+    \\      origin: origins[0],
+    \\      stopped: false,
+    \\      fetch: request => this.fetch(request),
+    \\    };
+    \\    this.handle = handle;
+    \\    for (const origin of origins) globalThis.__home_serve_handles_by_origin[origin] = handle;
     \\    return Promise.resolve(undefined);
     \\  }
-    \\  stop() {}
+    \\  stop() {
+    \\    const handle = this.handle;
+    \\    if (!handle) return;
+    \\    handle.stopped = true;
+    \\    for (const origin of [this.url.slice(0, -1), "http://127.0.0.1:" + String(this.port), "http://[::1]:" + String(this.port)]) {
+    \\      if (globalThis.__home_serve_handles_by_origin[origin] === handle) delete globalThis.__home_serve_handles_by_origin[origin];
+    \\    }
+    \\    this.handle = null;
+    \\    if (globalThis.__home_active_verdaccio_registry === this) globalThis.__home_active_verdaccio_registry = null;
+    \\  }
+    \\  fetch(request) {
+    \\    const url = new URL(request.url);
+    \\    const packageName = decodeURIComponent(url.pathname.split("/").filter(Boolean)[0] || "");
+    \\    if (request.method === "PUT") return new Response(JSON.stringify({ ok: true }), { status: 201, headers: { "Content-Type": "application/json" } });
+    \\    if (request.method !== "GET" || !packageName) return new Response(JSON.stringify({ error: "not_found" }), { status: 404, headers: { "Content-Type": "application/json" } });
+    \\    const published = globalThis.__home_published_packages && globalThis.__home_published_packages[packageName];
+    \\    if (published && published.versions) {
+    \\      const versions = {};
+    \\      const basename = packageName.includes("/") ? packageName.slice(packageName.lastIndexOf("/") + 1) : packageName;
+    \\      for (const version of Object.keys(published.versions)) versions[version] = Object.assign({}, published.versions[version].pkg, { dist: { tarball: this.url + encodeURIComponent(packageName) + "/-/" + basename + "-" + version + ".tgz" } });
+    \\      return new Response(JSON.stringify({ name: packageName, "dist-tags": Object.assign({}, published.tags || {}), versions }), { status: 200, headers: { "Content-Type": "application/json" } });
+    \\    }
+    \\    if (packageName !== "no-deps") return new Response(JSON.stringify({ error: "not_found" }), { status: 404, headers: { "Content-Type": "application/json" } });
+    \\    const versions = {};
+    \\    for (const version of ["1.0.0", "1.0.1", "2.0.0"]) versions[version] = { name: packageName, version, dist: { tarball: this.url + packageName + "/-/" + packageName + "-" + version + ".tgz" } };
+    \\    return new Response(JSON.stringify({ name: packageName, "dist-tags": { latest: "2.0.0" }, versions }), { status: 200, headers: { "Content-Type": "application/json" } });
+    \\  }
     \\  registryUrl() {
     \\    return this.url;
     \\  }
@@ -93265,22 +93313,6 @@ fn rewriteFuzzilliReprlCorpus(allocator: std.mem.Allocator, source: []const u8) 
     );
 }
 
-fn rewriteInstallLifecycleCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    return try std.mem.replaceOwned(u8, allocator, source, "const MAX_CONCURRENT = 12;", "const MAX_CONCURRENT = 100000;");
-}
-
-fn rewriteConfigVersionCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    const start = std.mem.indexOf(u8, source, "let registryCanServe = false;") orelse return allocator.dupe(u8, source);
-    const suffix = "\nafterAll(() => {";
-    const after = std.mem.indexOfPos(u8, source, start, suffix) orelse return allocator.dupe(u8, source);
-    var out = std.ArrayList(u8).empty;
-    defer out.deinit(allocator);
-    try out.appendSlice(allocator, source[0..start]);
-    try out.appendSlice(allocator, "let registryCanServe = true;\nregistry.start().catch(() => {});\n");
-    try out.appendSlice(allocator, source[after..]);
-    return out.toOwnedSlice(allocator);
-}
-
 fn rewriteSmallListGrowCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     const spawn_block =
         \\await using proc = Bun.spawn({
@@ -99134,10 +99166,6 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
             " as typeof import(\"bun:internal-for-testing\")",
             "",
         )
-    else if (std.mem.eql(u8, relative_path, "cli/install/bun-install-lifecycle-scripts.test.ts"))
-        try rewriteInstallLifecycleCorpus(allocator, module_source)
-    else if (std.mem.eql(u8, relative_path, "cli/install/config-version.test.ts"))
-        try rewriteConfigVersionCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/css/small-list-grow.test.ts"))
         try rewriteSmallListGrowCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/glob/match.test.ts"))
@@ -99625,9 +99653,10 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     defer out.deinit(allocator);
     try out.appendSlice(allocator, source[0..shebang_len]);
     const strict_mode = sourceHasLeadingUseStrict(diagnosed_module_source);
-    const top_level_await = std.mem.endsWith(u8, relative_path, ".mjs") or std.mem.eql(u8, relative_path, "js/sql/local-sql.test.ts");
+    const top_level_await = std.mem.endsWith(u8, relative_path, ".mjs") or
+        try jsc_bootstrap.corpusSourceHasTopLevelAwait(allocator, diagnosed_module_source, relative_path);
     if (top_level_await) {
-        try out.appendSlice(allocator, if (strict_mode) "try {\n(async function() {\n\"use strict\";\n" else "try {\n(async function() {\n");
+        try out.appendSlice(allocator, if (strict_mode) "try {\nglobalThis.__home_file_initialization = (async function() {\n\"use strict\";\n" else "try {\nglobalThis.__home_file_initialization = (async function() {\n");
     } else {
         try out.appendSlice(allocator, if (strict_mode) "try {\n(function() {\n\"use strict\";\n" else "try {\n(function() {\n");
     }
@@ -137024,6 +137053,81 @@ test "bootstrap runner prepares install lifecycle corpus imports" {
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "from \"bun\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const { file, spawn, write } = globalThis.__home_import(\"bun\");") != null);
+}
+
+test "bootstrap preserves install lifecycle throttling and registry readiness" {
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const lifecycle_source = try Io.Dir.cwd().readFileAlloc(
+        io,
+        "packages/runtime/test/bun-corpus/cli/install/bun-install-lifecycle-scripts.test.ts",
+        std.testing.allocator,
+        std.Io.Limit.limited(1024 * 1024),
+    );
+    defer std.testing.allocator.free(lifecycle_source);
+    var lifecycle = try prepareCorpusModule(std.testing.allocator, lifecycle_source, "cli/install/bun-install-lifecycle-scripts.test.ts");
+    defer lifecycle.deinit(std.testing.allocator);
+
+    try std.testing.expect(lifecycle.unsupported_reason == null);
+    try std.testing.expect(std.mem.startsWith(u8, lifecycle.source, "try {\n(function() {\n"));
+    try std.testing.expect(std.mem.indexOf(u8, lifecycle.source, "const MAX_CONCURRENT = 12;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, lifecycle.source, "const MAX_CONCURRENT = 100000;") == null);
+
+    const config_source = try Io.Dir.cwd().readFileAlloc(
+        io,
+        "packages/runtime/test/bun-corpus/cli/install/config-version.test.ts",
+        std.testing.allocator,
+        std.Io.Limit.limited(1024 * 1024),
+    );
+    defer std.testing.allocator.free(config_source);
+    var config = try prepareCorpusModule(std.testing.allocator, config_source, "cli/install/config-version.test.ts");
+    defer config.deinit(std.testing.allocator);
+
+    try std.testing.expect(config.unsupported_reason == null);
+    try std.testing.expect(std.mem.startsWith(u8, config.source, "try {\nglobalThis.__home_file_initialization = (async function() {\n"));
+    try std.testing.expect(std.mem.indexOf(u8, config.source, "let registryCanServe = false;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, config.source, "const registryDeadline = Date.now() + 30_000;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, config.source, "let registryCanServe = true;") == null);
+}
+
+test "bootstrap verdaccio registry serves package metadata until stopped" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { VerdaccioRegistry } from "harness";
+        \\
+        \\test("registry lifecycle", async () => {
+        \\  const registry = new VerdaccioRegistry();
+        \\  await registry.start();
+        \\  const response = await fetch(`${registry.registryUrl()}no-deps`);
+        \\  expect(response.status).toBe(200);
+        \\  const manifest = JSON.parse(await response.text());
+        \\  expect(manifest.name).toBe("no-deps");
+        \\  expect(manifest["dist-tags"].latest).toBe("2.0.0");
+        \\  expect(manifest.versions["1.0.0"].version).toBe("1.0.0");
+        \\  registry.stop();
+        \\  let rejected = false;
+        \\  try { await fetch(`${registry.registryUrl()}no-deps`); } catch { rejected = true; }
+        \\  expect(rejected).toBeTrue();
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/config-version.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("Verdaccio registry harness failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "bootstrap runner models root lifecycle install spawn" {

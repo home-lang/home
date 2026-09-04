@@ -514,7 +514,7 @@ pub const Runtime = struct {
                 .platform = .bun,
                 .experimental_decorators = std.mem.eql(u8, spec.path, "bundler/transpiler/decorators.test.ts"),
             };
-            if (transpileSourceWithBunParser(allocator, &handle, spec.source, loader)) |stripped| {
+            if (transpileSourceWithBunParser(allocator, &handle, spec.source, loader, null)) |stripped| {
                 var lowered = stripped;
                 if (try rewriteGeneratedBunWrapImport(allocator, stripped)) |rewritten| {
                     allocator.free(stripped);
@@ -1132,7 +1132,7 @@ fn transpileSource(
     if (try transpileEarlyTranspilerFixture(allocator, trimmed)) |fixture_output| return fixture_output;
     if (try transpileExportElimination(allocator, handle, source_text)) |fixture_output| return fixture_output;
     if (use_bun_parser_probe or shouldUseBunParserForTranspile(source_text, loader, handle)) {
-        return transpileSourceWithBunParser(allocator, handle, source_text, loader);
+        return transpileSourceWithBunParser(allocator, handle, source_text, loader, null);
     }
 
     var out: std.ArrayList(u8) = .empty;
@@ -1190,6 +1190,7 @@ fn transpileSourceWithBunParser(
     handle: *const TranspilerHandle,
     source_text: []const u8,
     loader: TranspilerLoader,
+    has_top_level_await: ?*bool,
 ) ![]u8 {
     home_rt.ast.Expr.Data.Store.create();
     home_rt.ast.Stmt.Data.Store.create();
@@ -1279,6 +1280,7 @@ fn transpileSourceWithBunParser(
         return error.ParseError;
     }
     const ast = parse_result.ast;
+    if (has_top_level_await) |out| out.* = !ast.top_level_await_keyword.isEmpty();
 
     const buffer_writer = home_rt.js_printer.BufferWriter.init(allocator);
     var buffer_printer = home_rt.js_printer.BufferPrinter.init(buffer_writer);
@@ -1329,7 +1331,26 @@ pub fn transpileCorpusSourceWithBunParser(
         .loader = loader,
         .platform = .browser,
     };
-    return transpileSourceWithBunParser(allocator, &handle, source_text, loader);
+    return transpileSourceWithBunParser(allocator, &handle, source_text, loader, null);
+}
+
+/// Detect module-scope await with the production parser instead of confusing
+/// awaits nested in async callbacks with top-level await.
+pub fn corpusSourceHasTopLevelAwait(
+    allocator: std.mem.Allocator,
+    source_text: []const u8,
+    relative_path: []const u8,
+) !bool {
+    if (std.mem.indexOf(u8, source_text, "await") == null) return false;
+    const loader = corpusLoaderFromPath(relative_path);
+    const handle = TranspilerHandle{
+        .loader = loader,
+        .platform = .browser,
+    };
+    var has_top_level_await = false;
+    const printed = try transpileSourceWithBunParser(allocator, &handle, source_text, loader, &has_top_level_await);
+    defer allocator.free(printed);
+    return has_top_level_await;
 }
 
 fn stripWrappedDefaultRawTemplateParens(allocator: std.mem.Allocator, printed: []const u8) !?[]u8 {
