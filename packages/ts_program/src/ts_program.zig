@@ -9803,7 +9803,7 @@ test "Program: mapped prototype conditionals preserve optional generic and rest 
     ;
     const owner =
         \\import type { ProtoOf } from "./util.js";
-        \\type Trait = { _zod: { def: unknown; [key: string]: unknown } };
+        \\export interface Trait { _zod: { def: { kind: "schema" }; [key: string]: unknown } }
         \\export function $constructor<T extends Trait>(name: string, initializer: (inst: T) => void, proto?: ProtoOf<T>): void {
         \\  void name;
         \\  void initializer;
@@ -9814,8 +9814,7 @@ test "Program: mapped prototype conditionals preserve optional generic and rest 
     const consumer =
         \\import * as core from "./barrel.js";
         \\type Mask<Keys extends PropertyKey> = { [K in Keys]?: true };
-        \\interface Schema<Shape extends object = { key: string }> {
-        \\  _zod: { def: { kind: "schema" } };
+        \\interface Schema<Shape extends object = { key: string }> extends core.Trait {
         \\  clone(def?: { kind: "schema" }, params?: { parent: boolean }): this;
         \\  register<R extends { add(value: Schema, meta: string): void }>(registry: R, ...meta: [string]): this;
         \\  check(...checks: (((value: string) => boolean) | { run(value: string): boolean })[]): this;
