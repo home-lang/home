@@ -50,5 +50,8 @@ while IFS= read -r f; do
     sig=$(echo "$log" | grep -oE 'panic: .*|error: .*|TODOError: [^@]*' | head -1 | tr '\t' ' ' | cut -c1-110)
   fi
   printf '%s\t%s\t%s\n' "$status" "$rel" "$sig" >> "$OUT"
-done < <(find "$CORPUS/$SUB" -name "*.test.*" | sort)
+# `*.test.*` also matches sidecars that are not runnable files — `__snapshots__`
+# holds `<name>.test.ts.snap`, which the runner reports as a crash. Select the
+# executable extensions instead.
+done < <(find "$CORPUS/$SUB" \( -name "*.test.js" -o -name "*.test.jsx" -o -name "*.test.mjs" -o -name "*.test.cjs" -o -name "*.test.ts" -o -name "*.test.tsx" -o -name "*.test.mts" -o -name "*.test.cts" \) | sort)
 echo "SUB=$SUB pass=$pass fail=$fail crash=$crash hang=$hang total=$((pass+fail+crash+hang))"
