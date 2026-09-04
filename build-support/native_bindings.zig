@@ -59,69 +59,15 @@ pub fn registryObject(b: *std.Build, object_root: []const u8) std.Build.LazyPath
 }
 
 /// Rebuild ScriptExecutionContext from Home so worker shutdown can close the
-/// identifier registry before disposing queued C++ tasks. The Home unity
-/// wrapper preserves every other implementation from Bun's pinned unit.
+/// identifier registry before disposing queued C++ tasks. Like the other owned
+/// units, the unity wrapper is generated from the linked build's own bundle, so
+/// the sibling set cannot drift from the objects it replaces.
 pub fn scriptExecutionContextObject(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
     if (cached_script_execution_context_object) |object| return object;
-    const io = std.Io.Threaded.global_single_threaded.io();
-    const build_root = std.fs.path.dirname(object_root) orelse @panic("invalid native object root");
-    const external_path = b.fmt("{s}/unified/UnifiedSource-src_jsc_bindings-4.cpp", .{build_root});
-    const external = std.Io.Dir.cwd().readFileAlloc(io, external_path, b.allocator, .limited(1024 * 1024)) catch |err|
-        std.debug.panic("cannot read native unified source {s}: {s}", .{ external_path, @errorName(err) });
-    defer b.allocator.free(external);
-    const wrapper_path = b.root.joinString(b.allocator, "packages/runtime/src/native/HomeScriptExecutionContext.cpp") catch @panic("OOM");
-    const wrapper = std.Io.Dir.cwd().readFileAlloc(io, wrapper_path, b.allocator, .limited(1024 * 1024)) catch |err|
-        std.debug.panic("cannot read Home unified source {s}: {s}", .{ wrapper_path, @errorName(err) });
-    defer b.allocator.free(wrapper);
-    if (!unityIncludeBasenamesMatch(external, wrapper)) {
-        std.debug.panic("HomeScriptExecutionContext.cpp include order drifted from {s}", .{external_path});
-    }
-
-    const files = b.addWriteFiles();
-    _ = files.addCopyFile(b.path("packages/runtime/upstream/src/jsc/bindings/ScriptExecutionContext.cpp"), "ScriptExecutionContext.cpp");
-    const source = files.addCopyFile(b.path("packages/runtime/src/native/HomeScriptExecutionContext.cpp"), "HomeScriptExecutionContext.cpp");
-    const object = compileObject(b, object_root, "UnifiedSource-src_jsc_bindings-4.cpp", source);
+    const output = nativeModules(b, object_root);
+    const object = compileObject(b, object_root, "UnifiedSource-src_jsc_bindings-4.cpp", output.path(b, "HomeScriptExecutionContext.cpp"));
     cached_script_execution_context_object = object;
     return object;
-}
-
-fn nextUnityInclude(source: []const u8, cursor: *usize) ?[]const u8 {
-    while (cursor.* < source.len) {
-        const line_end = std.mem.indexOfScalarPos(u8, source, cursor.*, '\n') orelse source.len;
-        const line = std.mem.trim(u8, source[cursor.*..line_end], " \t\r");
-        cursor.* = @min(line_end + 1, source.len);
-        if (!std.mem.startsWith(u8, line, "#include \"") or !std.mem.endsWith(u8, line, "\"")) continue;
-        return line[10 .. line.len - 1];
-    }
-    return null;
-}
-
-fn unityIncludeBasenamesMatch(expected: []const u8, actual: []const u8) bool {
-    var expected_cursor: usize = 0;
-    var actual_cursor: usize = 0;
-    while (true) {
-        const expected_include = nextUnityInclude(expected, &expected_cursor);
-        const actual_include = nextUnityInclude(actual, &actual_cursor);
-        if (expected_include == null or actual_include == null)
-            return expected_include == null and actual_include == null;
-        if (!std.mem.eql(u8, std.fs.path.basename(expected_include.?), std.fs.path.basename(actual_include.?)))
-            return false;
-    }
-}
-
-test "owned ScriptExecutionContext unity wrapper preserves sibling includes" {
-    const external =
-        \\#include "../../../src/jsc/bindings/ScriptExecutionContext.cpp"
-        \\#include "../../../src/jsc/bindings/Serialization.cpp"
-    ;
-    const owned =
-        \\// Home replacement
-        \\#include "ScriptExecutionContext.cpp"
-        \\#include "Serialization.cpp"
-    ;
-    try std.testing.expect(unityIncludeBasenamesMatch(external, owned));
-    try std.testing.expect(!unityIncludeBasenamesMatch(external, "#include \"ScriptExecutionContext.cpp\"\n"));
-    try std.testing.expect(!unityIncludeBasenamesMatch(external, "#include \"Serialization.cpp\"\n#include \"ScriptExecutionContext.cpp\"\n"));
 }
 
 pub fn messagePortObject(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
