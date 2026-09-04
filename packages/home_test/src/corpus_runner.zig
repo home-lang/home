@@ -76701,9 +76701,11 @@ const harness_prelude =
     \\  }
     \\  if (!module && /\.(?:c?js)$/i.test(resolved) && __home_build_read_text(resolved) !== null) module = globalThis.require(resolved);
     \\  if (!module) throw __home_module_not_found_error(specifier, "MODULE_NOT_FOUND");
-    \\  if (module.harness && typeof module.harness.test === "function" && typeof module.harness.assert_equals === "function" && typeof module.harness.assert_throws === "function" && !module.harness.__home_reports_test_name) {
-    \\    const originalWptTest = module.harness.test;
-    \\    module.harness.test = function(fn, description) {
+    \\  const isWptHarnessModule = /(?:^|[\\/])common[\\/]wpt(?:\.js)?$/.test(String(specifier)) || /(?:^|[\\/])common[\\/]wpt(?:\.js)?$/.test(String(resolved));
+    \\  const wptHarness = isWptHarnessModule ? module.harness : null;
+    \\  if (wptHarness && typeof wptHarness.test === "function" && typeof wptHarness.assert_equals === "function" && typeof wptHarness.assert_throws === "function" && !wptHarness.__home_reports_test_name) {
+    \\    const originalWptTest = wptHarness.test;
+    \\    wptHarness.test = function(fn, description) {
     \\      return originalWptTest(function() {
     \\        try {
     \\          return fn();
@@ -76715,7 +76717,7 @@ const harness_prelude =
     \\        }
     \\      }, description);
     \\    };
-    \\    Object.defineProperty(module.harness, "__home_reports_test_name", { value: true });
+    \\    Object.defineProperty(wptHarness, "__home_reports_test_name", { value: true });
     \\  }
     \\  return module;
     \\};
@@ -101558,16 +101560,44 @@ test "harness prelude defines TransformStream and Text{Encoder,Decoder}Stream" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "ReadableStream.prototype.getReader = function(options)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function ReadableStreamBYOBReader(stream)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_read_byte_stream(stream, suppliedView)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_make_byob_request(view, respond)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_make_byob_request(view, respond, cancel)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "error.code = \"ERR_INVALID_ARG_VALUE\";") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "error.code = \"ERR_INVALID_ARG_TYPE\";") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "WritableStream.prototype.getWriter = function()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Cannot write to a closing or closed WritableStream") != null);
     // A transform error must reject reads, writes, and both closed promises.
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_transform_error(state, reason) {") != null);
-    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "const text = String(chunk);") != null);
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "try { text = String(chunk); }") != null);
     // pipeThrough connects a source readable to the transform's writable.
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "ReadableStream.prototype.pipeThrough = function(transform, options) {") != null);
+}
+
+test "bootstrap import does not observe unrelated namespace properties" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\globalThis.__home_modules["guarded-module"] = new Proxy({ value: 42 }, {
+        \\  get(target, property) {
+        \\    if (property === "harness") throw new Error("unexpected harness probe");
+        \\    return target[property];
+        \\  },
+        \\});
+        \\test("imports proxy namespaces without probing private properties", () => {
+        \\  expect(globalThis.__home_import("guarded-module").value).toBe(42);
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "internal/import-proxy-namespace.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "harness prelude exposes Web Stream compression and Node adapters" {
