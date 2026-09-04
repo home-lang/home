@@ -146845,6 +146845,11 @@ pub const Checker = struct {
             const object_node = self.hir.parentOf(property_node);
             if (object_node == hir_mod.none_node_id or self.hir.kindOf(object_node) != .object_literal) return null;
             const object_target = self.contextualTargetTypeForExpression(object_node) orelse return null;
+            // `ThisType<T>` belongs to the containing object literal and must
+            // win over a receiver synthesized while materializing one mapped
+            // conditional member. The latter describes the partial prototype
+            // shape, whereas methods are contextually bound to the instance T.
+            if (self.thisTypeMarkerConstraint(object_target)) |this_t| return this_t;
             if (!property.is_computed) {
                 if (self.propertyNameFromKeyNode(property.key)) |member_name| {
                     const member_target = self.contextualObjectLiteralMemberTarget(object_target, member_name) catch null;
