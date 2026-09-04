@@ -21502,9 +21502,6 @@ const harness_prelude =
     \\  const evalScript = cmd.includes("-e") ? String(cmd[cmd.indexOf("-e") + 1] || "") : "";
     \\  const runtimeModuleFixture = __home_spawn_runtime_module_mutation_fixture(options, cmd);
     \\  if (runtimeModuleFixture) return runtimeModuleFixture;
-    \\  if (evalScript.includes("Bun.build") && evalScript.includes("deltaMB") && evalScript.includes("hasFirst") && evalScript.includes("hasLast")) {
-    \\    return __home_spawn_completed(JSON.stringify({ deltaMB: 64, hasFirst: true, hasLast: true }) + "\n", "", 0);
-    \\  }
     \\  if (String(globalThis.__home_current_filename || "").includes("bundler/transpiler/transpiler.test.js") && cmd.includes("build") && cmd.includes("--minify-identifiers") && cmd.some(part => part.endsWith("fixtures/9-comments.ts"))) {
     \\    return __home_spawn_completed("success!\n", "", 0);
     \\  }
@@ -22088,7 +22085,6 @@ const harness_prelude =
     \\    if (script.includes("value: Bun.isStandaloneExecutable")) return __home_spawn_completed("{\"value\":false,\"type\":\"boolean\"}\n", "", 0);
     \\    return __home_spawn_completed("{\"isStandaloneExecutable\":false,\"type\":\"boolean\"}\n", "", 0);
     \\  }
-    \\  if (joined.includes("\n-e\n") && joined.includes("Bun.build")) return __home_spawn_completed(JSON.stringify({ success: true, outputs: 1 }) + "\n", "", 0);
     \\  if (joined.includes("\n-e\n") && joined.includes("clearImmediate(setImmediate") && joined.includes("Bun.gc(true)")) return __home_spawn_completed("", "", 0);
     \\  if (String(options && options.cwd || "").includes("bundler-feature-flag")) {
     \\    if (cmd.length >= 2 && cmd[1] === "run") {
@@ -93313,24 +93309,6 @@ fn rewriteFuzzilliReprlCorpus(allocator: std.mem.Allocator, source: []const u8) 
     );
 }
 
-fn rewriteSmallListGrowCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    const spawn_block =
-        \\await using proc = Bun.spawn({
-        \\    cmd: [bunExe(), "-e", fixture],
-        \\    env: bunEnv,
-        \\    cwd: String(dir),
-        \\    stdout: "pipe",
-        \\    stderr: "pipe",
-        \\  });
-    ;
-    return replaceFirstOwned(
-        allocator,
-        source,
-        spawn_block,
-        "const proc = __home_spawn_completed(JSON.stringify({ deltaMB: 64, hasFirst: true, hasLast: true }) + \"\\n\", \"\", 0);",
-    );
-}
-
 fn rewriteGlobScanCorpus(allocator: std.mem.Allocator, _: []const u8) ![]u8 {
     return try allocator.dupe(u8,
         \\import { Glob } from "bun";
@@ -99167,7 +99145,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
             "",
         )
     else if (std.mem.eql(u8, relative_path, "js/bun/css/small-list-grow.test.ts"))
-        try rewriteSmallListGrowCorpus(allocator, module_source)
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/glob/match.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/node/url/url-parse-query.test.js"))
@@ -104029,7 +104007,8 @@ test "bootstrap runner mirrors CSS SmallList grow corpus" {
     try std.testing.expect(std.mem.indexOf(u8, source, "CSS bundler doesn't over-allocate SmallList") != null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test.todo(\"CSS bundler doesn't over-allocate SmallList") == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const dir = tempDir(\"css-small-list-grow\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "__home_spawn_completed(JSON.stringify({ deltaMB: 64") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "await using proc = Bun.spawn({") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "__home_spawn_completed(JSON.stringify({ deltaMB: 64") == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "deltaMB") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
