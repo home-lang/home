@@ -9787,6 +9787,95 @@ test "Program: namespace imports preserve defaulted indexed generic callbacks" {
     try expectCompilationHasDiagnosticCode(invalid_compilation, 2339);
 }
 
+test "Program: mapped prototype conditionals preserve optional generic and rest parameters" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver };
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+
+    const util =
+        \\export type ProtoOf<T> = {
+        \\  [K in keyof T]?: (T[K] extends (...args: infer A) => infer R ? (...args: A) => R : T[K]) | undefined;
+        \\} & ThisType<T>;
+    ;
+    const owner =
+        \\import type { ProtoOf } from "./util.js";
+        \\type Trait = { _zod: { def: unknown; [key: string]: unknown } };
+        \\export function $constructor<T extends Trait>(name: string, proto?: ProtoOf<T>): void {
+        \\  void name;
+        \\  void proto;
+        \\}
+    ;
+    const barrel = "export * from \"./owner.js\";";
+    const consumer =
+        \\import * as core from "./barrel.js";
+        \\interface Schema {
+        \\  _zod: { def: { kind: "schema" } };
+        \\  clone(def?: { kind: "schema" }, params?: { parent: boolean }): this;
+        \\  register<R extends { add(value: Schema, meta: string): void }>(registry: R, ...meta: [string]): this;
+        \\  check(...checks: (((value: string) => boolean) | { run(value: string): boolean })[]): this;
+        \\  refine<C extends (value: string) => unknown>(check: C, params?: string): this;
+        \\}
+        \\core.$constructor<Schema>("Schema", {
+        \\  clone(def, params) {
+        \\    const exactDef: { kind: "schema" } | undefined = def;
+        \\    const exactParent: boolean | undefined = params?.parent;
+        \\    void exactDef; void exactParent;
+        \\    return this;
+        \\  },
+        \\  register(registry, meta) {
+        \\    registry.add(this, meta);
+        \\    return this;
+        \\  },
+        \\  check(...checks) {
+        \\    checks.map((check) => typeof check === "function" ? check("x") : check.run("x"));
+        \\    return this;
+        \\  },
+        \\  refine(check, params) {
+        \\    check(params ?? "x");
+        \\    return this;
+        \\  },
+        \\});
+        \\core.$constructor<Schema>("Invalid", {
+        \\  clone(def) {
+        \\    const wrong: number = def?.kind;
+        \\    def?.missing;
+        \\    void wrong;
+        \\    return this;
+        \\  },
+        \\});
+        \\function lexicalShadow(): void {
+        \\  function $constructor<T>(_name: string, proto?: { refine(value: number): number }): void { void proto; }
+        \\  $constructor<Schema>("local", { refine(value) { return value + 1; } });
+        \\}
+        \\void lexicalShadow;
+    ;
+    try vfs.addFile("/proj/util.ts", util);
+    try vfs.addFile("/proj/owner.ts", owner);
+    try vfs.addFile("/proj/barrel.ts", barrel);
+    try vfs.addFile("/proj/consumer.ts", consumer);
+    _ = try p.add("/proj/util.ts", util);
+    _ = try p.add("/proj/owner.ts", owner);
+    _ = try p.add("/proj/barrel.ts", barrel);
+    const consumer_id = try p.add("/proj/consumer.ts", consumer);
+
+    try p.compileAll(.{
+        .no_emit = true,
+        .strict_flags = .{ .no_implicit_any = true, .strict_null_checks = true },
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    });
+    const compilation = p.fileById(consumer_id).compilation.?;
+    try expectCompilationLacksDiagnosticCode(compilation, 7006);
+    try expectCompilationLacksDiagnosticCode(compilation, 7019);
+    try expectCompilationLacksDiagnosticCode(compilation, 2349);
+    try T.expectEqual(@as(usize, 2), compilation.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 2322), compilation.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 2339), compilation.diagnostics.items[1].code);
+}
+
 test "Program: namespace imports preserve callbacks through inherited interfaces" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();
