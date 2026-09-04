@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Scan the Bun corpus through the native full-VM path, categorizing each file as
-# pass / fail / crash / hang. Writes a TSV to the given out-file.
+# pass / fail / crash / hang / deps. Writes a TSV to the given out-file.
 #
 # Usage: vm-corpus-scan.sh <subdir-under-corpus> <out.tsv> [timeout-secs]
 set -uo pipefail
@@ -17,7 +17,7 @@ cd "$ROOT"
 : > "$OUT"
 RUNLOG="$(mktemp -t home-vm-scan.XXXXXX)"
 trap 'rm -f "$RUNLOG"' EXIT
-pass=0 fail=0 crash=0 hang=0
+pass=0 fail=0 crash=0 hang=0 deps=0
 while IFS= read -r f; do
   rel="${f#"$ROOT"/}"
   # Write to a file rather than capturing through a pipe. A test that leaves a
@@ -35,6 +35,11 @@ while IFS= read -r f; do
     status=crash; crash=$((crash+1))
   elif echo "$log" | grep -qE '^\(fail\)'; then
     status=fail; fail=$((fail+1))
+  elif echo "$log" | grep -qE "Cannot find package '|Could not resolve: \"|ENOENT while resolving package '|bun install failed with exit code"; then
+    # An unresolved npm dependency aborts the file before any test runs. That is
+    # the corpus provisioning gap (#618), not a defect in the runtime, and
+    # counting it as a crash overstates the crash surface.
+    status=deps; deps=$((deps+1))
   elif [[ $code -eq 0 ]]; then
     status=pass; pass=$((pass+1))
   else
@@ -54,4 +59,4 @@ while IFS= read -r f; do
 # holds `<name>.test.ts.snap`, which the runner reports as a crash. Select the
 # executable extensions instead.
 done < <(find "$CORPUS/$SUB" \( -name "*.test.js" -o -name "*.test.jsx" -o -name "*.test.mjs" -o -name "*.test.cjs" -o -name "*.test.ts" -o -name "*.test.tsx" -o -name "*.test.mts" -o -name "*.test.cts" \) | sort)
-echo "SUB=$SUB pass=$pass fail=$fail crash=$crash hang=$hang total=$((pass+fail+crash+hang))"
+echo "SUB=$SUB pass=$pass fail=$fail crash=$crash hang=$hang deps=$deps total=$((pass+fail+crash+hang+deps))"
