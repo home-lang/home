@@ -99943,7 +99943,7 @@ pub fn runSubset(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8, 
 }
 
 pub fn runGate(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8) !Summary {
-    const test_files = corpus.collectTestFiles(io, allocator, corpus_path) catch |err| switch (err) {
+    const test_files = corpus.collectTrackedTestFiles(io, allocator, corpus_path) catch |err| switch (err) {
         error.FileNotFound => return .{ .blocked = true, .reason = "corpus-not-found" },
         else => return err,
     };
@@ -99978,10 +99978,7 @@ pub fn runDirectory(
     corpus_path: []const u8,
     relative_directory: []const u8,
 ) !Summary {
-    const directory_path = try std.fs.path.join(allocator, &.{ corpus_path, relative_directory });
-    defer allocator.free(directory_path);
-
-    const test_files = corpus.collectTestFiles(io, allocator, directory_path) catch |err| switch (err) {
+    const test_files = corpus.collectTrackedDirectoryTestFiles(io, allocator, corpus_path, relative_directory) catch |err| switch (err) {
         error.FileNotFound => return .{ .blocked = true, .reason = "corpus-directory-not-found" },
         else => return err,
     };
@@ -100793,7 +100790,7 @@ test "native fs disposable corpus predicate covers the exact vendored matrix" {
     }
 
     try std.testing.expectEqual(@as(usize, 2), count);
-    try std.testing.expectEqual(@as(usize, 280), native_count);
+    try std.testing.expectEqual(@as(usize, 278), native_count);
     try std.testing.expect(isNativeFsDisposableCorpusFile("js/node/test/parallel/test-fs-promises-mkdtempDisposable.js"));
     try std.testing.expect(isNativeFsDisposableCorpusFile("js/node/test/parallel/test-fs-mkdtempDisposableSync.js"));
     try std.testing.expect(!isNativeFsDisposableCorpusFile("js/node/test/parallel/test-fs-mkdtempDisposable.js"));
@@ -101204,7 +101201,6 @@ test "native worker script corpus routing covers exact Node parallel matrix" {
     }
 
     inline for (.{
-        "js/node/test/parallel/test-worker.js",
         "js/node/test/parallel/test-worker-terminate-null-handler.mjs",
         "js/node/test/parallel/nested/test-worker-terminate-timers.js",
         "js/node/worker_threads/test-worker-terminate-timers.js",
@@ -101641,7 +101637,7 @@ test "bootstrap runner accounts for the full copied Bun corpus" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    const counts = try corpus.countPath(io, corpus.default_root);
+    const counts = try corpus.countTrackedCorpus(io, std.testing.allocator, corpus.default_root);
     try std.testing.expectEqual(@as(usize, corpus.expected_copied_bun_test_files), counts.tests);
 
     if (!fullBunCorpusGateEnabled()) return;

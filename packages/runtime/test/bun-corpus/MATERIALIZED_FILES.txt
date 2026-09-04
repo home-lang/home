@@ -1,0 +1,5 @@
+# Upstream-generated fixtures materialized for Home's copied Node test suite.
+# These paths are ignored by Bun's test/js/node/test/.gitignore and populated
+# by Node's test tooling rather than stored in Bun's Git tree.
+js/node/test/fixtures/wpt/url/resources/toascii.json
+js/node/test/fixtures/wpt/url/resources/urltestdata.json
