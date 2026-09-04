@@ -23,14 +23,10 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-# Locate the Home binary. Prefer an explicit override, then a release build,
-# then the debug build.
-HOME_BIN="${HOME_BIN:-}"
-if [[ -z "$HOME_BIN" ]]; then
-    for cand in "$ROOT/zig-out/bin/home" "$ROOT/zig-out/bin/home.exe" "$ROOT/zig-out/bin/home-debug"; do
-        if [[ -x "$cand" ]]; then HOME_BIN="$cand"; break; fi
-    done
-fi
+# Locate the Home binary: an explicit override, else the newest build present.
+# shellcheck source=scripts/home-bin.sh
+source "$ROOT/scripts/home-bin.sh"
+resolve_home_bin "$ROOT" || HOME_BIN=""
 
 if [[ -z "$HOME_BIN" || ! -x "$HOME_BIN" ]]; then
     echo "runtime-regression: no Home binary found (looked for zig-out/bin/home[-debug]); skipping" >&2

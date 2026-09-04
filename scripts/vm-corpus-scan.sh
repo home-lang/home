@@ -5,7 +5,9 @@
 # Usage: vm-corpus-scan.sh <subdir-under-corpus> <out.tsv> [timeout-secs]
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-HOME_BIN="$ROOT/zig-out/bin/home"
+# shellcheck source=scripts/home-bin.sh
+source "$ROOT/scripts/home-bin.sh"
+resolve_home_bin "$ROOT" || { echo "vm-corpus-scan: no Home binary in $ROOT/zig-out/bin" >&2; exit 1; }
 CORPUS="$ROOT/packages/runtime/test/bun-corpus"
 SUB="${1:-js/node/path}"
 OUT="${2:-/tmp/vm-scan.tsv}"
@@ -13,11 +15,20 @@ TO="${3:-15}"
 
 cd "$ROOT"
 : > "$OUT"
+RUNLOG="$(mktemp -t home-vm-scan.XXXXXX)"
+trap 'rm -f "$RUNLOG"' EXIT
 pass=0 fail=0 crash=0 hang=0
 while IFS= read -r f; do
   rel="${f#"$ROOT"/}"
-  log=$(HOME_NATIVE_VM=1 HOME_CORPUS_FULL_VM=1 timeout "$TO" "$HOME_BIN" test "$rel" 2>&1)
+  # Write to a file rather than capturing through a pipe. A test that leaves a
+  # server or installer running keeps the pipe's write end open, so command
+  # substitution blocks for that grandchild even after the bound has killed the
+  # file's own process group — the scan then wedges on one file forever instead
+  # of recording a hang and moving on. Closing stdin stops a child from waiting
+  # on a terminal that is not there.
+  HOME_NATIVE_VM=1 HOME_CORPUS_FULL_VM=1 run_bounded "$TO" "$HOME_BIN" test "$rel" >"$RUNLOG" 2>&1 </dev/null
   code=$?
+  log=$(cat "$RUNLOG")
   if [[ $code -eq 124 ]]; then
     status=hang; hang=$((hang+1))
   elif [[ $code -ge 128 ]]; then
