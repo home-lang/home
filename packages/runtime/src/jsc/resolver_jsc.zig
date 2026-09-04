@@ -32,7 +32,14 @@ pub fn nodeModulePathsJSValue(in_str: bun.String, globalObject: *bun.jsc.JSGloba
     const alloc = arena.allocator();
 
     var list = std.array_list.Managed(bun.String).init(alloc);
-    defer list.deinit();
+    defer {
+        // Every `createFormat` below hands back a +1 reference, and `toJSArray`
+        // only reads the slice (`BunString__createArray`) — it does not consume
+        // them. Release ours once the JS array holds its own. Bun's Rust keeps
+        // these in a `Vec<OwnedString>` that derefs each element on drop.
+        for (list.items) |str| str.deref();
+        list.deinit();
+    }
 
     const sliced = in_str.toUTF8(bun.default_allocator);
     defer sliced.deinit();
