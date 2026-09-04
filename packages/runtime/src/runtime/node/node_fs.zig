@@ -2555,12 +2555,20 @@ pub const Arguments = struct {
         length: u64 = std.math.maxInt(u64),
         position: ?ReadPosition = null,
         encoding: Encoding = Encoding.buffer,
+        /// The typed array whose backing store `fromJS` pinned for the async
+        /// path, released in `deinitAndUnprotect` (the JS-thread hook).
+        /// `.zero` when nothing was pinned.
+        pinned: jsc.JSValue = .zero,
 
         pub fn deinit(this: *const @This()) void {
             this.buffer.deinit();
         }
 
         pub fn deinitAndUnprotect(this: *@This()) void {
+            if (this.pinned != .zero) {
+                this.pinned.unpinArrayBuffer();
+                this.pinned = .zero;
+            }
             this.buffer.deinitAndUnprotect();
         }
 
@@ -2645,6 +2653,16 @@ pub const Arguments = struct {
                         if (position >= 0) args.position = position;
                         arguments.eat();
                     },
+                }
+            }
+
+            // The async write runs on the thread pool and reads the source bytes
+            // through a raw pointer, so the backing store must not be detachable
+            // while it is in flight. Pinning does not root the value; the
+            // existing protect() in toThreadSafe still does that.
+            if (arguments.will_be_async and args.buffer == .buffer) {
+                if (buffer_value) |bv| {
+                    if (bv.asPinnedArrayBuffer(ctx) != null) args.pinned = bv;
                 }
             }
 
