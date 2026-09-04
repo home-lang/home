@@ -2906,6 +2906,11 @@ pub const Arguments = struct {
 
         signal: ?*AbortSignal = null,
 
+        /// The typed array whose backing store `fromJS` pinned for the async
+        /// path, released in `deinitAndUnprotect`. `.zero` when nothing was
+        /// pinned.
+        pinned: jsc.JSValue = .zero,
+
         pub fn deinit(self: WriteFile) void {
             self.file.deinit();
             self.data.deinit();
@@ -2921,6 +2926,10 @@ pub const Arguments = struct {
         }
 
         pub fn deinitAndUnprotect(self: *WriteFile) void {
+            if (self.pinned != .zero) {
+                self.pinned.unpinArrayBuffer();
+                self.pinned = .zero;
+            }
             self.file.deinitAndUnprotect();
             self.data.deinitAndUnprotect();
             if (self.signal) |signal| {
@@ -2998,6 +3007,15 @@ pub const Arguments = struct {
                 return ctx.ERR(.INVALID_ARG_TYPE, "The \"data\" argument must be of type string or an instance of Buffer, TypedArray, or DataView", .{}).throw();
             };
 
+            // The async write reads the source bytes on the thread pool through a
+            // raw pointer, so the backing store must not be detachable while it
+            // is in flight. Pinning does not root the value; toThreadSafe's
+            // protect() still does that.
+            var pinned: jsc.JSValue = .zero;
+            if (arguments.will_be_async and data == .buffer) {
+                if (data_value.asPinnedArrayBuffer(ctx) != null) pinned = data_value;
+            }
+
             return .{
                 .file = path,
                 .encoding = encoding,
@@ -3007,6 +3025,7 @@ pub const Arguments = struct {
                 .dirfd = bun.FD.cwd(),
                 .signal = abort_signal,
                 .flush = flush,
+                .pinned = pinned,
             };
         }
 
