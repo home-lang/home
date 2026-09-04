@@ -41,6 +41,17 @@ pub const Builder = struct {
     query: origins.Query,
     declarations: std.AutoHashMapUnmanaged(Key, *schema.Declaration) = .empty,
 
+    const ReadMode = enum { all, pick, omit };
+    const ReadCoverage = struct {
+        source: *const schema.Expression,
+        keys: ?*const schema.Expression = null,
+        mode: ReadMode = .all,
+    };
+    const ReadBinding = struct {
+        parameter: *const schema.Parameter,
+        argument: *const schema.Expression,
+    };
+
     pub fn init(gpa: std.mem.Allocator, arena: std.mem.Allocator, resolver: *resolver_mod.Resolver, sources: []const Source) !Builder {
         var result: Builder = .{ .gpa = gpa, .arena = arena, .sources = sources, .resolver = resolver, .query = origins.Query.init(gpa, resolver) };
         errdefer result.query.deinit();
@@ -65,6 +76,165 @@ pub const Builder = struct {
         // generic parameters, and every supported sibling. `any` is the only
         // sound cross-pool representation for this one unprojectable leaf.
         return self.expression(.opaque_leaf);
+    }
+
+    fn contextualReadArgument(expr: *const schema.Expression, bindings: []const ReadBinding) *const schema.Expression {
+        if (expr.* != .parameter) return expr;
+        var index = bindings.len;
+        while (index > 0) {
+            index -= 1;
+            if (bindings[index].parameter == expr.parameter) return bindings[index].argument;
+        }
+        return expr;
+    }
+
+    fn contextualMappedCopiesSource(mapped: schema.Mapped) bool {
+        if (mapped.constraint.* != .keyof) return false;
+        const source = mapped.constraint.keyof;
+        return switch (mapped.template.*) {
+            .indexed_access => |indexed| contextualReadExpressionsEqual(indexed.object, source) and
+                indexed.index.* == .parameter and indexed.index.parameter == mapped.parameter,
+            .union_type => |members| blk: {
+                var found = false;
+                for (members) |member| switch (member.*) {
+                    .primitive => |primitive| if (primitive != Primitive.undefined_t) break :blk false,
+                    else => if (contextualMappedTemplateCopiesSource(member, source, mapped.parameter)) {
+                        if (found) break :blk false;
+                        found = true;
+                    } else break :blk false,
+                };
+                break :blk found;
+            },
+            else => false,
+        };
+    }
+
+    fn contextualReadExpressionsEqual(a: *const schema.Expression, b: *const schema.Expression) bool {
+        if (a == b) return true;
+        return a.* == .parameter and b.* == .parameter and a.parameter == b.parameter;
+    }
+
+    fn contextualMappedTemplateCopiesSource(
+        expr: *const schema.Expression,
+        source: *const schema.Expression,
+        parameter: *const schema.Parameter,
+    ) bool {
+        return switch (expr.*) {
+            .indexed_access => |indexed| contextualReadExpressionsEqual(indexed.object, source) and
+                indexed.index.* == .parameter and indexed.index.parameter == parameter,
+            else => false,
+        };
+    }
+
+    fn contextualReadCoverage(
+        self: *Builder,
+        expr: *const schema.Expression,
+        bindings: []const ReadBinding,
+        active: *std.AutoHashMapUnmanaged(*const schema.Declaration, void),
+    ) !?ReadCoverage {
+        switch (expr.*) {
+            .parameter => {
+                const argument = contextualReadArgument(expr, bindings);
+                if (argument != expr) return self.contextualReadCoverage(argument, bindings, active);
+                return .{ .source = expr };
+            },
+            .reference => |reference| {
+                if (active.contains(reference.declaration)) return null;
+                try active.put(self.gpa, reference.declaration, {});
+                defer _ = active.remove(reference.declaration);
+                if (reference.arguments.len != reference.declaration.parameters.len or reference.declaration.body == null) return null;
+                const nested = try self.gpa.alloc(ReadBinding, bindings.len + reference.arguments.len);
+                defer self.gpa.free(nested);
+                @memcpy(nested[0..bindings.len], bindings);
+                for (reference.declaration.parameters, reference.arguments, nested[bindings.len..]) |*parameter, argument, *binding| binding.* = .{
+                    .parameter = parameter,
+                    .argument = contextualReadArgument(argument, bindings),
+                };
+                return self.contextualReadCoverage(reference.declaration.body.?, nested, active);
+            },
+            .conditional => |conditional| {
+                if (conditional.extends_type.* != .primitive or
+                    (conditional.extends_type.primitive != Primitive.any and
+                        conditional.extends_type.primitive != Primitive.unknown)) return null;
+                return self.contextualReadCoverage(conditional.true_branch, bindings, active);
+            },
+            .mapped => |mapped| {
+                if (!contextualMappedCopiesSource(mapped)) return null;
+                return self.contextualReadCoverage(mapped.constraint.keyof, bindings, active);
+            },
+            .utility => |utility| {
+                const source = (try self.contextualReadCoverage(utility.source, bindings, active)) orelse return null;
+                return switch (utility.kind) {
+                    .partial, .required, .readonly => source,
+                    .pick => if (source.mode == .all)
+                        .{ .source = source.source, .keys = contextualReadArgument(utility.keys.?, bindings), .mode = .pick }
+                    else
+                        null,
+                    .omit => if (source.mode == .all)
+                        .{ .source = source.source, .keys = contextualReadArgument(utility.keys.?, bindings), .mode = .omit }
+                    else
+                        null,
+                };
+            },
+            .intersection => |members| {
+                var picked: ?ReadCoverage = null;
+                var omitted: ?ReadCoverage = null;
+                for (members) |member| {
+                    const coverage = (try self.contextualReadCoverage(member, bindings, active)) orelse continue;
+                    if (coverage.mode == .all) return coverage;
+                    if (coverage.mode == .pick and picked == null) picked = coverage;
+                    if (coverage.mode == .omit and omitted == null) omitted = coverage;
+                }
+                if (picked) |pick| if (omitted) |omit| {
+                    if (pick.source == omit.source and pick.keys == omit.keys) return .{
+                        .source = pick.source,
+                    };
+                };
+                return null;
+            },
+            else => return null,
+        }
+    }
+
+    fn contextualReadProjection(self: *Builder, reference: schema.Reference) !?*const schema.Expression {
+        if (reference.arguments.len != reference.declaration.parameters.len or reference.declaration.body == null) return null;
+        const bindings = try self.gpa.alloc(ReadBinding, reference.arguments.len);
+        defer self.gpa.free(bindings);
+        for (reference.declaration.parameters, reference.arguments, bindings) |*parameter, argument, *binding| binding.* = .{
+            .parameter = parameter,
+            .argument = argument,
+        };
+        var active: std.AutoHashMapUnmanaged(*const schema.Declaration, void) = .empty;
+        defer active.deinit(self.gpa);
+        try active.put(self.gpa, reference.declaration, {});
+        const coverage = (try self.contextualReadCoverage(reference.declaration.body.?, bindings, &active)) orelse return null;
+        return if (coverage.mode == .all) coverage.source else null;
+    }
+
+    fn contextualShallowStructuralReferenceSupported(self: *Builder, reference: schema.Reference) !bool {
+        if (reference.arguments.len > reference.declaration.parameters.len or reference.declaration.body == null) return false;
+        var pending: std.ArrayListUnmanaged(*const schema.Expression) = .empty;
+        defer pending.deinit(self.gpa);
+        var visited: std.AutoHashMapUnmanaged(*const schema.Expression, void) = .empty;
+        defer visited.deinit(self.gpa);
+        try pending.append(self.gpa, reference.declaration.body.?);
+        while (pending.pop()) |expr| {
+            const entry = try visited.getOrPut(self.gpa, expr);
+            if (entry.found_existing) continue;
+            switch (expr.*) {
+                .primitive, .opaque_leaf, .builtin_object, .parameter, .string, .number, .boolean, .object, .indexed_object => {},
+                .array, .readonly_array => |element| try pending.append(self.gpa, element),
+                .tuple => |elements| for (elements) |element| try pending.append(self.gpa, element.type),
+                .union_type, .intersection => |members| try pending.appendSlice(self.gpa, members),
+                .reference => |nested| {
+                    if (nested.arguments.len > nested.declaration.parameters.len or nested.declaration.body == null) return false;
+                    try pending.append(self.gpa, nested.declaration.body.?);
+                },
+                .unsupported => return false,
+                else => return false,
+            }
+        }
+        return true;
     }
 
     /// Interface schemas may safely retain qualified aliases whose complete
@@ -103,12 +273,61 @@ pub const Builder = struct {
         return true;
     }
 
-    fn lowerTransferable(self: *Builder, context: Context, node: hir.NodeId) !*const schema.Expression {
+    fn lowerTransferableWithStructuralDefault(self: *Builder, context: Context, node: hir.NodeId, allow_structural_default: bool) !*const schema.Expression {
         const lowered = try self.lower(context, node);
         if (!context.allow_opaque) return lowered;
-        const result = try self.transferable(lowered);
+        if (try schema.Schema.expressionSupported(lowered, self.gpa)) return lowered;
+        const result = switch (lowered.*) {
+            .reference => |reference| blk: {
+                const contextual_read = try self.contextualReadProjection(reference);
+                if (contextual_read == null and
+                    (!allow_structural_default or !try self.contextualShallowStructuralReferenceSupported(reference)))
+                    break :blk try self.expression(.opaque_leaf);
+                break :blk try self.expression(.{ .reference = .{
+                    .declaration = reference.declaration,
+                    .arguments = reference.arguments,
+                    .projection_only = reference.projection_only,
+                    .contextual_projection = true,
+                    .contextual_read = contextual_read,
+                } });
+            },
+            else => try self.transferable(lowered),
+        };
         if (result != lowered) context.declaration.contextual_only = true;
         return result;
+    }
+
+    fn lowerTransferable(self: *Builder, context: Context, node: hir.NodeId) !*const schema.Expression {
+        return self.lowerTransferableWithStructuralDefault(context, node, false);
+    }
+
+    fn lowerContextualDefault(self: *Builder, context: Context, node: hir.NodeId) !*const schema.Expression {
+        return self.lowerTransferableWithStructuralDefault(context, node, true);
+    }
+
+    fn standardUtility(
+        self: *Builder,
+        name: []const u8,
+        args: []const *const schema.Expression,
+    ) !?*const schema.Expression {
+        const kind: ?schema.UtilityKind = if (args.len == 1 and std.mem.eql(u8, name, "Partial"))
+            .partial
+        else if (args.len == 1 and std.mem.eql(u8, name, "Required"))
+            .required
+        else if (args.len == 1 and std.mem.eql(u8, name, "Readonly"))
+            .readonly
+        else if (args.len == 2 and std.mem.eql(u8, name, "Pick"))
+            .pick
+        else if (args.len == 2 and std.mem.eql(u8, name, "Omit"))
+            .omit
+        else
+            null;
+        const utility = kind orelse return null;
+        return try self.expression(.{ .utility = .{
+            .kind = utility,
+            .source = args[0],
+            .keys = if (args.len == 2) args[1] else null,
+        } });
     }
 
     fn extendContext(self: *Builder, context: Context, parameters: []const *const schema.Parameter) !Context {
@@ -172,8 +391,19 @@ pub const Builder = struct {
         }
         def.parameters = try self.arena.alloc(schema.Parameter, info.params.len);
         for (info.params, def.parameters) |node, *param| param.* = .{ .name = c.interner.get(hir.typeParameterOf(&c.hir, node).name) };
-        const allow_opaque = kind == .type_alias_decl and switch (c.hir.kindOf(hir.typeAliasOf(&c.hir, key.node).aliased)) {
-            .fn_type, .constructor_type => true,
+        const allow_opaque = switch (kind) {
+            .type_alias_decl => switch (c.hir.kindOf(hir.typeAliasOf(&c.hir, key.node).aliased)) {
+                .fn_type, .constructor_type => true,
+                else => false,
+            },
+            .interface_decl => blk: {
+                for (hir.interfaceMembers(&c.hir, key.node)) |member_node| {
+                    if (c.hir.kindOf(member_node) != .interface_member) continue;
+                    const member = hir.interfaceMemberOf(&c.hir, member_node);
+                    if (std.mem.eql(u8, c.interner.get(member.name), "__call")) break :blk true;
+                }
+                break :blk false;
+            },
             else => false,
         };
         const context: Context = .{ .source = key.source, .declaration = def, .allow_opaque = allow_opaque };
@@ -182,7 +412,7 @@ pub const Builder = struct {
             param.variance = value.variance;
             param.is_const = value.is_const;
             if (value.constraint != 0) param.constraint = try self.lowerTransferable(context, value.constraint);
-            if (value.default != 0) param.default = try self.lowerTransferable(context, value.default);
+            if (value.default != 0) param.default = try self.lowerContextualDefault(context, value.default);
         }
         def.body = if (kind == .type_alias_decl)
             try self.lower(context, hir.typeAliasOf(&c.hir, key.node).aliased)
@@ -309,7 +539,7 @@ pub const Builder = struct {
             parameter.variance = value.variance;
             parameter.is_const = value.is_const;
             if (value.constraint != 0) parameter.constraint = try self.lowerTransferable(function_context, value.constraint);
-            if (value.default != 0) parameter.default = try self.lowerTransferable(function_context, value.default);
+            if (value.default != 0) parameter.default = try self.lowerContextualDefault(function_context, value.default);
         }
         var params: std.ArrayListUnmanaged(schema.Element) = .empty;
         var this_type: ?*const schema.Expression = null;
@@ -411,6 +641,9 @@ pub const Builder = struct {
                         };
                     },
                     .external => {},
+                }
+                if (ref.qualifier_len == 0) {
+                    if (try self.standardUtility(name, args)) |utility| return utility;
                 }
                 if (args.len == 1 and (std.mem.eql(u8, name, "Array") or std.mem.eql(u8, name, "ReadonlyArray")))
                     return self.expression(if (std.mem.eql(u8, name, "Array")) .{ .array = args[0] } else .{ .readonly_array = args[0] });
@@ -861,6 +1094,49 @@ test "class schema: qualified references become concrete only for supported decl
     try T.expect(callback.parameters[1].type.* == .opaque_leaf);
     try T.expectEqualStrings("Value", callback.result.reference.declaration.name);
     try T.expect(callback_result.declaration.contextual_only);
+}
+
+test "class schema: callable utility projections retain a proven read surface" {
+    const graph = try TestGraph.init(&.{.{ .path = "/owner.ts", .text =
+        \\export interface IssueBase { readonly code?: string; readonly path: PropertyKey[]; readonly message: string; }
+        \\export interface InvalidType extends IssueBase { readonly code: "invalid_type"; readonly expected: string; }
+        \\export interface InvalidValue extends IssueBase { readonly code: "invalid_value"; readonly values: string[]; }
+        \\export type Issue = InvalidType | InvalidValue;
+        \\type MakePartial<T, K extends keyof T> = Omit<T, K> & Partial<Pick<T, K>>;
+        \\type Flatten<T> = { [K in keyof T]: T[K] } & {};
+        \\type InternalIssue<T extends IssueBase> = T extends any ? Flatten<MakePartial<T, "message"> & { input: unknown }> : never;
+        \\export interface ErrorMap<T extends IssueBase = Issue> {
+        \\  (issue: InternalIssue<T>): { message: string } | string | undefined;
+        \\}
+    }});
+    defer graph.deinit();
+
+    const result = try graph.class(0, "ErrorMap");
+    defer result.deinit(T.allocator);
+    const declaration = result.declaration;
+    try T.expect(declaration.contextual_only);
+    const default = declaration.parameters[0].default.?.reference;
+    try T.expect(default.contextual_projection);
+    try T.expect(default.contextual_read == null);
+    const call = declaration.body.?.object[0].type.function;
+    const issue = call.parameters[0].type.reference;
+    try T.expect(issue.contextual_projection);
+    try T.expect(issue.contextual_read.?.parameter == &declaration.parameters[0]);
+    try T.expect(try result.isSupported(T.allocator));
+
+    const owner = graph.sources.items[0].compilation;
+    const node_count = owner.hir.nodeCount();
+    const type_count = owner.type_interner.pool.typeCount();
+    const diagnostics = owner.diagnostics.items.len;
+    owner.source = "";
+    for (0..32) |_| {
+        const repeated = try graph.class(0, "ErrorMap");
+        repeated.deinit(T.allocator);
+    }
+    try T.expectEqual(node_count, owner.hir.nodeCount());
+    try T.expectEqual(type_count, owner.type_interner.pool.typeCount());
+    try T.expectEqual(diagnostics, owner.diagnostics.items.len);
+    try T.expect(!owner.checked_types_ready);
 }
 
 test "class schema: function signatures retain readonly record domains" {

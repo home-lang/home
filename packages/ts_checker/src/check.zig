@@ -5355,6 +5355,8 @@ pub const Checker = struct {
     /// files. Borrowed from the driver/program while checking this file.
     program_exported_classes: []const ProgramExportedClass = &.{},
     program_generic_definitions: std.HashMapUnmanaged(*const ProgramClassSchema.Declaration, TypeId, ProgramDeclarationContext, 80) = .empty,
+    program_contextual_declarations: std.AutoHashMapUnmanaged(*const ProgramClassSchema.Declaration, *const ProgramClassSchema.Declaration) = .empty,
+    program_contextual_declarations_active: std.AutoHashMapUnmanaged(*const ProgramClassSchema.Declaration, void) = .empty,
     program_expression_parameters: std.AutoHashMapUnmanaged(*const ProgramClassSchema.Parameter, TypeId) = .empty,
     program_definition_classes: std.AutoHashMapUnmanaged(TypeId, struct { name: hir_mod.StringId, origin: hir_mod.StringId }) = .empty,
     program_local_class_names: std.StringHashMapUnmanaged(void) = .empty,
@@ -5920,6 +5922,8 @@ pub const Checker = struct {
         self.program_import_resolutions.deinit(self.gpa);
         self.clearProgramGenericInstances();
         self.program_generic_definitions.deinit(self.gpa);
+        self.program_contextual_declarations.deinit(self.gpa);
+        self.program_contextual_declarations_active.deinit(self.gpa);
         self.program_expression_parameters.deinit(self.gpa);
         self.program_definition_classes.deinit(self.gpa);
         self.program_local_class_names.deinit(self.gpa);
@@ -107138,11 +107142,37 @@ pub const Checker = struct {
 
     /// A callable type alias with an untransferable inner leaf must not become
     /// the variable's general-purpose type. It can still provide exact outer
-    /// contextual parameter slots to that variable's function initializer.
+    /// contextual parameter slots to that variable's function initializer,
+    /// including when it is the return of an annotated function type.
     fn programContextualExportedType(self: *Checker, type_node: NodeId) CheckError!?TypeId {
-        if (type_node == hir_mod.none_node_id or self.hir.kindOf(type_node) != .type_ref) return null;
+        if (type_node == hir_mod.none_node_id) return null;
+        const kind = self.hir.kindOf(type_node);
+        if (kind == .fn_type or kind == .constructor_type) {
+            const function = hir_mod.fnTypeOf(self.hir, type_node);
+            if (function.return_type == hir_mod.none_node_id) return null;
+            const contextual_return = (try self.programContextualExportedType(function.return_type)) orelse return null;
+            const signature = try self.lowererLowerWithTypeParams(type_node);
+            if (!self.interner.isSignature(signature)) return null;
+            return @as(?TypeId, try self.programSignatureWithReturn(signature, contextual_return));
+        }
+        if (kind != .type_ref) return null;
         const reference = hir_mod.typeRefOf(self.hir, type_node);
-        if (reference.qualifier_len != 0) return null;
+        if (reference.qualifier_len != 0) {
+            const qualifiers = hir_mod.typeRefQualifier(self.hir, type_node);
+            if (qualifiers.len != 1 or self.hir.kindOf(qualifiers[0]) != .identifier) return null;
+            const root_name = hir_mod.identifierOf(self.hir, qualifiers[0]).name;
+            const import_info = (try self.localImportModuleInfo(root_name, type_node)) orelse return null;
+            if (import_info.exported_root != null) return null;
+            return self.programContextualExportedTypeForImportPath(
+                import_info.import_node,
+                import_info.specifier,
+                reference.name,
+                type_node,
+            );
+        }
+        if (self.nameHasEnclosingTypeParameter(reference.name, type_node) or
+            self.findVisibleNamedTypeDecl(type_node, reference.name) != null)
+            return null;
         const root = self.rootBlockFor(type_node);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
         for (hir_mod.blockStmts(self.hir, root)) |statement| {
@@ -107163,11 +107193,42 @@ pub const Checker = struct {
                 }
             }
             const name = imported_name orelse continue;
-            for (self.program_exported_types) |entry| {
-                if (entry.projection_only or !entry.contextual_only or !std.mem.eql(u8, entry.export_name, self.string_interner.get(name))) continue;
-                if (!try self.programImportTargetsPath(statement, self.string_interner.get(import.module), entry.target_path)) continue;
-                return self.programDeclarationTypeReference(entry.declaration, type_node);
-            }
+            if (try self.programContextualExportedTypeForImportPath(statement, import.module, name, type_node)) |result| return result;
+        }
+        return null;
+    }
+
+    fn programSignatureWithReturn(self: *Checker, signature: TypeId, return_t: TypeId) CheckError!TypeId {
+        const payload_index = self.interner.pool.payloadOf(signature);
+        if (payload_index >= self.interner.pool.signature_payloads.items.len) return signature;
+        const payload = self.interner.pool.signature_payloads.items[payload_index];
+        const params = self.interner.signatureParams(signature);
+        const this_t = self.signatureThisParam(signature);
+        const result = if (this_t) |receiver|
+            self.interner.internSignatureWithThisType(params, return_t, payload.is_construct, payload.is_abstract_construct, receiver) catch return error.OutOfMemory
+        else
+            self.interner.internSignatureWithAbstract(params, return_t, payload.is_construct, payload.is_abstract_construct) catch return error.OutOfMemory;
+        try self.copySignatureParamNames(result, signature);
+        try self.copySignatureNullishArrayDefaults(result, signature);
+        if (self.rest_signatures.contains(signature)) try self.rest_signatures.put(self.gpa, result, {});
+        if (self.signature_min_args.get(signature)) |min_required| try self.signature_min_args.put(self.gpa, result, min_required);
+        if (self.signature_predicates.get(signature)) |predicate| try self.signature_predicates.put(self.gpa, result, predicate);
+        if (self.generic_signature_params.get(signature)) |type_params| try self.recordGenericSignatureParams(result, type_params);
+        if (this_t) |receiver| try self.signature_this_params.put(self.gpa, result, receiver);
+        return result;
+    }
+
+    fn programContextualExportedTypeForImportPath(
+        self: *Checker,
+        import_node: NodeId,
+        specifier: hir_mod.StringId,
+        name: hir_mod.StringId,
+        anchor: NodeId,
+    ) CheckError!?TypeId {
+        for (self.program_exported_types) |entry| {
+            if (entry.projection_only or !entry.contextual_only or !std.mem.eql(u8, entry.export_name, self.string_interner.get(name))) continue;
+            if (!try self.programImportTargetsPath(import_node, self.string_interner.get(specifier), entry.target_path)) continue;
+            return self.programDeclarationTypeReference(entry.declaration, anchor);
         }
         return null;
     }
@@ -107317,6 +107378,8 @@ pub const Checker = struct {
 
     fn clearProgramGenericInstances(self: *Checker) void {
         self.program_generic_definitions.clearRetainingCapacity();
+        self.program_contextual_declarations.clearRetainingCapacity();
+        self.program_contextual_declarations_active.clearRetainingCapacity();
         self.program_expression_parameters.clearRetainingCapacity();
         self.program_definition_classes.clearRetainingCapacity();
         self.program_local_class_names.clearRetainingCapacity();
@@ -107525,12 +107588,119 @@ pub const Checker = struct {
         return self.string_interner.intern(text) catch error.OutOfMemory;
     }
 
+    fn contextualProgramDeclaration(
+        self: *Checker,
+        declaration: *const ProgramClassSchema.Declaration,
+    ) CheckError!*const ProgramClassSchema.Declaration {
+        if (self.program_contextual_declarations.get(declaration)) |existing| return existing;
+        const result = try self.diag_arena.allocator().create(ProgramClassSchema.Declaration);
+        result.* = declaration.*;
+        result.contextual_only = true;
+        result.contextual_projection = true;
+        try self.program_contextual_declarations.put(self.gpa, declaration, result);
+        return result;
+    }
+
+    fn programContextualDeclarationReference(
+        self: *Checker,
+        declaration: *const ProgramClassSchema.Declaration,
+        supplied: []const TypeId,
+    ) ProgramTypeError!TypeId {
+        if (supplied.len > declaration.parameters.len) return error.UnsupportedProgramType;
+        if (self.program_contextual_declarations_active.contains(declaration)) return types.Primitive.any;
+        try self.program_contextual_declarations_active.put(self.gpa, declaration, {});
+        defer _ = self.program_contextual_declarations_active.remove(declaration);
+
+        const args = try self.gpa.alloc(TypeId, declaration.parameters.len);
+        defer self.gpa.free(args);
+        @memset(args, types.Primitive.unknown);
+        @memcpy(args[0..supplied.len], supplied);
+        for (declaration.parameters[supplied.len..], supplied.len..) |parameter, index| {
+            const default = parameter.default orelse return error.UnsupportedProgramType;
+            args[index] = try self.lowerProgramExpression(default, declaration, args);
+        }
+        const body = declaration.body orelse return error.UnsupportedProgramType;
+        return self.lowerProgramExpression(body, declaration, args);
+    }
+
+    fn programExpressionHasDeclarationLeaf(expression: *const ProgramClassSchema.Expression) bool {
+        return switch (expression.*) {
+            .reference, .unsupported, .typeof_class => true,
+            .array, .readonly_array, .keyof, .this_type => |element| programExpressionHasDeclarationLeaf(element),
+            .tuple => |elements| blk: {
+                for (elements) |element| if (programExpressionHasDeclarationLeaf(element.type)) break :blk true;
+                break :blk false;
+            },
+            .union_type, .intersection => |members| blk: {
+                for (members) |member| if (programExpressionHasDeclarationLeaf(member)) break :blk true;
+                break :blk false;
+            },
+            .object => |members| blk: {
+                for (members) |member| if (programExpressionHasDeclarationLeaf(member.type)) break :blk true;
+                break :blk false;
+            },
+            .indexed_object => |object| blk: {
+                for (object.members) |member| if (programExpressionHasDeclarationLeaf(member.type)) break :blk true;
+                for (object.indices) |index| if (programExpressionHasDeclarationLeaf(index.value)) break :blk true;
+                break :blk false;
+            },
+            else => false,
+        };
+    }
+
+    /// Retain only properties that every member of the proven source can be
+    /// read through. They stay optional because the source utility pipeline
+    /// may relax requiredness without changing the readable-key surface.
+    fn programContextualReadSurface(self: *Checker, source_t: TypeId) ProgramTypeError!TypeId {
+        if (source_t >= self.interner.pool.typeCount()) return source_t;
+        const flags = self.interner.pool.flagsOf(source_t);
+        if (flags.is_union or flags.is_intersection) {
+            const source_members = if (flags.is_union) self.interner.unionMembers(source_t) else self.interner.intersectionMembers(source_t);
+            const result = try self.gpa.alloc(TypeId, source_members.len);
+            defer self.gpa.free(result);
+            for (source_members, result) |member, *out| out.* = try self.programContextualReadSurface(member);
+            return if (flags.is_union) self.interner.internUnion(result) else self.interner.internIntersection(result);
+        }
+        if (flags.is_type_parameter) {
+            const key_t = self.interner.internFreshTypeParameterWithFlags(
+                self.string_interner.intern("__home_contextual_read_key") catch return error.OutOfMemory,
+                self.interner.internKeyof(source_t) catch return error.OutOfMemory,
+                types.Primitive.none,
+                .bivariant,
+                false,
+            ) catch return error.OutOfMemory;
+            return self.interner.internMapped(
+                self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(key_t)].constraint,
+                self.interner.internIndexedAccess(source_t, key_t) catch return error.OutOfMemory,
+                .none,
+                .add,
+            ) catch return error.OutOfMemory;
+        }
+        if (!flags.is_object_type) return source_t;
+        const members = try self.gpa.dupe(types.ObjectMember, self.interner.objectMembers(source_t));
+        defer self.gpa.free(members);
+        for (members) |*member| {
+            member.is_optional = true;
+            if (!self.typeIncludesUndefined(member.type))
+                member.type = try self.interner.internUnion(&.{ member.type, types.Primitive.undefined_t });
+        }
+        return self.interner.internObjectTypeWithIndexAndSymbol(
+            members,
+            self.interner.objectStringIndex(source_t),
+            self.interner.objectNumberIndex(source_t),
+            self.interner.objectSymbolIndex(source_t),
+        );
+    }
+
     fn programExpressionMembers(self: *Checker, members: []const ProgramClassSchema.Member, declaration: *const ProgramClassSchema.Declaration, args: []const TypeId) ProgramTypeError![]types.ObjectMember {
         const result = try self.gpa.alloc(types.ObjectMember, members.len);
         errdefer self.gpa.free(result);
         for (members, result) |member, *out| out.* = .{
             .name = self.string_interner.intern(member.name) catch return error.OutOfMemory,
-            .type = try self.lowerProgramExpression(member.type, declaration, args),
+            .type = if (declaration.contextual_projection and programExpressionHasDeclarationLeaf(member.type))
+                types.Primitive.any
+            else
+                try self.lowerProgramExpression(member.type, declaration, args),
             .is_optional = member.optional,
             .is_readonly = member.readonly,
             .is_method = member.method,
@@ -107582,7 +107752,7 @@ pub const Checker = struct {
                 return self.interner.internObjectTypeWithIndex(members, string_index, number_index);
             },
             .record => |record| {
-                if (declaration.contextual_only) return types.Primitive.any;
+                if (declaration.contextual_only and !declaration.contextual_projection) return types.Primitive.any;
                 const key_t = try self.lowerProgramExpression(record.key, declaration, args);
                 const value_t = try self.lowerProgramExpression(record.value, declaration, args);
                 var singleton = [_]TypeId{key_t};
@@ -107607,6 +107777,7 @@ pub const Checker = struct {
                 if (record.readonly) try self.readonly_index_types.put(self.gpa, result, {});
                 return result;
             },
+            .utility => return error.UnsupportedProgramType,
             .tuple => |elements| {
                 const result = try self.gpa.alloc(types.TupleElement, elements.len);
                 defer self.gpa.free(result);
@@ -107677,14 +107848,26 @@ pub const Checker = struct {
                 return sig;
             },
             .reference => |ref| {
-                if (declaration.contextual_only and
+                const contextual_projection = ref.contextual_projection or declaration.contextual_projection;
+                if (ref.contextual_projection) if (ref.contextual_read) |read| {
+                    return self.programContextualReadSurface(try self.lowerProgramExpression(read, declaration, args));
+                };
+                if (!contextual_projection and declaration.contextual_only and
                     !try ProgramClassSchema.Schema.declarationSupported(ref.declaration, self.gpa))
                     return types.Primitive.any;
+                const target = if (contextual_projection)
+                    try self.contextualProgramDeclaration(ref.declaration)
+                else
+                    ref.declaration;
                 const values = try self.gpa.alloc(TypeId, ref.arguments.len);
                 defer self.gpa.free(values);
                 for (ref.arguments, values) |arg, *out| out.* = try self.lowerProgramExpression(arg, declaration, args);
-                return self.programDeclarationReference(ref.declaration, values, &.{}) catch |err| switch (err) {
-                    error.UnsupportedProgramType => if (declaration.contextual_only) types.Primitive.any else error.UnsupportedProgramType,
+                const result = if (contextual_projection)
+                    self.programContextualDeclarationReference(target, values)
+                else
+                    self.programDeclarationReference(target, values, &.{});
+                return result catch |err| switch (err) {
+                    error.UnsupportedProgramType => if (contextual_projection or declaration.contextual_only) types.Primitive.any else error.UnsupportedProgramType,
                     error.OutOfMemory => error.OutOfMemory,
                 };
             },
