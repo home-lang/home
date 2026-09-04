@@ -175725,18 +175725,23 @@ pub const Checker = struct {
             return false;
         }
         if (flags.is_intersection) {
+            const contextual_this = self.thisTypeMarkerConstraint(target_t);
             for (self.interner.intersectionMembers(target_t)) |member| {
                 if (self.thisTypeMarkerConstraint(member) != null) continue;
                 if (self.typeIsMappedPayloadType(member) and
                     try self.objectLiteralMappedKeysAreShadowedByIntersectionSibling(arg_node, target_t, member)) continue;
                 if (self.objectLiteralOmitArtifactIsOwnedByOverrideSibling(arg_node, target_t, member)) continue;
+                if (self.typeIsMappedPayloadType(member)) {
+                    if (!try self.objectLiteralAssignableToMappedTarget(arg_node, arg_t, member, contextual_this)) return false;
+                    continue;
+                }
                 if (!try self.objectLiteralAssignableToTargetInner(arg_node, arg_t, member, false)) return false;
             }
             if (check_methods) try self.checkObjectLiteralMethodBodiesWithThis(arg_node, target_t);
             return true;
         }
         if (self.typeIsMappedPayloadType(target_t)) {
-            return try self.objectLiteralAssignableToMappedTarget(arg_node, arg_t, target_t);
+            return try self.objectLiteralAssignableToMappedTarget(arg_node, arg_t, target_t, null);
         }
         if (!flags.is_object_type) return false;
         if (!self.objectTypeMembersUsableForRelation(target_t)) return false;
@@ -175944,7 +175949,35 @@ pub const Checker = struct {
         return m.template;
     }
 
-    fn objectLiteralAssignableToMappedTarget(self: *Checker, arg_node: NodeId, arg_t: TypeId, target_t: TypeId) anyerror!bool {
+    fn signatureWithContextualThis(self: *Checker, signature: TypeId, this_t: TypeId) CheckError!TypeId {
+        if (!self.interner.isSignature(signature)) return signature;
+        const payload_idx = self.interner.pool.payloadOf(signature);
+        if (payload_idx >= self.interner.pool.signature_payloads.items.len) return signature;
+        const payload = self.interner.pool.signature_payloads.items[payload_idx];
+        const contextual = self.interner.internSignatureWithThisType(
+            self.interner.signatureParams(signature),
+            self.interner.signatureReturn(signature) orelse types.Primitive.any,
+            payload.is_construct,
+            payload.is_abstract_construct,
+            this_t,
+        ) catch return error.OutOfMemory;
+        try self.copySignatureParamNames(contextual, signature);
+        try self.copySignatureNullishArrayDefaults(contextual, signature);
+        if (self.rest_signatures.contains(signature)) try self.rest_signatures.put(self.gpa, contextual, {});
+        if (self.signature_min_args.get(signature)) |min_required| try self.signature_min_args.put(self.gpa, contextual, min_required);
+        if (self.signature_predicates.get(signature)) |predicate| try self.signature_predicates.put(self.gpa, contextual, predicate);
+        if (self.generic_signature_params.get(signature)) |type_params| try self.recordGenericSignatureParams(contextual, type_params);
+        try self.signature_this_params.put(self.gpa, contextual, this_t);
+        return contextual;
+    }
+
+    fn objectLiteralAssignableToMappedTarget(
+        self: *Checker,
+        arg_node: NodeId,
+        arg_t: TypeId,
+        target_t: TypeId,
+        contextual_this: ?TypeId,
+    ) anyerror!bool {
         if (arg_t >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(arg_t).is_object_type) return false;
         const props = hir_mod.objectLiteralProps(self.hir, arg_node);
         if (props.len == 0 and self.interner.mappedPayload(target_t).optional != .add) return false;
@@ -175960,7 +175993,16 @@ pub const Checker = struct {
             const value_node = op.value;
             if (value_node == hir_mod.none_node_id) continue;
             const source_t = (try self.objectLiteralMemberComparableType(value_node, self.interner.objectMember(arg_t, prop_name) orelse types.Primitive.any)) orelse return false;
-            const target_prop_t = try self.mappedPropertyTargetType(target_t, prop_name);
+            var target_prop_t = try self.mappedPropertyTargetType(target_t, prop_name);
+            if (contextual_this) |this_t| {
+                if (self.isContextualFunctionExpressionLike(value_node)) {
+                    if ((try self.contextualCallableFromDeferredConditional(target_prop_t, 0)) orelse
+                        self.firstSignatureType(target_prop_t)) |signature|
+                    {
+                        target_prop_t = try self.signatureWithContextualThis(signature, this_t);
+                    }
+                }
+            }
             if (try self.isArgumentAssignableToParam(value_node, source_t, target_prop_t)) continue;
             if (try self.checkerAssignableTo(source_t, target_prop_t)) continue;
             return false;
