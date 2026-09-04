@@ -159775,10 +159775,16 @@ pub const Checker = struct {
             const ia = self.interner.pool.indexed_access_payloads.items[self.interner.pool.payloadOf(t)];
             const new_obj = try self.substituteType(ia.object, subs);
             const new_idx = try self.substituteType(ia.index, subs);
-            if (!self.containsThisTypeParameter(new_obj) and
-                !self.containsFreeTypeParameter(new_idx))
-            {
-                if (try self.resolveObjectIndexedAccessType(new_obj, new_idx)) |resolved| return resolved;
+            const new_obj_is_type_parameter = new_obj < self.interner.pool.typeCount() and
+                self.interner.pool.flagsOf(new_obj).is_type_parameter;
+            if (!new_obj_is_type_parameter and !self.containsFreeTypeParameter(new_idx)) {
+                if (try self.resolveObjectIndexedAccessType(new_obj, new_idx)) |resolved| {
+                    // An exact key that does not itself mention polymorphic
+                    // `this` is independent of another member that does. Keep
+                    // the indexed access only when resolving the selected
+                    // property would erase its own late-bound `this`.
+                    if (!self.containsThisTypeParameter(resolved)) return resolved;
+                }
             }
             return self.interner.internIndexedAccess(new_obj, new_idx) catch return t;
         }
@@ -161226,7 +161232,8 @@ pub const Checker = struct {
                     continue;
                 }
                 if (self.hir.kindOf(args[i]) == .object_literal) {
-                    if (self.objectTypeFromMaybeOptional(param_t)) |object_target| {
+                    const instantiated_param_t = self.resolveGenericType(param_t) catch param_t;
+                    if (self.diagnosticObjectTypeFromMaybeOptional(instantiated_param_t, 0)) |object_target| {
                         if (try self.tryReportContextualFunctionPropertyReturnMismatch(args[i], object_target)) {
                             stop_after_arg_mismatch = true;
                             continue;
@@ -175315,6 +175322,11 @@ pub const Checker = struct {
     fn objectLiteralAssignableToTargetInner(self: *Checker, arg_node: NodeId, arg_t: TypeId, target_t: TypeId, check_methods: bool) anyerror!bool {
         if (target_t < types.Primitive.first_dynamic or target_t >= self.interner.pool.typeCount()) return false;
         const flags = self.interner.pool.flagsOf(target_t);
+        if (flags.is_instantiation) {
+            const resolved = try self.resolveGenericType(target_t);
+            if (resolved != target_t)
+                return self.objectLiteralAssignableToTargetInner(arg_node, arg_t, resolved, check_methods);
+        }
         if (flags.is_union) {
             for (self.interner.unionMembers(target_t)) |member| {
                 if (try self.objectLiteralAssignableToTargetInner(arg_node, arg_t, member, check_methods)) return true;
@@ -176397,7 +176409,8 @@ pub const Checker = struct {
         widen_literal_sources: bool,
     ) !bool {
         if (self.hir.kindOf(init_node) != .object_literal) return false;
-        const resolved_target = self.objectTypeFromMaybeOptional(target_t) orelse return false;
+        const instantiated_target = self.resolveGenericType(target_t) catch target_t;
+        const resolved_target = self.diagnosticObjectTypeFromMaybeOptional(instantiated_target, 0) orelse return false;
         if (self.typeHasAliasDisplayPrefix(target_t, "RecursivePartial<") or
             self.typeHasAliasDisplayPrefix(resolved_target, "RecursivePartial<"))
         {
@@ -176572,7 +176585,13 @@ pub const Checker = struct {
                 continue;
             }
             const return_t = (try self.reduceDisplayedAliasInstance(raw_return_t)) orelse raw_return_t;
-            const source_sig = self.firstSignatureType(self.hir.typeOf(property.value)) orelse continue;
+            const contextual_source_t = self.hir.typeOf(property.value);
+            const source_sig = self.firstSignatureType(contextual_source_t) orelse
+                (try self.contextualFunctionExpressionDiagnosticSignature(
+                    property.value,
+                    contextual_source_t,
+                    target_sig,
+                )) orelse continue;
             const source_return_t = self.interner.signatureReturn(source_sig) orelse continue;
             if (try self.contextualGenericFunctionSignatureDisplayEquivalent(
                 property.value,
@@ -176894,6 +176913,27 @@ pub const Checker = struct {
             if (!mf.is_object_type) return null;
             if (object_t != null) return null;
             object_t = m;
+        }
+        return object_t;
+    }
+
+    /// Peel an optional generic instance down to its one structural object
+    /// while ignoring a `ThisType<T>` marker. This is diagnostic-only: normal
+    /// assignability still checks the complete intersection.
+    fn diagnosticObjectTypeFromMaybeOptional(self: *Checker, t: TypeId, depth: u8) ?TypeId {
+        if (depth == 8 or t < types.Primitive.first_dynamic or t >= self.interner.pool.typeCount()) return null;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_object_type) return t;
+        if (!flags.is_union and !flags.is_intersection) return null;
+        const is_union = flags.is_union;
+        var object_t: ?TypeId = null;
+        const members = if (is_union) self.interner.unionMembers(t) else self.interner.intersectionMembers(t);
+        for (members) |member| {
+            if (member == types.Primitive.undefined_t or member == types.Primitive.void_t or member == types.Primitive.null_t) continue;
+            if (!is_union and self.thisTypeMarkerConstraint(member) != null) continue;
+            const candidate = self.diagnosticObjectTypeFromMaybeOptional(member, depth + 1) orelse return null;
+            if (object_t != null and object_t.? != candidate) return null;
+            object_t = candidate;
         }
         return object_t;
     }
@@ -220126,6 +220166,26 @@ test "checker: mapped type over keyof T materializes properties" {
     try T.expectEqual(@as(usize, 2), members.len);
     // Both members should be number_t.
     for (members) |m| try T.expectEqual(types.Primitive.number_t, m.type);
+}
+
+test "checker: polymorphic this does not block exact mapped member context" {
+    const s = try newSetup(
+        \\type ProtoOf<T> = {
+        \\  [K in keyof T]?: T[K] extends (...args: infer A) => infer R ? (...args: A) => R : T[K];
+        \\} & ThisType<T>;
+        \\interface Model { clone(): this; parse(data: string): number; }
+        \\declare function construct<T>(prototype?: ProtoOf<T>): void;
+        \\construct<Model>({ parse(data) { return data.length; } });
+        \\construct<Model>({ parse(data) { return data.missing; } });
+        \\construct<Model>({ parse() { return "wrong"; } });
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true, .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.parameter_implicitly_any));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 2), s.checker.diagnostics.items.len);
 }
 
 test "checker: mapped type rejects unconstrained conditional key parameter" {
