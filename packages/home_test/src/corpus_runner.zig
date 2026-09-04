@@ -1337,6 +1337,13 @@ const harness_prelude =
     \\function __home_build_read_text(path) {
     \\  if (__home_fs_is_deleted(path)) return null;
     \\  const resolvedOverlayPath = __home_fs_resolve_symlink_path(path);
+    \\  const overlayPaths = [String(path), resolvedOverlayPath];
+    \\  for (const overlayPath of overlayPaths) {
+    \\    if ((globalThis.__home_written_file_bytes && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_bytes, overlayPath)) ||
+    \\        (globalThis.__home_written_file_sparse && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_sparse, overlayPath))) {
+    \\      return __home_utf8_bytes_to_text(__home_file_bytes_sync(overlayPath));
+    \\    }
+    \\  }
     \\  if (globalThis.__home_written_files && Object.prototype.hasOwnProperty.call(globalThis.__home_written_files, String(path))) return globalThis.__home_written_files[String(path)];
     \\  if (globalThis.__home_written_files && Object.prototype.hasOwnProperty.call(globalThis.__home_written_files, resolvedOverlayPath)) return globalThis.__home_written_files[resolvedOverlayPath];
     \\  if (typeof globalThis.__home_readFileSyncNative !== "function") return null;
@@ -22618,6 +22625,19 @@ const harness_prelude =
     \\    error.code = "Z_DATA_ERROR";
     \\    return error;
     \\  };
+    \\  if (bytes.length >= 3 && bytes[0] === 0x1f && bytes[1] === 0x8b && bytes[2] === 0x08 && typeof globalThis.__home_gzipDecompressNative === "function") {
+    \\    let output;
+    \\    try {
+    \\      output = Buffer.from(globalThis.__home_gzipDecompressNative(Buffer.from(bytes).toString("base64")), "base64");
+    \\    } catch (cause) {
+    \\      const error = dataError(cause && cause.message ? String(cause.message) : "invalid gzip data");
+    \\      error.cause = cause;
+    \\      throw error;
+    \\    }
+    \\    const maximum = typeof __home_zlib_module === "object" && __home_zlib_module.__home_max_output_length != null ? Number(__home_zlib_module.__home_max_output_length) : Infinity;
+    \\    if (output.length > maximum) throw __home_zlib_error("RangeError", "ERR_BUFFER_TOO_LARGE", "Cannot create a Buffer larger than " + String(maximum) + " bytes");
+    \\    return output;
+    \\  }
     \\  while (offset < bytes.length) {
     \\    if (bytes[offset] === 0) {
     \\      while (offset < bytes.length && bytes[offset] === 0) offset++;
@@ -61161,6 +61181,7 @@ const harness_prelude =
     \\  stream._memLevel = validated ? validated.memLevel : undefined;
     \\  stream.__home_encoding = null;
     \\  stream.__home_chunks = [];
+    \\  stream.__home_drain_scheduled = false;
     \\  stream.bytesWritten = 0;
     \\  const eventOn = stream.on;
     \\  stream.on = function(name, callback) {
@@ -61247,6 +61268,17 @@ const harness_prelude =
     \\    this.bytesWritten += value.length;
     \\    writableState.length += value.length;
     \\    if (writableState.length >= writableState.highWaterMark) writableState.needDrain = true;
+    \\    if (!this.__home_drain_scheduled) {
+    \\      this.__home_drain_scheduled = true;
+    \\      Promise.resolve().then(() => {
+    \\        this.__home_drain_scheduled = false;
+    \\        writableState.length = 0;
+    \\        if (writableState.needDrain && !state.closed) {
+    \\          writableState.needDrain = false;
+    \\          this.emit("drain");
+    \\        }
+    \\      });
+    \\    }
     \\    if (normalizedKind === "gunzip") {
     \\      const buffered = Buffer.concat(input);
     \\      if (buffered.length >= 2 && (buffered[0] !== 0x1f || buffered[1] !== 0x8b)) {
@@ -63685,10 +63717,10 @@ const harness_prelude =
     \\  unlinkSync(path) {
     \\    const normalized = __home_fs_path(path);
     \\    const hadSymlinkOverlay = __home_fs_is_symlink(normalized);
+    \\    const hadWrittenOverlay = !!(globalThis.__home_written_files && Object.prototype.hasOwnProperty.call(globalThis.__home_written_files, normalized));
     \\    const existedBefore = hadSymlinkOverlay || __home_build_file_exists(normalized);
     \\    __home_fs_mark_deleted(normalized);
     \\    if (hadSymlinkOverlay && globalThis.__home_symlinks) delete globalThis.__home_symlinks[__home_fs_normalize_path(normalized)];
-    \\    const hadWrittenOverlay = !!(globalThis.__home_written_files && Object.prototype.hasOwnProperty.call(globalThis.__home_written_files, normalized));
     \\    if (hadWrittenOverlay) delete globalThis.__home_written_files[normalized];
     \\    if (globalThis.__home_written_file_bytes && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_bytes, normalized)) delete globalThis.__home_written_file_bytes[normalized];
     \\    if (globalThis.__home_written_file_sparse && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_sparse, normalized)) delete globalThis.__home_written_file_sparse[normalized];
