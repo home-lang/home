@@ -9804,22 +9804,29 @@ test "Program: mapped prototype conditionals preserve optional generic and rest 
     const owner =
         \\import type { ProtoOf } from "./util.js";
         \\type Trait = { _zod: { def: unknown; [key: string]: unknown } };
-        \\export function $constructor<T extends Trait>(name: string, proto?: ProtoOf<T>): void {
+        \\export function $constructor<T extends Trait>(name: string, initializer: (inst: T) => void, proto?: ProtoOf<T>): void {
         \\  void name;
+        \\  void initializer;
         \\  void proto;
         \\}
     ;
     const barrel = "export * from \"./owner.js\";";
     const consumer =
         \\import * as core from "./barrel.js";
-        \\interface Schema {
+        \\type Mask<Keys extends PropertyKey> = { [K in Keys]?: true };
+        \\interface Schema<Shape extends object = { key: string }> {
         \\  _zod: { def: { kind: "schema" } };
         \\  clone(def?: { kind: "schema" }, params?: { parent: boolean }): this;
         \\  register<R extends { add(value: Schema, meta: string): void }>(registry: R, ...meta: [string]): this;
         \\  check(...checks: (((value: string) => boolean) | { run(value: string): boolean })[]): this;
         \\  refine<C extends (value: string) => unknown>(check: C, params?: string): this;
+        \\  parse(data: string): string;
+        \\  partial(): Schema<{ -readonly [K in keyof Shape]: Shape[K] }>;
+        \\  partial<M extends Mask<keyof Shape>>(
+        \\    mask: M & Record<Exclude<keyof M, keyof Shape>, never>
+        \\  ): Schema<{ -readonly [K in keyof Shape]: K extends keyof M ? Shape[K] : Shape[K] }>;
         \\}
-        \\core.$constructor<Schema>("Schema", {
+        \\core.$constructor<Schema>("Schema", () => {}, {
         \\  clone(def, params) {
         \\    const exactDef: { kind: "schema" } | undefined = def;
         \\    const exactParent: boolean | undefined = params?.parent;
@@ -9838,12 +9845,19 @@ test "Program: mapped prototype conditionals preserve optional generic and rest 
         \\    check(params ?? "x");
         \\    return this;
         \\  },
+        \\  parse: function _parse(data) {
+        \\    return data.length === 0 ? "" : String(_parse);
+        \\  },
+        \\  partial(...args) {
+        \\    void args[0];
+        \\    return this;
+        \\  },
         \\});
-        \\core.$constructor<Schema>("Invalid", {
+        \\const mismatch: number = "wrong";
+        \\void mismatch;
+        \\core.$constructor<Schema>("Invalid", () => {}, {
         \\  clone(def) {
-        \\    const wrong: number = def?.kind;
         \\    def?.missing;
-        \\    void wrong;
         \\    return this;
         \\  },
         \\});
@@ -9871,6 +9885,9 @@ test "Program: mapped prototype conditionals preserve optional generic and rest 
     try expectCompilationLacksDiagnosticCode(compilation, 7006);
     try expectCompilationLacksDiagnosticCode(compilation, 7019);
     try expectCompilationLacksDiagnosticCode(compilation, 2349);
+    try expectCompilationLacksDiagnosticCode(compilation, 2304);
+    try expectCompilationLacksDiagnosticCode(compilation, 2493);
+    try expectCompilationLacksDiagnosticCode(compilation, 2532);
     try T.expectEqual(@as(usize, 2), compilation.diagnostics.items.len);
     try T.expectEqual(@as(u32, 2322), compilation.diagnostics.items[0].code);
     try T.expectEqual(@as(u32, 2339), compilation.diagnostics.items[1].code);
