@@ -4469,6 +4469,25 @@ pub const HomeKernelCodegen = struct {
             .AssignmentExpr => |assign| {
                 switch (assign.target.*) {
                     .Identifier => |target| {
+                        // A struct or array variable is storage, not a value:
+                        // its slot holds the bytes themselves. Evaluating the
+                        // right-hand side yields its *address*, so the scalar
+                        // path below would store that address over the first
+                        // field and leave the rest of the destination as it
+                        // was — `a = b` then reads back a pointer where the
+                        // first member should be, and stale bytes after it.
+                        //
+                        // The declaration path already copies (`var a: T = b`);
+                        // only assignment to an existing variable did not.
+                        if (self.local_types.get(target.name)) |target_type| {
+                            if (self.isStorageType(target_type)) {
+                                if (self.locals.get(target.name)) |slot| {
+                                    try self.emit().leaLocal(.acc, @intCast(slot));
+                                    try self.emitStoreToAddress(target_type, assign.value);
+                                    return;
+                                }
+                            }
+                        }
                         try self.generateExpr(assign.value);
                         // `_ = expr` evaluates for effect and drops the result.
                         if (std.mem.eql(u8, target.name, "_")) {
