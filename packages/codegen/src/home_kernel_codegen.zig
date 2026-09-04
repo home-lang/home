@@ -3385,6 +3385,22 @@ pub const HomeKernelCodegen = struct {
                         self.stack_offset -= 8;
                         try self.locals.put(s2.iterator, self.stack_offset);
                     }
+                    // And so is the loop's limit. It is evaluated once, before
+                    // the first iteration, so that `for i in 0..f()` calls f
+                    // once rather than on every pass — and so that a body which
+                    // changes what the bound was computed from does not change
+                    // the number of iterations underneath itself.
+                    {
+                        const limit_name = try std.fmt.allocPrint(
+                            self.import_arena.allocator(),
+                            "__for_limit_{s}",
+                            .{s2.iterator},
+                        );
+                        if (!self.locals.contains(limit_name)) {
+                            self.stack_offset -= 8;
+                            try self.locals.put(limit_name, self.stack_offset);
+                        }
+                    }
                     if (s2.index) |idx| {
                         if (!self.locals.contains(idx)) {
                             self.stack_offset -= 8;
@@ -3814,6 +3830,81 @@ pub const HomeKernelCodegen = struct {
                 self.loop_break = prev_break;
                 self.loop_continue = prev_continue;
 
+                try self.emit().jump(start);
+                try self.print("{s}:\n", .{end});
+            },
+            .ForStmt => |for_stmt| {
+                // `for i in a..b` and `for i in a..=b`. Iterating a collection
+                // is a different lowering and is not done here; saying so
+                // names the construct rather than emitting a loop that runs
+                // zero times.
+                if (for_stmt.iterable.* != .RangeExpr) {
+                    try self.print("    # ERROR: unsupported statement: ForStmt over a non-range iterable\n", .{});
+                    return;
+                }
+                const range = for_stmt.iterable.RangeExpr;
+                if (range.step != null) {
+                    try self.print("    # ERROR: unsupported statement: ForStmt with a step\n", .{});
+                    return;
+                }
+
+                const iter_slot = self.locals.get(for_stmt.iterator) orelse {
+                    try self.print("    # ERROR: no frame slot reserved for {s}\n", .{for_stmt.iterator});
+                    return;
+                };
+                const limit_name = try std.fmt.allocPrint(
+                    self.allocator,
+                    "__for_limit_{s}",
+                    .{for_stmt.iterator},
+                );
+                defer self.allocator.free(limit_name);
+                const limit_slot = self.locals.get(limit_name) orelse {
+                    try self.print("    # ERROR: no frame slot reserved for the bound of {s}\n", .{for_stmt.iterator});
+                    return;
+                };
+
+                try self.generateExpr(range.start);
+                try self.emit().storeLocal(.acc, @intCast(iter_slot));
+                try self.generateExpr(range.end);
+                try self.emit().storeLocal(.acc, @intCast(limit_slot));
+
+                const label_num = self.freshLabel();
+                const start = try std.fmt.allocPrint(self.allocator, ".L_for_start_{d}", .{label_num});
+                defer self.allocator.free(start);
+                const step_label = try std.fmt.allocPrint(self.allocator, ".L_for_step_{d}", .{label_num});
+                defer self.allocator.free(step_label);
+                const end = try std.fmt.allocPrint(self.allocator, ".L_for_end_{d}", .{label_num});
+                defer self.allocator.free(end);
+
+                try self.print("{s}:\n", .{start});
+                // Left operand in the accumulator, right in tmp, matching what
+                // a comparison expression builds.
+                try self.emit().loadLocal(.acc, @intCast(iter_slot));
+                try self.emit().push(.acc);
+                try self.emit().loadLocal(.acc, @intCast(limit_slot));
+                try self.emit().movReg(.tmp, .acc);
+                try self.emit().pop(.acc);
+                try self.emitCompare(if (range.inclusive) .le else .lt);
+                try self.emit().jumpIfZero(.acc, end);
+
+                // `continue` goes to the increment, not the top: jumping to the
+                // top would skip it and spin forever.
+                const prev_break = self.loop_break;
+                const prev_continue = self.loop_continue;
+                self.loop_break = end;
+                self.loop_continue = step_label;
+
+                for (for_stmt.body.statements) |body_stmt| {
+                    try self.generateStmt(body_stmt);
+                }
+
+                self.loop_break = prev_break;
+                self.loop_continue = prev_continue;
+
+                try self.print("{s}:\n", .{step_label});
+                try self.emit().loadLocal(.acc, @intCast(iter_slot));
+                try self.emit().addImm(.acc, 1);
+                try self.emit().storeLocal(.acc, @intCast(iter_slot));
                 try self.emit().jump(start);
                 try self.print("{s}:\n", .{end});
             },
