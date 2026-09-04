@@ -158,20 +158,39 @@ pub fn check(this: *@This(), globalThis: *jsc.JSGlobalObject, callframe: *jsc.Ca
                 if (os.compare(.gte) and oe.compare(.lte)) return .true;
             },
             .subnet => |*s| {
-                if (address.as_v4()) |ip_addr| if (s.network.as_v4()) |subnet_addr| {
-                    if (s.prefix == 32) if (ip_addr == subnet_addr) (return .true) else continue;
-                    // A /0 subnet matches every address. Guard it before the mask:
-                    // `1 << 32` / a shift by the full width is illegal (panics in
-                    // safe builds), so prefix 0 must not reach the shift below.
-                    if (s.prefix == 0) return .true;
-                    const one: u32 = 1;
-                    const mask_addr = ((one << @intCast(s.prefix)) - 1) << @intCast(32 - s.prefix);
-                    const ip_net: u32 = @byteSwap(ip_addr) & mask_addr;
-                    const subnet_net: u32 = @byteSwap(subnet_addr) & mask_addr;
-                    if (ip_net == subnet_net) return .true;
-                };
-                if (address.sin.family == std.posix.AF.INET6 and s.network.sin.family == std.posix.AF.INET6) {
-                    const ip_addr: u128 = @bitCast(address.sin6.addr);
+                // The subnet's own family selects the comparison, because that is
+                // what the validated prefix range belongs to (0..32 for AF_INET,
+                // 0..128 for AF_INET6). Selecting on `as_v4()` instead lets an
+                // IPv4-mapped IPv6 subnet reach the 32-bit mask carrying a prefix
+                // of up to 128, where `32 - prefix` underflows.
+                if (s.network.sin.family == std.posix.AF.INET) {
+                    if (address.as_v4()) |ip_addr| {
+                        const subnet_addr = s.network.sin.addr;
+                        if (s.prefix == 32) if (ip_addr == subnet_addr) (return .true) else continue;
+                        // A /0 subnet matches every address. Guard it before the mask:
+                        // `1 << 32` / a shift by the full width is illegal (panics in
+                        // safe builds), so prefix 0 must not reach the shift below.
+                        if (s.prefix == 0) return .true;
+                        const one: u32 = 1;
+                        const mask_addr = ((one << @intCast(s.prefix)) - 1) << @intCast(32 - s.prefix);
+                        const ip_net: u32 = @byteSwap(ip_addr) & mask_addr;
+                        const subnet_net: u32 = @byteSwap(subnet_addr) & mask_addr;
+                        if (ip_net == subnet_net) return .true;
+                    }
+                }
+                if (s.network.sin.family == std.posix.AF.INET6) {
+                    // An IPv6 subnet also covers IPv4 addresses through their mapped
+                    // ::ffff:a.b.c.d form, so map rather than requiring the address
+                    // to have been given as IPv6.
+                    const ip_addr: u128 = if (address.sin.family == std.posix.AF.INET6)
+                        @bitCast(address.sin6.addr)
+                    else if (address.as_v4()) |ip4| mapped: {
+                        var bytes: [16]u8 = @splat(0);
+                        bytes[10] = 255;
+                        bytes[11] = 255;
+                        bytes[12..16].* = @as([4]u8, @bitCast(ip4));
+                        break :mapped @bitCast(bytes);
+                    } else continue;
                     const subnet_addr: u128 = @bitCast(s.network.sin6.addr);
                     if (s.prefix == 128) if (ip_addr == subnet_addr) (return .true) else continue;
                     // A /0 subnet matches every address; guard before the mask so

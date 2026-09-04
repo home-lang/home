@@ -242,10 +242,6 @@ describe("MessagePort pipe", () => {
           B.close();
           const finalized = { count: 0 };
           const reg = new FinalizationRegistry(() => { finalized.count++; });
-          // Async close can outlive the registry's last local use. Keep the
-          // registry (not its targets) alive until reporting finalizers.
-          // https://github.com/home-lang/home/issues/462
-          globalThis.finalizationRegistry = reg;
           for (let i = 0; i < 200; i++) {
             const { port1: C, port2: D } = new MessageChannel();
             D.onmessage = () => {};
@@ -256,7 +252,6 @@ describe("MessagePort pipe", () => {
           // If dropped-in-transit endpoints weren't closed, every D would
           // be pinned via isOtherSideOpen and finalized.count would be 0.
           console.log(JSON.stringify({ finalized: finalized.count }));
-          delete globalThis.finalizationRegistry;
           A.close();
           process.exit(0);
         `,

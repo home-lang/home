@@ -9478,6 +9478,60 @@ test "Program: qualified imported leaves retain contextual callback signatures" 
     for (compilation.diagnostics.items) |diagnostic| try T.expectEqual(@as(u32, 2322), diagnostic.code);
 }
 
+test "Program: returned imported callable interfaces retain callback read contracts" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver };
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+
+    const owner =
+        \\export interface IssueBase { readonly code?: string; readonly path: PropertyKey[]; readonly message: string; }
+        \\export interface InvalidType extends IssueBase { readonly code: "invalid_type"; readonly expected: string; }
+        \\export interface InvalidValue extends IssueBase { readonly code: "invalid_value"; readonly values: string[]; }
+        \\export type Issue = InvalidType | InvalidValue;
+        \\type MakePartial<T, K extends keyof T> = Omit<T, K> & Partial<Pick<T, K>>;
+        \\type Flatten<T> = { [K in keyof T]: T[K] } & {};
+        \\type InternalIssue<T extends IssueBase = Issue> = T extends any ? RawIssue<T> : never;
+        \\type RawIssue<T extends IssueBase> = T extends any
+        \\  ? Flatten<MakePartial<T, "message" | "path"> & { readonly input: unknown } & Record<string, unknown>>
+        \\  : never;
+        \\export interface ErrorMap<T extends IssueBase = Issue> {
+        \\  (issue: InternalIssue<T>): { message: string } | string | undefined | null;
+        \\}
+    ;
+    const consumer =
+        \\import type * as errors from "./owner.js";
+        \\import type { ErrorMap } from "./owner.js";
+        \\export const qualified: () => errors.ErrorMap = () => (issue) => issue.code;
+        \\export const direct: () => ErrorMap = () => (issue) => issue.code;
+        \\export const missingProperty: () => ErrorMap = () => (issue) => issue.missing;
+        \\export const wrongReturn: () => ErrorMap = () => (issue) => 42;
+        \\function localShadow(): void {
+        \\  interface ErrorMap { (value: number): number; }
+        \\  const local: () => ErrorMap = () => (value) => value + 1;
+        \\  void local;
+        \\}
+    ;
+    try vfs.addFile("/proj/owner.ts", owner);
+    try vfs.addFile("/proj/consumer.ts", consumer);
+    _ = try p.add("/proj/owner.ts", owner);
+    const consumer_id = try p.add("/proj/consumer.ts", consumer);
+
+    try p.compileAll(.{
+        .no_emit = true,
+        .strict_flags = .{ .no_implicit_any = true, .strict_null_checks = true },
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    });
+    const compilation = p.fileById(consumer_id).compilation.?;
+    try expectCompilationLacksDiagnosticCode(compilation, 7006);
+    try T.expectEqual(@as(usize, 2), compilation.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 2339), compilation.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 2322), compilation.diagnostics.items[1].code);
+}
+
 test "Program: named imports preserve generic interface method context" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();

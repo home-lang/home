@@ -1,7 +1,6 @@
 const std = @import("std");
 
 pub export var Bun__reported_memory_size: usize = 0;
-pub export const Bun__githubURL: [*:0]const u8 = "https://github.com/oven-sh/bun";
 
 const Environment = @import("environment.zig");
 

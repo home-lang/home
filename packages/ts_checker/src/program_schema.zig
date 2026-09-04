@@ -35,6 +35,13 @@ pub const Reference = struct {
     declaration: *const Declaration,
     arguments: []const *const Expression,
     projection_only: bool = false,
+    /// This edge is retained solely to contextually type a callable input.
+    /// Its target may contain source-owned utility machinery that is not
+    /// admissible as the importing file's general-purpose type.
+    contextual_projection: bool = false,
+    /// Proven source expression whose complete readable-key surface survives
+    /// this contextual utility projection.
+    contextual_read: ?*const Expression = null,
 };
 pub const IndexedAccess = struct { object: *const Expression, index: *const Expression };
 pub const Conditional = struct {
@@ -53,6 +60,12 @@ pub const Mapped = struct {
 pub const IndexSignature = struct { key: *const Expression, value: *const Expression };
 pub const IndexedObject = struct { members: []const Member, indices: []const IndexSignature };
 pub const Record = struct { key: *const Expression, value: *const Expression, readonly: bool = false };
+pub const UtilityKind = enum { partial, required, readonly, pick, omit };
+pub const Utility = struct {
+    kind: UtilityKind,
+    source: *const Expression,
+    keys: ?*const Expression = null,
+};
 pub const Expression = union(enum) {
     primitive: types.TypeId,
     /// A deliberately opaque leaf in an otherwise transferable declaration.
@@ -72,6 +85,7 @@ pub const Expression = union(enum) {
     object: []const Member,
     indexed_object: IndexedObject,
     record: Record,
+    utility: Utility,
     tuple: []const Element,
     union_type: []const *const Expression,
     intersection: []const *const Expression,
@@ -98,6 +112,10 @@ pub const Declaration = struct {
     /// This declaration preserves a callable shell by degrading at least one
     /// untransferable leaf. It is valid only as contextual function input.
     contextual_only: bool = false,
+    /// Set only on a checker-local copy reached through a contextual edge.
+    /// It permits exact utility/index scaffolding while keeping unsupported
+    /// object-property leaves opaque.
+    contextual_projection: bool = false,
 };
 
 pub const Schema = struct {
@@ -171,6 +189,11 @@ pub const Schema = struct {
                         return false;
                     }
                 },
+                .utility => |utility| {
+                    if (!allow_opaque) return false;
+                    try pending.append(gpa, utility.source);
+                    if (utility.keys) |keys| try pending.append(gpa, keys);
+                },
                 .tuple => |elements| for (elements) |element| {
                     try pending.append(gpa, element.type);
                 },
@@ -186,6 +209,12 @@ pub const Schema = struct {
                     if (function.predicate) |predicate| try pending.append(gpa, predicate.target);
                 },
                 .reference => |ref| {
+                    if (ref.contextual_projection) {
+                        if (!allow_opaque) return false;
+                        try pending.appendSlice(gpa, ref.arguments);
+                        if (ref.contextual_read) |read| try pending.append(gpa, read);
+                        continue;
+                    }
                     if (ref.projection_only and !allow_opaque) return false;
                     try appendDeclaration(gpa, pending, ref.declaration);
                     try pending.appendSlice(gpa, ref.arguments);

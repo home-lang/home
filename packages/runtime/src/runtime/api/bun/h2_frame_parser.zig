@@ -4509,10 +4509,13 @@ pub const H2FrameParser = struct {
         const available_payload = actual_max_frame_size - priority_overhead;
 
         // RFC 7540 Section 6.10: CONTINUATION frames carry ONLY header block fragments.
-        // Unlike HEADERS frames, CONTINUATION frames CANNOT have padding or priority fields.
-        // When we need CONTINUATION frames, disable padding to keep the logic simple.
-        // Pass available_payload as maxLen so getPadding can apply padding when headers fit in one frame.
-        const padding: u8 = if (encoded_size > available_payload) 0 else stream.getPadding(encoded_size, available_payload);
+        // Unlike HEADERS frames, CONTINUATION frames CANNOT have padding or priority fields,
+        // so padding is disabled whenever the block does not fit in a single HEADERS frame.
+        // Reserve one byte for the pad-length field so `encoded_size + padding_overhead`
+        // never exceeds `available_payload`; otherwise padding alone could push an
+        // already-fitting block into the CONTINUATION branch below, which then slices
+        // `first_chunk_size` bytes out of a shorter encoded header block.
+        const padding: u8 = if (encoded_size >= available_payload) 0 else stream.getPadding(encoded_size, available_payload - 1);
         const padding_overhead: usize = if (padding != 0) @as(usize, @intCast(padding)) + 1 else 0;
 
         // Max payload for HEADERS frame (accounting for priority and padding overhead)

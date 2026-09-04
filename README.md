@@ -276,6 +276,11 @@ The latest untimed correctness gate is reported separately from performance:
 | Admission audit | TypeScript 6.0.3 | Native TypeScript 7.0.2 | Home |
 |---|---:|---:|---:|
 | [Export-list owner and barrel diagnostics](docs/docs/TS_PERFORMANCE.md#indexed-export-queries-and-variable-list-ownership) | 128/128 | 128/128 | 128/128 |
+| [Returned imported callable controls](docs/docs/TS_PERFORMANCE.md#returned-imported-callable-context) | 2/2 positive; TS2339 + TS2322 | 2/2 positive; TS2339 + TS2322 | 2/2 positive; TS2339 + TS2322 |
+
+On the pinned Zod 4.5.2 graph, the callable-context fix removes exactly 60
+TS7006 diagnostics with zero additions (1,148 → 1,088). Zod remains an untimed,
+unadmitted workload until the remaining diagnostics are resolved.
 
 The latest optimization admissions preserve that qualified snapshot while
 recording both accepted and rejected probes:

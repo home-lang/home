@@ -28,6 +28,12 @@ pending_close: bool = false,
 pending_reset: bool = false,
 closed: bool = false,
 task: jsc.WorkPoolTask = .{ .callback = undefined },
+/// Per-mode external-allocation footprint, fixed at construction. Immutable
+/// because `estimatedSize` runs on the concurrent GC marking thread, where
+/// reading `stream` would race an in-progress write's mutable borrow — and
+/// because the reported footprint must not collapse when `close()` clears the
+/// mode.
+estimated_external_size: usize = 0,
 
 pub fn constructor(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!*@This() {
     const arguments = callframe.argumentsUndef(1).ptr;
@@ -50,17 +56,24 @@ pub fn constructor(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) b
         .globalThis = globalThis,
     });
     ptr.stream.mode = @fromBackingInt(@intCast(mode_int));
+    ptr.estimated_external_size = externalSizeFor(ptr.stream.mode);
     return ptr;
 }
 
-pub fn estimatedSize(this: *const @This()) usize {
+fn externalSizeFor(mode: @TypeOf(@as(Context, undefined).mode)) usize {
     const encoder_state_size: usize = 5143; // @sizeOf(@cImport(@cInclude("brotli/encode.h")).BrotliEncoderStateStruct)
     const decoder_state_size: usize = 855; // @sizeOf(@cImport(@cInclude("brotli/decode.h")).BrotliDecoderStateStruct)
-    return @sizeOf(@This()) + switch (this.stream.mode) {
+    return switch (mode) {
         .BROTLI_ENCODE => encoder_state_size,
         .BROTLI_DECODE => decoder_state_size,
         else => 0,
     };
+}
+
+/// Called from any thread (concurrent GC marking), so it reads only the
+/// immutable footprint recorded at construction.
+pub fn estimatedSize(this: *const @This()) usize {
+    return @sizeOf(@This()) + this.estimated_external_size;
 }
 
 pub fn init(this: *@This(), globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {

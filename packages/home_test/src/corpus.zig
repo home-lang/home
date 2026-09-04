@@ -12,9 +12,7 @@ const Io = std.Io;
 pub const default_root = "packages/runtime/test/bun-corpus";
 pub const expected_copied_bun_test_tree_entries = 12996;
 pub const expected_copied_bun_test_files = 4708;
-const generated_home_corpus_files = 2;
-
-const local_bun_filtered_files = [_][]const u8{};
+pub const tracked_manifest_name = "BUN_TRACKED_FILES.txt";
 
 pub const Counts = struct {
     files: usize = 0,
@@ -85,6 +83,87 @@ pub fn collectFiles(io: Io, allocator: std.mem.Allocator, path: []const u8) ![][
 
 pub fn collectTestFiles(io: Io, allocator: std.mem.Allocator, path: []const u8) ![][]const u8 {
     return collectFilesMatching(io, allocator, path, .tests);
+}
+
+pub fn countTrackedCorpus(io: Io, allocator: std.mem.Allocator, corpus_root: []const u8) !Counts {
+    const files = try collectTrackedFilesMatching(io, allocator, corpus_root, "", .all);
+    defer freeTestFiles(allocator, files);
+
+    var counts = Counts{ .files = files.len };
+    for (files) |file| {
+        if (isTestFile(std.fs.path.basename(file))) counts.tests += 1;
+    }
+    return counts;
+}
+
+pub fn collectTrackedTestFiles(
+    io: Io,
+    allocator: std.mem.Allocator,
+    corpus_root: []const u8,
+) ![][]const u8 {
+    return collectTrackedFilesMatching(io, allocator, corpus_root, "", .tests);
+}
+
+pub fn collectTrackedDirectoryTestFiles(
+    io: Io,
+    allocator: std.mem.Allocator,
+    corpus_root: []const u8,
+    relative_directory: []const u8,
+) ![][]const u8 {
+    return collectTrackedFilesMatching(io, allocator, corpus_root, relative_directory, .tests);
+}
+
+fn collectTrackedFilesMatching(
+    io: Io,
+    allocator: std.mem.Allocator,
+    corpus_root: []const u8,
+    relative_directory: []const u8,
+    selection: FileSelection,
+) ![][]const u8 {
+    const manifest_path = try std.fs.path.join(allocator, &.{ corpus_root, tracked_manifest_name });
+    defer allocator.free(manifest_path);
+    const manifest = try Io.Dir.cwd().readFileAlloc(
+        io,
+        manifest_path,
+        allocator,
+        std.Io.Limit.limited(2 * 1024 * 1024),
+    );
+    defer allocator.free(manifest);
+
+    return collectTrackedFilesFromManifest(allocator, manifest, relative_directory, selection);
+}
+
+fn collectTrackedFilesFromManifest(
+    allocator: std.mem.Allocator,
+    manifest: []const u8,
+    relative_directory: []const u8,
+    selection: FileSelection,
+) ![][]const u8 {
+    const directory_prefix = if (relative_directory.len == 0)
+        null
+    else
+        try std.fmt.allocPrint(allocator, "{s}/", .{std.mem.trimEnd(u8, relative_directory, "/")});
+    defer if (directory_prefix) |prefix| allocator.free(prefix);
+
+    var files = std.ArrayList([]const u8).empty;
+    errdefer {
+        for (files.items) |file| allocator.free(file);
+        files.deinit(allocator);
+    }
+
+    var lines = std.mem.splitScalar(u8, manifest, '\n');
+    while (lines.next()) |raw_line| {
+        const line = std.mem.trimEnd(u8, raw_line, "\r");
+        if (line.len == 0) continue;
+        const relative = if (directory_prefix) |prefix| blk: {
+            if (!std.mem.startsWith(u8, line, prefix)) continue;
+            break :blk line[prefix.len..];
+        } else line;
+        if (selection == .tests and !isTestFile(std.fs.path.basename(relative))) continue;
+        try files.append(allocator, try allocator.dupe(u8, relative));
+    }
+
+    return files.toOwnedSlice(allocator);
 }
 
 fn collectFilesMatching(io: Io, allocator: std.mem.Allocator, path: []const u8, selection: FileSelection) ![][]const u8 {
@@ -203,6 +282,53 @@ test "Bun corpus collector returns sorted relative test paths" {
     }
 }
 
+test "Bun corpus manifest excludes generated and provisioned test-shaped files" {
+    const manifest =
+        \\bake/bake.test.ts
+        \\js/node/test/fixtures/es-modules/node_modules/pkg/index.js
+    ;
+    const files = try collectTrackedFilesFromManifest(
+        std.testing.allocator,
+        manifest,
+        "",
+        .tests,
+    );
+    defer freeTestFiles(std.testing.allocator, files);
+
+    try std.testing.expectEqual(@as(usize, 1), files.len);
+    try std.testing.expectEqualStrings("bake/bake.test.ts", files[0]);
+
+    // Neither an ignored bake output nor tests installed under a dependency
+    // become corpus entries unless the pinned Bun Git tree names them.
+    try std.testing.expect(!containsPath(files, "bake/fixtures/deinitialization/.bake-debug/generated.test.ts"));
+    try std.testing.expect(!containsPath(files, "napi/napi-app/node_modules/retry/test/test-retry.js"));
+}
+
+test "Bun corpus manifest scopes directory runs to tracked tests" {
+    const manifest =
+        \\napi/napi-app/app.test.js
+        \\napi/napi-app/fixture.js
+        \\napi/other.test.js
+    ;
+    const files = try collectTrackedFilesFromManifest(
+        std.testing.allocator,
+        manifest,
+        "napi/napi-app",
+        .tests,
+    );
+    defer freeTestFiles(std.testing.allocator, files);
+
+    try std.testing.expectEqual(@as(usize, 1), files.len);
+    try std.testing.expectEqualStrings("app.test.js", files[0]);
+}
+
+fn containsPath(files: []const []const u8, expected: []const u8) bool {
+    for (files) |file| {
+        if (std.mem.eql(u8, file, expected)) return true;
+    }
+    return false;
+}
+
 test "Bun corpus counter walks nested directories" {
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
@@ -222,11 +348,29 @@ test "Bun corpus counter walks nested directories" {
 }
 
 test "Bun corpus collector sees vendored upstream tests" {
-    const counts = try countPath(std.testing.io, default_root);
-    try std.testing.expectEqual(@as(usize, expected_copied_bun_test_tree_entries + generated_home_corpus_files), counts.files);
+    const counts = try countTrackedCorpus(std.testing.io, std.testing.allocator, default_root);
+    try std.testing.expectEqual(@as(usize, expected_copied_bun_test_tree_entries), counts.files);
     try std.testing.expectEqual(@as(usize, expected_copied_bun_test_files), counts.tests);
 
-    const files = try collectTestFiles(std.testing.io, std.testing.allocator, default_root);
+    const tracked_files = try collectTrackedFilesMatching(
+        std.testing.io,
+        std.testing.allocator,
+        default_root,
+        "",
+        .all,
+    );
+    defer freeTestFiles(std.testing.allocator, tracked_files);
+    for (tracked_files, 0..) |file, index| {
+        if (index > 0) try std.testing.expect(std.mem.lessThan(u8, tracked_files[index - 1], file));
+        const full_path = try std.fs.path.join(std.testing.allocator, &.{ default_root, file });
+        defer std.testing.allocator.free(full_path);
+        Io.Dir.cwd().access(std.testing.io, full_path, .{ .follow_symlinks = false }) catch |err| {
+            std.debug.print("tracked Bun corpus file missing from checkout: {s}\n", .{file});
+            return err;
+        };
+    }
+
+    const files = try collectTrackedTestFiles(std.testing.io, std.testing.allocator, default_root);
     defer freeTestFiles(std.testing.allocator, files);
 
     try std.testing.expectEqual(counts.tests, files.len);
@@ -269,7 +413,7 @@ test "Bun corpus collector includes every upstream test file" {
     };
     defer freeTestFiles(std.testing.allocator, upstream_files);
 
-    const copied_files = try collectTestFiles(std.testing.io, std.testing.allocator, default_root);
+    const copied_files = try collectTrackedTestFiles(std.testing.io, std.testing.allocator, default_root);
     defer freeTestFiles(std.testing.allocator, copied_files);
 
     try std.testing.expect(copied_files.len >= upstream_files.len);
@@ -302,7 +446,7 @@ test "Bun corpus collector matches local Bun checkout when present" {
     };
     defer freeTestFiles(std.testing.allocator, upstream_files);
 
-    const copied_files = try collectTestFiles(std.testing.io, std.testing.allocator, default_root);
+    const copied_files = try collectTrackedTestFiles(std.testing.io, std.testing.allocator, default_root);
     defer freeTestFiles(std.testing.allocator, copied_files);
 
     if (upstream_files.len != copied_files.len) {
@@ -321,52 +465,37 @@ test "Bun corpus collector matches local Bun checkout when present" {
     }
 }
 
-test "Bun corpus mirror includes every local Bun test-tree file when present" {
+test "Bun corpus manifest includes every pinned file in local Bun checkout when present" {
     const upstream_root = localBunTestRoot(std.testing.allocator) catch |err| switch (err) {
         error.SkipZigTest => return error.SkipZigTest,
         else => return err,
     };
     defer std.testing.allocator.free(upstream_root);
 
-    const upstream_files = collectFiles(std.testing.io, std.testing.allocator, upstream_root) catch |err| switch (err) {
-        error.FileNotFound => return error.SkipZigTest,
-        error.NotDir => return error.SkipZigTest,
-        else => return err,
-    };
-    defer freeTestFiles(std.testing.allocator, upstream_files);
+    const tracked_files = try collectTrackedFilesMatching(
+        std.testing.io,
+        std.testing.allocator,
+        default_root,
+        "",
+        .all,
+    );
+    defer freeTestFiles(std.testing.allocator, tracked_files);
 
-    const copied_files = try collectFiles(std.testing.io, std.testing.allocator, default_root);
-    defer freeTestFiles(std.testing.allocator, copied_files);
+    for (tracked_files) |file| {
+        const upstream_path = try std.fs.path.join(std.testing.allocator, &.{ upstream_root, file });
+        defer std.testing.allocator.free(upstream_path);
+        Io.Dir.cwd().access(std.testing.io, upstream_path, .{ .follow_symlinks = false }) catch |err| {
+            std.debug.print("pinned Bun file missing from local checkout: {s}\n", .{file});
+            return err;
+        };
 
-    var upstream_set = std.StringHashMap(void).init(std.testing.allocator);
-    defer upstream_set.deinit();
-    for (upstream_files) |file| try upstream_set.put(file, {});
-
-    var copied_set = std.StringHashMap(void).init(std.testing.allocator);
-    defer copied_set.deinit();
-    for (copied_files) |file| try copied_set.put(file, {});
-
-    var expected_copied_from_upstream: usize = 0;
-    for (upstream_files) |upstream_file| {
-        if (isIntentionallyFilteredLocalBunFile(upstream_file)) continue;
-        expected_copied_from_upstream += 1;
-        if (!copied_set.contains(upstream_file)) {
-            std.debug.print("missing local Bun test-tree file in corpus: {s}\n", .{upstream_file});
-            try std.testing.expect(false);
-        }
+        const copied_path = try std.fs.path.join(std.testing.allocator, &.{ default_root, file });
+        defer std.testing.allocator.free(copied_path);
+        Io.Dir.cwd().access(std.testing.io, copied_path, .{ .follow_symlinks = false }) catch |err| {
+            std.debug.print("pinned Bun file missing from copied corpus: {s}\n", .{file});
+            return err;
+        };
     }
-
-    var copied_from_upstream: usize = 0;
-    for (copied_files) |copied_file| {
-        if (isGeneratedHomeCorpusFile(copied_file)) continue;
-        copied_from_upstream += 1;
-        if (!upstream_set.contains(copied_file)) {
-            std.debug.print("extra non-upstream file in Bun corpus mirror: {s}\n", .{copied_file});
-            try std.testing.expect(false);
-        }
-    }
-
-    try std.testing.expectEqual(expected_copied_from_upstream, copied_from_upstream);
 }
 
 fn localBunTestRoot(allocator: std.mem.Allocator) ![]const u8 {
@@ -375,16 +504,4 @@ fn localBunTestRoot(allocator: std.mem.Allocator) ![]const u8 {
     }
     const home = std.c.getenv("HOME") orelse return error.SkipZigTest;
     return std.fs.path.join(allocator, &.{ std.mem.span(home), "Code", "bun", "test" });
-}
-
-fn isGeneratedHomeCorpusFile(file: []const u8) bool {
-    return std.mem.eql(u8, file, "UPSTREAM_SHA.txt") or
-        std.mem.eql(u8, file, "FILTERED_FILES.txt");
-}
-
-fn isIntentionallyFilteredLocalBunFile(file: []const u8) bool {
-    for (local_bun_filtered_files) |filtered| {
-        if (std.mem.eql(u8, file, filtered)) return true;
-    }
-    return false;
 }

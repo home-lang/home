@@ -2555,12 +2555,20 @@ pub const Arguments = struct {
         length: u64 = std.math.maxInt(u64),
         position: ?ReadPosition = null,
         encoding: Encoding = Encoding.buffer,
+        /// The typed array whose backing store `fromJS` pinned for the async
+        /// path, released in `deinitAndUnprotect` (the JS-thread hook).
+        /// `.zero` when nothing was pinned.
+        pinned: jsc.JSValue = .zero,
 
         pub fn deinit(this: *const @This()) void {
             this.buffer.deinit();
         }
 
         pub fn deinitAndUnprotect(this: *@This()) void {
+            if (this.pinned != .zero) {
+                this.pinned.unpinArrayBuffer();
+                this.pinned = .zero;
+            }
             this.buffer.deinitAndUnprotect();
         }
 
@@ -2648,6 +2656,25 @@ pub const Arguments = struct {
                 }
             }
 
+            // The async write runs on the thread pool and reads the source bytes
+            // through a raw pointer, so the backing store must not be detachable
+            // while it is in flight. Pinning does not root the value; the
+            // existing protect() in toThreadSafe still does that.
+            //
+            // Install the re-derived buffer rather than keeping the slice taken
+            // before the pin: pinning a FastTypedArray materializes its
+            // ArrayBuffer, and JSC's slowDownAndWasteMemory() copies the elements
+            // into fresh storage and repoints the view's vector. The earlier
+            // pointer is then abandoned storage.
+            if (arguments.will_be_async and args.buffer == .buffer) {
+                if (buffer_value) |bv| {
+                    if (bv.asPinnedArrayBuffer(ctx)) |pinned_ab| {
+                        args.buffer.buffer.buffer = pinned_ab;
+                        args.pinned = bv;
+                    }
+                }
+            }
+
             return args;
         }
     };
@@ -2658,6 +2685,11 @@ pub const Arguments = struct {
         offset: u64,
         length: u64,
         position: ?ReadPosition = null,
+        /// The typed array whose backing store `fromJS` pinned for the async
+        /// path, released in `deinitAndUnprotect` — the JS-thread hook that
+        /// `NewAsyncFSTask(...).deinit` runs on every completion path.
+        /// `.zero` when nothing was pinned.
+        pinned: jsc.JSValue = .zero,
 
         pub fn deinit(_: Read) void {}
 
@@ -2666,6 +2698,10 @@ pub const Arguments = struct {
         }
 
         pub fn deinitAndUnprotect(this: *Read) void {
+            if (this.pinned != .zero) {
+                this.pinned.unpinArrayBuffer();
+                this.pinned = .zero;
+            }
             this.buffer.buffer.value.unprotect();
         }
 
@@ -2683,8 +2719,6 @@ pub const Arguments = struct {
             const buffer_value = arguments.nextEat() orelse
                 // theoretically impossible, argument has been passed already
                 return ctx.throwInvalidArguments("buffer is required", .{});
-            const buffer: jsc.MarkedArrayBuffer = Buffer.fromJS(ctx, buffer_value) orelse
-                return ctx.throwInvalidArgumentTypeValue("buffer", "TypedArray", buffer_value);
 
             const offset_value: jsc.JSValue = arguments.nextEat() orelse .null;
             // if (offset == null) {
@@ -2702,6 +2736,17 @@ pub const Arguments = struct {
                 try arg.toNumber(ctx)
             else
                 0;
+
+            // Materialize the destination only after every argument coercion has
+            // run. `toNumber` above calls a user-supplied `valueOf`, and that JS is
+            // free to detach or transfer the destination buffer. MarkedArrayBuffer
+            // is a value copy of the view descriptor, not a live handle, so one
+            // captured earlier keeps the pre-detach pointer and the read would go
+            // straight into memory the caller no longer owns. Re-reading the view
+            // here yields the detached zero-length slice, which the `buf_len == 0`
+            // check below turns into ERR_INVALID_ARG_VALUE.
+            const buffer: jsc.MarkedArrayBuffer = Buffer.fromJS(ctx, buffer_value) orelse
+                return ctx.throwInvalidArgumentTypeValue("buffer", "TypedArray", buffer_value);
 
             //   if (length === 0) {
             //     return process.nextTick(function tick() {
@@ -2770,12 +2815,31 @@ pub const Arguments = struct {
             else
                 null;
 
+            // The async read runs on the thread pool and fills the destination
+            // through a raw pointer, so the backing store must not be detachable
+            // while it is in flight. Pinning does not root the value; the
+            // protect() in toThreadSafe still does that.
+            //
+            // Install the re-derived buffer: pinning a FastTypedArray
+            // materializes its ArrayBuffer, and JSC's slowDownAndWasteMemory()
+            // copies the elements into fresh storage and repoints the view's
+            // vector, so the slice captured above would be abandoned storage.
+            var out_buffer = buffer;
+            var pinned_value: jsc.JSValue = .zero;
+            if (arguments.will_be_async) {
+                if (buffer_value.asPinnedArrayBuffer(ctx)) |pinned_ab| {
+                    out_buffer.buffer = pinned_ab;
+                    pinned_value = buffer_value;
+                }
+            }
+
             return .{
                 .fd = fd,
-                .buffer = buffer,
+                .buffer = out_buffer,
                 .offset = offset,
                 .length = length,
                 .position = position,
+                .pinned = pinned_value,
             };
         }
     };
@@ -2888,6 +2952,11 @@ pub const Arguments = struct {
 
         signal: ?*AbortSignal = null,
 
+        /// The typed array whose backing store `fromJS` pinned for the async
+        /// path, released in `deinitAndUnprotect`. `.zero` when nothing was
+        /// pinned.
+        pinned: jsc.JSValue = .zero,
+
         pub fn deinit(self: WriteFile) void {
             self.file.deinit();
             self.data.deinit();
@@ -2903,6 +2972,10 @@ pub const Arguments = struct {
         }
 
         pub fn deinitAndUnprotect(self: *WriteFile) void {
+            if (self.pinned != .zero) {
+                self.pinned.unpinArrayBuffer();
+                self.pinned = .zero;
+            }
             self.file.deinitAndUnprotect();
             self.data.deinitAndUnprotect();
             if (self.signal) |signal| {
@@ -2980,6 +3053,15 @@ pub const Arguments = struct {
                 return ctx.ERR(.INVALID_ARG_TYPE, "The \"data\" argument must be of type string or an instance of Buffer, TypedArray, or DataView", .{}).throw();
             };
 
+            // The async write reads the source bytes on the thread pool through a
+            // raw pointer, so the backing store must not be detachable while it
+            // is in flight. Pinning does not root the value; toThreadSafe's
+            // protect() still does that.
+            var pinned: jsc.JSValue = .zero;
+            if (arguments.will_be_async and data == .buffer) {
+                if (data_value.asPinnedArrayBuffer(ctx) != null) pinned = data_value;
+            }
+
             return .{
                 .file = path,
                 .encoding = encoding,
@@ -2989,6 +3071,7 @@ pub const Arguments = struct {
                 .dirfd = bun.FD.cwd(),
                 .signal = abort_signal,
                 .flush = flush,
+                .pinned = pinned,
             };
         }
 
