@@ -3,11 +3,18 @@ pub const BufferVectorized = struct {
         str: *jsc.ZigString,
         buf_ptr: [*]u8,
         fill_length: usize,
-        encoding: jsc.Node.Encoding,
+        requested_encoding: jsc.Node.Encoding,
     ) callconv(.c) bool {
         if (str.len == 0) return true;
 
         var buf = buf_ptr[0..fill_length];
+
+        // Per Node docs, `'ascii'` on encode is equivalent to `'latin1'`: a
+        // verbatim byte copy with no 7-bit masking. The shared ascii writer
+        // masks because the ascii *decode* path reuses it, so fold it here and
+        // `Buffer.fill(str, 'ascii')` / `Buffer.alloc(n, str, 'ascii')` keep
+        // their high-bit bytes, as `Buffer.prototype.write` already does.
+        const encoding: jsc.Node.Encoding = if (requested_encoding == .ascii) .latin1 else requested_encoding;
 
         const written = switch (encoding) {
             .utf8 => if (str.is16Bit())
