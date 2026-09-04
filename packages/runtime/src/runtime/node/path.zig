@@ -898,10 +898,12 @@ pub fn formatWindowsJS_T(comptime T: type, globalObject: *jsc.JSGlobalObject, pa
 pub fn formatJS_T(comptime T: type, globalObject: *jsc.JSGlobalObject, allocator: std.mem.Allocator, isWindows: bool, pathObject: PathParsed(T)) bun.JSError!jsc.JSValue {
     const baseLen = pathObject.base.len;
     const dirLen = pathObject.dir.len;
-    // Add one for the possible separator.
+    // Add one for the possible separator, and one more for the dot formatExt
+    // inserts when `ext` does not already start with one — without it a
+    // dot-less `ext` overruns the buffer by exactly that byte.
     const bufLen: usize = @max(1 +
         (if (dirLen > 0) dirLen else pathObject.root.len) +
-        (if (baseLen > 0) baseLen else pathObject.name.len + pathObject.ext.len), PATH_SIZE(T));
+        (if (baseLen > 0) baseLen else pathObject.name.len + pathObject.ext.len + 1), PATH_SIZE(T));
     const buf = bun.handleOom(allocator.alloc(T, bufLen));
     defer allocator.free(buf);
     return if (isWindows) formatWindowsJS_T(T, globalObject, pathObject, buf) else formatPosixJS_T(T, globalObject, pathObject, buf);
