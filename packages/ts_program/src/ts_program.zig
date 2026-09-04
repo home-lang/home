@@ -9591,6 +9591,7 @@ test "Program: namespace imports preserve defaulted indexed generic callbacks" {
         \\import type { Class, ProtoOf } from "./util.js";
         \\type Trait = { _zod: { def: unknown; [key: string]: unknown } };
         \\interface ConstructorParams { Parent?: typeof Class }
+        \\export interface ImportedBase<D> { _zod: { def: D }; inherited: string; }
         \\export interface $constructor<T extends Trait, D = T["_zod"]["def"]> {
         \\  new (def: D): T;
         \\  init(inst: T, def: D): asserts inst is T;
@@ -9612,7 +9613,12 @@ test "Program: namespace imports preserve defaulted indexed generic callbacks" {
     const broken = "export const unrelated = ;";
     const consumer =
         \\import * as core from "./barrel.js";
-        \\interface Schema { _zod: { def: { kind: "schema" } }; clone(): this; format(value: string): string; }
+        \\interface Schema extends core.ImportedBase<{ kind: "schema" }> {
+        \\  clone(): this;
+        \\  format(value: string): string;
+        \\  partial(): number;
+        \\  partial(mask: { key: string }): number;
+        \\}
         \\core.$constructor<Schema>("Schema", (inst, def) => {
         \\  const exactInst: Schema = inst;
         \\  const exactDef: { kind: "schema" } = def;
@@ -9621,7 +9627,12 @@ test "Program: namespace imports preserve defaulted indexed generic callbacks" {
         \\}, {
         \\  format(value) {
         \\    const exact: string = value;
-        \\    return exact;
+        \\    const kind: "schema" = this._zod.def.kind;
+        \\    return exact + kind + this.inherited;
+        \\  },
+        \\  partial(...args) {
+        \\    const key: string = args[0].key;
+        \\    return key.length + this._zod.def.kind.length;
         \\  },
         \\});
     ;
@@ -9751,7 +9762,10 @@ test "Program: namespace imports preserve defaulted indexed generic callbacks" {
     try expectCompilationLacksDiagnosticCode(named_compilation, 2322);
     try expectCompilationLacksDiagnosticCode(named_compilation, 2347);
     try expectCompilationLacksDiagnosticCode(compilation, 7006);
+    try expectCompilationLacksDiagnosticCode(compilation, 7019);
     try expectCompilationLacksDiagnosticCode(compilation, 2322);
+    try expectCompilationLacksDiagnosticCode(compilation, 2339);
+    try expectCompilationLacksDiagnosticCode(compilation, 2493);
     try expectCompilationLacksDiagnosticCode(compilation, 2347);
     try expectCompilationLacksDiagnosticCode(optional_proto_compilation, 2345);
     try expectCompilationHasDiagnosticCode(invalid_optional_proto_compilation, 2345);
