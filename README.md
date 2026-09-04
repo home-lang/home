@@ -277,10 +277,18 @@ The latest untimed correctness gate is reported separately from performance:
 |---|---:|---:|---:|
 | [Export-list owner and barrel diagnostics](docs/docs/TS_PERFORMANCE.md#indexed-export-queries-and-variable-list-ownership) | 128/128 | 128/128 | 128/128 |
 | [Returned imported callable controls](docs/docs/TS_PERFORMANCE.md#returned-imported-callable-context) | 2/2 positive; TS2339 + TS2322 | 2/2 positive; TS2339 + TS2322 | 2/2 positive; TS2339 + TS2322 |
+| [Polymorphic mapped receiver controls](docs/docs/TS_PERFORMANCE.md#polymorphic-mapped-receiver-context) | TS2339 + TS2322 | TS2339 + TS2322 | TS2339 + TS2322 |
 
-On the pinned Zod 4.5.2 graph, the callable-context fix removes exactly 60
-TS7006 diagnostics with zero additions (1,148 → 1,088). Zod remains an untimed,
-unadmitted workload until the remaining diagnostics are resolved.
+The same-parent ReleaseFast audit on the pinned 106-file Zod 4.5.2 graph is
+reported separately from the admitted synthetic suite:
+
+| [Zod 4.5.2 mapped-receiver audit](docs/docs/TS_PERFORMANCE.md#polymorphic-mapped-receiver-context) | Exact parent | #619 candidate | Change |
+|---|---:|---:|---:|
+| Diagnostics | 1,088 | **976** | **112 removed; 0 added** |
+| Mean wall time, two runs | 9.925 s | **5.740 s** | **42.2% lower** |
+
+TypeScript 6.0.3 reports zero diagnostics on this graph. Zod remains outside
+the cross-compiler timing table until Home also reaches zero diagnostics.
 
 The latest optimization admissions preserve that qualified snapshot while
 recording both accepted and rejected probes:
