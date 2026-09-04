@@ -9591,6 +9591,7 @@ test "Program: namespace imports preserve defaulted indexed generic callbacks" {
         \\import type { Class, ProtoOf } from "./util.js";
         \\type Trait = { _zod: { def: unknown; [key: string]: unknown } };
         \\interface ConstructorParams { Parent?: typeof Class }
+        \\export interface ImportedBase<D> { _zod: { def: D }; inherited: string; }
         \\export interface $constructor<T extends Trait, D = T["_zod"]["def"]> {
         \\  new (def: D): T;
         \\  init(inst: T, def: D): asserts inst is T;
@@ -9612,7 +9613,12 @@ test "Program: namespace imports preserve defaulted indexed generic callbacks" {
     const broken = "export const unrelated = ;";
     const consumer =
         \\import * as core from "./barrel.js";
-        \\interface Schema { _zod: { def: { kind: "schema" } }; format(value: string): string; }
+        \\interface Schema extends core.ImportedBase<{ kind: "schema" }> {
+        \\  clone(): this;
+        \\  format(value: string): string;
+        \\  partial(): number;
+        \\  partial(mask: { key: string }): number;
+        \\}
         \\core.$constructor<Schema>("Schema", (inst, def) => {
         \\  const exactInst: Schema = inst;
         \\  const exactDef: { kind: "schema" } = def;
@@ -9621,7 +9627,12 @@ test "Program: namespace imports preserve defaulted indexed generic callbacks" {
         \\}, {
         \\  format(value) {
         \\    const exact: string = value;
-        \\    return exact;
+        \\    const kind: "schema" = this._zod.def.kind;
+        \\    return exact + kind + this.inherited;
+        \\  },
+        \\  partial(...args) {
+        \\    const key: string = args[0].key;
+        \\    return key.length + this._zod.def.kind.length;
         \\  },
         \\});
     ;
@@ -9636,7 +9647,7 @@ test "Program: namespace imports preserve defaulted indexed generic callbacks" {
         \\core.$constructor<Schema>("Schema", () => {}, null);
     ;
     const named_consumer =
-        \\import { $constructor } from "./owner";
+        \\import { $constructor } from "./barrel";
         \\interface Schema { _zod: { def: { kind: "schema" } } }
         \\$constructor<Schema>("Schema", (inst, def) => {
         \\  const exactInst: Schema = inst;
@@ -9666,12 +9677,31 @@ test "Program: namespace imports preserve defaulted indexed generic callbacks" {
     ;
     const invalid_proto_consumer =
         \\import * as core from "./owner";
-        \\interface Schema { _zod: { def: { kind: "schema" } }; format(value: string): string; }
+        \\interface Schema { _zod: { def: { kind: "schema" } }; clone(): this; format(value: string): string; }
         \\core.$constructor<Schema>("Schema", () => {}, {
         \\  format(value) {
         \\    const wrong: number = value;
         \\    return value;
         \\  },
+        \\});
+    ;
+    const direct_proto_consumer =
+        \\import { $constructor } from "./barrel.js";
+        \\interface Schema { _zod: { def: { kind: "schema" } }; clone(): this; format(value: string): string; }
+        \\$constructor<Schema>("Schema", () => {}, {
+        \\  format(value) { return value.length; },
+        \\});
+        \\function localShadow(): void {
+        \\  function $constructor<T>(_name: string, callback: (value: number) => number): void { void callback; }
+        \\  $constructor<Schema>("local", (value) => value + 1);
+        \\}
+        \\void localShadow;
+    ;
+    const plain_proto_consumer =
+        \\import { $constructor } from "./barrel.js";
+        \\interface Schema { _zod: { def: { kind: "schema" } }; format(value: string): string; }
+        \\$constructor<Schema>("Schema", () => {}, {
+        \\  format(value) { return value; },
         \\});
     ;
     const invalid_consumer =
@@ -9695,6 +9725,8 @@ test "Program: namespace imports preserve defaulted indexed generic callbacks" {
     try vfs.addFile("/proj/contextual-consumer.ts", contextual_consumer);
     try vfs.addFile("/proj/invalid-contextual-consumer.ts", invalid_contextual_consumer);
     try vfs.addFile("/proj/invalid-proto-consumer.ts", invalid_proto_consumer);
+    try vfs.addFile("/proj/direct-proto-consumer.ts", direct_proto_consumer);
+    try vfs.addFile("/proj/plain-proto-consumer.ts", plain_proto_consumer);
     try vfs.addFile("/proj/invalid-consumer.ts", invalid_consumer);
     _ = try p.add("/proj/util.ts", util);
     _ = try p.add("/proj/owner.ts", owner);
@@ -9707,6 +9739,8 @@ test "Program: namespace imports preserve defaulted indexed generic callbacks" {
     const contextual_consumer_id = try p.add("/proj/contextual-consumer.ts", contextual_consumer);
     const invalid_contextual_consumer_id = try p.add("/proj/invalid-contextual-consumer.ts", invalid_contextual_consumer);
     const invalid_proto_consumer_id = try p.add("/proj/invalid-proto-consumer.ts", invalid_proto_consumer);
+    const direct_proto_consumer_id = try p.add("/proj/direct-proto-consumer.ts", direct_proto_consumer);
+    const plain_proto_consumer_id = try p.add("/proj/plain-proto-consumer.ts", plain_proto_consumer);
     const invalid_consumer_id = try p.add("/proj/invalid-consumer.ts", invalid_consumer);
 
     try p.compileAll(.{
@@ -9721,12 +9755,17 @@ test "Program: namespace imports preserve defaulted indexed generic callbacks" {
     const contextual_compilation = p.fileById(contextual_consumer_id).compilation.?;
     const invalid_contextual_compilation = p.fileById(invalid_contextual_consumer_id).compilation.?;
     const invalid_proto_compilation = p.fileById(invalid_proto_consumer_id).compilation.?;
+    const direct_proto_compilation = p.fileById(direct_proto_consumer_id).compilation.?;
+    const plain_proto_compilation = p.fileById(plain_proto_consumer_id).compilation.?;
     const invalid_compilation = p.fileById(invalid_consumer_id).compilation.?;
     try expectCompilationLacksDiagnosticCode(named_compilation, 7006);
     try expectCompilationLacksDiagnosticCode(named_compilation, 2322);
     try expectCompilationLacksDiagnosticCode(named_compilation, 2347);
     try expectCompilationLacksDiagnosticCode(compilation, 7006);
+    try expectCompilationLacksDiagnosticCode(compilation, 7019);
     try expectCompilationLacksDiagnosticCode(compilation, 2322);
+    try expectCompilationLacksDiagnosticCode(compilation, 2339);
+    try expectCompilationLacksDiagnosticCode(compilation, 2493);
     try expectCompilationLacksDiagnosticCode(compilation, 2347);
     try expectCompilationLacksDiagnosticCode(optional_proto_compilation, 2345);
     try expectCompilationHasDiagnosticCode(invalid_optional_proto_compilation, 2345);
@@ -9737,6 +9776,12 @@ test "Program: namespace imports preserve defaulted indexed generic callbacks" {
     try expectCompilationHasDiagnosticCode(invalid_contextual_compilation, 2339);
     try expectCompilationLacksDiagnosticCode(invalid_proto_compilation, 7006);
     try expectCompilationHasDiagnosticCode(invalid_proto_compilation, 2322);
+    try expectCompilationLacksDiagnosticCode(direct_proto_compilation, 7006);
+    try expectCompilationLacksDiagnosticCode(direct_proto_compilation, 2345);
+    try expectCompilationHasDiagnosticCode(direct_proto_compilation, 2322);
+    try expectCompilationLacksDiagnosticCode(plain_proto_compilation, 7006);
+    try expectCompilationLacksDiagnosticCode(plain_proto_compilation, 2322);
+    try expectCompilationLacksDiagnosticCode(plain_proto_compilation, 2345);
     try expectCompilationLacksDiagnosticCode(invalid_compilation, 7006);
     try expectCompilationHasDiagnosticCode(invalid_compilation, 2322);
     try expectCompilationHasDiagnosticCode(invalid_compilation, 2339);

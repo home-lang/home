@@ -6668,3 +6668,67 @@ the three-compiler timing table and #548 stays open.
 zig build home-tsc -Doptimize=ReleaseFast
 /usr/bin/time -p ./zig-out/bin/home-tsc --project /path/to/zod-4.5.2/tsconfig.benchmark.json
 ```
+
+### Polymorphic mapped receiver context
+
+Issue [#619](https://github.com/home-lang/home/issues/619), under
+[#548](https://github.com/home-lang/home/issues/548) and
+[#416](https://github.com/home-lang/home/issues/416), follows the returned
+callable work with the mapped prototype argument used by Zod constructors. A
+concrete `T[K]` now reads only the selected direct member instead of expanding
+the receiver's full recursive graph. Direct overload sets remain intact and
+conditional inference uses their final signature. Literal-key indexed chains
+at argument boundaries resolve member by member. A selected member containing
+polymorphic `this` remains deferred.
+
+For contextual object-literal methods, a missing member can also be projected
+through local interface heritage to one exact member of a qualified imported
+base. The lookup validates the visible local declaration, walks local bases
+with a cycle guard, and lowers only the requested source-owned member in its
+generic environment. It does not publish an approximate whole interface,
+special-case Zod or method names, infer from source spelling, or suppress
+assignment diagnostics.
+
+Two strict four-file reductions cover namespace-qualified and direct imports,
+a barrel, a local explicit type argument, a sibling returning polymorphic
+`this`, an overloaded mapped method, inherited imported receiver fields, and
+deliberately invalid property/return controls. TypeScript **6.0.3**, native
+TypeScript **7.0.2**, and Home agree on the diagnostic codes and locations:
+
+| Mapped-receiver control | TypeScript 6.0.3 | Native TypeScript 7.0.2 | Home |
+|---|---:|---:|---:|
+| Valid contextual parameters, overload tuple and inherited `this` members | pass | pass | pass |
+| Unknown parameter property | TS2339 | TS2339 | TS2339 |
+| Wrong mapped-method return | TS2322 | TS2322 | TS2322 |
+
+The real-project comparison uses exact parent `77deef967`, the #619 candidate,
+ReleaseFast builds, and the unchanged 106 production files selected by
+`tsconfig.benchmark.json` from pinned Zod **4.5.2**. Both binaries run from the
+same extracted graph with strict checking, no emit, and identical exclusions.
+Diagnostic identities normalize to `path:line:column:code`; timing removes only
+the `/usr/bin/time` trailer. No result or sample is filtered.
+
+| Zod 4.5.2 exact-parent A/B | Parent `77deef967` | #619 candidate | Change |
+|---|---:|---:|---:|
+| All diagnostics | 1,088 | **976** | **−112** |
+| Added normalized diagnostics | — | **0** | none |
+| Removed normalized diagnostics | — | **112** | toward the TS 6 zero-diagnostic oracle |
+| Wall seconds, runs 1 / 2 | 9.28 / 10.57 | **6.00 / 5.48** | both candidate runs lower |
+| Mean wall time | 9.925 s | **5.740 s** | **42.2% lower** |
+
+An additional exact-parent run under the final machine load took 9.95 seconds.
+The two candidate runs produced byte-identical normalized diagnostic sets. This
+is a same-correctness Home A/B, not a cross-compiler Zod speed claim: Home still
+emits 976 diagnostics while TypeScript 6.0.3 emits zero, so Zod remains outside
+the admitted three-compiler timing table.
+
+The final source passes Program **172/172**, checker **4,334/4,334**,
+`git diff --check`, and scoped `pickier` on both changed Zig files. The
+repository-wide `pickier` command remains red on pre-existing vendored and
+upstream findings. Full commands and normalized-set evidence are recorded in
+[#619](https://github.com/home-lang/home/issues/619#issuecomment-5546027783).
+
+```sh
+zig build home-tsc -Doptimize=ReleaseFast
+/usr/bin/time -p ./zig-out/bin/home-tsc --project /path/to/zod-4.5.2/tsconfig.benchmark.json
+```
