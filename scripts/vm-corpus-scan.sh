@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Scan the Bun corpus through the native full-VM path, categorizing each file as
-# pass / fail / crash / hang / deps. Writes a TSV to the given out-file.
+# pass / fail / crash / hang / deps / oom. Writes a TSV to the given out-file.
+#
+# Every run is bounded in BOTH time and memory (see scripts/home-bin.sh):
+# macOS honours no `ulimit` memory cap, so without the resident-set watchdog a
+# single runaway file can exhaust the machine.
 #
 # Usage: vm-corpus-scan.sh <subdir-under-corpus> <out.tsv> [timeout-secs]
 set -uo pipefail
@@ -17,7 +21,7 @@ cd "$ROOT"
 : > "$OUT"
 RUNLOG="$(mktemp -t home-vm-scan.XXXXXX)"
 trap 'rm -f "$RUNLOG"' EXIT
-pass=0 fail=0 crash=0 hang=0 deps=0
+pass=0 fail=0 crash=0 hang=0 deps=0 oom=0
 while IFS= read -r f; do
   rel="${f#"$ROOT"/}"
   # Write to a file rather than capturing through a pipe. A test that leaves a
@@ -31,6 +35,10 @@ while IFS= read -r f; do
   log=$(cat "$RUNLOG")
   if [[ $code -eq 124 ]]; then
     status=hang; hang=$((hang+1))
+  elif [[ $code -eq 125 ]]; then
+    # Killed at the resident-set ceiling rather than finishing. Reported on its
+    # own so a memory blow-up is never silently filed as a crash.
+    status=oom; oom=$((oom+1))
   elif [[ $code -ge 128 ]]; then
     status=crash; crash=$((crash+1))
   elif echo "$log" | grep -qE '^\(fail\)'; then
@@ -59,4 +67,4 @@ while IFS= read -r f; do
 # holds `<name>.test.ts.snap`, which the runner reports as a crash. Select the
 # executable extensions instead.
 done < <(find "$CORPUS/$SUB" \( -name "*.test.js" -o -name "*.test.jsx" -o -name "*.test.mjs" -o -name "*.test.cjs" -o -name "*.test.ts" -o -name "*.test.tsx" -o -name "*.test.mts" -o -name "*.test.cts" \) | sort)
-echo "SUB=$SUB pass=$pass fail=$fail crash=$crash hang=$hang deps=$deps total=$((pass+fail+crash+hang+deps))"
+echo "SUB=$SUB pass=$pass fail=$fail crash=$crash hang=$hang deps=$deps oom=$oom total=$((pass+fail+crash+hang+deps+oom))"
