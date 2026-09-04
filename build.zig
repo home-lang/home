@@ -72,13 +72,48 @@ fn dependOnTest(
 // Gated: if the artifacts are absent we fall back to the system framework so the
 // non-native build still works. Only exercised once the home_rt module compiles.
 // Default locations for Bun's compiled C++ binding objects and the WebKit
-// static libs. These are machine-specific; override at build time with the
-// HOME_BUN_OBJ_ROOT / HOME_BUN_WEBKIT_LIB environment variables (see
-// linkBunNative). When neither the env var nor this path exists, the build
-// falls back to the system JavaScriptCore framework (no Bun bindings).
-const bun_obj_root_default = "/Users/chris/Code/bun/build/release/obj";
-const bun_webkit_lib_default = "/Users/chris/.bun/build-cache/webkit-cd821fecca0d39c8-macos-arm64/lib";
+// static libs. Both live under $HOME in the layout Bun's own build system
+// produces, so a leading `~/` is expanded rather than naming one contributor's
+// machine. Override at build time with the HOME_BUN_OBJ_ROOT /
+// HOME_BUN_WEBKIT_LIB environment variables (see linkBunNative). When neither
+// the env var nor this path exists, the build falls back to the system
+// JavaScriptCore framework (no Bun bindings).
+const bun_obj_root_default = "~/Code/bun/build/release/obj";
+
+// Bun downloads a prebuilt WebKit keyed by the commit its checkout pins in
+// `scripts/build/deps/webkit.ts` (`WEBKIT_VERSION`), and names the cache
+// directory after it. JSC's ABI — the `JSType` enum table asserted in
+// `packages/runtime/src/native/jstype_abi.cpp` above all — is only valid for
+// that exact build, so this hash must track the native artifact source SHA
+// recorded in #66. A WebKit from a different Bun checkout has a different
+// JSType table and miscompiles rather than mislinking.
+const bun_webkit_version = "cd821fecca0d39c8";
 const link_bun_rust_archive = false;
+
+/// Expand a leading `~/` (or a bare `~`) through $HOME so the machine-specific
+/// artifact defaults above resolve on any contributor's machine.
+fn expandTilde(b: *std.Build, path: []const u8) []const u8 {
+    if (!std.mem.startsWith(u8, path, "~")) return path;
+    const home = b.graph.environ_map.get("HOME") orelse return path;
+    if (path.len == 1) return home;
+    if (path[1] != '/') return path; // `~user/` expansion is not supported
+    return b.fmt("{s}{s}", .{ home, path[1..] });
+}
+
+/// Bun names its WebKit cache `webkit-<version>-<os>-<arch>`, so the default
+/// has to follow the build target rather than assume the host.
+fn defaultWebkitLib(b: *std.Build, target: std.Build.ResolvedTarget) []const u8 {
+    const os = switch (target.result.os.tag) {
+        .linux => "linux",
+        .windows => "windows",
+        else => "macos",
+    };
+    const arch = switch (target.result.cpu.arch) {
+        .x86_64 => "x64",
+        else => "arm64",
+    };
+    return b.fmt("~/.bun/build-cache/webkit-{s}-{s}-{s}/lib", .{ bun_webkit_version, os, arch });
+}
 
 const native_vendor_roots = [_][]const u8{
     "vendor/tinycc/", // bun:ffi JIT backend (with environment.enable_tinycc)
@@ -142,14 +177,32 @@ fn linkBunNative(b: *std.Build, m: *std.Build.Module, target: std.Build.Resolved
 
     // Resolve Bun's object dir + WebKit lib dir, env-overridable so the build
     // is portable across machines (point these at a locally-built Bun).
-    const bun_obj_root = b.graph.environ_map.get("HOME_BUN_OBJ_ROOT") orelse bun_obj_root_default;
-    const bun_webkit_lib = b.graph.environ_map.get("HOME_BUN_WEBKIT_LIB") orelse bun_webkit_lib_default;
+    const bun_obj_root = expandTilde(b, b.graph.environ_map.get("HOME_BUN_OBJ_ROOT") orelse bun_obj_root_default);
+    const bun_webkit_lib = expandTilde(b, b.graph.environ_map.get("HOME_BUN_WEBKIT_LIB") orelse defaultWebkitLib(b, target));
     const bun_webkit_root = std.fs.path.dirname(bun_webkit_lib) orelse bun_webkit_lib;
 
     m.addIncludePath(.{ .cwd_relative = b.fmt("{s}/include", .{bun_webkit_root}) });
 
     // Fork std: filesystem moved to `std.Io.Dir` (io-parameterized).
     const io = std.Io.Threaded.global_single_threaded.io();
+
+    // Linking Bun's objects against a WebKit that is merely absent produces a
+    // link failure; linking them against the WRONG WebKit compiles and then
+    // misreads every JSC cell tag. Neither is worth diagnosing from the
+    // resulting wall of C++ errors, so name the expected build up front.
+    std.Io.Dir.accessAbsolute(io, b.fmt("{s}/include/JavaScriptCore/JSType.h", .{bun_webkit_root}), .{}) catch {
+        if (target.result.os.tag == .macos) m.linkFramework("JavaScriptCore", .{});
+        std.debug.print(
+            \\warn: Bun's WebKit not found at {s}; using system JavaScriptCore.
+            \\      Home links the WebKit that Bun pins as WEBKIT_VERSION={s}...
+            \\      (scripts/build/deps/webkit.ts). Build Bun at the native artifact
+            \\      SHA tracked in home-lang/home#66 to populate it:
+            \\        cd ~/Code/bun && bun run build:release
+            \\      Point elsewhere with HOME_BUN_WEBKIT_LIB.
+            \\
+        , .{ bun_webkit_lib, bun_webkit_version });
+        return;
+    };
 
     // If Bun's objects aren't present, fall back to the system framework.
     var dir = std.Io.Dir.openDirAbsolute(io, bun_obj_root, .{ .iterate = true }) catch {
