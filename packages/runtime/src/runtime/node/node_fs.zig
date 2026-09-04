@@ -2660,9 +2660,18 @@ pub const Arguments = struct {
             // through a raw pointer, so the backing store must not be detachable
             // while it is in flight. Pinning does not root the value; the
             // existing protect() in toThreadSafe still does that.
+            //
+            // Install the re-derived buffer rather than keeping the slice taken
+            // before the pin: pinning a FastTypedArray materializes its
+            // ArrayBuffer, and JSC's slowDownAndWasteMemory() copies the elements
+            // into fresh storage and repoints the view's vector. The earlier
+            // pointer is then abandoned storage.
             if (arguments.will_be_async and args.buffer == .buffer) {
                 if (buffer_value) |bv| {
-                    if (bv.asPinnedArrayBuffer(ctx) != null) args.pinned = bv;
+                    if (bv.asPinnedArrayBuffer(ctx)) |pinned_ab| {
+                        args.buffer.buffer.buffer = pinned_ab;
+                        args.pinned = bv;
+                    }
                 }
             }
 
@@ -2676,6 +2685,11 @@ pub const Arguments = struct {
         offset: u64,
         length: u64,
         position: ?ReadPosition = null,
+        /// The typed array whose backing store `fromJS` pinned for the async
+        /// path, released in `deinitAndUnprotect` — the JS-thread hook that
+        /// `NewAsyncFSTask(...).deinit` runs on every completion path.
+        /// `.zero` when nothing was pinned.
+        pinned: jsc.JSValue = .zero,
 
         pub fn deinit(_: Read) void {}
 
@@ -2684,6 +2698,10 @@ pub const Arguments = struct {
         }
 
         pub fn deinitAndUnprotect(this: *Read) void {
+            if (this.pinned != .zero) {
+                this.pinned.unpinArrayBuffer();
+                this.pinned = .zero;
+            }
             this.buffer.buffer.value.unprotect();
         }
 
@@ -2797,12 +2815,31 @@ pub const Arguments = struct {
             else
                 null;
 
+            // The async read runs on the thread pool and fills the destination
+            // through a raw pointer, so the backing store must not be detachable
+            // while it is in flight. Pinning does not root the value; the
+            // protect() in toThreadSafe still does that.
+            //
+            // Install the re-derived buffer: pinning a FastTypedArray
+            // materializes its ArrayBuffer, and JSC's slowDownAndWasteMemory()
+            // copies the elements into fresh storage and repoints the view's
+            // vector, so the slice captured above would be abandoned storage.
+            var out_buffer = buffer;
+            var pinned_value: jsc.JSValue = .zero;
+            if (arguments.will_be_async) {
+                if (buffer_value.asPinnedArrayBuffer(ctx)) |pinned_ab| {
+                    out_buffer.buffer = pinned_ab;
+                    pinned_value = buffer_value;
+                }
+            }
+
             return .{
                 .fd = fd,
-                .buffer = buffer,
+                .buffer = out_buffer,
                 .offset = offset,
                 .length = length,
                 .position = position,
+                .pinned = pinned_value,
             };
         }
     };
