@@ -9821,6 +9821,7 @@ test "Program: mapped prototype conditionals preserve optional generic and rest 
         \\  check(...checks: (((value: string) => boolean) | { run(value: string): boolean })[]): this;
         \\  refine<C extends (value: string) => unknown>(check: C, params?: string): this;
         \\  parse(data: string): string;
+        \\  kind(): "schema";
         \\  partial(): Schema<{ -readonly [K in keyof Shape]: Shape[K] }>;
         \\  partial<M extends Mask<keyof Shape>>(
         \\    mask: M & Record<Exclude<keyof M, keyof Shape>, never>
@@ -9847,6 +9848,9 @@ test "Program: mapped prototype conditionals preserve optional generic and rest 
         \\  },
         \\  parse: function _parse(data) {
         \\    return data.length === 0 ? "" : String(_parse);
+        \\  },
+        \\  kind() {
+        \\    return this._zod.def.kind;
         \\  },
         \\  partial(...args) {
         \\    void args[0];
