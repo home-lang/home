@@ -19772,6 +19772,31 @@ pub const Checker = struct {
         return k == .object_pattern or k == .array_pattern;
     }
 
+    /// Record the lexical name bound inside a named function body. Contextual
+    /// typing can re-check that body in a fresh narrow scope, so both the
+    /// ordinary and contextual body walkers must establish the same binding.
+    fn recordFunctionSelfBinding(self: *Checker, node: NodeId, contextual_t: ?TypeId) CheckError!void {
+        const f = hir_mod.fnDeclOf(self.hir, node);
+        if (f.flags.is_method or f.flags.is_constructor or
+            f.name == hir_mod.none_node_id or self.hir.kindOf(f.name) != .identifier)
+        {
+            return;
+        }
+        const fn_id = hir_mod.identifierOf(self.hir, f.name);
+        // Parameters are in an inner lexical scope and therefore shadow the
+        // function's own name inside its body.
+        for (hir_mod.fnParams(self.hir, node)) |param_node| {
+            if (self.hir.kindOf(param_node) != .parameter) continue;
+            const param = hir_mod.parameterOf(self.hir, param_node);
+            if (param.name == hir_mod.none_node_id or self.hir.kindOf(param.name) != .identifier) continue;
+            if (hir_mod.identifierOf(self.hir, param.name).name == fn_id.name) return;
+        }
+        const fn_t = contextual_t orelse self.hir.typeOf(node);
+        if (fn_t != types.Primitive.none and !self.type_names.contains(fn_id.name)) {
+            try self.recordNarrow(fn_id.name, fn_t);
+        }
+    }
+
     /// Type the body of a function/method/arrow. Split from
     /// `checkFnDecl` so callers (e.g. `checkClassDecl`) can run the
     /// signature pass first, register the enclosing scope's
@@ -19792,31 +19817,7 @@ pub const Checker = struct {
         // narrowed types. Popped on return.
         try self.pushNarrowScope();
         defer self.popNarrowScope();
-        if (!f.flags.is_method and !f.flags.is_constructor and f.name != hir_mod.none_node_id and self.hir.kindOf(f.name) == .identifier) {
-            const fn_id = hir_mod.identifierOf(self.hir, f.name);
-            const fn_t = self.hir.typeOf(node);
-            // tsc lexical scoping: a parameter binding lives in an inner
-            // scope than the function's own name. When a parameter shadows
-            // the function name (e.g. `function f(f: (x) => U)`), references
-            // to that name inside the body must resolve to the PARAMETER,
-            // not the enclosing function. Since the self-name is recorded
-            // into the same narrow scope and `lookupNarrow` short-circuits
-            // identifier resolution before the lexical parameter walk, skip
-            // the self-name binding entirely when a parameter shadows it.
-            var shadowed_by_param = false;
-            for (hir_mod.fnParams(self.hir, node)) |p| {
-                if (self.hir.kindOf(p) != .parameter) continue;
-                const pp = hir_mod.parameterOf(self.hir, p);
-                if (pp.name == hir_mod.none_node_id or self.hir.kindOf(pp.name) != .identifier) continue;
-                if (hir_mod.identifierOf(self.hir, pp.name).name == fn_id.name) {
-                    shadowed_by_param = true;
-                    break;
-                }
-            }
-            if (!shadowed_by_param and fn_t != types.Primitive.none and !self.type_names.contains(fn_id.name)) {
-                try self.recordNarrow(fn_id.name, fn_t);
-            }
-        }
+        try self.recordFunctionSelfBinding(node, null);
         // ÃÂÃÂ§3.A.11 ÃÂ¢ÃÂÃÂ bind `this` from an explicit `this: T` parameter.
         // The parser captures these as a regular parameter whose name
         // identifier interned as "this". When found, lower its
@@ -65824,7 +65825,19 @@ pub const Checker = struct {
         defer refreshed_members.deinit(self.gpa);
         for (current_members) |member| {
             var refreshed = member;
-            if (self.interfaceMemberTypeNodeByName(member_nodes, member.name)) |type_node| {
+            const declared_type_node = blk: {
+                if (member.decl_node != hir_mod.none_node_id and
+                    self.hir.kindOf(member.decl_node) == .interface_member)
+                {
+                    const declaration = hir_mod.interfaceMemberOf(self.hir, member.decl_node);
+                    if (declaration.name == member.name and declaration.type_node != hir_mod.none_node_id) {
+                        break :blk declaration.type_node;
+                    }
+                }
+                break :blk self.interfaceMemberTypeNodeByName(member_nodes, member.name) orelse hir_mod.none_node_id;
+            };
+            if (declared_type_node != hir_mod.none_node_id) {
+                const type_node = declared_type_node;
                 if (self.typeNodeReferencesBareName(type_node, iface_name)) {
                     refreshed.type = try self.lowererLowerWithTypeParams(type_node);
                 }
@@ -80991,7 +81004,8 @@ pub const Checker = struct {
         if (allow_infer_match) {
             var infer_subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
             defer infer_subs.deinit(self.gpa);
-            const matched = self.matchInfer(check, ext, &infer_subs) catch false;
+            const infer_check = (try self.resolveExactIndexedAccessForInfer(check, 0)) orelse check;
+            const matched = self.matchInfer(infer_check, ext, &infer_subs) catch false;
             if (matched and infer_subs.count() > 0) {
                 return self.substituteType(tt, &infer_subs);
             }
@@ -81099,7 +81113,8 @@ pub const Checker = struct {
         if (allow_infer_match) {
             var infer_subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
             defer infer_subs.deinit(self.gpa);
-            const matched = self.matchInfer(check, ext, &infer_subs) catch false;
+            const infer_check = (try self.resolveExactIndexedAccessForInfer(check, 0)) orelse check;
+            const matched = self.matchInfer(infer_check, ext, &infer_subs) catch false;
             if (matched and infer_subs.count() > 0) {
                 return self.substituteType(tt, &infer_subs);
             }
@@ -119195,6 +119210,7 @@ pub const Checker = struct {
         self.removeContextualParameterUnknownDiagnostics(fn_node, params, param_ts);
         try self.pushNarrowScope();
         defer self.popNarrowScope();
+        try self.recordFunctionSelfBinding(fn_node, sig);
         const n = params.len;
         const effective_param_ts = try self.gpa.alloc(TypeId, n);
         defer self.gpa.free(effective_param_ts);
@@ -170204,16 +170220,16 @@ pub const Checker = struct {
         return self.resolveGenericType(member_t) catch member_t;
     }
 
-    /// Resolve an exact indexed member for contextual typing. Unlike the
-    /// argument-relation variant, polymorphic `this` is valid here because
-    /// the containing object literal supplies the receiver context.
-    fn resolveExactIndexedAccessForContext(self: *Checker, t: TypeId, depth: usize) CheckError!?TypeId {
+    /// Resolve an exact indexed member for conditional `infer` matching.
+    /// Reading one named member preserves recursive receivers and overloads
+    /// without expanding the containing type's full graph.
+    fn resolveExactIndexedAccessForInfer(self: *Checker, t: TypeId, depth: usize) CheckError!?TypeId {
         if (depth > 8 or t >= self.interner.pool.typeCount()) return null;
         const flags = self.interner.pool.flagsOf(t);
         if (!flags.is_indexed_access) return null;
         const indexed = self.interner.pool.indexed_access_payloads.items[self.interner.pool.payloadOf(t)];
         const key = self.stringLiteralValueFromType(indexed.index) orelse return null;
-        var object_t = (try self.resolveExactIndexedAccessForContext(indexed.object, depth + 1)) orelse indexed.object;
+        var object_t = (try self.resolveExactIndexedAccessForInfer(indexed.object, depth + 1)) orelse indexed.object;
         object_t = self.resolveGenericType(object_t) catch object_t;
         if (object_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(object_t).is_type_parameter) {
             object_t = self.typeParameterConstraint(object_t) orelse return null;
@@ -170241,7 +170257,7 @@ pub const Checker = struct {
         }
         if (!flags.is_conditional) return null;
         const conditional = self.interner.conditionalPayloadOrNull(t) orelse return null;
-        const check_t = (try self.resolveExactIndexedAccessForContext(conditional.check_type, depth + 1)) orelse conditional.check_type;
+        const check_t = (try self.resolveExactIndexedAccessForInfer(conditional.check_type, depth + 1)) orelse conditional.check_type;
         var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
         defer subs.deinit(self.gpa);
         if (!try self.matchInfer(check_t, conditional.extends_type, &subs)) return null;
