@@ -407,14 +407,17 @@ pub fn writeU16(input: [*]const u16, len: usize, to: [*]u8, to_len: usize, compt
         },
 
         .base64, .base64url => {
-            if (to_len < 2 or len == 0)
-                return 0;
-
-            // very very slow case!
-            // shouldn't really happen though
-            const transcoded = strings.toUTF8Alloc(bun.default_allocator, input[0..len]) catch return 0;
-            defer bun.default_allocator.free(transcoded);
-            return writeU8(transcoded.ptr, transcoded.len, to, to_len, encoding);
+            // Match Node: a two-byte string is decoded from the low byte of each
+            // UTF-16 code unit, so U+013D behaves like '=' and U+1234 like '4' —
+            // the same narrowing Node's lenient fallback decoder applies.
+            // Transcoding to UTF-8 instead expands every non-ASCII code unit into
+            // a multi-byte sequence of non-base64 characters, and the decode then
+            // yields nothing at all.
+            if (len == 0) return 0;
+            const narrowed = bun.default_allocator.alloc(u8, len) catch return 0;
+            defer bun.default_allocator.free(narrowed);
+            strings.copyU16IntoU8(narrowed, input[0..len]);
+            return writeU8(narrowed.ptr, narrowed.len, to, to_len, encoding);
         },
         // else => return &[_]u8{};
     }
@@ -521,11 +524,16 @@ pub fn constructFromU16(input: [*]const u16, len: usize, allocator: std.mem.Allo
         },
 
         .base64, .base64url => {
-            // very very slow case!
-            // shouldn't really happen though
-            const transcoded = strings.toUTF8Alloc(allocator, input[0..len]) catch return &[_]u8{};
-            defer allocator.free(transcoded);
-            return constructFromU8(transcoded.ptr, transcoded.len, allocator, encoding);
+            // Match Node: a two-byte string is decoded from the low byte of each
+            // UTF-16 code unit, so U+013D behaves like '=' and U+1234 like '4' —
+            // the same narrowing Node's lenient fallback decoder applies, and the
+            // same one `writeU16` performs above. Transcoding to UTF-8 instead
+            // expands every non-ASCII code unit into a multi-byte sequence of
+            // non-base64 characters.
+            const narrowed = allocator.alloc(u8, len) catch return &[_]u8{};
+            defer allocator.free(narrowed);
+            strings.copyU16IntoU8(narrowed, input[0..len]);
+            return constructFromU8(narrowed.ptr, narrowed.len, allocator, encoding);
         },
     }
 }
