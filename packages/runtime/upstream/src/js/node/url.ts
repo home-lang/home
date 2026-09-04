@@ -262,9 +262,24 @@ Url.prototype.parse = function parse(url: string, parseQueryString?: boolean, sl
     // find the first instance of any hostEndingChars
     // Ignore TAB/LF/CR only in the authority. The path and query retain their
     // control characters, which the legacy serializer percent-escapes below.
+    // A bracketed IPv6 literal is exempt: stripping there would silently repair
+    // `[\n::1]` into a valid address instead of rejecting it, and the host
+    // validation below can no longer tell the two apart once the character is
+    // gone.
     const authorityEnd = rest.search(/[/?#]/);
     const authorityLength = authorityEnd === -1 ? rest.length : authorityEnd;
-    rest = rest.slice(0, authorityLength).replace(/[\t\n\r]/g, "") + rest.slice(authorityLength);
+    const authority = rest.slice(0, authorityLength);
+    const bracketEnd = authority.indexOf("]");
+    const literalStart = authority.indexOf("[");
+    if (literalStart !== -1 && bracketEnd > literalStart) {
+      rest =
+        authority.slice(0, literalStart).replace(/[\t\n\r]/g, "") +
+        authority.slice(literalStart, bracketEnd + 1) +
+        authority.slice(bracketEnd + 1).replace(/[\t\n\r]/g, "") +
+        rest.slice(authorityLength);
+    } else {
+      rest = authority.replace(/[\t\n\r]/g, "") + rest.slice(authorityLength);
+    }
 
     var hostEnd = -1;
     for (var i = 0; i < hostEndingChars.length; i++) {
@@ -357,6 +372,16 @@ Url.prototype.parse = function parse(url: string, parseQueryString?: boolean, sl
         // Legacy IPv6 addresses retain their spelling (including embedded
         // IPv4), but must still reject characters that can spoof the host.
         if (/[\0\t\n\r #%/<>?@\\^|]/.test(this.hostname)) throw $ERR_INVALID_URL(url);
+        // The character check above cannot tell a real literal from a
+        // malformed one: `[:::1]`, `[::banana]` and an address carrying a
+        // stripped control character all survive it. The address itself still
+        // has to parse, so hand the bracketed form to the WHATWG parser and
+        // keep this spelling only when it accepts it.
+        try {
+          new URL("http://" + this.hostname);
+        } catch {
+          throw $ERR_INVALID_URL(url);
+        }
       } else {
         // IDNA conversion must not apply WHATWG IPv4 canonicalization to a
         // legacy host, such as 127.1 or a non-special protocol's 0.0,1.1.
