@@ -2162,6 +2162,12 @@ pub const HomeKernelCodegen = struct {
     /// cannot be determined, which is a refusal rather than a guess: emitting
     /// a symbol of the wrong length would corrupt whatever follows it.
     fn declareGlobalVar(self: *HomeKernelCodegen, decl: *const ast.LetDecl) !bool {
+        // Idempotent: the pre-pass above registers module storage before any
+        // function body is lowered, and the statement itself is still walked
+        // afterwards. Registering twice appends to global_order twice and
+        // emits the symbol twice, which the assembler rejects as a duplicate
+        // definition.
+        if (self.global_vars.contains(decl.name)) return true;
         // A module-level array literal needs no annotation: its length is the
         // number of elements, and its element width comes from what they are.
         // `let exception_names = ["Division By Zero", ...]` is how this tree
@@ -3539,6 +3545,30 @@ pub const HomeKernelCodegen = struct {
         try self.foldModuleConstants(program);
         try self.collectEnums(program);
         try self.layoutStructs(program);
+
+        // Module-level storage, before any function body is lowered.
+        //
+        // Functions already forward-reference each other freely, because
+        // declared_fns is populated in a pass of its own above. Module
+        // variables were not: a `var` was registered only when the statement
+        // was reached, so a function defined earlier in the file saw the name
+        // as undefined and its assignment became
+        // "# ERROR: assignment to undefined variable".
+        //
+        // That made a file's meaning depend on the order its declarations
+        // happened to be written in, which nothing in the language says it
+        // should — and the failure is quiet in the worst way: the read
+        // compiles to zero rather than to a diagnostic the build stops on.
+        //
+        // Runs after struct layout because a variable's size may come from a
+        // struct declared anywhere in the file.
+        for (program.statements) |stmt| {
+            if (stmt != .LetDecl) continue;
+            const decl = stmt.LetDecl;
+            if (decl.is_mutable or self.assigned_names.contains(decl.name)) {
+                _ = self.declareGlobalVar(decl) catch continue;
+            }
+        }
 
         // Generate code for each statement
         for (program.statements) |stmt| {
