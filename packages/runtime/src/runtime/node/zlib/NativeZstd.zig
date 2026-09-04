@@ -28,6 +28,12 @@ pending_close: bool = false,
 pending_reset: bool = false,
 closed: bool = false,
 task: jsc.WorkPoolTask = .{ .callback = undefined },
+/// Per-mode external-allocation footprint, fixed at construction. Immutable
+/// because `estimatedSize` runs on the concurrent GC marking thread, where
+/// reading `stream` would race an in-progress write's mutable borrow — and
+/// because the reported footprint must not collapse when `close()` clears the
+/// mode.
+estimated_external_size: usize = 0,
 
 pub fn constructor(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!*@This() {
     const arguments = callframe.argumentsAsArray(1);
@@ -50,15 +56,22 @@ pub fn constructor(globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) b
         .globalThis = globalThis,
     });
     ptr.stream.mode = @enumFromInt(mode_int);
+    ptr.estimated_external_size = externalSizeFor(ptr.stream.mode);
     return ptr;
 }
 
-pub fn estimatedSize(this: *const @This()) usize {
-    return @sizeOf(@This()) + @as(usize, switch (this.stream.mode) {
+fn externalSizeFor(mode: @TypeOf(@as(Context, undefined).mode)) usize {
+    return switch (mode) {
         .ZSTD_COMPRESS => 5272, // estimate of bun.c.ZSTD_sizeof_CCtx(@ptrCast(this.stream.state)),
         .ZSTD_DECOMPRESS => 95968, // estimate of bun.c.ZSTD_sizeof_DCtx(@ptrCast(this.stream.state)),
         else => 0,
-    });
+    };
+}
+
+/// Called from any thread (concurrent GC marking), so it reads only the
+/// immutable footprint recorded at construction.
+pub fn estimatedSize(this: *const @This()) usize {
+    return @sizeOf(@This()) + this.estimated_external_size;
 }
 
 pub fn init(this: *@This(), globalThis: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.JSError!jsc.JSValue {
