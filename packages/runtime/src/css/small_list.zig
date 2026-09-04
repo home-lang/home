@@ -783,6 +783,75 @@ test "SmallList spills to heap after inline capacity" {
     try std.testing.expectEqualSlices(u32, &.{ 1, 2, 3 }, list.slice());
 }
 
+test "SmallList heap growth requests element-sized allocations" {
+    const TrackingAllocator = struct {
+        backing: Allocator,
+        largest_request: usize = 0,
+        remap_count: usize = 0,
+
+        const Self = @This();
+
+        fn allocator(self: *Self) Allocator {
+            return .{
+                .ptr = self,
+                .vtable = &.{
+                    .alloc = alloc,
+                    .resize = resize,
+                    .remap = remap,
+                    .free = free,
+                },
+            };
+        }
+
+        fn note(self: *Self, size: usize) void {
+            self.largest_request = @max(self.largest_request, size);
+        }
+
+        fn alloc(ctx: *anyopaque, len: usize, alignment: std.mem.Alignment, ret_addr: usize) ?[*]u8 {
+            const self: *Self = @ptrCast(@alignCast(ctx));
+            self.note(len);
+            return self.backing.rawAlloc(len, alignment, ret_addr);
+        }
+
+        fn resize(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) bool {
+            const self: *Self = @ptrCast(@alignCast(ctx));
+            self.note(new_len);
+            return self.backing.rawResize(memory, alignment, new_len, ret_addr);
+        }
+
+        fn remap(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
+            const self: *Self = @ptrCast(@alignCast(ctx));
+            self.note(new_len);
+            self.remap_count += 1;
+            return self.backing.rawRemap(memory, alignment, new_len, ret_addr);
+        }
+
+        fn free(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ret_addr: usize) void {
+            const self: *Self = @ptrCast(@alignCast(ctx));
+            self.backing.rawFree(memory, alignment, ret_addr);
+        }
+    };
+
+    const Element = [32]u8;
+    var tracking = TrackingAllocator{ .backing = std.testing.allocator };
+    const allocator = tracking.allocator();
+    var list = SmallList(Element, 1){};
+    defer list.deinit(allocator);
+
+    for (0..100) |index| {
+        const element: Element = @splat(@as(u8, @intCast(index)));
+        list.append(allocator, element);
+    }
+
+    try std.testing.expect(tracking.remap_count >= 2);
+    try std.testing.expectEqual(@as(u32, 100), list.len());
+    try std.testing.expect(tracking.largest_request <= @as(usize, list.capacity) * @sizeOf(Element));
+    for (list.slice(), 0..) |element, index| {
+        try std.testing.expectEqual(@as(u8, @intCast(index)), element[0]);
+        try std.testing.expectEqual(@as(u8, @intCast(index)), element[@sizeOf(Element) - 1]);
+    }
+}
+
 test "SmallList orderedRemove and swapRemove update length" {
     var list = SmallList(u32, 3).initInlined(&.{ 1, 2, 3 });
 
