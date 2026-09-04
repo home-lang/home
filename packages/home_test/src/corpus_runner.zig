@@ -22583,6 +22583,9 @@ const harness_prelude =
     \\}
     \\function __home_gzip_sync(value) {
     \\  const body = __home_body_bytes_sync(value);
+    \\  if (typeof globalThis.__home_gzipCompressNative === "function") {
+    \\    return Buffer.from(globalThis.__home_gzipCompressNative(Buffer.from(body).toString("base64")), "base64");
+    \\  }
     \\  if (body.length === 0) return Buffer.from([0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
     \\  for (let period = 1; period <= Math.min(64, Math.floor(body.length / 2)); period++) {
     \\    let periodic = true;
@@ -22628,7 +22631,7 @@ const harness_prelude =
     \\  if (bytes.length >= 3 && bytes[0] === 0x1f && bytes[1] === 0x8b && bytes[2] === 0x08 && typeof globalThis.__home_gzipDecompressNative === "function") {
     \\    let output;
     \\    try {
-    \\      output = Buffer.from(globalThis.__home_gzipDecompressNative(Buffer.from(bytes).toString("base64")), "base64");
+    \\      output = Buffer.from(globalThis.__home_gzipDecompressNative(Buffer.from(bytes).toString("base64"), allowPartial), "base64");
     \\    } catch (cause) {
     \\      const error = dataError(cause && cause.message ? String(cause.message) : "invalid gzip data");
     \\      error.cause = cause;
@@ -22696,6 +22699,9 @@ const harness_prelude =
     \\}
     \\function __home_deflate_sync(value) {
     \\  const body = __home_body_bytes_sync(value);
+    \\  if (typeof globalThis.__home_deflateCompressNative === "function") {
+    \\    return Buffer.from(globalThis.__home_deflateCompressNative(Buffer.from(body).toString("base64")), "base64");
+    \\  }
     \\  if (body.length >= 128 && typeof globalThis.__home_zstdCompressNative === "function") {
     \\    const compressed = __home_zstd_sync(value, { level: 3 });
     \\    const encoded = Buffer.alloc(6 + compressed.length);
@@ -22710,6 +22716,10 @@ const harness_prelude =
     \\  return __home_compressed_buffer([0x78, 0x9c], value, [0xde, 0xad, 0xbe, 0xef]);
     \\}
     \\function __home_deflate_raw_sync(value) {
+    \\  const body = __home_body_bytes_sync(value);
+    \\  if (typeof globalThis.__home_rawDeflateCompressNative === "function") {
+    \\    return Buffer.from(globalThis.__home_rawDeflateCompressNative(Buffer.from(body).toString("base64")), "base64");
+    \\  }
     \\  return __home_compressed_buffer([0x03], value, [0x00]);
     \\}
     \\function __home_brotli_sync(value, options) {
@@ -61213,9 +61223,21 @@ const harness_prelude =
     \\    const buffered = Buffer.concat(input);
     \\    let consumed = -1;
     \\    let decoded = null;
-    \\    if (normalizedKind === "inflate") {
+    \\    if (normalizedKind === "inflate" && buffered.length >= 2 && (buffered[0] & 0x0f) === 8 && (((buffered[0] << 8) | buffered[1]) % 31) === 0 && typeof globalThis.__home_deflateDecompressNative === "function") {
+    \\      try {
+    \\        const result = String(globalThis.__home_deflateDecompressNative(buffered.toString("base64"), false, true));
+    \\        const separator = result.indexOf(":");
+    \\        if (separator > 0) { consumed = Number(result.slice(0, separator)); decoded = Buffer.from(result.slice(separator + 1), "base64"); }
+    \\      } catch (error) {}
+    \\    } else if (normalizedKind === "inflate") {
     \\      const marker = __home_zlib_marker_index(buffered, [0xde, 0xad, 0xbe, 0xef], 2);
     \\      if (marker >= 0) { consumed = marker + 4; decoded = buffered.slice(2, marker); }
+    \\    } else if (normalizedKind === "inflate-raw" && typeof globalThis.__home_rawDeflateDecompressNative === "function") {
+    \\      try {
+    \\        const result = String(globalThis.__home_rawDeflateDecompressNative(buffered.toString("base64"), false, true));
+    \\        const separator = result.indexOf(":");
+    \\        if (separator > 0) { consumed = Number(result.slice(0, separator)); decoded = Buffer.from(result.slice(separator + 1), "base64"); }
+    \\      } catch (error) {}
     \\    } else if (normalizedKind === "inflate-raw") {
     \\      const marker = __home_zlib_marker_index(buffered, [0x00], 1);
     \\      if (marker >= 0) { consumed = marker + 1; decoded = buffered.slice(1, marker); }
@@ -61489,6 +61511,21 @@ const harness_prelude =
     \\function __home_inflate_sync(value, options) {
     \\  const bytes = Buffer.from(__home_body_bytes_sync(value));
     \\  if (bytes.length === 0) return Buffer.alloc(0);
+    \\  const allowPartial = !!(options && typeof options === "object" && Number(options.finishFlush) === __home_zlib_constants.Z_SYNC_FLUSH);
+    \\  const hasZlibHeader = bytes.length >= 2 && (bytes[0] & 0x0f) === 8 && (((bytes[0] << 8) | bytes[1]) % 31) === 0;
+    \\  if (hasZlibHeader && typeof globalThis.__home_deflateDecompressNative === "function") {
+    \\    let output;
+    \\    try {
+    \\      output = Buffer.from(globalThis.__home_deflateDecompressNative(bytes.toString("base64"), allowPartial), "base64");
+    \\    } catch (cause) {
+    \\      const error = __home_zlib_error("Error", "Z_DATA_ERROR", cause && cause.message ? String(cause.message) : "invalid deflate data");
+    \\      error.cause = cause;
+    \\      throw error;
+    \\    }
+    \\    const maximum = options && typeof options === "object" && Number(options.maxOutputLength) > 0 ? Number(options.maxOutputLength) : (__home_zlib_module.__home_max_output_length == null ? Infinity : Number(__home_zlib_module.__home_max_output_length));
+    \\    if (output.length > maximum) throw __home_zlib_error("RangeError", "ERR_BUFFER_TOO_LARGE", "Cannot create a Buffer larger than " + String(maximum) + " bytes");
+    \\    return output;
+    \\  }
     \\  if (bytes.length >= 6 && bytes[0] === 0x78 && bytes[1] === 0x5a) {
     \\    const compressedLength = (bytes[2] | (bytes[3] << 8) | (bytes[4] << 16) | (bytes[5] << 24)) >>> 0;
     \\    if (6 + compressedLength > bytes.length) throw __home_zlib_error("Error", "Z_DATA_ERROR", "truncated compressed deflate data");
@@ -61515,6 +61552,20 @@ const harness_prelude =
     \\function __home_inflate_raw_sync(value, options) {
     \\  const bytes = Buffer.from(__home_body_bytes_sync(value));
     \\  if (bytes.length === 0) return Buffer.alloc(0);
+    \\  if (typeof globalThis.__home_rawDeflateDecompressNative === "function") {
+    \\    const allowPartial = !!(options && typeof options === "object" && Number(options.finishFlush) === __home_zlib_constants.Z_SYNC_FLUSH);
+    \\    let output;
+    \\    try {
+    \\      output = Buffer.from(globalThis.__home_rawDeflateDecompressNative(bytes.toString("base64"), allowPartial), "base64");
+    \\    } catch (cause) {
+    \\      const error = __home_zlib_error("Error", "Z_DATA_ERROR", cause && cause.message ? String(cause.message) : "invalid raw deflate data");
+    \\      error.cause = cause;
+    \\      throw error;
+    \\    }
+    \\    const maximum = options && typeof options === "object" && Number(options.maxOutputLength) > 0 ? Number(options.maxOutputLength) : Infinity;
+    \\    if (output.length > maximum) throw __home_zlib_error("RangeError", "ERR_BUFFER_TOO_LARGE", "Cannot create a Buffer larger than " + String(maximum) + " bytes");
+    \\    return output;
+    \\  }
     \\  const end = __home_zlib_marker_index(bytes, [0x00], 1);
     \\  if (end < 0) {
     \\    if (options && typeof options === "object" && Number(options.finishFlush) === __home_zlib_constants.Z_SYNC_FLUSH && bytes[0] === 0x03) return bytes.slice(1);

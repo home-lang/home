@@ -408,14 +408,38 @@ pub const Runtime = struct {
         home_rt.jsc.callback.registerCallback(
             self.engine.currentContext(),
             self.engine.currentGlobalObject(),
+            "__home_gzipCompressNative",
+            gzipCompressNative,
+        );
+        home_rt.jsc.callback.registerCallback(
+            self.engine.currentContext(),
+            self.engine.currentGlobalObject(),
             "__home_gzipDecompressNative",
             gzipDecompressNative,
         );
         home_rt.jsc.callback.registerCallback(
             self.engine.currentContext(),
             self.engine.currentGlobalObject(),
+            "__home_deflateCompressNative",
+            deflateCompressNative,
+        );
+        home_rt.jsc.callback.registerCallback(
+            self.engine.currentContext(),
+            self.engine.currentGlobalObject(),
             "__home_deflateDecompressNative",
             deflateDecompressNative,
+        );
+        home_rt.jsc.callback.registerCallback(
+            self.engine.currentContext(),
+            self.engine.currentGlobalObject(),
+            "__home_rawDeflateCompressNative",
+            rawDeflateCompressNative,
+        );
+        home_rt.jsc.callback.registerCallback(
+            self.engine.currentContext(),
+            self.engine.currentGlobalObject(),
+            "__home_rawDeflateDecompressNative",
+            rawDeflateDecompressNative,
         );
         home_rt.jsc.callback.registerCallback(
             self.engine.currentContext(),
@@ -4832,6 +4856,8 @@ fn flateDecompressNative(
     const actual_ctx = ctx.?;
     const allocator = std.heap.smp_allocator;
     const codec_name = if (container == .gzip) "Gzip" else "Deflate";
+    const allow_partial = argument_count >= 2 and arguments[1] != null and extern_fns.JSValueToBoolean(actual_ctx, arguments[1]);
+    const include_consumed = argument_count >= 3 and arguments[2] != null and extern_fns.JSValueToBoolean(actual_ctx, arguments[2]);
     if (argument_count < 1 or arguments[0] == null) {
         setExceptionFmt(actual_ctx, exception, "{s} response decompression requires input", .{codec_name});
         return null;
@@ -4850,16 +4876,117 @@ fn flateDecompressNative(
     };
     defer allocator.free(window);
     var reader: std.Io.Reader = .fixed(input);
-    var decompressor = flate.Decompress.init(&reader, container, window);
-    const output = decompressor.reader.allocRemaining(allocator, std.Io.Limit.unlimited) catch |err| {
-        setExceptionFmt(actual_ctx, exception, "{s} response decompression failed: {s}", .{ codec_name, @errorName(err) });
-        return null;
-    };
-    defer allocator.free(output);
-    return makeBase64StringValue(actual_ctx, allocator, output) catch |err| {
+    var output: std.Io.Writer.Allocating = .init(allocator);
+    defer output.deinit();
+    while (reader.seek < reader.end) {
+        var decompressor = flate.Decompress.init(&reader, container, window);
+        _ = decompressor.reader.streamRemaining(&output.writer) catch |err| {
+            if (allow_partial and err == error.ReadFailed) {
+                if (decompressor.err) |inner_err| {
+                    if (inner_err == error.EndOfStream) break;
+                }
+            }
+            setExceptionFmt(actual_ctx, exception, "{s} response decompression failed: {s}", .{ codec_name, @errorName(decompressor.err orelse err) });
+            return null;
+        };
+        if (container != .gzip) break;
+        while (reader.seek < reader.end and input[reader.seek] == 0) reader.seek += 1;
+    }
+    if (include_consumed) {
+        const encoded_len = std.base64.standard.Encoder.calcSize(output.written().len);
+        const encoded = allocator.alloc(u8, encoded_len) catch |err| {
+            setExceptionFmt(actual_ctx, exception, "{s} response decompression result failed: {s}", .{ codec_name, @errorName(err) });
+            return null;
+        };
+        defer allocator.free(encoded);
+        _ = std.base64.standard.Encoder.encode(encoded, output.written());
+        const result = std.fmt.allocPrint(allocator, "{d}:{s}", .{ reader.seek, encoded }) catch |err| {
+            setExceptionFmt(actual_ctx, exception, "{s} response decompression result failed: {s}", .{ codec_name, @errorName(err) });
+            return null;
+        };
+        defer allocator.free(result);
+        return makeStringValue(actual_ctx, result) catch |err| {
+            setExceptionFmt(actual_ctx, exception, "{s} response decompression result failed: {s}", .{ codec_name, @errorName(err) });
+            return null;
+        };
+    }
+    return makeBase64StringValue(actual_ctx, allocator, output.written()) catch |err| {
         setExceptionFmt(actual_ctx, exception, "{s} response decompression result failed: {s}", .{ codec_name, @errorName(err) });
         return null;
     };
+}
+
+fn flateCompressNative(
+    container: std.compress.flate.Container,
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) ?*JSValue {
+    _ = function;
+    _ = this;
+    const actual_ctx = ctx.?;
+    const allocator = std.heap.smp_allocator;
+    const codec_name = switch (container) {
+        .gzip => "Gzip",
+        .zlib => "Deflate",
+        .raw => "Raw deflate",
+    };
+    if (argument_count < 1 or arguments[0] == null) {
+        setExceptionFmt(actual_ctx, exception, "{s} compression requires input", .{codec_name});
+        return null;
+    }
+
+    const input = decodeBase64Argument(allocator, actual_ctx, arguments[0].?, exception) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "{s} compression input failed: {s}", .{ codec_name, @errorName(err) });
+        return null;
+    };
+    defer allocator.free(input);
+
+    const flate = std.compress.flate;
+    var output = std.Io.Writer.Allocating.initCapacity(allocator, 4096) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "{s} compression allocation failed: {s}", .{ codec_name, @errorName(err) });
+        return null;
+    };
+    defer output.deinit();
+    const work = allocator.alloc(u8, flate.max_window_len) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "{s} compression allocation failed: {s}", .{ codec_name, @errorName(err) });
+        return null;
+    };
+    defer allocator.free(work);
+    var compressor = flate.Compress.init(&output.writer, work, container, flate.Compress.Options.default) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "{s} compression initialization failed: {s}", .{ codec_name, @errorName(err) });
+        return null;
+    };
+    compressor.writer.writeAll(input) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "{s} compression failed: {s}", .{ codec_name, @errorName(err) });
+        return null;
+    };
+    compressor.finish() catch |err| {
+        setExceptionFmt(actual_ctx, exception, "{s} compression failed: {s}", .{ codec_name, @errorName(err) });
+        return null;
+    };
+    output.writer.flush() catch |err| {
+        setExceptionFmt(actual_ctx, exception, "{s} compression failed: {s}", .{ codec_name, @errorName(err) });
+        return null;
+    };
+    return makeBase64StringValue(actual_ctx, allocator, output.written()) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "{s} compression result failed: {s}", .{ codec_name, @errorName(err) });
+        return null;
+    };
+}
+
+fn gzipCompressNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    return flateCompressNative(.gzip, ctx, function, this, argument_count, arguments, exception);
 }
 
 fn gzipDecompressNative(
@@ -4882,6 +5009,39 @@ fn deflateDecompressNative(
     exception: extern_fns.ExceptionRef,
 ) callconv(.c) ?*JSValue {
     return flateDecompressNative(.zlib, ctx, function, this, argument_count, arguments, exception);
+}
+
+fn deflateCompressNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    return flateCompressNative(.zlib, ctx, function, this, argument_count, arguments, exception);
+}
+
+fn rawDeflateCompressNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    return flateCompressNative(.raw, ctx, function, this, argument_count, arguments, exception);
+}
+
+fn rawDeflateDecompressNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    return flateDecompressNative(.raw, ctx, function, this, argument_count, arguments, exception);
 }
 
 fn brotliDecompressNative(
