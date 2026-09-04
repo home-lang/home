@@ -6608,3 +6608,63 @@ The console record is `commonjs-query.hyU20d/confirmation-v1.log`.
 `provenance-confirmation.json` verifies that all recorded artifact hashes still
 match the pre-measurement snapshot. Raw full-run and confirmation JSON remain
 in their separately named directories under `bench/vs_tsgo/results/`.
+
+### Returned imported callable context
+
+Issue [#617](https://github.com/home-lang/home/issues/617), under the pinned
+Zod admission issue [#548](https://github.com/home-lang/home/issues/548), fixes
+a source-owned contextual-type loss. An annotation such as
+`() => errors.$ZodErrorMap` now carries the imported callable interface into a
+returned arrow, including both namespace-qualified and direct type imports.
+The Program schema proves that the callable parameter's readable keys survive
+its homomorphic utility pipeline; it does not special-case Zod, inspect source
+spelling, suppress `noImplicitAny`, or expose the projection as a general type.
+Unsupported property leaves remain opaque, local names win over imported names,
+and a cycle guard bounds recursive declaration lowering.
+
+The focused strict NodeNext reduction uses the same `types.ts`, `consumer.ts`,
+and configuration for TypeScript 6.0.3, native TypeScript 7.0.2, and Home. Both
+valid imported-factory forms are silent. The deliberately invalid forms retain
+the reference diagnostic-code multiset:
+
+| Returned-callable control | TypeScript 6.0.3 | Native TypeScript 7.0.2 | Home before #617 | Home after #617 |
+|---|---:|---:|---:|---:|
+| Direct and qualified factories reading `issue.code` | 2/2 pass | 2/2 pass | 0/2 (TS7006) | 2/2 pass |
+| Unknown `issue.missing` access | TS2339 | TS2339 | not enforced | TS2339 |
+| Numeric callback return | TS2322 | TS2322 | not enforced | TS2322 |
+
+The regression also shadows `ErrorMap` locally and performs 32 repeated queries
+after clearing the prepared owner's source text. Its node, type, and diagnostic
+counts remain unchanged and the owner is not checked. The dedicated TypeScript
+Program suite passes **172/172** tests.
+
+The exact real-project A/B uses frozen parent `5ac3860e2`, the final #617 code
+and test candidate `c70c49550`, ReleaseFast builds, and the unchanged 106 production
+TypeScript files in Zod 4.5.2 `src/v4`. Both compilers receive the same strict,
+no-emit, NodeNext project; upstream tests are excluded identically. Two complete
+runs per binary produce byte-identical diagnostic output within each arm after
+removing only `/usr/bin/time`'s three-line trailer:
+
+| Zod 4.5.2 diagnostic gate | Parent `5ac3860e2` | #617 candidate | Change |
+|---|---:|---:|---:|
+| All diagnostics | 1,148 | **1,088** | **−60** |
+| TS7006 | 443 | **383** | **−60** |
+| Every non-TS7006 diagnostic | 705 | 705 | unchanged |
+| Added normalized diagnostics | — | **0** | none |
+| Wall seconds, runs 1 / 2 | 27.32 / 26.62 | 26.53 / 26.01 | means 26.97 / 26.27 |
+
+The normalized parent output SHA-256 is
+`9f707d2c0bf1908bcc7e204864c1aa6c97d8a0688859fb2d75be10fe7905462b`;
+the candidate output is
+`b25a8ef800e405367139b2e9c383d7aa960bdea889a535cb860fde55cc1116cf`.
+The frozen ReleaseFast binaries are respectively
+`1aa7ea72a4ae236bf5802648b8ea5ceda71eb4aaba82af43efc992c88d43b1f9`
+and `ff57be82352fd70e76c0aa0086b33e026cc73c66491cd0f1368f09c0414bb578`.
+The two-run timing sample is recorded for transparency, not admitted as a speed
+claim. The graph still emits 1,088 diagnostics, so Zod remains ineligible for
+the three-compiler timing table and #548 stays open.
+
+```sh
+zig build home-tsc -Doptimize=ReleaseFast
+/usr/bin/time -p ./zig-out/bin/home-tsc --project /path/to/zod-4.5.2/tsconfig.benchmark.json
+```
