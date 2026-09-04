@@ -1050,10 +1050,14 @@ pub const FileSystemFlags = enum(c_int) {
 
     pub fn fromJS(ctx: *jsc.JSGlobalObject, val: jsc.JSValue) bun.JSError!?FileSystemFlags {
         if (val.isNumber()) {
-            if (!val.isInt32()) {
-                return ctx.throwValue(ctx.ERR(.OUT_OF_RANGE, "The value of \"flags\" is out of range. It must be an integer. Received {d}", .{val.asNumber()}).toJS());
-            }
-            const number = try val.coerce(i32, ctx);
+            // Match Node's stringToFlags, which runs validateInt32 on a numeric
+            // `flags`: any integer-valued number in the int32 range is accepted,
+            // regardless of whether JSC boxed it as an int32 or a double. Go's
+            // `syscall/js` bridge (GOOS=js) reads every argument out of wasm
+            // linear memory with getFloat64, so a valid flag such as 578
+            // (O_RDWR|O_CREAT|O_TRUNC) arrives double-boxed and must not be
+            // rejected as a non-integer.
+            const number = try node.validators.validateInt32(ctx, val, "flags", .{}, null, null);
             const flags = @max(number, 0);
             // On Windows, numeric flags from fs.constants (e.g. O_CREAT=0x100)
             // use the platform's native MSVC/libuv values which differ from the
