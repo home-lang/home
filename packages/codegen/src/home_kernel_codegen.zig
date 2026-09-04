@@ -4499,6 +4499,18 @@ pub const HomeKernelCodegen = struct {
             .AssignmentExpr => |assign| {
                 switch (assign.target.*) {
                     .Identifier => |target| {
+                        // Module-level storage takes the same copy as a local
+                        // does. A struct global is recorded with is_array set
+                        // — storage is storage — so the refusal below reported
+                        // "cannot assign to the array" for what the source
+                        // wrote as a plain struct assignment, and refused it.
+                        if (self.global_vars.get(target.name)) |g| {
+                            if (g.is_array and self.isStorageType(g.type_name)) {
+                                try self.emit().leaSymbol(.acc, g.symbol);
+                                try self.emitStoreToAddress(g.type_name, assign.value);
+                                return;
+                            }
+                        }
                         // A struct or array variable is storage, not a value:
                         // its slot holds the bytes themselves. Evaluating the
                         // right-hand side yields its *address*, so the scalar
