@@ -437,6 +437,30 @@ pub fn chmod(path: [:0]const u8, mode: bun.Mode) Maybe(void) {
     unreachable;
 }
 
+/// Change a path's mode without following a final symlink. This matches the
+/// safety contract required when making package bin targets executable: an
+/// archive or workspace may legitimately contain a symlink at that path, but
+/// chmod must never escape the package through it.
+pub fn lchmod(path: [:0]const u8, mode: bun.Mode) Maybe(void) {
+    if (comptime Environment.isWindows) {
+        return sys_uv.chmod(path, mode);
+    }
+
+    if (comptime Environment.isMac or Environment.isFreeBSD) {
+        while (true) {
+            const rc = bun.c.lchmod(path.ptr, mode);
+            if (Maybe(void).errnoSysP(rc, .lchmod, path)) |err| {
+                if (err.getErrno() == .INTR) continue;
+                return err;
+            }
+
+            return .success;
+        }
+    }
+
+    return fchmodat(bun.FD.cwd(), path, mode, std.posix.AT.SYMLINK_NOFOLLOW);
+}
+
 pub fn chdirOSPath(
     path: [:0]const u8,
     destination: if (Environment.isPosix) [:0]const u8 else []const u8,

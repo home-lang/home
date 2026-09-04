@@ -5443,6 +5443,7 @@ pub const sys = struct {
     pub const rmdir = @import("sys/sys.zig").rmdir;
     pub const munmap = @import("sys/sys.zig").munmap;
     pub const chmod = @import("sys/sys.zig").chmod;
+    pub const lchmod = @import("sys/sys.zig").lchmod;
     pub const chown = @import("sys/sys.zig").chown;
     pub const access = @import("sys/sys.zig").access;
     pub const faccessat = @import("sys/sys.zig").faccessat;

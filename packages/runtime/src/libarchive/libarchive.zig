@@ -215,6 +215,40 @@ fn isSymlinkTargetSafe(symlink_path: []const u8, link_target: [:0]const u8, syml
     return !(std.mem.eql(u8, resolved, "..") or strings.hasPrefixComptime(resolved, "../"));
 }
 
+/// Returns true when resolving a relative archive pathname would climb above
+/// the extraction directory. Parent components are allowed when a preceding
+/// component keeps them inside the root (for example `a/../b`).
+fn pathEscapesExtractionRoot(comptime T: type, path: []const T) bool {
+    const slash: T = @intCast('/');
+    const backslash: T = @intCast('\\');
+    const dot: T = @intCast('.');
+    var depth: usize = 0;
+    var component_start: usize = 0;
+    var i: usize = 0;
+    while (i <= path.len) : (i += 1) {
+        const at_end = i == path.len;
+        const separator = !at_end and (path[i] == slash or (comptime Environment.isWindows and path[i] == backslash));
+        if (!at_end and !separator) continue;
+
+        const component = path[component_start..i];
+        if (component.len == 2 and component[0] == dot and component[1] == dot) {
+            if (depth == 0) return true;
+            depth -= 1;
+        } else if (component.len > 0 and !(component.len == 1 and component[0] == dot)) {
+            depth += 1;
+        }
+        component_start = i + 1;
+    }
+    return false;
+}
+
+test "archive extraction path containment" {
+    try std.testing.expect(!pathEscapesExtractionRoot(u8, "safe/file.txt"));
+    try std.testing.expect(!pathEscapesExtractionRoot(u8, "safe/../file.txt"));
+    try std.testing.expect(pathEscapesExtractionRoot(u8, "../escaped/file.txt"));
+    try std.testing.expect(pathEscapesExtractionRoot(u8, "safe/../../escaped/file.txt"));
+}
+
 pub const Archiver = struct {
     // impl: *lib.archive = undefined,
     // buf: []const u8 = undefined,
@@ -421,6 +455,23 @@ pub const Archiver = struct {
 
                     const rest = tokenizer.rest();
                     pathname = rest.ptr[0..rest.len :0];
+
+                    // `normalizeBufT` writes into the fixed-size OS path buffer.
+                    // GNU longname records can exceed that buffer, so skip them
+                    // and continue extracting later well-formed entries.
+                    if (pathname.len >= normalized_buf.len) {
+                        if (options.log) {
+                            Output.warn("Skipping entry with a path longer than the maximum path length: {f}\n", .{
+                                bun.fmt.fmtOSPath(pathname, .{}),
+                            });
+                        }
+                        continue :loop;
+                    }
+
+                    // Filesystem *at calls interpret any leading parent traversal
+                    // relative to dir_fd. Reject only paths whose component stack
+                    // actually climbs above that extraction root.
+                    if (pathEscapesExtractionRoot(bun.OSPathChar, pathname)) continue :loop;
 
                     const normalized = bun.path.normalizeBufT(bun.OSPathChar, pathname, &normalized_buf, .auto);
                     normalized_buf[normalized.len] = 0;

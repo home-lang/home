@@ -238,6 +238,10 @@ const CheckerResolverAdapter = struct {
                 .exported_value = ts_program.moduleExportsValueSpaceName(self.resolver.gpa, src, name, is_tsx),
                 .ambient_const_enum = ts_program.moduleExportsAmbientConstEnumName(self.resolver.gpa, src, module_path, name, is_tsx),
             };
+        const local_facts = if (effective_resolved != null)
+            ts_program.moduleLocalImportFactsFromCompilation(compilation, name)
+        else
+            ts_program.ModuleLocalImportFacts{};
         const exported = resolved_facts.exported_type;
         const exported_value = resolved_facts.exported_value;
         const ambient_const_enum = resolved_facts.ambient_const_enum;
@@ -265,6 +269,11 @@ const CheckerResolverAdapter = struct {
             .module_name = module_name,
             .exported_type = exported or if (ambient) |query| query.facts.exported_type else false,
             .exported_value = exported_value or if (ambient) |query| query.facts.exported_value else false,
+            .declares_local = local_facts.declares_local,
+            .local_exported_as = if (local_facts.exported_as.len != 0)
+                arena.dupe(u8, local_facts.exported_as) catch return null
+            else
+                "",
             .exported_value_readonly = resolved_facts.exported_value_readonly,
             .ambient_const_enum = ambient_const_enum or if (ambient) |query| query.facts.ambient_const_enum else false,
             .cannot_be_named = cannot_be_named,
@@ -1199,6 +1208,33 @@ test "conformance: CommonJS display queries reuse the prepared owner" {
         }
         try std.testing.expectEqual(@as(u32, 1), adapter.module_compilation_cache.count());
     }
+}
+
+test "conformance: local import facts reuse the prepared owner" {
+    const allocator = std.testing.allocator;
+    var vfs = ts_resolver.VirtualFs.init(allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/owner.ts", "const hidden = 1; export { hidden as public };");
+    var resolver = ts_resolver.Resolver.init(allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var adapter = CheckerResolverAdapter{ .resolver = &resolver };
+    defer adapter.deinit();
+
+    const first = CheckerResolverAdapter.moduleExportImpl(&adapter, "./owner", "/app.ts", "hidden").?;
+    try std.testing.expect(!first.exported_value);
+    try std.testing.expect(first.declares_local);
+    try std.testing.expectEqualStrings("public", first.local_exported_as);
+    try std.testing.expectEqual(@as(u32, 1), adapter.module_compilation_cache.count());
+    const owner = adapter.moduleCompilation("/owner.ts").?;
+    try std.testing.expect(!owner.checked_types_ready);
+
+    try vfs.addFile("/owner.ts", "export const changed = 1;");
+    const next = CheckerResolverAdapter.moduleExportImpl(&adapter, "./owner", "/app.ts", "hidden").?;
+    try std.testing.expect(next.declares_local);
+    try std.testing.expectEqualStrings("public", next.local_exported_as);
+    try std.testing.expect(owner == adapter.moduleCompilation("/owner.ts").?);
+    try std.testing.expect(!owner.checked_types_ready);
+    try std.testing.expectEqual(@as(u32, 1), adapter.module_compilation_cache.count());
 }
 
 test "conformance: program diagnostics sort same-position globals by code" {

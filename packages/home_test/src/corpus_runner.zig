@@ -265,6 +265,7 @@ const harness_prelude =
     \\  globalThis.__home_current_scope = globalThis.__home_root_scope;
     \\  globalThis.__home_scopes = [globalThis.__home_root_scope];
     \\  globalThis.__home_registered_tests = [];
+    \\  globalThis.__home_file_initialization = null;
     \\  globalThis.__home_current_finished_callbacks = null;
     \\  globalThis.__home_current_test_concurrent = false;
     \\  globalThis.__home_current_snapshot_name = null;
@@ -5097,16 +5098,6 @@ const harness_prelude =
     \\  child.exited = settled.then(result => { child.exitCode = result.code; return result.code; });
     \\  child[Symbol.asyncDispose] = function() { return child.exited.then(() => undefined); };
     \\  return child;
-    \\}
-    \\function __home_spawn_memfd_disabled_fixture(options) {
-    \\  if (!String(globalThis.__home_current_filename || "").includes("js/bun/memfd-disabled.test.ts")) return null;
-    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
-    \\  const evalIndex = cmd.indexOf("-e");
-    \\  const script = evalIndex >= 0 ? String(cmd[evalIndex + 1] || "") : "";
-    \\  if (evalIndex < 0) return null;
-    \\  if (script.includes("process.stdin.pipe(process.stdout)") && script.includes("Buffer.alloc(64 * 1024")) return __home_spawn_completed("65536 true\n", "", 0);
-    \\  if (script.includes("Buffer.alloc(8 * 1024 * 1024") && script.includes("new Response(body).blob()")) return __home_spawn_completed("ok 8388608\n", "", 0);
-    \\  return null;
     \\}
     \\function __home_spawn_blob_utf16_bom_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("js/web/fetch/blob.test.ts")) return null;
@@ -28922,8 +28913,6 @@ const harness_prelude =
     \\    if (messagePortContextFixture) return messagePortContextFixture;
     \\    const performanceObserverLeakFixture = __home_spawn_performance_observer_leak_fixture(options || {});
     \\    if (performanceObserverLeakFixture) return performanceObserverLeakFixture;
-    \\    const memfdDisabledFixture = __home_spawn_memfd_disabled_fixture(options || {});
-    \\    if (memfdDisabledFixture) return memfdDisabledFixture;
     \\    const blobUtf16BomFixture = __home_spawn_blob_utf16_bom_fixture(options || {});
     \\    if (blobUtf16BomFixture) return blobUtf16BomFixture;
     \\    const fetchAbortQueuedFixture = __home_spawn_fetch_abort_queued_fixture(options || {});
@@ -35178,7 +35167,7 @@ const harness_prelude =
     \\  },
     \\};
     \\globalThis.__home_finish_tests = function() {
-    \\  const testsResult = __home_run_registered_tests();
+    \\  const testsResult = __home_then_after(globalThis.__home_file_initialization, __home_run_registered_tests);
     \\  let cleanupChain = null;
     \\  const runAfterAll = function() {
     \\    for (let i = globalThis.__home_scopes.length - 1; i >= 0; --i) {
@@ -47378,12 +47367,59 @@ const harness_prelude =
     \\    this.packagesPath = options.packagesPath || __home_temp_dir_with_files("verdaccio-packages", {});
     \\    this.configPath = options.configPath || __home_build_join(this.packagesPath, "verdaccio.yaml");
     \\    this.verbose = !!options.verbose;
+    \\    this.handle = null;
     \\    globalThis.__home_active_verdaccio_registry = this;
     \\  }
     \\  start() {
+    \\    if (this.handle && !this.handle.stopped) return Promise.resolve(undefined);
+    \\    const origins = [this.url.slice(0, -1), "http://127.0.0.1:" + String(this.port), "http://[::1]:" + String(this.port)];
+    \\    for (const origin of origins) {
+    \\      const occupied = globalThis.__home_serve_handles_by_origin[origin];
+    \\      if (occupied && occupied !== this.handle && !occupied.stopped) {
+    \\        const error = new Error("listen EADDRINUSE: address already in use " + origin);
+    \\        error.code = "EADDRINUSE";
+    \\        return Promise.reject(error);
+    \\      }
+    \\    }
+    \\    const handle = {
+    \\      id: "verdaccio-" + String(this.port),
+    \\      port: this.port,
+    \\      hostname: "localhost",
+    \\      origin: origins[0],
+    \\      stopped: false,
+    \\      fetch: request => this.fetch(request),
+    \\    };
+    \\    this.handle = handle;
+    \\    for (const origin of origins) globalThis.__home_serve_handles_by_origin[origin] = handle;
     \\    return Promise.resolve(undefined);
     \\  }
-    \\  stop() {}
+    \\  stop() {
+    \\    const handle = this.handle;
+    \\    if (!handle) return;
+    \\    handle.stopped = true;
+    \\    for (const origin of [this.url.slice(0, -1), "http://127.0.0.1:" + String(this.port), "http://[::1]:" + String(this.port)]) {
+    \\      if (globalThis.__home_serve_handles_by_origin[origin] === handle) delete globalThis.__home_serve_handles_by_origin[origin];
+    \\    }
+    \\    this.handle = null;
+    \\    if (globalThis.__home_active_verdaccio_registry === this) globalThis.__home_active_verdaccio_registry = null;
+    \\  }
+    \\  fetch(request) {
+    \\    const url = new URL(request.url);
+    \\    const packageName = decodeURIComponent(url.pathname.split("/").filter(Boolean)[0] || "");
+    \\    if (request.method === "PUT") return new Response(JSON.stringify({ ok: true }), { status: 201, headers: { "Content-Type": "application/json" } });
+    \\    if (request.method !== "GET" || !packageName) return new Response(JSON.stringify({ error: "not_found" }), { status: 404, headers: { "Content-Type": "application/json" } });
+    \\    const published = globalThis.__home_published_packages && globalThis.__home_published_packages[packageName];
+    \\    if (published && published.versions) {
+    \\      const versions = {};
+    \\      const basename = packageName.includes("/") ? packageName.slice(packageName.lastIndexOf("/") + 1) : packageName;
+    \\      for (const version of Object.keys(published.versions)) versions[version] = Object.assign({}, published.versions[version].pkg, { dist: { tarball: this.url + encodeURIComponent(packageName) + "/-/" + basename + "-" + version + ".tgz" } });
+    \\      return new Response(JSON.stringify({ name: packageName, "dist-tags": Object.assign({}, published.tags || {}), versions }), { status: 200, headers: { "Content-Type": "application/json" } });
+    \\    }
+    \\    if (packageName !== "no-deps") return new Response(JSON.stringify({ error: "not_found" }), { status: 404, headers: { "Content-Type": "application/json" } });
+    \\    const versions = {};
+    \\    for (const version of ["1.0.0", "1.0.1", "2.0.0"]) versions[version] = { name: packageName, version, dist: { tarball: this.url + packageName + "/-/" + packageName + "-" + version + ".tgz" } };
+    \\    return new Response(JSON.stringify({ name: packageName, "dist-tags": { latest: "2.0.0" }, versions }), { status: 200, headers: { "Content-Type": "application/json" } });
+    \\  }
     \\  registryUrl() {
     \\    return this.url;
     \\  }
@@ -76623,6 +76659,7 @@ const harness_prelude =
     \\  }
     \\  return globalThis.__home_import(resolved);
     \\}
+    \\globalThis.__home_import_with_loader = __home_import_with_loader;
     \\function __home_import_query_fixture_module(specifier, query) {
     \\  const resolved = __home_resolve_require(specifier);
     \\  if (!String(resolved).endsWith("js/bun/resolve/import-query-fixture.ts")) return null;
@@ -93276,63 +93313,6 @@ fn rewriteFuzzilliReprlCorpus(allocator: std.mem.Allocator, source: []const u8) 
     );
 }
 
-fn rewriteBunWriteCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    const without_fs = try std.mem.replaceOwned(
-        u8,
-        allocator,
-        source,
-        "import fs, { mkdirSync } from \"fs\";",
-        "const fs = globalThis.__home_import(\"fs\").default;\nconst { mkdirSync, unlinkSync } = fs;",
-    );
-    defer allocator.free(without_fs);
-
-    const without_harness = try std.mem.replaceOwned(
-        u8,
-        allocator,
-        without_fs,
-        "import { bunEnv, bunExe, exampleHtml, exampleSite, gcTick, isWindows, tempDir, withoutAggressiveGC } from \"harness\";",
-        "const { bunEnv, bunExe, exampleHtml, exampleSite, gcTick, isWindows, tempDir, withoutAggressiveGC } = globalThis.__home_import(\"harness\");",
-    );
-    defer allocator.free(without_harness);
-
-    const without_path = try std.mem.replaceOwned(
-        u8,
-        allocator,
-        without_harness,
-        "import path, { join } from \"path\";",
-        "const path = globalThis.__home_import(\"path\");\nconst { join } = path;",
-    );
-    defer allocator.free(without_path);
-
-    return allocator.dupe(u8, without_path);
-}
-
-fn rewriteArchiveCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    const without_await_using = try std.mem.replaceOwned(u8, allocator, source, "await using ", "const ");
-    defer allocator.free(without_await_using);
-    return try std.mem.replaceOwned(u8, allocator, without_await_using, "using ", "const ");
-}
-
-fn rewriteInstallLifecycleCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    return try std.mem.replaceOwned(u8, allocator, source, "const MAX_CONCURRENT = 12;", "const MAX_CONCURRENT = 100000;");
-}
-
-fn rewriteConfigVersionCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    const start = std.mem.indexOf(u8, source, "let registryCanServe = false;") orelse return allocator.dupe(u8, source);
-    const suffix = "\nafterAll(() => {";
-    const after = std.mem.indexOfPos(u8, source, start, suffix) orelse return allocator.dupe(u8, source);
-    var out = std.ArrayList(u8).empty;
-    defer out.deinit(allocator);
-    try out.appendSlice(allocator, source[0..start]);
-    try out.appendSlice(allocator, "let registryCanServe = true;\nregistry.start().catch(() => {});\n");
-    try out.appendSlice(allocator, source[after..]);
-    return out.toOwnedSlice(allocator);
-}
-
-fn rewriteSymlinkPathTraversalCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    return try std.mem.replaceOwned(u8, allocator, source, "using dir = tempDir(", "const dir = tempDir(");
-}
-
 fn rewriteSmallListGrowCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     const spawn_block =
         \\await using proc = Bun.spawn({
@@ -94721,10 +94701,6 @@ fn rewriteGlobStressCorpus(allocator: std.mem.Allocator, source: []const u8) ![]
     );
 }
 
-fn rewriteShellWhichCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    return try std.mem.replaceOwned(u8, allocator, source, ".repeat(100000)", ".repeat(2048)");
-}
-
 fn rewriteAsyncLocalStorageCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     return try std.mem.replaceOwned(
         u8,
@@ -94878,26 +94854,6 @@ fn rewriteFileAttributeImports(
     return out.toOwnedSlice(allocator);
 }
 
-fn rewriteImportQueryCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    return try std.mem.replaceOwned(
-        u8,
-        allocator,
-        source,
-        "await import(url);",
-        "await globalThis.__home_dynamic_import(url);",
-    );
-}
-
-fn rewriteTextLoaderCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    return try std.mem.replaceOwned(
-        u8,
-        allocator,
-        source,
-        "await import(src, { with: { type: \"text\" } })",
-        "await globalThis.__home_dynamic_import(src, { with: { type: \"text\" } })",
-    );
-}
-
 fn rewriteImportMetaResolveCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     return try std.mem.replaceOwned(
         u8,
@@ -95043,60 +94999,6 @@ fn rewriteLoadSameJsFileCorpus(allocator: std.mem.Allocator, source: []const u8)
     );
 }
 
-fn rewriteJson5ResolveCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    const empty_import = try std.mem.replaceOwned(
-        u8,
-        allocator,
-        source,
-        "import emptyJson5 from \"./json5-empty.json5\";",
-        "const emptyJson5 = globalThis.__home_import_json5(\"./json5-empty.json5\").default;",
-    );
-    defer allocator.free(empty_import);
-    return try std.mem.replaceOwned(
-        u8,
-        allocator,
-        empty_import,
-        "import json5FromCustomTypeAttribute from \"./json5-fixture.json5.txt\" with { type: \"json5\" };",
-        "const json5FromCustomTypeAttribute = globalThis.__home_import_json5(\"./json5-fixture.json5.txt\").default;",
-    );
-}
-
-fn rewriteYamlResolveCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    const empty_import = try std.mem.replaceOwned(
-        u8,
-        allocator,
-        source,
-        "import emptyYaml from \"./yaml-empty.yaml\";",
-        "const emptyYaml = globalThis.__home_import_yaml(\"./yaml-empty.yaml\").default;",
-    );
-    defer allocator.free(empty_import);
-    return try std.mem.replaceOwned(
-        u8,
-        allocator,
-        empty_import,
-        "import yamlFromCustomTypeAttribute from \"./yaml-fixture.yaml.txt\" with { type: \"yaml\" };",
-        "const yamlFromCustomTypeAttribute = globalThis.__home_import_yaml(\"./yaml-fixture.yaml.txt\").default;",
-    );
-}
-
-fn rewriteTomlResolveCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    const empty_import = try std.mem.replaceOwned(
-        u8,
-        allocator,
-        source,
-        "import emptyToml from \"./toml-empty.toml\";",
-        "const emptyToml = globalThis.__home_import_toml(\"./toml-empty.toml\").default;",
-    );
-    defer allocator.free(empty_import);
-    return try std.mem.replaceOwned(
-        u8,
-        allocator,
-        empty_import,
-        "import tomlFromCustomTypeAttribute from \"./toml-fixture.toml.txt\" with { type: \"toml\" };",
-        "const tomlFromCustomTypeAttribute = globalThis.__home_import_toml(\"./toml-fixture.toml.txt\").default;",
-    );
-}
-
 fn rewriteAbortSignalLeakCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     var threaded = std.Io.Threaded.init(allocator, .{});
     defer threaded.deinit();
@@ -95134,36 +95036,6 @@ fn rewriteAbortSignalLeakCorpus(allocator: std.mem.Allocator, source: []const u8
     defer allocator.free(test_without_fixture_import);
 
     return std.mem.concat(allocator, u8, &.{ fixture_without_main, "\n", test_without_fixture_import });
-}
-
-fn rewriteMemfdDisabledCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    return try std.mem.replaceOwned(
-        u8,
-        allocator,
-        source,
-        "test.skipIf(process.platform !== \"linux\")",
-        "test",
-    );
-}
-
-fn rewriteRuntimeErrorCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    return try std.mem.replaceOwned(
-        u8,
-        allocator,
-        source,
-        "import RuntimeError from \"../../../packages/bun-error/runtime-error\";",
-        "const RuntimeError = globalThis.__home_import(\"../../../packages/bun-error/runtime-error\").default;",
-    );
-}
-
-fn rewriteDifferentDirectorySnapshotCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    return try std.mem.replaceOwned(
-        u8,
-        allocator,
-        source,
-        "test.todo(\"snapshots in different directory\", () => {",
-        "test(\"snapshots in different directory\", () => {",
-    );
 }
 
 fn rewriteChildProcessNodeCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
@@ -98096,11 +97968,12 @@ fn isJsIdentifierStart(byte: u8) bool {
 /// namespace object directly. Matches the per-file hardcoded `.default` patches.
 fn moduleDefaultExportIsApi(name: []const u8) bool {
     const defaulted = [_][]const u8{
-        "fs",          "node:fs",
-        "fs/promises", "node:fs/promises",
-        "zlib",        "node:zlib",
-        "ws",          "fastify",
-        "express",     "@fastify/websocket",
+        "fs",                                        "node:fs",
+        "fs/promises",                               "node:fs/promises",
+        "zlib",                                      "node:zlib",
+        "ws",                                        "fastify",
+        "express",                                   "@fastify/websocket",
+        "../../../packages/bun-error/runtime-error",
     };
     for (defaulted) |m| {
         if (std.mem.eql(u8, name, m)) return true;
@@ -98110,6 +97983,37 @@ fn moduleDefaultExportIsApi(name: []const u8) bool {
 
 fn moduleIsTypesOnly(name: []const u8) bool {
     return std.mem.eql(u8, name, "undici-types");
+}
+
+fn loaderForModuleSpecifier(specifier: []const u8) ?[]const u8 {
+    const without_query = if (std.mem.indexOfScalar(u8, specifier, '?')) |index| specifier[0..index] else specifier;
+    if (std.mem.endsWith(u8, without_query, ".json5")) return "json5";
+    if (std.mem.endsWith(u8, without_query, ".yaml") or std.mem.endsWith(u8, without_query, ".yml")) return "yaml";
+    if (std.mem.endsWith(u8, without_query, ".toml")) return "toml";
+    return null;
+}
+
+fn supportedImportAttributeLoader(loader: []const u8) bool {
+    inline for (.{
+        "text", "file", "css", "wasm", "base64", "dataurl", "html", "js", "jsx", "ts", "tsx", "json", "jsonc", "json5", "yaml", "toml", "sqlite", "sqlite_embedded",
+    }) |supported| {
+        if (std.mem.eql(u8, loader, supported)) return true;
+    }
+    return false;
+}
+
+fn jsStringLiteralEnd(source: []const u8, start: usize) ?usize {
+    if (start >= source.len or (source[start] != '"' and source[start] != '\'')) return null;
+    const quote = source[start];
+    var i = start + 1;
+    while (i < source.len) : (i += 1) {
+        if (source[i] == '\\') {
+            i += 1;
+            continue;
+        }
+        if (source[i] == quote) return i;
+    }
+    return null;
 }
 
 fn skipJsWhitespace(source: []const u8, start: usize) usize {
@@ -98135,6 +98039,66 @@ fn readJsIdentifier(source: []const u8, start: usize) ?usize {
     if (start >= source.len or !isJsIdentifierContinue(source[start])) return null;
     var i = start + 1;
     while (i < source.len and isJsIdentifierContinue(source[i])) i += 1;
+    return i;
+}
+
+/// Lower a static default import whose extension or import attribute selects a
+/// data loader. The corpus realm cannot execute ESM declarations directly, but
+/// its loader bridge implements the same JSON/JSON5/YAML/TOML/text/file/etc.
+/// semantics. Keeping this syntax-driven avoids per-fixture source mutations.
+fn tryAppendStaticLoaderImportRewrite(
+    out: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    start: usize,
+) !?usize {
+    if (start > 0 and isJsIdentifierContinue(source[start - 1])) return null;
+    var i = consumeJsKeyword(source, start, "import") orelse return null;
+    if (i >= source.len or !isJsWhitespace(source[i])) return null;
+    i = skipJsWhitespace(source, i);
+    if (i >= source.len or !isJsIdentifierStart(source[i])) return null;
+    const binding_end = readJsIdentifier(source, i) orelse return null;
+    const binding = source[i..binding_end];
+    i = skipJsWhitespace(source, binding_end);
+    i = consumeJsKeyword(source, i, "from") orelse return null;
+    if (i >= source.len or !isJsWhitespace(source[i])) return null;
+    i = skipJsWhitespace(source, i);
+
+    const specifier_start = i;
+    const specifier_end = jsStringLiteralEnd(source, specifier_start) orelse return null;
+    const specifier = source[specifier_start + 1 .. specifier_end];
+    i = skipJsWhitespace(source, specifier_end + 1);
+    var loader = loaderForModuleSpecifier(specifier);
+
+    if (consumeJsKeyword(source, i, "with")) |after_with| {
+        i = skipJsWhitespace(source, after_with);
+        if (i >= source.len or source[i] != '{') return null;
+        i = skipJsWhitespace(source, i + 1);
+        i = consumeJsKeyword(source, i, "type") orelse return null;
+        i = skipJsWhitespace(source, i);
+        if (i >= source.len or source[i] != ':') return null;
+        i = skipJsWhitespace(source, i + 1);
+        const loader_start = i;
+        const loader_end = jsStringLiteralEnd(source, loader_start) orelse return null;
+        const explicit_loader = source[loader_start + 1 .. loader_end];
+        if (!supportedImportAttributeLoader(explicit_loader)) return null;
+        loader = explicit_loader;
+        i = skipJsWhitespace(source, loader_end + 1);
+        if (i < source.len and source[i] == ',') i = skipJsWhitespace(source, i + 1);
+        if (i >= source.len or source[i] != '}') return null;
+        i = skipJsHorizontalWhitespace(source, i + 1);
+    }
+
+    const selected_loader = loader orelse return null;
+    if (i < source.len and source[i] == ';') i += 1;
+
+    try out.appendSlice(allocator, "const ");
+    try out.appendSlice(allocator, binding);
+    try out.appendSlice(allocator, " = globalThis.__home_import_with_loader(");
+    try out.appendSlice(allocator, source[specifier_start .. specifier_end + 1]);
+    try out.appendSlice(allocator, ", \"");
+    try out.appendSlice(allocator, selected_loader);
+    try out.appendSlice(allocator, "\").default;\n");
     return i;
 }
 
@@ -98247,6 +98211,7 @@ fn supportedNamedImportModule(source: []const u8, start: usize, relative_path: [
         "./simple-dummy-registry",
         "./semver-fixture.js",
         "./fixtures/sign.fixture.ts",
+        "../../../packages/bun-error/runtime-error",
         "./wire-frames",
         "./chooses-ts",
         "harness",
@@ -98614,6 +98579,13 @@ fn appendSourceWithBunTestImportRewrites(
                 if (std.mem.startsWith(u8, source[i..], "import")) {
                     var replacement = std.ArrayList(u8).empty;
                     defer replacement.deinit(allocator);
+                    if (try tryAppendStaticLoaderImportRewrite(&replacement, allocator, source, i)) |end| {
+                        try out.appendSlice(allocator, source[segment_start..i]);
+                        try out.appendSlice(allocator, replacement.items);
+                        i = end;
+                        segment_start = i;
+                        continue;
+                    }
                     if (try tryAppendBunTestImportRewrite(&replacement, allocator, source, i, relative_path)) |end| {
                         try out.appendSlice(allocator, source[segment_start..i]);
                         try out.appendSlice(allocator, replacement.items);
@@ -99194,20 +99166,10 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
             " as typeof import(\"bun:internal-for-testing\")",
             "",
         )
-    else if (std.mem.eql(u8, relative_path, "js/bun/archive.test.ts"))
-        try rewriteArchiveCorpus(allocator, module_source)
-    else if (std.mem.eql(u8, relative_path, "cli/install/bun-install-lifecycle-scripts.test.ts"))
-        try rewriteInstallLifecycleCorpus(allocator, module_source)
-    else if (std.mem.eql(u8, relative_path, "cli/install/config-version.test.ts"))
-        try rewriteConfigVersionCorpus(allocator, module_source)
-    else if (std.mem.eql(u8, relative_path, "cli/install/symlink-path-traversal.test.ts"))
-        try rewriteSymlinkPathTraversalCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/css/small-list-grow.test.ts"))
         try rewriteSmallListGrowCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/glob/match.test.ts"))
         null
-    else if (std.mem.eql(u8, relative_path, "js/bun/shell/commands/which.test.ts"))
-        try rewriteShellWhichCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/node/url/url-parse-query.test.js"))
         null
     else if (std.mem.eql(u8, relative_path, "js/node/url/url-canParse-whatwg.test.js"))
@@ -99312,8 +99274,6 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/import-attributes/import-attributes.test.ts"))
         null
-    else if (std.mem.eql(u8, relative_path, "js/bun/io/bun-write.test.js"))
-        try rewriteBunWriteCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/io/fetch/fetch-abort-slow-connect.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/jsc-stress/fixtures/simd-baseline.test.ts"))
@@ -99350,8 +99310,6 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/md/gfm-compat.test.ts"))
         null
-    else if (std.mem.eql(u8, relative_path, "js/bun/memfd-disabled.test.ts"))
-        try rewriteMemfdDisabledCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/net/named-pipe-listen-error.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/net/socket-retention.test.ts"))
@@ -99402,10 +99360,6 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteImportMetaResolveCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/import-meta.test.js"))
         try rewriteImportMetaCorpus(allocator, module_source)
-    else if (std.mem.eql(u8, relative_path, "js/bun/resolve/import-query.test.ts"))
-        try rewriteImportQueryCorpus(allocator, module_source)
-    else if (std.mem.eql(u8, relative_path, "js/bun/resolve/json5/json5.test.js"))
-        try rewriteJson5ResolveCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/load-same-js-file-a-lot.test.ts"))
         try rewriteLoadSameJsFileCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/lower-using-bun-target.test.ts"))
@@ -99424,12 +99378,6 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/resolve/resolve.test.ts"))
         null
-    else if (std.mem.eql(u8, relative_path, "js/bun/resolve/toml/toml.test.js"))
-        try rewriteTomlResolveCorpus(allocator, module_source)
-    else if (std.mem.eql(u8, relative_path, "js/bun/resolve/yaml/yaml.test.js"))
-        try rewriteYamlResolveCorpus(allocator, module_source)
-    else if (std.mem.eql(u8, relative_path, "js/bun/runtime-error.test.ts"))
-        try rewriteRuntimeErrorCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/s3/s3-stream-cancel-leak.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/s3/s3.test.ts"))
@@ -99470,8 +99418,6 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteFilesystemRouterCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/util/fuzzilli-reprl.test.ts"))
         try rewriteFuzzilliReprlCorpus(allocator, module_source)
-    else if (std.mem.eql(u8, relative_path, "js/bun/util/text-loader.test.ts"))
-        try rewriteTextLoaderCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-connect-x509.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/shell/assignments-in-pipeline.test.ts"))
@@ -99505,8 +99451,6 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/shell/commands/seq.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/shell/commands/true.test.ts"))
-        null
-    else if (std.mem.eql(u8, relative_path, "js/bun/shell/commands/which.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/shell/commands/yes.test.ts"))
         null
@@ -99672,8 +99616,6 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteNativeTodoCorpus(allocator, "bun test diff printer subprocess snapshot")
     else if (std.mem.eql(u8, relative_path, "js/bun/test/snapshot-tests/new-snapshot.test.ts"))
         null
-    else if (std.mem.eql(u8, relative_path, "js/bun/test/snapshot-tests/snapshots/more-snapshots/different-directory.test.ts"))
-        try rewriteDifferentDirectorySnapshotCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/test/snapshot-tests/snapshots/snapshot.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/spyMatchers.test.ts"))
@@ -99711,9 +99653,10 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     defer out.deinit(allocator);
     try out.appendSlice(allocator, source[0..shebang_len]);
     const strict_mode = sourceHasLeadingUseStrict(diagnosed_module_source);
-    const top_level_await = std.mem.endsWith(u8, relative_path, ".mjs") or std.mem.eql(u8, relative_path, "js/sql/local-sql.test.ts");
+    const top_level_await = std.mem.endsWith(u8, relative_path, ".mjs") or
+        try jsc_bootstrap.corpusSourceHasTopLevelAwait(allocator, diagnosed_module_source, relative_path);
     if (top_level_await) {
-        try out.appendSlice(allocator, if (strict_mode) "try {\n(async function() {\n\"use strict\";\n" else "try {\n(async function() {\n");
+        try out.appendSlice(allocator, if (strict_mode) "try {\nglobalThis.__home_file_initialization = (async function() {\n\"use strict\";\n" else "try {\nglobalThis.__home_file_initialization = (async function() {\n");
     } else {
         try out.appendSlice(allocator, if (strict_mode) "try {\n(function() {\n\"use strict\";\n" else "try {\n(function() {\n");
     }
@@ -106619,7 +106562,7 @@ test "bootstrap runner mirrors Bun shell which command corpus" {
     defer prepared.deinit(std.testing.allocator);
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun shell command lookup error integration") == null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, ".repeat(2048)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, ".repeat(100000)") != null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const { $ } = globalThis.__home_import(\"bun\");") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_bun_shell_lookup_error") != null);
 
@@ -115156,7 +115099,7 @@ test "bootstrap runner mirrors different-directory snapshot corpus" {
     defer prepared.deinit(std.testing.allocator);
 
     try std.testing.expect(prepared.unsupported_reason == null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test.todo(\"snapshots in different directory\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test.todo(\"snapshots in different directory\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "snapshots in different directory 14") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
@@ -115169,8 +115112,8 @@ test "bootstrap runner mirrors different-directory snapshot corpus" {
         std.debug.print("Different-directory snapshot corpus failure: {s}\n", .{file_run.result.first_failure_message});
     }
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
-    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+    try std.testing.expectEqual(@as(usize, 0), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.todo);
 }
 
 test "bootstrap runner mirrors Node HTTP early hints CRLF corpus" {
@@ -123655,16 +123598,16 @@ test "bootstrap runner mirrors memfd disabled fallback corpus" {
     var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/memfd-disabled.test.ts");
     defer summary.deinit(std.testing.allocator);
 
-    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 2 or summary.todo != 0) {
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 0 or summary.todo != 2) {
         std.debug.print(
             "memfd disabled corpus mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
-            .{ summary.passed, @as(usize, 2), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
+            .{ summary.passed, @as(usize, 0), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
         );
     }
     try std.testing.expectEqual(@as(usize, 1), summary.files);
-    try std.testing.expectEqual(@as(usize, 2), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
-    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 2), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
@@ -124458,14 +124401,14 @@ test "bootstrap runner mirrors sparse archive extraction corpus" {
     var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
     defer summary.deinit(std.testing.allocator);
 
-    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 100 or summary.todo != 1) {
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 101 or summary.todo != 1) {
         std.debug.print(
             "archive corpus mismatch: passed={} expected={} failed={} todo={} expected_todo={} unsupported={} message={s}\n",
-            .{ summary.passed, @as(usize, 100), summary.failed, summary.todo, @as(usize, 1), summary.unsupported, summary.first_failure_message },
+            .{ summary.passed, @as(usize, 101), summary.failed, summary.todo, @as(usize, 1), summary.unsupported, summary.first_failure_message },
         );
     }
     try std.testing.expectEqual(@as(usize, 1), summary.files);
-    try std.testing.expectEqual(@as(usize, 100), summary.passed);
+    try std.testing.expectEqual(@as(usize, 101), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 1), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
@@ -125257,7 +125200,7 @@ test "bootstrap runner mirrors JSON5 resolve import loader corpus" {
 
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "JSON5 import attribute loader resolution") == null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_import_json5(\"./json5-empty.json5\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_import_with_loader(\"./json5-empty.json5\", \"json5\")") != null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "with { type: \"json5\" }") == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_dynamic_import(\"./json5-fixture.json5\")") != null);
 
@@ -125379,7 +125322,7 @@ test "bootstrap runner mirrors YAML resolve import loader corpus" {
 
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "YAML import attribute loader resolution") == null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_import_yaml(\"./yaml-empty.yaml\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_import_with_loader(\"./yaml-empty.yaml\", \"yaml\")") != null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "with { type: \"yaml\" }") == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_dynamic_import(\"./yaml-fixture.yaml\")") != null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_dynamic_import(\"./yaml-fixture.yml\")") != null);
@@ -125408,7 +125351,7 @@ test "bootstrap runner mirrors TOML resolve import loader corpus" {
 
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "TOML import attribute loader resolution") == null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_import_toml(\"./toml-empty.toml\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_import_with_loader(\"./toml-empty.toml\", \"toml\")") != null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "with { type: \"toml\" }") == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_dynamic_import(\"./toml-fixture.toml\")") != null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun.TOML.parse(tomlContent)") != null);
@@ -128464,7 +128407,7 @@ test "bootstrap runner mirrors mixed runtime regression mini-suite" {
         .{ .path = "regression/issue/012039.test.ts", .passed = 3 },
         .{ .path = "js/web/html/html-rewriter-doctype.test.ts", .passed = 1 },
         .{ .path = "js/bun/jsonc/jsonc.test.ts", .passed = 14 },
-        .{ .path = "js/bun/test/snapshot-tests/snapshots/more-snapshots/different-directory.test.ts", .passed = 1 },
+        .{ .path = "js/bun/test/snapshot-tests/snapshots/more-snapshots/different-directory.test.ts", .passed = 0, .todo = 1 },
         .{ .path = "js/bun/test/jest-each.test.ts", .passed = 25 },
         .{ .path = "regression/issue/htmlrewriter-additional-bugs.test.ts", .passed = 7 },
         .{ .path = "regression/issue/24191.test.ts", .passed = 2 },
@@ -133357,6 +133300,22 @@ test "corpus module preparation reports unsupported module syntax" {
     try std.testing.expectEqualStrings("unsupported module syntax", prepared.unsupported_reason.?);
 }
 
+test "corpus module preparation lowers static data-loader imports generically" {
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import config from "./config.json5";
+        \\import raw from './fixture.data' with { type: 'text', };
+        \\test("works", () => expect([config, raw]).toHaveLength(2));
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/data-loader.test.js");
+    defer prepared.deinit(std.testing.allocator);
+
+    try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_import_with_loader(\"./config.json5\", \"json5\").default") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "globalThis.__home_import_with_loader('./fixture.data', \"text\").default") != null);
+    try std.testing.expect(!hasUnsupportedModuleSyntax(prepared.source));
+}
+
 test "UV N-API corpus imports use vendored constants and source assets" {
     for ([_][]const u8{ "napi/uv.test.ts", "napi/uv_stub.test.ts" }) |path| {
         const source_path = try std.fmt.allocPrint(std.testing.allocator, "packages/runtime/test/bun-corpus/{s}", .{path});
@@ -137094,6 +137053,81 @@ test "bootstrap runner prepares install lifecycle corpus imports" {
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "from \"bun\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const { file, spawn, write } = globalThis.__home_import(\"bun\");") != null);
+}
+
+test "bootstrap preserves install lifecycle throttling and registry readiness" {
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const lifecycle_source = try Io.Dir.cwd().readFileAlloc(
+        io,
+        "packages/runtime/test/bun-corpus/cli/install/bun-install-lifecycle-scripts.test.ts",
+        std.testing.allocator,
+        std.Io.Limit.limited(1024 * 1024),
+    );
+    defer std.testing.allocator.free(lifecycle_source);
+    var lifecycle = try prepareCorpusModule(std.testing.allocator, lifecycle_source, "cli/install/bun-install-lifecycle-scripts.test.ts");
+    defer lifecycle.deinit(std.testing.allocator);
+
+    try std.testing.expect(lifecycle.unsupported_reason == null);
+    try std.testing.expect(std.mem.startsWith(u8, lifecycle.source, "try {\n(function() {\n"));
+    try std.testing.expect(std.mem.indexOf(u8, lifecycle.source, "const MAX_CONCURRENT = 12;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, lifecycle.source, "const MAX_CONCURRENT = 100000;") == null);
+
+    const config_source = try Io.Dir.cwd().readFileAlloc(
+        io,
+        "packages/runtime/test/bun-corpus/cli/install/config-version.test.ts",
+        std.testing.allocator,
+        std.Io.Limit.limited(1024 * 1024),
+    );
+    defer std.testing.allocator.free(config_source);
+    var config = try prepareCorpusModule(std.testing.allocator, config_source, "cli/install/config-version.test.ts");
+    defer config.deinit(std.testing.allocator);
+
+    try std.testing.expect(config.unsupported_reason == null);
+    try std.testing.expect(std.mem.startsWith(u8, config.source, "try {\nglobalThis.__home_file_initialization = (async function() {\n"));
+    try std.testing.expect(std.mem.indexOf(u8, config.source, "let registryCanServe = false;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, config.source, "const registryDeadline = Date.now() + 30_000;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, config.source, "let registryCanServe = true;") == null);
+}
+
+test "bootstrap verdaccio registry serves package metadata until stopped" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const source =
+        \\import { expect, test } from "bun:test";
+        \\import { VerdaccioRegistry } from "harness";
+        \\
+        \\test("registry lifecycle", async () => {
+        \\  const registry = new VerdaccioRegistry();
+        \\  await registry.start();
+        \\  const response = await fetch(`${registry.registryUrl()}no-deps`);
+        \\  expect(response.status).toBe(200);
+        \\  const manifest = JSON.parse(await response.text());
+        \\  expect(manifest.name).toBe("no-deps");
+        \\  expect(manifest["dist-tags"].latest).toBe("2.0.0");
+        \\  expect(manifest.versions["1.0.0"].version).toBe("1.0.0");
+        \\  registry.stop();
+        \\  let rejected = false;
+        \\  try { await fetch(`${registry.registryUrl()}no-deps`); } catch { rejected = true; }
+        \\  expect(rejected).toBeTrue();
+        \\});
+    ;
+    var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/config-version.test.ts");
+    defer prepared.deinit(std.testing.allocator);
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
+    defer file_run.deinit(std.testing.allocator);
+
+    if (file_run.result.status() != .passed) {
+        std.debug.print("Verdaccio registry harness failure: {s}\n", .{file_run.result.first_failure_message});
+    }
+    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
+    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
 test "bootstrap runner models root lifecycle install spawn" {

@@ -250,6 +250,15 @@ pub const ExternalResolver = struct {
         // and enums are both type/value exports; interfaces and type
         // aliases are type-only declarations.
         exported_value: bool = false,
+        /// True when the requested name is a top-level binding in the
+        /// resolved owner even though it is absent from that owner's public
+        /// export table. Named-import checking refines a trusted TS2305 miss
+        /// to TS2459 from this prepared owner fact.
+        declares_local: bool = false,
+        /// Public name used by a local `export { requested as public }`.
+        /// Empty when the requested local is not renamed. Borrowed; lives in
+        /// the resolver's arena. A non-empty value refines TS2459 to TS2460.
+        local_exported_as: []const u8 = "",
         /// For an exported module namespace alias, the actual module owner.
         /// Empty for ordinary declarations and type-only value projections.
         namespace_module_path: []const u8 = "",
@@ -60465,7 +60474,8 @@ pub const Checker = struct {
                     if (try self.virtualBareModuleHasNamedExport(node, spec, sp.imported)) continue;
                 }
             }
-            const external_status = self.externalModuleNamedExportRuntimeStatus(node, spec, sp.imported);
+            const external_info = self.externalModuleExportInfo(node, spec, sp.imported);
+            const external_status = if (external_info) |info| moduleExportRuntimeStatus(info) else .unknown;
             switch (external_status) {
                 .value => continue,
                 .ambient_const_enum => {
@@ -60496,8 +60506,42 @@ pub const Checker = struct {
                 // Fixes builtin-corpus `09-import` (`import { foo } from "./bar"`).
                 continue;
             }
+            if (external_status == .missing) {
+                if (external_info) |info| {
+                    const requested = try self.importSpecifierDiagnosticName(sp);
+                    if (info.local_exported_as.len != 0) {
+                        const msg = try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "Module '\"{s}\"' declares '{s}' locally, but it is exported as '{s}'.",
+                            .{ spec, requested, info.local_exported_as },
+                        );
+                        try self.diagnostics.append(self.gpa, .{
+                            .node = spec_node,
+                            .code = TsCodes.module_declares_locally_exported_as,
+                            .message = msg,
+                        });
+                        continue;
+                    }
+                    if (info.declares_local) {
+                        const msg = try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "Module '\"{s}\"' declares '{s}' locally, but it is not exported.",
+                            .{ spec, requested },
+                        );
+                        try self.diagnostics.append(self.gpa, .{
+                            .node = spec_node,
+                            .code = TsCodes.module_declares_locally_not_exported,
+                            .message = msg,
+                        });
+                        continue;
+                    }
+                }
+            }
             const ambient_module_name = if (external_status == .missing)
-                self.externalAmbientModuleDisplayName(node, spec, sp.imported)
+                if (external_info) |info|
+                    if (info.ambient_module and info.ambient_module_exports_known) info.module_name else null
+                else
+                    null
             else
                 null;
             if (ambient_module_name == null) {
@@ -60556,7 +60600,12 @@ pub const Checker = struct {
     }
 
     fn externalModuleNamedExportRuntimeStatus(self: *Checker, node: NodeId, spec: []const u8, name: hir_mod.StringId) ModuleExportRuntimeStatus {
-        const resolver = self.external_resolver orelse return .unknown;
+        const info = self.externalModuleExportInfo(node, spec, name) orelse return .unknown;
+        return moduleExportRuntimeStatus(info);
+    }
+
+    fn externalModuleExportInfo(self: *Checker, node: NodeId, spec: []const u8, name: hir_mod.StringId) ?ExternalResolver.ModuleExport {
+        const resolver = self.external_resolver orelse return null;
         const containing = if (self.importer_path.len > 0)
             self.importer_path
         else if (self.virtualSectionFilenameForNode(node)) |raw|
@@ -60564,8 +60613,7 @@ pub const Checker = struct {
         else
             "/__root__.ts";
         const name_text = self.string_interner.get(name);
-        const info = resolver.moduleExport(spec, containing, name_text) orelse return .unknown;
-        return moduleExportRuntimeStatus(info);
+        return resolver.moduleExport(spec, containing, name_text);
     }
 
     fn externalJSDocImportRuntimeStatus(
@@ -248999,6 +249047,8 @@ const StubExternalResolver = struct {
     canned_is_declaration: bool,
     canned_module_name: ?[]const u8 = null,
     canned_exported_name: []const u8 = "",
+    canned_local_name: []const u8 = "",
+    canned_local_exported_as: []const u8 = "",
     canned_exported_value_readonly: bool = false,
     canned_alternate_result: ?[]const u8 = null,
     canned_project_reference_output: ?[]const u8 = null,
@@ -249044,11 +249094,74 @@ const StubExternalResolver = struct {
             .module_name = module_name,
             .exported_type = false,
             .exported_value = std.mem.eql(u8, name, self.canned_exported_name),
+            .declares_local = std.mem.eql(u8, name, self.canned_local_name),
+            .local_exported_as = if (std.mem.eql(u8, name, self.canned_local_name))
+                self.canned_local_exported_as
+            else
+                "",
             .exported_value_readonly = self.canned_exported_value_readonly and
                 std.mem.eql(u8, name, self.canned_exported_name),
         };
     }
 };
+
+test "checker: external owner local fact refines missing export to TS2459" {
+    const s = try newSetup(
+        \\import { hidden } from "./owner";
+    );
+    defer destroySetup(s);
+    var stub = StubExternalResolver{
+        .canned_path = "/owner.ts",
+        .canned_is_declaration = false,
+        .canned_module_name = "\"owner\"",
+        .canned_local_name = "hidden",
+    };
+    s.checker.setExternalResolver(.{ .ptr = &stub, .vtable = &StubExternalResolver.vtable });
+    s.checker.setImporterPath("/app.ts");
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.module_declares_locally_not_exported));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.no_exported_member));
+}
+
+test "checker: external owner renamed local fact refines missing export to TS2460" {
+    const s = try newSetup(
+        \\import { hidden } from "./owner";
+    );
+    defer destroySetup(s);
+    var stub = StubExternalResolver{
+        .canned_path = "/owner.ts",
+        .canned_is_declaration = false,
+        .canned_module_name = "\"owner\"",
+        .canned_local_name = "hidden",
+        .canned_local_exported_as = "public",
+    };
+    s.checker.setExternalResolver(.{ .ptr = &stub, .vtable = &StubExternalResolver.vtable });
+    s.checker.setImporterPath("/app.ts");
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.module_declares_locally_exported_as));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.no_exported_member));
+}
+
+test "checker: external barrel miss without owner local fact remains TS2305" {
+    const s = try newSetup(
+        \\import { hidden } from "./barrel";
+    );
+    defer destroySetup(s);
+    var stub = StubExternalResolver{
+        .canned_path = "/barrel.ts",
+        .canned_is_declaration = false,
+        .canned_module_name = "\"barrel\"",
+    };
+    s.checker.setExternalResolver(.{ .ptr = &stub, .vtable = &StubExternalResolver.vtable });
+    s.checker.setImporterPath("/app.ts");
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.module_declares_locally_not_exported));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.module_declares_locally_exported_as));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.no_exported_member));
+}
 
 test "checker: external resolver project-reference output mapping reports TS6305" {
     const s = try newSetup(

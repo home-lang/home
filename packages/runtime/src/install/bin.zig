@@ -873,7 +873,7 @@ pub const Bin = extern struct {
         fn createSymlink(this: *Linker, abs_target: [:0]const u8, abs_dest: [:0]const u8, global: bool) void {
             defer {
                 if (this.err == null) {
-                    _ = bun.sys.chmod(abs_target, umask | 0o777);
+                    _ = bun.sys.lchmod(abs_target, 0o777 & ~umask);
                 }
             }
 

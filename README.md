@@ -271,6 +271,12 @@ every successful finite sample without filtering.
 | Apple M3 Pro, macOS ARM64 | 20 / 20 | `startup`: 12.56× faster | `type_predicates_large`: 1.59× faster |
 | Debian Bookworm, Linux ARM64 | 20 / 20 | `startup`: 21.67× faster | `checkjs_jsdoc`: 1.02× faster |
 
+The latest untimed correctness gate is reported separately from performance:
+
+| Admission audit | TypeScript 6.0.3 | Native TypeScript 7.0.2 | Home |
+|---|---:|---:|---:|
+| [Export-list owner and barrel diagnostics](docs/docs/TS_PERFORMANCE.md#indexed-export-queries-and-variable-list-ownership) | 128/128 | 128/128 | 128/128 |
+
 The latest optimization admissions preserve that qualified snapshot while
 recording both accepted and rejected probes:
 

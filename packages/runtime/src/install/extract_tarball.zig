@@ -294,10 +294,15 @@ fn extract(this: *const ExtractTarball, log: *logger.Log, tgz_bytes: []const u8)
                 // installed from GitHub. package.json version becomes sort of
                 // meaningless in cases like this.
                 if (resolved.len > 0) insert_tag: {
-                    const gh_tag = extract_destination.createFile(std.Options.debug_io, ".bun-tag", .{ .truncate = true }) catch break :insert_tag;
-                    defer gh_tag.close(std.Options.debug_io);
-                    bun.sys.File.from(gh_tag).writeAll(resolved).unwrap() catch {
-                        extract_destination.deleteFile(std.Options.debug_io, ".bun-tag") catch {};
+                    const gh_tag = bun.sys.File.openat(
+                        bun.FD.fromStdDir(extract_destination),
+                        ".bun-tag",
+                        bun.O.WRONLY | bun.O.CREAT | bun.O.TRUNC | (if (comptime Environment.isWindows) 0 else bun.O.NOFOLLOW),
+                        0o664,
+                    ).unwrap() catch break :insert_tag;
+                    defer gh_tag.close();
+                    gh_tag.writeAll(resolved).unwrap() catch {
+                        _ = bun.sys.unlinkat(bun.FD.fromStdDir(extract_destination), @as([:0]const u8, ".bun-tag"));
                     };
                 }
             },

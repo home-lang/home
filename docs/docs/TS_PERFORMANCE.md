@@ -6158,25 +6158,37 @@ Commit `d6878e880` ([#538](https://github.com/home-lang/home/issues/538)) preser
 for every declarator, without inferring it from source text in the index.
 The parser suite passes **891/891** tests.
 
-The new `audit_export_lists.py` has 96 untimed cases across const/let/var/declare-var,
-named/namespace/two-hop barrel imports, both root orders, and identical positives
-with appended wrong-type or hidden-binding negatives. Both pinned TypeScript
-compilers pass all cases. Frozen Home `de8fe28f1` fails all 96; the new candidate
-passes **80/96**, with the expected diagnostic codes unchanged:
+The `audit_export_lists.py` gate now has 128 untimed cases across
+const/let/var/declare-var, named/namespace/two-hop barrel imports, both root
+orders, and identical positives with appended wrong-type, hidden-binding, or
+renamed-hidden-binding negatives. Every compiler receives the same explicit
+root set and exact expected diagnostic-code multiset. The
+[#540](https://github.com/home-lang/home/issues/540) candidate carries prepared
+owner-local declaration and renamed-export facts through the resolver; it does
+not reopen source or check the owner from the consumer. Direct hidden imports
+therefore refine a trusted export-table miss to TS2459/TS2460, while a barrel
+that does not itself declare the name remains TS2305.
 
-| Export-list control | TS 6.0.3 | Native TS 7.0.2 | Home before | Home after |
+| Export-list control | TS 6.0.3 | Native TS 7.0.2 | Home before #540 | Home after #540 |
 |---|---:|---:|---:|---:|
-| Valid trailing-member consumption | 32/32 | 32/32 | 0/32 | 32/32 |
-| Wrong trailing-member type | 32/32 | 32/32 | 0/32 | 32/32 |
-| Hidden name through a barrel | 16/16 | 16/16 | 0/16 | 16/16 |
-| Hidden name imported directly | 16/16 | 16/16 | 0/16 | 0/16 |
+| Valid trailing-member consumption | 32/32 | 32/32 | 32/32 | 32/32 |
+| Wrong trailing-member type | 32/32 | 32/32 | 32/32 | 32/32 |
+| Hidden name through a barrel (TS2305) | 16/16 | 16/16 | 16/16 | 16/16 |
+| Hidden name imported directly (TS2459) | 16/16 | 16/16 | 0/16 | 16/16 |
+| Renamed hidden name through a barrel (TS2305) | 16/16 | 16/16 | 0/16 | 16/16 |
+| Renamed hidden name imported directly (TS2460) | 16/16 | 16/16 | 0/16 | 16/16 |
+| **Total** | **128/128** | **128/128** | **80/128** | **128/128** |
 
-The remaining direct hidden imports are rejected, but with TS2305 instead of
-TS2459. They remain failures, tracked by
-[#540](https://github.com/home-lang/home/issues/540); currently the more precise
-local-declaration diagnostic is available for virtual same-HIR modules but not
-real external owners. Evidence: `export-index.NVcIdu/export-lists-before.log`
-and `export_lists-v3.log`.
+That is **384/384 compiler checks with zero failures** after the fix, versus 48
+Home failures before it. This is a correctness/admission result, not a timing
+claim. Frozen evidence is retained under `local-import-facts.zSUp41/`: the
+pristine `078363fa4` before binary is SHA-256
+`ae96066ab6cb5b205d4dd6132024a587bf2b16bda3293fee1ca593118693c13e` and the
+after binary is
+`1ad8f6bd5d1959ca9f236776453b83407f2296af428edd3b527f4bcd9623e921`, with one
+complete before log and two byte-identical after logs (SHA-256
+`2f911dc51b73577f69c7c729f000a2b030b32dc5308660fc3775fee1008c8c`). The earlier 96-case evidence remains in
+`export-index.NVcIdu/export-lists-before.log` and `export_lists-v3.log`.
 
 All **19/19 workloads pass admission**. Existing release audits retain their
 previous scores: factory 240/240, recursive 288/288, generic classes 120/120,
@@ -6193,6 +6205,7 @@ The frozen ReleaseFast binary is
 `615e9fa1f78c2cad17a0b8911b897ede73c00422138d6ecbb2b74801d4564f14`.
 
 ```sh
+HOME_TSC="$PWD/bench/vs_tsgo/results/local-import-facts.zSUp41/after/bin/home-tsc" python3 bench/vs_tsgo/audit_export_lists.py
 HOME_TSC="$PWD/bench/vs_tsgo/results/export-index.NVcIdu/release-v3/bin/home-tsc" python3 bench/vs_tsgo/audit_export_lists.py
 HOME_TSC="$PWD/bench/vs_tsgo/results/export-index.NVcIdu/release-v3/bin/home-tsc" python3 bench/vs_tsgo/run.py cold --runs 30 --warmup 3
 ```

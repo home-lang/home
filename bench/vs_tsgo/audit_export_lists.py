@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Untimed ownership and typing of exported variable lists for #538 / #537."""
+"""Untimed export-list ownership and hidden-import diagnostics for #537 / #540."""
 
 from audit_globals import Case, audit
 
@@ -24,14 +24,19 @@ def cases() -> list[Case]:
                 imports = f"import {{ first as numeric, second as selected }} from './{target}';\n"
                 first, second = "numeric", "selected"
             positive = imports + f"const numberValue: number = {first};\nconst stringValue: string = {second};\n"
+            renamed_files = {**files, "a-owner.ts": owner + "export { hidden as public };\n"}
             controls = (
-                ("positive", positive, ()),
-                ("wrong-type", positive + f"const bad: number = {second};\n", ("2322",)),
-                ("hidden", positive + f"import {{ hidden }} from './{target}';\n", ("2305" if target == "c-barrel" else "2459",)),
+                ("positive", files, positive, ()),
+                ("wrong-type", files, positive + f"const bad: number = {second};\n", ("2322",)),
+                ("hidden", files, positive + f"import {{ hidden }} from './{target}';\n",
+                 ("2305" if target == "c-barrel" else "2459",)),
+                ("renamed-hidden", renamed_files, positive + f"import {{ hidden }} from './{target}';\n",
+                 ("2305" if target == "c-barrel" else "2460",)),
             )
             for order, app in (("before", "0-app.ts"), ("after", "z-app.ts")):
-                for control, text, expected in controls:
-                    result.append(Case(f"{placement}/app-{order}/{control}", declaration, {**files, app: text}, expected))
+                for control, control_files, text, expected in controls:
+                    result.append(Case(f"{placement}/app-{order}/{control}", declaration,
+                                       {**control_files, app: text}, expected))
     return result
 
 

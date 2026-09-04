@@ -2376,6 +2376,7 @@ const CheckerResolverAdapter = struct {
                 name,
             );
         };
+        const local_facts = ts_program.moduleLocalImportFactsFromCompilation(compilation, name);
         const exported = facts.exported_type;
         const cannot_be_named = facts.cannot_be_named;
         const type_only_pos = facts.type_only_pos;
@@ -2391,6 +2392,11 @@ const CheckerResolverAdapter = struct {
                 .module_name = module_name,
                 .exported_type = exported,
                 .exported_value = facts.exported_value,
+                .declares_local = local_facts.declares_local,
+                .local_exported_as = if (local_facts.exported_as.len != 0)
+                    arena.dupe(u8, local_facts.exported_as) catch return null
+                else
+                    "",
                 .namespace_module_path = namespaceExportOwner(origins) orelse "",
                 .runtime_value = runtimeValueFromExportFacts(origins, facts.exported_value),
                 .exported_value_readonly = facts.exported_value_readonly,
@@ -2446,6 +2452,7 @@ const CheckerResolverAdapter = struct {
                 name,
             );
         };
+        const local_facts = ts_program.moduleLocalImportFactsFromCompilation(compilation, name);
         const type_only_pos = facts.type_only_pos;
         const result: ts_driver.ExternalResolver.ModuleExport = blk: {
             self.resolver_mutex.lock();
@@ -2456,6 +2463,11 @@ const CheckerResolverAdapter = struct {
                 .module_name = ts_program.renderModuleDisplayName(arena, resolved.path) catch return null,
                 .exported_type = facts.exported_type,
                 .exported_value = facts.exported_value,
+                .declares_local = local_facts.declares_local,
+                .local_exported_as = if (local_facts.exported_as.len != 0)
+                    arena.dupe(u8, local_facts.exported_as) catch return null
+                else
+                    "",
                 .namespace_module_path = namespaceExportOwner(origins) orelse "",
                 .runtime_value = runtimeValueFromExportFacts(origins, facts.exported_value),
                 .ambient_const_enum = facts.ambient_const_enum,
@@ -4283,6 +4295,34 @@ test "tsc_main: resolver adapter preserves generic functions through js export s
     try std.testing.expect(info.exported_value);
     try std.testing.expect(info.generic_function);
     try std.testing.expect(info.call_only_function);
+}
+
+test "tsc_main: resolver adapter carries prepared local import facts" {
+    var vfs = ts_resolver.VirtualFs.init(std.testing.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/owner.ts", "const hidden = 1; export { hidden as public };");
+    var resolver = ts_resolver.Resolver.init(std.testing.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var adapter = CheckerResolverAdapter.init(std.testing.allocator, &resolver);
+    defer adapter.deinit();
+
+    const hidden = CheckerResolverAdapter.moduleExportImpl(
+        &adapter,
+        "./owner",
+        "/consumer.ts",
+        "hidden",
+    ) orelse return error.TestUnexpectedResult;
+    try std.testing.expect(!hidden.exported_value);
+    try std.testing.expect(hidden.declares_local);
+    try std.testing.expectEqualStrings("public", hidden.local_exported_as);
+
+    const public = CheckerResolverAdapter.moduleExportImpl(
+        &adapter,
+        "./owner",
+        "/consumer.ts",
+        "public",
+    ) orelse return error.TestUnexpectedResult;
+    try std.testing.expect(public.exported_value);
 }
 
 test "tsc_main: classifyExtension recognizes TS, Home, JS and unsupported shapes" {
