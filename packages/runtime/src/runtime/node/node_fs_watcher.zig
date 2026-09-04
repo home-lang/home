@@ -659,12 +659,23 @@ pub const FSWatcher = struct {
 
             const cwd = bun.fs.FileSystem.instance.top_level_dir;
 
-            break :brk Path.joinAbsStringBufZ(
+            // `slice` is user-controlled and is validated only against the raw
+            // per-platform MAX_PATH_BYTES, so prepending the cwd can push the
+            // join past the pooled PathBuffer. Use the bounds-checked join and
+            // surface ENAMETOOLONG instead of writing out of bounds. The last
+            // byte is reserved for the NUL written below.
+            const joined = Path.joinAbsStringBufChecked(
                 cwd,
-                joined_buf,
+                joined_buf[0 .. joined_buf.len - 1],
                 &.{slice},
                 .auto,
-            );
+            ) orelse return .{ .err = .{
+                .errno = @intFromEnum(bun.sys.E.NAMETOOLONG),
+                .syscall = .watch,
+                .path = args.path.slice(),
+            } };
+            joined_buf[joined.len] = 0;
+            break :brk joined_buf[0..joined.len :0];
         };
 
         const vm = args.global_this.bunVM();

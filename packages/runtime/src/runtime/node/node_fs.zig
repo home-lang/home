@@ -2701,8 +2701,6 @@ pub const Arguments = struct {
             const buffer_value = arguments.nextEat() orelse
                 // theoretically impossible, argument has been passed already
                 return ctx.throwInvalidArguments("buffer is required", .{});
-            const buffer: jsc.MarkedArrayBuffer = Buffer.fromJS(ctx, buffer_value) orelse
-                return ctx.throwInvalidArgumentTypeValue("buffer", "TypedArray", buffer_value);
 
             const offset_value: jsc.JSValue = arguments.nextEat() orelse .null;
             // if (offset == null) {
@@ -2720,6 +2718,17 @@ pub const Arguments = struct {
                 try arg.toNumber(ctx)
             else
                 0;
+
+            // Materialize the destination only after every argument coercion has
+            // run. `toNumber` above calls a user-supplied `valueOf`, and that JS is
+            // free to detach or transfer the destination buffer. MarkedArrayBuffer
+            // is a value copy of the view descriptor, not a live handle, so one
+            // captured earlier keeps the pre-detach pointer and the read would go
+            // straight into memory the caller no longer owns. Re-reading the view
+            // here yields the detached zero-length slice, which the `buf_len == 0`
+            // check below turns into ERR_INVALID_ARG_VALUE.
+            const buffer: jsc.MarkedArrayBuffer = Buffer.fromJS(ctx, buffer_value) orelse
+                return ctx.throwInvalidArgumentTypeValue("buffer", "TypedArray", buffer_value);
 
             //   if (length === 0) {
             //     return process.nextTick(function tick() {
