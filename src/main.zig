@@ -2361,6 +2361,58 @@ fn runTestsViaVM(allocator_unused: std.mem.Allocator, args: []const [:0]const u8
         }
     };
 
+    // Bun's test configuration is rooted at its `test/` directory. The
+    // mirrored corpus carries that directory's unchanged bunfig.toml and
+    // preload.ts, but Home is normally invoked from the repository root. Run
+    // explicit corpus targets from the corpus root so bunfig discovery,
+    // preload resolution, tsconfig paths, and relative fixtures have exactly
+    // the same base as `cd test && bun test ...` in the upstream checkout.
+    // Merely forwarding the repository-relative path would instead load
+    // Home's root bunfig.toml and silently omit Bun's test preload.
+    var effective_args: []const [:0]const u8 = args;
+    var rewritten_args: ?[][:0]const u8 = null;
+    var rewritten_values: std.ArrayListUnmanaged([:0]u8) = .empty;
+    defer {
+        for (rewritten_values.items) |value| allocator.free(value);
+        rewritten_values.deinit(allocator);
+        if (rewritten_args) |values| allocator.free(values);
+    }
+    var original_cwd: ?[:0]u8 = null;
+    defer if (original_cwd) |cwd| {
+        std.Io.Threaded.chdir(cwd) catch unreachable;
+        allocator.free(cwd);
+    };
+
+    if (argTargetsBunCorpus(args)) |target| {
+        const corpus_path = switch (target) {
+            .root => |path| path,
+            .directory => |directory| directory.corpus_path,
+            .file => |file| file.corpus_path,
+        };
+        const cwd = try home_rt.getcwdAlloc(allocator);
+        original_cwd = cwd;
+        const corpus_root = try std.fs.path.resolve(allocator, &.{ cwd, corpus_path });
+        defer allocator.free(corpus_root);
+
+        const normalized = try allocator.alloc([:0]const u8, args.len);
+        rewritten_args = normalized;
+        for (args, 0..) |arg, index| {
+            const relative = if (resolveBunCorpusTarget(arg)) |arg_target| switch (arg_target) {
+                .root => ".",
+                .directory => |directory| directory.relative_path,
+                .file => |file| file.relative_path,
+            } else {
+                normalized[index] = arg;
+                continue;
+            };
+            const relative_z = try home_rt.dupeZ(allocator, u8, relative);
+            try rewritten_values.append(allocator, relative_z);
+            normalized[index] = relative_z;
+        }
+        effective_args = normalized;
+        try std.Io.Threaded.chdir(corpus_root);
+    }
+
     const log = try allocator.create(home_rt.logger.Log);
     log.* = home_rt.logger.Log.init(allocator);
 
@@ -2368,10 +2420,10 @@ fn runTestsViaVM(allocator_unused: std.mem.Allocator, args: []const [:0]const u8
     // Keep parser argv separate from process.argv: Home's dispatcher has
     // already normalized the test command's arguments, but user code must
     // still observe the original executable and argument list.
-    const parser_argv = try allocator.alloc([:0]const u8, args.len + 2);
+    const parser_argv = try allocator.alloc([:0]const u8, effective_args.len + 2);
     parser_argv[0] = home_rt.argv[0];
     parser_argv[1] = "test";
-    @memcpy(parser_argv[2..], args);
+    @memcpy(parser_argv[2..], effective_args);
     home_rt.clap.args.setProcessArgs(parser_argv);
     const ctx = try home_rt.cli.Command.createContextData(allocator, log, .TestCommand);
     ctx.start_time = home_rt.start_time;
