@@ -9932,6 +9932,94 @@ test "Program: mapped prototype conditionals preserve optional generic and rest 
     try expectCompilationHasDiagnosticCode(compilation, 2339);
 }
 
+test "Program: generic nested member assignments contextually type callbacks" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver };
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+
+    const owner =
+        \\export interface Context { label: string }
+        \\export interface JsonWriter { write(value: string): void }
+        \\export interface ProcessParams { mode: string }
+        \\export interface BaseInternals {
+        \\  def: unknown;
+        \\  process?: ((ctx: Context, json: JsonWriter, params: ProcessParams) => void) | undefined;
+        \\}
+        \\export interface TypeInternals<out O = unknown, out I = unknown> extends BaseInternals {
+        \\  output: O;
+        \\  input: I;
+        \\}
+        \\export interface Type<
+        \\  O = unknown,
+        \\  I = unknown,
+        \\  Internals extends TypeInternals<O, I> = TypeInternals<O, I>
+        \\> { _zod: Internals }
+        \\export interface WrappedType<out Internals extends TypeInternals = TypeInternals>
+        \\  extends Type<any, any, Internals> {}
+        \\export interface DateInternals<Input> extends TypeInternals<Date, Input> {
+        \\  traits: Set<string>;
+        \\}
+    ;
+    const consumer =
+        \\import * as core from "./owner.js";
+        \\interface LocalType<Internals extends core.TypeInternals = core.TypeInternals>
+        \\  extends core.Type<any, any, Internals> {}
+        \\interface DateType extends LocalType<core.DateInternals<Date>> {}
+        \\interface Factory<T> { readonly prototype: T }
+        \\declare function Factory<T>(name: string, initialize: (inst: T, def: unknown) => void): Factory<T>;
+        \\export const DateType: Factory<DateType> = Factory("inferred", (inst, def) => {
+        \\  inst._zod.process = (ctx, json, params) => {
+        \\    const label: string = ctx.label;
+        \\    json.write(params.mode);
+        \\    void label;
+        \\  };
+        \\  void def;
+        \\});
+        \\export const ExplicitDateType = Factory<DateType>("explicit", (inst) => {
+        \\  inst._zod.process = (ctx, json, params) => {
+        \\    json.write(params.mode);
+        \\    void ctx.label;
+        \\  };
+        \\});
+    ;
+    const invalid =
+        \\import * as core from "./owner.js";
+        \\interface LocalType<Internals extends core.TypeInternals = core.TypeInternals>
+        \\  extends core.Type<any, any, Internals> {}
+        \\interface DateType extends LocalType<core.DateInternals<Date>> {}
+        \\interface Factory<T> { readonly prototype: T }
+        \\declare function Factory<T>(name: string, initialize: (inst: T) => void): Factory<T>;
+        \\export const InvalidDateType: Factory<DateType> = Factory("invalid", (inst) => {
+        \\  inst._zod.process = (ctx, json, params) => {
+        \\    json.write(params.mode);
+        \\    void ctx.missing;
+        \\  };
+        \\});
+    ;
+    try vfs.addFile("/proj/owner.ts", owner);
+    try vfs.addFile("/proj/consumer.ts", consumer);
+    try vfs.addFile("/proj/invalid.ts", invalid);
+    _ = try p.add("/proj/owner.ts", owner);
+    const consumer_id = try p.add("/proj/consumer.ts", consumer);
+    const invalid_id = try p.add("/proj/invalid.ts", invalid);
+
+    try p.compileAll(.{
+        .no_emit = true,
+        .strict_flags = .{ .no_implicit_any = true, .strict_null_checks = true },
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    });
+    const compilation = p.fileById(consumer_id).compilation.?;
+    const invalid_compilation = p.fileById(invalid_id).compilation.?;
+    try T.expectEqual(@as(usize, 0), compilation.diagnostics.items.len);
+    try expectCompilationLacksDiagnosticCode(invalid_compilation, 7006);
+    try expectCompilationHasDiagnosticCode(invalid_compilation, 2339);
+    try T.expectEqual(@as(usize, 1), invalid_compilation.diagnostics.items.len);
+}
+
 test "Program: namespace imports preserve callbacks through inherited interfaces" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();
