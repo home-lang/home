@@ -320,7 +320,11 @@ const harness_prelude =
     \\globalThis.__home_must_call_failure_message = function() {
     \\  const failed = __home_must_call_checks.filter(check => "minimum" in check ? check.actual < check.minimum : check.actual !== check.exact);
     \\  if (failed.length === 0) return "";
-    \\  return failed.map(check => "Mismatched " + check.name + " function calls in " + check.filename + ". Expected " + ("minimum" in check ? "at least " + check.minimum : "exactly " + check.exact) + ", actual " + check.actual + ".").join("\n");
+    \\  const message = failed.map(check => "Mismatched " + check.name + " function calls in " + check.filename + ". Expected " + ("minimum" in check ? "at least " + check.minimum : "exactly " + check.exact) + ", actual " + check.actual + ".").join("\n");
+    \\  const lifecycle = Array.isArray(globalThis.__home_worker_message_trace) ? globalThis.__home_worker_message_trace.slice(-16) : [];
+    \\  const output = Array.isArray(globalThis.__home_console_output) ? globalThis.__home_console_output.slice(-16) : [];
+    \\  const handles = typeof globalThis.__home_refed_runtime_handle_message === "function" ? globalThis.__home_refed_runtime_handle_message() : "";
+    \\  return message + "\nRegistered call checks: " + String(__home_must_call_checks.length) + (lifecycle.length ? "\nWorker lifecycle: " + lifecycle.join(" -> ") : "") + (handles ? "\n" + handles : "") + (output.length ? "\nRecent console output:\n" + output.join("\n") : "");
     \\};
     \\globalThis.__home_has_refed_runtime_handles = function() {
     \\  for (const registryName of ["__home_net_servers", "__home_net_servers_by_path", "__home_tls_servers", "__home_http_servers", "__home_http_servers_by_endpoint", "__home_http2_servers", "__home_http2_servers_by_path"]) {
@@ -340,7 +344,7 @@ const harness_prelude =
     \\    if (!registry) continue;
     \\    for (const key of Object.keys(registry)) {
     \\      const handle = registry[key];
-    \\      if (handle && !handle.__home_unrefed) active.push(registryName + "[" + key + "]" + ("listening" in handle ? "(listening=" + String(handle.listening) + ", pending=" + String(!!handle.__home_listen_pending) + ", closeCalled=" + String(!!handle.__home_close_called) + ")" : ""));
+    \\      if (handle && !handle.__home_unrefed) active.push(registryName + "[" + key + "]" + ("listening" in handle ? "(listening=" + String(handle.listening) + ", pending=" + String(!!handle.__home_listen_pending) + ", closeCalled=" + String(!!handle.__home_close_called) + ", listeningListeners=" + String(typeof handle.listenerCount === "function" ? handle.listenerCount("listening") : 0) + ")" : ""));
     \\    }
     \\  }
     \\  return active.length ? "referenced runtime handles did not quiesce after bounded event-loop checkpoints: " + active.join(", ") : "";
@@ -70570,7 +70574,8 @@ const harness_prelude =
     \\  if (typeof args[2] === "function") callback = args[2];
     \\  let url = null;
     \\  if (typeof input === "string" || input instanceof URL) {
-    \\    url = new URL(String(input));
+    \\    const requestUrl = typeof input === "string" ? input.replace(/[\t\r\n]/g, "") : String(input);
+    \\    url = new URL(requestUrl);
     \\    if (input instanceof URL && options.headers === undefined && input.headers !== undefined) options.headers = input.headers;
     \\    if (options.auth === undefined && (url.username || url.password)) options.auth = decodeURIComponent(url.username) + ":" + decodeURIComponent(url.password);
     \\    if (options.protocol !== undefined) url.protocol = String(options.protocol);
@@ -71003,7 +71008,7 @@ const harness_prelude =
     \\        const proxyServer = server;
     \\        const authority = String(url.host || url.hostname);
     \\        const connectHeaders = Object.create(null);
-    \\        connectHeaders["proxy-connection"] = "keep-alive";
+    \\        connectHeaders["proxy-connection"] = selectedAgent && (selectedAgent.keepAlive || Number.isFinite(selectedAgent.maxSockets)) ? "keep-alive" : "close";
     \\        connectHeaders.host = authority;
     \\        const tunnelSocket = Object.assign(__home_http_event_target(), { destroyed: false, write() { return true; }, end() { this.destroyed = true; return this; }, destroy() { this.destroyed = true; return this; } });
     \\        proxyServer.emit("connect", Object.assign(__home_http_event_target(), { method: "CONNECT", url: authority, headers: connectHeaders }), tunnelSocket, Buffer.alloc(0));
@@ -71291,8 +71296,9 @@ const harness_prelude =
     \\  clientRequest.agent = selectedAgent;
     \\  if (clientRequest.__home_headers.host === undefined && !clientRequest.__home_headers_array && (options.setDefaultHeaders !== false || options.setHost === true)) clientRequest.setHeader("Host", String(url.__home_host_header || url.host || url.hostname || "localhost"));
     \\  if (proxyUrl) {
-    \\    if (clientRequest.__home_headers.connection === undefined) clientRequest.setHeader("Connection", "keep-alive");
-    \\    if (clientRequest.__home_headers["proxy-connection"] === undefined) clientRequest.setHeader("Proxy-Connection", String(clientRequest.__home_headers.connection || "keep-alive"));
+    \\    const proxyConnection = selectedAgent && (selectedAgent.keepAlive || Number.isFinite(selectedAgent.maxSockets)) ? "keep-alive" : "close";
+    \\    if (clientRequest.__home_headers.connection === undefined) clientRequest.setHeader("Connection", proxyConnection);
+    \\    if (clientRequest.__home_headers["proxy-connection"] === undefined) clientRequest.setHeader("Proxy-Connection", String(clientRequest.__home_headers.connection || proxyConnection));
     \\    clientRequest.__home_proxy_url = proxyUrl;
     \\    clientRequest.__home_proxy_request_path = url.href;
     \\  }
@@ -157744,6 +157750,14 @@ test "bootstrap HTTP timeout readability and socket reuse contracts" {
         \\  await new Promise((resolve, reject) => { const request = http.request(url, response => { response.resume(); response.once("end", resolve); }); request.once("error", reject); request.end(); });
         \\  await new Promise(resolve => server.close(resolve));
         \\});
+        \\test("string request URLs preprocess ASCII tabs and newlines while object options stay strict", async () => {
+        \\  const server = http.createServer((request, response) => { assert.strictEqual(request.url, "/cleanpath"); response.end("ok"); });
+        \\  await new Promise(resolve => server.listen(0, resolve));
+        \\  const port = String(server.address().port); const dirtyPort = port.slice(0, 1) + "\r\n" + port.slice(1);
+        \\  await new Promise((resolve, reject) => { const request = http.get("http://local\thost:" + dirtyPort + "/clean\npath", response => { response.resume(); response.once("end", resolve); }); request.once("error", reject); });
+        \\  assert.throws(() => http.request({ hostname: "local\rhost", port }), { code: "ERR_INVALID_CHAR" });
+        \\  await new Promise(resolve => server.close(resolve));
+        \\});
         \\test("custom Duplex responses decode chunk framing after readable=false", async () => {
         \\  const parsed = __home_http_parse_response_frame("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nb\r\nhello world\r\n0\r\n\r\n", false); assert.strictEqual(parsed.body, "hello world");
         \\  class FakeAgent extends http.Agent { createConnection() { const socket = new Duplex(); let read = false; socket._read = function() { if (read) return this.push(null); read = true; this.push("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"); this.push("b\r\nhello world\r\n"); this.readable = false; this.push("0\r\n\r\n"); }; socket._write = (_data, _encoding, done) => done(); socket.destroy = socket.destroySoon = function() { this.writable = false; }; return socket; } }
@@ -157789,7 +157803,7 @@ test "bootstrap HTTP timeout readability and socket reuse contracts" {
 
     if (file_run.result.status() != .passed) std.debug.print("HTTP timeout/readability contract failure: {s}\n", .{file_run.result.first_failure_message});
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 6), file_run.result.passed);
+    try std.testing.expectEqual(@as(usize, 7), file_run.result.passed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.failed);
     try std.testing.expectEqual(@as(usize, 0), file_run.result.unsupported);
 }
