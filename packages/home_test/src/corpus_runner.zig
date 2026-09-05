@@ -79681,8 +79681,10 @@ const harness_prelude =
     \\      const end = __home_find_byte_suffix(bytes, [0x00], 1);
     \\      if (end >= 0) return bytes.slice(1, end);
     \\    }
+    \\    const hasZlibHeader = bytes.length >= 2 && (bytes[0] & 0x0f) === 8 && (((bytes[0] << 8) | bytes[1]) % 31) === 0;
     \\    try {
-    \\      return Buffer.from(globalThis.__home_deflateDecompressNative(Buffer.from(bytes).toString("base64")), "base64");
+    \\      const decompress = hasZlibHeader ? globalThis.__home_deflateDecompressNative : globalThis.__home_rawDeflateDecompressNative;
+    \\      return Buffer.from(decompress(Buffer.from(bytes).toString("base64")), "base64");
     \\    } catch (cause) {
     \\      throw __home_response_compression_error("ZlibError", String(cause && cause.message || cause), cause, encoding);
     \\    }
@@ -80485,19 +80487,20 @@ const harness_prelude =
     \\}
     \\function __home_fetch_redirect_location(location) {
     \\  const raw = String(location || "");
+    \\  const normalizeProtocolRelative = value => String(value).startsWith("://") ? String(value).slice(1) : String(value);
     \\  let hasRawBytes = false;
     \\  for (let index = 0; index < raw.length; index++) {
     \\    const code = raw.charCodeAt(index);
-    \\    if (code > 255) return raw;
+    \\    if (code > 255) return normalizeProtocolRelative(raw);
     \\    if (code >= 128) hasRawBytes = true;
     \\  }
-    \\  if (!hasRawBytes) return raw;
+    \\  if (!hasRawBytes) return normalizeProtocolRelative(raw);
     \\  try {
     \\    const bytes = new Uint8Array(raw.length);
     \\    for (let index = 0; index < raw.length; index++) bytes[index] = raw.charCodeAt(index) & 255;
-    \\    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    \\    return normalizeProtocolRelative(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
     \\  } catch (error) {
-    \\    return raw;
+    \\    return normalizeProtocolRelative(raw);
     \\  }
     \\}
     \\function __home_fetch_redirect_headers(request, redirectedUrl, redirectedMethod) {
