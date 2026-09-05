@@ -2549,6 +2549,7 @@ pub const cli = struct {
     pub const AddCommand = @import("runtime/cli/add_command.zig").AddCommand;
     pub const BuildCommand = @import("runtime/cli/build_command.zig").BuildCommand;
     pub const InstallCommand = @import("runtime/cli/install_command.zig").InstallCommand;
+    pub const RemoveCommand = @import("runtime/cli/remove_command.zig").RemoveCommand;
     pub const TestCommand = @import("runtime/cli/test_command.zig").TestCommand;
     pub const PmPkgCommand = @import("runtime/cli/pm_pkg_command.zig").PmPkgCommand;
     pub const ScanCommand = @import("runtime/cli/scan_command.zig").ScanCommand;

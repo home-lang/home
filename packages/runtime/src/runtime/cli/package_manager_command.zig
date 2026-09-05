@@ -203,10 +203,10 @@ pub const PackageManagerCommand = struct {
                 try DefaultTrustedCommand.exec();
                 Global.exit(0);
             } else if (strings.eqlComptime(subcommand, "untrusted")) {
-                try UntrustedCommand.exec(ctx, pm, @constCast(args));
+                try UntrustedCommand.exec(ctx, pm, args);
                 Global.exit(0);
             } else if (strings.eqlComptime(subcommand, "trust")) {
-                try TrustCommand.exec(ctx, pm, @constCast(args));
+                try TrustCommand.exec(ctx, pm, args);
                 Global.exit(0);
             }
         }

@@ -5971,6 +5971,11 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
     if (std.mem.eql(u8, command, "remove") or std.mem.eql(u8, command, "rm") or std.mem.eql(u8, command, "uninstall")) {
+        if (build_options.enable_jsc and envFlagSet("HOME_NATIVE_VM")) {
+            const ctx = try nativePackageCommandContext(args, .RemoveCommand);
+            try home_rt.cli.RemoveCommand.exec(ctx);
+            return;
+        }
         try execPantryCommand(allocator, "remove", args[2..]);
         return;
     }
@@ -6070,6 +6075,13 @@ pub fn main(init: std.process.Init) !void {
         }
         if (std.mem.eql(u8, args[2], "why")) {
             try home_rt.cli.WhyCommand.execStandalone(ctx, args[3..]);
+            return;
+        }
+        if (std.mem.eql(u8, args[2], "trust") or
+            std.mem.eql(u8, args[2], "untrusted") or
+            std.mem.eql(u8, args[2], "default-trusted"))
+        {
+            try home_rt.cli.PackageManagerCommand.exec(ctx);
             return;
         }
         if (std.mem.eql(u8, args[2], "ls") or
