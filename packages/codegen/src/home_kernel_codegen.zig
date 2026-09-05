@@ -4809,6 +4809,51 @@ pub const HomeKernelCodegen = struct {
                         try self.emit().cmpRegs(.acc, .tmp);
                         try self.emit().condMove(.lt, .acc, .tmp);
                     },
+                    .MemSet => {
+                        // @memset(dest, byte) takes its length from dest's
+                        // type; @memset(ptr, byte, len) is told it. The first
+                        // form is what a kernel writes for a fixed-size field,
+                        // and refusing it sent callers to hand-rolled loops.
+                        const dest = r.target;
+                        const value = r.second_arg orelse {
+                            try self.writeAll("    # ERROR: @memset needs a value\n");
+                            return;
+                        };
+
+                        // Length first: it is the part that can fail, and
+                        // failing before any register is loaded keeps the
+                        // error from being half a memset.
+                        const length_expr: ?*ast.Expr = r.third_arg;
+                        var static_length: usize = 0;
+                        if (length_expr == null) {
+                            const dest_type = self.typeOfLValue(dest) orelse {
+                                try self.writeAll("    # ERROR: @memset cannot size this destination\n");
+                                return;
+                            };
+                            // `&x` has x's type through typeOfLValue; a
+                            // pointer type is sized by its pointee.
+                            const bare = splitAlign(dest_type).bare;
+                            const sized = pointeeType(bare) orelse bare;
+                            static_length = self.sizeOf(sized) orelse {
+                                try self.print("    # ERROR: @memset cannot size {s}\n", .{sized});
+                                return;
+                            };
+                        }
+
+                        try self.generateExpr(dest);
+                        try self.emit().push(.acc);
+                        if (length_expr) |len| {
+                            try self.generateExpr(len);
+                        } else {
+                            try self.emit().movImm(@intCast(static_length));
+                        }
+                        try self.emit().movReg(.mem_len, .acc);
+                        try self.emit().pop(.mem_dst);
+                        // The value goes last: it lands in the accumulator,
+                        // which is what memFill writes from.
+                        try self.generateExpr(value);
+                        try self.emit().memFill(self.freshLabel());
+                    },
                     else => {
                         // Floating-point and type-introspection builtins have
                         // no lowering in a freestanding integer backend.
