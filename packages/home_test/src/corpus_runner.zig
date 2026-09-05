@@ -21432,6 +21432,14 @@ const harness_prelude =
     \\  if (!isTs) nodes.push({ id: 4, callFrame: { functionName: "anotherFunction", scriptId: "1", url, lineNumber: 13, columnNumber: 0 }, hitCount: 3, positionTicks: [{ line: 16, ticks: 2 }] });
     \\  return JSON.stringify({ nodes, startTime: 0, endTime: 1000, samples: nodes.slice(1).map(node => node.id), timeDeltas: nodes.slice(1).map(() => 1000) });
     \\}
+    \\function __home_cli_resolve_path(cwd, path) {
+    \\  const value = __home_build_normalize(String(path || ""));
+    \\  if (!value || value.startsWith("/")) return value;
+    \\  const base = __home_build_normalize(String(cwd || ""));
+    \\  if (!base || base === ".") return value;
+    \\  if (!base.startsWith("/") && (value === base || value.startsWith(base + "/"))) return value;
+    \\  return __home_build_join(base, value);
+    \\}
     \\function __home_cli_build_entries(cmd, cwd) {
     \\  const entries = [];
     \\  const valueFlags = new Set(["--outfile", "--outdir", "--target", "--tsconfig-override", "--entrypoints"]);
@@ -21439,16 +21447,16 @@ const harness_prelude =
     \\  for (let i = buildIndex < 0 ? 0 : buildIndex + 1; i < cmd.length; i++) {
     \\    const part = cmd[i];
     \\    if (valueFlags.has(part)) {
-    \\      if (part === "--entrypoints" && i + 1 < cmd.length) entries.push(cmd[i + 1]);
+    \\      if (part === "--entrypoints" && i + 1 < cmd.length) entries.push(__home_cli_resolve_path(cwd, cmd[i + 1]));
     \\      i += 1;
     \\      continue;
     \\    }
     \\    if (part.startsWith("--entrypoints=")) {
-    \\      entries.push(part.slice("--entrypoints=".length));
+    \\      entries.push(__home_cli_resolve_path(cwd, part.slice("--entrypoints=".length)));
     \\      continue;
     \\    }
     \\    if (part.startsWith("-")) continue;
-    \\    if (/\.(html?|css|[cm]?[jt]sx?)$/i.test(part)) entries.push(part.startsWith("/") ? part : __home_build_join(cwd, part));
+    \\    if (/\.(html?|css|[cm]?[jt]sx?)$/i.test(part)) entries.push(__home_cli_resolve_path(cwd, part));
     \\  }
     \\  return entries;
     \\}
@@ -22195,6 +22203,22 @@ const harness_prelude =
     \\      const cwd = String(options && options.cwd || process.cwd());
     \\      const entries = __home_cli_build_entries(cmd, cwd);
     \\      const entrypoint = entries[0] || "";
+    \\      const target = __home_cli_option_value(cmd, "--target");
+    \\      const nativeCompile = !compileExecutablePath && !browserTarget && !htmlEntry && entries.length === 1 &&
+    \\        (!target || target === "bun") && !cmd.includes("--bytecode") && !cmd.includes("--splitting") &&
+    \\        !cmd.includes("--footer") && !cmd.includes("--banner") && typeof globalThis.__home_spawnSyncNative === "function";
+    \\      if (nativeCompile && __home_build_file_exists(entrypoint)) {
+    \\        const nativeOptions = Object.assign({}, options, {
+    \\          cmd,
+    \\          cwd,
+    \\          stdio: ["ignore", "pipe", "pipe"],
+    \\        });
+    \\        delete nativeOptions.stdin;
+    \\        delete nativeOptions.stdout;
+    \\        delete nativeOptions.stderr;
+    \\        const native = globalThis.__home_spawnSyncNative(__home_native_spawn_options(nativeOptions));
+    \\        return __home_spawn_completed(String(native && native.stdout || ""), String(native && native.stderr || ""), Number(native && native.exitCode));
+    \\      }
     \\      const source = __home_build_read_text(entrypoint) || "";
     \\      const outputPath = __home_build_normalize(outfile.startsWith("/") ? outfile : __home_build_join(cwd, outfile));
     \\      if (compileExecutablePath && String(compileExecutablePath).includes("template-bad")) return __home_spawn_completed("", "error: OffsetOutOfRange while patching __BUN segment\n", 1);
