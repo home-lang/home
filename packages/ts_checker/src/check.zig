@@ -66621,6 +66621,7 @@ pub const Checker = struct {
     /// the namespace's own re-opening (`mergeTwoInterfaces2`).
     fn interfaceDeclScopesMatchExistingType(self: *Checker, iface_decl: NodeId, name: hir_mod.StringId) bool {
         const previous = self.last_iface_decl_for_name.get(name) orelse return false;
+        if (self.nearestLexicalBlock(iface_decl) != self.nearestLexicalBlock(previous)) return false;
         var a_path: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
         defer a_path.deinit(self.gpa);
         var b_path: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
@@ -66816,6 +66817,14 @@ pub const Checker = struct {
         }
         // Top-level: collapse to a single sentinel (the root block).
         return self.rootBlockFor(node);
+    }
+
+    fn nearestLexicalBlock(self: *Checker, node: NodeId) NodeId {
+        var cur = self.hir.parentOf(node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            if (self.hir.kindOf(cur) == .block_stmt) return cur;
+        }
+        return hir_mod.none_node_id;
     }
 
     fn declarationIsRootStatement(self: *Checker, node: NodeId) bool {
@@ -75475,7 +75484,13 @@ pub const Checker = struct {
         const scope = self.nearestDeclarationScope(decl);
         if (scope == hir_mod.none_node_id) return null;
         const scope_kind = self.hir.kindOf(scope);
-        if (scope_kind != .namespace_decl and scope_kind != .module_decl) return null;
+        if (scope_kind != .namespace_decl and scope_kind != .module_decl) {
+            const latest = self.last_iface_decl_for_name.get(name) orelse return null;
+            if (self.nearestLexicalBlock(decl) == self.nearestLexicalBlock(latest)) return null;
+        }
+        // Namespace members and interfaces shadowed across lexical blocks
+        // need declaration-owned records. Ordinary root/same-scope merges
+        // keep using the refreshable flat cache below this helper.
         if (self.generic_interfaces_by_decl.get(decl)) |info| return info;
         try self.checkInterfaceDecl(decl);
         return self.generic_interfaces_by_decl.get(decl);

@@ -5238,6 +5238,34 @@ test "Program: imported class heritage retains base nominal identity" {
     try T.expectEqual(@as(u32, 2322), compilation.diagnostics.items[0].code);
 }
 
+test "Program: local generic interface names do not rebind owner signatures" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    const source =
+        \\export interface Box<T> { readonly value: T; }
+        \\export function make<T>(value: T): Box<T> { return { value }; }
+        \\function consume() {
+        \\  interface Box<T> { value: number; }
+        \\  const value = make('text');
+        \\  const good: string = value.value;
+        \\  return value;
+        \\}
+        \\const selected = consume();
+        \\const bad: boolean = selected.value;
+    ;
+    try vfs.addFile("/app.ts", source);
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .node10 });
+    defer resolver.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    const app_id = try program.add("/app.ts", source);
+
+    try program.compileAll(.{ .no_emit = true, .strict = true });
+    const compilation = program.fileById(app_id).compilation.?;
+    try T.expectEqual(@as(usize, 1), compilation.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 2322), compilation.diagnostics.items[0].code);
+}
+
 test "Program: namespace imports preserve inferred const literal keys" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();
