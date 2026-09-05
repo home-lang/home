@@ -311,6 +311,15 @@ effective arguments and retains only declaration-backed constraint proofs:
 | Diagnostics | 710 | **604** | **106 removed (14.9%); 0 added** |
 | Removed diagnostic codes | — | 67× TS2430; 21× TS2345; 18× TS7006 | toward the zero-diagnostic oracle |
 
+The next correctness audit preserves symbolic indexed-access defaults until
+earlier effective arguments are available. The production graph stays exactly
+stable while the focused TypeScript oracle gap closes:
+
+| [Zod 4.5.2 symbolic indexed-default audit](docs/docs/TS_PERFORMANCE.md#symbolic-indexed-access-generic-defaults) | Post-#633 main | #634 candidate | Change |
+|---|---:|---:|---:|
+| Diagnostics | 604 | **604** | **0 added; 0 removed** |
+| Focused same-file oracle | 2 valid uses rejected | **all valid uses accepted** | three invalid controls retained |
+
 TypeScript 6.0.3 reports zero diagnostics on this graph. Zod remains outside
 the cross-compiler timing table until Home also reaches zero diagnostics.
 

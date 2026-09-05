@@ -6954,3 +6954,74 @@ zig build test -Dfilter=ts_program
 zig build home-tsc -Doptimize=ReleaseFast
 ./zig-out/bin/home-tsc --project /path/to/zod-4.5.2/tsconfig.benchmark.json
 ```
+
+### Symbolic indexed-access generic defaults
+
+Issue [#634](https://github.com/home-lang/home/issues/634), under
+[#548](https://github.com/home-lang/home/issues/548) and
+[#416](https://github.com/home-lang/home/issues/416), separates a second kind
+of dependent default from #633. A default such as
+`D = T["state"]["definition"]` previously resolved through `T`'s constraint
+while its declaration was lowered. That permanently stored the base
+definition and prevented `Constructor<UserSchema>` from recovering
+`UserSchema["state"]["definition"]`.
+
+The checker now scopes default lowering explicitly. Any indexed-access graph
+that still contains a declaration type parameter is retained as existing
+interned TypeIds. #633's declaration-order substitution later replaces the
+earlier effective arguments and the normal indexed-access reducer selects the
+concrete members. No syntax node or declaration HIR is stored, revisited, or
+re-lowered at a use site, and ordinary indexed accesses outside parameter
+defaults keep their existing eager behavior.
+
+The strict same-file oracle covers bare defaults, partial application,
+explicit override, a valid nested projection, and three invalid controls.
+TypeScript 6.0.3, native TypeScript 7.0.2, and Home agree on every accepted and
+rejected location. The compilers differ only in whether the missing `id`
+argument is expressed as TS2345 or TS2741.
+
+| Indexed-default control | TypeScript 6.0.3 | Native TypeScript 7.0.2 | Home |
+|---|---:|---:|---:|
+| Bare, partial, explicit, and nested valid uses | pass | pass | pass |
+| Object argument missing `id` | TS2345 | TS2741 | TS2741 |
+| Invalid primitive assignment | TS2322 | TS2322 | TS2322 |
+| Invalid unrelated object assignment | TS2741 | TS2741 | TS2741 |
+
+A two-file Program reduction exports the generic declaration and imports it
+into a consumer that owns the concrete schema. The valid bare and partial
+uses remain accepted across the serialized declaration boundary, while the
+same three invalid locations remain rejected.
+
+The production gate compares current post-#633 main `c5c3fd009` with the #634
+candidate on the unchanged 106 production files selected by the pinned Zod
+4.5.2 strict, no-emit configuration. Complete diagnostic identities normalize
+to the sorted `path:line:column - error TS code` set; no diagnostic, file, or
+sample is filtered.
+
+| Zod 4.5.2 symbolic indexed-default audit | Post-#633 main | #634 candidate | Change |
+|---|---:|---:|---:|
+| All diagnostics | 604 | **604** | **0** |
+| Normalized diagnostic identities | 604 | **604** | **0 added; 0 removed** |
+| Final candidate wall seconds | — | 23.02 | transparency only |
+
+Both sides have normalized diagnostic-key SHA-256
+`b1507875d4327b4df2dce0fed41123d3d409d8f85aca7b05fcaf6d3777c29210`.
+The final candidate ReleaseFast binary SHA-256 is
+`0ae28e7b700ac0effb7e6ec6ee7012ee23bc9387077a61d123bdc3260d4de163`.
+The single final-artifact timing is not a counterbalanced same-semantics A/B,
+so it is not admitted as a speed comparison.
+
+The final source passes the focused oracle, the full **4,347-test** checker
+suite in Debug, ReleaseSafe, and ReleaseFast, the complete Program suite,
+`zig fmt`, scoped `pickier`, and `git diff --check`. Recursive generic default
+fixed points remain separately tracked in
+[#639](https://github.com/home-lang/home/issues/639).
+
+```sh
+zig build test -Dfilter=ts_checker
+zig build test -Dfilter=ts_checker -Doptimize=ReleaseSafe
+zig build test -Dfilter=ts_checker -Doptimize=ReleaseFast
+zig build test -Dfilter=ts_program
+zig build home-tsc -Doptimize=ReleaseFast
+./zig-out/bin/home-tsc --project /path/to/zod-4.5.2/tsconfig.benchmark.json
+```
