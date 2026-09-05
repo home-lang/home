@@ -863,6 +863,7 @@ pub const Program = struct {
     fn boundSourceIsExternalModule(c: *const ts_driver.Compilation) bool {
         if (c.root == hir_mod_ns.none_node_id) return false;
         for (hir_mod_ns.blockStmts(&c.hir, c.root)) |stmt| {
+            if (boundCommonJsDefinePropertyExport(c, stmt)) return true;
             switch (c.hir.kindOf(stmt)) {
                 .export_decl => return true,
                 .import_decl => {
@@ -871,11 +872,41 @@ pub const Program = struct {
                     // not turn a script into an external module.
                     if (imp.import_equals == hir_mod_ns.none_node_id or imp.is_export) return true;
                 },
+                .assignment => {
+                    const assignment = hir_mod_ns.assignmentOf(&c.hir, stmt);
+                    if (assignment.op == null and boundCommonJsExportTarget(c, assignment.target)) return true;
+                },
                 else => {},
             }
         }
         for (c.hir.kinds.items) |kind| if (kind == .import_meta) return true;
         return false;
+    }
+
+    fn rootBindsValueName(c: *const ts_driver.Compilation, name: []const u8) bool {
+        const id = c.interner.lookup(name) orelse return false;
+        return c.module.root.values.contains(id);
+    }
+
+    fn boundCommonJsExportTarget(c: *const ts_driver.Compilation, target: hir_mod_ns.NodeId) bool {
+        const object = commonJsPropertyAccessObject(&c.hir, target) orelse return false;
+        if (c.hir.kindOf(object) == .identifier and
+            std.mem.eql(u8, c.interner.get(hir_mod_ns.identifierOf(&c.hir, object).name), "exports"))
+        {
+            return !rootBindsValueName(c, "exports");
+        }
+        return commonJsModuleExportsAccess(&c.hir, &c.interner, target) and
+            !rootBindsValueName(c, "module") or
+            commonJsModuleExportsAccess(&c.hir, &c.interner, object) and
+                !rootBindsValueName(c, "module");
+    }
+
+    fn boundCommonJsDefinePropertyExport(c: *const ts_driver.Compilation, stmt: hir_mod_ns.NodeId) bool {
+        if (moduleCommonJsDefinePropertyExport(&c.hir, &c.interner, c.root, stmt) == null or
+            rootBindsValueName(c, "Object")) return false;
+        const args = hir_mod_ns.callArgs(&c.hir, stmt);
+        if (c.hir.kindOf(args[0]) == .identifier) return !rootBindsValueName(c, "exports");
+        return !rootBindsValueName(c, "module");
     }
 
     /// All execution modes share the same per-file identity and lifecycle.
@@ -8463,6 +8494,36 @@ test "Program: bound global index preserves declaration owners and meaning space
         }
     };
     try T.checkAllAllocationFailures(T.allocator, AllocationFailures.run, .{&p});
+}
+
+test "Program: bound global index excludes CommonJS modules without hiding shadowed scripts" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    _ = try p.add("/whole.ts", "interface Whole {} module.exports = {};");
+    _ = try p.add("/exports.ts", "interface Property {} exports.value = 1;");
+    _ = try p.add(
+        "/define.ts",
+        "interface Defined {} Object.defineProperty(exports, 'value', { value: 1 });",
+    );
+    _ = try p.add(
+        "/shadowed-module.ts",
+        "const module = { exports: {} }; interface ShadowedModule {} module.exports = {};",
+    );
+    _ = try p.add(
+        "/shadowed-exports.ts",
+        "const exports = { value: 0 }; interface ShadowedExports {} exports.value = 1;",
+    );
+    try p.compileAllParallel(.{ .bind_only = true }, 2);
+    var index = try p.collectBoundGlobals();
+    defer index.deinit(T.allocator);
+    inline for (.{ "Whole", "Property", "Defined" }) |name|
+        try T.expectEqual(@as(usize, 0), index.lookup(p.strings.?.lookup(name).?, .type).len);
+    inline for (.{ "ShadowedModule", "ShadowedExports" }) |name|
+        try T.expectEqual(@as(usize, 1), index.lookup(p.strings.?.lookup(name).?, .type).len);
 }
 
 test "Program: all checking modes consume bound global names without leaking modules" {
