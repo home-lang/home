@@ -2097,9 +2097,22 @@ pub fn TrivialNew(comptime Type: type) fn (Type) *Type {
     }.new;
 }
 
-pub fn new(comptime Type: type, value: Type) *Type {
-    const created = handleOom(default_allocator.create(Type));
+/// Globally allocate a value that will be released with `destroy`.
+/// Debug builds preserve Bun's allocation-scope diagnostics so lifecycle
+/// regressions can be asserted by the upstream suite.
+pub inline fn new(comptime Type: type, value: Type) *Type {
+    return handleOom(tryNew(Type, value));
+}
+
+pub inline fn tryNew(comptime Type: type, value: Type) OOM!*Type {
+    const created = try default_allocator.create(Type);
     created.* = value;
+
+    if (comptime Environment.allow_assert) {
+        const log_alloc = Output.scoped(.alloc, .visibleIf(meta.hasDecl(Type, "log_allocations")));
+        log_alloc("new({s}) = {*}", .{ meta.typeName(Type), created });
+    }
+
     return created;
 }
 
@@ -2115,11 +2128,19 @@ pub inline fn assertf(ok: bool, comptime format: []const u8, args: anytype) void
     }
 }
 
-/// Wave-15 Tier-1 grinder stub — Bun's `bun.destroy(ptr)` is the
-/// allocator-aware mirror of `allocator.destroy`. Skips heap-breakdown +
-/// RefCount sanity checks (`bun.heap_breakdown` / `bun.ptr.ref_count` not
-/// yet ported).
 pub inline fn destroy(pointer: anytype) void {
+    const Type = std.meta.Child(@TypeOf(pointer));
+
+    if (comptime Environment.allow_assert) {
+        const log_alloc = Output.scoped(.alloc, .visibleIf(meta.hasDecl(Type, "log_allocations")));
+        log_alloc("destroy({s}) = {*}", .{ meta.typeName(Type), pointer });
+
+        @import("ptr/ref_count.zig").maybeAssertNoRefs(Type, pointer);
+        if (comptime std.meta.hasFn(Type, "assertBeforeDestroy")) {
+            pointer.assertBeforeDestroy();
+        }
+    }
+
     default_allocator.destroy(pointer);
 }
 
@@ -3682,6 +3703,8 @@ pub const meta = struct {
     }
     pub const bits = @import("meta/bits.zig");
     pub const traits = @import("meta/traits.zig");
+    pub const hasDecl = @import("meta/meta.zig").hasDecl;
+    pub const hasField = @import("meta/meta.zig").hasField;
 
     pub fn typeName(comptime Type: type) []const u8 {
         return typeBaseName(@typeName(Type));

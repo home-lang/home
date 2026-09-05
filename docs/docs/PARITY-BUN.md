@@ -1858,6 +1858,24 @@ outer envelope; that TODO remains excluded from completed parity. The unchanged
 1,025 MiB `fetch-gzip.test.ts` now also completes **24/24** inside the ordinary
 scanner. Adapter-mode results remain excluded from these strict parity claims.
 
+Native WebSocket client parsing now caps only the incomplete HTTP upgrade
+header, including CRLF or bare-LF terminators split across socket reads; bytes
+after the terminating blank line remain pipelined WebSocket data instead of
+being rejected as an oversized header. Received Close frames preserve their
+actual status for `CloseEvent`, including 1001, while a bodyless Close is echoed
+without an illegal wire status and reported to JavaScript as 1005. Invalid wire
+codes continue to close with 1002.
+
+Home's root `new` / `destroy` allocation helpers now retain Bun's Debug
+allocation-scope logging, refcount-zero assertion, and type-specific
+`assertBeforeDestroy` hook. The unchanged proxy-tunnel lifecycle fixtures can
+therefore prove that every `NewWebSocketClient(false)` and
+`NewHTTPUpgradeClient` allocation is destroyed instead of merely observing a
+successful connection. The four formerly failing unchanged fixtures pass
+**50/50 tests with 111 assertions** in Debug and the fresh release-fast build.
+The complete strict full-VM `js/web/websocket` scan is **23/23 files**, with no
+failures, crashes, hangs, dependency gaps, or OOMs.
+
 ## Summary
 
 Substrate file-count progress. "Present" is the live Zig file count under

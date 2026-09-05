@@ -746,16 +746,15 @@ pub fn NewWebSocketClient(comptime ssl: bool) type {
                             const close_data = this.ping_frame_bytes[6..][0..this.ping_len];
                             if (this.ping_len >= 2) {
                                 var code = std.mem.readInt(u16, close_data[0..2], .big);
-                                if (code == 1001) code = 1000;
                                 // RFC 6455 §7.4.1-§7.4.2: codes <1000, the reserved
                                 // 1004-1006 and 1015-2999, and the undefined >4999
                                 // are protocol errors, so JS sees 1002.
                                 if ((code < 1000) or (code >= 1004 and code < 1007) or (code >= 1015 and code <= 2999) or (code > 4999)) code = 1002;
                                 var buf: [125]u8 = undefined;
                                 @memcpy(buf[0 .. this.ping_len - 2], close_data[2..this.ping_len]);
-                                this.sendCloseWithBody(socket, code, &buf, this.ping_len - 2);
+                                this.sendCloseWithBody(socket, code, code, &buf, this.ping_len - 2);
                             } else {
-                                this.sendClose();
+                                this.sendCloseWithoutStatus(socket);
                             }
                             this.close_frame_buffering = false;
                             terminated = true;
@@ -763,7 +762,7 @@ pub fn NewWebSocketClient(comptime ssl: bool) type {
                         }
 
                         this.close_received = true;
-                        this.sendClose();
+                        this.sendCloseWithoutStatus(socket);
                         terminated = true;
                         break;
                     },
@@ -776,8 +775,8 @@ pub fn NewWebSocketClient(comptime ssl: bool) type {
             }
         }
 
-        pub fn sendClose(this: *WebSocket) void {
-            this.sendCloseWithBody(this.tcp, 1000, null, 0);
+        fn sendCloseWithoutStatus(this: *WebSocket, socket: Socket) void {
+            this.sendCloseWithBody(socket, null, 1005, null, 0);
         }
 
         fn enqueueEncodedBytes(
@@ -976,11 +975,12 @@ pub fn NewWebSocketClient(comptime ssl: bool) type {
         fn sendCloseWithBody(
             this: *WebSocket,
             socket: Socket,
-            code: u16,
+            wire_code: ?u16,
+            event_code: u16,
             body: ?*[125]u8,
             body_len: usize,
         ) void {
-            log("Sending close with code {d}", .{code});
+            log("Sending close with code {?d}", .{wire_code});
             if (!this.hasTCP()) {
                 this.dispatchAbruptClose(ErrorCode.ended);
                 this.clearData();
@@ -998,10 +998,11 @@ pub fn NewWebSocketClient(comptime ssl: bool) type {
             header.final = true;
             header.opcode = .Close;
             header.mask = true;
-            header.len = @as(u7, @truncate(body_len + 2));
+            const code_len: usize = if (wire_code != null) 2 else 0;
+            header.len = @as(u7, @truncate(body_len + code_len));
             final_body_bytes[0..2].* = header.slice();
             const mask_buf: *[4]u8 = final_body_bytes[2..6];
-            final_body_bytes[6..8].* = @bitCast(@byteSwap(code));
+            if (wire_code) |code| final_body_bytes[6..8].* = @bitCast(@byteSwap(code));
 
             var reason = bun.String.empty;
             if (body) |data| {
@@ -1013,17 +1014,17 @@ pub fn NewWebSocketClient(comptime ssl: bool) type {
                         return;
                     }
                     reason = bun.String.cloneUTF8(body_slice);
-                    @memcpy(final_body_bytes[8..][0..body_len], body_slice);
+                    @memcpy(final_body_bytes[6 + code_len ..][0..body_len], body_slice);
                 }
             }
 
-            // we must mask the code
-            var slice = final_body_bytes[0..(8 + body_len)];
+            // Client frames must be masked, including an empty Close frame.
+            var slice = final_body_bytes[0 .. 6 + code_len + body_len];
             Mask.fill(this.globalThis, mask_buf, slice[6..], slice[6..]);
 
             if (this.enqueueEncodedBytes(socket, slice)) {
                 this.clearData();
-                this.dispatchClose(code, &reason);
+                this.dispatchClose(event_code, &reason);
             }
         }
         pub fn isSameSocket(this: *WebSocket, socket: Socket) bool {
@@ -1235,12 +1236,12 @@ pub fn NewWebSocketClient(comptime ssl: bool) type {
                     var fixed_buffer = std.heap.FixedBufferAllocator.init(&close_reason_buf);
                     const allocator = fixed_buffer.allocator();
                     const wrote = std.fmt.allocPrint(allocator, "{f}", .{str.*}) catch break :inner;
-                    this.sendCloseWithBody(tcp, code, wrote.ptr[0..125], wrote.len);
+                    this.sendCloseWithBody(tcp, code, code, wrote.ptr[0..125], wrote.len);
                     return;
                 }
             }
 
-            this.sendCloseWithBody(tcp, code, null, 0);
+            this.sendCloseWithBody(tcp, code, code, null, 0);
         }
 
         const InitialDataHandler = struct {

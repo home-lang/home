@@ -77,6 +77,50 @@ pub fn NewHTTPUpgradeClient(comptime ssl: bool) type {
 
         const HTTPClient = @This();
 
+        const BufferedHeader = struct {
+            bytes: []const u8,
+            trailing: []const u8,
+        };
+
+        /// Return how many bytes from the new read complete the HTTP header.
+        /// picohttpparser accepts both CRLF and bare-LF line endings, so detect
+        /// either form, including a terminator split across two socket reads.
+        fn completedHeaderBytesInData(buffered: []const u8, data: []const u8) ?usize {
+            if (data.len > 0 and data[0] == '\n') {
+                if (std.mem.endsWith(u8, buffered, "\n") or std.mem.endsWith(u8, buffered, "\n\r")) return 1;
+            }
+            if (data.len >= 2 and std.mem.endsWith(u8, buffered, "\n") and std.mem.startsWith(u8, data, "\r\n")) return 2;
+
+            const lf_end = if (std.mem.indexOf(u8, data, "\n\n")) |index| index + 2 else null;
+            const crlf_end = if (std.mem.indexOf(u8, data, "\n\r\n")) |index| index + 3 else null;
+            if (lf_end) |end| {
+                if (crlf_end) |other_end| return @min(end, other_end);
+                return end;
+            }
+            return crlf_end;
+        }
+
+        /// Append only response-header bytes to the short-read accumulator.
+        /// Bytes after the terminating blank line are WebSocket/proxy payload,
+        /// and must neither count toward the HTTP header cap nor be copied into
+        /// the header buffer.
+        fn appendBufferedHeader(this: *HTTPClient, data: []const u8) ?BufferedHeader {
+            bun.assert(this.body.items.len > 0);
+
+            const header_data_len = completedHeaderBytesInData(this.body.items, data);
+            const append_len = header_data_len orelse data.len;
+            if (this.body.items.len +| append_len > bun.http.max_http_header_size) {
+                this.terminate(ErrorCode.invalid_response);
+                return null;
+            }
+
+            bun.handleOom(this.body.appendSlice(bun.default_allocator, data[0..append_len]));
+            return .{
+                .bytes = this.body.items,
+                .trailing = if (header_data_len != null) data[append_len..] else "",
+            };
+        }
+
         /// Handler set referenced by `dispatch.zig` (kind = `.ws_client_upgrade[_tls]`).
         /// The `register()` C++ round-trip that previously installed these on a
         /// shared `us_socket_context_t` is gone — sockets are stamped with the
@@ -591,16 +635,11 @@ pub fn NewHTTPUpgradeClient(comptime ssl: bool) type {
             }
 
             var body = data;
+            var trailing: []const u8 = "";
             if (this.body.items.len > 0) {
-                // Cap accumulated upgrade-response header bytes: a peer that
-                // streams headers without completing must not grow body without
-                // bound.
-                if (this.body.items.len +| data.len > bun.http.max_http_header_size) {
-                    this.terminate(ErrorCode.invalid_response);
-                    return;
-                }
-                bun.handleOom(this.body.appendSlice(bun.default_allocator, data));
-                body = this.body.items;
+                const buffered = this.appendBufferedHeader(data) orelse return;
+                body = buffered.bytes;
+                trailing = buffered.trailing;
             }
 
             const is_first = this.body.items.len == 0;
@@ -632,23 +671,19 @@ pub fn NewHTTPUpgradeClient(comptime ssl: bool) type {
                 }
             };
 
-            this.processResponse(response, body[@as(usize, @intCast(response.bytes_read))..]);
+            const parsed_remainder = body[@as(usize, @intCast(response.bytes_read))..];
+            this.processResponse(response, if (trailing.len > 0) trailing else parsed_remainder);
         }
 
         fn handleProxyResponse(this: *HTTPClient, socket: Socket, data: []const u8) void {
             log("handleProxyResponse", .{});
 
             var body = data;
+            var trailing: []const u8 = "";
             if (this.body.items.len > 0) {
-                // Cap accumulated upgrade-response header bytes: a peer that
-                // streams headers without completing must not grow body without
-                // bound.
-                if (this.body.items.len +| data.len > bun.http.max_http_header_size) {
-                    this.terminate(ErrorCode.invalid_response);
-                    return;
-                }
-                bun.handleOom(this.body.appendSlice(bun.default_allocator, data));
-                body = this.body.items;
+                const buffered = this.appendBufferedHeader(data) orelse return;
+                body = buffered.bytes;
+                trailing = buffered.trailing;
             }
 
             // Check for HTTP 200 response from proxy
@@ -699,7 +734,8 @@ pub fn NewHTTPUpgradeClient(comptime ssl: bool) type {
             // Clear the body buffer for WebSocket handshake
             this.body.clearRetainingCapacity();
 
-            const remain_buf = body[@as(usize, @intCast(response.bytes_read))..];
+            const parsed_remainder = body[@as(usize, @intCast(response.bytes_read))..];
+            const remain_buf = if (trailing.len > 0) trailing else parsed_remainder;
 
             // Safely unwrap proxy state - it must exist if we're in proxy_handshake state
             const p = if (this.proxy) |*proxy| proxy else {
@@ -821,16 +857,11 @@ pub fn NewHTTPUpgradeClient(comptime ssl: bool) type {
 
             // Process as if it came directly from the socket
             var body = data;
+            var trailing: []const u8 = "";
             if (this.body.items.len > 0) {
-                // Cap accumulated upgrade-response header bytes: a peer that
-                // streams headers without completing must not grow body without
-                // bound.
-                if (this.body.items.len +| data.len > bun.http.max_http_header_size) {
-                    this.terminate(ErrorCode.invalid_response);
-                    return;
-                }
-                bun.handleOom(this.body.appendSlice(bun.default_allocator, data));
-                body = this.body.items;
+                const buffered = this.appendBufferedHeader(data) orelse return;
+                body = buffered.bytes;
+                trailing = buffered.trailing;
             }
 
             const is_first = this.body.items.len == 0;
@@ -862,7 +893,8 @@ pub fn NewHTTPUpgradeClient(comptime ssl: bool) type {
                 }
             };
 
-            this.processResponse(response, body[@as(usize, @intCast(response.bytes_read))..]);
+            const parsed_remainder = body[@as(usize, @intCast(response.bytes_read))..];
+            this.processResponse(response, if (trailing.len > 0) trailing else parsed_remainder);
         }
 
         pub fn handleEnd(this: *HTTPClient, _: Socket) void {
