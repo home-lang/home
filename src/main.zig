@@ -4729,6 +4729,7 @@ fn bunCorpusFileRequiresFullVm(relative_path: []const u8) bool {
         std.mem.eql(u8, relative_path, "js/bun/sqlite/column-types.test.js") or
         std.mem.eql(u8, relative_path, "js/bun/sqlite/sql-timezone.test.js") or
         std.mem.eql(u8, relative_path, "js/bun/sqlite/sqlite.test.js") or
+        std.mem.eql(u8, relative_path, "js/node/module/sourcemap-simd.test.ts") or
         std.mem.eql(u8, relative_path, "js/bun/sourcemap/internal-sourcemap-roundtrip.test.ts") or
         std.mem.eql(u8, relative_path, "js/bun/sourcemap/internal-sourcemap.test.ts") or
         std.mem.eql(u8, relative_path, "js/bun/resolve/resolve.test.ts");
@@ -4877,6 +4878,7 @@ test "ported Bun corpus matrices requiring runtime services use the full native 
     try std.testing.expect(bunCorpusFileRequiresFullVm("js/bun/sqlite/column-types.test.js"));
     try std.testing.expect(bunCorpusFileRequiresFullVm("js/bun/sqlite/sql-timezone.test.js"));
     try std.testing.expect(bunCorpusFileRequiresFullVm("js/bun/sqlite/sqlite.test.js"));
+    try std.testing.expect(bunCorpusFileRequiresFullVm("js/node/module/sourcemap-simd.test.ts"));
     try std.testing.expect(bunCorpusFileRequiresFullVm("js/bun/sourcemap/internal-sourcemap-roundtrip.test.ts"));
     try std.testing.expect(bunCorpusFileRequiresFullVm("js/bun/sourcemap/internal-sourcemap.test.ts"));
     try std.testing.expect(bunCorpusFileRequiresFullVm("js/bun/resolve/resolve.test.ts"));
