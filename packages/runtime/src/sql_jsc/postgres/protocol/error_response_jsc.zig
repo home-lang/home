@@ -4,28 +4,28 @@ pub fn toJS(this: ErrorResponse, globalObject: *jsc.JSGlobalObject) JSValue {
 
     for (this.messages.items) |*msg| {
         b.cap += switch (msg.*) {
-            inline else => |m| m.utf8ByteLength(),
+            inline else => |m| m.slice().len,
         } + 1;
     }
     b.allocate(bun.default_allocator) catch {};
 
-    var severity: String = String.dead;
-    var code: String = String.dead;
-    var message: String = String.dead;
-    var detail: String = String.dead;
-    var hint: String = String.dead;
-    var position: String = String.dead;
-    var internalPosition: String = String.dead;
-    var internal: String = String.dead;
-    var where: String = String.dead;
-    var schema: String = String.dead;
-    var table: String = String.dead;
-    var column: String = String.dead;
-    var datatype: String = String.dead;
-    var constraint: String = String.dead;
-    var file: String = String.dead;
-    var line: String = String.dead;
-    var routine: String = String.dead;
+    var severity: String = .{};
+    var code: String = .{};
+    var message: String = .{};
+    var detail: String = .{};
+    var hint: String = .{};
+    var position: String = .{};
+    var internalPosition: String = .{};
+    var internal: String = .{};
+    var where: String = .{};
+    var schema: String = .{};
+    var table: String = .{};
+    var column: String = .{};
+    var datatype: String = .{};
+    var constraint: String = .{};
+    var file: String = .{};
+    var line: String = .{};
+    var routine: String = .{};
 
     for (this.messages.items) |*msg| {
         switch (msg.*) {
@@ -52,52 +52,52 @@ pub fn toJS(this: ErrorResponse, globalObject: *jsc.JSGlobalObject) JSValue {
 
     var needs_newline = false;
     construct_message: {
-        if (!message.isEmpty()) {
-            _ = b.appendStr(message);
+        if (message.slice().len > 0) {
+            _ = b.append(message.slice());
             needs_newline = true;
             break :construct_message;
         }
-        if (!detail.isEmpty()) {
+        if (detail.slice().len > 0) {
             if (needs_newline) {
                 _ = b.append("\n");
             } else {
                 _ = b.append(" ");
             }
             needs_newline = true;
-            _ = b.appendStr(detail);
+            _ = b.append(detail.slice());
         }
-        if (!hint.isEmpty()) {
+        if (hint.slice().len > 0) {
             if (needs_newline) {
                 _ = b.append("\n");
             } else {
                 _ = b.append(" ");
             }
             needs_newline = true;
-            _ = b.appendStr(hint);
+            _ = b.append(hint.slice());
         }
     }
 
-    const errno = if (!code.isEmpty()) code.byteSlice() else null;
-    const error_code = if (code.eqlComptime("42601")) // syntax error - https://www.postgresql.org/docs/8.1/errcodes-appendix.html
+    const errno = if (code.slice().len > 0) code.slice() else null;
+    const error_code = if (std.mem.eql(u8, code.slice(), "42601")) // syntax error - https://www.postgresql.org/docs/8.1/errcodes-appendix.html
         "ERR_POSTGRES_SYNTAX_ERROR"
     else
         "ERR_POSTGRES_SERVER_ERROR";
 
-    const detail_slice = if (detail.isEmpty()) null else detail.byteSlice();
-    const hint_slice = if (hint.isEmpty()) null else hint.byteSlice();
-    const severity_slice = if (severity.isEmpty()) null else severity.byteSlice();
-    const position_slice = if (position.isEmpty()) null else position.byteSlice();
-    const internalPosition_slice = if (internalPosition.isEmpty()) null else internalPosition.byteSlice();
-    const internalQuery_slice = if (internal.isEmpty()) null else internal.byteSlice();
-    const where_slice = if (where.isEmpty()) null else where.byteSlice();
-    const schema_slice = if (schema.isEmpty()) null else schema.byteSlice();
-    const table_slice = if (table.isEmpty()) null else table.byteSlice();
-    const column_slice = if (column.isEmpty()) null else column.byteSlice();
-    const dataType_slice = if (datatype.isEmpty()) null else datatype.byteSlice();
-    const constraint_slice = if (constraint.isEmpty()) null else constraint.byteSlice();
-    const file_slice = if (file.isEmpty()) null else file.byteSlice();
-    const line_slice = if (line.isEmpty()) null else line.byteSlice();
-    const routine_slice = if (routine.isEmpty()) null else routine.byteSlice();
+    const detail_slice = if (detail.slice().len == 0) null else detail.slice();
+    const hint_slice = if (hint.slice().len == 0) null else hint.slice();
+    const severity_slice = if (severity.slice().len == 0) null else severity.slice();
+    const position_slice = if (position.slice().len == 0) null else position.slice();
+    const internalPosition_slice = if (internalPosition.slice().len == 0) null else internalPosition.slice();
+    const internalQuery_slice = if (internal.slice().len == 0) null else internal.slice();
+    const where_slice = if (where.slice().len == 0) null else where.slice();
+    const schema_slice = if (schema.slice().len == 0) null else schema.slice();
+    const table_slice = if (table.slice().len == 0) null else table.slice();
+    const column_slice = if (column.slice().len == 0) null else column.slice();
+    const dataType_slice = if (datatype.slice().len == 0) null else datatype.slice();
+    const constraint_slice = if (constraint.slice().len == 0) null else constraint.slice();
+    const file_slice = if (file.slice().len == 0) null else file.slice();
+    const line_slice = if (line.slice().len == 0) null else line.slice();
+    const routine_slice = if (routine.slice().len == 0) null else routine.slice();
 
     const error_message = if (b.len > 0) b.allocatedSlice()[0..b.len] else "";
 
@@ -123,10 +123,11 @@ pub fn toJS(this: ErrorResponse, globalObject: *jsc.JSGlobalObject) JSValue {
 }
 
 const ErrorResponse = @import("../../../sql/postgres/protocol/ErrorResponse.zig");
+const String = @import("../../../sql/postgres/protocol/FieldMessage.zig").FieldMessage.String;
 const createPostgresError = @import("../error_jsc.zig").createPostgresError;
 
 const bun = @import("bun");
-const String = bun.String;
+const std = @import("std");
 
 const jsc = bun.jsc;
 const JSValue = jsc.JSValue;

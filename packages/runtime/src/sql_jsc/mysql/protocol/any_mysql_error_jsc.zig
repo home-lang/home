@@ -2,6 +2,8 @@ pub fn mysqlErrorToJS(globalObject: *jsc.JSGlobalObject, message: ?[]const u8, e
     const msg = message orelse @errorName(err);
     const code = switch (err) {
         error.ConnectionClosed => "ERR_MYSQL_CONNECTION_CLOSED",
+        error.ConnectionFailed => "ERR_MYSQL_CONNECTION_FAILED",
+        error.ConnectionRefused => "ERR_MYSQL_CONNECTION_REFUSED",
         error.Overflow => "ERR_MYSQL_OVERFLOW",
         error.AuthenticationFailed => "ERR_MYSQL_AUTHENTICATION_FAILED",
         error.UnsupportedAuthPlugin => "ERR_MYSQL_UNSUPPORTED_AUTH_PLUGIN",

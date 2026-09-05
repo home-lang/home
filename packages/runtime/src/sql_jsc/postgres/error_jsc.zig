@@ -24,6 +24,8 @@ pub fn createPostgresError(
 pub fn postgresErrorToJS(globalObject: *jsc.JSGlobalObject, message: ?[]const u8, err: AnyPostgresError) JSValue {
     const code = switch (err) {
         error.ConnectionClosed => "ERR_POSTGRES_CONNECTION_CLOSED",
+        error.ConnectionFailed => "ERR_POSTGRES_CONNECTION_FAILED",
+        error.ConnectionRefused => "ERR_POSTGRES_CONNECTION_REFUSED",
         error.ExpectedRequest => "ERR_POSTGRES_EXPECTED_REQUEST",
         error.ExpectedStatement => "ERR_POSTGRES_EXPECTED_STATEMENT",
         error.InvalidBackendKeyData => "ERR_POSTGRES_INVALID_BACKEND_KEY_DATA",

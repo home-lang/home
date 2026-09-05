@@ -6,6 +6,8 @@
 
 pub const Error = error{
     ConnectionClosed,
+    ConnectionFailed,
+    ConnectionRefused,
     ConnectionTimedOut,
     LifetimeTimeout,
     IdleTimeout,

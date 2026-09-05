@@ -378,7 +378,13 @@ pub fn onClose(this: *PostgresSQLConnection) void {
         defer loop.exit();
         this.poll_ref.unref(this.vm);
 
-        this.fail("Connection closed", error.ConnectionClosed);
+        switch (this.status) {
+            .connecting, .sent_startup_message => this.fail(
+                "Connection closed before the connection was established",
+                error.ConnectionFailed,
+            ),
+            else => this.fail("Connection closed", error.ConnectionClosed),
+        }
     }
 }
 
@@ -822,7 +828,12 @@ pub fn SocketHandler(comptime ssl: bool) type {
                 this.close();
                 return;
             }
-            this.onClose();
+            this.unregisterAutoFlusher();
+            const loop = this.vm.eventLoop();
+            loop.enter();
+            defer loop.exit();
+            this.poll_ref.unref(this.vm);
+            this.fail("Failed to connect", error.ConnectionRefused);
         }
 
         pub fn onTimeout(this: *PostgresSQLConnection, socket: SocketType) void {
@@ -874,7 +885,15 @@ pub fn doFlush(this: *PostgresSQLConnection, _: *jsc.JSGlobalObject, _: *jsc.Cal
 }
 
 fn close(this: *@This()) void {
-    this.disconnect();
+    if (!this.vm.isShuttingDown() and (this.status == .connecting or this.status == .sent_startup_message)) {
+        // Closing an in-flight connect produces no socket callback. Fail it
+        // directly so pending work settles and release the creation poll ref
+        // that the absent callback would otherwise strand.
+        this.fail("Connection closed", error.ConnectionClosed);
+        this.poll_ref.unref(this.vm);
+    } else {
+        this.disconnect();
+    }
     this.unregisterAutoFlusher();
     this.write_buffer.clearAndFree(bun.default_allocator);
 }
@@ -1852,7 +1871,7 @@ pub fn on(this: *PostgresSQLConnection, comptime MessageType: @TypeOf(.enum_lite
                 defer {
                     err.deinit();
                 }
-                this.failWithJSValue(err.toJS(this.globalObject) catch return);
+                this.failWithJSValue(err.toJS(this.globalObject));
 
                 // it shouldn't enqueue any requests while connecting
                 bun.assert(this.requests.count == 0);

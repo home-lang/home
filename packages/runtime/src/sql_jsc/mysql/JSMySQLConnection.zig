@@ -250,7 +250,13 @@ pub fn SocketHandler(comptime ssl: bool) type {
 
         pub fn onClose(this: *JSMySQLConnection, _: SocketType, _: i32, _: ?*anyopaque) void {
             defer this.deref();
-            this.fail("Connection closed", error.ConnectionClosed);
+            switch (this._connection.status) {
+                .connecting, .handshaking, .authenticating, .authentication_awaiting_pk => this.fail(
+                    "Connection closed before the connection was established",
+                    error.ConnectionFailed,
+                ),
+                else => this.fail("Connection closed", error.ConnectionClosed),
+            }
         }
 
         pub fn onEnd(_: *JSMySQLConnection, socket: SocketType) void {
@@ -259,8 +265,7 @@ pub fn SocketHandler(comptime ssl: bool) type {
         }
 
         pub fn onConnectError(this: *JSMySQLConnection, _: SocketType, _: i32) void {
-            // TODO: proper propagation of the error
-            this.fail("Connection closed", error.ConnectionClosed);
+            this.fail("Failed to connect", error.ConnectionRefused);
         }
 
         pub fn onTimeout(this: *JSMySQLConnection, _: SocketType) void {
@@ -555,7 +560,16 @@ pub fn doClose(this: *@This(), globalObject: *jsc.JSGlobalObject, _: *jsc.CallFr
     this.stopTimers();
 
     defer this.updateReferenceType();
-    this._connection.cleanQueueAndClose(null, this.getQueriesArray());
+    switch (this._connection.status) {
+        // uSockets does not dispatch onClose when an in-flight connect is
+        // closed before establishment, so settle the connection and its
+        // pending queries synchronously.
+        .connecting, .handshaking, .authenticating, .authentication_awaiting_pk => this.fail(
+            "Connection closed",
+            error.ConnectionClosed,
+        ),
+        .connected, .disconnected, .failed => this._connection.cleanQueueAndClose(null, this.getQueriesArray()),
+    }
     return .js_undefined;
 }
 

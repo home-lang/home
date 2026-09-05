@@ -6,6 +6,8 @@
 
 pub const AnyPostgresError = error{
     ConnectionClosed,
+    ConnectionFailed,
+    ConnectionRefused,
     ExpectedRequest,
     ExpectedStatement,
     InvalidBackendKeyData,

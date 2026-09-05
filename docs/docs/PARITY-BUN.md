@@ -1907,6 +1907,27 @@ the asserted OCSP URI in `node-tls-connect.test.ts`, and
 assertions. These upstream fixture/environment failures are retained as
 failures rather than weakened or counted as Home passes.
 
+SQL connection lifecycle behavior now preserves Bun's adapter-specific error
+classification and retry contract: a refused dial reports
+`ERR_POSTGRES_CONNECTION_REFUSED` or `ERR_MYSQL_CONNECTION_REFUSED`, while a
+socket closed before its handshake completes reports the corresponding
+`CONNECTION_FAILED` code and remains eligible for the configured connect retry
+window. A forced close also settles connections whose native socket has not yet
+been stored, since those in-flight connects do not receive a uSockets close
+callback. User `onconnect` and `onclose` exceptions still surface through the
+process exception path without interrupting pool bookkeeping, pending-query
+rejection, or close-promise settlement.
+
+PostgreSQL startup errors now use the structured `ErrorResponse` JavaScript
+bridge, preserving the server message and protocol fields instead of flattening
+the entire frame into a placeholder string. Empty `ErrorResponse` and
+`NoticeResponse` frames initialize their field storage before decoding, so
+cleanup remains valid even when a server sends no fields. The four unchanged
+focused fixtures pass **28/28 tests with 52 assertions** in both Debug and
+ReleaseFast, and the complete strict full-VM `js/sql` scan is **35/35 files** in
+both modes with no failures, crashes, hangs, dependency gaps, or OOMs. No test
+deadline, workload, assertion, annotation, or skip was changed.
+
 ## Summary
 
 Substrate file-count progress. "Present" is the live Zig file count under

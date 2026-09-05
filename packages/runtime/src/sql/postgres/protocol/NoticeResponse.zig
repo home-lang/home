@@ -22,6 +22,7 @@ pub fn deinit(this: *NoticeResponse) void {
 }
 
 pub fn decodeInternal(this: *@This(), comptime Container: type, reader: NewReader(Container)) !void {
+    this.* = .{};
     var remaining_bytes = try reader.length();
     remaining_bytes -|= 4;
 

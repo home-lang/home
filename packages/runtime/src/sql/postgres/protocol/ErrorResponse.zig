@@ -27,11 +27,10 @@ pub fn deinit(this: *ErrorResponse) void {
     this.messages.deinit(home_rt.default_allocator);
 }
 
-pub fn toJS(this: ErrorResponse, globalObject: *home_rt.jsc.JSGlobalObject) home_rt.JSError!home_rt.jsc.JSValue {
-    return globalObject.createErrorInstance("{f}", .{this});
-}
+pub const toJS = @import("../../../sql_jsc/postgres/protocol/error_response_jsc.zig").toJS;
 
 pub fn decodeInternal(this: *@This(), comptime Container: type, reader: NewReader(Container)) !void {
+    this.* = .{};
     var remaining_bytes = try reader.length();
     if (remaining_bytes < 4) return error.InvalidMessageLength;
     remaining_bytes -|= 4;
