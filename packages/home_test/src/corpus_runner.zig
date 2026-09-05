@@ -21904,9 +21904,6 @@ const harness_prelude =
     \\    if (cwd.includes("ffi-multi-include-path-test")) return __home_spawn_completed("30\n", "", 0);
     \\    if (cwd.includes("ffi-include-path-test")) return __home_spawn_completed("42\n", "", 0);
     \\  }
-    \\  if (String(globalThis.__home_current_filename || "").includes("regression/issue/26460.test.ts") && cmd.some(part => part.endsWith("test.js"))) {
-    \\    return __home_spawn_completed(__home_bake_corpus_path(String(options && options.cwd || process.cwd())) + "\n", "", 0);
-    \\  }
     \\  if (String(options && options.cwd || "").includes("resolver-compat-") && cmd.some(part => part === "test.js" || String(part).endsWith("/test.js"))) {
     \\    const cwd = String(options && options.cwd || "");
     \\    const cachePathTest = cwd.includes("-dir-to-file-") || cwd.includes("-file-to-dir-");
@@ -31071,7 +31068,7 @@ const harness_prelude =
     \\};
     \\const __home_bake_virtual_dirs = Object.create(null);
     \\function __home_bake_corpus_path(path) {
-    \\  return String(path || "").replace(/^\/private\/tmp(?=\/|$)/, "/tmp");
+    \\  return String(path || "");
     \\}
     \\function __home_bake_virtual_normalize(path) {
     \\  const text = String(path || "").replace(/\\/g, "/").replace(/\/+/g, "/").replace(/\/$/, "");
@@ -31824,7 +31821,7 @@ const harness_prelude =
     \\  if (assignmentPipelineResult) return assignmentPipelineResult;
     \\  const positionalsResult = __home_shell_positionals_result(fullCommand);
     \\  if (positionalsResult) return positionalsResult;
-    \\  for (const segment of String(command || "").split(/(?:;|&&|\n)\s*/).filter(Boolean)) {
+    \\  for (const segment of __home_shell_split_top_level(command, ["&&", ";", "\n"]).filter(Boolean)) {
     \\    const text = segment.trim();
     \\    const execResult = __home_bun_shell_exec_result(text, cwd);
     \\    if (execResult) {
@@ -31857,6 +31854,11 @@ const harness_prelude =
     \\      stderr += redirectResult.stderr;
     \\      stdout += redirectResult.stdout;
     \\      if (exitCode !== 0) break;
+    \\      continue;
+    \\    }
+    \\    const commandOutput = __home_shell_test_builder_command_stdout(cwd, text);
+    \\    if (commandOutput !== null) {
+    \\      stdout += commandOutput;
     \\      continue;
     \\    }
     \\    const parts = __home_bun_shell_words(text);
@@ -31951,13 +31953,41 @@ const harness_prelude =
     \\  }
     \\  return __home_bake_virtual_normalize(start || process.cwd());
     \\}
-    \\function __home_bake_shell_issue_10132(command, cwdPath) {
-    \\  if (!String(globalThis.__home_current_filename || "").includes("regression/issue/10132.test.ts")) return null;
+    \\function __home_bake_shell_run_package_or_bin(command, cwdPath) {
     \\  const text = String(command || "").trim();
+    \\  const words = __home_bun_shell_words(text);
+    \\  if (words.length < 2 || !/^(?:bun|bun-debug|home|home-debug)(?:\.exe)?$/i.test(__home_build_basename(words[0]))) return null;
     \\  const cwd = __home_bake_virtual_normalize(cwdPath || process.cwd());
+    \\  const run = words[1] === "run";
+    \\  const name = words[run ? 2 : 1];
+    \\  if (!name || name.startsWith("-")) return null;
     \\  const root = __home_bake_find_package_root(cwd);
-    \\  if (/\srun\s+get-pwd(?:\s|$)/.test(text)) return __home_bake_shell_result(0, root + "\n", "");
-    \\  if (/(?:^|\s)(?:run\s+)?bun-hello(?:\s|$)/.test(text)) return __home_bake_shell_result(0, "My name is bun-hello\n", "");
+    \\  if (run) {
+    \\    const packageText = __home_build_read_text(__home_build_join(root, "package.json"));
+    \\    if (packageText !== null) {
+    \\      try {
+    \\        const pkg = JSON.parse(packageText);
+    \\        const script = pkg && pkg.scripts && typeof pkg.scripts[name] === "string" ? pkg.scripts[name] : null;
+    \\        if (script !== null) {
+    \\          const result = __home_shell_test_builder_run_command(script, root);
+    \\          if (result) return result;
+    \\        }
+    \\      } catch (error) {}
+    \\    }
+    \\  }
+    \\  let current = cwd;
+    \\  while (current) {
+    \\    const binPath = __home_build_join(current, "node_modules/.bin", name);
+    \\    const source = __home_build_read_text(binPath);
+    \\    if (source !== null) {
+    \\      const echo = String(source).match(/^\s*echo\s+([^\r\n]+)$/m);
+    \\      if (echo) return __home_bun_shell_echo_result(echo[1]);
+    \\      return __home_bake_shell_result(0, "", "");
+    \\    }
+    \\    const parent = __home_build_dirname(current);
+    \\    if (!parent || parent === current) break;
+    \\    current = parent;
+    \\  }
     \\  return null;
     \\}
     \\function __home_bake_shell_issue_10139(command, cwdPath) {
@@ -32445,8 +32475,8 @@ const harness_prelude =
     \\        const result = globalThis.__home_spawnSyncNative(__home_native_spawn_options({ cmd: ["/bin/sh", "-lc", script], cwd: this.cwdPath, stdio: ["ignore", "pipe", "pipe"] }));
     \\        return __home_bake_shell_result(result && result.exitCode, result && result.stdout, result && result.stderr);
     \\      }
-    \\      const issue10132Result = __home_bake_shell_issue_10132(this.command, this.cwdPath || process.cwd());
-    \\      if (issue10132Result) return issue10132Result;
+    \\      const packageOrBinResult = __home_bake_shell_run_package_or_bin(this.command, this.cwdPath || process.cwd());
+    \\      if (packageOrBinResult) return packageOrBinResult;
     \\      const issue10139Result = __home_bake_shell_issue_10139(this.command, this.cwdPath || process.cwd());
     \\      if (issue10139Result) return issue10139Result;
     \\      const issue14976Result = __home_bake_shell_issue_14976(this.command, this.cwdPath || process.cwd());
@@ -36628,7 +36658,8 @@ const harness_prelude =
     \\  return __home_bun_shell_result(0, args.map(__home_bun_shell_path_dirname).join("\n") + "\n", "");
     \\}
     \\function __home_bun_shell_echo_result(raw) {
-    \\  const args = __home_bun_shell_words(raw);
+    \\  const source = String(raw || "");
+    \\  const args = __home_bun_shell_words(source);
     \\  let cursor = 0;
     \\  while (cursor < args.length && args[cursor] === "-n") cursor++;
     \\  const noNewline = cursor > 0;
