@@ -276,6 +276,8 @@ The latest untimed correctness gate is reported separately from performance:
 | Admission audit | TypeScript 6.0.3 | Native TypeScript 7.0.2 | Home |
 |---|---:|---:|---:|
 | [Export-list owner and barrel diagnostics](docs/docs/TS_PERFORMANCE.md#indexed-export-queries-and-variable-list-ownership) | 128/128 | 128/128 | 128/128 |
+| [Typed cross-file global ownership](docs/docs/TS_PERFORMANCE.md#typed-cross-file-global-ownership-and-cyclic-provenance-untimed) | 60/60 | 60/60 | 60/60 |
+| [Bound-global visibility](docs/docs/TS_PERFORMANCE.md#typed-cross-file-global-ownership-and-cyclic-provenance-untimed) | 56/56 | 56/56 | 56/56 |
 | [Returned imported callable controls](docs/docs/TS_PERFORMANCE.md#returned-imported-callable-context) | 2/2 positive; TS2339 + TS2322 | 2/2 positive; TS2339 + TS2322 | 2/2 positive; TS2339 + TS2322 |
 | [Polymorphic mapped receiver controls](docs/docs/TS_PERFORMANCE.md#polymorphic-mapped-receiver-context) | TS2339 + TS2322 | TS2339 + TS2322 | TS2339 + TS2322 |
 

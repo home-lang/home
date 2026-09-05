@@ -7205,3 +7205,83 @@ zig build home-tsc -Doptimize=ReleaseFast
 ./zig-out/bin/home-tsc --ignoreConfig --noEmit --skipLibCheck entry.ts
 ./zig-out/bin/home-tsc --project /path/to/zod-4.5.2/tsconfig.benchmark.json
 ```
+
+### Typed cross-file global ownership and cyclic provenance (untimed)
+
+Issue [#480](https://github.com/home-lang/home/issues/480), under
+[#548](https://github.com/home-lang/home/issues/548) and
+[#416](https://github.com/home-lang/home/issues/416), replaces the program's
+name-only global fallback with checked source-owner types. Commit
+[`592b9ff3a`](https://github.com/home-lang/home/commit/592b9ff3aadd43abfdc8975010bf49fb6ec76ab6)
+relocates real value and type bindings into each receiving compilation,
+including structural members, generic signature metadata, lexical globals,
+`globalThis` properties, interface merging, destructured declaration slots,
+and separate type/value namespaces. Serial, parallel, and streaming checking
+use the same dependency-derived provider order. External modules remain
+isolated, and CommonJS providers retain their separate import scheduler.
+
+The first expanded cyclic audit exposed a real transitive-owner fault: an
+imported declaration handle and a local HIR NodeId occupied the same numeric
+domain. A third compilation could therefore reinterpret foreign provenance as
+an unrelated local node. Commit
+[`af08e7e61`](https://github.com/home-lang/home/commit/af08e7e61a7502019f81d01fef5ad6d11ca35b30)
+tags registry declaration handles, preserves them across subsequent owner
+transfers, rejects stale handles, and limits syntax-only checker inspection to
+nodes that actually belong to the current HIR. The provenance is retained;
+it is not replaced with a fabricated local node or shallow benchmark shape.
+Commit
+[`6ec121877`](https://github.com/home-lang/home/commit/6ec121877929782fa72e70498a9fd257ca015e37)
+keeps the cyclic positive/negative programs as permanent CLI controls.
+
+Every audit creates fresh strict, no-emit, no-lib projects and gives the same
+files and explicit root order to Home, TypeScript 6.0.3, and native TypeScript
+7.0.2. The negative sources only append invalid uses to their positive
+counterparts and require the exact diagnostic-code multiset. Crashes, usage
+errors, clean invalid programs, and diagnostics on valid programs all fail.
+The cyclic family splits mutually recursive `Left` and `Right` interfaces from
+their consumer and reverses the entire explicit root order.
+
+| Untimed global control | TypeScript 6.0.3 | Native TypeScript 7.0.2 | Pre-change Home `5cbf35e3b` | Home `592b9ff3a` | Final Home `6ec121877` |
+|---|---:|---:|---:|---:|---:|
+| Same-file globals | 24/24 | 24/24 | 24/24 | 24/24 | 24/24 |
+| Existing cross-file globals | 32/32 | 32/32 | 8/32 | 32/32 | 32/32 |
+| New cyclic-owner controls | 4/4 | 4/4 | not run | 0/4 (owner import error) | **4/4** |
+| Expanded global total | 60/60 | 60/60 | not comparable | 56/60 | **60/60** |
+| Bound-global visibility | 56/56 | 56/56 | 44/56 | 56/56 | **56/56** |
+
+The final global process total is **180/180** checks and the independent
+bound-global process total is **168/168** checks. The unchanged pinned Zod
+4.5.2 graph remains exactly **600 diagnostics**, so this change does not move
+that separate real-project count. The adjacent imported-owner audit improves
+to **16/20** Home cases, while both competitors pass 20/20; only the two
+rest-signature positive/negative pairs in both root orders remain. The
+nominal-origin audit remains **44/52** for Home versus 52/52 for both
+competitors, with inherited private/protected owners still open. Those
+failures are not waived or folded into this completed global control.
+
+Final source gates pass: **4,348/4,348 checker**, **179/179 Program**,
+**187/187 driver**, **69/69 CLI**, and **6/6** directly modified global audit
+tests. ReleaseFast and `zig fmt` pass. The repository-wide benchmark test
+discovery currently passes 92/95; its three failures are unchanged stale
+expectations in `test_audit_export_lists.py` (96 expected cases versus the
+current 128-case audit), outside this change. The required repository-wide
+Pickier run also remains red on existing debt: 20,869 findings across 12,036
+files. The final ReleaseFast `home-tsc` SHA-256 is
+`92f6cb3f52c05c5791e83ee9c30d077d34dbaef960adbf8e04c8f1452a4c6d5d`.
+
+This is a correctness checkpoint, not a timing claim. ReleaseFast compilation
+ran while another repository suite loaded the same workstation, so its wall
+time is deliberately excluded from the performance table.
+
+```sh
+python3 bench/vs_tsgo/audit_globals.py
+python3 bench/vs_tsgo/audit_bound_globals.py
+python3 bench/vs_tsgo/audit_owners.py
+python3 bench/vs_tsgo/audit_nominal_origins.py
+zig build test -Dfilter=ts_checker
+zig build test -Dfilter=ts_program
+zig build test -Dfilter=ts_driver
+zig build test -Dfilter=ts_cli
+zig build -Doptimize=ReleaseFast
+bunx --bun pickier .
+```
