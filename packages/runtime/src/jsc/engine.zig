@@ -29,7 +29,6 @@
 // the minimum needed to validate the binding round-trip.
 
 const std = @import("std");
-const builtin = @import("builtin");
 const extern_fns = @import("extern_fns.zig");
 const opaques = @import("opaques.zig");
 
@@ -73,9 +72,7 @@ pub const Engine = struct {
     /// panics; M3 fills in the body by calling `JSGlobalContextRelease`.
     pub fn deinit(self: *Engine) void {
         if (self.context) |context| {
-            if (!builtin.is_test) {
-                extern_fns.JSGlobalContextRelease(context);
-            }
+            extern_fns.JSGlobalContextRelease(context);
             self.context = null;
         }
         self.vm = null;
