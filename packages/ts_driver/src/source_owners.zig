@@ -5,9 +5,9 @@
 //! lifetime, so an old declaration handle cannot alias a replacement source.
 //! Handles are NOT local HIR NodeIds; resolve them through declaration().
 //! Registry and target type pool require exclusive access during importOwner.
-//! The target is a shared transfer pool: ALL declaration-bearing types in it
-//! must use this registry's handles. Never mix owner-local HIR IDs or handles
-//! from another registry into that pool; import the local owner too.
+//! Untagged provenance belongs to the source owner's local HIR; tagged values
+//! are handles already owned by this registry and survive transitive transfer.
+//! Never place handles from another registry in a source or target pool.
 
 const std = @import("std");
 const hir = @import("hir");
@@ -16,6 +16,17 @@ const checker = @import("ts_checker");
 
 pub const OwnerId = enum(u32) { none = 0, _ };
 pub const Error = checker.checked_transfer.Error || error{ InvalidOwner, InvalidDeclaration };
+
+/// Declaration-bearing type payloads use the same scalar storage as local
+/// HIR NodeIds. Tag registry handles so a checked owner that already contains
+/// imported declarations can be transferred again without reinterpreting a
+/// foreign handle as a node in the intermediate owner's HIR.
+const declaration_handle_tag: hir.NodeId = 1 << 31;
+const declaration_handle_index_mask: hir.NodeId = declaration_handle_tag - 1;
+
+pub fn isDeclarationHandle(node: hir.NodeId) bool {
+    return node & declaration_handle_tag != 0;
+}
 
 pub const Source = struct {
     hir: *const hir.Hir,
@@ -92,8 +103,10 @@ pub const Registry = struct {
     }
 
     pub fn declaration(self: *const Registry, handle: hir.NodeId) Error!Declaration {
-        if (handle == 0 or handle > self.nodes.items.len) return error.InvalidDeclaration;
-        const key = self.nodes.items[handle - 1];
+        if (!isDeclarationHandle(handle)) return error.InvalidDeclaration;
+        const raw_index = handle & declaration_handle_index_mask;
+        if (raw_index == 0 or raw_index > self.nodes.items.len) return error.InvalidDeclaration;
+        const key = self.nodes.items[raw_index - 1];
         const owner = try self.source(key.owner);
         if (key.node == 0 or key.node >= owner.hir.nodeCount()) return error.InvalidDeclaration;
         const location = owner.hir.spanOf(key.node);
@@ -103,16 +116,16 @@ pub const Registry = struct {
 
     fn internDeclaration(self: *Registry, owner: OwnerId, node: hir.NodeId) Error!hir.NodeId {
         const view = try self.source(owner);
-        if (node == 0 or node >= view.hir.nodeCount()) return error.InvalidDeclaration;
+        if (node == 0 or isDeclarationHandle(node) or node >= view.hir.nodeCount()) return error.InvalidDeclaration;
         const location = view.hir.spanOf(node);
         if (location.start > location.end or location.end > view.text.len) return error.InvalidDeclaration;
         const key: NodeKey = .{ .owner = owner, .node = node };
         if (self.node_ids.get(key)) |id| return id;
-        if (self.nodes.items.len == std.math.maxInt(u32)) return error.TypeIdOverflow;
+        if (self.nodes.items.len == declaration_handle_index_mask) return error.TypeIdOverflow;
         try self.nodes.ensureUnusedCapacity(self.allocator, 1);
         try self.node_ids.ensureUnusedCapacity(self.allocator, 1);
         self.nodes.appendAssumeCapacity(key);
-        const id: hir.NodeId = @intCast(self.nodes.items.len);
+        const id: hir.NodeId = declaration_handle_tag | @as(hir.NodeId, @intCast(self.nodes.items.len));
         self.node_ids.putAssumeCapacityNoClobber(key, id);
         return id;
     }
@@ -165,6 +178,14 @@ const Context = struct {
 
     fn node(context: *anyopaque, id: hir.NodeId) checker.type_transfer.Error!hir.NodeId {
         const self: *Context = @ptrCast(@alignCast(context));
+        if (isDeclarationHandle(id)) {
+            _ = self.registry.declaration(id) catch |err| return switch (err) {
+                error.OutOfMemory => error.OutOfMemory,
+                error.TypeIdOverflow => error.TypeIdOverflow,
+                else => error.UnmappedName,
+            };
+            return id;
+        }
         return self.registry.internDeclaration(self.owner, id) catch |err| switch (err) {
             error.OutOfMemory => error.OutOfMemory,
             error.TypeIdOverflow => error.TypeIdOverflow,
@@ -229,6 +250,8 @@ test "source owners: real declarations remain distinct and stale revisions canno
     var first = try Fixture.init();
     const first_owner = try registry.register(first.view());
     const old = try registry.internDeclaration(first_owner, first.decl);
+    try T.expect(isDeclarationHandle(old));
+    try T.expectError(error.InvalidDeclaration, registry.declaration(first.decl));
     try T.expectEqual(old, try registry.internDeclaration(first_owner, first.decl));
     try T.expectEqualStrings(Fixture.text, (try registry.declaration(old)).text());
     try registry.unregister(first_owner);
@@ -241,7 +264,11 @@ test "source owners: real declarations remain distinct and stale revisions canno
     const second_owner = try registry.register(second.view());
     defer registry.unregister(second_owner) catch unreachable;
     const current = try registry.internDeclaration(second_owner, second.decl);
+    try T.expect(isDeclarationHandle(current));
     try T.expect(first_owner != second_owner and old != current);
+    var context = Context{ .registry = &registry, .owner = second_owner, .from = &second.names, .to = &second.names };
+    try T.expectEqual(current, try Context.node(&context, current));
+    try T.expectError(error.UnmappedName, Context.node(&context, old));
     try T.expectEqualStrings("/same.ts", (try registry.declaration(current)).source.path);
     try T.expectEqual(hir.NodeKind.interface_decl, (try registry.declaration(current)).source.hir.kindOf(second.decl));
     try T.expectError(error.InvalidOwner, registry.declaration(old));

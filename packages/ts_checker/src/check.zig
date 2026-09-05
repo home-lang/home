@@ -47319,7 +47319,7 @@ pub const Checker = struct {
         var object_t = self.hir.typeOf(m.object);
         if (object_t == types.Primitive.none) object_t = try self.checkExpression(m.object);
         const member = self.interner.objectMemberInfo(object_t, m.name) orelse return false;
-        if (member.decl_node == hir_mod.none_node_id) return false;
+        if (!self.nodeBelongsToCurrentHir(member.decl_node)) return false;
         return switch (self.hir.kindOf(member.decl_node)) {
             .interface_member => self.typeAnnotationIsUniqueSymbol(hir_mod.interfaceMemberOf(self.hir, member.decl_node).type_node),
             .object_property => self.typeAnnotationIsUniqueSymbol(hir_mod.objectPropertyOf(self.hir, member.decl_node).type_annotation),
@@ -47534,8 +47534,12 @@ pub const Checker = struct {
         return self.interface_extends_visibility_class.get(iface_name);
     }
 
+    fn nodeBelongsToCurrentHir(self: *const Checker, node: NodeId) bool {
+        return node != hir_mod.none_node_id and node < self.hir.nodeCount();
+    }
+
     fn memberDeclaringClassNode(self: *Checker, member_node: NodeId) NodeId {
-        if (member_node == hir_mod.none_node_id) return hir_mod.none_node_id;
+        if (!self.nodeBelongsToCurrentHir(member_node)) return hir_mod.none_node_id;
         var cur = self.hir.parentOf(member_node);
         while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
             const kind = self.hir.kindOf(cur);
@@ -47545,7 +47549,7 @@ pub const Checker = struct {
     }
 
     fn memberDeclarationIsProtected(self: *Checker, member_node: NodeId) bool {
-        if (member_node == hir_mod.none_node_id) return false;
+        if (!self.nodeBelongsToCurrentHir(member_node)) return false;
         var cur = member_node;
         while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
             switch (self.hir.kindOf(cur)) {
@@ -51263,7 +51267,7 @@ pub const Checker = struct {
         t: TypeId,
         member: types.ObjectMember,
     ) CheckError!?[]const u8 {
-        var current = member.decl_node;
+        var current = if (self.nodeBelongsToCurrentHir(member.decl_node)) member.decl_node else hir_mod.none_node_id;
         while (current != hir_mod.none_node_id) : (current = self.hir.parentOf(current)) {
             const kind = self.hir.kindOf(current);
             if (kind != .class_decl and kind != .class_expr and kind != .interface_decl) continue;
@@ -51719,7 +51723,7 @@ pub const Checker = struct {
     /// override semantics. Silent no-op when the parent expression
     /// isn't a known class identifier.
     fn getterReadTypeForHeritageMember(self: *Checker, member: types.ObjectMember) ?TypeId {
-        if (member.decl_node == hir_mod.none_node_id or !self.interner.isSignature(member.type)) return null;
+        if (!self.nodeBelongsToCurrentHir(member.decl_node) or !self.interner.isSignature(member.type)) return null;
         const kind = self.hir.kindOf(member.decl_node);
         if (kind != .fn_decl and kind != .fn_expr and kind != .arrow_fn) return null;
         if (!hir_mod.fnDeclOf(self.hir, member.decl_node).flags.is_getter) return null;
@@ -51871,7 +51875,7 @@ pub const Checker = struct {
                 if (getters.contains(member_name)) return base_member.type;
             }
         }
-        if (base_member.decl_node == hir_mod.none_node_id) return null;
+        if (!self.nodeBelongsToCurrentHir(base_member.decl_node)) return null;
         const decl_kind = self.hir.kindOf(base_member.decl_node);
         if (decl_kind != .fn_decl and decl_kind != .fn_expr and decl_kind != .arrow_fn) return null;
         if (!hir_mod.fnDeclOf(self.hir, base_member.decl_node).flags.is_getter) return null;
@@ -51905,7 +51909,7 @@ pub const Checker = struct {
     }
 
     fn methodDeclParams(self: *Checker, decl_node: NodeId) ?[]const NodeId {
-        if (decl_node == hir_mod.none_node_id) return null;
+        if (!self.nodeBelongsToCurrentHir(decl_node)) return null;
         return switch (self.hir.kindOf(decl_node)) {
             .fn_decl, .fn_expr, .arrow_fn => hir_mod.fnParams(self.hir, decl_node),
             .interface_member => blk: {
@@ -66442,7 +66446,7 @@ pub const Checker = struct {
         for (current_members) |member| {
             var refreshed = member;
             const declared_type_node = blk: {
-                if (member.decl_node != hir_mod.none_node_id and
+                if (self.nodeBelongsToCurrentHir(member.decl_node) and
                     self.hir.kindOf(member.decl_node) == .interface_member)
                 {
                     const declaration = hir_mod.interfaceMemberOf(self.hir, member.decl_node);
@@ -67529,7 +67533,7 @@ pub const Checker = struct {
     }
 
     fn objectMemberDeclaredTypeNode(self: *Checker, member: types.ObjectMember) ?NodeId {
-        if (member.decl_node == hir_mod.none_node_id) return null;
+        if (!self.nodeBelongsToCurrentHir(member.decl_node)) return null;
         return switch (self.hir.kindOf(member.decl_node)) {
             .interface_member => hir_mod.interfaceMemberOf(self.hir, member.decl_node).type_node,
             .object_property => hir_mod.objectPropertyOf(self.hir, member.decl_node).type_annotation,
@@ -68783,7 +68787,7 @@ pub const Checker = struct {
         container: NodeId,
         member_node: NodeId,
     ) NodeId {
-        if (self.hir.kindOf(container) != .interface_decl or member_node == hir_mod.none_node_id) {
+        if (self.hir.kindOf(container) != .interface_decl or !self.nodeBelongsToCurrentHir(member_node)) {
             return hir_mod.none_node_id;
         }
         const owner = self.nearestAncestorKind(member_node, .interface_decl);
@@ -69327,7 +69331,7 @@ pub const Checker = struct {
     /// `interfaceWithStringIndexerHidingBaseTypeIndexer.ts(13,5)`
     /// and `interfaceWithStringIndexerHidingBaseTypeIndexer3.ts(13,5)`.
     fn declaredIndexMemberTypeName(self: *Checker, decl_node: NodeId) ?[]const u8 {
-        if (decl_node == hir_mod.none_node_id) return null;
+        if (!self.nodeBelongsToCurrentHir(decl_node)) return null;
         const type_node = switch (self.hir.kindOf(decl_node)) {
             .interface_member => hir_mod.interfaceMemberOf(self.hir, decl_node).type_node,
             .index_signature => hir_mod.indexSignatureOf(self.hir, decl_node).value_type,
@@ -93264,7 +93268,7 @@ pub const Checker = struct {
             }
         }
         const decl_node = self.type_parameter_decl_nodes.get(self.resolvedTypeParameterPlaceholder(type_param_t)) orelse return false;
-        if (decl_node == hir_mod.none_node_id or self.hir.kindOf(decl_node) != .type_parameter) return false;
+        if (!self.nodeBelongsToCurrentHir(decl_node) or self.hir.kindOf(decl_node) != .type_parameter) return false;
         const constraint_node = hir_mod.typeParameterOf(self.hir, decl_node).constraint;
         if (constraint_node == hir_mod.none_node_id) return false;
         return typeTextsEqualIgnoringWhitespace(self.nodeSourceTextOrEmpty(constraint_node), target_display);
@@ -102520,7 +102524,7 @@ pub const Checker = struct {
         const receiver_t = self.hir.typeOf(member.object);
         if (receiver_t == types.Primitive.none or receiver_t >= self.interner.pool.typeCount()) return null;
         const info = self.interner.objectMemberInfo(receiver_t, member.name) orelse return null;
-        if (info.decl_node == hir_mod.none_node_id) return null;
+        if (!self.nodeBelongsToCurrentHir(info.decl_node)) return null;
         const type_node = switch (self.hir.kindOf(info.decl_node)) {
             .interface_member => hir_mod.interfaceMemberOf(self.hir, info.decl_node).type_node,
             .object_property => hir_mod.objectPropertyOf(self.hir, info.decl_node).type_annotation,
@@ -103776,7 +103780,7 @@ pub const Checker = struct {
             const type_name = self.interner.typeParameterName(resolved) orelse return null;
             break :blk self.enclosingTypeParameterDeclByName(context_node, type_name) orelse return null;
         };
-        if (decl_node == hir_mod.none_node_id or self.hir.kindOf(decl_node) != .type_parameter) return null;
+        if (!self.nodeBelongsToCurrentHir(decl_node) or self.hir.kindOf(decl_node) != .type_parameter) return null;
         return try self.typeNodeConstraintMember(hir_mod.typeParameterOf(self.hir, decl_node).constraint, name);
     }
 
@@ -105006,7 +105010,7 @@ pub const Checker = struct {
         target_t: TypeId,
         member: types.ObjectMember,
     ) CheckError!void {
-        if (member.decl_node == hir_mod.none_node_id) return;
+        if (!self.nodeBelongsToCurrentHir(member.decl_node)) return;
         if (self.diagnostics.items.len == 0) return;
         const last = &self.diagnostics.items[self.diagnostics.items.len - 1];
         if (last.code != TsCodes.type_not_assignable) return;
@@ -105334,7 +105338,7 @@ pub const Checker = struct {
         }
         if (!flags.is_object_type) return false;
         for (self.interner.objectMembers(object_t)) |member| {
-            if (member.name != member_name or member.decl_node == hir_mod.none_node_id) continue;
+            if (member.name != member_name or !self.nodeBelongsToCurrentHir(member.decl_node)) continue;
             const kind = self.hir.kindOf(member.decl_node);
             if (kind != .fn_decl and kind != .fn_expr and kind != .arrow_fn) return false;
             const declaration = hir_mod.fnDeclOf(self.hir, member.decl_node);
@@ -105352,7 +105356,7 @@ pub const Checker = struct {
         if (!self.interner.pool.flagsOf(receiver_t).is_object_type) return null;
         var getter_decl = hir_mod.none_node_id;
         for (self.interner.objectMembers(receiver_t)) |member| {
-            if (member.name != member_name or member.decl_node == hir_mod.none_node_id) continue;
+            if (member.name != member_name or !self.nodeBelongsToCurrentHir(member.decl_node)) continue;
             const kind = self.hir.kindOf(member.decl_node);
             if (kind != .fn_decl and kind != .fn_expr and kind != .arrow_fn) return null;
             if (!hir_mod.fnDeclOf(self.hir, member.decl_node).flags.is_getter) return null;
@@ -117400,8 +117404,8 @@ pub const Checker = struct {
     }
 
     fn jsxDisplayMemberDeclarationLessThan(self: *Checker, lhs: types.ObjectMember, rhs: types.ObjectMember) bool {
-        if (lhs.decl_node == hir_mod.none_node_id) return false;
-        if (rhs.decl_node == hir_mod.none_node_id) return true;
+        if (!self.nodeBelongsToCurrentHir(lhs.decl_node)) return false;
+        if (!self.nodeBelongsToCurrentHir(rhs.decl_node)) return true;
         return self.hir.spanOf(lhs.decl_node).start < self.hir.spanOf(rhs.decl_node).start;
     }
 
@@ -129224,7 +129228,7 @@ pub const Checker = struct {
         }
         if (!flags.is_object_type) return null;
         for (self.interner.objectMembers(receiver_t)) |member| {
-            if (member.name != member_name or member.decl_node == hir_mod.none_node_id) continue;
+            if (member.name != member_name or !self.nodeBelongsToCurrentHir(member.decl_node)) continue;
             if (self.hir.kindOf(member.decl_node) != .object_property) return null;
             const property = hir_mod.objectPropertyOf(self.hir, member.decl_node);
             if (property.type_annotation == hir_mod.none_node_id) {
@@ -143772,7 +143776,7 @@ pub const Checker = struct {
         if (flags.is_type_parameter) {
             const resolved = self.resolvedTypeParameterPlaceholder(t);
             if (self.type_parameter_decl_nodes.get(resolved)) |decl_node| {
-                if (decl_node != hir_mod.none_node_id and self.hir.kindOf(decl_node) == .type_parameter) {
+                if (self.nodeBelongsToCurrentHir(decl_node) and self.hir.kindOf(decl_node) == .type_parameter) {
                     const decl = hir_mod.typeParameterOf(self.hir, decl_node);
                     if (self.typeNodeIsExcludeSymbol(decl.constraint)) return true;
                 }
@@ -157313,7 +157317,7 @@ pub const Checker = struct {
     ) bool {
         const resolved_param = self.resolvedTypeParameterPlaceholder(param_t);
         if (self.type_parameter_decl_nodes.get(resolved_param)) |decl_node| {
-            if (decl_node != hir_mod.none_node_id and self.hir.kindOf(decl_node) == .type_parameter) {
+            if (self.nodeBelongsToCurrentHir(decl_node) and self.hir.kindOf(decl_node) == .type_parameter) {
                 const decl = hir_mod.typeParameterOf(self.hir, decl_node);
                 if (decl.constraint != hir_mod.none_node_id and
                     (self.hir.kindOf(decl.constraint) == .keyof_type or
@@ -158993,7 +158997,7 @@ pub const Checker = struct {
         member: types.ObjectMember,
         subs: *const std.AutoHashMapUnmanaged(TypeId, TypeId),
     ) CheckError!?TypeId {
-        if (member.decl_node == hir_mod.none_node_id or subs.count() == 0) return null;
+        if (!self.nodeBelongsToCurrentHir(member.decl_node) or subs.count() == 0) return null;
         const type_node = switch (self.hir.kindOf(member.decl_node)) {
             .interface_member => hir_mod.interfaceMemberOf(self.hir, member.decl_node).type_node,
             .object_property => hir_mod.objectPropertyOf(self.hir, member.decl_node).type_annotation,
@@ -182993,7 +182997,7 @@ pub const Checker = struct {
     }
 
     fn objectMemberDeclaredNameText(self: *Checker, member: types.ObjectMember) ?[]const u8 {
-        if (member.decl_node == hir_mod.none_node_id) return null;
+        if (!self.nodeBelongsToCurrentHir(member.decl_node)) return null;
         const src = self.source orelse return null;
         const span = self.hir.spanOf(member.decl_node);
         if (span.start >= span.end or span.end > src.len) return null;
@@ -187899,7 +187903,7 @@ pub const Checker = struct {
         const patterns = self.pattern_index_signatures.get(object_t) orelse return;
         for (patterns) |pattern| {
             const param_name = blk: {
-                if (pattern.decl_node != hir_mod.none_node_id and self.hir.kindOf(pattern.decl_node) == .index_signature) {
+                if (self.nodeBelongsToCurrentHir(pattern.decl_node) and self.hir.kindOf(pattern.decl_node) == .index_signature) {
                     const ix = hir_mod.indexSignatureOf(self.hir, pattern.decl_node);
                     if (ix.key_name != 0) break :blk self.string_interner.get(ix.key_name);
                 }

@@ -8464,6 +8464,20 @@ test "Program: cyclic global declaration owners are independent of root order" {
                 \\const goodCycle: Left = left.right.left;
                 \\const badValue: number = left.right.value;
             ;
+            _ = try p.add(
+                "/lib.d.ts",
+                "interface Object {}\n" ++
+                    "interface Function {}\n" ++
+                    "interface CallableFunction extends Function {}\n" ++
+                    "interface NewableFunction extends Function {}\n" ++
+                    "interface IArguments { readonly length: number; [index: number]: unknown; }\n" ++
+                    "interface String {}\n" ++
+                    "interface Number {}\n" ++
+                    "interface Boolean {}\n" ++
+                    "interface RegExp {}\n" ++
+                    "interface Array<T> { readonly length: number; [index: number]: T; }\n" ++
+                    "interface ReadonlyArray<T> { readonly length: number; readonly [index: number]: T; }\n",
+            );
             var app: FileId = undefined;
             if (declarations_first) {
                 _ = try p.add("/left.d.ts", left);
