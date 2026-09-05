@@ -6411,6 +6411,7 @@ pub const Checker = struct {
         self.removeUntypedTypeArgumentCascadesAfterMissingProperty();
         self.removeTypeArgumentCountDiagnosticsInJs();
         self.removeJsDocObjectMethodTypeMismatchCascades();
+        self.removeResolvedConditionalIteratorDiagnostics();
         try self.applyCompilerCorpusExactDiagnosticReconciliations(root);
         self.removePropertyMissingDiagnosticsSupersededBySuggestion();
         try self.restoreRecoveredJsxImplicitAnyDiagnostics(root);
@@ -6426,6 +6427,48 @@ pub const Checker = struct {
             try self.restoreJsNamespaceSyntaxDiagnostics(root);
             self.sortDiagnosticsByPosition();
         }
+    }
+
+    fn removeResolvedConditionalIteratorDiagnostics(self: *Checker) void {
+        var write: usize = 0;
+        for (self.diagnostics.items) |diagnostic| {
+            const resolved = diagnostic.code == TsCodes.yield_star_not_iterable and
+                self.conditionalTruthinessMakesIteratorValid(diagnostic.node);
+            if (resolved) continue;
+            self.diagnostics.items[write] = diagnostic;
+            write += 1;
+        }
+        self.diagnostics.items.len = write;
+    }
+
+    fn conditionalTruthinessMakesIteratorValid(self: *Checker, node: NodeId) bool {
+        if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .identifier) return false;
+        const name = hir_mod.identifierOf(self.hir, node).name;
+        var child = node;
+        var parent = self.hir.parentOf(node);
+        while (parent != hir_mod.none_node_id) : ({
+            child = parent;
+            parent = self.hir.parentOf(parent);
+        }) {
+            switch (self.hir.kindOf(parent)) {
+                .conditional => {
+                    const conditional = hir_mod.conditionalOf(self.hir, parent);
+                    if (conditional.then_branch != child or
+                        self.hir.kindOf(conditional.cond) != .identifier or
+                        hir_mod.identifierOf(self.hir, conditional.cond).name != name)
+                    {
+                        continue;
+                    }
+                    var condition_t = self.hir.typeOf(conditional.cond);
+                    if (condition_t == types.Primitive.none) condition_t = self.typeOfIdentifier(conditional.cond);
+                    const truthy_t = self.nonNullishAccessType(condition_t) catch condition_t;
+                    return self.isIterableLikeType(truthy_t);
+                },
+                .fn_decl, .fn_expr, .arrow_fn => return false,
+                else => {},
+            }
+        }
+        return false;
     }
 
     /// Malformed JSX recovery can drop opening or closing nodes from HIR even
@@ -30682,6 +30725,13 @@ pub const Checker = struct {
                     const target_member = hir_mod.memberOf(self.hir, a.target);
                     if (self.moduleInterfaceAugmentationPrototypeMember(target_member.object, target_member.name, fn_node) catch null) |augmented_t| {
                         target_t = augmented_t;
+                    } else if (self.contextualMemberAssignmentSignatureFromCallTypeArgument(a.target) catch null) |projected_sig| {
+                        // A callback parameter supplied by a generic call can
+                        // carry a more precise nested member contract than
+                        // the provisional expression type on the assignment
+                        // target. Use it during the function's first check so
+                        // parameters and body share one coherent flow pass.
+                        target_t = projected_sig;
                     }
                 }
             },
@@ -31206,7 +31256,11 @@ pub const Checker = struct {
     ) CheckError!?TypeId {
         const diagnostic_start = self.diagnostics.items.len;
         const signature = try self.contextualMemberAssignmentSignatureFromCallTypeArgumentInner(target);
-        if (signature == null) self.diagnostics.shrinkRetainingCapacity(diagnostic_start);
+        // This is a speculative contextual query. Declaration projection can
+        // revisit a generic type node outside its lexical scope; none of the
+        // diagnostics produced by that lookup belong to the user's program,
+        // regardless of whether the query ultimately finds a signature.
+        self.diagnostics.shrinkRetainingCapacity(diagnostic_start);
         return signature;
     }
 
@@ -31264,7 +31318,11 @@ pub const Checker = struct {
             .type => |type_id| self.contextualAssignmentSignature(self.resolveGenericType(type_id) catch type_id),
         } orelse return null;
         if (self.containsFreeTypeParameter(signature)) return null;
-        return if (self.interner.signatureReturn(signature) == types.Primitive.void_t) signature else null;
+        // Contextual parameter types do not depend on the target returning
+        // `void`. The contextual recheck infers the source signature and the
+        // ordinary assignment relation still validates its actual return, so
+        // retain non-void signatures here as TypeScript does.
+        return signature;
     }
 
     fn contextualCallArgumentType(
@@ -53616,6 +53674,12 @@ pub const Checker = struct {
 
     fn heritageAssignableDepth(self: *Checker, source: TypeId, target: TypeId, depth: u8) anyerror!bool {
         if (source == target) return true;
+        // `unknown` is the safe top type: every source, including an
+        // unconstrained type parameter, is assignable to it. Keep this ahead
+        // of the source-type-parameter constraint walk below; an unconstrained
+        // `T` has no constraint to recurse through, but `T -> unknown` is
+        // nevertheless valid (and is common in generic interface heritage).
+        if (target == types.Primitive.any or target == types.Primitive.unknown) return true;
         if (self.mappedSourceAssignableToOpenAnyIndexTarget(source, target)) return true;
         if (self.numberLikeAssignableToNumericEnum(source, target)) return true;
         if (depth >= 16) return self.engine.isAssignableTo(source, target);
@@ -62949,13 +63013,7 @@ pub const Checker = struct {
             try self.checkTypeArgSatisfiesConstraint(args[i], info.params[i], arg_t);
         }
         if (args.len < info.params.len) {
-            var j: usize = args.len;
-            while (j < info.params.len) : (j += 1) {
-                const p = info.params[j];
-                if (p >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(p).is_type_parameter) continue;
-                const tp = self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(p)];
-                if (tp.default != types.Primitive.none) try subs.put(self.gpa, p, tp.default);
-            }
+            try self.putDependentGenericDefaults(info.params, args.len, &subs);
         }
         const instantiated = self.substituteType(info.body, &subs) catch info.body;
         try self.copyMemberPredicatesFromReceiver(instantiated, info.body);
@@ -73683,6 +73741,34 @@ pub const Checker = struct {
         return info.params.len;
     }
 
+    /// Fill omitted generic arguments from declaration-site defaults in
+    /// declaration order. A later default is evaluated in the environment
+    /// formed by every earlier effective argument, so `<T = unknown,
+    /// U = Box<T>>` instantiates `U` as `Box<unknown>` for a bare reference
+    /// and as `Box<number>` for `<number>`. Storing the raw default leaves
+    /// `T` free inside `U` and makes otherwise valid structural relations
+    /// compare against an arbitrary future instantiation of `T`.
+    fn putDependentGenericDefaults(
+        self: *Checker,
+        params: []const TypeId,
+        start: usize,
+        subs: *std.AutoHashMapUnmanaged(TypeId, TypeId),
+    ) CheckError!void {
+        var index = start;
+        while (index < params.len) : (index += 1) {
+            const param = params[index];
+            if (param >= self.interner.pool.typeCount() or
+                !self.interner.pool.flagsOf(param).is_type_parameter)
+            {
+                continue;
+            }
+            const payload = self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(param)];
+            if (payload.default == types.Primitive.none) continue;
+            const effective_default = try self.substituteType(payload.default, subs);
+            try subs.put(self.gpa, param, effective_default);
+        }
+    }
+
     fn genericAliasHasRangeTypeArgCount(self: *Checker, info: GenericAliasInfo) bool {
         return self.genericAliasMinTypeArgCount(info) < info.params.len;
     }
@@ -77015,10 +77101,7 @@ pub const Checker = struct {
                         } else if (info.params.len > 0) {
                             var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
                             defer subs.deinit(self.gpa);
-                            for (info.params) |p| {
-                                const tp = self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(p)];
-                                if (tp.default != types.Primitive.none) try subs.put(self.gpa, p, tp.default);
-                            }
+                            try self.putDependentGenericDefaults(info.params, 0, &subs);
                             const instantiated = self.substituteType(info.body, &subs) catch info.body;
                             try self.copyMemberPredicatesFromReceiver(instantiated, info.body);
                             return instantiated;
@@ -77488,14 +77571,7 @@ pub const Checker = struct {
                         // declaration-site defaults (`<T, U = number>`)
                         // for partial application like `Pair<string>`.
                         if (args.len < info.params.len) {
-                            var j: usize = args.len;
-                            while (j < info.params.len) : (j += 1) {
-                                const p = info.params[j];
-                                if (!self.interner.pool.flagsOf(p).is_type_parameter) continue;
-                                const tp = self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(p)];
-                                if (tp.default == types.Primitive.none) continue;
-                                try subs.put(self.gpa, p, tp.default);
-                            }
+                            try self.putDependentGenericDefaults(info.params, args.len, &subs);
                         }
                         _ = self.type_arg_lower_in_progress.remove(type_node);
                         _ = self.circ_ctx_stack.pop();
@@ -106953,13 +107029,7 @@ pub const Checker = struct {
                 var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
                 defer subs.deinit(self.gpa);
                 try subs.put(self.gpa, info.params[0], elem_t);
-                var i: usize = 1;
-                while (i < info.params.len) : (i += 1) {
-                    const p = info.params[i];
-                    if (!self.interner.pool.flagsOf(p).is_type_parameter) continue;
-                    const tp = self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(p)];
-                    if (tp.default != types.Primitive.none) try subs.put(self.gpa, p, tp.default);
-                }
+                try self.putDependentGenericDefaults(info.params, 1, &subs);
                 inst_t = try self.substituteType(info.body, &subs);
             }
             if (self.interner.objectMember(inst_t, name)) |member_t| return member_t;
@@ -109752,8 +109822,19 @@ pub const Checker = struct {
                 {
                     const target_sig = if (target_kind == .element_access)
                         self.contextualAssignmentSignature(target_t)
-                    else
-                        try self.contextualMemberAssignmentSignatureFromCallTypeArgument(a.target);
+                    else blk_member: {
+                        const projected = try self.contextualMemberAssignmentSignatureFromCallTypeArgument(a.target);
+                        const signature = projected orelse break :blk_member null;
+                        // Non-void projected callbacks are contextualized in
+                        // their first function pass above. Rechecking their
+                        // bodies here loses surrounding flow state; the
+                        // ordinary assignment relation still validates the
+                        // inferred return type.
+                        break :blk_member if (self.interner.signatureReturn(signature) == types.Primitive.void_t)
+                            signature
+                        else
+                            null;
+                    };
                     if (target_sig) |signature| {
                         try self.checkFunctionWithContextualSignatureMode(a.value, signature, false, &contextual_assignment_value_t);
                     }
@@ -119717,6 +119798,11 @@ pub const Checker = struct {
         self.removePriorDiagnosticsInNodeSpan(fn_node, TsCodes.argument_type_mismatch);
         self.removePriorDiagnosticsInNodeSpan(fn_node, TsCodes.type_not_assignable);
         self.removePriorDiagnosticsInNodeSpan(fn_node, TsCodes.property_does_not_exist);
+        // A provisional pass can see an unconstrained callback parameter and
+        // diagnose a spread as non-iterable. The contextual pass owns the
+        // final body types, so discard that provisional TS2488 and let this
+        // complete recheck emit it again only when it remains invalid.
+        self.removePriorDiagnosticsInNodeSpan(fn_node, TsCodes.yield_star_not_iterable);
         self.removeImplicitAnyDiagnosticsWithin(fn_node);
         self.removeUntypedCallsForContextualCallableParameters(fn_node, params, param_ts);
         self.removeContextualParameterUnknownDiagnostics(fn_node, params, param_ts);
@@ -125141,7 +125227,21 @@ pub const Checker = struct {
     /// would type-check without TS2554 / TS2345. Used by overload
     /// resolution to pick an applicable signature.
     fn signatureAccepts(self: *Checker, call_node: NodeId, sig: TypeId, args: []const NodeId, arg_types: []const TypeId) !bool {
-        const params = self.interner.signatureParams(sig);
+        // Applicability checks below can intern types while examining
+        // literals, spreads, and structural arguments. That may grow the
+        // signature-parameter pool, so do not retain its borrowed slice
+        // across the walk. Most real signatures stay on the stack.
+        const borrowed_params = self.interner.signatureParams(sig);
+        var stack_params: [16]TypeId = undefined;
+        const heap_params = if (borrowed_params.len > stack_params.len)
+            try self.gpa.dupe(TypeId, borrowed_params)
+        else
+            null;
+        defer if (heap_params) |owned| self.gpa.free(owned);
+        const params = if (heap_params) |owned| owned else blk: {
+            @memcpy(stack_params[0..borrowed_params.len], borrowed_params);
+            break :blk stack_params[0..borrowed_params.len];
+        };
         const is_variadic = self.rest_signatures.contains(sig) and params.len > 0;
         const fixed_count: usize = if (is_variadic) params.len - 1 else params.len;
         const fixed_min_required: usize = @min(self.signatureMinRequiredArgsForCall(sig, params, call_node), fixed_count);
@@ -133039,6 +133139,12 @@ pub const Checker = struct {
                 }
                 if ((t == types.Primitive.any or t == types.Primitive.unknown) and !self.isDeclNameSlot(node)) {
                     if (active_annotation_t) |declared_t| {
+                        // A truthiness guard on `any | null | undefined`
+                        // legitimately narrows to `any`. Do not restore the
+                        // nullable declared union merely because the selected
+                        // constituent is itself an any-like top type.
+                        const declared_non_null = self.subtractNullUndefined(declared_t) catch declared_t;
+                        if (declared_non_null == t) return t;
                         if (declared_t != types.Primitive.any and declared_t != types.Primitive.unknown) return declared_t;
                     }
                 } else if (!self.isDeclNameSlot(node)) {
@@ -144559,7 +144665,8 @@ pub const Checker = struct {
             return false;
         }
         const readonly_to_mutable = self.readonlyArrayLikeAssignedToMutable(arg_constraint, target_constraint);
-        if (!readonly_to_mutable and (self.engine.isAssignableTo(arg_constraint, target_constraint) catch true)) return false;
+        if (!readonly_to_mutable and try self.checkerAssignableTo(arg_constraint, target_constraint)) return false;
+        if (!readonly_to_mutable and try self.objectConstraintAssignableToTargetUnionMember(arg_node, arg_constraint, target_constraint)) return false;
 
         const arg_text = (try self.typeArgConstraintTypeName(arg_t, false)) orelse return false;
         const constraint_text = (try self.typeArgConstraintTypeName(target_constraint, false)) orelse return false;
@@ -144590,6 +144697,110 @@ pub const Checker = struct {
             .chain = chain,
         });
         return true;
+    }
+
+    /// Prove a free type parameter's object constraint against one branch of
+    /// an object union. Ordinary relation may retain an earlier named TypeId
+    /// for a member while a generic interface instance holds the fully
+    /// lowered base object. Compare every visible property normally, then use
+    /// declaration identity only when the source property's generic interface
+    /// explicitly extends the target property's declaration.
+    fn objectConstraintAssignableToTargetUnionMember(
+        self: *Checker,
+        anchor: NodeId,
+        source_t: TypeId,
+        target_t: TypeId,
+    ) CheckError!bool {
+        const source = try self.resolveGenericType(source_t);
+        const target = try self.resolveGenericType(target_t);
+        if (source >= self.interner.pool.typeCount() or target >= self.interner.pool.typeCount()) return false;
+        const source_flags = self.interner.pool.flagsOf(source);
+        const target_flags = self.interner.pool.flagsOf(target);
+        if (!source_flags.is_object_type or source_flags.is_union or source_flags.is_intersection or
+            !target_flags.is_union)
+        {
+            return false;
+        }
+
+        const target_members = try self.gpa.dupe(TypeId, self.interner.unionMembers(target));
+        defer self.gpa.free(target_members);
+        for (target_members) |raw_member| {
+            if (raw_member == types.Primitive.null_t or raw_member == types.Primitive.undefined_t) continue;
+            const member = try self.resolveGenericType(raw_member);
+            if (member >= self.interner.pool.typeCount()) continue;
+            const member_flags = self.interner.pool.flagsOf(member);
+            if (!member_flags.is_object_type or member_flags.is_union or member_flags.is_intersection) continue;
+            if (self.objectHasCallOrConstructSignature(member) or
+                self.interner.objectStringIndex(member) != types.Primitive.none or
+                self.interner.objectNumberIndex(member) != types.Primitive.none or
+                self.interner.objectSymbolIndex(member) != types.Primitive.none)
+            {
+                continue;
+            }
+
+            const required_members = try self.gpa.dupe(types.ObjectMember, self.interner.objectMembers(member));
+            defer self.gpa.free(required_members);
+            var satisfies_required_members = true;
+            for (required_members) |required| {
+                if (required.visibility != .public) {
+                    satisfies_required_members = false;
+                    break;
+                }
+                var source_member = (try self.lookupObjectMember(source, required.name)) orelse if (required.is_optional)
+                    continue
+                else {
+                    satisfies_required_members = false;
+                    break;
+                };
+                var constraint_hops: u8 = 0;
+                while (constraint_hops < 16 and
+                    source_member < self.interner.pool.typeCount() and
+                    self.interner.pool.flagsOf(source_member).is_type_parameter) : (constraint_hops += 1)
+                {
+                    const constraint = self.typeParameterConstraint(source_member) orelse break;
+                    if (constraint == source_member or constraint == types.Primitive.none) break;
+                    source_member = constraint;
+                }
+                source_member = self.resolvedRecursiveInterfaceType(source_member);
+                const target_member = self.resolvedRecursiveInterfaceType(required.type);
+                if (!(try self.checkerAssignableTo(source_member, target_member)) and
+                    !try self.genericInterfaceDeclaredBaseMatchesTarget(anchor, source_member, target_member))
+                {
+                    satisfies_required_members = false;
+                    break;
+                }
+            }
+            if (satisfies_required_members) return true;
+        }
+        return false;
+    }
+
+    fn genericInterfaceDeclaredBaseMatchesTarget(
+        self: *Checker,
+        anchor: NodeId,
+        source_t: TypeId,
+        target_t: TypeId,
+    ) CheckError!bool {
+        const source_display = self.alias_display_names.get(source_t) orelse return false;
+        const source_lt = std.mem.indexOfScalar(u8, source_display, '<') orelse return false;
+        if (source_lt == 0) return false;
+        const source_qualified = source_display[0..source_lt];
+        const source_dot = std.mem.lastIndexOfScalar(u8, source_qualified, '.');
+        const source_name = self.string_interner.intern(
+            if (source_dot) |index| source_qualified[index + 1 ..] else source_qualified,
+        ) catch return error.OutOfMemory;
+        const source_decl = self.generic_interface_decl_by_instance.get(source_t) orelse
+            self.findVisibleNamedTypeDecl(anchor, source_name) orelse return false;
+        if (self.hir.kindOf(source_decl) != .interface_decl) return false;
+
+        const target_name = self.namedTypeForId(target_t) orelse return false;
+        const target_decl = self.findVisibleNamedTypeDecl(anchor, target_name) orelse return false;
+        for (hir_mod.interfaceExtends(self.hir, source_decl)) |base_node| {
+            const base_name = self.unqualifiedTypeRefName(base_node) orelse continue;
+            const base_decl = self.findVisibleNamedTypeDecl(base_node, base_name) orelse continue;
+            if (base_decl == target_decl) return true;
+        }
+        return false;
     }
 
     /// True when `source` and `target` are both type parameters with
@@ -209875,6 +210086,23 @@ test "checker: generic interface heritage accepts exact and covariant wrapper ov
     ));
 }
 
+test "checker: generic heritage treats unknown as a safe top type" {
+    const s = try newSetup(
+        \\interface State<out O = unknown> { output: O; }
+        \\interface Base<O = unknown, Internals extends State<O> = State<O>> { state: Internals; }
+        \\interface GenericChild<O = unknown> extends Base { state: State<O>; }
+        \\interface BadChild extends Base<string> { state: State<number>; }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.interface_incorrectly_extends));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.interface_incorrectly_extends,
+        "Interface 'BadChild' incorrectly extends interface 'Base<string>'.",
+    ));
+}
+
 test "checker: interface heritage accepts covariant self members" {
     const s = try newSetup(
         \\interface Base { self: Base; value: string; }
@@ -219247,6 +219475,102 @@ test "checker: explicit type args fill trailing generic defaults" {
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
+test "checker: generic interface references instantiate dependent defaults in declaration order" {
+    const s = try newSetup(
+        \\interface Box<T> { value: T; }
+        \\interface Family<T = unknown, U = Box<T>> { first: T; second: U; }
+        \\interface NumericFamily extends Family<number> {}
+        \\interface BareFamily extends Family { first: number; second: Box<number>; }
+        \\declare const numeric: NumericFamily;
+        \\const exact: number = numeric.second.value;
+        \\const invalid: string = numeric.second.value;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.interface_incorrectly_extends));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: nested generic default uses earlier explicit argument" {
+    const s = try newSetup(
+        \\interface Box<T> { value: T; }
+        \\interface Family<T = unknown, U = Box<T>> { first: T; second: U; }
+        \\declare const family: Family<number>;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    const statements = hir_mod.blockStmts(&s.hir, s.root);
+    const family_t = s.hir.typeOf(statements[2]);
+    const second_name = try s.sint.intern("second");
+    const value_name = try s.sint.intern("value");
+    const second_t = s.ti.objectMember(family_t, second_name) orelse return error.TestExpectedEqual;
+    try T.expectEqual(types.Primitive.number_t, s.ti.objectMember(second_t, value_name).?);
+}
+
+test "checker: constrained type argument relates source constraint to target union" {
+    const s = try newSetup(
+        \\// @strictNullChecks: true
+        \\interface BaseState { output: unknown; tag: string }
+        \\interface State<O = unknown> extends BaseState { output: O }
+        \\interface Type<O = unknown, S extends State<O> = State<O>> { _zod: S }
+        \\type SomeType = { _zod: BaseState };
+        \\type FunctionOut = Type;
+        \\interface Tuple<Rest extends SomeType | null> { rest: Rest }
+        \\interface Good<Rest extends FunctionOut = FunctionOut> { value: Tuple<Rest> }
+        \\interface Bad { value: Tuple<{ nope: number }> }
+        \\interface Scalar<N extends number> { value: N }
+        \\interface BadScalar<S extends string> { value: Scalar<S> }
+        \\interface WrongShape { _zod: { nope: number } }
+        \\interface BadNested<R extends WrongShape> { value: Tuple<R> }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.type_does_not_satisfy_constraint,
+        "Type '{ nope: number; }' does not satisfy the constraint 'SomeType | null'.",
+    ));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.type_does_not_satisfy_constraint,
+        "Type 'S' does not satisfy the constraint 'number'.",
+    ));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.type_does_not_satisfy_constraint,
+        "Type 'R' does not satisfy the constraint 'SomeType | null'.",
+    ));
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.type_does_not_satisfy_constraint));
+
+    const statements = hir_mod.blockStmts(&s.hir, s.root);
+    const zod_name = try s.sint.intern("_zod");
+    const function_out = s.checker.type_names.get(try s.sint.intern("FunctionOut")) orelse
+        return error.TestExpectedEqual;
+    const some_type = s.checker.type_names.get(try s.sint.intern("SomeType")) orelse
+        return error.TestExpectedEqual;
+    const wrong_shape = s.checker.type_names.get(try s.sint.intern("WrongShape")) orelse
+        return error.TestExpectedEqual;
+    const target_member = (try s.checker.lookupObjectMember(some_type, zod_name)) orelse
+        return error.TestExpectedEqual;
+    const wrong_member = (try s.checker.lookupObjectMember(wrong_shape, zod_name)) orelse
+        return error.TestExpectedEqual;
+    var source_member = (try s.checker.lookupObjectMember(function_out, zod_name)) orelse
+        return error.TestExpectedEqual;
+    if (source_member < s.ti.pool.typeCount() and s.ti.pool.flagsOf(source_member).is_type_parameter) {
+        source_member = s.checker.typeParameterConstraint(source_member) orelse source_member;
+    }
+    try T.expect(try s.checker.genericInterfaceDeclaredBaseMatchesTarget(
+        statements[6],
+        source_member,
+        target_member,
+    ));
+    try T.expect(!try s.checker.genericInterfaceDeclaredBaseMatchesTarget(
+        statements[11],
+        wrong_member,
+        target_member,
+    ));
+}
+
 test "checker: explicit type args take precedence over inference" {
     // Inference would say `T = number`, but explicit `<string>`
     // wins. The arg is then checked against the substituted
@@ -226247,6 +226571,51 @@ test "checker: generic nested member assignments contextually type callbacks" {
     try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.parameter_implicitly_any));
     try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.property_does_not_exist));
     try T.expectEqual(@as(usize, 1), b.base.checker.diagnostics.items.len);
+}
+
+test "checker: generic nested member assignments use non-void callback context" {
+    const b = try newBoundSetup(
+        \\interface BaseInternals { run(payload: string, ctx: number): string }
+        \\interface TypeInternals<O = unknown> extends BaseInternals { output: O }
+        \\interface Type<O = unknown, Internals extends TypeInternals<O> = TypeInternals<O>> { state: Internals }
+        \\interface Factory<T> { readonly prototype: T }
+        \\declare function Factory<T>(initialize: (inst: T) => void): Factory<T>;
+        \\const Good: Factory<Type> = Factory((inst) => {
+        \\  inst.state.run = (payload, ctx) => { void ctx; return payload; };
+        \\});
+        \\const Bad: Factory<Type> = Factory((inst) => {
+        \\  inst.state.run = (payload, ctx) => ctx;
+        \\});
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{
+        .strict_null_checks = true,
+        .strict_function_types = true,
+        .no_implicit_any = true,
+    });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.parameter_implicitly_any));
+    try T.expect(checkerCountCode(b.base, TsCodes.type_not_assignable) >= 1);
+}
+
+test "checker: contextual callback recheck replaces provisional spread diagnostics" {
+    const b = try newBoundSetup(
+        \\interface Holder { values?: Set<any> | undefined }
+        \\declare function lazy<T>(callback: (value: T) => unknown): void;
+        \\lazy<Holder>((holder) => {
+        \\  const values = holder.values;
+        \\  return values ? [...values] : undefined;
+        \\});
+        \\lazy<Holder>((holder) => [...holder.values]);
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{
+        .strict_null_checks = true,
+        .no_implicit_any = true,
+    });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.parameter_implicitly_any));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.yield_star_not_iterable));
 }
 
 test "checker: ambiguous member-assigned callback remains uncontextualized" {
@@ -266198,6 +266567,20 @@ test "checker: array callbacks accept complete lib parameter lists" {
     }
 }
 
+test "checker: Array every and some callbacks accept truthy non-boolean returns" {
+    const s = try newSetup(
+        \\const values: ({ marker: string } | undefined)[] = [];
+        \\values.every((value) => value);
+        \\values.some((value) => value?.marker);
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true, .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.parameter_implicitly_any));
+}
+
 test "checker: Array.prototype.reduce<U> infers result type from the initial value" {
     const s = try newSetup(
         \\const arr: number[] = [1, 2, 3];
@@ -266722,6 +267105,19 @@ test "checker: truthiness narrowing strips undefined from a call-result const un
         \\const f = g();
         \\if (f) { f.bar; }
     ));
+}
+
+test "checker: conditional truthiness narrows any union before array spread" {
+    const s = try newSetup(
+        \\declare const guarded: any | undefined;
+        \\const ok = guarded ? [...guarded] : [];
+        \\declare const unguarded: any | undefined;
+        \\const bad = [...unguarded];
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.yield_star_not_iterable));
 }
 
 test "checker: && guard narrows a call-result const union" {

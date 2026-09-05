@@ -483,10 +483,9 @@ pub fn arrayProto(
     // form which subsumes most call sites.
     const u_or_u_arr = try ti.internUnion(&[_]TypeId{ u_tp, u_arr });
     const cb_t_u_or_arr = try ti.internSignature(&[_]TypeId{ elem, number_t, arr_t }, u_or_u_arr, false);
-    // `(value: T, index: number, array: T[]) => boolean` — used by every / some.
-    const cb_t_bool = try ti.internSignature(&[_]TypeId{ elem, number_t, arr_t }, boolean_t, false);
     // `(value: T, index: number, array: T[]) => unknown` — used by filter / find, matching lib.d.ts
-    // predicate overloads that accept truthy non-boolean returns.
+    // predicate overloads that accept truthy non-boolean returns. Current
+    // lib.d.ts uses the same return type for every / some.
     const cb_t_unknown = try ti.internSignature(&[_]TypeId{ elem, number_t, arr_t }, unknown_t, false);
     // `(value: T, index: number, array: T[]) => void` — used by forEach.
     const cb_t_void = try ti.internSignature(&[_]TypeId{ elem, number_t, arr_t }, void_t, false);
@@ -516,8 +515,8 @@ pub fn arrayProto(
     const sig_flatMap = try ti.internSignature(&[_]TypeId{cb_t_u_or_arr}, u_arr, false);
     const sig_filter = try ti.internSignature(&[_]TypeId{cb_t_unknown}, arr_t, false);
     const sig_forEach = try ti.internSignature(&[_]TypeId{cb_t_void}, void_t, false);
-    const sig_every = try ti.internSignature(&[_]TypeId{cb_t_bool}, boolean_t, false);
-    const sig_some = try ti.internSignature(&[_]TypeId{cb_t_bool}, boolean_t, false);
+    const sig_every = try ti.internSignature(&[_]TypeId{cb_t_unknown}, boolean_t, false);
+    const sig_some = try ti.internSignature(&[_]TypeId{cb_t_unknown}, boolean_t, false);
     // `includes(searchElement: T, fromIndex?: number): boolean`. The
     // optional fromIndex was missing; upstream lib.d.ts declares it.
     const sig_includes = try ti.internSignature(&[_]TypeId{ elem, optional_number_t }, boolean_t, false);
