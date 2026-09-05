@@ -295,6 +295,14 @@ contextual receiver returns on that same frozen graph:
 | Diagnostics | 976 | **833** | **143 removed; 0 added** |
 | Removed diagnostic codes | — | 127× TS7006; 16× TS7019 | toward the zero-diagnostic oracle |
 
+The next audit restores callback context for nested member assignments inside
+generic constructor initializers without publishing approximate imported types:
+
+| [Zod 4.5.2 generic member callback audit](docs/docs/TS_PERFORMANCE.md#generic-member-assigned-callback-context) | Exact parent | #627 candidate | Change |
+|---|---:|---:|---:|
+| Diagnostics | 833 | **710** | **123 removed; 0 added** |
+| TS7006 | 241 | **118** | **123 removed (51.0%)** |
+
 TypeScript 6.0.3 reports zero diagnostics on this graph. Zod remains outside
 the cross-compiler timing table until Home also reaches zero diagnostics.
 

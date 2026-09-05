@@ -6805,3 +6805,64 @@ The frozen ReleaseFast binary hashes are
 zig build home-tsc -Doptimize=ReleaseFast
 ./zig-out/bin/home-tsc --project /path/to/zod-4.5.2/tsconfig.benchmark.json
 ```
+
+### Generic member-assigned callback context
+
+Issue [#627](https://github.com/home-lang/home/issues/627), under
+[#548](https://github.com/home-lang/home/issues/548) and
+[#416](https://github.com/home-lang/home/issues/416), continues the frozen Zod
+4.5.2 admission audit after #624. The isolated shape is a callback passed to a
+generic constructor that assigns another callback through a nested member such
+as `inst._zod.processJSONSchema`. The constructor's type argument may be
+explicit or supplied by the receiving variable annotation, and the leaf member
+may be an optional `function | undefined` union.
+
+The checker now recovers that concrete call-site type argument, projects only
+the requested local/imported member path, and follows Program-schema heritage
+in contextual mode. Unsupported generic siblings become opaque only during the
+isolated traversal; no approximate whole interface is published. A projected
+signature is accepted only when it is unambiguous, has no free type parameters,
+and returns `void`. Failed speculative projections roll back their own
+diagnostics. Contextual return diagnostics also copy object-member storage
+before inference can grow and relocate the interner pool.
+
+The focused checker reductions cover annotation-inferred and explicit type
+arguments, an optional callable union, an unsupported `Set` sibling, an
+ambiguous callable-union control, a missing-property control, and stable member
+iteration during contextual return inference. The cross-file Program reduction
+adds an imported `DateInternals<Date>` heritage chain with the same two
+provenance modes. TypeScript 6.0.3 and native TypeScript 7.0.2 both accept the
+valid oracle paths, report TS2339 and TS2322 for the deliberate invalid paths,
+and retain TS7006 for the ambiguous union.
+
+The production comparison uses exact parent `4deb785cc`, semantic candidate
+`d846dbe1b`, ReleaseFast `home-tsc` builds, and the unchanged 106 production
+files selected by the pinned Zod 4.5.2 `tsconfig.benchmark.json`. Diagnostic
+identities normalize to `path:line:column:code:message`. This is an untimed
+correctness gate; the one candidate execution is not presented as a speed
+comparison because no counterbalanced same-parent timing pair was collected.
+
+| Zod 4.5.2 exact-parent diagnostic A/B | Parent `4deb785cc` | #627 `d846dbe1b` | Change |
+|---|---:|---:|---:|
+| All diagnostics | 833 | **710** | **−123 (14.8%)** |
+| TS7006 | 241 | **118** | **−123 (51.0%)** |
+| Added normalized diagnostics | — | **0** | none |
+
+All 123 removed identities are the three implicit parameters on the 41
+`processJSONSchema` assignments selected in #627; no other diagnostic identity
+changed. The final source passes Program **175/175**, the full checker suite,
+ReleaseSafe and ReleaseFast `home-tsc`, `zig fmt`, and `git diff --check`.
+
+The raw parent and candidate diagnostic SHA-256 values are
+`94ecd8b025e5248c1ab3f84d32ae560eaabf3119c5e7e844c654fbe0f740b6d5` and
+`a32aa20198a39a7f89c3e2353ceff0850bb7b7c35a20d49e674a633ef7fed93e`.
+The normalized diagnostic-key hashes are
+`adc0a1ef5e90ac1bc4417cab81b140583e14160b1d00c42230d250087ef087d4` and
+`e3a14e0141bdb1e24c10606d5fe79b2261b35198844bbbb0b30e7831c10a718a`.
+The candidate ReleaseFast binary hash is
+`04a2de299a5ea84629d7490267300de231805bb001c657cebe7fd5699c368f1f`.
+
+```sh
+zig build home-tsc -Doptimize=ReleaseFast
+./zig-out/bin/home-tsc --project /path/to/zod-4.5.2/tsconfig.benchmark.json
+```
