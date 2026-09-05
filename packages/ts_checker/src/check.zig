@@ -5399,6 +5399,10 @@ pub const Checker = struct {
     /// Program schema. They have no node in the importing checker's HIR, so
     /// provenance must travel with their TypeId instead.
     program_declaration_type_parameters: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
+    /// Operational tuple shapes lowered from source-owned Program schemas.
+    /// These lack a consumer HIR annotation, so rest-call relation checks use
+    /// this provenance instead of syntax-only tuple handling.
+    program_schema_tuple_types: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
     /// Display-only names for Program generic definitions and the concrete
     /// zero-argument object types resolved from them. These never participate
     /// in consumer name lookup or structural identity.
@@ -6034,6 +6038,7 @@ pub const Checker = struct {
         self.program_contextual_declarations_active.deinit(self.gpa);
         self.program_expression_parameters.deinit(self.gpa);
         self.program_declaration_type_parameters.deinit(self.gpa);
+        self.program_schema_tuple_types.deinit(self.gpa);
         self.program_definition_names.deinit(self.gpa);
         self.program_type_display_names.deinit(self.gpa);
         self.program_definition_classes.deinit(self.gpa);
@@ -55456,6 +55461,9 @@ pub const Checker = struct {
             }
             if (self.isActualTupleType(t)) {
                 try self.markTupleOrigin(new_obj);
+            }
+            if (self.program_schema_tuple_types.contains(t)) {
+                try self.program_schema_tuple_types.put(self.gpa, new_obj, {});
             }
             if (self.alias_display_names.get(t)) |display| {
                 if (try self.substitutedAliasDisplayText(t, display, subs, visited)) |substituted_display| {
@@ -108739,14 +108747,31 @@ pub const Checker = struct {
             },
             .utility => return error.UnsupportedProgramType,
             .tuple => |elements| {
-                const result = try self.gpa.alloc(types.TupleElement, elements.len);
-                defer self.gpa.free(result);
-                for (elements, result) |element, *out| out.* = .{
-                    .type = try self.lowerProgramExpression(element.type, declaration, args),
-                    .is_optional = element.optional,
-                    .is_rest = element.rest,
+                for (elements) |element| if (element.rest) {
+                    const result = try self.gpa.alloc(types.TupleElement, elements.len);
+                    defer self.gpa.free(result);
+                    for (elements, result) |item, *out| out.* = .{
+                        .type = try self.lowerProgramExpression(item.type, declaration, args),
+                        .is_optional = item.optional,
+                        .is_rest = item.rest,
+                    };
+                    return self.interner.internTupleType(result);
                 };
-                return self.interner.internTupleType(result);
+                var element_types: std.ArrayListUnmanaged(TypeId) = .empty;
+                defer element_types.deinit(self.gpa);
+                var min_required = elements.len;
+                for (elements, 0..) |element, index| {
+                    var element_t = try self.lowerProgramExpression(element.type, declaration, args);
+                    if (element.optional) {
+                        min_required = @min(min_required, index);
+                        if (!self.typeIncludesUndefined(element_t))
+                            element_t = try self.interner.internUnion(&.{ element_t, types.Primitive.undefined_t });
+                    }
+                    try element_types.append(self.gpa, element_t);
+                }
+                const tuple_t = try self.internTupleFromTypesWithMinRequired(element_types.items, min_required, false);
+                try self.program_schema_tuple_types.put(self.gpa, tuple_t, {});
+                return tuple_t;
             },
             .union_type, .intersection => |members| {
                 const result = try self.gpa.alloc(TypeId, members.len);
@@ -163489,15 +163514,15 @@ pub const Checker = struct {
             });
             return .reported;
         }
-        const tuple_union_target = self.isTupleLikeUnionType(target_t);
+        const tuple_target = self.program_schema_tuple_types.contains(target_t) or self.isTupleLikeUnionType(target_t);
         const named_property_target = self.restTargetHasRequiredNamedProperty(target_t);
-        if (!tuple_union_target and !named_property_target) return .not_applicable;
-        const tuple_target_name = if (tuple_union_target)
+        if (!tuple_target and !named_property_target) return .not_applicable;
+        const tuple_target_name = if (tuple_target)
             (try self.restTupleCallTargetDiagnosticName(sig, target_t)) orelse return .not_applicable
         else
             "";
 
-        const preserve_literals = tuple_union_target or hir_mod.callTypeArgs(self.hir, call_node).len > 0;
+        const preserve_literals = tuple_target or hir_mod.callTypeArgs(self.hir, call_node).len > 0;
         const source_t = (try self.synthesizedRestArgumentListType(
             call_node,
             args,
@@ -163519,7 +163544,7 @@ pub const Checker = struct {
         {
             return .reported;
         }
-        if (tuple_union_target) {
+        if (tuple_target) {
             try self.reportRestTupleUnionCallMismatch(
                 call_node,
                 args,
@@ -200860,6 +200885,41 @@ test "checker: source-owned factory defaults substitute earlier arguments withou
     try subs.put(T.allocator, declared[0], types.Primitive.number_t);
     try s.checker.applyGenericSignatureDefaults(signature, &subs);
     try T.expectEqual(types.Primitive.number_t, s.ti.objectNumberIndex(subs.get(declared[1]).?));
+}
+
+test "checker: source-owned rest tuple signatures retain their call boundary" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    const number: ProgramClassSchema.Expression = .{ .primitive = types.Primitive.number_t };
+    const string: ProgramClassSchema.Expression = .{ .primitive = types.Primitive.string_t };
+    const tuple: ProgramClassSchema.Expression = .{ .tuple = &.{
+        .{ .type = &number },
+        .{ .type = &string },
+    } };
+    const function: ProgramClassSchema.Expression = .{ .function = .{
+        .parameters = &.{.{ .type = &tuple, .rest = true }},
+        .result = &number,
+    } };
+    const declaration: ProgramClassSchema.Declaration = .{
+        .path = "/owner.ts",
+        .position = 0,
+        .name = "tuple",
+        .body = &function,
+        .is_function = true,
+    };
+    const signature = (try s.checker.programExportedValueType(.{
+        .target_path = "/owner.ts",
+        .export_name = "tuple",
+        .kind = .function,
+        .declaration = &declaration,
+    })).?;
+    try T.expect(s.checker.rest_signatures.contains(signature));
+    const params = s.ti.signatureParams(signature);
+    try T.expectEqual(@as(usize, 1), params.len);
+    try T.expect(s.checker.program_schema_tuple_types.contains(params[0]));
+    try T.expectEqual(@as(?u64, 2), s.checker.fixedTupleLength(params[0]));
+    try T.expectEqual(types.Primitive.number_t, s.checker.tupleElementType(params[0], 0));
+    try T.expectEqual(types.Primitive.string_t, s.checker.tupleElementType(params[0], 1));
 }
 
 test "checker: source-owned anonymous constraints report without a local declaration node" {

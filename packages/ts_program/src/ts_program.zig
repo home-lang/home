@@ -5154,6 +5154,43 @@ test "Program: exported type and factory aliases share a source-owned declaratio
     try T.expect(factory != null);
 }
 
+test "Program: imported rest tuples retain positional owner types" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    const first = "export declare function tuple(...args: [number, string]): number;";
+    const second = "export declare function tuple(...args: [string, number]): number;";
+    const app =
+        \\import { tuple as firstTuple } from './first';
+        \\import { tuple as secondTuple } from './second';
+        \\const left: number = firstTuple(1, 'ok');
+        \\const right: number = secondTuple('ok', 1);
+        \\firstTuple('bad', 1);
+        \\secondTuple(1, 'bad');
+    ;
+    try vfs.addFile("/first.ts", first);
+    try vfs.addFile("/second.ts", second);
+    try vfs.addFile("/app.ts", app);
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .node10 });
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver };
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    const app_id = try program.add("/app.ts", app);
+    _ = try program.add("/first.ts", first);
+    _ = try program.add("/second.ts", second);
+
+    try program.compileAll(.{
+        .no_emit = true,
+        .strict = true,
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    });
+    const compilation = program.fileById(app_id).compilation.?;
+    try T.expectEqual(@as(usize, 2), compilation.diagnostics.items.len);
+    for (compilation.diagnostics.items) |diagnostic| {
+        try T.expectEqual(@as(u32, 2345), diagnostic.code);
+    }
+}
+
 test "Program: namespace imports preserve inferred const literal keys" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();
