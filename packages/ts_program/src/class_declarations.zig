@@ -224,7 +224,7 @@ fn classFacts(gpa: std.mem.Allocator, resolver: *resolver_mod.Resolver, sources:
         .declaration_pos = c.hir.spanOf(node).start,
         .class_name = name,
         .type_parameter_names = owned_params,
-        .schema = if (class.type_params_len > 0) try class_schema.collect(gpa, resolver, sources, source, node) else null,
+        .schema = if (class.type_params_len > 0 or class.extends != 0) try class_schema.collect(gpa, resolver, sources, source, node) else null,
         .members = owned_members,
         .static_members = owned_statics,
     };

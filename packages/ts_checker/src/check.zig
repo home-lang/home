@@ -109169,7 +109169,18 @@ pub const Checker = struct {
                 .declaration_origin = if (member.visibility == .public) 0 else origin,
             });
         }
-        const instance_t = self.interner.internObjectType(instance_members.items) catch return error.OutOfMemory;
+        var instance_t = self.interner.internObjectType(instance_members.items) catch return error.OutOfMemory;
+        if (exported_class.schema) |schema| {
+            const declaration = schema.declaration;
+            if (declaration.parameters.len == class_params.items.len and
+                try self.programSchemaSupported(schema))
+            {
+                if (declaration.body) |body| {
+                    const schema_t = self.lowerProgramExpression(body, declaration, class_params.items) catch instance_t;
+                    instance_t = self.resolveGenericType(schema_t) catch schema_t;
+                }
+            }
+        }
         const any_array = self.interner.internArrayType(self.string_interner, types.Primitive.any) catch return error.OutOfMemory;
         const construct_params = [_]TypeId{any_array};
         const construct_sig = self.interner.internSignature(&construct_params, instance_t, true) catch return error.OutOfMemory;
@@ -200792,6 +200803,49 @@ test "checker: source-owned generic instances retain concrete recursive argument
     alias.path = "/other.ts";
     const other_owner = try s.checker.instantiateProgramDeclaration(&alias, &.{types.Primitive.string_t}, &.{});
     try T.expect(s.ti.objectMemberInfo(first, item).?.declaration_origin != s.ti.objectMemberInfo(other_owner, item).?.declaration_origin);
+}
+
+test "checker: source-owned class heritage retains base nominal identity" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+    const string: ProgramClassSchema.Expression = .{ .primitive = types.Primitive.string_t };
+    const base_body: ProgramClassSchema.Expression = .{ .object = &.{.{
+        .name = "key",
+        .type = &string,
+        .visibility = .private,
+    }} };
+    const base: ProgramClassSchema.Declaration = .{
+        .path = "/first.ts",
+        .position = 0,
+        .name = "Secret",
+        .body = &base_body,
+        .is_class = true,
+    };
+    const base_reference: ProgramClassSchema.Expression = .{ .reference = .{
+        .declaration = &base,
+        .arguments = &.{},
+    } };
+    const own: ProgramClassSchema.Expression = .{ .object = &.{} };
+    const child_body: ProgramClassSchema.Expression = .{ .intersection = &.{ &base_reference, &own } };
+    const child: ProgramClassSchema.Declaration = .{
+        .path = "/first.ts",
+        .position = 1,
+        .name = "Child",
+        .body = &child_body,
+        .is_class = true,
+    };
+    const other_base: ProgramClassSchema.Declaration = .{
+        .path = "/second.ts",
+        .position = 0,
+        .name = "Secret",
+        .body = &base_body,
+        .is_class = true,
+    };
+    const base_t = try s.checker.instantiateProgramDeclaration(&base, &.{}, &.{});
+    const child_t = try s.checker.instantiateProgramDeclaration(&child, &.{}, &.{});
+    const other_t = try s.checker.instantiateProgramDeclaration(&other_base, &.{}, &.{});
+    try T.expect(try s.checker.checkerAssignableTo(child_t, base_t));
+    try T.expect(!try s.checker.checkerAssignableTo(child_t, other_t));
 }
 
 test "checker: source-owned growing recursion expands only requested surfaces" {

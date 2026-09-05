@@ -447,7 +447,6 @@ pub const Builder = struct {
 
     fn classBody(self: *Builder, context: Context, node: hir.NodeId) !*const schema.Expression {
         const c = self.sources[context.source].compilation;
-        if (hir.classOf(&c.hir, node).extends != 0) return self.expression(.unsupported);
         var members: std.ArrayListUnmanaged(schema.Member) = .empty;
         for (hir.classMembers(&c.hir, node)) |member| {
             switch (c.hir.kindOf(member)) {
@@ -486,7 +485,31 @@ pub const Builder = struct {
                 else => {},
             }
         }
-        return self.expression(.{ .object = try members.toOwnedSlice(self.arena) });
+        const own = try self.expression(.{ .object = try members.toOwnedSlice(self.arena) });
+        const base = hir.classOf(&c.hir, node).extends;
+        if (base == 0) return own;
+        return self.expression(.{ .intersection = try self.arena.dupe(*const schema.Expression, &.{
+            try self.classHeritage(context, base),
+            own,
+        }) });
+    }
+
+    fn classHeritage(self: *Builder, context: Context, node: hir.NodeId) !*const schema.Expression {
+        const c = self.sources[context.source].compilation;
+        if (c.hir.kindOf(node) == .type_ref) return self.lower(context, node);
+        if (c.hir.kindOf(node) != .identifier) return self.expression(.unsupported);
+        const name = hir.identifierOf(&c.hir, node).name;
+        return switch (try self.resolve(context.source, node, name)) {
+            .declaration => |key| self.expression(.{ .reference = .{
+                .declaration = try self.declaration(key),
+                .arguments = &.{},
+            } }),
+            .missing => if (std.mem.eql(u8, c.interner.get(name), "Error"))
+                self.expression(.{ .builtin_object = "Error" })
+            else
+                self.expression(.unsupported),
+            .external, .unsupported => self.expression(.unsupported),
+        };
     }
 
     fn object(self: *Builder, context: Context, nodes: []const hir.NodeId) !*const schema.Expression {
@@ -1180,12 +1203,20 @@ test "class schema: local Array aliases are not replaced by builtin array shapes
     try T.expectEqualStrings("Array", result.declaration.body.?.object[0].type.reference.declaration.name);
 }
 
-test "class schema: unsupported type forms remain explicit beside generic functions" {
+test "class schema: unsupported type forms remain explicit beside generic functions and heritage" {
     const graph = try TestGraph.init(&.{.{ .path = "/owner.ts", .text =
+        \\export declare class Secret { private key: string; }
+        \\export declare class Child extends Secret {}
         \\export declare class Box<T> { value: readonly [T]; generic: <T>(x: T) => T; }
         \\export declare class Derived<T> extends Box<T> { extra: T; }
     }});
     defer graph.deinit();
+    const child = try graph.class(0, "Child");
+    defer child.deinit(T.allocator);
+    const child_heritage = child.declaration.body.?.intersection;
+    try T.expectEqual(@as(usize, 2), child_heritage.len);
+    try T.expectEqualStrings("Secret", child_heritage[0].reference.declaration.name);
+    try T.expectEqual(@as(usize, 0), child_heritage[0].reference.arguments.len);
     const box = try graph.class(0, "Box");
     defer box.deinit(T.allocator);
     try T.expect(box.declaration.body.?.object[0].type.* == .unsupported);
@@ -1195,7 +1226,12 @@ test "class schema: unsupported type forms remain explicit beside generic functi
     try T.expect(generic.result.parameter == &generic.type_parameters[0]);
     const derived = try graph.class(0, "Derived");
     defer derived.deinit(T.allocator);
-    try T.expect(derived.declaration.body.?.* == .unsupported);
+    const heritage = derived.declaration.body.?.intersection;
+    try T.expectEqual(@as(usize, 2), heritage.len);
+    try T.expectEqualStrings("Box", heritage[0].reference.declaration.name);
+    try T.expect(heritage[0].reference.arguments[0].parameter == &derived.declaration.parameters[0]);
+    try T.expectEqualStrings("extra", heritage[1].object[0].name);
+    try T.expect(heritage[1].object[0].type.parameter == &derived.declaration.parameters[0]);
 }
 
 test "class schema: ambiguous imported types never select an arbitrary declaration" {

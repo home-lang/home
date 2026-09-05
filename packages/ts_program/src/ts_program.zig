@@ -5191,6 +5191,53 @@ test "Program: imported rest tuples retain positional owner types" {
     }
 }
 
+test "Program: imported class heritage retains base nominal identity" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    const owner =
+        \\export declare class Secret { private key: string; value: string; }
+        \\export declare class Child extends Secret {}
+    ;
+    const app =
+        \\import { Secret, Child } from './first';
+        \\import { Child as OtherChild } from './second';
+        \\declare const child: Child;
+        \\declare const other: OtherChild;
+        \\const good: Secret = child;
+        \\const bad: Secret = other;
+    ;
+    try vfs.addFile("/first.ts", owner);
+    try vfs.addFile("/second.ts", owner);
+    try vfs.addFile("/app.ts", app);
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{ .strategy = .node10 });
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver };
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    const app_id = try program.add("/app.ts", app);
+    _ = try program.add("/first.ts", owner);
+    _ = try program.add("/second.ts", owner);
+
+    try program.compileAll(.{
+        .no_emit = true,
+        .strict = true,
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    });
+    const classes = try program.collectProgramExportedClasses();
+    defer Program.freeProgramExportedClasses(T.allocator, classes);
+    var child_schemas: usize = 0;
+    for (classes) |class| {
+        if (!std.mem.eql(u8, class.class_name, "Child")) continue;
+        try T.expect(class.schema != null);
+        try T.expect(class.schema.?.declaration.body.?.* == .intersection);
+        child_schemas += 1;
+    }
+    try T.expectEqual(@as(usize, 2), child_schemas);
+    const compilation = program.fileById(app_id).compilation.?;
+    try T.expectEqual(@as(usize, 1), compilation.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 2322), compilation.diagnostics.items[0].code);
+}
+
 test "Program: namespace imports preserve inferred const literal keys" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();
