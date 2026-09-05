@@ -545,6 +545,7 @@ pub const ArrayBuffer = extern struct {
 pub const MarkedArrayBuffer = struct {
     buffer: ArrayBuffer = .{},
     allocator: ?std.mem.Allocator = null,
+    pinned: bool = false,
 
     pub inline fn stream(this: *MarkedArrayBuffer) ArrayBuffer.Stream {
         return this.buffer.stream();
@@ -572,6 +573,11 @@ pub const MarkedArrayBuffer = struct {
     pub fn fromJS(global: *jsc.JSGlobalObject, value: jsc.JSValue) ?MarkedArrayBuffer {
         const array_buffer = value.asArrayBuffer(global) orelse return null;
         return MarkedArrayBuffer{ .buffer = array_buffer, .allocator = null };
+    }
+
+    pub fn fromJSPinned(global: *jsc.JSGlobalObject, value: jsc.JSValue) ?MarkedArrayBuffer {
+        const array_buffer = value.asPinnedArrayBuffer(global) orelse return null;
+        return MarkedArrayBuffer{ .buffer = array_buffer, .allocator = null, .pinned = true };
     }
 
     pub fn fromBytes(bytes: []u8, allocator: std.mem.Allocator, typed_array_type: jsc.JSValue.JSType) MarkedArrayBuffer {

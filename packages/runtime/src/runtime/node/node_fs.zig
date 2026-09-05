@@ -1472,9 +1472,11 @@ pub const Arguments = struct {
 
         pub fn deinit(_: *const @This()) void {}
 
-        pub fn deinitAndUnprotect(this: *const @This()) void {
+        pub fn deinitAndUnprotect(this: *@This()) void {
+            this.buffers.release();
             this.buffers.value.unprotect();
             this.buffers.buffers.deinit();
+            this.buffers.views.deinit();
         }
 
         pub fn toThreadSafe(this: *@This()) void {
@@ -1485,6 +1487,12 @@ pub const Arguments = struct {
             this.buffers.buffers.items = clone;
             this.buffers.buffers.capacity = clone.len;
             this.buffers.buffers.allocator = bun.default_allocator;
+
+            const views = bun.handleOom(bun.default_allocator.dupe(jsc.JSValue, this.buffers.views.items));
+            this.buffers.views.deinit();
+            this.buffers.views.items = views;
+            this.buffers.views.capacity = views.len;
+            this.buffers.views.allocator = bun.default_allocator;
         }
 
         pub fn fromJS(ctx: *jsc.JSGlobalObject, arguments: *ArgumentsSlice) bun.JSError!Writev {
@@ -1493,13 +1501,15 @@ pub const Arguments = struct {
                 return throwInvalidFdError(ctx, fd_value);
             };
 
-            const buffers = try jsc.Node.VectorArrayBuffer.fromJS(
+            var buffers = try jsc.Node.VectorArrayBuffer.fromJS(
                 ctx,
                 arguments.protectEatNext() orelse {
                     return ctx.throwInvalidArguments("Expected an ArrayBufferView[]", .{});
                 },
                 arguments.arena.allocator(),
+                arguments.will_be_async,
             );
+            errdefer buffers.release();
 
             var position: ?u52 = null;
 
@@ -1526,9 +1536,11 @@ pub const Arguments = struct {
             _ = this;
         }
 
-        pub fn deinitAndUnprotect(this: *const @This()) void {
+        pub fn deinitAndUnprotect(this: *@This()) void {
+            this.buffers.release();
             this.buffers.value.unprotect();
             this.buffers.buffers.deinit();
+            this.buffers.views.deinit();
         }
 
         pub fn toThreadSafe(this: *@This()) void {
@@ -1539,6 +1551,12 @@ pub const Arguments = struct {
             this.buffers.buffers.items = clone;
             this.buffers.buffers.capacity = clone.len;
             this.buffers.buffers.allocator = bun.default_allocator;
+
+            const views = bun.handleOom(bun.default_allocator.dupe(jsc.JSValue, this.buffers.views.items));
+            this.buffers.views.deinit();
+            this.buffers.views.items = views;
+            this.buffers.views.capacity = views.len;
+            this.buffers.views.allocator = bun.default_allocator;
         }
 
         pub fn fromJS(ctx: *jsc.JSGlobalObject, arguments: *ArgumentsSlice) bun.JSError!Readv {
@@ -1547,13 +1565,15 @@ pub const Arguments = struct {
                 return throwInvalidFdError(ctx, fd_value);
             };
 
-            const buffers = try jsc.Node.VectorArrayBuffer.fromJS(
+            var buffers = try jsc.Node.VectorArrayBuffer.fromJS(
                 ctx,
                 arguments.protectEatNext() orelse {
                     return ctx.throwInvalidArguments("Expected an ArrayBufferView[]", .{});
                 },
                 arguments.arena.allocator(),
+                arguments.will_be_async,
             );
+            errdefer buffers.release();
 
             var position: ?u52 = null;
 
@@ -1687,7 +1707,7 @@ pub const Arguments = struct {
 
     fn wrapTo(T: type, in: i64) T {
         comptime bun.assert(@typeInfo(T).int.signedness == .unsigned);
-        return @intCast(@mod(in, std.math.maxInt(T)));
+        return if (in == -1) std.math.maxInt(T) else @intCast(in);
     }
 
     pub const LChown = Chown;

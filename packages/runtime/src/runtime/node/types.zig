@@ -586,6 +586,7 @@ pub const PathLike = union(enum) {
                 val.deinit();
             },
             .buffer => |val| {
+                if (val.pinned) val.buffer.value.unpinArrayBuffer();
                 val.buffer.value.unprotect();
             },
             else => {},
@@ -696,7 +697,14 @@ pub const PathLike = union(enum) {
             .Uint8Array,
             .DataView,
             => {
-                const buffer = Buffer.fromTypedArray(ctx, arg);
+                var buffer = if (arguments.will_be_async)
+                    Buffer.fromJSPinned(ctx, arg) orelse Buffer.fromTypedArray(ctx, arg)
+                else
+                    Buffer.fromTypedArray(ctx, arg);
+                errdefer if (buffer.pinned) {
+                    buffer.pinned = false;
+                    buffer.buffer.value.unpinArrayBuffer();
+                };
                 try Valid.pathBuffer(buffer, ctx);
                 try Valid.pathNullBytes(buffer.slice(), ctx);
 
@@ -705,7 +713,14 @@ pub const PathLike = union(enum) {
             },
 
             .ArrayBuffer => {
-                const buffer = Buffer.fromArrayBuffer(ctx, arg);
+                var buffer = if (arguments.will_be_async)
+                    Buffer.fromJSPinned(ctx, arg) orelse Buffer.fromArrayBuffer(ctx, arg)
+                else
+                    Buffer.fromArrayBuffer(ctx, arg);
+                errdefer if (buffer.pinned) {
+                    buffer.pinned = false;
+                    buffer.buffer.value.unpinArrayBuffer();
+                };
                 try Valid.pathBuffer(buffer, ctx);
                 try Valid.pathNullBytes(buffer.slice(), ctx);
 
@@ -850,38 +865,72 @@ pub const Valid = struct {
 pub const VectorArrayBuffer = struct {
     value: jsc.JSValue,
     buffers: std.array_list.Managed(bun.PlatformIOVec),
+    views: std.array_list.Managed(jsc.JSValue),
+    protected_count: usize = 0,
+    pinned_count: usize = 0,
 
     pub fn toJS(this: VectorArrayBuffer, _: *jsc.JSGlobalObject) jsc.JSValue {
         return this.value;
     }
 
-    pub fn fromJS(globalObject: *jsc.JSGlobalObject, val: jsc.JSValue, allocator: std.mem.Allocator) bun.JSError!VectorArrayBuffer {
+    pub fn release(this: *VectorArrayBuffer) void {
+        for (this.views.items[0..this.pinned_count]) |view| {
+            view.unpinArrayBuffer();
+        }
+        this.pinned_count = 0;
+
+        for (this.views.items[0..this.protected_count]) |view| {
+            view.unprotect();
+        }
+        this.protected_count = 0;
+    }
+
+    pub fn fromJS(globalObject: *jsc.JSGlobalObject, val: jsc.JSValue, allocator: std.mem.Allocator, pin: bool) bun.JSError!VectorArrayBuffer {
         if (!val.jsType().isArrayLike()) {
             return globalObject.throwInvalidArguments("Expected ArrayBufferView[]", .{});
         }
 
-        var bufferlist = std.array_list.Managed(bun.PlatformIOVec).init(allocator);
+        var out = VectorArrayBuffer{
+            .value = val,
+            .buffers = std.array_list.Managed(bun.PlatformIOVec).init(allocator),
+            .views = std.array_list.Managed(jsc.JSValue).init(allocator),
+        };
+        errdefer out.release();
+
         var i: usize = 0;
         const len = try val.getLength(globalObject);
-        bun.handleOom(bufferlist.ensureTotalCapacityPrecise(len));
+        bun.handleOom(out.buffers.ensureTotalCapacityPrecise(len));
+        bun.handleOom(out.views.ensureTotalCapacityPrecise(len));
 
+        // Read every element before taking any data pointer. Indexed access can
+        // invoke getters or proxy traps which detach an earlier element.
         while (i < len) {
             const element = try val.getIndex(globalObject, @as(u32, @truncate(i)));
+            element.protect();
+            bun.handleOom(out.views.append(element));
+            out.protected_count += 1;
+            i += 1;
+        }
 
+        for (out.views.items) |element| {
             if (!element.isCell()) {
                 return globalObject.throwInvalidArguments("Expected ArrayBufferView[]", .{});
             }
 
-            const array_buffer = element.asArrayBuffer(globalObject) orelse {
+            const array_buffer = (if (pin)
+                element.asPinnedArrayBuffer(globalObject)
+            else
+                element.asArrayBuffer(globalObject)) orelse {
                 return globalObject.throwInvalidArguments("Expected ArrayBufferView[]", .{});
             };
+            if (pin) out.pinned_count += 1;
 
             const buf = array_buffer.byteSlice();
-            bun.handleOom(bufferlist.append(bun.platformIOVecCreate(buf)));
-            i += 1;
+            bun.handleOom(out.buffers.append(bun.platformIOVecCreate(buf)));
         }
 
-        return VectorArrayBuffer{ .value = val, .buffers = bufferlist };
+        if (!pin) out.release();
+        return out;
     }
 };
 
