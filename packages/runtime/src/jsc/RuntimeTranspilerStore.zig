@@ -427,6 +427,16 @@ pub const RuntimeTranspilerStore = struct {
                 }
             }
 
+            // The parser can return an AST while also recording fatal binding
+            // diagnostics (for example, duplicate lexical declarations). The
+            // synchronous loader rejects at this same boundary. Continuing in
+            // the worker would print source for JSC to parse again, replacing
+            // Bun's structured BuildMessage and notes with a plain SyntaxError.
+            if (log.errors > 0) {
+                this.parse_error = error.ParseError;
+                return;
+            }
+
             if (cache.entry) |*entry| {
                 vm.source_mappings.putMappings(&parse_result.source, .{
                     .list = .{ .items = @constCast(entry.sourcemap), .capacity = entry.sourcemap.len },
