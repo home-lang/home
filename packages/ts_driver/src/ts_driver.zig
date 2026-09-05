@@ -25,6 +25,7 @@ pub const Hir = hir_mod.Hir;
 pub const Token = ts_lexer.Token;
 pub const StrictFlags = ts_checker.StrictFlags;
 pub const TypeId = ts_checker.TypeId;
+pub const CheckedTypes = ts_checker.CheckedTypes;
 pub const Primitive = ts_checker.Primitive;
 pub const SourceMarkerMatcher = ts_checker.SourceMarkerMatcher;
 pub const SourceMarkerIndex = ts_checker.SourceMarkerIndex;
@@ -433,6 +434,10 @@ pub const CompileOptions = struct {
     /// Non-generic program-global types already relocated into this
     /// compilation's type interner.
     program_global_types: []const ProgramGlobalBinding = &.{},
+    /// Owner-scoped semantic metadata accompanying relocated program-global
+    /// types. The checker imports only records whose keys and values are
+    /// independent of the source owner's HIR node identity.
+    program_checked_types: []const *const ts_checker.CheckedTypes = &.{},
     /// Program-level relative module interface augmentations discovered
     /// in sibling files.
     module_interface_augmentations: []const ModuleInterfaceAugmentation = &.{},
@@ -2340,6 +2345,9 @@ pub fn checkPreparedSource(c: *Compilation, options: CompileOptions) CompileErro
     }
     if (options.program_global_types.len > 0) {
         checker.setProgramGlobalTypes(options.program_global_types);
+    }
+    if (options.program_checked_types.len > 0) {
+        try checker.importProgramTypeMetadata(options.program_checked_types);
     }
     if (options.ambient_global_namespace_roots.len > 0) {
         checker.setAmbientGlobalNamespaceRoots(options.ambient_global_namespace_roots);

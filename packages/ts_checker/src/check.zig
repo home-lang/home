@@ -512,6 +512,11 @@ pub const ScriptObjectExpando = struct {
 pub const ProgramGlobalBinding = struct {
     name: hir_mod.StringId,
     type: TypeId,
+    /// Bare declared type name for values whose annotation refers to a
+    /// mergeable program-global type. A receiving source may contribute a
+    /// later interface declaration; in that case its completed local merge
+    /// supersedes the owner's pre-merge object while preserving the binding.
+    declared_type_name: ?hir_mod.StringId = null,
     /// True for `var`/function-style bindings that become properties of
     /// `globalThis`; false for top-level lexical `let`/`const` bindings and
     /// type-space entries.
@@ -5893,6 +5898,62 @@ pub const Checker = struct {
 
     pub fn setProgramGlobalTypes(self: *Checker, bindings: []const ProgramGlobalBinding) void {
         self.program_global_types = bindings;
+    }
+
+    /// Install the node-independent portion of relocated checked metadata.
+    /// Source-owner declaration handles are deliberately excluded: they are
+    /// not NodeIds in this checker's HIR and remain resolvable only through
+    /// the program's provenance registry.
+    pub fn importProgramTypeMetadata(self: *Checker, sources: []const *const CheckedTypes) CheckError!void {
+        for (sources) |source| {
+            var generic_signatures = source.generic_signature_params.iterator();
+            while (generic_signatures.next()) |entry| {
+                if (self.generic_signature_params.contains(entry.key_ptr.*)) continue;
+                const params = try self.gpa.dupe(TypeId, entry.value_ptr.*);
+                errdefer self.gpa.free(params);
+                try self.generic_signature_params.put(self.gpa, entry.key_ptr.*, params);
+            }
+            var rest_signatures = source.rest_signatures.iterator();
+            while (rest_signatures.next()) |entry| {
+                try self.rest_signatures.put(self.gpa, entry.key_ptr.*, {});
+            }
+            var signature_min_args = source.signature_min_args.iterator();
+            while (signature_min_args.next()) |entry| {
+                try self.signature_min_args.put(self.gpa, entry.key_ptr.*, entry.value_ptr.*);
+            }
+            var signature_display_min_args = source.signature_display_min_args.iterator();
+            while (signature_display_min_args.next()) |entry| {
+                try self.signature_display_min_args.put(self.gpa, entry.key_ptr.*, entry.value_ptr.*);
+            }
+            var signature_this_params = source.signature_this_params.iterator();
+            while (signature_this_params.next()) |entry| {
+                try self.signature_this_params.put(self.gpa, entry.key_ptr.*, entry.value_ptr.*);
+            }
+            var no_infer_types = source.no_infer_types.iterator();
+            while (no_infer_types.next()) |entry| {
+                try self.no_infer_types.put(self.gpa, entry.key_ptr.*, entry.value_ptr.*);
+            }
+            var placeholder_targets = source.type_parameter_placeholder_targets.iterator();
+            while (placeholder_targets.next()) |entry| {
+                try self.type_parameter_placeholder_targets.put(self.gpa, entry.key_ptr.*, entry.value_ptr.*);
+            }
+            var recursive_interfaces = source.recursive_interface_targets.iterator();
+            while (recursive_interfaces.next()) |entry| {
+                try self.recursive_interface_targets.put(self.gpa, entry.key_ptr.*, entry.value_ptr.*);
+            }
+            var inferred_variance = source.inferred_variance.iterator();
+            while (inferred_variance.next()) |entry| {
+                try self.inferred_variance.put(self.gpa, entry.key_ptr.*, entry.value_ptr.*);
+            }
+            inline for (.{ "readonly_index_types", "tuple_origin_types", "array_origin_types", "normalized_object_literal_unions", "infer_type_parameters" }) |name| {
+                var entries = @field(source, name).iterator();
+                while (entries.next()) |entry| try @field(self, name).put(self.gpa, entry.key_ptr.*, {});
+            }
+            inline for (.{ "tuple_trailing_rest_types", "tuple_trailing_variadic_types" }) |name| {
+                var entries = @field(source, name).iterator();
+                while (entries.next()) |entry| try @field(self, name).put(self.gpa, entry.key_ptr.*, entry.value_ptr.*);
+            }
+        }
     }
 
     pub fn setAmbientGlobalNamespaceRoots(self: *Checker, roots: []const []const u8) void {
@@ -28445,6 +28506,11 @@ pub const Checker = struct {
                         elem_node = hir_mod.none_node_id;
                     }
                     if (elem_t == types.Primitive.none) elem_t = types.Primitive.any;
+                    if (!self.strict_flags.strict_null_checks and
+                        (elem_t == types.Primitive.null_t or elem_t == types.Primitive.undefined_t))
+                    {
+                        elem_t = types.Primitive.any;
+                    }
                     try self.recordBindingTargetFlow(p.name, elem_node, elem_t);
                 }
             },
@@ -28513,9 +28579,10 @@ pub const Checker = struct {
         if (target_node == hir_mod.none_node_id) return;
         switch (self.hir.kindOf(target_node)) {
             .identifier => {
-                if (source_t == types.Primitive.none or source_t == types.Primitive.any or source_t == types.Primitive.unknown) return;
+                if (source_t == types.Primitive.none or source_t == types.Primitive.unknown) return;
                 const id = hir_mod.identifierOf(self.hir, target_node);
                 self.hir.setType(target_node, source_t);
+                if (source_t == types.Primitive.any) return;
                 try self.recordNarrow(id.name, source_t);
             },
             .array_pattern, .object_pattern => {
@@ -66053,8 +66120,15 @@ pub const Checker = struct {
             // tsc's `mergeTwoInterfaces` / `mergeThreeInterfaces`.
             var keep_first_params = false;
             const final_t = blk: {
-                if (self.type_names.get(id.name)) |existing_t| {
-                    if (self.interfaceDeclScopesMatchExistingType(node, id.name)) {
+                const local_existing = self.type_names.get(id.name);
+                const program_existing = if (local_existing == null and
+                    self.declarationIsRootStatement(node) and
+                    !self.rootHasTopLevelExternalModuleMarker(node))
+                    self.programGlobalType(id.name)
+                else
+                    null;
+                if (local_existing orelse program_existing) |existing_t| {
+                    if (program_existing != null or self.interfaceDeclScopesMatchExistingType(node, id.name)) {
                         // When this declaration's type-parameter
                         // CONSTRAINTS conflict with the first declaration's
                         // (the TS2428 case, e.g. `<T extends Date>` then
@@ -66118,9 +66192,10 @@ pub const Checker = struct {
                             }
                         }
                         const prev_decl = self.last_iface_decl_for_name.get(id.name) orelse hir_mod.none_node_id;
-                        const merged = if (prev_decl != hir_mod.none_node_id and
-                            self.declarationIsRootStatement(node) and
-                            self.declarationIsRootStatement(prev_decl))
+                        const merged = if (program_existing != null or
+                            (prev_decl != hir_mod.none_node_id and
+                                self.declarationIsRootStatement(node) and
+                                self.declarationIsRootStatement(prev_decl)))
                             self.mergeInterfaceDeclarationTypePreservingIndexes(existing_t, unified_t) catch unified_t
                         else
                             self.mergeInterfaceDeclarationType(existing_t, unified_t) catch unified_t;
@@ -89918,6 +89993,13 @@ pub const Checker = struct {
                 if (declared_type != types.Primitive.none) {
                     try self.recordBindingPatternFlowFromSource(v.name, hir_mod.none_node_id, declared_type);
                 } else if (!self.nodeIsDirectSourceFileStatement(node)) {
+                    try self.recordBindingPatternFlowFromSource(v.name, v.init, final_type);
+                } else {
+                    // Top-level pattern bindings do not retain a file-scope
+                    // flow narrow, but their declaration slots still need
+                    // stable checked types for source-owner publication.
+                    try self.pushNarrowScope();
+                    defer self.popNarrowScope();
                     try self.recordBindingPatternFlowFromSource(v.name, v.init, final_type);
                 }
             }
@@ -172259,14 +172341,24 @@ pub const Checker = struct {
 
     fn programGlobalValueType(self: *const Checker, name: hir_mod.StringId) ?TypeId {
         for (self.program_global_value_types) |binding| {
-            if (binding.name == name) return binding.type;
+            if (binding.name == name) {
+                if (binding.declared_type_name) |type_name| {
+                    if (self.type_names.get(type_name)) |merged| return merged;
+                }
+                return binding.type;
+            }
         }
         return null;
     }
 
     fn programGlobalThisPropertyType(self: *const Checker, name: hir_mod.StringId) ?TypeId {
         for (self.program_global_value_types) |binding| {
-            if (binding.name == name and binding.is_global_this_property) return binding.type;
+            if (binding.name == name and binding.is_global_this_property) {
+                if (binding.declared_type_name) |type_name| {
+                    if (self.type_names.get(type_name)) |merged| return merged;
+                }
+                return binding.type;
+            }
         }
         return null;
     }

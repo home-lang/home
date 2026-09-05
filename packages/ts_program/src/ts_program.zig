@@ -263,6 +263,34 @@ const BoundGlobals = struct {
     }
 };
 
+/// Relocated checked owners and the typed bindings that point into one
+/// receiving compilation's type pool. Type payloads remain in that pool;
+/// relocation maps and copied metadata live only through the check call.
+const ImportedProgramGlobals = struct {
+    gpa: std.mem.Allocator,
+    imports: std.ArrayListUnmanaged(source_owners.Imported) = .empty,
+    import_owners: std.ArrayListUnmanaged(source_owners.OwnerId) = .empty,
+    checked: std.ArrayListUnmanaged(*const ts_driver.CheckedTypes) = .empty,
+    values: std.ArrayListUnmanaged(ts_driver.ProgramGlobalBinding) = .empty,
+    types: std.ArrayListUnmanaged(ts_driver.ProgramGlobalBinding) = .empty,
+
+    fn deinit(self: *ImportedProgramGlobals) void {
+        for (self.imports.items) |*imported| imported.deinit();
+        self.imports.deinit(self.gpa);
+        self.import_owners.deinit(self.gpa);
+        self.checked.deinit(self.gpa);
+        self.values.deinit(self.gpa);
+        self.types.deinit(self.gpa);
+    }
+
+    fn importedFor(self: *const ImportedProgramGlobals, owner: source_owners.OwnerId) ?*const source_owners.Imported {
+        for (self.import_owners.items, self.imports.items) |candidate, *imported| {
+            if (candidate == owner) return imported;
+        }
+        return null;
+    }
+};
+
 pub const Program = struct {
     gpa: std.mem.Allocator,
     /// All source owners use this name keyspace, but retain independent HIR,
@@ -522,6 +550,316 @@ pub const Program = struct {
         return index;
     }
 
+    fn fileContributesGlobals(globals: *const BoundGlobals, file: *const File) bool {
+        for (globals.entries.values()) |owners| {
+            for (owners.items) |owner| if (owner.file == file) return true;
+        }
+        return false;
+    }
+
+    fn identifierIsValueReference(hir: *const hir_mod_ns.Hir, node: hir_mod_ns.NodeId) bool {
+        const parent = hir.parentOf(node);
+        if (parent == hir_mod_ns.none_node_id) return true;
+        return switch (hir.kindOf(parent)) {
+            .fn_decl, .fn_expr, .arrow_fn => hir_mod_ns.fnDeclOf(hir, parent).name != node,
+            .var_decl, .let_decl, .const_decl => hir_mod_ns.varDeclOf(hir, parent).name != node,
+            .parameter => blk: {
+                const parameter = hir_mod_ns.parameterOf(hir, parent);
+                break :blk parameter.name != node and
+                    !(parameter.flags.is_rename_binding_key and parameter.default_value == node);
+            },
+            .type_alias_decl => hir_mod_ns.typeAliasOf(hir, parent).name != node,
+            .interface_decl => hir_mod_ns.interfaceOf(hir, parent).name != node,
+            .class_decl, .class_expr => hir_mod_ns.classOf(hir, parent).name != node,
+            .enum_decl => hir_mod_ns.enumOf(hir, parent).name != node,
+            .namespace_decl, .module_decl => hir_mod_ns.namespaceOf(hir, parent).name != node,
+            .object_property => blk: {
+                const property = hir_mod_ns.objectPropertyOf(hir, parent);
+                break :blk property.key != node or property.is_shorthand;
+            },
+            .labeled_stmt, .break_stmt, .continue_stmt => false,
+            else => true,
+        };
+    }
+
+    fn fileReferencesGlobalName(file: *const File, key: BoundGlobals.Key) bool {
+        const compilation = file.compilation orelse return false;
+        var node: hir_mod_ns.NodeId = 1;
+        while (node < compilation.hir.nodeCount()) : (node += 1) {
+            switch (compilation.hir.kindOf(node)) {
+                .identifier => if (key.space != .type and
+                    hir_mod_ns.identifierOf(&compilation.hir, node).name == key.name and
+                    identifierIsValueReference(&compilation.hir, node)) return true,
+                .type_ref => if (key.space != .value and
+                    hir_mod_ns.typeRefOf(&compilation.hir, node).name == key.name) return true,
+                .member_access => if (key.space == .value) {
+                    const member = hir_mod_ns.memberOf(&compilation.hir, node);
+                    if (member.name != key.name or compilation.hir.kindOf(member.object) != .identifier) continue;
+                    const object_name = hir_mod_ns.identifierOf(&compilation.hir, member.object).name;
+                    if (std.mem.eql(u8, compilation.interner.get(object_name), "globalThis")) return true;
+                },
+                else => {},
+            }
+        }
+        return false;
+    }
+
+    fn appendGlobalProviderOrder(
+        self: *Program,
+        file_index: usize,
+        globals: *const BoundGlobals,
+        states: []u2,
+        order: *std.ArrayListUnmanaged(usize),
+    ) ProgramError!void {
+        if (states[file_index] == 2) return;
+        if (states[file_index] == 1) return;
+        states[file_index] = 1;
+        const file = self.files.items[file_index];
+        const compilation = file.compilation orelse return;
+        for (globals.entries.keys(), globals.entries.values()) |key, owners| {
+            const local_map = switch (key.space) {
+                .value => &compilation.module.root.values,
+                .type => &compilation.module.root.types,
+                .namespace => &compilation.module.root.namespaces,
+            };
+            const has_local = local_map.contains(key.name);
+            var needs_foreign_merge = false;
+            if (has_local and key.space == .type and !file.is_declaration) {
+                for (owners.items) |owner| {
+                    if (owner.file != file and owner.file.is_declaration) {
+                        needs_foreign_merge = true;
+                        break;
+                    }
+                }
+            }
+            if (has_local and !needs_foreign_merge) continue;
+            if (!needs_foreign_merge and !fileReferencesGlobalName(file, key)) continue;
+            for (owners.items) |owner| {
+                if (owner.file == file or owner.file.redirect_target != null) continue;
+                try self.appendGlobalProviderOrder(owner.file.id, globals, states, order);
+            }
+        }
+        states[file_index] = 2;
+        try order.append(self.gpa, file_index);
+    }
+
+    fn fileIsCommonJsExportProvider(file: *const File, exports: []const ts_driver.ProgramCommonJsExport) bool {
+        for (exports) |exported| if (std.mem.eql(u8, exported.module_path, file.path)) return true;
+        return false;
+    }
+
+    fn globalProviderOrder(
+        self: *Program,
+        globals: *const BoundGlobals,
+        commonjs_exports: []const ts_driver.ProgramCommonJsExport,
+    ) ProgramError![]const usize {
+        const states = try self.gpa.alloc(u2, self.files.items.len);
+        defer self.gpa.free(states);
+        @memset(states, 0);
+        var order: std.ArrayListUnmanaged(usize) = .empty;
+        errdefer order.deinit(self.gpa);
+        for (self.files.items, 0..) |file, index| {
+            if (file.redirect_target == null and file.imports.items.len == 0 and
+                !fileIsCommonJsExportProvider(file, commonjs_exports) and
+                fileContributesGlobals(globals, file))
+                try self.appendGlobalProviderOrder(index, globals, states, &order);
+        }
+        return order.toOwnedSlice(self.gpa);
+    }
+
+    fn importedBoundGlobalType(
+        imported: *const source_owners.Imported,
+        owner: BoundGlobal,
+    ) ?ts_driver.TypeId {
+        const compilation = owner.file.compilation orelse return null;
+        for (owner.symbol.decls.items) |decl| {
+            const kind = compilation.hir.kindOf(decl);
+            if (kind == .var_decl or kind == .let_decl or kind == .const_decl) {
+                const variable = hir_mod_ns.varDeclOf(&compilation.hir, decl);
+                if (boundPatternIdentifierType(compilation, variable.name, owner.symbol.name)) |binding_type| {
+                    return imported.types.ids.typeId(binding_type) catch null;
+                }
+            }
+            const source_type = compilation.hir.typeOf(decl);
+            if (source_type == ts_driver.Primitive.none) continue;
+            return imported.types.ids.typeId(source_type) catch null;
+        }
+        return null;
+    }
+
+    fn boundPatternIdentifierType(
+        compilation: *const ts_driver.Compilation,
+        node: hir_mod_ns.NodeId,
+        name: hir_mod_ns.StringId,
+    ) ?ts_driver.TypeId {
+        if (node == hir_mod_ns.none_node_id) return null;
+        switch (compilation.hir.kindOf(node)) {
+            .identifier => {
+                if (hir_mod_ns.identifierOf(&compilation.hir, node).name != name) return null;
+                const binding_type = compilation.hir.typeOf(node);
+                return if (binding_type == ts_driver.Primitive.none) null else binding_type;
+            },
+            .object_pattern, .array_pattern => {
+                for (hir_mod_ns.patternElements(&compilation.hir, node)) |element| {
+                    if (compilation.hir.kindOf(element) != .parameter) continue;
+                    const parameter = hir_mod_ns.parameterOf(&compilation.hir, element);
+                    if (boundPatternIdentifierType(compilation, parameter.name, name)) |binding_type| return binding_type;
+                }
+            },
+            else => {},
+        }
+        return null;
+    }
+
+    fn boundGlobalDeclaredTypeName(owner: BoundGlobal) ?hir_mod_ns.StringId {
+        const compilation = owner.file.compilation orelse return null;
+        for (owner.symbol.decls.items) |decl| {
+            const kind = compilation.hir.kindOf(decl);
+            if (kind != .var_decl and kind != .let_decl and kind != .const_decl) continue;
+            const variable = hir_mod_ns.varDeclOf(&compilation.hir, decl);
+            if (variable.type_annotation == hir_mod_ns.none_node_id or
+                compilation.hir.kindOf(variable.type_annotation) != .type_ref) continue;
+            const reference = hir_mod_ns.typeRefOf(&compilation.hir, variable.type_annotation);
+            if (reference.qualifier_len == 0 and reference.args_len == 0) return reference.name;
+        }
+        return null;
+    }
+
+    fn mergeImportedGlobalTypes(
+        self: *Program,
+        compilation: *ts_driver.Compilation,
+        first: ts_driver.TypeId,
+        second: ts_driver.TypeId,
+    ) ProgramError!ts_driver.TypeId {
+        if (first == second) return first;
+        const pool = &compilation.type_interner.pool;
+        if (first >= pool.typeCount() or second >= pool.typeCount() or
+            !pool.flagsOf(first).is_object_type or !pool.flagsOf(second).is_object_type)
+        {
+            return first;
+        }
+        var members: std.ArrayListUnmanaged(@TypeOf(compilation.type_interner.objectMembers(first)[0])) = .empty;
+        defer members.deinit(self.gpa);
+        try members.appendSlice(self.gpa, compilation.type_interner.objectMembers(first));
+        for (compilation.type_interner.objectMembers(second)) |candidate| {
+            for (members.items) |existing| {
+                if (existing.name == candidate.name) break;
+            } else try members.append(self.gpa, candidate);
+        }
+        const string_index = if (compilation.type_interner.objectStringIndex(first) != ts_driver.Primitive.none)
+            compilation.type_interner.objectStringIndex(first)
+        else
+            compilation.type_interner.objectStringIndex(second);
+        const number_index = if (compilation.type_interner.objectNumberIndex(first) != ts_driver.Primitive.none)
+            compilation.type_interner.objectNumberIndex(first)
+        else
+            compilation.type_interner.objectNumberIndex(second);
+        const symbol_index = if (compilation.type_interner.objectSymbolIndex(first) != ts_driver.Primitive.none)
+            compilation.type_interner.objectSymbolIndex(first)
+        else
+            compilation.type_interner.objectSymbolIndex(second);
+        return compilation.type_interner.internObjectTypeWithIndexAndSymbol(
+            members.items,
+            string_index,
+            number_index,
+            symbol_index,
+        ) catch return error.OutOfMemory;
+    }
+
+    fn importProgramGlobals(self: *Program, file: *File, globals: *const BoundGlobals) ProgramError!ImportedProgramGlobals {
+        var result: ImportedProgramGlobals = .{ .gpa = self.gpa };
+        errdefer result.deinit();
+        const compilation = file.compilation orelse return result;
+
+        for (globals.entries.values()) |owners| {
+            for (owners.items) |owner| {
+                if (owner.file == file or owner.file.owner == .none or
+                    result.importedFor(owner.file.owner) != null) continue;
+                self.owners_mutex.lock();
+                var imported = self.owners.importOwner(
+                    &compilation.type_interner,
+                    &compilation.interner,
+                    owner.file.owner,
+                ) catch |err| {
+                    self.owners_mutex.unlock();
+                    return switch (err) {
+                        error.OutOfMemory => error.OutOfMemory,
+                        else => error.EmitError,
+                    };
+                };
+                self.owners_mutex.unlock();
+                result.import_owners.append(self.gpa, owner.file.owner) catch |err| {
+                    imported.deinit();
+                    return err;
+                };
+                result.imports.append(self.gpa, imported) catch |err| {
+                    _ = result.import_owners.pop();
+                    imported.deinit();
+                    return err;
+                };
+            }
+        }
+        try result.checked.ensureTotalCapacity(self.gpa, result.imports.items.len);
+        for (result.imports.items) |*imported| result.checked.appendAssumeCapacity(&imported.types.checked);
+
+        for (globals.entries.keys(), globals.entries.values()) |key, owners| {
+            if (key.space == .value) {
+                for (owners.items) |owner| {
+                    if (owner.file == file or owner.file.owner == .none) continue;
+                    const imported = result.importedFor(owner.file.owner) orelse continue;
+                    const value_type = importedBoundGlobalType(imported, owner) orelse continue;
+                    try result.values.append(self.gpa, .{
+                        .name = key.name,
+                        .type = value_type,
+                        .declared_type_name = boundGlobalDeclaredTypeName(owner),
+                        .is_global_this_property = owner.symbol.flags.is_var or
+                            owner.symbol.flags.is_function or owner.symbol.flags.is_class or
+                            owner.symbol.flags.is_enum or owner.symbol.flags.is_namespace_decl,
+                    });
+                    break;
+                }
+                continue;
+            }
+            if (key.space != .type) continue;
+            var merged_type: ?ts_driver.TypeId = null;
+            for (owners.items) |owner| {
+                if (owner.file == file or owner.file.owner == .none) continue;
+                const imported = result.importedFor(owner.file.owner) orelse continue;
+                const owner_type = importedBoundGlobalType(imported, owner) orelse continue;
+                merged_type = if (merged_type) |current|
+                    try self.mergeImportedGlobalTypes(compilation, current, owner_type)
+                else
+                    owner_type;
+            }
+            if (merged_type) |global_type| try result.types.append(self.gpa, .{
+                .name = key.name,
+                .type = global_type,
+            });
+        }
+        return result;
+    }
+
+    fn compileFileWithTypedGlobals(
+        self: *Program,
+        file: *File,
+        options: ts_driver.CompileOptions,
+        globals: *const BoundGlobals,
+    ) ProgramError!void {
+        var imported = try self.importProgramGlobals(file, globals);
+        defer imported.deinit();
+        var per_file = options;
+        per_file.program_global_value_types = imported.values.items;
+        per_file.program_global_types = imported.types.items;
+        per_file.program_checked_types = imported.checked.items;
+        self.compileFile(file, per_file) catch |err| return switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            error.LexError => error.LexError,
+            error.ParseError => error.ParseError,
+            error.BindError => error.BindError,
+            else => error.EmitError,
+        };
+    }
+
     fn boundSourceIsExternalModule(c: *const ts_driver.Compilation) bool {
         if (c.root == hir_mod_ns.none_node_id) return false;
         for (hir_mod_ns.blockStmts(&c.hir, c.root)) |stmt| {
@@ -617,46 +955,33 @@ pub const Program = struct {
         defer self.gpa.free(known_reference_paths);
         for (self.files.items, 0..) |f, i| known_reference_paths[i] = f.path;
         for (options.known_reference_paths, 0..) |path, i| known_reference_paths[self.files.items.len + i] = path;
+        var shared_options = options;
+        shared_options.ambient_global_namespace_roots = ambient_global_namespace_roots;
+        shared_options.script_object_expandos = script_object_expandos;
+        shared_options.program_global_var_names = program_global_var_names;
+        shared_options.program_global_type_names = program_global_type_names;
+        shared_options.module_interface_augmentations = module_interface_augmentations;
+        shared_options.program_exported_classes = program_exported_classes;
+        shared_options.program_exported_values = declarations.values;
+        shared_options.program_exported_types = declarations.types;
+        shared_options.program_ambient_module_interface_exports = program_ambient_module_interface_exports;
+        shared_options.program_commonjs_exports = program_commonjs_exports;
+        shared_options.program_umd_globals = merged_program_umd_globals;
+        shared_options.known_reference_paths = known_reference_paths;
+
+        const provider_order = try self.globalProviderOrder(&globals, program_commonjs_exports);
+        defer self.gpa.free(provider_order);
+        for (provider_order) |file_index| {
+            const f = self.files.items[file_index];
+            if (!needsCompilation(f, shared_options)) continue;
+            try self.compileFileWithTypedGlobals(f, shared_options, &globals);
+            try self.populateProgramCommonJsExportSchemas(f, @constCast(program_commonjs_exports));
+        }
         for (compilation_order) |file_index| {
             const f = self.files.items[file_index];
             if (f.redirect_target != null) continue;
-            if (!needsCompilation(f, options)) continue;
-            var per_file = options;
-            per_file.is_tsx = options.is_tsx or f.is_tsx;
-            per_file.package_type_module = f.package_type_module;
-            per_file.ambient_global_namespace_roots = ambient_global_namespace_roots;
-            per_file.script_object_expandos = script_object_expandos;
-            per_file.program_global_var_names = program_global_var_names;
-            per_file.program_global_type_names = program_global_type_names;
-            per_file.module_interface_augmentations = module_interface_augmentations;
-            per_file.program_exported_classes = program_exported_classes;
-            per_file.program_exported_values = declarations.values;
-            per_file.program_exported_types = declarations.types;
-            per_file.program_ambient_module_interface_exports = program_ambient_module_interface_exports;
-            per_file.program_commonjs_exports = program_commonjs_exports;
-            per_file.program_umd_globals = merged_program_umd_globals;
-            per_file.known_reference_paths = known_reference_paths;
-            per_file.suppress_import_helper_diagnostics = true;
-            // Per-file declaration-file flag. Multi-file fixtures
-            // (e.g. `react.d.ts` + `app.tsx` in one conformance case)
-            // share a global `options.is_declaration_file` that the
-            // harness derives from a single representative path — so
-            // a regular `.tsx` file compiled in the same case as a
-            // `.d.ts` neighbour was inheriting `is_declaration_file=true`
-            // and getting class-field initializers falsely flagged with
-            // TS1039. Trust the per-file extension flag: it's accurate
-            // for every file in the program (single-file callers see
-            // the same value they'd have passed in the global option).
-            per_file.is_declaration_file = f.is_declaration;
-            // Anchor checker module-resolution requests at the
-            // current file when the caller hasn't overridden the
-            // importer path. This is what lets
-            // `Checker.setExternalResolver` produce correct
-            // node_modules-relative resolutions for fixtures whose
-            // virtual sections were stripped before per-file
-            // compilation.
-            if (per_file.importer_path.len == 0) per_file.importer_path = f.path;
-            try self.compileFile(f, per_file);
+            if (!needsCompilation(f, shared_options)) continue;
+            try self.compileFileWithTypedGlobals(f, shared_options, &globals);
             try self.populateProgramCommonJsExportSchemas(f, @constCast(program_commonjs_exports));
         }
 
@@ -803,35 +1128,38 @@ pub const Program = struct {
         defer self.gpa.free(known_reference_paths);
         for (self.files.items, 0..) |f, i| known_reference_paths[i] = f.path;
         for (options.known_reference_paths, 0..) |path, i| known_reference_paths[self.files.items.len + i] = path;
+        var shared_options = options;
+        shared_options.ambient_global_namespace_roots = ambient_global_namespace_roots;
+        shared_options.script_object_expandos = script_object_expandos;
+        shared_options.program_global_var_names = program_global_var_names;
+        shared_options.program_global_type_names = program_global_type_names;
+        shared_options.module_interface_augmentations = module_interface_augmentations;
+        shared_options.program_exported_classes = program_exported_classes;
+        shared_options.program_exported_values = declarations.values;
+        shared_options.program_exported_types = declarations.types;
+        shared_options.program_ambient_module_interface_exports = program_ambient_module_interface_exports;
+        shared_options.program_commonjs_exports = program_commonjs_exports;
+        shared_options.program_umd_globals = merged_program_umd_globals;
+        shared_options.known_reference_paths = known_reference_paths;
+        const provider_order = try self.globalProviderOrder(&globals, program_commonjs_exports);
+        defer self.gpa.free(provider_order);
+        for (provider_order) |file_index| {
+            const f = self.files.items[file_index];
+            if (!needsCompilation(f, shared_options)) continue;
+            try self.compileFileWithTypedGlobals(f, shared_options, &globals);
+            try self.populateProgramCommonJsExportSchemas(f, @constCast(program_commonjs_exports));
+        }
         for (compilation_order) |file_index| {
             const f = self.files.items[file_index];
             if (f.redirect_target != null) continue;
-            if (!needsCompilation(f, options)) {
+            if (!needsCompilation(f, shared_options)) {
                 // Already compiled — replay its diagnostics anyway so
                 // a streaming consumer that joined late doesn't miss
                 // them.
                 callback(ctx, f.path, f.compilation.?.diagnostics.items);
                 continue;
             }
-            var per_file = options;
-            per_file.is_tsx = options.is_tsx or f.is_tsx;
-            per_file.package_type_module = f.package_type_module;
-            per_file.is_declaration_file = f.is_declaration;
-            per_file.ambient_global_namespace_roots = ambient_global_namespace_roots;
-            per_file.script_object_expandos = script_object_expandos;
-            per_file.program_global_var_names = program_global_var_names;
-            per_file.program_global_type_names = program_global_type_names;
-            per_file.module_interface_augmentations = module_interface_augmentations;
-            per_file.program_exported_classes = program_exported_classes;
-            per_file.program_exported_values = declarations.values;
-            per_file.program_exported_types = declarations.types;
-            per_file.program_ambient_module_interface_exports = program_ambient_module_interface_exports;
-            per_file.program_commonjs_exports = program_commonjs_exports;
-            per_file.program_umd_globals = merged_program_umd_globals;
-            per_file.known_reference_paths = known_reference_paths;
-            per_file.suppress_import_helper_diagnostics = true;
-            if (per_file.importer_path.len == 0) per_file.importer_path = f.path;
-            try self.compileFile(f, per_file);
+            try self.compileFileWithTypedGlobals(f, shared_options, &globals);
             try self.populateProgramCommonJsExportSchemas(f, @constCast(program_commonjs_exports));
             callback(ctx, f.path, f.compilation.?.diagnostics.items);
         }
@@ -2713,14 +3041,23 @@ pub const Program = struct {
         shared_options.program_commonjs_exports = program_commonjs_exports;
         shared_options.program_umd_globals = merged_program_umd_globals;
         shared_options.known_reference_paths = known_reference_paths;
+        const provider_order = try self.globalProviderOrder(&globals, program_commonjs_exports);
+        defer self.gpa.free(provider_order);
+        for (provider_order) |file_index| {
+            const f = self.files.items[file_index];
+            if (!needsCompilation(f, shared_options)) continue;
+            try self.compileFileWithTypedGlobals(f, shared_options, &globals);
+            try self.populateProgramCommonJsExportSchemas(f, @constCast(program_commonjs_exports));
+        }
         if (self.programCommonJsExportsNeedDependencyChecking(program_commonjs_exports)) {
             try self.compileFilesInDependencyBatches(
                 shared_options,
                 workers,
                 @constCast(program_commonjs_exports),
+                &globals,
             );
         } else {
-            try self.compileFilesParallel(shared_options, workers);
+            try self.compileFilesParallelWithTypedGlobals(shared_options, workers, &globals);
         }
 
         try self.appendMissingCompilerTypeReferenceDiagnostics(options);
@@ -2736,6 +3073,7 @@ pub const Program = struct {
         options: ts_driver.CompileOptions,
         workers: ?usize,
         program_commonjs_exports: []ts_driver.ProgramCommonJsExport,
+        globals: *const BoundGlobals,
     ) ProgramError!void {
         const completed = try self.gpa.alloc(bool, self.files.items.len);
         defer self.gpa.free(completed);
@@ -2769,7 +3107,7 @@ pub const Program = struct {
                 }
             }
 
-            try self.compileFileIndicesParallel(options, workers, ready.items);
+            try self.compileFileIndicesParallel(options, workers, ready.items, globals);
             for (ready.items) |index| {
                 completed[index] = true;
                 remaining -= 1;
@@ -2788,7 +3126,21 @@ pub const Program = struct {
         for (self.files.items, 0..) |f, idx| {
             if (needsCompilation(f, options)) try pending.append(self.gpa, idx);
         }
-        try self.compileFileIndicesParallel(options, workers, pending.items);
+        try self.compileFileIndicesParallel(options, workers, pending.items, null);
+    }
+
+    fn compileFilesParallelWithTypedGlobals(
+        self: *Program,
+        options: ts_driver.CompileOptions,
+        workers: ?usize,
+        globals: *const BoundGlobals,
+    ) ProgramError!void {
+        var pending: std.ArrayListUnmanaged(usize) = .empty;
+        defer pending.deinit(self.gpa);
+        for (self.files.items, 0..) |f, idx| {
+            if (needsCompilation(f, options)) try pending.append(self.gpa, idx);
+        }
+        try self.compileFileIndicesParallel(options, workers, pending.items, globals);
     }
 
     fn compileFileIndicesParallel(
@@ -2796,6 +3148,7 @@ pub const Program = struct {
         options: ts_driver.CompileOptions,
         workers: ?usize,
         pending: []const usize,
+        globals: ?*const BoundGlobals,
     ) ProgramError!void {
         if (pending.len == 0) return;
         const cpu_count = std.Thread.getCpuCount() catch 1;
@@ -2806,16 +3159,29 @@ pub const Program = struct {
         var failures = std.atomic.Value(u32).init(0);
 
         const Worker = struct {
-            fn run(prog: *Program, opts: ts_driver.CompileOptions, pending_slice: []const usize, cur: *std.atomic.Value(usize), fail: *std.atomic.Value(u32)) void {
+            fn run(
+                prog: *Program,
+                opts: ts_driver.CompileOptions,
+                pending_slice: []const usize,
+                global_index: ?*const BoundGlobals,
+                cur: *std.atomic.Value(usize),
+                fail: *std.atomic.Value(u32),
+            ) void {
                 while (true) {
                     const i = cur.fetchAdd(1, .seq_cst);
                     if (i >= pending_slice.len) return;
                     const idx = pending_slice[i];
                     const f = prog.files.items[idx];
-                    prog.compileFile(f, opts) catch {
-                        _ = fail.fetchAdd(1, .seq_cst);
-                        continue;
-                    };
+                    if (global_index) |index|
+                        prog.compileFileWithTypedGlobals(f, opts, index) catch {
+                            _ = fail.fetchAdd(1, .seq_cst);
+                            continue;
+                        }
+                    else
+                        prog.compileFile(f, opts) catch {
+                            _ = fail.fetchAdd(1, .seq_cst);
+                            continue;
+                        };
                 }
             }
         };
@@ -2826,9 +3192,9 @@ pub const Program = struct {
         var spawned: usize = 0;
         for (threads, 0..) |*t, i| {
             _ = i;
-            t.* = std.Thread.spawn(.{}, Worker.run, .{ self, options, pending, &cursor, &failures }) catch {
+            t.* = std.Thread.spawn(.{}, Worker.run, .{ self, options, pending, globals, &cursor, &failures }) catch {
                 // If we can't spawn more workers, do the rest serially.
-                Worker.run(self, options, pending, &cursor, &failures);
+                Worker.run(self, options, pending, globals, &cursor, &failures);
                 break;
             };
             spawned += 1;
@@ -7996,7 +8362,7 @@ test "Program: all checking modes consume bound global names without leaking mod
         defer resolver.deinit();
         var p = Program.init(T.allocator, &resolver);
         defer p.deinit();
-        const app = try p.add("/app.ts", "globalThis.second; globalThis.hoisted; globalThis.destructured; globalThis.hidden;");
+        const app = try p.add("/app.ts", "globalThis.second; globalThis.hoisted; const destructuredGood: number = globalThis.destructured; const destructuredBad: string = globalThis.destructured; globalThis.hidden;");
         _ = try p.add("/definitions.ts", "/*\nexport {}\n*/ var first = 1, second = 2; { var hoisted = 1; } var { destructured } = { destructured: 1 };");
         _ = try p.add("/module.ts", "var hidden = 1; export {};");
         const Sink = struct {
@@ -8009,8 +8375,118 @@ test "Program: all checking modes consume bound global names without leaking mod
             .streaming => try p.compileAllStreaming(options, {}, Sink.callback),
         }
         const c = p.fileById(app).compilation.?;
-        try T.expectEqual(@as(usize, 1), c.diagnostics.items.len);
-        try T.expectEqual(@as(u32, 7017), c.diagnostics.items[0].code);
+        try T.expectEqual(@as(usize, 2), c.diagnostics.items.len);
+        try T.expectEqual(@as(u32, 2322), c.diagnostics.items[0].code);
+        try T.expectEqual(@as(u32, 7017), c.diagnostics.items[1].code);
+    }
+}
+
+test "Program: checked global owners publish structural generic lexical and globalThis types in either order" {
+    const Mode = enum { serial, parallel, streaming };
+    inline for (.{ Mode.serial, Mode.parallel, Mode.streaming }) |mode| {
+        inline for (.{ false, true }) |declarations_first| {
+            var vfs = ts_resolver.VirtualFs.init(T.allocator);
+            defer vfs.deinit();
+            var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+            defer resolver.deinit();
+            var p = Program.init(T.allocator, &resolver);
+            defer p.deinit();
+            const declarations =
+                \\interface Shared { count(value: number): number }
+                \\interface Generic { identity<T>(value: T): T }
+                \\interface Methods { identity(value: string): string }
+                \\declare var shared: Shared;
+                \\declare var generic: Generic;
+                \\declare var globalValue: number;
+                \\declare let lexicalValue: number;
+                \\declare const brokenDeclaration: MissingType;
+            ;
+            const consumer =
+                \\interface Shared { value: string }
+                \\const Methods = 1;
+                \\declare var methods: Methods;
+                \\const goodValue: string = shared.value;
+                \\const goodCount: number = shared.count(1);
+                \\const goodGeneric: string = generic.identity("ok");
+                \\const goodGlobal: number = globalThis.globalValue;
+                \\const goodLexical: number = lexicalValue;
+                \\const badValue: number = shared.value;
+                \\shared.count("bad");
+                \\const badGeneric: number = generic.identity("bad");
+                \\const badGlobal: string = globalThis.globalValue;
+                \\const badLexical: string = lexicalValue;
+                \\const badCollision: number = methods.identity("collision");
+            ;
+            var app: FileId = undefined;
+            if (declarations_first) {
+                _ = try p.add("/globals.d.ts", declarations);
+                app = try p.add("/app.ts", consumer);
+            } else {
+                app = try p.add("/app.ts", consumer);
+                _ = try p.add("/globals.d.ts", declarations);
+            }
+            const Sink = struct {
+                fn callback(_: void, _: []const u8, _: []const ts_driver.Diagnostic) void {}
+            };
+            const options: ts_driver.CompileOptions = .{ .strict = true, .no_emit = true, .skip_lib_check = true };
+            switch (mode) {
+                .serial => try p.compileAll(options),
+                .parallel => try p.compileAllParallel(options, 2),
+                .streaming => try p.compileAllStreaming(options, {}, Sink.callback),
+            }
+            const compilation = p.fileById(app).compilation.?;
+            try T.expectEqual(@as(usize, 6), compilation.diagnostics.items.len);
+            const expected = [_]u32{ 2322, 2345, 2322, 2322, 2322, 2322 };
+            for (expected, compilation.diagnostics.items) |code, diagnostic| try T.expectEqual(code, diagnostic.code);
+        }
+    }
+}
+
+test "Program: cyclic global declaration owners are independent of root order" {
+    const Mode = enum { serial, parallel, streaming };
+    inline for (.{ Mode.serial, Mode.parallel, Mode.streaming }) |mode| {
+        inline for (.{ false, true }) |declarations_first| {
+            var vfs = ts_resolver.VirtualFs.init(T.allocator);
+            defer vfs.deinit();
+            var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+            defer resolver.deinit();
+            var p = Program.init(T.allocator, &resolver);
+            defer p.deinit();
+            const left =
+                \\interface Left { right: Right }
+                \\declare var left: Left;
+            ;
+            const right =
+                \\interface Right { value: string; left: Left }
+            ;
+            const consumer =
+                \\const goodValue: string = left.right.value;
+                \\const goodCycle: Left = left.right.left;
+                \\const badValue: number = left.right.value;
+            ;
+            var app: FileId = undefined;
+            if (declarations_first) {
+                _ = try p.add("/left.d.ts", left);
+                _ = try p.add("/right.d.ts", right);
+                app = try p.add("/app.ts", consumer);
+            } else {
+                app = try p.add("/app.ts", consumer);
+                _ = try p.add("/right.d.ts", right);
+                _ = try p.add("/left.d.ts", left);
+            }
+            const Sink = struct {
+                fn callback(_: void, _: []const u8, _: []const ts_driver.Diagnostic) void {}
+            };
+            const options: ts_driver.CompileOptions = .{ .strict = true, .no_emit = true, .skip_lib_check = true };
+            switch (mode) {
+                .serial => try p.compileAll(options),
+                .parallel => try p.compileAllParallel(options, 2),
+                .streaming => try p.compileAllStreaming(options, {}, Sink.callback),
+            }
+            const compilation = p.fileById(app).compilation.?;
+            try T.expectEqual(@as(usize, 1), compilation.diagnostics.items.len);
+            try T.expectEqual(@as(u32, 2322), compilation.diagnostics.items[0].code);
+        }
     }
 }
 
