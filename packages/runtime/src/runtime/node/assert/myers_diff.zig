@@ -19,6 +19,12 @@ pub const Options = struct {
     /// are considered equal. Not used when comparing chars. Defaults to
     /// `false`.
     check_comma_disparity: bool = false,
+    /// Maximum memory occupied by saved edit-graph frames. Myers' algorithm
+    /// uses O((N + M)D) trace storage; bounding it keeps assertion formatting
+    /// from consuming unbounded memory for large, dissimilar values. This
+    /// matches Bun's effective 64 MiB trace ceiling while making it independent
+    /// of allocator growth behavior.
+    max_trace_bytes: comptime_int = 64 * 1024 * 1024,
 };
 
 // By limiting maximum string and buffer lengths, we can store u32s in the
@@ -150,6 +156,9 @@ pub fn DifferWithEql(comptime Line: type, comptime opts: Options, comptime areLi
             defer graph_alloc.free(graph);
             @memset(graph, 0);
             graph.len = graph_size;
+            const trace_frame_size = std.math.mul(usize, @as(usize, graph_size), @sizeOf(uint)) catch
+                return Error.DiffTooLarge;
+            const max_trace_frames = @as(usize, opts.max_trace_bytes) / trace_frame_size;
 
             var trace = std.array_list.Managed([]const uint).init(trace_alloc);
             // reserve enough space for each frame to avoid realloc on ptr list. Lists may end up in the heap, but
@@ -167,6 +176,7 @@ pub fn DifferWithEql(comptime Line: type, comptime opts: Options, comptime areLi
             // ================================================================
 
             for (0..max + 1) |_diff_level| {
+                if (trace.items.len >= max_trace_frames) return Error.DiffTooLarge;
                 const diff_level: int = @intCast(_diff_level); // why is this always usize?
                 // const new_trace = try TraceFrame.initCapacity(trace_alloc, graph.len);
                 const new_trace = try trace_alloc.dupe(uint, graph);
@@ -592,6 +602,11 @@ test StrDiffer {
         var d = try StrDiffer.diff(a, actual.items, expected.items);
         defer d.deinit();
     }
+}
+
+test "Differ bounds edit trace memory" {
+    const TinyTraceDiffer = Differ(u8, .{ .max_trace_bytes = 1 });
+    try t.expectError(error.DiffTooLarge, TinyTraceDiffer.diff(t.allocator, "actual", "expected"));
 }
 
 pub fn split(

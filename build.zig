@@ -165,7 +165,10 @@ fn shouldLinkBunObject(path: []const u8) bool {
     return true;
 }
 
-fn linkBunNative(b: *std.Build, m: *std.Build.Module, target: std.Build.ResolvedTarget, have_lolhtml: bool) void {
+/// Links Bun's private JSC/WebCore object graph when its pinned native build is
+/// available. The return value records whether Bun-specific callback invariants
+/// (such as its thread-local AtomStringTable repair) are available to Zig code.
+fn linkBunNative(b: *std.Build, m: *std.Build.Module, target: std.Build.ResolvedTarget, have_lolhtml: bool) bool {
     m.linkSystemLibrary("c++", .{});
     m.linkSystemLibrary("uv", .{});
     if (target.result.os.tag == .macos) {
@@ -201,14 +204,14 @@ fn linkBunNative(b: *std.Build, m: *std.Build.Module, target: std.Build.Resolved
             \\      Point elsewhere with HOME_BUN_WEBKIT_LIB.
             \\
         , .{ bun_webkit_lib, bun_webkit_version });
-        return;
+        return false;
     };
 
     // If Bun's objects aren't present, fall back to the system framework.
     var dir = std.Io.Dir.openDirAbsolute(io, bun_obj_root, .{ .iterate = true }) catch {
         if (target.result.os.tag == .macos) m.linkFramework("JavaScriptCore", .{});
         std.debug.print("warn: Bun native objects not found at {s}; using system JavaScriptCore\n", .{bun_obj_root});
-        return;
+        return false;
     };
     defer dir.close(io);
 
@@ -225,7 +228,7 @@ fn linkBunNative(b: *std.Build, m: *std.Build.Module, target: std.Build.Resolved
     m.addObjectFile(native_bindings.jsAbortSignalObject(b, bun_obj_root));
     m.addObjectFile(native_bindings.uwsObject(b, bun_obj_root));
 
-    var walker = dir.walk(b.allocator) catch return;
+    var walker = dir.walk(b.allocator) catch return true;
     defer walker.deinit();
     while (walker.next(io) catch null) |entry| {
         if (entry.kind != .file) continue;
@@ -293,6 +296,8 @@ fn linkBunNative(b: *std.Build, m: *std.Build.Module, target: std.Build.Resolved
             "CoreText",       "CoreGraphics", "Metal",
         }) |fw| m.linkFramework(fw, .{});
     }
+
+    return true;
 }
 
 fn linkZigJs(b: *std.Build, m: *std.Build.Module, root: []const u8) void {
@@ -592,6 +597,7 @@ pub fn build(b: *std.Build) void {
         const tool_build_options = b.addOptions();
         tool_build_options.addOption(bool, "enable_jsc", true);
         tool_build_options.addOption(bool, "use_zig_js", tool_use_zig_js);
+        tool_build_options.addOption(bool, "use_bun_jsc", false);
         tool_build_options.addOption([]const u8, "js_engine", tool_js_engine);
         const tool_build_options_module = tool_build_options.createModule();
         const tool_compat_pkg = createPackage(b, "packages/runtime/src/jsc/tool_compat.zig", target, optimize, zig_test_framework);
@@ -967,6 +973,7 @@ pub fn build(b: *std.Build) void {
         b.root.root_dir.handle.access(io, ".native/liblolhtml.a", .{}) catch break :blk false;
         break :blk true;
     };
+    const use_bun_jsc = enable_jsc and linkBunNative(b, home_rt_pkg, target, have_lolhtml);
     build_options.addOption(bool, "have_lolhtml", have_lolhtml);
     build_options.addOption(bool, "enable_craft", enable_craft);
     build_options.addOption(bool, "debug_logging", debug_logging);
@@ -981,6 +988,7 @@ pub fn build(b: *std.Build) void {
     build_options.addOption(bool, "enable_sanitize_thread", enable_sanitize_thread);
     build_options.addOption(bool, "enable_jsc", enable_jsc);
     build_options.addOption(bool, "use_zig_js", false);
+    build_options.addOption(bool, "use_bun_jsc", use_bun_jsc);
     build_options.addOption([]const u8, "js_engine", if (enable_jsc) "jsc" else "none");
     build_options.addOption(bool, "enable_macros", enable_macros);
     build_options.addOption(bool, "override_no_export_cpp_apis", false);
@@ -1028,8 +1036,6 @@ pub fn build(b: *std.Build) void {
     home_rt_pkg.linkSystemLibrary("brotlidec", .{});
     home_rt_pkg.linkSystemLibrary("brotlienc", .{});
     home_rt_pkg.linkSystemLibrary("zstd", .{});
-    if (enable_jsc) linkBunNative(b, home_rt_pkg, target, have_lolhtml);
-
     // Link Craft if enabled
     if (enable_craft) {
         std.debug.print("✅ Craft integration enabled\n", .{});

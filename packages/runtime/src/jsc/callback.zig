@@ -137,8 +137,10 @@ fn atomTableSafeCallback(comptime fn_ptr: HostCallbackFn) HostCallbackFn {
             arguments: [*c]const ?*JSValue,
             exception: ExceptionRef,
         ) callconv(.c) ?*JSValue {
-            if (ctx) |context| {
-                Home__JSC__ensureCurrentAtomStringTable(@ptrCast(context));
+            if (comptime build_options.use_bun_jsc) {
+                if (ctx) |context| {
+                    Home__JSC__ensureCurrentAtomStringTable(@ptrCast(context));
+                }
             }
             return fn_ptr(ctx, function, this_object, argument_count, arguments, exception);
         }
