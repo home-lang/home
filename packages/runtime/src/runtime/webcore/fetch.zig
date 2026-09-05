@@ -243,6 +243,7 @@ fn fetchImpl(
     var disable_keepalive = false;
     var disable_decompression = false;
     var compress: ?http.compress_body.CompressOption = null;
+    var max_redirects: ?u8 = null;
     var verbose: http.HTTPVerboseLevel = if (vm.log.level.atLeast(.debug)) .headers else .none;
     if (verbose == .none) {
         verbose = vm.getVerboseFetch();
@@ -461,6 +462,36 @@ fn fetchImpl(
                     break :extract_compress;
                 }
             }
+            if (globalThis.hasException()) {
+                is_error = true;
+                return .zero;
+            }
+        }
+    }
+
+    // "maxRedirects: number"
+    extract_max_redirects: {
+        const objects_to_try = [_]JSValue{ options_object orelse .zero, request_init_object orelse .zero };
+        for (objects_to_try) |object| {
+            if (object == .zero) continue;
+            if (try object.get(globalThis, "maxRedirects")) |value| {
+                if (!value.isUndefinedOrNull()) {
+                    if (!value.isNumber()) {
+                        is_error = true;
+                        return globalThis.throwInvalidArguments("fetch: 'maxRedirects' must be a non-negative integer", .{});
+                    }
+
+                    const number = value.asNumber();
+                    if (!std.math.isFinite(number) or number < 0 or @trunc(number) != number) {
+                        is_error = true;
+                        return globalThis.throwInvalidArguments("fetch: 'maxRedirects' must be a non-negative integer", .{});
+                    }
+
+                    max_redirects = @intFromFloat(@min(number, 126));
+                    break :extract_max_redirects;
+                }
+            }
+
             if (globalThis.hasException()) {
                 is_error = true;
                 return .zero;
@@ -1480,6 +1511,7 @@ fn fetchImpl(
             .disable_timeout = disable_timeout,
             .disable_decompression = disable_decompression,
             .compress = compress,
+            .max_redirects = max_redirects,
             .reject_unauthorized = reject_unauthorized,
             .redirect_type = redirect_type,
             .verbose = verbose,
@@ -1494,6 +1526,7 @@ fn fetchImpl(
             .force_http2 = force_http2,
             .force_http3 = force_http3,
             .force_http1 = force_http1,
+            .is_node_http_client = allow_get_body,
             .check_server_identity = if (check_server_identity.isEmptyOrUndefinedOrNull()) .empty else .create(check_server_identity, globalThis),
             .unix_socket_path = unix_socket_path,
         },

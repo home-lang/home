@@ -1202,9 +1202,11 @@ pub const FetchTasklet = struct {
                 .disable_keepalive = fetch_options.disable_keepalive,
                 .disable_decompression = fetch_options.disable_decompression,
                 .compress = fetch_options.compress,
+                .max_redirects = fetch_options.max_redirects,
                 .reject_unauthorized = fetch_options.reject_unauthorized,
                 .verbose = fetch_options.verbose,
                 .tls_props = fetch_options.ssl_config,
+                .is_node_http_client = fetch_options.is_node_http_client,
             },
         );
         // enable streaming the write side
@@ -1403,6 +1405,7 @@ pub const FetchTasklet = struct {
         disable_keepalive: bool,
         disable_decompression: bool,
         compress: ?http.compress_body.CompressOption = null,
+        max_redirects: ?u8 = null,
         reject_unauthorized: bool,
         url: ZigURL,
         verbose: http.HTTPVerboseLevel = .none,
@@ -1421,6 +1424,7 @@ pub const FetchTasklet = struct {
         force_http2: bool = false,
         force_http3: bool = false,
         force_http1: bool = false,
+        is_node_http_client: bool = false,
     };
 
     pub fn queue(

@@ -102,8 +102,10 @@ pub const Options = struct {
     disable_keepalive: ?bool = null,
     disable_decompression: ?bool = null,
     compress: ?HTTPClient.compress_body.CompressOption = null,
+    max_redirects: ?u8 = null,
     reject_unauthorized: ?bool = null,
     tls_props: ?SSLConfig.SharedPtr = null,
+    is_node_http_client: bool = false,
 };
 
 const Preconnect = struct {
@@ -221,6 +223,7 @@ pub fn init(
         .redirect_type = redirect_type,
         .compress = options.compress,
     };
+    this.client.flags.is_node_http_client = options.is_node_http_client;
     if (options.unix_socket_path) |val| {
         assert(this.client.unix_socket_path.length() == 0);
         this.client.unix_socket_path = val;
@@ -233,6 +236,9 @@ pub fn init(
     }
     if (options.disable_decompression) |val| {
         this.client.flags.disable_decompression = val;
+    }
+    if (options.max_redirects) |val| {
+        this.client.remaining_redirect_count = @intCast(@min(val, 126) + 1);
     }
     if (options.disable_keepalive) |val| {
         this.client.flags.disable_keepalive = val;

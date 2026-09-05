@@ -1834,18 +1834,29 @@ both its wire Host and certificate identity from the redirected URL. The
 unchanged strict full-VM fixtures pass `fetch-keepalive.test.ts` **2/2 with 5
 assertions** and `fetch.tls.test.ts` **21/21 with 65 assertions** in ReleaseFast.
 
-The complete strict full-VM `js/web/fetch` scan classifies **58 files as passing,
-1 failing, 1 over the 20-second scan bound, and 1 over the scan's 4 GiB RSS
-guard**. The resource classifications are not logical failures: the unchanged
-`fetch-leak.test.ts` completes in about 39 seconds with **21 passes / 1 upstream
-TODO / 0 failures**, and the unchanged 1,025 MiB `fetch-gzip.test.ts` completes
-**24/24** when run outside the directory scanner's generic memory guard. The
-sole failing file is `fetch.test.ts`, at **346/350 with 7,423 assertions** in
-strict full-VM mode. Its remaining redirect-limit contracts are tracked in
-[#649](https://github.com/home-lang/home/issues/649); bodyless Content-Length
-framing and interim-1xx storage reclamation are tracked in
-[#650](https://github.com/home-lang/home/issues/650). Adapter-mode 350/350 output
-is deliberately excluded from the parity claim.
+The Rust-side `maxRedirects` option contract is now carried through Home's Zig
+fetch task and HTTP client: values must be non-negative integers, are capped at
+126, and use Bun's `limit + 1` internal hop budget. Public `fetch` drops a
+caller-supplied nonzero Content-Length when there is no body, while preserving
+explicit zero and the internal `node:http` client's framing authority. Parsed
+HTTP/1 informational responses are drained from the owned accumulation buffer
+immediately, retaining only the unread suffix instead of every preceding 1xx
+header block.
+
+The unchanged strict full-VM `fetch.test.ts` is **350/350 with 7,427 assertions**
+in Debug and ReleaseFast, including its original roughly 48 MiB interim-response
+flood and memory threshold. Adjacent strict ReleaseFast results include Undici
+**10/10**, `node-http.test.ts` **128 passes / 1 upstream skip / 0 failures**,
+HTTP/2 client **60/60**, HTTP/3 client **52/52**, content length **1/1**, and the
+redirect, keepalive, and TLS files above.
+
+The final complete strict full-VM `js/web/fetch` scan classifies **60 files as
+passing, 0 failing/crashing/dependency-gapped/OOM, and 1 over the generic
+20-second file bound**. The unchanged `fetch-leak.test.ts` completes in about
+39 seconds with **21 passes / 1 upstream TODO / 0 failures** under its legitimate
+outer envelope; that TODO remains excluded from completed parity. The unchanged
+1,025 MiB `fetch-gzip.test.ts` now also completes **24/24** inside the ordinary
+scanner. Adapter-mode results remain excluded from these strict parity claims.
 
 ## Summary
 

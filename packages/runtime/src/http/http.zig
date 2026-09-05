@@ -686,7 +686,10 @@ pub const Flags = packed struct(u32) {
     /// Set after the first H3 retry so a stale-session/GOAWAY race retries
     /// once on a fresh connection but never loops.
     h3_retried: bool = false,
-    _: u13 = 0,
+    /// Preserve explicit request framing required by node:http's internal
+    /// fetch path even when the request body is empty.
+    is_node_http_client: bool = false,
+    _: u12 = 0,
 };
 
 // TODO: reduce the size of this struct
@@ -1139,11 +1142,18 @@ pub fn buildRequest(this: *HTTPClient, body_len: usize) picohttp.Request {
             header_count += 1;
         }
     } else if (original_content_length) |content_length| {
-        request_headers_buf[header_count] = .{
-            .name = content_length_header_name,
-            .value = content_length,
-        };
-        header_count += 1;
+        // Public fetch drops a non-zero Content-Length when there is no body.
+        // node:http owns its framing and may intentionally send one; an
+        // explicit zero is harmless and remains compatible with Bun/Node.
+        const should_preserve = this.flags.is_node_http_client or
+            (std.fmt.parseUnsigned(usize, content_length, 10) catch std.math.maxInt(usize)) == 0;
+        if (should_preserve) {
+            request_headers_buf[header_count] = .{
+                .name = content_length_header_name,
+                .value = content_length,
+            };
+            header_count += 1;
+        }
     }
 
     return picohttp.Request{
@@ -2053,6 +2063,18 @@ pub fn handleOnDataHeaders(
             log("information headers", .{});
 
             this.state.pending_response = null;
+            if (!needs_move) {
+                // `to_read` is the unconsumed suffix of the owned accumulation
+                // buffer. Release every parsed informational response now so
+                // an origin cannot make memory grow with an unbounded 1xx
+                // sequence while withholding the final response.
+                const remaining = to_read.len;
+                const buffer = &this.state.response_message_buffer.list;
+                const consumed = buffer.items.len -| remaining;
+                std.mem.copyForwards(u8, buffer.items[0..remaining], buffer.items[consumed..][0..remaining]);
+                buffer.items.len = remaining;
+                to_read = buffer.items;
+            }
             if (to_read.len == 0) {
                 // we only received 1XX responses, we wanna wait for the next status code
                 return;
