@@ -336,6 +336,12 @@ pub const Runtime = struct {
         home_rt.jsc.callback.registerCallback(
             self.engine.currentContext(),
             self.engine.currentGlobalObject(),
+            "__home_writeFileBytesSyncNative",
+            writeFileBytesSyncNative,
+        );
+        home_rt.jsc.callback.registerCallback(
+            self.engine.currentContext(),
+            self.engine.currentGlobalObject(),
             "__home_readFileSyncNative",
             readFileSyncNative,
         );
@@ -4610,6 +4616,52 @@ fn writeFileSyncNative(
     const io = threaded.io();
 
     Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = data }) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "node:fs.writeFileSync() failed: {s}", .{@errorName(err)});
+        return null;
+    };
+    return extern_fns.JSValueMakeUndefined(actual_ctx);
+}
+
+fn writeFileBytesSyncNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this;
+    const actual_ctx = ctx.?;
+    const allocator = std.heap.smp_allocator;
+
+    if (argument_count < 2 or arguments[0] == null or arguments[1] == null) {
+        setException(actual_ctx, exception, "node:fs.writeFileSync() requires path and data");
+        return null;
+    }
+
+    const path = valueToOwnedString(allocator, actual_ctx, arguments[0].?, exception) catch |err| {
+        setExceptionFmt(actual_ctx, exception, "node:fs.writeFileSync() path failed: {s}", .{@errorName(err)});
+        return null;
+    };
+    defer allocator.free(path);
+
+    if (extern_fns.JSValueGetTypedArrayType(actual_ctx, arguments[1].?, exception) == .kJSTypedArrayTypeNone) {
+        setException(actual_ctx, exception, "node:fs.writeFileSync() data must be an ArrayBufferView");
+        return null;
+    }
+    const input_object = extern_fns.JSValueToObject(actual_ctx, arguments[1].?, exception) orelse return null;
+    const input_len = extern_fns.JSObjectGetTypedArrayByteLength(actual_ctx, input_object, exception);
+    const input: []const u8 = if (input_len == 0)
+        &.{}
+    else blk: {
+        const input_ptr = extern_fns.JSObjectGetTypedArrayBytesPtr(actual_ctx, input_object, exception) orelse return null;
+        break :blk @as([*]const u8, @ptrCast(input_ptr))[0..input_len];
+    };
+
+    var threaded = std.Io.Threaded.init(allocator, .{});
+    defer threaded.deinit();
+    Io.Dir.cwd().writeFile(threaded.io(), .{ .sub_path = path, .data = input }) catch |err| {
         setExceptionFmt(actual_ctx, exception, "node:fs.writeFileSync() failed: {s}", .{@errorName(err)});
         return null;
     };

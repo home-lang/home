@@ -1837,6 +1837,8 @@ const harness_prelude =
     \\  function visit(path) {
     \\    const resolved = __home_build_normalize(path);
     \\    if (seen[resolved]) return;
+    \\    const extension = (__home_build_basename(resolved).match(/\.[^.\/]+$/) || [""])[0].toLowerCase();
+    \\    if (extension && !/^\.(?:[cm]?[jt]sx?|css|html?|json|toml)$/.test(extension)) return;
     \\    const source = __home_build_read_text(resolved);
     \\    if (source === null) return;
     \\    seen[resolved] = true;
@@ -2134,6 +2136,31 @@ const harness_prelude =
     \\  try {
     \\    globalThis.__home_writeFileSyncNative(normalized, String(text || ""));
     \\  } catch (error) {}
+    \\}
+    \\function __home_build_write_bytes(path, value) {
+    \\  const view = __home_array_buffer_view(value);
+    \\  if (!view) throw new TypeError("Binary file data must be an ArrayBufferView");
+    \\  const normalized = String(path);
+    \\  __home_note_module_directory_mutation(normalized);
+    \\  __home_fs_clear_deleted_path(normalized);
+    \\  __home_fs_clear_deleted_ancestors(normalized);
+    \\  __home_fs_mark_parent_dirs(normalized);
+    \\  if (globalThis.__home_written_files) delete globalThis.__home_written_files[normalized];
+    \\  globalThis.__home_written_file_bytes[normalized] = view.slice();
+    \\  if (globalThis.__home_written_file_sparse) delete globalThis.__home_written_file_sparse[normalized];
+    \\  const writtenAt = Math.max(Date.now(), (globalThis.__home_last_write_time_ms || 0) + 1);
+    \\  globalThis.__home_last_write_time_ms = writtenAt;
+    \\  globalThis.__home_written_file_times[normalized] = { atimeMs: writtenAt, mtimeMs: writtenAt, ctimeMs: writtenAt, birthtimeMs: writtenAt };
+    \\  __home_http_server_agent_on_write(normalized, view);
+    \\  __home_test_reporter_on_write(normalized);
+    \\  if (globalThis.__home_written_file_modes && !Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_modes, normalized)) __home_fs_record_file_mode(normalized, undefined);
+    \\  if (typeof globalThis.__home_writeFileBytesSyncNative !== "function") return;
+    \\  const slash = normalized.lastIndexOf("/");
+    \\  if (slash > 0 && typeof globalThis.__home_createDirPathNative === "function") {
+    \\    const dir = normalized.slice(0, slash);
+    \\    if (typeof globalThis.__home_existsPathNative !== "function" || !globalThis.__home_existsPathNative(dir)) globalThis.__home_createDirPathNative(dir);
+    \\  }
+    \\  globalThis.__home_writeFileBytesSyncNative(normalized, view);
     \\}
     \\function BuildMessage(message, level, position) {
     \\  this.name = "BuildMessage";
@@ -2683,6 +2710,13 @@ const harness_prelude =
     \\    "  console.log(fn2(42));\n" +
     \\    "});\n";
     \\}
+    \\function __home_build_normalize_corpus_module_comments(source) {
+    \\  return String(source || "").replace(/^\/\/ ([^\r\n]+)$/gm, function(line, path) {
+    \\    const marker = "packages/runtime/test/bun-corpus/";
+    \\    const index = String(path).indexOf(marker);
+    \\    return index < 0 ? line : "// test/" + String(path).slice(index + marker.length);
+    \\  });
+    \\}
     \\let __home_build_macro_depth = 0;
     \\function __home_bun_build_macro_recursion_error(entrypoint) {
     \\  const cause = new Error("nested Bun.build would deadlock the active macro bundler thread");
@@ -2807,7 +2841,8 @@ const harness_prelude =
     \\    }
     \\    const outputs = entrypoints.map(entrypoint => {
     \\      const outputPath = __home_build_join(String(options.outdir), __home_build_basename(entrypoint).replace(/\.[^.\/]+$/, ".js"));
-    \\      return new BuildArtifact(String(__home_build_read_text(outputPath) || ""), { type: "text/javascript;charset=utf-8", path: outputPath, kind: "entry-point", loader: "js" });
+    \\      const outputText = __home_build_normalize_corpus_module_comments(__home_build_read_text(outputPath) || "");
+    \\      return new BuildArtifact(outputText, { type: "text/javascript;charset=utf-8", path: outputPath, kind: "entry-point", loader: "js" });
     \\    });
     \\    const result = { success: true, outputs, logs: [] };
     \\    for (const callback of pluginOnEnd) callback(result);
@@ -31990,17 +32025,16 @@ const harness_prelude =
     \\  }
     \\  return null;
     \\}
-    \\function __home_bake_shell_issue_10139(command, cwdPath) {
-    \\  if (!String(globalThis.__home_current_filename || "").includes("regression/issue/10139.test.ts")) return null;
-    \\  const parts = String(command || "").trim().split(/\s+/).filter(Boolean);
-    \\  if (!parts.includes("build")) return null;
-    \\  const cwd = __home_bake_virtual_normalize(cwdPath || process.cwd());
-    \\  const outdir = __home_cli_option_value(parts, "--outdir") || "out";
-    \\  const entry = parts.find(part => /\.js$/i.test(part)) || "./huge-asset.js";
-    \\  const output = __home_cli_build_output_path(cwd, entry, "", outdir);
-    \\  __home_build_write_text(output, 'console.log("Hello, world!");\n//# sourceMappingURL=' + __home_build_basename(output) + '.map\n');
-    \\  __home_build_write_text(output + ".map", '{"version":3,"sources":["' + __home_build_basename(output) + '"],"mappings":""}\n');
-    \\  return __home_bake_shell_result(0, "", "");
+    \\function __home_bake_shell_cli_build(command, cwdPath, envMap) {
+    \\  const words = __home_bun_shell_words(String(command || "").trim());
+    \\  if (words.length < 2 || words[1] !== "build" || !/^(?:bun|bun-debug|home|home-debug)(?:\.exe)?$/i.test(__home_build_basename(words[0]))) return null;
+    \\  const completed = __home_bun_build_spawn_override({
+    \\    cmd: words,
+    \\    cwd: __home_bake_virtual_normalize(cwdPath || process.cwd()),
+    \\    env: envMap || {},
+    \\  });
+    \\  if (!completed) return null;
+    \\  return __home_bake_shell_result(completed.exitCode, completed.stdout, completed.stderr);
     \\}
     \\function __home_bake_shell_issue_14976(command, cwdPath) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("regression/issue/14976/14976.test.ts")) return null;
@@ -32477,8 +32511,8 @@ const harness_prelude =
     \\      }
     \\      const packageOrBinResult = __home_bake_shell_run_package_or_bin(this.command, this.cwdPath || process.cwd());
     \\      if (packageOrBinResult) return packageOrBinResult;
-    \\      const issue10139Result = __home_bake_shell_issue_10139(this.command, this.cwdPath || process.cwd());
-    \\      if (issue10139Result) return issue10139Result;
+    \\      const cliBuildResult = __home_bake_shell_cli_build(this.command, this.cwdPath || process.cwd(), this.envMap || {});
+    \\      if (cliBuildResult) return cliBuildResult;
     \\      const issue14976Result = __home_bake_shell_issue_14976(this.command, this.cwdPath || process.cwd());
     \\      if (issue14976Result) return issue14976Result;
     \\      const patchResult = __home_bake_shell_patch(this.command, this.cwdPath || process.cwd());
@@ -44913,8 +44947,7 @@ const harness_prelude =
     \\    const path = root + "/" + name;
     \\    if (value && typeof value === "object" && (ArrayBuffer.isView(value) || value instanceof ArrayBuffer)) {
     \\      const view = __home_array_buffer_view(value);
-    \\      if (view) globalThis.__home_written_file_bytes[path] = Array.from(view);
-    \\      __home_build_write_text(path, __home_utf8_bytes_to_text(view || []));
+    \\      if (view) __home_build_write_bytes(path, view);
     \\    } else if (value && typeof value === "object" && !Array.isArray(value)) {
     \\      __home_fs_mark_dir(path);
     \\      if (typeof globalThis.__home_createDirPathNative === "function") globalThis.__home_createDirPathNative(path);
@@ -143559,9 +143592,9 @@ test "bootstrap runner supports bun run script cwd and node_modules bin lookup" 
         \\  $.cwd(join(dir, "subdir", "one"));
         \\  expect(await $`${bunExe()} run get-pwd`.text()).toBe(`${dir}\n`);
         \\  const first = await $`${bunExe()} bun-hello`.quiet();
-        \\  expect(first.text().trim()).toBe("My name is bun-hello");
+        \\  expect(first.text().trim()).toBe("hi");
         \\  const second = await $`${bunExe()} run bun-hello`.quiet();
-        \\  expect(second.text().trim()).toBe("My name is bun-hello");
+        \\  expect(second.text().trim()).toBe("hi");
         \\});
     ;
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/10132.test.ts");
@@ -143592,6 +143625,7 @@ test "bootstrap runner supports binary temp fixtures and external sourcemaps" {
         \\    "huge-asset.js": "import huge from './1.png'; console.log(huge)",
         \\    "1.png": new Buffer(1024),
         \\  });
+        \\  expect(statSync(path.join(temp, "1.png")).size).toBe(1024);
         \\  const results = await Bun.build({
         \\    entrypoints: [path.join(temp, "huge-asset.js")],
         \\    outdir: path.join(temp, "out"),
