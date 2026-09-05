@@ -27136,7 +27136,7 @@ const harness_prelude =
     \\  return opts;
     \\}
     \\function __home_archive_entry_bytes(value) {
-    \\  return __home_body_bytes_sync(value);
+    \\  return Array.from(__home_body_bytes_sync(value), byte => byte & 0xff);
     \\}
     \\function __home_archive_entries_from_object(input) {
     \\  const entries = [];
@@ -28320,16 +28320,13 @@ const harness_prelude =
     \\  },
     \\  sleep(ms) {
     \\    const duration = ms instanceof Date ? Math.max(0, ms.getTime() - Date.now()) : Math.max(0, Number(ms) || 0);
-    \\    if (duration > 0) {
-    \\      __home_virtual_time_ms += duration;
-    \\      if (typeof globalThis.__home_advance_performance_clock === "function") globalThis.__home_advance_performance_clock(duration);
-    \\      const records = globalThis.__home_abort_timeout_records;
-    \\      if (Array.isArray(records)) {
-    \\        for (const record of records.slice()) if (record && !record.settled && record.deadline <= __home_virtual_time_ms) record.dispatch();
-    \\      }
-    \\      __home_drain_due_real_timeouts(__home_virtual_time_ms);
-    \\    }
-    \\    return Promise.resolve().then(() => undefined).then(() => undefined);
+    \\    if (duration === 0) return Promise.resolve().then(() => undefined).then(() => undefined);
+    \\    return new Promise(resolve => {
+    \\      setTimeout(() => {
+    \\        __home_virtual_time_ms += duration;
+    \\        resolve(undefined);
+    \\      }, duration);
+    \\    });
     \\  },
     \\  secrets: __home_bun_secrets,
     \\  nanoseconds() {
@@ -43866,18 +43863,20 @@ const harness_prelude =
     \\  let cause;
     \\  if (typeof globalThis.__home_readFileBytesNative === "function") for (const candidate of candidates) {
     \\    try {
-    \\      const bytes = Buffer.from(String(globalThis.__home_readFileBytesNative(candidate)), "base64");
     \\      let stats;
     \\      try { stats = fs.statSync(candidate); } catch {}
-    \\      return { bytes, path: candidate, stats };
+    \\      if (stats && typeof stats.isDirectory === "function" && stats.isDirectory()) return { directory: true, path: candidate, stats };
+    \\      const bytes = Buffer.from(String(globalThis.__home_readFileBytesNative(candidate)), "base64");
+    \\      return { bytes, directory: false, path: candidate, stats };
     \\    } catch (error) { cause = error; }
     \\  }
     \\  for (const candidate of candidates) {
     \\    try {
-    \\      const bytes = fs.readFileSync(candidate);
     \\      let stats;
     \\      try { stats = fs.statSync(candidate); } catch {}
-    \\      return { bytes, path: candidate, stats };
+    \\      if (stats && typeof stats.isDirectory === "function" && stats.isDirectory()) return { directory: true, path: candidate, stats };
+    \\      const bytes = fs.readFileSync(candidate);
+    \\      return { bytes, directory: false, path: candidate, stats };
     \\    } catch (error) { cause = error; }
     \\  }
     \\  return { cause };
@@ -81870,7 +81869,11 @@ const harness_prelude =
     \\      }
     \\      if (origin.startsWith("https://")) {
     \\        const tlsVerificationError = __home_fetch_verify_local_tls(handle, request, fetchOptions, href);
-    \\        if (tlsVerificationError) throw tlsVerificationError;
+    \\        if (tlsVerificationError) {
+    \\          __home_fetch_redirect_finish(redirectState);
+    \\          if (typeof globalThis.__home_endServeRequestNative === "function") globalThis.__home_endServeRequestNative(handle.id);
+    \\          return __home_fetch_thenable(null, tlsVerificationError);
+    \\        }
     \\      }
     \\      if (!usesHttp3 && fetchOptions.keepalive !== false && request.headers.get("connection") === null) request.headers.set("Connection", "keep-alive");
     \\      request.__home_raw_body = request.__home_serialized_formdata ? { __home_text: request.__home_serialized_formdata.text } : (fetchOptions && fetchOptions.body !== undefined ? fetchOptions.body : null);
