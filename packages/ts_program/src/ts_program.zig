@@ -9989,6 +9989,58 @@ test "Program: imported indexed access defaults instantiate from earlier argumen
     try T.expectEqual(@as(usize, 1), argument_diagnostics);
 }
 
+test "Program: imported recursive defaults enforce closed generic constraints" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver };
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+
+    const owner =
+        \\export interface BaseState {
+        \\  output: unknown;
+        \\  tag: string;
+        \\  constr: new (def: any) => Type;
+        \\  parent?: Type;
+        \\}
+        \\export interface State<O = unknown> extends BaseState { output: O }
+        \\export interface Type<O = unknown, S extends State<O> = State<O>> { _zod: S }
+        \\export type SomeType = { _zod: BaseState };
+        \\export type FunctionOut = Type;
+        \\export interface Tuple<Rest extends SomeType | null> { rest: Rest }
+    ;
+    const consumer =
+        \\import type { FunctionOut, SomeType, Tuple } from "./owner.js";
+        \\interface Good<Rest extends FunctionOut = FunctionOut> { value: Tuple<Rest> }
+        \\interface Bad { value: Tuple<{ nope: number }> }
+        \\interface WrongShape { _zod: { nope: number } }
+        \\interface BadNested<R extends WrongShape> { value: Tuple<R> }
+        \\declare const good: Good;
+        \\const accepted: SomeType = good.value.rest;
+        \\void accepted;
+        \\interface ReadonlyBag<T extends readonly FunctionOut[] = readonly FunctionOut[]> { values: T }
+        \\interface ReadonlyGood<T extends readonly FunctionOut[]> { value: ReadonlyBag<T> }
+    ;
+    try vfs.addFile("/proj/owner.ts", owner);
+    try vfs.addFile("/proj/consumer.ts", consumer);
+    const owner_id = try p.add("/proj/owner.ts", owner);
+    const consumer_id = try p.add("/proj/consumer.ts", consumer);
+
+    try p.compileAll(.{
+        .no_emit = true,
+        .strict_flags = .{ .no_implicit_any = true, .strict_null_checks = true },
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    });
+    try T.expectEqual(@as(usize, 0), p.fileById(owner_id).compilation.?.diagnostics.items.len);
+    const compilation = p.fileById(consumer_id).compilation.?;
+    try T.expectEqual(@as(usize, 2), compilation.diagnostics.items.len);
+    for (compilation.diagnostics.items) |diagnostic| {
+        try T.expectEqual(@as(u32, 2344), diagnostic.code);
+    }
+}
+
 test "Program: generic nested member assignments contextually type callbacks" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();

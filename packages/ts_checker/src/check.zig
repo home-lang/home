@@ -5390,6 +5390,15 @@ pub const Checker = struct {
     program_contextual_declarations: std.AutoHashMapUnmanaged(*const ProgramClassSchema.Declaration, *const ProgramClassSchema.Declaration) = .empty,
     program_contextual_declarations_active: std.AutoHashMapUnmanaged(*const ProgramClassSchema.Declaration, void) = .empty,
     program_expression_parameters: std.AutoHashMapUnmanaged(*const ProgramClassSchema.Parameter, TypeId) = .empty,
+    /// Type parameters owned by source declarations transferred through the
+    /// Program schema. They have no node in the importing checker's HIR, so
+    /// provenance must travel with their TypeId instead.
+    program_declaration_type_parameters: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
+    /// Display-only names for Program generic definitions and the concrete
+    /// zero-argument object types resolved from them. These never participate
+    /// in consumer name lookup or structural identity.
+    program_definition_names: std.AutoHashMapUnmanaged(TypeId, hir_mod.StringId) = .empty,
+    program_type_display_names: std.AutoHashMapUnmanaged(TypeId, hir_mod.StringId) = .empty,
     program_definition_classes: std.AutoHashMapUnmanaged(TypeId, struct { name: hir_mod.StringId, origin: hir_mod.StringId }) = .empty,
     program_local_class_names: std.StringHashMapUnmanaged(void) = .empty,
     program_local_class_names_built: bool = false,
@@ -5963,6 +5972,9 @@ pub const Checker = struct {
         self.program_contextual_declarations.deinit(self.gpa);
         self.program_contextual_declarations_active.deinit(self.gpa);
         self.program_expression_parameters.deinit(self.gpa);
+        self.program_declaration_type_parameters.deinit(self.gpa);
+        self.program_definition_names.deinit(self.gpa);
+        self.program_type_display_names.deinit(self.gpa);
         self.program_definition_classes.deinit(self.gpa);
         self.program_local_class_names.deinit(self.gpa);
         self.generic_instances.deinit(self.gpa);
@@ -55365,6 +55377,15 @@ pub const Checker = struct {
                 self.interner.internObjectType(new_members.items) catch return t
             else
                 self.interner.internObjectTypeWithIndexAndSymbol(new_members.items, new_str, new_num, new_sym) catch return t;
+            if (self.readonly_index_types.contains(t)) {
+                try self.readonly_index_types.put(self.gpa, new_obj, {});
+            }
+            if (self.array_origin_types.contains(t)) {
+                try self.array_origin_types.put(self.gpa, new_obj, {});
+            }
+            if (self.isActualTupleType(t)) {
+                try self.markTupleOrigin(new_obj);
+            }
             if (self.alias_display_names.get(t)) |display| {
                 if (try self.substitutedAliasDisplayText(t, display, subs, visited)) |substituted_display| {
                     try self.alias_display_names.put(self.gpa, new_obj, substituted_display.text);
@@ -55383,6 +55404,12 @@ pub const Checker = struct {
             }
             if (self.class_decl_by_instance.get(t)) |decl| {
                 try self.class_decl_by_instance.put(self.gpa, new_obj, decl);
+            }
+            if (self.interfaceDeclarationForTypeIdentity(t)) |decl| {
+                try self.generic_interface_decl_by_instance.put(self.gpa, new_obj, decl);
+            }
+            if (self.program_type_display_names.get(t)) |name| {
+                try self.program_type_display_names.put(self.gpa, new_obj, name);
             }
             return new_obj;
         }
@@ -66065,6 +66092,27 @@ pub const Checker = struct {
                                         if (cur_p != first_p) try subs.put(self.gpa, cur_p, first_p);
                                     }
                                     if (subs.count() > 0) unified_t = self.substituteType(iface_t, &subs) catch iface_t;
+                                    if (is_self_recheck) {
+                                        for (param_ids.items, first.params) |cur_p, first_p| {
+                                            if (cur_p >= self.interner.pool.typeCount() or
+                                                first_p >= self.interner.pool.typeCount() or
+                                                !self.interner.pool.flagsOf(cur_p).is_type_parameter or
+                                                !self.interner.pool.flagsOf(first_p).is_type_parameter)
+                                            {
+                                                continue;
+                                            }
+                                            const current_payload = self.interner.pool.type_parameter_payloads.items[
+                                                self.interner.pool.payloadOf(cur_p)
+                                            ];
+                                            const first_payload = &self.interner.pool.type_parameter_payloads.items[
+                                                self.interner.pool.payloadOf(first_p)
+                                            ];
+                                            first_payload.constraint = self.substituteTypeNoCycles(current_payload.constraint, &subs) catch
+                                                current_payload.constraint;
+                                            first_payload.default = self.substituteTypeNoCycles(current_payload.default, &subs) catch
+                                                current_payload.default;
+                                        }
+                                    }
                                     keep_first_params = true;
                                 }
                             }
@@ -77866,7 +77914,7 @@ pub const Checker = struct {
                             const override_guard = is_class_instance and is_concrete_instantiation;
                             try self.registerAliasDisplayNameInner(instantiated, r.name, alias_arg_list.items, override_guard);
                         }
-                        if (scoped_generic_info != null) {
+                        if (info.body_node == hir_mod.none_node_id and !is_class_instance) {
                             if (self.findVisibleNamedTypeDecl(type_node, r.name)) |decl| {
                                 if (self.hir.kindOf(decl) == .interface_decl) {
                                     try self.generic_interface_decl_by_instance.put(self.gpa, instantiated, decl);
@@ -82760,9 +82808,19 @@ pub const Checker = struct {
                 pending.appendSlice(allocator, self.interner.unionMembers(current)) catch return true;
             } else if (flags.is_intersection) {
                 pending.appendSlice(allocator, self.interner.intersectionMembers(current)) catch return true;
+            } else if (flags.is_instantiation) {
+                const instantiation = self.interner.pool.instantiation_payloads.items[self.interner.pool.payloadOf(current)];
+                pending.appendSlice(
+                    allocator,
+                    self.interner.pool.type_arg_pool.items[instantiation.args_start..][0..instantiation.args_len],
+                ) catch return true;
             } else if (flags.is_object_type) {
                 for (self.interner.objectMembers(current)) |member| pending.append(allocator, member.type) catch return true;
-                pending.appendSlice(allocator, &.{ self.interner.objectStringIndex(current), self.interner.objectNumberIndex(current) }) catch return true;
+                pending.appendSlice(allocator, &.{
+                    self.interner.objectStringIndex(current),
+                    self.interner.objectNumberIndex(current),
+                    self.interner.objectSymbolIndex(current),
+                }) catch return true;
             } else if (flags.is_signature) {
                 pending.appendSlice(allocator, self.interner.signatureParams(current)) catch return true;
                 if (self.interner.signatureReturn(current)) |result| pending.append(allocator, result) catch return true;
@@ -108131,6 +108189,9 @@ pub const Checker = struct {
         self.program_contextual_declarations.clearRetainingCapacity();
         self.program_contextual_declarations_active.clearRetainingCapacity();
         self.program_expression_parameters.clearRetainingCapacity();
+        self.program_declaration_type_parameters.clearRetainingCapacity();
+        self.program_definition_names.clearRetainingCapacity();
+        self.program_type_display_names.clearRetainingCapacity();
         self.program_definition_classes.clearRetainingCapacity();
         self.program_local_class_names.clearRetainingCapacity();
         self.program_local_class_names_built = false;
@@ -108182,8 +108243,16 @@ pub const Checker = struct {
         // Only a directly materialized object body belongs to this definition.
         // Identity/reference aliases reuse another type; recording their name
         // as its origin would make recursion identity depend on lookup order.
-        if (self.interner.pool.flagsOf(definition.body).is_object_type and result == substituted)
+        if (self.interner.pool.flagsOf(definition.body).is_object_type and result == substituted) {
             try self.generic_instance_origins.put(self.gpa, result, reference.origin);
+            if (self.program_definition_names.get(reference.origin)) |name| {
+                if (args.len == 0) {
+                    try self.program_type_display_names.put(self.gpa, result, name);
+                } else {
+                    try self.registerAliasDisplayNameInner(result, name, args, true);
+                }
+            }
+        }
         if (self.program_definition_classes.get(reference.origin)) |class| {
             try self.synthetic_program_class_origins.put(self.gpa, result, class.origin);
             try self.class_name_by_instance.put(self.gpa, result, class.name);
@@ -108208,6 +108277,7 @@ pub const Checker = struct {
                 types.Variance.fromHirBits(parameter.variance),
                 parameter.is_const,
             );
+            try self.program_declaration_type_parameters.put(self.gpa, id.*, {});
         }
         for (declaration.parameters, parameters) |parameter, id| {
             const constraint = if (parameter.constraint) |expression| try self.lowerProgramExpression(expression, declaration, parameters) else types.Primitive.none;
@@ -108222,6 +108292,11 @@ pub const Checker = struct {
             error.OutOfMemory => return error.OutOfMemory,
             error.InvalidTypeGraph => return error.UnsupportedProgramType,
         };
+        try self.program_definition_names.put(
+            self.gpa,
+            definition,
+            self.string_interner.intern(declaration.name) catch return error.OutOfMemory,
+        );
         if (declaration.is_class) try self.program_definition_classes.put(self.gpa, definition, .{
             .name = self.string_interner.intern(declaration.name) catch return error.OutOfMemory,
             .origin = try self.programSchemaDeclarationOrigin(declaration),
@@ -144137,6 +144212,10 @@ pub const Checker = struct {
             return try std.fmt.allocPrint(self.diag_arena.allocator(), "readonly {s}", .{name});
         }
         if (try self.simpleDiagnosticTypeName(t)) |name| return name;
+        if (t < self.interner.pool.typeCount()) {
+            const flags = self.interner.pool.flagsOf(t);
+            if (flags.is_union or flags.is_intersection) return try self.allocSimpleTypeName(t);
+        }
         if (self.typeIsArrayLikeObject(t)) return try self.allocSimpleTypeName(t);
         if (!allow_signature_display) return null;
         return (try self.allocSimpleTypeName(t)) orelse (try self.allocObjectTypeShape(t));
@@ -144317,13 +144396,15 @@ pub const Checker = struct {
         if (!self.interner.pool.flagsOf(constraint_param).is_type_parameter) return;
         const raw_constraint = self.typeParameterConstraint(constraint_param) orelse
             self.typeParameterConstraint(param_t) orelse return;
-        const constraint = if (self.current_type_arg_constraint_subs) |subs|
+        var constraint = if (self.current_type_arg_constraint_subs) |subs|
             self.substituteType(raw_constraint, subs) catch raw_constraint
         else
             raw_constraint;
         if (constraint == types.Primitive.any or constraint == types.Primitive.unknown) return;
         if (constraint == arg_t) return;
-        if (self.containsFreeTypeParameter(constraint)) return;
+        if (self.containsFreeTypeParameter(constraint)) {
+            constraint = (try self.closeDeclarationOwnedConstraintDefaults(constraint, arg_node)) orelse return;
+        }
         if (self.typeIsPropertyKeyTarget(constraint) and
             (self.typeNodeKeyofBaseName(arg_node, 0) != null or
                 self.typeNodeDerivesFromPropertyKey(arg_node, 0))) return;
@@ -144461,6 +144542,160 @@ pub const Checker = struct {
             .message = msg,
             .chain = chain,
         });
+    }
+
+    /// Close declaration-owned type parameters retained at a recursive
+    /// generic's fixed-point edge. Parameters belonging to another declaration
+    /// are replaced from their stored defaults; parameters owned by the
+    /// declaration containing `anchor`, parameters without defaults, and
+    /// parameters whose identity is unavailable remain genuinely unresolved.
+    /// Returns null for that unresolved case. No declaration syntax is lowered.
+    fn closeDeclarationOwnedConstraintDefaults(
+        self: *Checker,
+        root: TypeId,
+        anchor: NodeId,
+    ) CheckError!?TypeId {
+        var pending: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer pending.deinit(self.gpa);
+        var visited: std.AutoHashMapUnmanaged(TypeId, void) = .empty;
+        defer visited.deinit(self.gpa);
+        var substitutions: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+        defer substitutions.deinit(self.gpa);
+        try pending.append(self.gpa, root);
+
+        while (pending.pop()) |raw_current| {
+            if (raw_current < types.Primitive.first_dynamic or
+                raw_current >= self.interner.pool.typeCount()) continue;
+            const current = self.resolvedTypeParameterPlaceholder(raw_current);
+            if (current >= self.interner.pool.typeCount()) continue;
+            const entry = try visited.getOrPut(self.gpa, current);
+            if (entry.found_existing) continue;
+            const flags = self.interner.pool.flagsOf(current);
+
+            if (flags.is_type_parameter) {
+                const declaration = self.type_parameter_decl_nodes.get(raw_current) orelse
+                    self.type_parameter_decl_nodes.get(current);
+                if (declaration) |decl| {
+                    if (decl == hir_mod.none_node_id or
+                        self.hir.kindOf(decl) != .type_parameter) return null;
+                    const owner = self.hir.parentOf(decl);
+                    if (owner == hir_mod.none_node_id or self.nodeDescendsFrom(anchor, owner)) return null;
+                } else if (!self.program_declaration_type_parameters.contains(raw_current) and
+                    !self.program_declaration_type_parameters.contains(current))
+                {
+                    return null;
+                }
+                const payload_idx = self.interner.pool.payloadOf(current);
+                if (payload_idx >= self.interner.pool.type_parameter_payloads.items.len) return null;
+                const default_t = self.interner.pool.type_parameter_payloads.items[payload_idx].default;
+                if (default_t == types.Primitive.none) return null;
+                try substitutions.put(self.gpa, current, default_t);
+                if (raw_current != current) try substitutions.put(self.gpa, raw_current, default_t);
+                try pending.append(self.gpa, default_t);
+                continue;
+            }
+            if (flags.is_union) {
+                try pending.appendSlice(self.gpa, self.interner.unionMembers(current));
+                continue;
+            }
+            if (flags.is_intersection) {
+                try pending.appendSlice(self.gpa, self.interner.intersectionMembers(current));
+                continue;
+            }
+            if (flags.is_instantiation) {
+                const instantiation = self.interner.pool.instantiation_payloads.items[self.interner.pool.payloadOf(current)];
+                try pending.appendSlice(
+                    self.gpa,
+                    self.interner.pool.type_arg_pool.items[instantiation.args_start..][0..instantiation.args_len],
+                );
+                continue;
+            }
+            if (flags.is_tuple) {
+                const tuple = self.interner.pool.tuple_payloads.items[self.interner.pool.payloadOf(current)];
+                for (self.interner.pool.tuple_element_pool.items[tuple.elements_start..][0..tuple.elements_len]) |element| {
+                    try pending.append(self.gpa, element.type);
+                }
+                continue;
+            }
+            if (flags.is_object_type) {
+                for (self.interner.objectMembers(current)) |member| {
+                    try pending.append(self.gpa, member.type);
+                }
+                try pending.appendSlice(self.gpa, &.{
+                    self.interner.objectStringIndex(current),
+                    self.interner.objectNumberIndex(current),
+                    self.interner.objectSymbolIndex(current),
+                });
+                continue;
+            }
+            if (flags.is_signature) {
+                try pending.appendSlice(self.gpa, self.interner.signatureParams(current));
+                if (self.interner.signatureReturn(current)) |return_t| {
+                    try pending.append(self.gpa, return_t);
+                }
+                if (self.signatureThisParam(current)) |this_t| {
+                    try pending.append(self.gpa, this_t);
+                }
+                continue;
+            }
+            if (flags.is_keyof) {
+                const payload_idx = self.interner.pool.payloadOf(current);
+                if (payload_idx < self.interner.pool.keyof_payloads.items.len) {
+                    try pending.append(self.gpa, self.interner.pool.keyof_payloads.items[payload_idx].operand);
+                }
+                continue;
+            }
+            if (flags.is_indexed_access) {
+                const payload_idx = self.interner.pool.payloadOf(current);
+                if (payload_idx < self.interner.pool.indexed_access_payloads.items.len) {
+                    const indexed = self.interner.pool.indexed_access_payloads.items[payload_idx];
+                    try pending.appendSlice(self.gpa, &.{ indexed.object, indexed.index });
+                }
+                continue;
+            }
+            if (flags.is_conditional) {
+                const conditional = self.interner.conditionalPayload(current);
+                try pending.appendSlice(self.gpa, &.{
+                    conditional.check_type,
+                    conditional.extends_type,
+                    conditional.true_branch,
+                    conditional.false_branch,
+                });
+                continue;
+            }
+            if (flags.is_mapped) {
+                const mapped = self.interner.mappedPayload(current);
+                try pending.appendSlice(self.gpa, &.{ mapped.constraint, mapped.template });
+                continue;
+            }
+            if (flags.is_template_literal) {
+                try pending.appendSlice(self.gpa, self.interner.templateLiteralTypes(current));
+                continue;
+            }
+            if (flags.is_string_mapping) {
+                try pending.append(self.gpa, self.interner.stringMappingPayload(current).inner);
+            }
+        }
+        if (substitutions.count() == 0) return root;
+
+        // Defaults can depend on earlier parameters. Resolve the stored map to
+        // a fixed point before applying it to the recursive graph; canonical
+        // interning makes stable values compare by TypeId.
+        var pass: usize = 0;
+        while (pass <= substitutions.count()) : (pass += 1) {
+            var changed = false;
+            var iterator = substitutions.iterator();
+            while (iterator.next()) |entry| {
+                const previous = entry.value_ptr.*;
+                const next = try self.substituteTypeNoCycles(previous, &substitutions);
+                if (next != previous) {
+                    entry.value_ptr.* = next;
+                    changed = true;
+                }
+            }
+            if (!changed) break;
+        }
+        return try self.substituteTypeNoCycles(root, &substitutions);
     }
 
     fn jsDocConstrainedTypeAssignable(
@@ -144676,14 +144911,17 @@ pub const Checker = struct {
     ) CheckError!bool {
         if (arg_t >= self.interner.pool.typeCount()) return false;
         if (!self.interner.pool.flagsOf(arg_t).is_type_parameter) return false;
-        const arg_constraint = self.typeParameterConstraint(arg_t) orelse return false;
+        var arg_constraint = self.typeParameterConstraint(arg_t) orelse return false;
         if (arg_constraint == types.Primitive.any or
             arg_constraint == types.Primitive.unknown or
             arg_constraint == types.Primitive.never or
-            arg_constraint == target_constraint or
-            self.containsFreeTypeParameter(arg_constraint))
+            arg_constraint == target_constraint)
         {
             return false;
+        }
+        if (self.containsFreeTypeParameter(arg_constraint)) {
+            arg_constraint = (try self.closeDeclarationOwnedConstraintDefaults(arg_constraint, arg_node)) orelse
+                return false;
         }
         const readonly_to_mutable = self.readonlyArrayLikeAssignedToMutable(arg_constraint, target_constraint);
         if (!readonly_to_mutable and try self.checkerAssignableTo(arg_constraint, target_constraint)) return false;
@@ -144802,26 +145040,38 @@ pub const Checker = struct {
         source_t: TypeId,
         target_t: TypeId,
     ) CheckError!bool {
-        const source_display = self.alias_display_names.get(source_t) orelse return false;
-        const source_lt = std.mem.indexOfScalar(u8, source_display, '<') orelse return false;
-        if (source_lt == 0) return false;
-        const source_qualified = source_display[0..source_lt];
-        const source_dot = std.mem.lastIndexOfScalar(u8, source_qualified, '.');
-        const source_name = self.string_interner.intern(
-            if (source_dot) |index| source_qualified[index + 1 ..] else source_qualified,
-        ) catch return error.OutOfMemory;
-        const source_decl = self.generic_interface_decl_by_instance.get(source_t) orelse
-            self.findVisibleNamedTypeDecl(anchor, source_name) orelse return false;
+        const source_decl = self.interfaceDeclarationForTypeIdentity(source_t) orelse blk: {
+            const source_display = self.alias_display_names.get(source_t) orelse return false;
+            const source_lt = std.mem.indexOfScalar(u8, source_display, '<') orelse return false;
+            if (source_lt == 0) return false;
+            const source_qualified = source_display[0..source_lt];
+            const source_dot = std.mem.lastIndexOfScalar(u8, source_qualified, '.');
+            const source_name = self.string_interner.intern(
+                if (source_dot) |index| source_qualified[index + 1 ..] else source_qualified,
+            ) catch return error.OutOfMemory;
+            break :blk self.findVisibleNamedTypeDecl(anchor, source_name) orelse return false;
+        };
         if (self.hir.kindOf(source_decl) != .interface_decl) return false;
 
-        const target_name = self.namedTypeForId(target_t) orelse return false;
-        const target_decl = self.findVisibleNamedTypeDecl(anchor, target_name) orelse return false;
+        const target_decl = self.interfaceDeclarationForTypeIdentity(target_t) orelse blk: {
+            const target_name = self.namedTypeForId(target_t) orelse return false;
+            break :blk self.findVisibleNamedTypeDecl(anchor, target_name) orelse return false;
+        };
         for (hir_mod.interfaceExtends(self.hir, source_decl)) |base_node| {
             const base_name = self.unqualifiedTypeRefName(base_node) orelse continue;
             const base_decl = self.findVisibleNamedTypeDecl(base_node, base_name) orelse continue;
             if (base_decl == target_decl) return true;
         }
         return false;
+    }
+
+    fn interfaceDeclarationForTypeIdentity(self: *Checker, t: TypeId) ?NodeId {
+        if (self.generic_interface_decl_by_instance.get(t)) |decl| return decl;
+        const name = self.namedTypeForId(t) orelse return null;
+        const decl = self.last_iface_decl_for_name.get(name) orelse return null;
+        if (decl == hir_mod.none_node_id or self.hir.kindOf(decl) != .interface_decl) return null;
+        if (self.hir.typeOf(decl) != t) return null;
+        return decl;
     }
 
     /// True when `source` and `target` are both type parameters with
@@ -160565,6 +160815,11 @@ pub const Checker = struct {
                                 try self.type_parameter_decl_nodes.put(self.gpa, resolved_next, decl);
                             }
                         }
+                        if (self.program_declaration_type_parameters.contains(param_t) or
+                            self.program_declaration_type_parameters.contains(self.resolvedTypeParameterPlaceholder(param_t)))
+                        {
+                            try self.program_declaration_type_parameters.put(self.gpa, next_param_t, {});
+                        }
                     }
                     try preserved_params.append(self.gpa, next_param_t);
                 }
@@ -160798,6 +161053,12 @@ pub const Checker = struct {
             if (self.class_decl_by_instance.get(t)) |decl| {
                 try self.class_decl_by_instance.put(self.gpa, new_obj, decl);
             }
+            if (self.interfaceDeclarationForTypeIdentity(t)) |decl| {
+                try self.generic_interface_decl_by_instance.put(self.gpa, new_obj, decl);
+            }
+            if (self.program_type_display_names.get(t)) |name| {
+                try self.program_type_display_names.put(self.gpa, new_obj, name);
+            }
             // Mirror `class_private_members` lookup against the instance:
             // privacy checks look up the class's private set via the
             // declaring class name, which is now reachable via the
@@ -160972,6 +161233,16 @@ pub const Checker = struct {
                 tp.variance,
                 tp.is_const,
             ) catch return t;
+            const declaration = self.type_parameter_decl_nodes.get(t) orelse
+                self.type_parameter_decl_nodes.get(self.resolvedTypeParameterPlaceholder(t));
+            if (declaration) |decl| {
+                try self.type_parameter_decl_nodes.put(self.gpa, substituted_param, decl);
+            }
+            if (self.program_declaration_type_parameters.contains(t) or
+                self.program_declaration_type_parameters.contains(self.resolvedTypeParameterPlaceholder(t)))
+            {
+                try self.program_declaration_type_parameters.put(self.gpa, substituted_param, {});
+            }
             if (self.infer_type_parameters.contains(t)) {
                 try self.infer_type_parameters.put(self.gpa, substituted_param, {});
             }
@@ -186632,6 +186903,9 @@ pub const Checker = struct {
                 const expand_string_named_export = self.string_named_export_types.contains(t);
                 if (if (expand_string_named_export) null else self.qualified_alias_diagnostic_names.get(t)) |display| {
                     break :blk display;
+                }
+                if (self.program_type_display_names.get(t)) |name| {
+                    break :blk self.string_interner.get(name);
                 }
                 if (if (expand_string_named_export) null else self.namedTypeForId(t)) |type_name| {
                     // An `alias_display_names` entry (registered for
@@ -219621,6 +219895,69 @@ test "checker: constrained type argument relates source constraint to target uni
         wrong_member,
         target_member,
     ));
+}
+
+test "checker: recursive default fixed points do not defer concrete constraint failures" {
+    const s = try newSetup(
+        \\interface BaseState {
+        \\  output: unknown;
+        \\  tag: string;
+        \\  constr: new (def: any) => Type;
+        \\  parent?: Type;
+        \\}
+        \\interface State<O = unknown> extends BaseState { output: O }
+        \\interface Type<O = unknown, S extends State<O> = State<O>> { _zod: S }
+        \\type SomeType = { _zod: BaseState };
+        \\type FunctionOut = Type;
+        \\interface Tuple<Rest extends SomeType | null> { rest: Rest }
+        \\interface Good<Rest extends FunctionOut = FunctionOut> { value: Tuple<Rest> }
+        \\interface Bad { value: Tuple<{ nope: number }> }
+        \\interface WrongShape { _zod: { nope: number } }
+        \\interface BadNested<R extends WrongShape> { value: Tuple<R> }
+        \\interface Owner<T = string> { value: T }
+        \\interface ReadonlyBag<T extends readonly FunctionOut[] = readonly FunctionOut[]> { values: T }
+        \\interface ReadonlyGood<T extends readonly FunctionOut[]> { value: ReadonlyBag<T> }
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), s.checker.diagnostics.items.len);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_does_not_satisfy_constraint));
+
+    const type_info = s.checker.generic_aliases.get(try s.sint.intern("Type")) orelse
+        return error.TestExpectedEqual;
+    try T.expectEqual(@as(usize, 2), type_info.params.len);
+    const state_payload = s.ti.pool.type_parameter_payloads.items[s.ti.pool.payloadOf(type_info.params[1])];
+    try T.expect(state_payload.constraint != types.Primitive.unknown);
+    try T.expect(state_payload.default != types.Primitive.unknown);
+
+    const tuple = s.checker.generic_aliases.get(try s.sint.intern("Tuple")) orelse
+        return error.TestExpectedEqual;
+    const constraint = s.checker.typeParameterConstraint(tuple.params[0]) orelse
+        return error.TestExpectedEqual;
+    try T.expect(s.checker.containsFreeTypeParameter(constraint));
+    const statements = hir_mod.blockStmts(&s.hir, s.root);
+    const bad_member = hir_mod.interfaceMembers(&s.hir, statements[7])[0];
+    const bad_type_ref = hir_mod.interfaceMemberOf(&s.hir, bad_member).type_node;
+    const bad_argument = hir_mod.typeRefArgs(&s.hir, bad_type_ref)[0];
+    const nested_member = hir_mod.interfaceMembers(&s.hir, statements[9])[0];
+    const nested_type_ref = hir_mod.interfaceMemberOf(&s.hir, nested_member).type_node;
+    const nested_argument = hir_mod.typeRefArgs(&s.hir, nested_type_ref)[0];
+    try T.expect(s.checker.diagnosticExists(bad_argument, TsCodes.type_does_not_satisfy_constraint));
+    try T.expect(s.checker.diagnosticExists(nested_argument, TsCodes.type_does_not_satisfy_constraint));
+    try T.expect((try s.checker.closeDeclarationOwnedConstraintDefaults(
+        constraint,
+        bad_argument,
+    )) != null);
+
+    const owner = s.checker.generic_aliases.get(try s.sint.intern("Owner")) orelse
+        return error.TestExpectedEqual;
+    const owner_member = hir_mod.interfaceMembers(&s.hir, statements[10])[0];
+    const owner_member_type = hir_mod.interfaceMemberOf(&s.hir, owner_member).type_node;
+    try T.expect((try s.checker.closeDeclarationOwnedConstraintDefaults(
+        owner.params[0],
+        owner_member_type,
+    )) == null);
 }
 
 test "checker: explicit type args take precedence over inference" {
