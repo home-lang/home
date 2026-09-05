@@ -6732,3 +6732,76 @@ upstream findings. Full commands and normalized-set evidence are recorded in
 zig build home-tsc -Doptimize=ReleaseFast
 /usr/bin/time -p ./zig-out/bin/home-tsc --project /path/to/zod-4.5.2/tsconfig.benchmark.json
 ```
+
+### Mapped prototype parameter tuples and contextual receivers
+
+Issue [#624](https://github.com/home-lang/home/issues/624), under
+[#548](https://github.com/home-lang/home/issues/548) and
+[#416](https://github.com/home-lang/home/issues/416), continues the exact Zod
+admission audit after #619. The failing shape is a conditional `ProtoOf<T>`
+mapped over a constructor prototype: its selected methods must retain optional,
+generic, and rest parameter tuples, while object-literal implementations must
+still receive the concrete polymorphic `this` type.
+
+The fix preserves signature-level contextual-receiver metadata through mapped
+materialization and substitution, carries source-member declaration provenance,
+and re-lowers the declared return in the interface and method type-parameter
+environment. A return accepted through the ordinary object relation is retained
+only when the inferred implementation return is the contextual receiver and the
+explicit receiver arguments satisfy the declaration's variance. This is a
+general declaration-backed proof: it does not inspect Zod source spelling or
+method names, and it does not suppress a failed primary relation.
+
+The strict four-file Program reduction covers optional parameters, generic
+parameters and defaults, rest tuples, overloads, inherited prototype members,
+and polymorphic receiver returns. It also keeps six deliberate failures: five
+TS2322 assignability controls (including primitive, unrelated-generic, and
+narrower-intersection returns) plus one TS2339 missing-property control. TS7006,
+TS7019, TS2349, TS2304, TS2493, and TS2532 remain absent from the valid paths.
+A separate pinned TypeScript 5.9.2 oracle probe accepts the valid classic-schema
+shape and rejects the invalid return controls.
+
+The real-project diagnostic comparison uses exact parent `ad4ae6291`, final
+semantic candidate `babca3e64`, ReleaseFast builds, and the unchanged 106
+production files selected by `tsconfig.benchmark.json` from pinned Zod 4.5.2.
+Both binaries run from the same extracted tree with the same strict, no-emit
+configuration. Diagnostic identities normalize to `path:line:column:code`.
+
+| Zod 4.5.2 exact-parent diagnostic A/B | Parent `ad4ae6291` | #624 `babca3e64` | Change |
+|---|---:|---:|---:|
+| All diagnostics | 976 | **833** | **−143 (14.7%)** |
+| TS7006 removed | — | **127** | contextual parameters restored |
+| TS7019 removed | — | **16** | rest parameters restored |
+| Added normalized diagnostics | — | **0** | none |
+
+Three alternating transparency samples took 4.38 / 4.43 / 4.36 seconds for
+the parent and 5.22 / 5.14 / 5.05 seconds for the semantic candidate: medians
+4.38 and 5.14 seconds, respectively. That 17.4% increase is not admitted as a
+speed comparison because the candidate performs different, more complete type
+checking. It is recorded so the correctness improvement does not hide its cost.
+
+A separate performance-only probe moved the contextual-receiver proof behind
+ordinary signature and return checks. Before/after outputs were byte-identical
+at 833 diagnostics. Ten counterbalanced AB/BA pairs gave medians of 5.26 seconds
+before and 5.36 seconds after; the reorder won only 3/10 pairs. The probe was
+therefore rejected and removed rather than shipped as an optimization.
+
+The final source passes Program **174/174**, checker **4,334/4,334**, ReleaseFast
+`home-tsc`, `zig fmt`, and `git diff --check`. Scoped `pickier` covers this
+Markdown record. Full evidence and issue progress are linked from
+[#624](https://github.com/home-lang/home/issues/624).
+
+The raw parent and candidate diagnostic SHA-256 values are
+`6a84880a00f1e22816610e546a964e5e5ce88e78b2e1baefcc9c7c461a699c8a` and
+`94ecd8b025e5248c1ab3f84d32ae560eaabf3119c5e7e844c654fbe0f740b6d5`.
+The normalized diagnostic-key hashes are
+`c3effc18a013210ee3f0129e6f4aa10e609d6dedf9276c4e9f2cc52ac921fc7b` and
+`6bbfaf9ca1acef7e056c09def0d162daab7fd918f324deaadecf11eed9f331b3`.
+The frozen ReleaseFast binary hashes are
+`0b74892a0b7acad79bdc6380cc5c4a0e990aa52b8b0e7e2c7144a5a26bb29a98` and
+`d0b2a9c3cdf37aaee5412212e0b569b32c064f5775ca2855574de26b8ebe84ad`.
+
+```sh
+zig build home-tsc -Doptimize=ReleaseFast
+./zig-out/bin/home-tsc --project /path/to/zod-4.5.2/tsconfig.benchmark.json
+```

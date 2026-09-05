@@ -287,6 +287,14 @@ reported separately from the admitted synthetic suite:
 | Diagnostics | 1,088 | **976** | **112 removed; 0 added** |
 | Mean wall time, two runs | 9.925 s | **5.740 s** | **42.2% lower** |
 
+The next exact-parent audit isolates mapped prototype parameter tuples and
+contextual receiver returns on that same frozen graph:
+
+| [Zod 4.5.2 mapped prototype tuple audit](docs/docs/TS_PERFORMANCE.md#mapped-prototype-parameter-tuples-and-contextual-receivers) | Exact parent | #624 candidate | Change |
+|---|---:|---:|---:|
+| Diagnostics | 976 | **833** | **143 removed; 0 added** |
+| Removed diagnostic codes | — | 127× TS7006; 16× TS7019 | toward the zero-diagnostic oracle |
+
 TypeScript 6.0.3 reports zero diagnostics on this graph. Zod remains outside
 the cross-compiler timing table until Home also reaches zero diagnostics.
 
