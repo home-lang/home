@@ -32886,7 +32886,7 @@ pub const Checker = struct {
         if (!is_sort and param_index > 2) return null;
         if (!isArrayCallbackMethodName(method)) return null;
         var recv_t = try self.checkExpression(m.object);
-        if (!self.arrayCallbackReceiverIsArrayLike(recv_t) and self.hir.kindOf(m.object) == .identifier) {
+        if (recv_t == types.Primitive.any and self.hir.kindOf(m.object) == .identifier) {
             const receiver_name = hir_mod.identifierOf(self.hir, m.object).name;
             recv_t = (try self.programQualifiedIndexedAssertionDestructuredArrayType(m.object, receiver_name)) orelse recv_t;
         }
@@ -112819,8 +112819,10 @@ pub const Checker = struct {
                     }
                 }
                 obj_t = self.resolvedRecursiveInterfaceType(obj_t);
-                if (try self.programQualifiedAssertionArrayMemberType(m.object, m.name)) |member_t| {
-                    break :blk try self.optionalChainResult(member_t, m.optional or self.expressionIsOptionalChain(m.object));
+                if (obj_t == types.Primitive.any) {
+                    if (try self.programQualifiedAssertionArrayMemberType(m.object, m.name)) |member_t| {
+                        break :blk try self.optionalChainResult(member_t, m.optional or self.expressionIsOptionalChain(m.object));
+                    }
                 }
                 if (!object_is_catch_binding and
                     obj_t == types.Primitive.any and

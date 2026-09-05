@@ -10001,6 +10001,11 @@ test "Program: qualified indexed assertions project destructured array members" 
         \\      return value;
         \\    });
         \\  }
+        \\  {
+        \\    const mime = { map: "local" };
+        \\    const exactMap: string = mime.map;
+        \\    const wrongMap: boolean = mime.map;
+        \\  }
         \\};
     ;
     try vfs.addFile("/proj/util.ts", util);
@@ -10017,7 +10022,8 @@ test "Program: qualified indexed assertions project destructured array members" 
     });
     const compilation = p.fileById(consumer_id).compilation.?;
     try expectCompilationLacksDiagnosticCode(compilation, 7006);
-    try expectCompilationHasDiagnosticCode(compilation, 2322);
+    try T.expectEqual(@as(usize, 2), compilation.diagnostics.items.len);
+    for (compilation.diagnostics.items) |diagnostic| try T.expectEqual(@as(u32, 2322), diagnostic.code);
 }
 
 test "Program: function schemas preserve readonly Record inputs and array results" {
