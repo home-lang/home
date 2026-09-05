@@ -1810,6 +1810,20 @@ references are balanced on Windows startup and reader-error paths. The
 unchanged native-source ownership fixture is 4/4 in Debug and ReleaseFast, and
 the complete seven-file `js/web/streams` scan is clean in both modes.
 
+Blob construction now consumes multipart arrays in sequence order instead of
+deferring object and nested-array coercion through a LIFO stack. Buffer-source
+and inner-Blob bytes are still snapshotted when their part is visited, so later
+user code cannot detach, resize, or collect their backing store before the
+join. Non-Blob DOM wrappers and nested arrays are stringified exactly once in
+place, and sparse/nullish parts retain the pinned Bun behavior.
+
+UTF-16LE Blob decoding now checks alignment before taking the zero-copy `u16`
+view. Odd-address slices decode little-endian byte pairs through aligned
+temporary storage, dropping only an incomplete trailing byte, for both
+`text()` and `json()`. The unchanged `js/web/fetch/blob.test.ts` fixture is now
+26/26 with 145 assertions in Debug and ReleaseFast. Across the six focused
+Blob files, both modes pass 65/65 tests and 215 assertions plus four snapshots.
+
 ## Summary
 
 Substrate file-count progress. "Present" is the live Zig file count under

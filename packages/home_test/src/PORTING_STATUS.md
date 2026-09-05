@@ -1721,9 +1721,17 @@ the Windows non-lazy path and released on reader errors. The unchanged native
 source fixture is 4/4, and the complete seven-file `js/web/streams` scan is
 clean in Debug and ReleaseFast.
 
-The three slice-bound regressions in `js/web/fetch/blob.test.ts` are green. The
-file remains 24/26 because object-part stringification and an odd-offset
-UTF-16LE child-process case are separate open parity gaps.
+Blob multipart construction now walks parts in source order rather than using
+the old LIFO fallback for objects and nested arrays. It preserves the pinned
+Bun/WebIDL byte-snapshot semantics for buffer sources and inner Blobs while
+stringifying other objects exactly once at their original position.
+
+UTF-16LE `Blob.text()` and `Blob.json()` now keep the aligned reinterpretation
+fast path and decode odd-address slice views into aligned temporary `u16`
+storage. Incomplete trailing bytes are dropped rather than read or trapped on.
+The unchanged `js/web/fetch/blob.test.ts` fixture is 26/26 with 145 assertions
+in Debug and ReleaseFast. The six focused Blob fixtures total 65/65 tests and
+215 assertions plus four snapshots in each mode.
 
 ---
 

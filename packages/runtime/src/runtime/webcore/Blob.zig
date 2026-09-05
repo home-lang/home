@@ -3833,6 +3833,30 @@ pub fn needsToReadFile(this: *const Blob) bool {
     return this.store != null and (this.store.?.data == .file);
 }
 
+/// Clone UTF-16LE bytes without assuming that a Blob slice starts at a
+/// naturally aligned address. Blob.slice() can produce an odd-address view;
+/// the aligned path stays allocation-free, while the fallback decodes pairs
+/// into aligned stack/heap storage and drops an incomplete trailing byte.
+fn cloneUTF16LE(bytes: []const u8) bun.OOM!bun.String {
+    const even_bytes = bytes[0 .. bytes.len & ~@as(usize, 1)];
+    if (@intFromPtr(even_bytes.ptr) % @alignOf(u16) == 0) {
+        return bun.String.cloneUTF16(bun.reinterpretSlice(u16, even_bytes));
+    }
+
+    var stack_fallback = bun.stackFallback(4096, bun.default_allocator);
+    const allocator = stack_fallback.get();
+    const units = try allocator.alloc(u16, even_bytes.len / 2);
+    defer allocator.free(units);
+
+    for (units, 0..) |*unit, i| {
+        const byte_index = i * 2;
+        unit.* = @as(u16, even_bytes[byte_index]) |
+            (@as(u16, even_bytes[byte_index + 1]) << 8);
+    }
+
+    return bun.String.cloneUTF16(units);
+}
+
 pub fn toStringWithBytes(this: *Blob, global: *JSGlobalObject, raw_bytes: []const u8, comptime lifetime: Lifetime) bun.JSError!JSValue {
     const bom, const buf = strings.BOM.detectAndSplit(raw_bytes);
 
@@ -3844,7 +3868,7 @@ pub fn toStringWithBytes(this: *Blob, global: *JSGlobalObject, raw_bytes: []cons
 
     if (bom == .utf16_le) {
         defer if (lifetime == .temporary) bun.default_allocator.free(raw_bytes);
-        var out = bun.String.cloneUTF16(bun.reinterpretSlice(u16, buf));
+        var out = cloneUTF16LE(buf) catch return global.throwOutOfMemory();
         defer out.deref();
         return out.toJS(global);
     }
@@ -3957,7 +3981,7 @@ pub fn toJSONWithBytes(this: *Blob, global: *JSGlobalObject, raw_bytes: []const 
     }
 
     if (bom == .utf16_le) {
-        var out = bun.String.cloneUTF16(bun.reinterpretSlice(u16, buf));
+        var out = cloneUTF16LE(buf) catch return global.throwOutOfMemory();
         defer if (lifetime == .temporary) bun.default_allocator.free(raw_bytes);
         defer if (lifetime == .transfer) this.detach();
         defer out.deref();
@@ -4279,7 +4303,7 @@ fn fromJSWithoutDeferGC(
                         // buffers instead.
                         return build.blob.dupe();
                     } else {
-                        const sliced = try current.toSliceClone(global);
+                        const sliced = try top_value.toSliceClone(global);
                         if (sliced.allocator.get()) |allocator| {
                             return Blob.initWithAllASCII(@constCast(sliced.slice()), allocator, global, false);
                         }
@@ -4299,197 +4323,76 @@ fn fromJSWithoutDeferGC(
 
     var stack_allocator = bun.stackFallback(1024, bun.default_allocator);
     const stack_mem_all = stack_allocator.get();
-    var stack: std.array_list.Managed(JSValue) = std.array_list.Managed(JSValue).init(stack_mem_all);
     var joiner = StringJoiner{ .allocator = stack_mem_all };
+    errdefer joiner.deinit();
     var could_have_non_ascii = false;
 
-    defer if (stack_allocator.fixed_buffer_allocator.end_index >= 1024) stack.deinit();
+    const Join = struct {
+        fn appendPart(
+            item: JSValue,
+            global_object: *JSGlobalObject,
+            part_joiner: *StringJoiner,
+            has_non_ascii: *bool,
+        ) bun.JSError!void {
+            switch (item.jsTypeLoose()) {
+                .ArrayBuffer,
+                .Int8Array,
+                .Uint8Array,
+                .Uint8ClampedArray,
+                .Int16Array,
+                .Uint16Array,
+                .Int32Array,
+                .Uint32Array,
+                .Float16Array,
+                .Float32Array,
+                .Float64Array,
+                .BigInt64Array,
+                .BigUint64Array,
+                .DataView,
+                => {
+                    has_non_ascii.* = true;
+                    var buf = item.asArrayBuffer(global_object).?;
+                    // WebIDL's Blob constructor snapshots a buffer source when
+                    // its part is visited. A later part can run arbitrary JS and
+                    // detach or resize the source before the final join.
+                    part_joiner.pushCloned(buf.byteSlice());
+                },
 
-    while (true) {
-        switch (current.jsTypeLoose()) {
-            .NumberObject,
-            jsc.JSValue.JSType.String,
-            jsc.JSValue.JSType.StringObject,
-            jsc.JSValue.JSType.DerivedStringObject,
-            => {
-                var sliced = try current.toSlice(global, bun.default_allocator);
-                const allocator = sliced.allocator.get();
-                could_have_non_ascii = could_have_non_ascii or !sliced.allocator.isWTFAllocator();
-                joiner.push(sliced.slice(), allocator);
-            },
-
-            .Array, .DerivedArray => {
-                var iter = try jsc.JSArrayIterator.init(current, global);
-                try stack.ensureUnusedCapacity(iter.len);
-
-                // Decide up front whether processing any part (or an entry already
-                // pending on `stack`) can re-enter user JS (toString / valueOf /
-                // proxy traps / getters) and detach a borrowed buffer before
-                // joiner.done() copies it out. If nothing can, typed-array/blob
-                // parts are borrowed (pushStatic) rather than cloned, which would
-                // double peak memory for `new Blob(largeChunks)`. A non-fast array
-                // is conservatively treated as able to run user JS.
-                var parts_can_run_js = iter.fast == null or stack.items.len > 0;
-                if (!parts_can_run_js) {
-                    var prescan = try jsc.JSArrayIterator.init(current, global);
-                    scan: while (try prescan.next()) |scan_item| {
-                        if (scan_item.isUndefinedOrNull()) continue;
-                        switch (scan_item.jsTypeLoose()) {
-                            .String,
-                            .ArrayBuffer,
-                            .Int8Array,
-                            .Uint8Array,
-                            .Uint8ClampedArray,
-                            .Int16Array,
-                            .Uint16Array,
-                            .Int32Array,
-                            .Uint32Array,
-                            .Float16Array,
-                            .Float32Array,
-                            .Float64Array,
-                            .BigInt64Array,
-                            .BigUint64Array,
-                            .DataView,
-                            => {},
-                            .DOMWrapper => {
-                                if (scan_item.as(Blob) == null) {
-                                    parts_can_run_js = true;
-                                    break :scan;
-                                }
-                            },
-                            else => {
-                                parts_can_run_js = true;
-                                break :scan;
-                            },
-                        }
+                .DOMWrapper => {
+                    if (item.as(Blob)) |blob| {
+                        has_non_ascii.* = has_non_ascii.* or blob.charset != .all_ascii;
+                        // Snapshot the immutable part now so later coercion and
+                        // GC cannot invalidate its store before done().
+                        part_joiner.pushCloned(blob.sharedView());
+                    } else {
+                        const sliced = try item.toSliceClone(global_object);
+                        const allocator = sliced.allocator.get();
+                        has_non_ascii.* = has_non_ascii.* or allocator != null;
+                        part_joiner.push(sliced.slice(), allocator);
                     }
-                }
+                },
 
-                var any_arrays = false;
-                while (try iter.next()) |item| {
-                    if (item.isUndefinedOrNull()) continue;
-
-                    // When it's a string or ArrayBuffer inside an array, we can avoid the extra push/pop
-                    // we only really want this for nested arrays
-                    // However, we must preserve the order
-                    // That means if there are any arrays
-                    // we have to restart the loop
-                    if (!any_arrays) {
-                        switch (item.jsTypeLoose()) {
-                            .NumberObject,
-                            .Cell,
-                            .String,
-                            .StringObject,
-                            .DerivedStringObject,
-                            => {
-                                var sliced = try item.toSlice(global, bun.default_allocator);
-                                const allocator = sliced.allocator.get();
-                                could_have_non_ascii = could_have_non_ascii or !sliced.allocator.isWTFAllocator();
-                                joiner.push(sliced.slice(), allocator);
-                                continue;
-                            },
-                            .ArrayBuffer,
-                            .Int8Array,
-                            .Uint8Array,
-                            .Uint8ClampedArray,
-                            .Int16Array,
-                            .Uint16Array,
-                            .Int32Array,
-                            .Uint32Array,
-                            .Float16Array,
-                            .Float32Array,
-                            .Float64Array,
-                            .BigInt64Array,
-                            .BigUint64Array,
-                            .DataView,
-                            => {
-                                could_have_non_ascii = true;
-                                var buf = item.asArrayBuffer(global).?;
-                                // Clone if a later part could run JS and detach this
-                                // buffer before done() copies it (UAF); else borrow.
-                                if (parts_can_run_js) {
-                                    joiner.pushCloned(buf.byteSlice());
-                                } else {
-                                    joiner.pushStatic(buf.byteSlice());
-                                }
-                                continue;
-                            },
-                            .Array, .DerivedArray => {
-                                any_arrays = true;
-                                could_have_non_ascii = true;
-                                break;
-                            },
-
-                            .DOMWrapper => {
-                                if (item.as(Blob)) |blob| {
-                                    could_have_non_ascii = could_have_non_ascii or blob.charset != .all_ascii;
-                                    if (parts_can_run_js) {
-                                        joiner.pushCloned(blob.sharedView());
-                                    } else {
-                                        joiner.pushStatic(blob.sharedView());
-                                    }
-                                    continue;
-                                } else {
-                                    const sliced = try current.toSliceClone(global);
-                                    const allocator = sliced.allocator.get();
-                                    could_have_non_ascii = could_have_non_ascii or allocator != null;
-                                    joiner.push(sliced.slice(), allocator);
-                                }
-                            },
-                            else => {},
-                        }
-                    }
-
-                    stack.appendAssumeCapacity(item);
-                }
-            },
-
-            .DOMWrapper => {
-                if (current.as(Blob)) |blob| {
-                    could_have_non_ascii = could_have_non_ascii or blob.charset != .all_ascii;
-                    // Unconditionally clone: entries still pending on `stack` are
-                    // processed after this and can run JS that detaches the store.
-                    joiner.pushCloned(blob.sharedView());
-                } else {
-                    const sliced = try current.toSliceClone(global);
-                    const allocator = sliced.allocator.get();
-                    could_have_non_ascii = could_have_non_ascii or allocator != null;
-                    joiner.push(sliced.slice(), allocator);
-                }
-            },
-
-            .ArrayBuffer,
-            .Int8Array,
-            .Uint8Array,
-            .Uint8ClampedArray,
-            .Int16Array,
-            .Uint16Array,
-            .Int32Array,
-            .Uint32Array,
-            .Float16Array,
-            .Float32Array,
-            .Float64Array,
-            .BigInt64Array,
-            .BigUint64Array,
-            .DataView,
-            => {
-                var buf = current.asArrayBuffer(global).?;
-                joiner.pushStatic(buf.slice());
-                could_have_non_ascii = true;
-            },
-
-            else => {
-                var sliced = try current.toSlice(global, bun.default_allocator);
-                if (global.hasException()) {
-                    const end_result = try joiner.done(bun.default_allocator);
-                    bun.default_allocator.free(end_result);
-                    return error.JSError;
-                }
-                could_have_non_ascii = could_have_non_ascii or !sliced.allocator.isWTFAllocator();
-                joiner.push(sliced.slice(), sliced.allocator.get());
-            },
+                else => {
+                    // Nested arrays are USVString parts rather than recursively
+                    // flattened. The pinned Bun constructor skips nullish parts
+                    // (including sparse-array holes), so preserve that behavior.
+                    if (item.isUndefinedOrNull()) return;
+                    var sliced = try item.toSlice(global_object, bun.default_allocator);
+                    has_non_ascii.* = has_non_ascii.* or !sliced.allocator.isWTFAllocator();
+                    part_joiner.push(sliced.slice(), sliced.allocator.get());
+                },
+            }
         }
-        current = stack.pop() orelse break;
+    };
+
+    switch (current.jsTypeLoose()) {
+        .Array, .DerivedArray => {
+            var iter = try jsc.JSArrayIterator.init(current, global);
+            while (try iter.next()) |item| {
+                try Join.appendPart(item, global, &joiner, &could_have_non_ascii);
+            }
+        },
+        else => try Join.appendPart(current, global, &joiner, &could_have_non_ascii),
     }
 
     const joined = try joiner.done(bun.default_allocator);
