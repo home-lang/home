@@ -311,6 +311,13 @@ fn bitWidthOfType(type_name: []const u8) ?usize {
 /// of the wrong length. Struct and array types are resolved by the codegen's
 /// own sizeOf, which has the struct table.
 fn sizeOfPrimitive(type_name: []const u8) ?usize {
+    // Floating point. f32 is four bytes in memory even though the backend
+    // computes in doubles: the width a value is stored at is what a struct
+    // layout depends on, and a field the hardware or another implementation
+    // reads must be the size it says it is.
+    if (std.mem.eql(u8, type_name, "f32")) return 4;
+    if (std.mem.eql(u8, type_name, "f64") or std.mem.eql(u8, type_name, "float") or
+        std.mem.eql(u8, type_name, "double")) return 8;
     if (std.mem.eql(u8, type_name, "u8") or std.mem.eql(u8, type_name, "i8") or
         std.mem.eql(u8, type_name, "bool")) return 1;
     if (std.mem.eql(u8, type_name, "u16") or std.mem.eql(u8, type_name, "i16")) return 2;
@@ -481,6 +488,31 @@ fn parseArrayTypeNamed(type_name: []const u8) ?struct { count_name: []const u8, 
 }
 
 /// True if the type is a pointer. Indexing one strides by the pointee.
+/// Whether a written type is a floating-point type.
+///
+/// The backend keeps every float value as an f64 bit pattern in the integer
+/// accumulator, and converts to the floating-point registers only around
+/// arithmetic. That is what lets the whole existing stack machine — pushes,
+/// locals, arguments, returns — carry floats without knowing they are floats;
+/// only the operations that mean something different for a float need to ask.
+///
+/// The cost is a calling convention that is not the platform's: a double is
+/// passed in an integer register as its bits, not in xmm0. Every caller and
+/// callee here is Home code compiled by this backend, so they agree — but a
+/// C function taking a double could not be called this way, and would need
+/// the argument classified into a floating-point register first.
+fn isFloatType(type_name: []const u8) bool {
+    const bare = splitAlign(type_name).bare;
+    return std.mem.eql(u8, bare, "f32") or std.mem.eql(u8, bare, "f64") or
+        std.mem.eql(u8, bare, "float") or std.mem.eql(u8, bare, "double");
+}
+
+/// Whether a float type is stored at single width. Only storage width: the
+/// value is still computed as a double.
+fn isSingleFloat(type_name: []const u8) bool {
+    return std.mem.eql(u8, splitAlign(type_name).bare, "f32");
+}
+
 fn isPointerType(type_name: []const u8) bool {
     // `[*]T` is a many-item pointer: an address you may index, with no length.
     if (std.mem.startsWith(u8, type_name, "[*]")) return true;
@@ -1464,6 +1496,10 @@ pub const HomeKernelCodegen = struct {
                 return f.type_name;
             },
             .UnaryExpr => |u| {
+                // Negation does not change a type, and a negated float is
+                // still a float — without this `-1.5` looked like an integer
+                // and every expression it appeared in took the integer path.
+                if (u.op == .Neg) return self.typeOfLValue(u.operand);
                 // `*p` has the pointee's type; `&x` has x's, as a pointer we
                 // only need for further member access, so report x's type.
                 const inner = self.typeOfLValue(u.operand) orelse return null;
@@ -1482,6 +1518,9 @@ pub const HomeKernelCodegen = struct {
                 if (c.callee.* != .Identifier) return null;
                 return self.fn_return_types.get(c.callee.Identifier.name);
             },
+            // A float literal is a double until something says otherwise, the
+            // same rule C uses. An `f32` binding narrows it at the store.
+            .FloatLiteral => return "f64",
             // A string literal's value is the address of its bytes, so a local
             // initialized from one is a byte pointer and may be indexed.
             .StringLiteral => return "[*]u8",
@@ -1821,6 +1860,15 @@ pub const HomeKernelCodegen = struct {
             // struct's "value" is its address.
             if (!info.is_bitfield) return;
         }
+        if (isFloatType(type_name)) {
+            // Read at the stored width and widen: an f32 in memory is four
+            // bytes that mean a single, not the low half of a double, so a
+            // plain 4-byte integer load would produce a different number.
+            try self.emit().floatLoad(isSingleFloat(type_name));
+            try self.emit().floatToBits();
+            return;
+        }
+
         const size = self.sizeOf(type_name) orelse 8;
         _ = loadFor(size) orelse {
             try self.print("    # ERROR: cannot load a value of type {s} ({d} bytes)\n", .{ type_name, size });
@@ -2203,6 +2251,21 @@ pub const HomeKernelCodegen = struct {
         // Address first, stashed, then the value — so the value expression
         // cannot clobber the address.
         try self.emit().push(.acc);
+
+        if (isFloatType(type_name)) {
+            // The value arrives as a double's bits whatever the destination's
+            // width, and an integer source has to be converted rather than
+            // reinterpreted. An f32 field is then narrowed on the way out:
+            // storing the low half of a double into four bytes writes a
+            // denormal, which is a silently wrong number rather than a
+            // failure.
+            try self.generateAsFloat(value);
+            try self.emit().pop(.tmp3);
+            try self.emit().floatFromBits();
+            try self.emit().floatStore(.tmp3, isSingleFloat(type_name));
+            return;
+        }
+
         try self.generateExpr(value);
         try self.emit().pop(.tmp3);
         try self.emit().storeIndirect(.acc, .tmp3, size);
@@ -3392,9 +3455,114 @@ pub const HomeKernelCodegen = struct {
     fn narrowToDeclared(self: *HomeKernelCodegen, type_name: []const u8) !void {
         const bare = splitAlign(type_name).bare;
         if (bare.len == 0) return;
+        if (isFloatType(bare)) {
+            // Arithmetic happens in doubles, so an f32 binding has to be
+            // rounded to what a single can hold — otherwise `f32` would mean
+            // single precision in a struct field and double precision in a
+            // local, and the same calculation would give two answers
+            // depending on where its intermediate landed.
+            if (isSingleFloat(bare)) {
+                try self.emit().floatFromBits();
+                try self.emit().floatRoundToSingle();
+                try self.emit().floatToBits();
+            }
+            return;
+        }
         if (!std.mem.eql(u8, bare, "bool") and bare[0] != 'u' and bare[0] != 'i') return;
         if (bitWidthOfType(bare) == null) return;
         try self.emitNarrowTo(bare);
+    }
+
+    /// A cast that crosses between integers and floats, which is a conversion
+    /// and not a reinterpretation. Returns true when it handled the cast.
+    ///
+    /// Getting this wrong is quiet: `@as(f64, 1)` reinterpreted rather than
+    /// converted is 4.9e-324, a number that prints as approximately zero and
+    /// makes every calculation downstream approximately zero with it.
+    /// `@bitCast` is the spelling for when the bits really are what is meant,
+    /// and it goes down the other path.
+    fn emitNumericConversion(
+        self: *HomeKernelCodegen,
+        value: *const ast.Expr,
+        target_type: []const u8,
+    ) !bool {
+        const to_float = isFloatType(target_type);
+        const from_float = self.isFloatExpr(value);
+        if (to_float == from_float) {
+            // Float to float still needs the store width applied, but the
+            // value is a double either way in a register, so there is nothing
+            // to emit here beyond the ordinary evaluation.
+            return false;
+        }
+
+        try self.generateExpr(value);
+        if (to_float) {
+            try self.emit().intToFloat();
+            try self.emit().floatToBits();
+            return true;
+        }
+        try self.emit().floatFromBits();
+        try self.emit().floatToInt();
+        try self.emitNarrowTo(target_type);
+        return true;
+    }
+
+    /// Whether an expression's value is a floating-point number.
+    fn isFloatExpr(self: *HomeKernelCodegen, expr: *const ast.Expr) bool {
+        if (expr.* == .FloatLiteral) return true;
+        const t = self.typeOfLValue(expr) orelse return false;
+        return isFloatType(t);
+    }
+
+    /// Evaluate an operand and leave a *double* bit pattern in the
+    /// accumulator, converting from an integer when that is what it is. An
+    /// integer reinterpreted as a double rather than converted is the classic
+    /// silent wrong answer here: `1` would become 4.9e-324.
+    fn generateAsFloat(self: *HomeKernelCodegen, expr: *const ast.Expr) !void {
+        try self.generateExpr(expr);
+        if (self.isFloatExpr(expr)) return;
+        try self.emit().intToFloat();
+        try self.emit().floatToBits();
+    }
+
+    /// Arithmetic and comparison on floats. Returns false for an operator
+    /// that has no floating-point meaning, so the caller can fall through and
+    /// report it the way it reports any other unsupported operator.
+    fn generateFloatBinary(self: *HomeKernelCodegen, binary: *const ast.BinaryExpr) !bool {
+        const op: ?kernel_target.BinOp = switch (binary.op) {
+            .Add, .CheckedAdd => .add,
+            .Sub, .CheckedSub => .sub,
+            .Mul, .CheckedMul => .mul,
+            .Div, .CheckedDiv => .div,
+            else => null,
+        };
+        const cond: ?Cond = switch (binary.op) {
+            .Equal => .eq,
+            .NotEqual => .ne,
+            .Less => .lt,
+            .LessEq => .le,
+            .Greater => .gt,
+            .GreaterEq => .ge,
+            else => null,
+        };
+        if (op == null and cond == null) return false;
+
+        // Left, stashed; then right. Source order, as in the integer path.
+        try self.generateAsFloat(binary.left);
+        try self.emit().push(.acc);
+        try self.generateAsFloat(binary.right);
+        try self.emit().floatFromBits();      // right -> float accumulator
+        try self.emit().floatAccToTmp();      // -> float temporary
+        try self.emit().pop(.acc);
+        try self.emit().floatFromBits();      // left -> float accumulator
+
+        if (op) |arith| {
+            try self.emit().floatBinOp(arith);
+            try self.emit().floatToBits();
+            return true;
+        }
+        try self.emit().floatCompare(cond.?, self.freshLabel());
+        return true;
     }
 
     /// Emit a comparison of the accumulator against `tmp`, leaving 0 or 1 in
@@ -3494,6 +3662,24 @@ pub const HomeKernelCodegen = struct {
                 },
                 .DoWhileStmt => |s2| try self.reserveLocals(s2.body.statements),
                 .BlockStmt => |s2| try self.reserveLocals(s2.statements),
+                // A switch case's body is a statement list like any other,
+                // and a `let` in one needs a frame slot as much as a `let` in
+                // an if. Without this the declaration compiled but every use
+                // of it reported an undefined variable — a name that exists,
+                // in a scope that exists, with nowhere to live.
+                .SwitchStmt => |s2| {
+                    try self.reserveLocalsInExpr(s2.value);
+                    for (s2.cases) |case| {
+                        try self.reserveLocals(case.body);
+                    }
+                },
+                .MatchStmt => |s2| {
+                    try self.reserveLocalsInExpr(s2.value);
+                    for (s2.arms) |arm| {
+                        if (arm.guard) |g| try self.reserveLocalsInExpr(g);
+                        try self.reserveLocalsInExpr(arm.body);
+                    }
+                },
                 .ReturnStmt => |s2| {
                     if (s2.value) |v| try self.reserveLocalsInExpr(v);
                 },
@@ -4188,6 +4374,14 @@ pub const HomeKernelCodegen = struct {
                     try self.emit().movImm(0);
                 }
             },
+            .FloatLiteral => |lit| {
+                // A float value travels as its IEEE-754 double bit pattern in
+                // the integer accumulator, so a literal is just a 64-bit
+                // immediate. No constant pool, and no load from memory before
+                // the value can be used.
+                const bits: u64 = @bitCast(lit.value);
+                try self.emit().movImm(@bitCast(bits));
+            },
             .BooleanLiteral => |lit| {
                 // Load boolean as integer (0 or 1) into %rax
                 try self.emit().movImm(@intCast(if (lit.value) @as(i64, 1) else @as(i64, 0)));
@@ -4357,6 +4551,16 @@ pub const HomeKernelCodegen = struct {
                     return;
                 }
 
+                // Floating point takes a different path: the operands are
+                // bit patterns in integer registers and have to reach the
+                // floating-point unit before anything can be done with them.
+                // Whether an expression is floating point is decided by its
+                // operands' types — if either side is a float, both are, and
+                // an integer operand is converted rather than reinterpreted.
+                if (self.isFloatExpr(binary.left) or self.isFloatExpr(binary.right)) {
+                    if (try self.generateFloatBinary(binary)) return;
+                }
+
                 // Left in %rax, right in %rcx. Evaluate left first and stash
                 // it, so operand order matches source order — the previous
                 // code evaluated the right operand first, which is observable
@@ -4515,7 +4719,19 @@ pub const HomeKernelCodegen = struct {
                 }
                 try self.generateExpr(unary.operand);
                 switch (unary.op) {
-                    .Neg => try self.emit().negate(),
+                    .Neg => {
+                        // Negating a float's bit pattern with the integer
+                        // `neg` produces a number unrelated to the one meant:
+                        // two's complement on an IEEE-754 encoding is not the
+                        // sign flip it looks like.
+                        if (self.isFloatExpr(unary.operand)) {
+                            try self.emit().floatFromBits();
+                            try self.emit().floatNegate();
+                            try self.emit().floatToBits();
+                        } else {
+                            try self.emit().negate();
+                        }
+                    },
                     .BitNot => {
                         try self.emit().bitNot();
                         // `not` is a full-width instruction. Complementing a
@@ -4788,6 +5004,7 @@ pub const HomeKernelCodegen = struct {
                 try self.emit().movImm(0);
             },
             .TypeCastExpr => |cast| {
+                if (try self.emitNumericConversion(cast.value, cast.target_type)) return;
                 try self.generateExpr(cast.value);
                 try self.emitNarrowTo(cast.target_type);
             },
@@ -4800,6 +5017,9 @@ pub const HomeKernelCodegen = struct {
                     },
                     // Width changes: evaluate, then narrow to the named type.
                     .Truncate, .IntCast, .As, .EnumToInt, .IntToEnum => {
+                        if (r.target_type) |t| {
+                            if (try self.emitNumericConversion(r.target, t)) return;
+                        }
                         try self.generateExpr(r.target);
                         if (r.target_type) |t| try self.emitNarrowTo(t);
                     },

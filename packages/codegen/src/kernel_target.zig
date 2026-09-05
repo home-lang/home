@@ -881,6 +881,250 @@ pub const Emitter = struct {
     // ------------------------------------------------------------ arithmetic
 
     /// `acc = acc <op> tmp`.
+    // ------------------------------------------------------------------
+    // Floating point
+    //
+    // A second, parallel stack machine: the float accumulator holds the left
+    // operand and the float temporary the right, mirroring `acc`/`tmp`. They
+    // are xmm0/xmm1 on x86-64 and d0/d1 on aarch64.
+    //
+    // Values are kept as f64 in registers whatever their declared width, and
+    // narrowed only when stored. Doing arithmetic at the declared width would
+    // mean two of every instruction below and a conversion at every mixed
+    // expression; carrying the wider type is what C does, and it is what
+    // makes `let x: f32 = a * b` round once, at the store, rather than twice.
+    //
+    // Using these on x86-64 requires SSE to be enabled — CR0.EM clear, CR0.MP
+    // set, CR4.OSFXSR and CR4.OSXMMEXCPT set — and requires whatever switches
+    // contexts to save the register file. A kernel that does neither will
+    // fault on the first instruction here, which is a loud failure rather
+    // than a quiet one.
+    // ------------------------------------------------------------------
+
+    /// Move a 64-bit pattern from the integer accumulator into the float
+    /// accumulator, reinterpreting the bits rather than converting them.
+    pub fn floatFromBits(self: Self) !void {
+        switch (self.arch) {
+            .x86_64 => try self.insn("movq %rax, %xmm0", .{}),
+            .aarch64 => try self.insn("fmov d0, x0", .{}),
+        }
+    }
+
+    /// The inverse: the float accumulator's bits into the integer one.
+    pub fn floatToBits(self: Self) !void {
+        switch (self.arch) {
+            .x86_64 => try self.insn("movq %xmm0, %rax", .{}),
+            .aarch64 => try self.insn("fmov x0, d0", .{}),
+        }
+    }
+
+    /// Push the float accumulator, and pop into the float temporary. The
+    /// stack is the only place a value can wait, since this machine has two
+    /// float registers and expressions nest arbitrarily.
+    pub fn floatPush(self: Self) !void {
+        switch (self.arch) {
+            .x86_64 => {
+                try self.insn("subq $8, %rsp", .{});
+                try self.insn("movsd %xmm0, (%rsp)", .{});
+            },
+            .aarch64 => try self.insn("str d0, [sp, #-16]!", .{}),
+        }
+    }
+
+    pub fn floatPopToTmp(self: Self) !void {
+        switch (self.arch) {
+            .x86_64 => {
+                try self.insn("movsd (%rsp), %xmm1", .{});
+                try self.insn("addq $8, %rsp", .{});
+            },
+            .aarch64 => try self.insn("ldr d1, [sp], #16", .{}),
+        }
+    }
+
+    pub fn floatPopToAcc(self: Self) !void {
+        switch (self.arch) {
+            .x86_64 => {
+                try self.insn("movsd (%rsp), %xmm0", .{});
+                try self.insn("addq $8, %rsp", .{});
+            },
+            .aarch64 => try self.insn("ldr d0, [sp], #16", .{}),
+        }
+    }
+
+    /// Move the float accumulator into the float temporary.
+    pub fn floatAccToTmp(self: Self) !void {
+        switch (self.arch) {
+            .x86_64 => try self.insn("movapd %xmm0, %xmm1", .{}),
+            .aarch64 => try self.insn("fmov d1, d0", .{}),
+        }
+    }
+
+    /// `facc = facc <op> ftmp`. Only the four arithmetic operations: there is
+    /// no float remainder instruction on either architecture, and a bitwise
+    /// operation on a float is a question about its representation, which the
+    /// caller should ask through the bit-level moves above.
+    pub fn floatBinOp(self: Self, op: BinOp) !void {
+        switch (self.arch) {
+            .x86_64 => switch (op) {
+                .add => try self.insn("addsd %xmm1, %xmm0", .{}),
+                .sub => try self.insn("subsd %xmm1, %xmm0", .{}),
+                .mul => try self.insn("mulsd %xmm1, %xmm0", .{}),
+                .div => try self.insn("divsd %xmm1, %xmm0", .{}),
+                else => return error.UnsupportedFloatOp,
+            },
+            .aarch64 => switch (op) {
+                .add => try self.insn("fadd d0, d0, d1", .{}),
+                .sub => try self.insn("fsub d0, d0, d1", .{}),
+                .mul => try self.insn("fmul d0, d0, d1", .{}),
+                .div => try self.insn("fdiv d0, d0, d1", .{}),
+                else => return error.UnsupportedFloatOp,
+            },
+        }
+    }
+
+    pub fn floatNegate(self: Self) !void {
+        switch (self.arch) {
+            .x86_64 => {
+                // No negate instruction for scalar doubles: subtract from
+                // zero rather than flipping the sign bit, so a negated zero
+                // and a negated NaN behave as the hardware defines.
+                try self.insn("xorpd %xmm1, %xmm1", .{});
+                try self.insn("subsd %xmm0, %xmm1", .{});
+                try self.insn("movapd %xmm1, %xmm0", .{});
+            },
+            .aarch64 => try self.insn("fneg d0, d0", .{}),
+        }
+    }
+
+    /// Compare the float accumulator against the float temporary and leave
+    /// 0 or 1 in the integer accumulator.
+    ///
+    /// Unordered comparisons — either operand NaN — must be false for
+    /// everything except `ne`. On x86-64 `ucomisd` sets PF for unordered, and
+    /// the signed conditions would otherwise read an unordered result as
+    /// less-than; the parity check is what keeps `NaN < 1.0` false.
+    pub fn floatCompare(self: Self, cond: Cond, label_id: usize) !void {
+        switch (self.arch) {
+            .x86_64 => {
+                try self.insn("ucomisd %xmm1, %xmm0", .{});
+                const setcc = switch (cond) {
+                    .eq => "sete",
+                    .ne => "setne",
+                    // Unsigned forms: ucomisd sets CF/ZF as for an unsigned
+                    // compare, which is how the ordered predicates are read.
+                    .lt, .ult => "setb",
+                    .le, .ule => "setbe",
+                    .gt, .ugt => "seta",
+                    .ge, .uge => "setae",
+                };
+                try self.insn("{s} %al", .{setcc});
+                try self.insn("movzbq %al, %rax", .{});
+                if (cond != .ne) {
+                    // Unordered: force the answer to 0. `ne` is the one
+                    // predicate that is true for NaN, and setne already
+                    // reports it that way.
+                    try self.insn("jnp .L_ford_{d}", .{label_id});
+                    try self.insn("movq $0, %rax", .{});
+                    try self.print(".L_ford_{d}:\n", .{label_id});
+                }
+            },
+            .aarch64 => {
+                try self.insn("fcmp d0, d1", .{});
+                const cc = switch (cond) {
+                    .eq => "eq",
+                    .ne => "ne",
+                    // `mi`/`ls`/`gt`/`ge` are the unordered-false forms:
+                    // fcmp sets V on unordered, and these read it as false.
+                    .lt, .ult => "mi",
+                    .le, .ule => "ls",
+                    .gt, .ugt => "gt",
+                    .ge, .uge => "ge",
+                };
+                try self.insn("cset x0, {s}", .{cc});
+            },
+        }
+    }
+
+    /// Round the value in the float accumulator to single precision and back
+    /// to a double. The bits stay a double's, but the number is one an f32
+    /// can hold — so an `f32` binding means single precision everywhere, not
+    /// only once it reaches memory.
+    pub fn floatRoundToSingle(self: Self) !void {
+        switch (self.arch) {
+            .x86_64 => {
+                try self.insn("cvtsd2ss %xmm0, %xmm0", .{});
+                try self.insn("cvtss2sd %xmm0, %xmm0", .{});
+            },
+            .aarch64 => {
+                try self.insn("fcvt s0, d0", .{});
+                try self.insn("fcvt d0, s0", .{});
+            },
+        }
+    }
+
+    /// Signed 64-bit integer in the accumulator to a double in the float
+    /// accumulator, and back. The back conversion truncates toward zero,
+    /// which is what a cast means everywhere else in this language.
+    pub fn intToFloat(self: Self) !void {
+        switch (self.arch) {
+            .x86_64 => try self.insn("cvtsi2sdq %rax, %xmm0", .{}),
+            .aarch64 => try self.insn("scvtf d0, x0", .{}),
+        }
+    }
+
+    pub fn floatToInt(self: Self) !void {
+        switch (self.arch) {
+            .x86_64 => try self.insn("cvttsd2siq %xmm0, %rax", .{}),
+            .aarch64 => try self.insn("fcvtzs x0, d0", .{}),
+        }
+    }
+
+    /// Load a double, or a single widened to one, from the address in the
+    /// integer accumulator. Storing goes the other way, narrowing on the way
+    /// out for f32 — which is the one place a value's declared width matters.
+    pub fn floatLoad(self: Self, single: bool) !void {
+        switch (self.arch) {
+            .x86_64 => {
+                if (single) {
+                    try self.insn("movss (%rax), %xmm0", .{});
+                    try self.insn("cvtss2sd %xmm0, %xmm0", .{});
+                } else {
+                    try self.insn("movsd (%rax), %xmm0", .{});
+                }
+            },
+            .aarch64 => {
+                if (single) {
+                    try self.insn("ldr s0, [x0]", .{});
+                    try self.insn("fcvt d0, s0", .{});
+                } else {
+                    try self.insn("ldr d0, [x0]", .{});
+                }
+            },
+        }
+    }
+
+    /// Store the float accumulator to the address in `addr`.
+    pub fn floatStore(self: Self, addr: Reg, single: bool) !void {
+        switch (self.arch) {
+            .x86_64 => {
+                if (single) {
+                    try self.insn("cvtsd2ss %xmm0, %xmm0", .{});
+                    try self.insn("movss %xmm0, ({s})", .{self.reg(addr)});
+                } else {
+                    try self.insn("movsd %xmm0, ({s})", .{self.reg(addr)});
+                }
+            },
+            .aarch64 => {
+                if (single) {
+                    try self.insn("fcvt s0, d0", .{});
+                    try self.insn("str s0, [{s}]", .{self.reg(addr)});
+                } else {
+                    try self.insn("str d0, [{s}]", .{self.reg(addr)});
+                }
+            },
+        }
+    }
+
     pub fn binOp(self: Self, op: BinOp) !void {
         switch (self.arch) {
             .x86_64 => switch (op) {
