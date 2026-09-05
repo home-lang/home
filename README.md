@@ -303,6 +303,14 @@ generic constructor initializers without publishing approximate imported types:
 | Diagnostics | 833 | **710** | **123 removed; 0 added** |
 | TS7006 | 241 | **118** | **123 removed (51.0%)** |
 
+The dependent-default audit then instantiates later defaults with earlier
+effective arguments and retains only declaration-backed constraint proofs:
+
+| [Zod 4.5.2 dependent generic-default audit](docs/docs/TS_PERFORMANCE.md#dependent-generic-defaults) | Frozen post-#627 parent | #633 candidate | Change |
+|---|---:|---:|---:|
+| Diagnostics | 710 | **604** | **106 removed (14.9%); 0 added** |
+| Removed diagnostic codes | — | 67× TS2430; 21× TS2345; 18× TS7006 | toward the zero-diagnostic oracle |
+
 TypeScript 6.0.3 reports zero diagnostics on this graph. Zod remains outside
 the cross-compiler timing table until Home also reaches zero diagnostics.
 

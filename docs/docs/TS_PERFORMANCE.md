@@ -6866,3 +6866,91 @@ The candidate ReleaseFast binary hash is
 zig build home-tsc -Doptimize=ReleaseFast
 ./zig-out/bin/home-tsc --project /path/to/zod-4.5.2/tsconfig.benchmark.json
 ```
+
+### Dependent generic defaults
+
+Issue [#633](https://github.com/home-lang/home/issues/633), under the Zod
+admission issue [#548](https://github.com/home-lang/home/issues/548) and
+correctness tracker [#416](https://github.com/home-lang/home/issues/416),
+continues from #627's frozen 710-diagnostic baseline. A later generic default
+is now instantiated in declaration order with every earlier effective
+argument. For example, `Family<T = unknown, U = Box<T>>` resolves `U` to
+`Box<unknown>` for `Family` and `Box<number>` for `Family<number>`, rather than
+leaving the declaration's `T` free inside `U`. The same helper drives all four
+existing default-fill sites.
+
+The supporting semantic fixes remain general: `every` and `some` callbacks
+accept truthy non-boolean returns like current `lib.d.ts`; unconstrained type
+parameters relate to `unknown` in interface heritage; narrowed nullable unions
+retain `any`; nested member-assigned callbacks can use non-void contextual
+signatures without rechecking their bodies outside the original flow state;
+speculative contextual diagnostics always roll back; provisional iterator
+diagnostics are reconciled after contextual checking; and overload
+applicability snapshots borrowed signature parameters before recursive
+interning. Constraint checking also verifies an object constraint against each
+target-union branch and uses visible interface declaration identity only when
+the source property's generic interface explicitly extends the target
+property's declaration. No Zod symbol or member name is special-cased.
+
+The focused strict reduction covers bare and partially supplied defaults, a
+valid generic argument whose constraint reaches one object-union branch, and
+three invalid controls: a concrete missing object shape, a scalar constraint,
+and a nested unrelated object constraint. TypeScript 6.0.3, native TypeScript
+7.0.2, and Home agree on every accepted and rejected location. TypeScript 7
+uses TS2741 rather than TS2344 for the concrete missing-property control; the
+semantic outcome is the same.
+
+| Dependent-default control | TypeScript 6.0.3 | Native TypeScript 7.0.2 | Home |
+|---|---:|---:|---:|
+| Bare and partially supplied dependent defaults | pass | pass | pass |
+| Declaration-backed object-union constraint | pass | pass | pass |
+| Concrete missing object shape | TS2344 | TS2741 | TS2344 |
+| Invalid scalar and nested constraints | 2× TS2344 | 2× TS2344 | 2× TS2344 |
+
+The real-project gate uses frozen parent `2de0edbc9`, the final #633 source,
+ReleaseFast builds, and the unchanged 106 production files selected by the
+pinned Zod 4.5.2 `tsconfig.benchmark.json`. Both arms use the same strict,
+no-emit configuration. Diagnostic identities normalize to the complete sorted
+`path:line:column - error TS code` set; no diagnostic, file, or sample is
+filtered.
+
+| Zod 4.5.2 dependent-default audit | Frozen post-#627 parent | #633 candidate | Change |
+|---|---:|---:|---:|
+| All diagnostics | 710 | **604** | **−106 (14.9%)** |
+| TS2430 | baseline | **67 removed** | invalid interface-extension cascades removed |
+| TS2345 | baseline | **21 removed** | valid constructor arguments restored |
+| TS7006 | baseline | **18 removed** | contextual parameters restored |
+| Added normalized diagnostics | — | **0** | none |
+| Wall seconds, runs 1 / 2 | — | 23.46 / 22.97 | transparency only |
+
+TypeScript 6.0.3 reports zero diagnostics on this frozen graph, so Zod remains
+outside the admitted cross-compiler timing table. The two candidate timings
+are recorded only for transparency: no counterbalanced same-semantics timing
+A/B was collected, and #633 intentionally performs more correct checking.
+
+The frozen configuration SHA-256 is
+`bc11625162272f50c164dd7fb9a245c15870692c5d6d275df72de36369014a70`.
+The sorted baseline diagnostic-key hash is
+`937b52579d8bc1fed1eafd7f649c9081fa272aac65331f0fde87d7f6569482dd`;
+both candidate runs produce
+`b1507875d4327b4df2dce0fed41123d3d409d8f85aca7b05fcaf6d3777c29210`.
+The final ReleaseFast binary hash is
+`e0b666a06f0f11736406a6fb11cee7ab4769d052675abc947bf7cdcdfeda3f3d`.
+
+The final source passes the focused TypeScript oracle, the full **4,346-test**
+checker suite in Debug, ReleaseSafe, and ReleaseFast, the TypeScript Program
+suite, `zig fmt`, and `git diff --check`. Symbolic indexed-access defaults are
+tracked separately in [#634](https://github.com/home-lang/home/issues/634).
+The recursive generic fixed-point limitation found during negative-control
+validation is recorded with its TypeScript 6/7 oracle in
+[#639](https://github.com/home-lang/home/issues/639); it was not hidden by a
+global diagnostic exception or proof-time declaration re-lowering.
+
+```sh
+zig build test -Dfilter=ts_checker
+zig build test -Dfilter=ts_checker -Doptimize=ReleaseSafe
+zig build test -Dfilter=ts_checker -Doptimize=ReleaseFast
+zig build test -Dfilter=ts_program
+zig build home-tsc -Doptimize=ReleaseFast
+./zig-out/bin/home-tsc --project /path/to/zod-4.5.2/tsconfig.benchmark.json
+```
