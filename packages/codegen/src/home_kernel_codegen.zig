@@ -1333,12 +1333,27 @@ pub const HomeKernelCodegen = struct {
     /// call, as in `wakeup_callback(pid)`.
     fn isCallableVariable(self: *HomeKernelCodegen, name: []const u8) !bool {
         if (self.local_types.get(name)) |t| {
-            return std.mem.indexOf(u8, t, "fn(") != null;
+            return self.namesFunctionType(t);
         }
         if (self.global_vars.get(name)) |g| {
-            return std.mem.indexOf(u8, g.type_name, "fn(") != null;
+            return self.namesFunctionType(g.type_name);
         }
         return false;
+    }
+
+    /// Whether a written type denotes a function pointer, following aliases.
+    /// `type DeviceOp = fn(u64, u32, u64): u32` is as much a function pointer
+    /// as the spelled-out type: without resolving the alias, a variable
+    /// declared with it was not recognised as callable and `op(...)` compiled
+    /// to a direct call to a symbol named `op`, which the linker then could
+    /// not find. An alias exists precisely so the spelled-out type does not
+    /// have to be repeated, and a name that stops working when you give it
+    /// one is a name that cannot be used.
+    fn namesFunctionType(self: *HomeKernelCodegen, type_name: []const u8) bool {
+        const bare = splitAlign(type_name).bare;
+        if (std.mem.indexOf(u8, bare, "fn(") != null) return true;
+        const resolved = self.resolveAlias(bare) orelse return false;
+        return std.mem.indexOf(u8, resolved, "fn(") != null;
     }
 
     fn functionSymbol(self: *HomeKernelCodegen, name: []const u8) ![]const u8 {

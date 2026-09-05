@@ -2536,30 +2536,18 @@ pub const Parser = struct {
         // elsewhere). Mirrors the discriminator on TypeAliasDecl.
         var target_owned: bool = false;
         if (self.check(.Fn)) {
-            // Parse function type: fn(params): return_type
-            _ = self.advance(); // consume 'fn'
-            _ = try self.expect(.LeftParen, "Expected '(' after 'fn' in function type");
-
-            // Skip parameter list - we just need to get past this for now
-            var paren_depth: usize = 1;
-            while (paren_depth > 0 and !self.isAtEnd()) {
-                if (self.check(.LeftParen)) {
-                    paren_depth += 1;
-                } else if (self.check(.RightParen)) {
-                    paren_depth -= 1;
-                }
-                if (paren_depth > 0) _ = self.advance();
-            }
-            _ = try self.expect(.RightParen, "Expected ')' after function parameters");
-
-            // Optional return type after ':'
-            if (self.match(&.{.Colon})) {
-                // Skip the return type
-                _ = self.advance(); // consume return type identifier
-            }
-
-            // Store as "fn" to indicate function type - actual type will be handled by type system
-            target_type = "fn";
+            // `type Name = fn(...)` goes through the same type-expression
+            // parser as `const Name = fn(...)`, so the two spellings of one
+            // declaration produce the same thing. This branch used to parse
+            // the signature and throw it away, storing the bare string "fn":
+            // the arity and return type were gone, and anything asking "is
+            // this a function pointer?" by looking for `fn(` said no. A
+            // variable declared with such an alias was therefore not
+            // recognised as callable, and calling it compiled to a direct
+            // call to a symbol named after the variable, which the linker
+            // could not find.
+            target_type = try self.parseTypeAnnotation();
+            target_owned = true;
         } else if (self.check(.LeftParen)) {
             // Parse tuple type: (T1, T2, ...)
             _ = self.advance(); // consume '('
@@ -2974,19 +2962,28 @@ pub const Parser = struct {
                 if (!self.match(&.{.Comma})) break;
             }
 
-            _ = try self.expect(.RightParen, "Expected ')' in function type");
+            const close_paren = try self.expect(.RightParen, "Expected ')' in function type");
 
             // Parse optional return type. Accept `: T`, `-> T`, OR
             // Zig-style `fn(...) T` with no separator before the type.
             // The token-class probe also covers prefix-style type
             // starters (`?T`, `*T`, `&T`, `[T]`, `!T`) so kernel
             // signatures like `fn(...) ?*Foo` parse cleanly.
+            //
+            // The separator-less form is only taken when the type is on the
+            // same line as the parameter list. Without that restriction a
+            // function type that ends a declaration —
+            // `type TimerCallback = fn(elapsed_us: u64)` — swallowed the
+            // first token of whatever came next as its return type, and the
+            // file stopped parsing several lines later with an error nowhere
+            // near the cause. A return type written on the following line is
+            // not something anyone writes; the next declaration is.
             var return_type: []const u8 = "()";
             var return_type_owned: bool = false;
             if (self.match(&.{.Colon}) or self.match(&.{.Arrow})) {
                 return_type = try self.parseTypeAnnotation();
                 return_type_owned = true;
-            } else if (self.isReturnTypeStart()) {
+            } else if (self.isReturnTypeStart() and self.peek().line == close_paren.line) {
                 return_type = try self.parseTypeAnnotation();
                 return_type_owned = true;
             }
