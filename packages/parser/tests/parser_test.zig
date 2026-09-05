@@ -508,6 +508,20 @@ test "parser: function without parameters" {
     try testing.expect(fn_decl.return_type == null);
 }
 
+test "parser: bodyless function is a forward declaration" {
+    const program = try parseSource(testing.allocator,
+        \\fn declared(x: u8)
+        \\fn next() {}
+    );
+    defer program.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 2), program.statements.len);
+    const declared = program.statements[0].FnDecl;
+    try testing.expect(declared.is_forward_decl);
+    try testing.expectEqual(@as(usize, 0), declared.body.statements.len);
+    try testing.expect(!program.statements[1].FnDecl.is_forward_decl);
+}
+
 test "parser: struct declaration" {
     const program = try parseSource(testing.allocator, "struct Point { x: int y: int }");
     defer program.deinit(testing.allocator);

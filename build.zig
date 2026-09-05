@@ -342,6 +342,11 @@ pub fn build(b: *std.Build) void {
         "ts-checker-test-filter",
         "Only compile/run ts_checker tests whose name contains this substring",
     );
+    const home_rt_test_filter = b.option(
+        []const u8,
+        "home-rt-test-filter",
+        "Only compile/run home_rt tests whose name contains this substring",
+    );
 
     const zig_test_framework: ?*std.Build.Module = if (test_framework_path) |path|
         b.createModule(.{
@@ -1432,7 +1437,11 @@ pub fn build(b: *std.Build) void {
     dependOnTest(test_step, &run_game_replay_tests.step, test_filter, "game_replay");
 
     // Home Runtime substrate tests
-    const home_rt_tests = b.addTest(.{ .root_module = home_rt_pkg });
+    const home_rt_test_filters: []const []const u8 = if (home_rt_test_filter) |needle| &.{needle} else &.{};
+    const home_rt_tests = b.addTest(.{
+        .root_module = home_rt_pkg,
+        .filters = home_rt_test_filters,
+    });
     const home_rt_test_launcher = b.addExecutable(.{
         .name = "home-rt-test-launcher",
         .root_module = b.createModule(.{
