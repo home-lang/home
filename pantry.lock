@@ -2,6 +2,11 @@
   "version": "1.0.0",
   "lockfileVersion": 2,
   "packages": {
+    "react@18.3.1": {
+      "name": "react",
+      "version": "18.3.1",
+      "source": "npm"
+    },
     "ziglang.org@0.17.0-dev.1441+d5181a9c9": {
       "name": "ziglang.org",
       "version": "0.17.0-dev.1441+d5181a9c9",

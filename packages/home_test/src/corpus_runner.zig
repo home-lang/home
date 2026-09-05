@@ -2857,6 +2857,119 @@ const harness_prelude =
     \\  if (options && options.sourcemap === true && !outdir) text += "\n//# sourceMappingURL=data:application/json;base64,e30=\n";
     \\  return new BuildArtifact(text, { type: "text/javascript;charset=utf-8", path, hash, kind: kind || "entry-point", loader: "jsx" });
     \\}
+    \\function __home_build_corpus_native_path(entrypoint) {
+    \\  const path = __home_build_normalize(String(entrypoint || ""));
+    \\  const marker = "/packages/runtime/test/bun-corpus/";
+    \\  const markerIndex = path.indexOf(marker);
+    \\  let workspaceRoot;
+    \\  let logicalPath;
+    \\  if (markerIndex >= 0) {
+    \\    workspaceRoot = path.slice(0, markerIndex);
+    \\    logicalPath = path.slice(markerIndex + marker.length);
+    \\  } else {
+    \\    logicalPath = path.replace(/^\/+/, "").replace(/^test\//, "");
+    \\    if (!/^(?:js|cli|bundler|regression|napi|internal|integration|bake|web|fixtures)\//.test(logicalPath)) return null;
+    \\    workspaceRoot = __home_build_dirname(__home_build_dirname(__home_build_dirname(globalThis.__home_bun_executable || process.execPath)));
+    \\  }
+    \\  const actualRoot = workspaceRoot + "/packages/runtime/test/bun-corpus";
+    \\  const canonicalRoot = workspaceRoot + "/test";
+    \\  return {
+    \\    actualRoot,
+    \\    canonicalRoot,
+    \\    actualPath: actualRoot + "/" + logicalPath,
+    \\    canonicalPath: canonicalRoot + "/" + logicalPath,
+    \\  };
+    \\}
+    \\function __home_build_native_loader(path) {
+    \\  const extension = String(path || "").toLowerCase().match(/\.([^.\\/]+)$/);
+    \\  switch (extension && extension[1]) {
+    \\    case "cjs": case "mjs": return "js";
+    \\    case "js": case "jsx": return "jsx";
+    \\    case "cts": case "mts": case "ts": return "ts";
+    \\    case "tsx": return "tsx";
+    \\    case "css": return "css";
+    \\    case "json": return "json";
+    \\    case "toml": return "toml";
+    \\    case "wasm": return "wasm";
+    \\    default: return "file";
+    \\  }
+    \\}
+    \\function __home_build_native_corpus(options, entrypoints) {
+    \\  if (typeof globalThis.__home_readFileSyncNative !== "function") return null;
+    \\  const paths = entrypoints.map(__home_build_corpus_native_path);
+    \\  if (paths.some(path => path === null)) return null;
+    \\  try { for (const path of paths) globalThis.__home_readFileSyncNative(path.actualPath); } catch (error) { return null; }
+    \\  const first = paths[0];
+    \\  if (paths.some(path => path.actualRoot !== first.actualRoot || path.canonicalRoot !== first.canonicalRoot)) return null;
+    \\  const plugin = {
+    \\    name: "home-bun-corpus-canonical-paths",
+    \\    setup(build) {
+    \\      build.onResolve({ filter: /.*/ }, args => {
+    \\        let path = String(args.path || "");
+    \\        if (args.importer && /^\.\.?[\\/]/.test(path)) path = __home_build_normalize(__home_build_join(__home_build_dirname(args.importer), path));
+    \\        else path = __home_build_normalize(path);
+    \\        if (path === first.actualRoot || path.startsWith(first.actualRoot + "/")) {
+    \\          return { path: first.canonicalRoot + path.slice(first.actualRoot.length), namespace: "file" };
+    \\        }
+    \\        if (path === first.canonicalRoot || path.startsWith(first.canonicalRoot + "/")) return { path, namespace: "file" };
+    \\        return undefined;
+    \\      });
+    \\      build.onLoad({ filter: /.*/, namespace: "file" }, args => {
+    \\        const path = __home_build_normalize(String(args.path || ""));
+    \\        if (path !== first.canonicalRoot && !path.startsWith(first.canonicalRoot + "/")) return undefined;
+    \\        const actualPath = first.actualRoot + path.slice(first.canonicalRoot.length);
+    \\        return { contents: String(globalThis.__home_readFileSyncNative(actualPath)), loader: __home_build_native_loader(actualPath) };
+    \\      });
+    \\    },
+    \\  };
+    \\  const nativeOptions = Object.assign({}, options, {
+    \\    entrypoints: paths.map(path => path.actualPath),
+    \\    plugins: [plugin],
+    \\  });
+    \\  if (typeof __home_native_bun_build === "function") return __home_native_bun_build(nativeOptions);
+    \\  if (typeof globalThis.__home_spawnSyncNative !== "function") return null;
+    \\  const childConfig = {
+    \\    options: Object.assign({}, options, { entrypoints: paths.map(path => path.actualPath), throw: false }),
+    \\    actualRoot: first.actualRoot,
+    \\    canonicalRoot: first.canonicalRoot,
+    \\  };
+    \\  const childScript = [
+    \\    "const config = " + JSON.stringify(childConfig) + ";",
+    \\    "const fs = require('fs');",
+    \\    "const pathModule = require('path');",
+    \\    "function loader(path) { const extension = pathModule.extname(path).slice(1).toLowerCase(); switch (extension) { case 'cjs': case 'mjs': return 'js'; case 'js': case 'jsx': return 'jsx'; case 'cts': case 'mts': case 'ts': return 'ts'; case 'tsx': return 'tsx'; case 'css': return 'css'; case 'json': return 'json'; case 'toml': return 'toml'; case 'wasm': return 'wasm'; default: return 'file'; } }",
+    \\    "const plugin = { name: 'home-bun-corpus-canonical-paths', setup(build) { build.onResolve({ filter: /.*/ }, args => { let path = String(args.path || ''); if (args.importer && /^\\.\\.?[\\\\/]/.test(path)) path = pathModule.resolve(pathModule.dirname(args.importer), path); if (path === config.actualRoot || path.startsWith(config.actualRoot + '/')) return { path: config.canonicalRoot + path.slice(config.actualRoot.length), namespace: 'file' }; if (path === config.canonicalRoot || path.startsWith(config.canonicalRoot + '/')) return { path, namespace: 'file' }; }); build.onLoad({ filter: /.*/, namespace: 'file' }, args => { const path = String(args.path || ''); if (path !== config.canonicalRoot && !path.startsWith(config.canonicalRoot + '/')) return; const actualPath = config.actualRoot + path.slice(config.canonicalRoot.length); return { contents: fs.readFileSync(actualPath), loader: loader(actualPath) }; }); } };",
+    \\    "const result = await Bun.build(Object.assign({}, config.options, { plugins: [plugin] }));",
+    \\    "const outputs = await Promise.all(result.outputs.map(async output => ({ text: await output.text(), type: output.type, size: output.size, path: output.path, hash: output.hash, kind: output.kind, loader: output.loader, sourcemapIndex: output.sourcemap == null ? -1 : result.outputs.indexOf(output.sourcemap) })));",
+    \\    "const logs = result.logs.map(log => ({ name: log.name, message: log.message, level: log.level, position: log.position == null ? null : { line: log.position.line, column: log.position.column, length: log.position.length, offset: log.position.offset, lineText: log.position.lineText, file: log.position.file } }));",
+    \\    "console.log('__HOME_NATIVE_BUILD_RESULT__' + JSON.stringify({ success: result.success, logs, outputs }));",
+    \\  ].join("\n");
+    \\  const workspaceRoot = first.canonicalRoot.slice(0, -"/test".length);
+    \\  const nativeEnv = Object.assign({}, process.env || {});
+    \\  const pantryPath = workspaceRoot + "/pantry";
+    \\  nativeEnv.NODE_PATH = nativeEnv.NODE_PATH ? pantryPath + (process.platform === "win32" ? ";" : ":") + nativeEnv.NODE_PATH : pantryPath;
+    \\  const child = globalThis.__home_spawnSyncNative(__home_native_spawn_options({
+    \\    cmd: [globalThis.__home_bun_executable || process.execPath, "-e", childScript],
+    \\    cwd: workspaceRoot,
+    \\    env: nativeEnv,
+    \\    stdio: ["ignore", "pipe", "pipe"],
+    \\  }));
+    \\  const stdout = String(child && child.stdout || "");
+    \\  const resultMarker = "__HOME_NATIVE_BUILD_RESULT__";
+    \\  const resultIndex = stdout.lastIndexOf(resultMarker);
+    \\  if (!child || Number(child.exitCode) !== 0 || resultIndex < 0) {
+    \\    throw new Error(String(child && child.stderr || stdout || "Native Bun.build bridge failed").trim());
+    \\  }
+    \\  const nativeResult = JSON.parse(stdout.slice(resultIndex + resultMarker.length).trim());
+    \\  const logs = nativeResult.logs.map(log => new BuildMessage(log.message, log.level, log.position));
+    \\  if (!nativeResult.success) return __home_build_fail(logs, options.throw !== false, []);
+    \\  const outputs = nativeResult.outputs.map(output => new BuildArtifact(output.text, output));
+    \\  for (let index = 0; index < outputs.length; index++) {
+    \\    const sourcemapIndex = Number(nativeResult.outputs[index].sourcemapIndex);
+    \\    outputs[index].sourcemap = sourcemapIndex >= 0 && sourcemapIndex < outputs.length ? outputs[sourcemapIndex] : null;
+    \\  }
+    \\  return Promise.resolve({ success: true, outputs, logs });
+    \\}
     \\function __home_bun_build(options) {
     \\  if (__home_build_macro_depth > 0) throw __home_bun_build_macro_recursion_error(options && options.entrypoints && options.entrypoints[0]);
     \\  if (!options || typeof options !== "object" || !Array.isArray(options.entrypoints) || options.entrypoints.length === 0) throw new TypeError("Bun.build() requires at least one entrypoint");
@@ -2891,6 +3004,12 @@ const harness_prelude =
     \\  }
     \\  const shouldThrow = options.throw !== false;
     \\  const entrypoints = options.entrypoints.map(__home_build_resolve_entry);
+    \\  const nativeCorpusBuildKeys = new Set(["entrypoints", "throw", "target", "outdir", "naming", "sourcemap"]);
+    \\  const canUseNativeCorpusBuild = Object.keys(options).every(key => nativeCorpusBuildKeys.has(key)) && entrypoints.every(path => /\.(?:[cm]?js|jsx)$/i.test(path));
+    \\  if (canUseNativeCorpusBuild) {
+    \\    const nativeCorpusBuild = __home_build_native_corpus(options, entrypoints);
+    \\    if (nativeCorpusBuild) return nativeCorpusBuild;
+    \\  }
     \\  const nativeDiskBuildKeys = new Set(["entrypoints", "throw", "target", "outdir"]);
     \\  const nativeDiskBuildTarget = options.target === undefined || options.target === "bun";
     \\  const canUseNativeDiskBuild = nativeDiskBuildTarget && options.outdir && Object.keys(options).every(key => nativeDiskBuildKeys.has(key)) && entrypoints.every(entrypoint => __home_build_read_text(entrypoint) !== null);
@@ -10075,6 +10194,7 @@ const harness_prelude =
     \\  const rendered = safe.replace(/> /g, "│ ").replace(/- /g, "• ");
     \\  return rendered.length > 1900000 ? rendered.slice(0, 1900000) : rendered;
     \\}
+    \\const __home_native_bun_build = globalThis.Bun && typeof globalThis.Bun.build === "function" ? globalThis.Bun.build.bind(globalThis.Bun) : null;
     \\const __home_native_bun_markdown = globalThis.Bun && globalThis.Bun.markdown;
     \\const __home_native_bun_inspect = globalThis.Bun && typeof globalThis.Bun.inspect === "function" ? globalThis.Bun.inspect.bind(globalThis.Bun) : null;
     \\const __home_native_bun_listen = globalThis.Bun && typeof globalThis.Bun.listen === "function" ? globalThis.Bun.listen.bind(globalThis.Bun) : null;
