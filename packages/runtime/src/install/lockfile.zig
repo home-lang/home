@@ -2125,8 +2125,7 @@ pub const default_trusted_dependencies = brk: {
     const StringHashContext = struct {
         pub fn hash(_: @This(), s: []const u8) u64 {
             @setEvalBranchQuota(999999);
-            // truncate to u32 because Lockfile.trustedDependencies uses the same u32 string hash
-            return @intCast(@as(u32, @truncate(String.Builder.stringHash(s))));
+            return String.Builder.stringHash(s);
         }
         pub fn eql(_: @This(), a: []const u8, b: []const u8) bool {
             @setEvalBranchQuota(999999);
@@ -2151,28 +2150,46 @@ pub const default_trusted_dependencies = brk: {
     break :brk &final;
 };
 
-pub fn hasTrustedDependency(this: *const Lockfile, name: []const u8, resolution: *const Resolution) bool {
-    if (this.trusted_dependencies) |trusted_dependencies| {
-        const hash = @as(u32, @truncate(String.Builder.stringHash(name)));
-        return trusted_dependencies.contains(hash);
+pub fn isDefaultTrustedDependencyHash(hash: PackageNameHash) bool {
+    for (default_trusted_dependencies_list) |name| {
+        if (String.Builder.stringHash(name) == hash) return true;
     }
-
-    // Only allow default trusted dependencies for npm packages
-    return resolution.tag == .npm and default_trusted_dependencies.has(name);
+    return false;
 }
 
-pub fn hasTrustedDependencyByPackageName(this: *const Lockfile, alias: []const u8, package_name: []const u8, resolution: *const Resolution) bool {
+pub fn hasTrustedDependencyByPackageName(
+    this: *const Lockfile,
+    alias: []const u8,
+    package_name: []const u8,
+    resolution: *const Resolution,
+    manager: *const PackageManager,
+    dependency_id: DependencyID,
+) bool {
     const trusted_name = if (resolution.tag == .npm) package_name else alias;
     if (this.trusted_dependencies) |trusted_dependencies| {
-        const hash = @as(u32, @truncate(String.Builder.stringHash(trusted_name)));
-        return trusted_dependencies.contains(hash);
+        if (resolution.tag != .npm and !this.isWorkspaceDependency(dependency_id)) return false;
+        return trusted_dependencies.contains(String.Builder.stringHash(trusted_name));
     }
 
-    return resolution.tag == .npm and default_trusted_dependencies.has(package_name);
+    if (resolution.tag != .npm or !default_trusted_dependencies.has(package_name)) return false;
+
+    const registry = std.mem.trimEnd(u8, manager.scopeForPackageName(package_name).url.href, "/");
+    const package_basename = if (package_name.len > 0 and package_name[0] == '@')
+        package_name[(std.mem.indexOfScalar(u8, package_name, '/') orelse return false) + 1 ..]
+    else
+        package_name;
+    var expected_buf: bun.PathBuffer = undefined;
+    const expected = std.fmt.bufPrint(&expected_buf, "{s}/{s}/-/{s}-{f}.tgz", .{
+        registry,
+        package_name,
+        package_basename,
+        resolution.value.npm.version.fmt(this.buffers.string_bytes.items),
+    }) catch return false;
+    return std.mem.eql(u8, resolution.value.npm.url.slice(this.buffers.string_bytes.items), expected);
 }
 
 pub const NameHashMap = std.ArrayHashMapUnmanaged(PackageNameHash, String, ArrayIdentityContext.U64, false);
-pub const TrustedDependenciesSet = std.ArrayHashMapUnmanaged(TruncatedPackageNameHash, void, ArrayIdentityContext, false);
+pub const TrustedDependenciesSet = std.ArrayHashMapUnmanaged(PackageNameHash, void, ArrayIdentityContext.U64, false);
 pub const VersionHashMap = std.ArrayHashMapUnmanaged(PackageNameHash, Semver.Version, ArrayIdentityContext.U64, false);
 pub const PatchedDependenciesMap = std.ArrayHashMapUnmanaged(PackageNameAndVersionHash, PatchedDep, ArrayIdentityContext.U64, false);
 pub const PatchedDep = extern struct {
@@ -2246,7 +2263,6 @@ const PackageID = Install.PackageID;
 const PackageInstall = Install.PackageInstall;
 const PackageNameAndVersionHash = Install.PackageNameAndVersionHash;
 const PackageNameHash = Install.PackageNameHash;
-const TruncatedPackageNameHash = Install.TruncatedPackageNameHash;
 const initializeStore = Install.initializeStore;
 const invalid_dependency_id = Install.invalid_dependency_id;
 const invalid_package_id = Install.invalid_package_id;

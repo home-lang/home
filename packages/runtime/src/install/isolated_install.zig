@@ -948,13 +948,6 @@ pub fn installIsolatedPackages(
                                     break :eligible false;
                                 }
                             }
-                            // `run_preinstall()` authorizes scripts by the
-                            // dependency *alias* name, so an aliased install
-                            // like `foo: npm:bar@1` is trusted if `foo` is in
-                            // trustedDependencies even though the package name
-                            // is `bar`. Mirror that here so the alias case
-                            // can't slip past the eligibility check.
-                            //
                             // Intentionally *not* gated on `do.run_scripts`
                             // (a later install without `--ignore-scripts`
                             // would run the postinstall through the project
@@ -967,13 +960,25 @@ pub fn installIsolatedPackages(
                             // Over-excludes the rare "trusted but actually no
                             // scripts" case in exchange for not needing a
                             // lockfile-format change.
-                            const dep_name, const dep_name_hash = if (dep_id != invalid_dependency_id)
-                                .{ dependencies[dep_id].name.slice(string_buf), dependencies[dep_id].name_hash }
+                            const package_name = pkg_names[pkg_id].slice(string_buf);
+                            const is_trusted = if (dep_id != invalid_dependency_id) trusted: {
+                                const dependency = dependencies[dep_id];
+                                const alias = dependency.name.slice(string_buf);
+                                break :trusted lockfile.hasTrustedDependencyByPackageName(
+                                    alias,
+                                    package_name,
+                                    &pkg_res,
+                                    manager,
+                                    dep_id,
+                                );
+                            } else false;
+                            const trusted_name_hash = if (pkg_res.tag == .npm)
+                                pkg_name_hashes[pkg_id]
+                            else if (dep_id != invalid_dependency_id)
+                                dependencies[dep_id].name_hash
                             else
-                                .{ pkg_names[pkg_id].slice(string_buf), pkg_name_hashes[pkg_id] };
-                            if (lockfile.hasTrustedDependency(dep_name, &pkg_res) or
-                                trusted_from_update.contains(@truncate(dep_name_hash)))
-                            {
+                                pkg_name_hashes[pkg_id];
+                            if (is_trusted or trusted_from_update.contains(trusted_name_hash)) {
                                 break :eligible false;
                             }
                             break :eligible true;

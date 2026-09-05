@@ -90,11 +90,11 @@ pub const Stringifier = struct {
         try writer.writeAll("{\n");
         try incIndent(writer, indent);
         {
-            try writer.print("\"lockfileVersion\": {d},\n", .{@intFromEnum(Version.current)});
+            try writer.print("\"lockfileVersion\": {d},\n", .{@backingInt(Version.current)});
             try writeIndent(writer, indent);
 
             const config_version: bun.ConfigVersion = options.config_version orelse .current;
-            try writer.print("\"configVersion\": {d},\n", .{@intFromEnum(config_version)});
+            try writer.print("\"configVersion\": {d},\n", .{@backingInt(config_version)});
             try writeIndent(writer, indent);
 
             try writer.writeAll("\"workspaces\": {\n");
@@ -236,8 +236,10 @@ pub const Stringifier = struct {
 
                     // intentionally not checking default trusted dependencies
                     if (lockfile.trusted_dependencies) |trusted_dependencies| {
-                        if (trusted_dependencies.contains(@truncate(dep.name_hash))) {
-                            try found_trusted_dependencies.put(allocator, dep.name_hash, dep.name);
+                        const trusted_name_hash = if (res.tag == .npm) pkg_name_hash else dep.name_hash;
+                        const trusted_name = if (res.tag == .npm) pkg_name else dep.name;
+                        if (trusted_dependencies.contains(trusted_name_hash)) {
+                            try found_trusted_dependencies.put(allocator, trusted_name_hash, trusted_name);
                         }
                     }
                 }
@@ -1200,7 +1202,7 @@ pub fn parseIntoBinaryLockfile(
                 try log.addError(source, dep.loc, "Expected a string");
                 return error.InvalidTrustedDependenciesSet;
             }
-            const name_hash: TruncatedPackageNameHash = @truncate((try dep.asStringHash(allocator, String.Builder.stringHash)).?);
+            const name_hash: PackageNameHash = (try dep.asStringHash(allocator, String.Builder.stringHash)).?;
             try trusted_dependencies.put(allocator, name_hash, {});
         }
 
@@ -2320,7 +2322,6 @@ const PackageManager = bun.install.PackageManager;
 const PackageNameHash = Install.PackageNameHash;
 const Repository = Install.Repository;
 const Resolution = Install.Resolution;
-const TruncatedPackageNameHash = Install.TruncatedPackageNameHash;
 const invalid_package_id = Install.invalid_package_id;
 
 const BinaryLockfile = bun.install.Lockfile;

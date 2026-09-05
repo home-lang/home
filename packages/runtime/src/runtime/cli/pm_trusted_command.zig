@@ -22,6 +22,7 @@ pub const UntrustedCommand = struct {
         try pm.updateLockfileIfNeeded(load_lockfile);
 
         const packages = pm.lockfile.packages.slice();
+        const package_names = packages.items(.name);
         const scripts: []Lockfile.Package.Scripts = packages.items(.scripts);
         const resolutions: []Install.Resolution = packages.items(.resolution);
         const buf = pm.lockfile.buffers.string_bytes.items;
@@ -37,8 +38,9 @@ pub const UntrustedCommand = struct {
 
             // called alias because a dependency name is not always the package name
             const alias = dep.name.slice(buf);
+            const package_name = package_names[package_id].slice(buf);
             const resolution = &resolutions[package_id];
-            if (!pm.lockfile.hasTrustedDependency(alias, resolution)) {
+            if (!pm.lockfile.hasTrustedDependencyByPackageName(alias, package_name, resolution, pm, dep_id)) {
                 try untrusted_dep_ids.put(ctx.allocator, dep_id, {});
             }
         }
@@ -85,6 +87,7 @@ pub const UntrustedCommand = struct {
                         &node_modules_path,
                         alias,
                         resolution,
+                        false,
                     ) catch |err| {
                         if (err == error.ENOENT) continue;
                         return err;
@@ -180,6 +183,7 @@ pub const TrustCommand = struct {
 
         const buf = pm.lockfile.buffers.string_bytes.items;
         const packages = pm.lockfile.packages.slice();
+        const names = packages.items(.name);
         const resolutions: []Install.Resolution = packages.items(.resolution);
         const scripts: []Lockfile.Package.Scripts = packages.items(.scripts);
 
@@ -191,8 +195,9 @@ pub const TrustCommand = struct {
             if (package_id == Install.invalid_package_id) continue;
 
             const alias = dep.name.slice(buf);
+            const package_name = names[package_id].slice(buf);
             const resolution = &resolutions[package_id];
-            if (!pm.lockfile.hasTrustedDependency(alias, resolution)) {
+            if (!pm.lockfile.hasTrustedDependencyByPackageName(alias, package_name, resolution, pm, dep_id)) {
                 try untrusted_dep_ids.put(ctx.allocator, dep_id, {});
             }
         }
@@ -242,6 +247,7 @@ pub const TrustCommand = struct {
                     }
 
                     const resolution = &resolutions[package_id];
+                    const package_name = names[package_id].slice(buf);
                     var package_scripts = scripts[package_id];
 
                     var folder_save = node_modules_path.save();
@@ -254,6 +260,7 @@ pub const TrustCommand = struct {
                         &node_modules_path,
                         alias,
                         resolution,
+                        true,
                     ) catch |err| {
                         if (err == error.ENOENT) continue;
                         return err;
@@ -264,7 +271,10 @@ pub const TrustCommand = struct {
                             if (trust_all) break :brk false;
 
                             for (packages_to_trust.items) |package_name_from_cli| {
-                                if (strings.eqlLong(package_name_from_cli, alias, true) and !pm.lockfile.hasTrustedDependency(alias, resolution)) {
+                                if ((strings.eqlLong(package_name_from_cli, alias, true) or
+                                    strings.eqlLong(package_name_from_cli, package_name, true)) and
+                                    !pm.lockfile.hasTrustedDependencyByPackageName(alias, package_name, resolution, pm, dep_id))
+                                {
                                     break :brk false;
                                 }
                             }
@@ -282,7 +292,10 @@ pub const TrustCommand = struct {
                         });
 
                         if (!skip) {
-                            try package_names_to_add.put(ctx.allocator, try ctx.allocator.dupe(u8, alias), {});
+                            try package_names_to_add.put(ctx.allocator, try ctx.allocator.dupe(
+                                u8,
+                                if (resolution.tag == .npm) package_name else alias,
+                            ), {});
                             scripts_count += scripts_list.total;
                         }
                     }
@@ -364,9 +377,9 @@ pub const TrustCommand = struct {
         };
 
         // now add the package names to lockfile.trustedDependencies and package.json `trustedDependencies`
-        const names = package_names_to_add.keys();
+        const trusted_names = package_names_to_add.keys();
         if (comptime Environment.allow_assert) {
-            bun.assertWithLocation(names.len > 0, @src());
+            bun.assertWithLocation(trusted_names.len > 0, @src());
         }
 
         // could be null if these are the first packages to be trusted
@@ -396,10 +409,10 @@ pub const TrustCommand = struct {
             }
         }
 
-        try Install.PackageManager.PackageJSONEditor.editTrustedDependencies(ctx.allocator, &package_json, names);
+        try Install.PackageManager.PackageJSONEditor.editTrustedDependencies(ctx.allocator, &package_json, trusted_names);
 
-        for (names) |name| {
-            try pm.lockfile.trusted_dependencies.?.put(ctx.allocator, @truncate(String.Builder.stringHash(name)), {});
+        for (trusted_names) |name| {
+            try pm.lockfile.trusted_dependencies.?.put(ctx.allocator, String.Builder.stringHash(name), {});
         }
 
         pm.lockfile.saveToDisk(&load_lockfile, &pm.options);

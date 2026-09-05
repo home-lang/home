@@ -257,9 +257,10 @@ pub const Scripts = extern struct {
         folder_path: *bun.AbsPath(.{ .sep = .auto }),
         folder_name: string,
         resolution: *const Resolution,
+        trusted_for_node_gyp: bool,
     ) !?Package.Scripts.List {
         if (this.hasAny()) {
-            const add_node_gyp_rebuild_script = if (lockfile.hasTrustedDependency(folder_name, resolution) and
+            const add_node_gyp_rebuild_script = if (trusted_for_node_gyp and
                 this.install.isEmpty() and
                 this.preinstall.isEmpty())
             brk: {

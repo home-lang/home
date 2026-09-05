@@ -37,7 +37,7 @@ pub const PackageInstaller = struct {
         optional: bool,
     }) = .empty,
 
-    trusted_dependencies_from_update_requests: std.AutoArrayHashMapUnmanaged(TruncatedPackageNameHash, void),
+    trusted_dependencies_from_update_requests: std.AutoArrayHashMapUnmanaged(PackageNameHash, void),
 
     // uses same ids as lockfile.trees
     trees: []TreeContext,
@@ -1199,10 +1199,12 @@ pub const PackageInstaller = struct {
                     }
 
                     const dep = this.lockfile.buffers.dependencies.items[dependency_id];
-                    const truncated_dep_name_hash: TruncatedPackageNameHash = @truncate(dep.name_hash);
+                    const alias_name = alias.slice(this.lockfile.buffers.string_bytes.items);
+                    const package_name = pkg_name.slice(this.lockfile.buffers.string_bytes.items);
+                    const trusted_name_hash = if (resolution.tag == .npm) pkg_name_hash else dep.name_hash;
                     const is_trusted, const is_trusted_through_update_request = brk: {
-                        if (this.trusted_dependencies_from_update_requests.contains(truncated_dep_name_hash)) break :brk .{ true, true };
-                        if (this.lockfile.hasTrustedDependency(alias.slice(this.lockfile.buffers.string_bytes.items), resolution)) break :brk .{ true, false };
+                        if (this.trusted_dependencies_from_update_requests.contains(trusted_name_hash)) break :brk .{ true, true };
+                        if (this.lockfile.hasTrustedDependencyByPackageName(alias_name, package_name, resolution, this.manager, dependency_id)) break :brk .{ true, false };
                         break :brk .{ false, false };
                     };
 
@@ -1243,11 +1245,11 @@ pub const PackageInstaller = struct {
                                 if (is_trusted_through_update_request) {
                                     this.manager.trusted_deps_to_add_to_package_json.append(
                                         this.manager.allocator,
-                                        bun.handleOom(this.manager.allocator.dupe(u8, alias.slice(this.lockfile.buffers.string_bytes.items))),
+                                        bun.handleOom(this.manager.allocator.dupe(u8, if (resolution.tag == .npm) package_name else alias_name)),
                                     ) catch |err| bun.handleOom(err);
 
                                     if (this.lockfile.trusted_dependencies == null) this.lockfile.trusted_dependencies = .{};
-                                    this.lockfile.trusted_dependencies.?.put(this.manager.allocator, truncated_dep_name_hash, {}) catch |err| bun.handleOom(err);
+                                    this.lockfile.trusted_dependencies.?.put(this.manager.allocator, trusted_name_hash, {}) catch |err| bun.handleOom(err);
                                 }
                             }
                         }
@@ -1279,7 +1281,8 @@ pub const PackageInstaller = struct {
                                         resolution.fmt(this.lockfile.buffers.string_bytes.items, .posix),
                                     });
                                 }
-                                const entry = bun.handleOom(this.summary.packages_with_blocked_scripts.getOrPut(this.manager.allocator, truncated_dep_name_hash));
+                                const blocked_name_hash: install.TruncatedPackageNameHash = @truncate(dep.name_hash);
+                                const entry = bun.handleOom(this.summary.packages_with_blocked_scripts.getOrPut(this.manager.allocator, blocked_name_hash));
                                 if (!entry.found_existing) entry.value_ptr.* = 0;
                                 entry.value_ptr.* += count;
                             }
@@ -1388,12 +1391,12 @@ pub const PackageInstaller = struct {
             defer this.incrementTreeInstallCount(this.current_tree_id, !is_pending_package_install, log_level);
 
             const dep = this.lockfile.buffers.dependencies.items[dependency_id];
-            const truncated_dep_name_hash: TruncatedPackageNameHash = @truncate(dep.name_hash);
+            const trusted_name_hash = if (resolution.tag == .npm) pkg_name_hash else dep.name_hash;
             const is_trusted, const is_trusted_through_update_request, const add_to_lockfile = brk: {
                 // trusted through a --trust dependency. need to enqueue scripts, write to package.json, and add to lockfile
-                if (this.trusted_dependencies_from_update_requests.contains(truncated_dep_name_hash)) break :brk .{ true, true, true };
+                if (this.trusted_dependencies_from_update_requests.contains(trusted_name_hash)) break :brk .{ true, true, true };
 
-                if (this.manager.summary.added_trusted_dependencies.get(truncated_dep_name_hash)) |should_add_to_lockfile| {
+                if (this.manager.summary.added_trusted_dependencies.get(trusted_name_hash)) |should_add_to_lockfile| {
                     // is a new trusted dependency. need to enqueue scripts and maybe add to lockfile
                     break :brk .{ true, false, should_add_to_lockfile };
                 }
@@ -1437,13 +1440,19 @@ pub const PackageInstaller = struct {
                         if (is_trusted_through_update_request) {
                             this.manager.trusted_deps_to_add_to_package_json.append(
                                 this.manager.allocator,
-                                bun.handleOom(this.manager.allocator.dupe(u8, alias.slice(this.lockfile.buffers.string_bytes.items))),
+                                bun.handleOom(this.manager.allocator.dupe(
+                                    u8,
+                                    if (resolution.tag == .npm)
+                                        pkg_name.slice(this.lockfile.buffers.string_bytes.items)
+                                    else
+                                        alias.slice(this.lockfile.buffers.string_bytes.items),
+                                )),
                             ) catch |err| bun.handleOom(err);
                         }
 
                         if (add_to_lockfile) {
                             if (this.lockfile.trusted_dependencies == null) this.lockfile.trusted_dependencies = .{};
-                            this.lockfile.trusted_dependencies.?.put(this.manager.allocator, truncated_dep_name_hash, {}) catch |err| bun.handleOom(err);
+                            this.lockfile.trusted_dependencies.?.put(this.manager.allocator, trusted_name_hash, {}) catch |err| bun.handleOom(err);
                         }
                     }
                 }
@@ -1477,6 +1486,7 @@ pub const PackageInstaller = struct {
             package_path,
             folder_name,
             resolution,
+            true,
         ) catch |err| {
             if (log_level != .silent) {
                 const fmt = "\n<r><red>error:<r> failed to enqueue lifecycle scripts for <b>{s}<r>: {s}\n";
@@ -1583,7 +1593,6 @@ const PostinstallOptimizer = install.PostinstallOptimizer;
 const Resolution = install.Resolution;
 const Task = install.Task;
 const TaskCallbackContext = install.TaskCallbackContext;
-const TruncatedPackageNameHash = install.TruncatedPackageNameHash;
 const invalid_package_id = install.invalid_package_id;
 
 const Lockfile = install.Lockfile;

@@ -513,7 +513,7 @@ pub fn moveToCacheDirectory(
         // TODO remove extracted files not matching any globs under "files"
         .github, .local_tarball, .remote_tarball => true,
         else => this.package_manager.lockfile.trusted_dependencies != null and
-            this.package_manager.lockfile.trusted_dependencies.?.contains(@truncate(Semver.String.Builder.stringHash(name))),
+            this.package_manager.lockfile.trusted_dependencies.?.contains(Semver.String.Builder.stringHash(name)),
     }) {
         const json_file, json_buf = bun.sys.File.readFileFrom(
             bun.FD.fromStdDir(cache_dir),

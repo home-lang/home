@@ -392,7 +392,7 @@ pub const PackageManagerCommand = struct {
 
             if (strings.leftHasAnyInRight(args, &.{ "-A", "-a", "--all" })) {
                 if (trusted_only) {
-                    try printTrustedDependenciesFlat(&first_directory, directories.items, lockfile);
+                    try printTrustedDependenciesFlat(&first_directory, directories.items, lockfile, pm);
                 } else {
                     try printNodeModulesFolderStructure(&first_directory, null, 0, &directories, lockfile, more_packages);
                 }
@@ -428,7 +428,7 @@ pub const PackageManagerCommand = struct {
                         if (package_id >= lockfile.packages.len) continue;
                         const alias = dependencies[dependency_id].name.slice(string_bytes);
                         const package_name = package_names[package_id].slice(string_bytes);
-                        if (!lockfile.hasTrustedDependencyByPackageName(alias, package_name, &resolutions[package_id])) continue;
+                        if (!lockfile.hasTrustedDependencyByPackageName(alias, package_name, &resolutions[package_id], pm, dependency_id)) continue;
                         sorted_dependencies[trusted_count] = dependency_id;
                         trusted_count += 1;
                     }
@@ -514,6 +514,7 @@ fn printTrustedDependenciesFlat(
     first_directory: *const NodeModulesFolder,
     directories: []const NodeModulesFolder,
     lockfile: *Lockfile,
+    manager: *PackageManager,
 ) !void {
     var cwd_buf: bun.PathBuffer = undefined;
     const path = bun.getcwd(&cwd_buf) catch {
@@ -549,23 +550,24 @@ fn printTrustedDependenciesFlat(
             visited: []bool,
             output: *std.ArrayListUnmanaged(DependencyID),
             alloc: std.mem.Allocator,
+            pm: *PackageManager,
         ) !void {
             const package_id = package_ids[dependency_id];
             if (package_id >= lock.packages.len or visited[package_id]) return;
             const alias = deps[dependency_id].name.slice(bytes);
             const package_name = names[package_id].slice(bytes);
-            if (!lock.hasTrustedDependencyByPackageName(alias, package_name, &package_resolutions[package_id])) return;
+            if (!lock.hasTrustedDependencyByPackageName(alias, package_name, &package_resolutions[package_id], pm, dependency_id)) return;
             visited[package_id] = true;
             try output.append(alloc, dependency_id);
         }
     };
 
     for (first_directory.dependencies) |dependency_id| {
-        try Visitor.visit(dependency_id, lockfile, dependencies, resolution_ids, package_names, resolutions, string_bytes, seen, &trusted, allocator);
+        try Visitor.visit(dependency_id, lockfile, dependencies, resolution_ids, package_names, resolutions, string_bytes, seen, &trusted, allocator, manager);
     }
     for (directories) |directory| {
         for (directory.dependencies) |dependency_id| {
-            try Visitor.visit(dependency_id, lockfile, dependencies, resolution_ids, package_names, resolutions, string_bytes, seen, &trusted, allocator);
+            try Visitor.visit(dependency_id, lockfile, dependencies, resolution_ids, package_names, resolutions, string_bytes, seen, &trusted, allocator, manager);
         }
     }
 

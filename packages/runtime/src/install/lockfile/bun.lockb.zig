@@ -6,6 +6,7 @@ const header_bytes: string = "#!/usr/bin/env bun\n" ++ version;
 const has_patched_dependencies_tag: u64 = @bitCast(@as([8]u8, "pAtChEdD".*));
 const has_workspace_package_ids_tag: u64 = @bitCast(@as([8]u8, "wOrKsPaC".*));
 const has_trusted_dependencies_tag: u64 = @bitCast(@as([8]u8, "tRuStEDd".*));
+const has_trusted_dependencies_v2_tag: u64 = @bitCast(@as([8]u8, "tRuStED2".*));
 const has_empty_trusted_dependencies_tag: u64 = @bitCast(@as([8]u8, "eMpTrUsT".*));
 const has_overrides_tag: u64 = @bitCast(@as([8]u8, "oVeRriDs".*));
 const has_catalogs_tag: u64 = @bitCast(@as([8]u8, "cAtAlOgS".*));
@@ -34,7 +35,7 @@ pub fn save(this: *Lockfile, options: *const PackageManager.Options, bytes: *std
     };
     const writer = ListWriter{ .bytes = bytes };
     try writer.writeAll(header_bytes);
-    try writer.writeInt(u32, @intFromEnum(this.format), .little);
+    try writer.writeInt(u32, @backingInt(this.format), .little);
 
     try writer.writeAll(&this.meta_hash);
 
@@ -126,14 +127,14 @@ pub fn save(this: *Lockfile, options: *const PackageManager.Options, bytes: *std
 
     if (this.trusted_dependencies) |trusted_dependencies| {
         if (trusted_dependencies.count() > 0) {
-            try writer.writeAll(std.mem.asBytes(&has_trusted_dependencies_tag));
+            try writer.writeAll(std.mem.asBytes(&has_trusted_dependencies_v2_tag));
 
             try Lockfile.Buffers.writeArray(
                 StreamType,
                 stream,
                 @TypeOf(writer),
                 writer,
-                []u32,
+                []PackageNameHash,
                 trusted_dependencies.keys(),
             );
         } else {
@@ -262,7 +263,7 @@ pub fn save(this: *Lockfile, options: *const PackageManager.Options, bytes: *std
 
     try writer.writeAll(std.mem.asBytes(&has_config_version_tag));
     const config_version: bun.ConfigVersion = options.config_version orelse .current;
-    try writer.writeInt(u64, @intFromEnum(config_version), .little);
+    try writer.writeInt(u64, @backingInt(config_version), .little);
 
     total_size.* = try stream.getPos();
 
@@ -292,14 +293,14 @@ pub fn load(
 
     var migrate_from_v2 = false;
     const format = try reader.readInt(u32, .little);
-    if (format > @intFromEnum(Lockfile.FormatVersion.current)) {
+    if (format > @backingInt(Lockfile.FormatVersion.current)) {
         return error.@"Unexpected lockfile version";
     }
 
-    if (format < @intFromEnum(Lockfile.FormatVersion.current)) {
+    if (format < @backingInt(Lockfile.FormatVersion.current)) {
 
         // we only allow migrating from v2 to v3 or above
-        if (format != @intFromEnum(Lockfile.FormatVersion.v2)) {
+        if (format != @backingInt(Lockfile.FormatVersion.v2)) {
             return error.@"Outdated lockfile version";
         }
 
@@ -428,11 +429,11 @@ pub fn load(
         // >= because `has_empty_trusted_dependencies_tag` is tag only
         if (remaining_in_buffer >= 8 and total_buffer_size <= stream.buffer.len) {
             const next_num = try reader.readInt(u64, .little);
-            if (remaining_in_buffer > 8 and next_num == has_trusted_dependencies_tag) {
+            if (remaining_in_buffer > 8 and next_num == has_trusted_dependencies_v2_tag) {
                 var trusted_dependencies_hashes = try Lockfile.Buffers.readArray(
                     stream,
                     allocator,
-                    std.ArrayListUnmanaged(u32),
+                    std.ArrayListUnmanaged(PackageNameHash),
                 );
                 defer trusted_dependencies_hashes.deinit(allocator);
 
@@ -442,6 +443,18 @@ pub fn load(
                 lockfile.trusted_dependencies.?.entries.len = trusted_dependencies_hashes.items.len;
                 @memcpy(lockfile.trusted_dependencies.?.keys(), trusted_dependencies_hashes.items);
                 try lockfile.trusted_dependencies.?.reIndex(allocator);
+            } else if (remaining_in_buffer > 8 and next_num == has_trusted_dependencies_tag) {
+                // Legacy lockfiles only stored truncated 32-bit hashes, which
+                // cannot prove the trusted package name in the presence of a
+                // collision. Consume the old payload but fail closed by
+                // retaining an explicit empty trust set.
+                var legacy_trusted_dependency_hashes = try Lockfile.Buffers.readArray(
+                    stream,
+                    allocator,
+                    std.ArrayListUnmanaged(u32),
+                );
+                defer legacy_trusted_dependency_hashes.deinit(allocator);
+                lockfile.trusted_dependencies = .{};
             } else if (next_num == has_empty_trusted_dependencies_tag) {
                 // trusted dependencies exists in package.json but is an empty array.
                 lockfile.trusted_dependencies = .{};

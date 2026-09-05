@@ -19,7 +19,7 @@ pub const Installer = struct {
 
     supported_backend: std.atomic.Value(PackageInstall.Method),
 
-    trusted_dependencies_from_update_requests: std.AutoArrayHashMapUnmanaged(TruncatedPackageNameHash, void),
+    trusted_dependencies_from_update_requests: std.AutoArrayHashMapUnmanaged(PackageNameHash, void),
 
     /// Absolute path to the global virtual store (`<cache_dir>/links`). When
     /// non-null, npm/git/tarball entries are materialized once into this
@@ -660,7 +660,7 @@ pub const Installer = struct {
                                             else
                                                 .ENAMETOOLONG;
                                             return .failure(
-                                                .{ .link_package = .{ .errno = @intFromEnum(err), .syscall = .copyfile } },
+                                                .{ .link_package = .{ .errno = @backingInt(err), .syscall = .copyfile } },
                                             );
                                         }
 
@@ -1109,13 +1109,15 @@ pub const Installer = struct {
                     const string_buf = installer.lockfile.buffers.string_bytes.items;
 
                     const dep = installer.lockfile.buffers.dependencies.items[dep_id];
-                    const truncated_dep_name_hash: TruncatedPackageNameHash = @truncate(dep.name_hash);
+                    const alias_name = dep.name.slice(string_buf);
+                    const package_name = pkg_name.slice(string_buf);
+                    const trusted_name_hash = if (pkg_res.tag == .npm) pkg_name_hash else dep.name_hash;
 
                     const is_trusted, const is_trusted_through_update_request = brk: {
-                        if (installer.trusted_dependencies_from_update_requests.contains(truncated_dep_name_hash)) {
+                        if (installer.trusted_dependencies_from_update_requests.contains(trusted_name_hash)) {
                             break :brk .{ true, true };
                         }
-                        if (installer.lockfile.hasTrustedDependency(dep.name.slice(string_buf), &pkg_res)) {
+                        if (installer.lockfile.hasTrustedDependencyByPackageName(alias_name, package_name, &pkg_res, manager, dep_id)) {
                             break :brk .{ true, false };
                         }
                         break :brk .{ false, false };
@@ -1152,6 +1154,7 @@ pub const Installer = struct {
                             &pkg_cwd,
                             dep.name.slice(string_buf),
                             &pkg_res,
+                            true,
                         ) catch |err| {
                             return .failure(.{ .run_scripts = err });
                         };
@@ -1161,7 +1164,10 @@ pub const Installer = struct {
                             entry_scripts[this.entry_id.get()] = clone;
 
                             if (is_trusted_through_update_request) {
-                                const trusted_dep_to_add = try installer.manager.allocator.dupe(u8, dep.name.slice(string_buf));
+                                const trusted_dep_to_add = try installer.manager.allocator.dupe(
+                                    u8,
+                                    if (pkg_res.tag == .npm) package_name else alias_name,
+                                );
 
                                 installer.trusted_dependencies_mutex.lock();
                                 defer installer.trusted_dependencies_mutex.unlock();
@@ -1173,7 +1179,7 @@ pub const Installer = struct {
                                 if (installer.lockfile.trusted_dependencies == null) {
                                     installer.lockfile.trusted_dependencies = .{};
                                 }
-                                try installer.lockfile.trusted_dependencies.?.put(installer.manager.allocator, truncated_dep_name_hash, {});
+                                try installer.lockfile.trusted_dependencies.?.put(installer.manager.allocator, trusted_name_hash, {});
                             }
 
                             if (list.first_index != 0) {
@@ -2038,7 +2044,6 @@ const PackageNameHash = install.PackageNameHash;
 const PostinstallOptimizer = install.PostinstallOptimizer;
 const Resolution = install.Resolution;
 const Store = install.Store;
-const TruncatedPackageNameHash = install.TruncatedPackageNameHash;
 const invalid_dependency_id = install.invalid_dependency_id;
 
 const Lockfile = install.Lockfile;

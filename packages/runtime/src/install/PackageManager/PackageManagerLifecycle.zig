@@ -314,10 +314,10 @@ pub fn spawnPackageLifecycleScripts(
     try LifecycleScriptSubprocess.spawnPackageScripts(this, list, envp, shell_bin, optional, log_level, foreground, install_ctx);
 }
 
-pub fn findTrustedDependenciesFromUpdateRequests(this: *PackageManager) std.AutoArrayHashMapUnmanaged(TruncatedPackageNameHash, void) {
+pub fn findTrustedDependenciesFromUpdateRequests(this: *PackageManager) std.AutoArrayHashMapUnmanaged(PackageNameHash, void) {
     const parts = this.lockfile.packages.slice();
     // find all deps originating from --trust packages from cli
-    var set: std.AutoArrayHashMapUnmanaged(TruncatedPackageNameHash, void) = .{};
+    var set: std.AutoArrayHashMapUnmanaged(PackageNameHash, void) = .{};
     if (this.options.do.trust_dependencies_from_args and this.lockfile.packages.len > 0) {
         const root_deps = parts.items(.dependencies)[this.root_package_id.get(this.lockfile, this.workspace_name_hash)];
         var dep_id = root_deps.off;
@@ -329,7 +329,7 @@ pub fn findTrustedDependenciesFromUpdateRequests(this: *PackageManager) std.Auto
                     const package_id = this.lockfile.buffers.resolutions.items[dep_id];
                     if (package_id == invalid_package_id) continue;
 
-                    const entry = bun.handleOom(set.getOrPut(this.lockfile.allocator, @truncate(root_dep.name_hash)));
+                    const entry = bun.handleOom(set.getOrPut(this.lockfile.allocator, trustedNameHash(this.lockfile, root_dep, package_id)));
                     if (!entry.found_existing) {
                         const dependency_slice = parts.items(.dependencies)[package_id];
                         addDependenciesToSet(&set, this.lockfile, dependency_slice);
@@ -344,7 +344,7 @@ pub fn findTrustedDependenciesFromUpdateRequests(this: *PackageManager) std.Auto
 }
 
 fn addDependenciesToSet(
-    names: *std.AutoArrayHashMapUnmanaged(TruncatedPackageNameHash, void),
+    names: *std.AutoArrayHashMapUnmanaged(PackageNameHash, void),
     lockfile: *Lockfile,
     dependencies_slice: Lockfile.DependencySlice,
 ) void {
@@ -356,12 +356,20 @@ fn addDependenciesToSet(
         if (package_id == invalid_package_id) continue;
 
         const dep = lockfile.buffers.dependencies.items[dep_id];
-        const entry = bun.handleOom(names.getOrPut(lockfile.allocator, @truncate(dep.name_hash)));
+        const entry = bun.handleOom(names.getOrPut(lockfile.allocator, trustedNameHash(lockfile, dep, package_id)));
         if (!entry.found_existing) {
             const dependency_slice = lockfile.packages.items(.dependencies)[package_id];
             addDependenciesToSet(names, lockfile, dependency_slice);
         }
     }
+}
+
+fn trustedNameHash(lockfile: *const Lockfile, dependency: Dependency, package_id: PackageID) PackageNameHash {
+    const resolution = lockfile.packages.items(.resolution)[package_id];
+    return if (resolution.tag == .npm)
+        lockfile.packages.items(.name_hash)[package_id]
+    else
+        dependency.name_hash;
 }
 
 const string = []const u8;
@@ -383,10 +391,11 @@ const Fs = bun.fs;
 const FileSystem = Fs.FileSystem;
 
 const LifecycleScriptSubprocess = bun.install.LifecycleScriptSubprocess;
+const Dependency = bun.install.Dependency;
 const PackageID = bun.install.PackageID;
 const PackageManager = bun.install.PackageManager;
 const PreinstallState = bun.install.PreinstallState;
-const TruncatedPackageNameHash = bun.install.TruncatedPackageNameHash;
+const PackageNameHash = bun.install.PackageNameHash;
 const invalid_package_id = bun.install.invalid_package_id;
 
 const Lockfile = bun.install.Lockfile;

@@ -534,7 +534,7 @@ pub fn Package(comptime SemverIntType: type) type {
 
                 // bool for if this dependency should be added to lockfile trusted dependencies.
                 // it is false when the new trusted dependency is coming from the default list.
-                added_trusted_dependencies: std.ArrayHashMapUnmanaged(TruncatedPackageNameHash, bool, ArrayIdentityContext, false) = .{},
+                added_trusted_dependencies: std.ArrayHashMapUnmanaged(PackageNameHash, bool, ArrayIdentityContext.U64, false) = .{},
                 removed_trusted_dependencies: TrustedDependenciesSet = .{},
 
                 patched_dependencies_changed: bool = false,
@@ -719,11 +719,12 @@ pub fn Package(comptime SemverIntType: type) type {
 
                         {
                             // added
-                            for (default_trusted_dependencies.entries) |entry| {
-                                if (!from_trusted_dependencies.contains(@truncate(entry.hash))) {
+                            for (Lockfile.default_trusted_dependencies_list) |name| {
+                                const name_hash = String.Builder.stringHash(name);
+                                if (!from_trusted_dependencies.contains(name_hash)) {
                                     // although this is a new trusted dependency, it is from the default
                                     // list so it shouldn't be added to the lockfile
-                                    try summary.added_trusted_dependencies.put(allocator, @truncate(entry.hash), false);
+                                    try summary.added_trusted_dependencies.put(allocator, name_hash, false);
                                 }
                             }
                         }
@@ -733,7 +734,7 @@ pub fn Package(comptime SemverIntType: type) type {
                             var from_trusted_iter = from_trusted_dependencies.iterator();
                             while (from_trusted_iter.next()) |entry| {
                                 const from_trusted = entry.key_ptr.*;
-                                if (!default_trusted_dependencies.hasWithHash(@intCast(from_trusted))) {
+                                if (!Lockfile.isDefaultTrustedDependencyHash(from_trusted)) {
                                     try summary.removed_trusted_dependencies.put(allocator, from_trusted, {});
                                 }
                             }
@@ -1569,7 +1570,7 @@ pub fn Package(comptime SemverIntType: type) type {
                                     , .{}) catch {};
                                     return error.InvalidPackageJSON;
                                 };
-                                lockfile.trusted_dependencies.?.putAssumeCapacity(@as(TruncatedPackageNameHash, @truncate(String.Builder.stringHash(name))), {});
+                                lockfile.trusted_dependencies.?.putAssumeCapacity(String.Builder.stringHash(name), {});
                             }
                         },
                         else => {
@@ -2282,7 +2283,6 @@ const PackageID = bun.install.PackageID;
 const PackageManager = install.PackageManager;
 const PackageNameHash = install.PackageNameHash;
 const Repository = install.Repository;
-const TruncatedPackageNameHash = install.TruncatedPackageNameHash;
 const initializeStore = install.initializeStore;
 const invalid_package_id = install.invalid_package_id;
 
@@ -2297,4 +2297,3 @@ const Stream = Lockfile.Stream;
 const StringBuilder = Lockfile.StringBuilder;
 const TrustedDependenciesSet = Lockfile.TrustedDependenciesSet;
 const assertNoUninitializedPadding = Lockfile.assertNoUninitializedPadding;
-const default_trusted_dependencies = Lockfile.default_trusted_dependencies;
