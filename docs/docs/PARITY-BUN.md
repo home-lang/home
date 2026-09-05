@@ -1795,6 +1795,21 @@ cached HTTP common strings. The unchanged
 `request-clone-leak.test.ts` workload passes all 12 cases with stable RSS.
 The old Request-specific workload-reduction rewrites were removed.
 
+Native WebCore Blob and stream ownership now matches Bun's post-pin fixes.
+Memory-backed Blob structured-clone payloads contain only the Blob's logical
+byte window at offset zero, without mutating the source Blob, and
+`Blob.resolveSize` preserves a known slice length while clamping it to the
+backing store. The unchanged `structured-clone-blob-file.test.ts` fixture is
+36/36 with 163 assertions in Debug and ReleaseFast; Blob slice streaming,
+Response bodies, and Content-Length now respect both slice bounds.
+
+Native ReadableStream `onClose` callbacks now live in the generated wrapper's
+GC-traced cached slot instead of a strong native reference that could complete
+a wrapper/source/stream cycle. The associated FileReader pending-read
+references are balanced on Windows startup and reader-error paths. The
+unchanged native-source ownership fixture is 4/4 in Debug and ReleaseFast, and
+the complete seven-file `js/web/streams` scan is clean in both modes.
+
 ## Summary
 
 Substrate file-count progress. "Present" is the live Zig file count under

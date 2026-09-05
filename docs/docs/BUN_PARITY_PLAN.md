@@ -933,8 +933,11 @@ tractable win this pass: `ERR_INVALID_THIS` for `Request` body methods (faithful
     closed by routing `Method.toJS` through Bun's cached native HTTP common-string bridge
   - native `Bun.hash` family (wyhash/adler32/crc32/cityHash) → `bun/util/hash.test.js`
   - `bun:ffi` `Bun.FFI.viewSource` → `bun/ffi/ffi-viewSource-non-object.test.ts`
-  - webcore body/stream store-detachment (`Response.body` stream,
-    `ERR_BODY_ALREADY_USED`) → `web/streams/readable-stream-blob-consumed.test.ts`
+  - ~~webcore body/stream store-detachment (`Response.body` stream,
+    `ERR_BODY_ALREADY_USED`) → `web/streams/readable-stream-blob-consumed.test.ts`~~
+    closed together with native-source callback ownership: generated cached
+    fields trace `onClose` without a native strong-reference cycle, and the
+    complete seven-file `js/web/streams` scan is clean in Debug and ReleaseFast
   - `CloseEvent` global + `Bun.spawnSync` (parked subprocess) → `js/...globals`
 
 Operational note: the "canonical main sync" automation occasionally leaves

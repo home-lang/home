@@ -451,9 +451,11 @@ fn _onStructuredCloneSerialize(
     comptime Writer: type,
     writer: Writer,
 ) !void {
+    const is_memory_backed = if (this.store) |store| store.data == .bytes else false;
+
     try writer.writeInt(u8, serialization_version, .little);
 
-    try writer.writeInt(u64, @intCast(this.offset), .little);
+    try writer.writeInt(u64, if (is_memory_backed) 0 else @intCast(this.offset), .little);
 
     try writer.writeInt(u32, @truncate(this.content_type.len), .little);
     try writer.writeAll(this.content_type);
@@ -464,11 +466,24 @@ fn _onStructuredCloneSerialize(
     else
         .empty;
 
-    try writer.writeInt(u8, @intFromEnum(store_tag), .little);
+    try writer.writeInt(u8, @backingInt(store_tag), .little);
 
-    this.resolveSize();
     if (this.store) |store| {
-        try store.serialize(Writer, writer);
+        switch (store.data) {
+            .bytes => |bytes| {
+                const view = this.sharedView();
+                try writer.writeInt(u32, @truncate(view.len), .little);
+                try writer.writeAll(view);
+
+                const stored_name = bytes.stored_name.slice();
+                try writer.writeInt(u32, @truncate(stored_name.len), .little);
+                try writer.writeAll(stored_name);
+            },
+            else => {
+                this.resolveSize();
+                try store.serialize(Writer, writer);
+            },
+        }
     }
 
     try writer.writeInt(u8, @intFromBool(this.is_jsdom_file), .little);
@@ -1100,7 +1115,7 @@ fn writeFileWithEmptySourceToDestination(ctx: *jsc.JSGlobalObject, destination_b
                     // #6336
                     .PERM => {
                         was_eperm = true;
-                        result.err.errno = @intCast(@intFromEnum(bun.sys.E.NOENT));
+                        result.err.errno = @intCast(@backingInt(bun.sys.E.NOENT));
                         continue :err .NOENT;
                     },
                     .NOENT => {
@@ -1114,7 +1129,7 @@ fn writeFileWithEmptySourceToDestination(ctx: *jsc.JSGlobalObject, destination_b
                                 // exists, so we shouldn't try to mkdir it
                                 // also means PERM is _actually_ a
                                 // permissions issue
-                                if (was_eperm) result.err.errno = @intCast(@intFromEnum(bun.sys.E.PERM));
+                                if (was_eperm) result.err.errno = @intCast(@backingInt(bun.sys.E.PERM));
                                 break :err;
                             },
                         };
@@ -3476,7 +3491,11 @@ pub fn resolveSize(this: *Blob) void {
             const store_size = store.size();
             if (store_size != Blob.max_size) {
                 this.offset = @min(store_size, offset);
-                this.size = store_size - offset;
+                const available = store_size - this.offset;
+                this.size = if (this.size == Blob.max_size)
+                    available
+                else
+                    @min(this.size, available);
             }
 
             return;
@@ -5082,7 +5101,7 @@ pub fn FileOpener(comptime This: type) type {
                     .result => |fd| fd,
                     .err => |err| {
                         if (comptime @hasField(This, "mkdirp_if_not_exists")) {
-                            if (err.errno == @intFromEnum(bun.sys.E.NOENT)) {
+                            if (err.errno == @backingInt(bun.sys.E.NOENT)) {
                                 switch (mkdirIfNotExists(this, err, path, path_string.slice())) {
                                     .@"continue" => continue,
                                     .fail => {

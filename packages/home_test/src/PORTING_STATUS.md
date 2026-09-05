@@ -1704,6 +1704,27 @@ unchanged allocation corpus is 6/6 at its original 524,288 clone reads and
 131,072 constructions, and the full Request clone-leak workload is 12/12
 with stable RSS. Both Request workload-reduction rewrites were deleted.
 
+## Native parity checkpoint: Blob slices and stream ownership
+
+Memory-backed Blob structured-clone serialization now writes the Blob's
+logical byte window at offset zero and leaves the source Blob unchanged.
+`Blob.resolveSize` also distinguishes an unknown size from a known slice size,
+so streaming a slice, using it as a Response body, and deriving Content-Length
+cannot expose bytes after the slice end. The unchanged structured-clone
+Blob/File corpus is 36/36 with 163 assertions in both Debug and ReleaseFast.
+
+ReadableStream native-source `onClose` callbacks now use the generated JS
+wrapper's GC-traced cached field. This removes the strong-reference cycle
+between the wrapper, native source, bound callback, and stream while retaining
+callback delivery. FileReader's related pending-read reference is acquired on
+the Windows non-lazy path and released on reader errors. The unchanged native
+source fixture is 4/4, and the complete seven-file `js/web/streams` scan is
+clean in Debug and ReleaseFast.
+
+The three slice-bound regressions in `js/web/fetch/blob.test.ts` are green. The
+file remains 24/26 because object-part stringification and an odd-offset
+UTF-16LE child-process case are separate open parity gaps.
+
 ---
 
 ## Next steps (suggested order)
