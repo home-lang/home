@@ -329,6 +329,15 @@ boundaries:
 | Diagnostics | 604 | **600** | **4 TS2345 removed; 0 added** |
 | Focused recursive-default oracle | 2 invalid controls accepted | **both rejected** | valid and readonly controls retained |
 
+The explicit-file CLI gate then verifies that TypeScript boolean options keep
+the following source path positional and that `skipLibCheck` changes only
+declaration-file semantic reporting:
+
+| [Explicit-file CLI boolean audit](docs/docs/TS_PERFORMANCE.md#explicit-file-cli-boolean-integrity) | Post-#639 main | #645 candidate | Change |
+|---|---:|---:|---:|
+| Pinned `ignoreConfig` / `skipLibCheck` oracle | exit 139 | **all 6 cases match** | source path preserved; true/false honored |
+| Zod 4.5.2 diagnostics | 600 | **600** | **0 added; 0 removed** |
+
 TypeScript 6.0.3 reports zero diagnostics on this graph. Zod remains outside
 the cross-compiler timing table until Home also reaches zero diagnostics.
 

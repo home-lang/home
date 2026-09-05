@@ -7119,3 +7119,89 @@ zig build test -Dfilter=ts_program -Doptimize=ReleaseFast
 zig build home-tsc -Doptimize=ReleaseFast
 ./zig-out/bin/home-tsc --project /path/to/zod-4.5.2/tsconfig.benchmark.json
 ```
+
+### Explicit-file CLI boolean integrity
+
+Issue [#645](https://github.com/home-lang/home/issues/645) was isolated while
+refreshing the pinned compiler oracle for #639. The generic unknown-option
+heuristic treated the source path after `--skipLibCheck` or `--ignoreConfig`
+as a possible option value. That produced an empty positional file list,
+switched the invocation into repository-project discovery, and eventually
+exited 139 while checking the wrong graph. The exact post-#639 parent and the
+[#645](https://github.com/home-lang/home/issues/645) candidate use the same
+two-line valid source and nearby config; there is no timeout, path filtering,
+or reduced project substituted for the failing command.
+
+Commit [`d318b0c28`](https://github.com/home-lang/home/commit/d318b0c2801d40c5d581ebd8726508de055f8200)
+gives both flags typed boolean storage. A present flag defaults to `true`, an
+immediately following `true` or `false` is consumed, and every other following
+argument remains positional. `ignoreConfig` suppresses config discovery only
+when explicit files are present; with no files, the nearby project still
+loads. `skipLibCheck` overrides the config in either direction. Declaration
+files remain bound and checked so their resolved metadata survives the driver
+pass, while their semantic diagnostics are omitted at the diagnostic boundary.
+Lexer and parser diagnostics remain visible.
+
+The strict oracle contains a valid `entry.ts`, a referenced declaration file
+with an unresolved `MissingType`, and a nearby config whose only root has a
+TS2322 error. Fresh harness-pinned TypeScript 6.0.3 and native TypeScript 7.0.2
+runs establish the expected outcomes. TypeScript's different nonzero exit
+codes are not normalized into semantic results.
+
+| Explicit-file control | TypeScript 6.0.3 | Native TypeScript 7.0.2 | Post-#639 parent | #645 candidate |
+|---|---:|---:|---:|---:|
+| `--ignoreConfig entry.ts` | TS2304 | TS2304 | exit 139 | TS2304 |
+| `--ignoreConfig --skipLibCheck entry.ts` | pass | pass | exit 139 | pass |
+| explicit `true` for both flags | pass | pass | exit 139 | pass |
+| `--ignoreConfig --skipLibCheck false entry.ts` | TS2304 | TS2304 | exit 139 | TS2304 |
+| `--ignoreConfig` with no files | config TS2322 | config TS2322 | config TS2322 | config TS2322 |
+| malformed declaration with `skipLibCheck` | syntax error | syntax error | exit 139 | syntax error |
+
+The absent-`ignoreConfig` TS5112 decision remains separately scoped to
+[#486](https://github.com/home-lang/home/issues/486). This change makes the
+escape hatch safe and semantically effective; it does not hide that remaining
+diagnostic difference.
+
+The complete post-#639 Zod 4.5.2 graph is also checked unchanged with exact
+parent `df4dff88f` and candidate ReleaseFast binaries. Diagnostic identities
+normalize to the sorted `path:line:column - error TS code` set after removing
+only the common absolute corpus prefix. No file, diagnostic code, or sample is
+filtered.
+
+| Zod 4.5.2 CLI-option audit | Post-#639 parent | #645 candidate | Change |
+|---|---:|---:|---:|
+| All diagnostics | 600 | **600** | **0 added; 0 removed** |
+| Normalized identity SHA-256 | `f093…fe2` | `f093…fe2` | identical |
+| Wall seconds, one run per arm | 27.49 | 25.83 | transparency only |
+
+The full identity SHA-256 for both arms is
+`f093515438ca8b68df2a1fea133f3e247d21574900579902513adac4636ecfe2`.
+The exact parent binary SHA-256 is
+`1acadca6b41f3f9a17dbd3b3d883a55810bf806a9db2699e7997a7c42a136390`;
+the candidate binary SHA-256 is
+`26ce61627370b68e8a5ef27d88f425c24efa2f24ad2df25fad15377c852b29dd`.
+One run per arm is insufficient for a speed claim, so these wall times are not
+admitted to the cross-compiler performance table.
+
+The source gates include focused parser, config-decision, and driver controls
+plus the complete CLI, driver, and Program suites in Debug, ReleaseSafe, and
+ReleaseFast. Their respective end-to-end compile-and-test times were
+3.00/27.75/56.44 seconds, 12.66/171.49/155.22 seconds, and
+10.14/169.95/198.30 seconds. These are verification costs, not frontend
+throughput measurements. `zig fmt`, scoped `pickier`, and `git diff --check`
+complete the changed-file gates.
+
+```sh
+zig build test -Dfilter=ts_cli
+zig build test -Dfilter=ts_driver
+zig build test -Dfilter=ts_program
+zig build test -Dfilter=ts_cli -Doptimize=ReleaseSafe
+zig build test -Dfilter=ts_driver -Doptimize=ReleaseSafe
+zig build test -Dfilter=ts_program -Doptimize=ReleaseSafe
+zig build test -Dfilter=ts_cli -Doptimize=ReleaseFast
+zig build test -Dfilter=ts_driver -Doptimize=ReleaseFast
+zig build test -Dfilter=ts_program -Doptimize=ReleaseFast
+zig build home-tsc -Doptimize=ReleaseFast
+./zig-out/bin/home-tsc --ignoreConfig --noEmit --skipLibCheck entry.ts
+./zig-out/bin/home-tsc --project /path/to/zod-4.5.2/tsconfig.benchmark.json
+```
