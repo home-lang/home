@@ -71007,14 +71007,48 @@ const harness_prelude =
     \\      if (proxyUrl && url.protocol === "https:") {
     \\        const proxyServer = server;
     \\        const authority = String(url.host || url.hostname);
-    \\        const connectHeaders = Object.create(null);
-    \\        connectHeaders["proxy-connection"] = selectedAgent && (selectedAgent.keepAlive || Number.isFinite(selectedAgent.maxSockets)) ? "keep-alive" : "close";
-    \\        connectHeaders.host = authority;
-    \\        const tunnelSocket = Object.assign(__home_http_event_target(), { destroyed: false, write() { return true; }, end() { this.destroyed = true; return this; }, destroy() { this.destroyed = true; return this; } });
-    \\        proxyServer.emit("connect", Object.assign(__home_http_event_target(), { method: "CONNECT", url: authority, headers: connectHeaders }), tunnelSocket, Buffer.alloc(0));
+    \\        const tunnelKey = proxyUrl.href + "->" + authority;
+    \\        const establishedTunnel = clientRequest.socket && clientRequest.socket.__home_https_proxy_tunnel_key === tunnelKey;
+    \\        if (!establishedTunnel) {
+    \\          const connectHeaders = Object.create(null);
+    \\          connectHeaders["proxy-connection"] = selectedAgent && (selectedAgent.keepAlive || Number.isFinite(selectedAgent.maxSockets)) ? "keep-alive" : "close";
+    \\          connectHeaders.host = authority;
+    \\          if (proxyUrl.username || proxyUrl.password) connectHeaders["proxy-authorization"] = "Basic " + Buffer.from(decodeURIComponent(proxyUrl.username) + ":" + decodeURIComponent(proxyUrl.password)).toString("base64");
+    \\          let tunnelResponse = "";
+    \\          let tunnelEnded = false;
+    \\          const tunnelSocket = Object.assign(__home_http_event_target(), {
+    \\            destroyed: false,
+    \\            write(chunk, callback) { tunnelResponse += Buffer.from(__home_net_bytes(chunk)).toString("latin1"); if (typeof callback === "function") Promise.resolve().then(callback); return !this.destroyed; },
+    \\            end(chunk, encoding, callback) { if (typeof chunk === "function") { callback = chunk; chunk = undefined; } else if (typeof encoding === "function") callback = encoding; if (chunk !== undefined) this.write(chunk); tunnelEnded = true; this.destroyed = true; if (typeof callback === "function") Promise.resolve().then(callback); return this; },
+    \\            destroy(error) { if (this.destroyed) return this; this.destroyed = true; tunnelEnded = true; if (error) this.emit("error", error); this.emit("close"); return this; },
+    \\          });
+    \\          try { proxyServer.emit("connect", Object.assign(__home_http_event_target(), { method: "CONNECT", url: authority, headers: connectHeaders }), tunnelSocket, Buffer.alloc(0)); }
+    \\          catch (error) { clientRequest.destroy(error); finishRequest(); return this; }
+    \\          const headerEnd = tunnelResponse.indexOf("\r\n\r\n");
+    \\          if (headerEnd < 0) {
+    \\            if (tunnelEnded) clientRequest.destroy(__home_fs_error(Error, "ERR_PROXY_TUNNEL", "Connection to establish proxy tunnel ended unexpectedly"));
+    \\            else { clientRequest.__home_proxy_tunnel_pending = true; clientRequest.__home_proxy_tunnel_timeout = Number(options.timeout !== undefined ? options.timeout : selectedAgent && selectedAgent.timeout || 0); }
+    \\            finishRequest();
+    \\            return this;
+    \\          }
+    \\          const statusLine = tunnelResponse.slice(0, tunnelResponse.indexOf("\r\n"));
+    \\          const statusMatch = statusLine.match(/^HTTP\/1\.[01] (\d{3})(?: .*)?$/);
+    \\          if (!statusMatch || statusMatch[1] !== "200") {
+    \\            const message = "Failed to establish tunnel to " + authority + " via " + proxyUrl.href + ": " + (statusLine || "Invalid proxy response");
+    \\            const error = __home_fs_error(Error, "ERR_PROXY_TUNNEL", message);
+    \\            if (statusMatch) error.statusCode = Number(statusMatch[1]);
+    \\            clientRequest.destroy(error);
+    \\            finishRequest();
+    \\            return this;
+    \\          }
+    \\          if (clientRequest.socket) clientRequest.socket.__home_https_proxy_tunnel_key = tunnelKey;
+    \\        }
     \\        server = __home_http_servers_by_endpoint[String(url.hostname) + ":" + String(port)] || __home_http_servers_by_endpoint["*:" + String(port)] || __home_http_servers[port];
     \\        clientRequest.__home_proxy_request_path = clientRequest.path;
     \\        if (!server) { Promise.resolve().then(() => clientRequest.emit("error", new Error("ECONNREFUSED"))); finishRequest(); return this; }
+    \\        const agentOptions = selectedAgent && selectedAgent.options && typeof selectedAgent.options === "object" ? selectedAgent.options : {};
+    \\        const trustedTarget = options.rejectUnauthorized === false || agentOptions.rejectUnauthorized === false || String(process.env.NODE_TLS_REJECT_UNAUTHORIZED || "") === "0" || options.ca || agentOptions.ca || String(process.env.NODE_EXTRA_CA_CERTS || "").trim();
+    \\        if (server.__home_secure_server && !trustedTarget) { const error = __home_fs_error(Error, "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "unable to verify the first certificate"); clientRequest.destroy(error); finishRequest(); return this; }
     \\      }
     \\      if (String(options.method || "GET").toUpperCase() === "CONNECT") {
     \\        const connectRequest = Object.assign(__home_http_incoming_message(null), { method: "CONNECT", url: clientRequest.path, headers: __home_http_received_headers(clientRequest.__home_raw_header_entries, false), rawHeaders: __home_http_raw_headers(clientRequest.__home_headers, clientRequest.__home_raw_header_names, clientRequest.__home_raw_header_values, clientRequest.__home_raw_header_entries) });
@@ -71309,7 +71343,16 @@ const harness_prelude =
     \\  clientRequest.aborted = false;
     \\  clientRequest.timeout = options.timeout;
     \\  clientRequest.__home_option_timeout = options.timeout;
-    \\  clientRequest.timeoutCb = function() { if (!clientRequest.destroyed && !clientRequest.__home_request_complete) clientRequest.emit("timeout"); };
+    \\  clientRequest.timeoutCb = function() {
+    \\    if (clientRequest.destroyed || clientRequest.__home_request_complete) return;
+    \\    if (clientRequest.__home_proxy_tunnel_pending) {
+    \\      const timeout = Math.max(0, Number(clientRequest.__home_proxy_tunnel_timeout) || 0);
+    \\      const error = __home_fs_error(Error, "ERR_PROXY_TUNNEL", "Connection to establish proxy tunnel timed out after " + String(timeout) + "ms");
+    \\      error.proxyTunnelTimeout = timeout;
+    \\      clientRequest.destroy(error);
+    \\    }
+    \\    clientRequest.emit("timeout");
+    \\  };
     \\  if (options.signal !== undefined && options.signal !== null) {
     \\    const signal = options.signal;
     \\    if (typeof signal !== "object" || typeof signal.addEventListener !== "function") throw __home_fs_error(TypeError, "ERR_INVALID_ARG_TYPE", 'The "options.signal" property must be an instance of AbortSignal.');
@@ -71888,11 +71931,14 @@ const harness_prelude =
     \\  process.env = Object.assign({}, process.env, envExtension || {});
     \\  let stdout = "";
     \\  let stderr = "";
+    \\  let exitCode = 0;
+    \\  let usedAgent = null;
     \\  try {
     \\    const requestUrl = String(process.env.REQUEST_URL || "");
+    \\    const library = requestUrl.startsWith("https:") ? __home_node_https : __home_node_http;
     \\    const requestOptions = {};
     \\    if (process.env.REQUEST_TIMEOUT) requestOptions.timeout = Number(process.env.REQUEST_TIMEOUT) || 0;
-    \\    if (process.env.AGENT_TIMEOUT) requestOptions.agent = new __home_http_Agent({ proxyEnv: process.env, timeout: Number(process.env.AGENT_TIMEOUT) || 0 });
+    \\    if (process.env.AGENT_TIMEOUT) requestOptions.agent = new library.Agent({ proxyEnv: process.env, timeout: Number(process.env.AGENT_TIMEOUT) || 0 });
     \\    if (process.env.RESOLVE_TO_LOCALHOST) requestOptions.lookup = (hostname, _options, callback) => {
     \\      stdout += "Resolving lookup for " + String(hostname) + " to 127.0.0.1\n";
     \\      callback(null, [{ address: "127.0.0.1", family: 4 }]);
@@ -71900,7 +71946,7 @@ const harness_prelude =
     \\    await new Promise(resolve => {
     \\      let request;
     \\      try {
-    \\        request = __home_node_http.get(requestUrl, requestOptions, response => {
+    \\        request = library.get(requestUrl, requestOptions, response => {
     \\          let body = "";
     \\          response.setEncoding("utf8");
     \\          response.on("data", chunk => { body += String(chunk); });
@@ -71909,15 +71955,19 @@ const harness_prelude =
     \\      } catch (error) {
     \\        const stack = typeof __home_normalize_bun_error_stack === "function" ? __home_normalize_bun_error_stack(error, error && error.stack) : String(error && error.stack || error);
     \\        stderr += "Request Error " + stack;
+    \\        exitCode = 1;
     \\        resolve();
     \\        return;
     \\      }
-    \\      request.on("error", error => { const code = String(error && error.code || "ECONNREFUSED"); const message = code === "ECONNREFUSED" && !String(error.message || "").includes("connect") ? "connect ECONNREFUSED" : String(error.message || error); stderr += "Request Error Error: " + message; resolve(); });
+    \\      usedAgent = request.agent;
+    \\      request.on("error", error => { const code = String(error && error.code || "ECONNREFUSED"); const message = code === "ECONNREFUSED" && !String(error.message || "").includes("connect") ? "connect ECONNREFUSED" : String(error.message || error); stderr += "Request Error Error: " + message + (code && !message.includes(code) ? "\n" + code : ""); resolve(); });
+    \\      request.on("timeout", () => { stderr += "Request timed out\n"; request.destroy(); });
     \\    });
     \\  } finally {
+    \\    if (usedAgent && typeof usedAgent.destroy === "function") usedAgent.destroy();
     \\    process.env = savedEnv;
     \\  }
-    \\  return { code: stderr ? 1 : 0, signal: null, stderr, stdout };
+    \\  return { code: exitCode, signal: null, stderr, stdout };
     \\}
     \\async function __home_http_run_proxied_post(envExtension) {
     \\  const savedEnv = Object.assign({}, process.env);
@@ -158246,6 +158296,46 @@ test "bootstrap HTTP pipelining and proxy corpus tranche contracts" {
         defer summary.deinit(std.testing.allocator);
         try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/bun-corpus", path, &summary);
         if (summary.failed != 0 or summary.unsupported != 0) std.debug.print("HTTP pipelining/proxy corpus failure for {s}: failed={} unsupported={} message={s}\n", .{ path, summary.failed, summary.unsupported, summary.first_failure_message });
+        try std.testing.expectEqual(@as(usize, 1), summary.files);
+        try std.testing.expectEqual(@as(usize, 0), summary.failed);
+        try std.testing.expectEqual(@as(usize, 0), summary.todo);
+        try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+        try std.testing.expect(summary.passed != 0 or summary.allowed_empty_files == 1);
+    }
+}
+
+test "bootstrap HTTPS proxy tunnel corpus tranche contracts" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const paths = [_][]const u8{
+        "js/node/test/parallel/test-https-proxy-request-auth-failure.mjs",
+        "js/node/test/parallel/test-https-proxy-request-connection-refused.mjs",
+        "js/node/test/parallel/test-https-proxy-request-handshake-failure.mjs",
+        "js/node/test/parallel/test-https-proxy-request-https-proxy.mjs",
+        "js/node/test/parallel/test-https-proxy-request-incomplete-headers.mjs",
+        "js/node/test/parallel/test-https-proxy-request-invalid-char-in-options.mjs",
+        "js/node/test/parallel/test-https-proxy-request-invalid-char-in-url.mjs",
+        "js/node/test/parallel/test-https-proxy-request-invalid-credentials.mjs",
+        "js/node/test/parallel/test-https-proxy-request-invalid-url.mjs",
+        "js/node/test/parallel/test-https-proxy-request-ipv6.mjs",
+        "js/node/test/parallel/test-https-proxy-request-max-sockets.mjs",
+        "js/node/test/parallel/test-https-proxy-request-no-proxy.mjs",
+        "js/node/test/parallel/test-https-proxy-request-socket-keep-alive.mjs",
+        "js/node/test/parallel/test-https-proxy-request-tunnel-timeout-agent.mjs",
+        "js/node/test/parallel/test-https-proxy-request-tunnel-timeout.mjs",
+        "js/node/test/parallel/test-https-proxy-request.mjs",
+        "js/node/test/parallel/test-https-request-proxy-post.mjs",
+    };
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+    for (paths) |path| {
+        var summary = Summary{};
+        defer summary.deinit(std.testing.allocator);
+        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/bun-corpus", path, &summary);
+        if (summary.failed != 0 or summary.unsupported != 0) std.debug.print("HTTPS proxy tunnel corpus failure for {s}: failed={} unsupported={} message={s}\n", .{ path, summary.failed, summary.unsupported, summary.first_failure_message });
         try std.testing.expectEqual(@as(usize, 1), summary.files);
         try std.testing.expectEqual(@as(usize, 0), summary.failed);
         try std.testing.expectEqual(@as(usize, 0), summary.todo);
