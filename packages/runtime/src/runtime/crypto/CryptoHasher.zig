@@ -272,7 +272,11 @@ pub const CryptoHasher = union(enum) {
 
         return CryptoHasher.new(brk: {
             if (hmac_key) |*key| {
-                const chosen_algorithm = try algorithm_name.toEnumFromMap(globalThis, "algorithm", EVP.Algorithm, EVP.Algorithm.map);
+                var algorithm_slice = algorithm.toSlice(bun.default_allocator);
+                defer algorithm_slice.deinit();
+                const chosen_algorithm = EVP.algorithmByName(algorithm_slice.slice()) orelse {
+                    return globalThis.throwInvalidArguments("Unsupported algorithm {f}", .{algorithm});
+                };
 
                 break :brk .{
                     .hmac = HMAC.init(chosen_algorithm, key.slice()) orelse {
@@ -477,14 +481,14 @@ const CryptoHasherZig = struct {
     state: *anyopaque,
     digest_length: u8,
 
-    const algo_map = [_]struct { string, type }{
-        .{ "sha3-224", std.crypto.hash.sha3.Sha3_224 },
-        .{ "sha3-256", std.crypto.hash.sha3.Sha3_256 },
-        .{ "sha3-384", std.crypto.hash.sha3.Sha3_384 },
-        .{ "sha3-512", std.crypto.hash.sha3.Sha3_512 },
-        .{ "shake128", std.crypto.hash.sha3.Shake128 },
-        .{ "shake256", std.crypto.hash.sha3.Shake256 },
-        .{ "blake2s256", std.crypto.hash.blake2.Blake2s256 },
+    const algo_map = [_]struct { EVP.Algorithm, type }{
+        .{ .@"sha3-224", std.crypto.hash.sha3.Sha3_224 },
+        .{ .@"sha3-256", std.crypto.hash.sha3.Sha3_256 },
+        .{ .@"sha3-384", std.crypto.hash.sha3.Sha3_384 },
+        .{ .@"sha3-512", std.crypto.hash.sha3.Sha3_512 },
+        .{ .shake128, std.crypto.hash.sha3.Shake128 },
+        .{ .shake256, std.crypto.hash.sha3.Shake256 },
+        .{ .blake2s256, std.crypto.hash.blake2.Blake2s256 },
     };
 
     inline fn digestLength(Algorithm: type) comptime_int {
@@ -498,8 +502,9 @@ const CryptoHasherZig = struct {
     pub fn hashByName(globalThis: *JSGlobalObject, algorithm: ZigString, input: jsc.Node.BlobOrStringOrBuffer, output: ?jsc.Node.StringOrBuffer) bun.JSError!?jsc.JSValue {
         var algorithm_slice = algorithm.toSlice(bun.default_allocator);
         defer algorithm_slice.deinit();
+        const chosen_algorithm = EVP.algorithmByName(algorithm_slice.slice()) orelse return null;
         inline for (algo_map) |item| {
-            if (bun.strings.eqlComptime(algorithm_slice.slice(), item[0])) {
+            if (chosen_algorithm == item[0]) {
                 return try hashByNameInner(globalThis, item[1], input, output);
             }
         }
@@ -577,24 +582,17 @@ const CryptoHasherZig = struct {
     fn constructor(algorithm: ZigString) ?*CryptoHasher {
         var algorithm_slice = algorithm.toSlice(bun.default_allocator);
         defer algorithm_slice.deinit();
-        inline for (algo_map) |item| {
-            if (bun.strings.eqlComptime(algorithm_slice.slice(), item[0])) {
-                return CryptoHasher.new(.{ .zig = .{
-                    .algorithm = @field(EVP.Algorithm, item[0]),
-                    .state = bun.new(item[1], item[1].init(.{})),
-                    .digest_length = digestLength(item[1]),
-                } });
-            }
-        }
-        return null;
+        const inner = init(algorithm_slice.slice()) orelse return null;
+        return CryptoHasher.new(.{ .zig = inner });
     }
 
     pub fn init(algorithm: []const u8) ?CryptoHasherZig {
+        const chosen_algorithm = EVP.algorithmByName(algorithm) orelse return null;
         inline for (algo_map) |item| {
-            const name, const T = item;
-            if (bun.strings.eqlComptime(algorithm, name)) {
+            const algorithm_tag, const T = item;
+            if (chosen_algorithm == algorithm_tag) {
                 const handle: CryptoHasherZig = .{
-                    .algorithm = @field(EVP.Algorithm, name),
+                    .algorithm = algorithm_tag,
                     .state = bun.new(T, T.init(.{})),
                     .digest_length = digestLength(T),
                 };
@@ -607,7 +605,7 @@ const CryptoHasherZig = struct {
 
     fn update(self: *CryptoHasherZig, bytes: []const u8) void {
         inline for (algo_map) |item| {
-            if (self.algorithm == @field(EVP.Algorithm, item[0])) {
+            if (self.algorithm == item[0]) {
                 return item[1].update(@ptrCast(@alignCast(self.state)), bytes);
             }
         }
@@ -616,7 +614,7 @@ const CryptoHasherZig = struct {
 
     fn copy(self: *const CryptoHasherZig) CryptoHasherZig {
         inline for (algo_map) |item| {
-            if (self.algorithm == @field(EVP.Algorithm, item[0])) {
+            if (self.algorithm == item[0]) {
                 return .{
                     .algorithm = self.algorithm,
                     .state = bun.dupe(item[1], @ptrCast(@alignCast(self.state))),
@@ -629,8 +627,8 @@ const CryptoHasherZig = struct {
 
     fn finalWithLen(self: *CryptoHasherZig, output_digest_slice: []u8, res_len: usize) []u8 {
         inline for (algo_map) |pair| {
-            const name, const T = pair;
-            if (self.algorithm == @field(EVP.Algorithm, name)) {
+            const algorithm_tag, const T = pair;
+            if (self.algorithm == algorithm_tag) {
                 T.final(@ptrCast(@alignCast(self.state)), @ptrCast(output_digest_slice));
                 const reset: *T = @ptrCast(@alignCast(self.state));
                 reset.* = T.init(.{});
@@ -646,7 +644,7 @@ const CryptoHasherZig = struct {
 
     fn deinit(self: *CryptoHasherZig) void {
         inline for (algo_map) |item| {
-            if (self.algorithm == @field(EVP.Algorithm, item[0])) {
+            if (self.algorithm == item[0]) {
                 return bun.destroy(@as(*item[1], @ptrCast(@alignCast(self.state))));
             }
         }

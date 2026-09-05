@@ -105,6 +105,8 @@ pub const Algorithm = enum {
         .{ "sha3-512", .@"sha3-512" },
         .{ "shake128", .shake128 },
         .{ "shake256", .shake256 },
+        .{ "shake-128", .shake128 },
+        .{ "shake-256", .shake256 },
         // .{ "md5-sha1", .@"MD5-SHA1" },
         // .{ "dsa-sha", .@"DSA-SHA" },
         // .{ "dsa-sha1", .@"DSA-SHA1" },
@@ -119,6 +121,10 @@ pub const Algorithm = enum {
         // .{ "rsa-ripemd160", .@"RSA-RIPEMD160" },
     });
 };
+
+pub fn algorithmByName(name: []const u8) ?Algorithm {
+    return Algorithm.map.getWithEql(name, strings.eqlCaseInsensitiveASCIIIgnoreLength);
+}
 
 pub fn init(algorithm: Algorithm, md: *const BoringSSL.EVP_MD, engine: *BoringSSL.ENGINE) EVP {
     bun.BoringSSL.load();
@@ -183,7 +189,7 @@ pub fn copy(this: *const EVP, engine: *BoringSSL.ENGINE) error{OutOfMemory}!EVP 
 }
 
 pub fn byNameAndEngine(engine: *BoringSSL.ENGINE, name: []const u8) ?EVP {
-    if (Algorithm.map.getWithEql(name, strings.eqlCaseInsensitiveASCIIIgnoreLength)) |algorithm| {
+    if (algorithmByName(name)) |algorithm| {
         if (algorithm.md()) |md| {
             return EVP.init(algorithm, md, engine);
         }
