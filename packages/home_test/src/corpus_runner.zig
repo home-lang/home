@@ -62794,7 +62794,7 @@ const harness_prelude =
     \\  }
     \\}
     \\function __home_fs_validate_data(data, name) {
-    \\  if (typeof data === "string" || __home_array_buffer_view(data)) return;
+    \\  if (typeof data === "string" || __home_array_buffer_view(data) || (data && data.__home_logical_buffer)) return;
     \\  const argumentName = name || "data";
     \\  throw __home_fs_error(TypeError, "ERR_INVALID_ARG_TYPE", 'The "' + argumentName + '" argument must be of type string or an instance of Buffer, TypedArray, or DataView. Received ' + __home_determine_specific_type(data));
     \\}
@@ -64455,7 +64455,6 @@ const harness_prelude =
     \\    }
     \\  }
     \\  if (match[3] === "1.1" && (hosts.length !== 1 || !hosts[0])) return { status: 400 };
-    \\  if (contentLengths.length > 1) return { status: 400 };
     \\  let contentLength = null;
     \\  for (const value of contentLengths) {
     \\    if (!/^\d+$/.test(value)) return { status: 400 };
@@ -77560,7 +77559,7 @@ const harness_prelude =
     \\    for (let index = 0; index < encoded.length; index++) bytes.push(encoded[index] & 0xff);
     \\  }
     \\  function appendBytes(value) {
-    \\    const encoded = __home_body_bytes_sync(value);
+    \\    const encoded = Array.isArray(value) ? value : __home_body_bytes_sync(value);
     \\    for (let index = 0; index < encoded.length; index++) bytes.push(encoded[index] & 0xff);
     \\  }
     \\  for (const entry of form.__home_entries || []) {
@@ -79012,6 +79011,7 @@ const harness_prelude =
     \\    try {
     \\      Object.defineProperty(reader, "__home_body_read_tracked", { configurable: true, value: true });
     \\      Object.defineProperty(reader, "read", { configurable: true, writable: true, value: function() {
+    \\        try { Object.defineProperty(body, "__home_body_consumed", { configurable: true, writable: true, value: true }); } catch (error) {}
     \\        return Promise.resolve(read.apply(this, arguments)).then(result => {
     \\          if (result && !result.done && result.value !== undefined) body.__home_bytes_read = Number(body.__home_bytes_read || 0) + __home_body_bytes_sync(result.value).length;
     \\          return result;
