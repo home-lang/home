@@ -7025,3 +7025,97 @@ zig build test -Dfilter=ts_program
 zig build home-tsc -Doptimize=ReleaseFast
 ./zig-out/bin/home-tsc --project /path/to/zod-4.5.2/tsconfig.benchmark.json
 ```
+
+### Recursive generic-default fixed points
+
+Issue [#639](https://github.com/home-lang/home/issues/639), under the Zod
+admission issue [#548](https://github.com/home-lang/home/issues/548) and
+correctness tracker [#416](https://github.com/home-lang/home/issues/416),
+closes the recursive fixed-point gap separated from #633 and #634. A fully
+defaulted interface such as
+`Type<O = unknown, S extends State<O> = State<O>>` can refer back to `Type`
+through `State<O>`'s base. The first recursive interface pass previously kept
+the provisional `unknown` constraint/default payloads even after the
+self-recheck had completed them. Constraint checking then treated the retained
+declaration parameter as a genuinely free use-site parameter and deferred a
+decidable mismatch.
+
+The checker now refreshes the original stable parameter identities from the
+completed self-recheck with the existing cycle-pruned substitution walk. A
+separate closure walk replaces only parameters proven to belong to another
+declaration and to have a stored default. Parameters owned by the current HIR
+declaration, parameters without defaults, and parameters with unknown
+provenance remain unresolved. Imported Program declarations carry the same
+ownership provenance explicitly because their source nodes do not belong to
+the consumer HIR. Substituted objects retain interface identity, Program
+display identity, readonly index state, array origin, and tuple origin. No HIR
+syntax is stored or re-lowered at the proof site, and free-parameter deferral
+is not globally disabled.
+
+The strict focused oracle includes the original valid default, a concrete
+invalid argument, a constrained invalid argument, and readonly-array controls.
+The same semantic cases also cross a two-file Program boundary. A separate
+checker-internal control proves that the closure walk still leaves a genuinely
+owner-local parameter unresolved. Fresh runs of the harness-pinned TypeScript
+6.0.3 and native TypeScript 7.0.2 compilers differ only in the diagnostic
+family for the concrete missing-property case.
+
+| Recursive-default control | TypeScript 6.0.3 | Native TypeScript 7.0.2 | Home |
+|---|---:|---:|---:|
+| Fully defaulted valid `Good` | pass | pass | pass |
+| Concrete invalid `Tuple<{ nope: number }>` | TS2344 | TS2741 | TS2344 |
+| Constrained invalid `Tuple<R>` with `R extends WrongShape` | TS2344 | TS2344 | TS2344 |
+| Readonly recursive-default controls | pass | pass | pass |
+
+The checker-internal owner-local control remains unresolved as designed; it
+does not represent a standalone TypeScript source diagnostic and is therefore
+not included as a cross-compiler row.
+
+The real-project gate compares exact post-#634 parent `773af2405` with semantic
+candidate `7d7cf23f8`. Both ReleaseFast binaries check the unchanged 106
+production files selected by the pinned Zod 4.5.2 strict, no-emit
+`tsconfig.benchmark.json`. Complete diagnostic identities normalize to the
+sorted `path:line:column - error TS code` set after removing only the common
+absolute corpus prefix. No diagnostic, file, code, or sample is filtered.
+
+| Zod 4.5.2 recursive-default audit | Post-#634 parent | #639 candidate | Change |
+|---|---:|---:|---:|
+| All diagnostics | 604 | **600** | **4 removed (0.7%)** |
+| TS2345 at the four recursive constructor sites | 4 | **0** | **4 removed** |
+| Added normalized diagnostics | — | **0** | none |
+| Wall seconds, one run per arm | 25.24 | 25.05 | transparency only |
+
+The removed identities are
+`src/v4/core/schemas.ts:4395:77`, `:4397:53`, `:4401:77`, and `:4403:53`, all
+TS2345. The parent normalized identity SHA-256 is
+`b1507875d4327b4df2dce0fed41123d3d409d8f85aca7b05fcaf6d3777c29210`;
+the candidate hash is
+`f093515438ca8b68df2a1fea133f3e247d21574900579902513adac4636ecfe2`.
+The final candidate ReleaseFast binary SHA-256 is
+`a201e6d7c5c20f046a9b591ef43d8c47f9679653981d61027d6340fd5ebaab80`.
+One run per arm is insufficient for a speed claim, so the wall times are not
+admitted to the cross-compiler performance table.
+
+An earlier candidate artifact was rejected after the complete identity diff
+found three added readonly-to-mutable TS2344 diagnostics. That audit exposed
+missing readonly side metadata in the bounded object substitution path; the
+general metadata propagation fix and readonly controls removed all three.
+The accepted final artifact has zero added identities.
+
+The final source passes the focused checker and Program reductions plus the
+complete checker and Program suites in Debug, ReleaseSafe, and ReleaseFast.
+End-to-end compile-and-test validation times were 266.98/57.88 seconds,
+173.84/163.88 seconds, and 170.59/178.43 seconds, respectively. These timings
+describe verification cost, not frontend throughput. `zig fmt`, scoped
+`pickier`, and `git diff --check` complete the source gates.
+
+```sh
+zig build test -Dfilter=ts_checker
+zig build test -Dfilter=ts_program
+zig build test -Dfilter=ts_checker -Doptimize=ReleaseSafe
+zig build test -Dfilter=ts_program -Doptimize=ReleaseSafe
+zig build test -Dfilter=ts_checker -Doptimize=ReleaseFast
+zig build test -Dfilter=ts_program -Doptimize=ReleaseFast
+zig build home-tsc -Doptimize=ReleaseFast
+./zig-out/bin/home-tsc --project /path/to/zod-4.5.2/tsconfig.benchmark.json
+```

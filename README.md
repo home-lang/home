@@ -320,6 +320,15 @@ stable while the focused TypeScript oracle gap closes:
 | Diagnostics | 604 | **604** | **0 added; 0 removed** |
 | Focused same-file oracle | 2 valid uses rejected | **all valid uses accepted** | three invalid controls retained |
 
+The recursive fixed-point audit then distinguishes declaration-owned defaults
+from genuinely free outer parameters and applies the same proof across Program
+boundaries:
+
+| [Zod 4.5.2 recursive-default audit](docs/docs/TS_PERFORMANCE.md#recursive-generic-default-fixed-points) | Post-#634 main | #639 candidate | Change |
+|---|---:|---:|---:|
+| Diagnostics | 604 | **600** | **4 TS2345 removed; 0 added** |
+| Focused recursive-default oracle | 2 invalid controls accepted | **both rejected** | valid and readonly controls retained |
+
 TypeScript 6.0.3 reports zero diagnostics on this graph. Zod remains outside
 the cross-compiler timing table until Home also reaches zero diagnostics.
 
