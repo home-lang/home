@@ -1,0 +1,7 @@
+{
+  "name": "@home/runtime-bun-corpus-root",
+  "private": true,
+  "dependencies": {
+    "react": "18.3.1"
+  }
+}
