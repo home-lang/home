@@ -585,6 +585,7 @@ pub const Builder = struct {
                     context.declaration.contextual_only = true;
                 };
                 if (ref.qualifier_len == 0) {
+                    if (std.mem.eql(u8, name, "this")) return self.expression(.polymorphic_this);
                     if (localParameter(context, name)) |parameter| return self.expression(.{ .parameter = parameter });
                     for (context.declaration.parameters) |*param| {
                         if (std.mem.eql(u8, param.name, name)) return self.expression(.{ .parameter = param });
@@ -1259,6 +1260,17 @@ test "class schema: explicit this is a receiver rather than a positional paramet
     try T.expectEqual(@as(usize, 1), function.parameters.len);
     try T.expectEqualStrings("value", function.this_type.?.object[0].name);
     try T.expect(function.this_type.?.object[0].type.parameter == &result.declaration.parameters[0]);
+    try T.expect(try result.isSupported(T.allocator));
+}
+
+test "class schema: polymorphic this remains distinct from ThisType markers" {
+    const graph = try TestGraph.init(&.{.{ .path = "/owner.ts", .text = "export interface Fluent { clone(): this; }" }});
+    defer graph.deinit();
+    const result = try graph.class(0, "Fluent");
+    defer result.deinit(T.allocator);
+    const function = result.declaration.body.?.object[0].type.function;
+    try T.expect(function.result.* == .polymorphic_this);
+    try T.expect(function.this_type == null);
     try T.expect(try result.isSupported(T.allocator));
 }
 

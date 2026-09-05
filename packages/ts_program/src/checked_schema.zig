@@ -164,6 +164,12 @@ const Builder = struct {
                 .bigint_lit => self.unsupported(),
             };
         }
+        if (flags.is_type_parameter) {
+            const name = interner.typeParameterName(typ) orelse return self.unsupported();
+            if (std.mem.eql(u8, self.compilation.interner.get(name), "this"))
+                return self.expression(.polymorphic_this);
+            return self.unsupported();
+        }
         if (flags.is_tuple) {
             const payload = interner.pool.tuple_payloads.items[interner.pool.payloadOf(typ)];
             const source = interner.pool.tuple_element_pool.items[payload.elements_start..][0..payload.elements_len];

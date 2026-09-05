@@ -96,6 +96,9 @@ pub const Expression = union(enum) {
     conditional: Conditional,
     mapped: Mapped,
     infer: *const Parameter,
+    /// The polymorphic `this` keyword used in method return and parameter
+    /// types. This is distinct from the `ThisType<T>` contextual marker.
+    polymorphic_this,
     this_type: *const Expression,
     typeof_class: *const Declaration,
     unsupported,
@@ -169,7 +172,7 @@ pub const Schema = struct {
             switch (expr.*) {
                 .unsupported => if (!allow_opaque) return false,
                 .opaque_leaf => if (!allow_opaque) return false,
-                .primitive, .builtin_object, .parameter, .string, .number, .boolean => {},
+                .primitive, .builtin_object, .parameter, .string, .number, .boolean, .polymorphic_this => {},
                 .array, .readonly_array, .keyof, .this_type => |element| try pending.append(gpa, element),
                 .object => |members| for (members) |member| {
                     try pending.append(gpa, member.type);
