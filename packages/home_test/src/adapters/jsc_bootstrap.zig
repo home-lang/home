@@ -598,8 +598,18 @@ pub const Runtime = struct {
         var counters = self.readCounters(allocator) catch |err| {
             return runner.FileRun.failBorrowed(spec.path, @errorName(err));
         };
+        var has_refed_runtime_handles = (readCounter(
+            allocator,
+            &self.engine,
+            "globalThis.__home_has_refed_runtime_handles && globalThis.__home_has_refed_runtime_handles() ? 1 : 0",
+        ) catch 0) != 0;
+        var has_pending_must_calls = (readCounter(
+            allocator,
+            &self.engine,
+            "globalThis.__home_has_pending_must_calls && globalThis.__home_has_pending_must_calls() ? 1 : 0",
+        ) catch 0) != 0;
         var drain_rounds: usize = 0;
-        while (counters.pending != 0 and drain_rounds < max_microtask_drain_rounds) : (drain_rounds += 1) {
+        while ((counters.pending != 0 or has_refed_runtime_handles or has_pending_must_calls) and drain_rounds < max_microtask_drain_rounds) : (drain_rounds += 1) {
             const needs_finalization_checkpoint = (readCounter(
                 allocator,
                 &self.engine,
@@ -626,6 +636,16 @@ pub const Runtime = struct {
             counters = self.readCounters(allocator) catch |err| {
                 return runner.FileRun.failBorrowed(spec.path, @errorName(err));
             };
+            has_refed_runtime_handles = (readCounter(
+                allocator,
+                &self.engine,
+                "globalThis.__home_has_refed_runtime_handles && globalThis.__home_has_refed_runtime_handles() ? 1 : 0",
+            ) catch 0) != 0;
+            has_pending_must_calls = (readCounter(
+                allocator,
+                &self.engine,
+                "globalThis.__home_has_pending_must_calls && globalThis.__home_has_pending_must_calls() ? 1 : 0",
+            ) catch 0) != 0;
         }
         if (counters.pending != 0) {
             const message = readString(self, allocator, "__home_bun_tests.firstFailure || (__home_bun_tests.pendingMessages && __home_bun_tests.pendingMessages.length ? __home_bun_tests.pendingMessages.join('; ') : 'pending async test promise requires event-loop support')") catch |err| {
@@ -647,6 +667,20 @@ pub const Runtime = struct {
             };
             defer allocator.free(message);
             return runner.FileRun.failOwned(allocator, spec.path, message);
+        }
+        const must_call_failure = readString(self, allocator, "globalThis.__home_must_call_failure_message ? globalThis.__home_must_call_failure_message() : ''") catch |err| {
+            return runner.FileRun.failBorrowed(spec.path, @errorName(err));
+        };
+        defer allocator.free(must_call_failure);
+        if (must_call_failure.len != 0) {
+            return runner.FileRun.failOwned(allocator, spec.path, must_call_failure);
+        }
+        if (has_refed_runtime_handles) {
+            const message = readString(self, allocator, "globalThis.__home_refed_runtime_handle_message ? globalThis.__home_refed_runtime_handle_message() : 'referenced runtime handles did not quiesce after bounded event-loop checkpoints'") catch |err| {
+                return runner.FileRun.failBorrowed(spec.path, @errorName(err));
+            };
+            defer allocator.free(message);
+            return runner.FileRun.unsupportedOwned(allocator, spec.path, message);
         }
         if (counters.passed + counters.failed + counters.todo == 0) {
             if (spec.allow_no_tests) {

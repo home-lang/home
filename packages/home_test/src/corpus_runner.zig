@@ -237,6 +237,7 @@ const harness_prelude =
     \\}
     \\var __home_bun_tests = globalThis.__home_bun_tests || { passed: 0, failed: 0, todo: 0, pending: 0, unsupported: 0, firstFailure: null, pendingMessages: [] };
     \\var __home_console_output = globalThis.__home_console_output || [];
+    \\var __home_must_call_checks = globalThis.__home_must_call_checks || [];
     \\var __home_real_timer_bindings = null;
     \\globalThis.__home_reset_tests = function() {
     \\  __home_use_real_timers();
@@ -252,6 +253,7 @@ const harness_prelude =
     \\  if (typeof globalThis.__home_reset_performance_clock === "function") globalThis.__home_reset_performance_clock();
     \\  __home_bun_tests = globalThis.__home_bun_tests = { passed: 0, failed: 0, todo: 0, pending: 0, unsupported: 0, firstFailure: null, pendingMessages: [] };
     \\  __home_console_output = globalThis.__home_console_output = [];
+    \\  __home_must_call_checks = globalThis.__home_must_call_checks = [];
     \\  globalThis.__home_root_scope = {
     \\    parent: null,
     \\    beforeAll: [],
@@ -281,10 +283,67 @@ const harness_prelude =
     \\  if (typeof __home_http2_Http2Session === "function") __home_http2_Http2Session.prototype.request = function() { return 0; };
     \\  if (typeof __home_http2_Http2Stream === "function") { __home_http2_Http2Stream.prototype.respond = function() { return 0; }; __home_http2_Http2Stream.prototype.pushPromise = function() { return 0; }; __home_http2_Http2Stream.prototype.info = function() { return 0; }; }
     \\  if (typeof globalThis.__home_reset_node_fs === "function") globalThis.__home_reset_node_fs();
-    \\  for (const registryName of ["__home_net_servers", "__home_net_servers_by_path", "__home_tls_servers", "__home_http2_servers", "__home_http2_servers_by_path", "__home_http2_fetch_sessions", "__home_http2_raw_sessions", "__home_serve_handles_by_origin", "__home_serve_handles_by_unix", "__home_listen_handles_by_port", "__home_listen_handles_by_unix"]) {
+    \\  for (const registryName of ["__home_net_servers", "__home_net_servers_by_path", "__home_tls_servers", "__home_http_servers", "__home_http_servers_by_endpoint", "__home_http2_servers", "__home_http2_servers_by_path", "__home_http2_fetch_sessions", "__home_http2_raw_sessions", "__home_serve_handles_by_origin", "__home_serve_handles_by_unix", "__home_listen_handles_by_port", "__home_listen_handles_by_unix"]) {
     \\    const registry = globalThis[registryName];
     \\    if (registry) for (const key of Object.keys(registry)) delete registry[key];
     \\  }
+    \\};
+    \\function __home_must_call_inner(fn, criteria, field) {
+    \\  if (typeof fn === "number") { criteria = fn; fn = function() {}; }
+    \\  else if (fn === undefined) fn = function() {};
+    \\  if (criteria === undefined) criteria = 1;
+    \\  if (typeof fn !== "function") throw new TypeError("The callback argument must be of type function");
+    \\  if (typeof criteria !== "number") throw new TypeError("Invalid " + field + " value: " + String(criteria));
+    \\  const check = { actual: 0, filename: String(globalThis.__home_current_filename || "<unknown>"), name: fn.name || "<anonymous>" };
+    \\  check[field] = criteria;
+    \\  __home_must_call_checks.push(check);
+    \\  const wrapped = function() { check.actual++; return fn.apply(this, arguments); };
+    \\  try {
+    \\    Object.defineProperties(wrapped, {
+    \\      name: { value: fn.name, writable: false, enumerable: false, configurable: true },
+    \\      length: { value: fn.length, writable: false, enumerable: false, configurable: true },
+    \\    });
+    \\  } catch {}
+    \\  return wrapped;
+    \\}
+    \\function __home_must_call(fn, exact) { return __home_must_call_inner(fn, exact, "exact"); }
+    \\function __home_must_call_at_least(fn, minimum) { return __home_must_call_inner(fn, minimum, "minimum"); }
+    \\function __home_must_succeed(fn, exact) {
+    \\  return __home_must_call(function(error) {
+    \\    if (error) throw error;
+    \\    if (typeof fn === "function") return fn.apply(this, Array.prototype.slice.call(arguments, 1));
+    \\  }, exact);
+    \\}
+    \\globalThis.__home_has_pending_must_calls = function() {
+    \\  return __home_must_call_checks.some(check => "minimum" in check ? check.actual < check.minimum : check.actual < check.exact);
+    \\};
+    \\globalThis.__home_must_call_failure_message = function() {
+    \\  const failed = __home_must_call_checks.filter(check => "minimum" in check ? check.actual < check.minimum : check.actual !== check.exact);
+    \\  if (failed.length === 0) return "";
+    \\  return failed.map(check => "Mismatched " + check.name + " function calls in " + check.filename + ". Expected " + ("minimum" in check ? "at least " + check.minimum : "exactly " + check.exact) + ", actual " + check.actual + ".").join("\n");
+    \\};
+    \\globalThis.__home_has_refed_runtime_handles = function() {
+    \\  for (const registryName of ["__home_net_servers", "__home_net_servers_by_path", "__home_tls_servers", "__home_http_servers", "__home_http_servers_by_endpoint", "__home_http2_servers", "__home_http2_servers_by_path"]) {
+    \\    const registry = globalThis[registryName];
+    \\    if (!registry) continue;
+    \\    for (const handle of Object.values(registry)) {
+    \\      if (!handle || handle.__home_unrefed) continue;
+    \\      return true;
+    \\    }
+    \\  }
+    \\  return false;
+    \\};
+    \\globalThis.__home_refed_runtime_handle_message = function() {
+    \\  const active = [];
+    \\  for (const registryName of ["__home_net_servers", "__home_net_servers_by_path", "__home_tls_servers", "__home_http_servers", "__home_http_servers_by_endpoint", "__home_http2_servers", "__home_http2_servers_by_path"]) {
+    \\    const registry = globalThis[registryName];
+    \\    if (!registry) continue;
+    \\    for (const key of Object.keys(registry)) {
+    \\      const handle = registry[key];
+    \\      if (handle && !handle.__home_unrefed) active.push(registryName + "[" + key + "]" + ("listening" in handle ? "(listening=" + String(handle.listening) + ", pending=" + String(!!handle.__home_listen_pending) + ", closeCalled=" + String(!!handle.__home_close_called) + ")" : ""));
+    \\    }
+    \\  }
+    \\  return active.length ? "referenced runtime handles did not quiesce after bounded event-loop checkpoints: " + active.join(", ") : "";
     \\};
     \\globalThis.__home_reset_tests();
     \\const __home_native_weak_map_set = WeakMap.prototype.set;
@@ -68784,8 +68843,8 @@ const harness_prelude =
     \\globalThis.__home_modules["node:tls"] = __home_node_tls;
     \\let __home_http_next_port = 43100;
     \\let __home_http_next_socket_port = 53100;
-    \\const __home_http_servers = Object.create(null);
-    \\const __home_http_servers_by_endpoint = Object.create(null);
+    \\const __home_http_servers = globalThis.__home_http_servers || (globalThis.__home_http_servers = Object.create(null));
+    \\const __home_http_servers_by_endpoint = globalThis.__home_http_servers_by_endpoint || (globalThis.__home_http_servers_by_endpoint = Object.create(null));
     \\function __home_http_event_target() {
     \\  const listeners = Object.create(null);
     \\  return {
@@ -70371,6 +70430,7 @@ const harness_prelude =
     \\      return { address: "127.0.0.1", family: "IPv4", port: this.__home_port };
     \\    },
     \\    close(callback) {
+    \\      this.__home_close_called = true;
     \\      if (!this.listening && !this.__home_listen_pending) {
     \\        const error = __home_fs_error(Error, "ERR_SERVER_NOT_RUNNING", "Server is not running.");
     \\        if (typeof callback === "function") Promise.resolve().then(() => callback(error));
@@ -71840,7 +71900,12 @@ const harness_prelude =
     \\          response.on("data", chunk => { body += String(chunk); });
     \\          response.on("end", () => { stdout += "Status Code: " + String(response.statusCode) + "\nHeaders: " + JSON.stringify(response.headers) + "\n" + body; resolve(); });
     \\        });
-    \\      } catch (error) { stderr += String(error && error.stack || error); resolve(); return; }
+    \\      } catch (error) {
+    \\        const stack = typeof __home_normalize_bun_error_stack === "function" ? __home_normalize_bun_error_stack(error, error && error.stack) : String(error && error.stack || error);
+    \\        stderr += "Request Error " + stack;
+    \\        resolve();
+    \\        return;
+    \\      }
     \\      request.on("error", error => { const code = String(error && error.code || "ECONNREFUSED"); const message = code === "ECONNREFUSED" && !String(error.message || "").includes("connect") ? "connect ECONNREFUSED" : String(error.message || error); stderr += "Request Error Error: " + message; resolve(); });
     \\    });
     \\  } finally {
@@ -77168,6 +77233,9 @@ const harness_prelude =
     \\      };
     \\    };
     \\    Object.defineProperty(sourceAwareMustNotCall, "__home_source_callsite", { value: true });
+    \\    module.exports.mustCall = __home_must_call;
+    \\    module.exports.mustCallAtLeast = __home_must_call_at_least;
+    \\    module.exports.mustSucceed = __home_must_succeed;
     \\    module.exports.mustNotCall = sourceAwareMustNotCall;
     \\  }
     \\  return module.exports;
@@ -98620,6 +98688,8 @@ fn supportedNamedImportModule(source: []const u8, start: usize, relative_path: [
         "v8-heapsnapshot",
         "child_process",
         "node:child_process",
+        "worker_threads",
+        "node:worker_threads",
         "@connectrpc/connect-node",
         "@azure/service-bus",
         "@electric-sql/pglite",
@@ -155418,6 +155488,46 @@ test "bootstrap runner supports mock called-with diff matchers" {
 
     try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+}
+
+test "bootstrap runner enforces Node common mustCall bookkeeping" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
+    defer runtime.deinit();
+
+    const incomplete_source =
+        \\import * as common from '../common/index.mjs';
+        \\common.mustCall(() => {}, 2)();
+    ;
+    var incomplete = try prepareCorpusModule(
+        std.testing.allocator,
+        incomplete_source,
+        "js/node/test/parallel/home-must-call-incomplete.mjs",
+    );
+    defer incomplete.deinit(std.testing.allocator);
+    var incomplete_run = try runtime.runFile(std.testing.allocator, incomplete.fileSpec());
+    defer incomplete_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.failed, incomplete_run.result.status());
+    try std.testing.expect(std.mem.indexOf(u8, incomplete_run.result.first_failure_message, "Expected exactly 2, actual 1") != null);
+
+    const complete_source =
+        \\import * as common from '../common/index.mjs';
+        \\const callback = common.mustCall(() => {}, 2);
+        \\Promise.resolve().then(callback);
+        \\Promise.resolve().then(callback);
+    ;
+    var complete = try prepareCorpusModule(
+        std.testing.allocator,
+        complete_source,
+        "js/node/test/parallel/home-must-call-complete.mjs",
+    );
+    defer complete.deinit(std.testing.allocator);
+    var complete_run = try runtime.runFile(std.testing.allocator, complete.fileSpec());
+    defer complete_run.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(test_result.TestStatus.passed, complete_run.result.status());
 }
 
 test "Bun test import rewrite lowers import.meta metadata" {
