@@ -66625,7 +66625,8 @@ const harness_prelude =
     \\}
     \\function __home_dns_validate_lookup_service(address, port) {
     \\  const text = String(address || "");
-    \\  if (text.length === 0 || !__home_net_is_ipv4(text) && !__home_net_is_ipv6(text)) throw __home_dns_value_error("The \"address\" argument is invalid. Received type string ('" + text + "')");
+    \\  if (text.length === 0) throw __home_dns_value_error("Expected address to be a non-empty string for 'lookupService'.");
+    \\  if (!__home_net_is_ipv4(text) && !__home_net_is_ipv6(text)) throw __home_dns_value_error("The \"address\" argument is invalid. Received type string ('" + text + "')");
     \\  if (typeof port !== "number" || !Number.isInteger(port) || port < 0 || port > 65535) { const error = new RangeError("Port should be >= 0 and < 65536"); error.code = "ERR_SOCKET_BAD_PORT"; throw error; }
     \\  return text;
     \\}

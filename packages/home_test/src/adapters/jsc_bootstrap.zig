@@ -538,7 +538,7 @@ pub const Runtime = struct {
                 .platform = .bun,
                 .experimental_decorators = std.mem.eql(u8, spec.path, "bundler/transpiler/decorators.test.ts"),
             };
-            if (transpileSourceWithBunParser(allocator, &handle, spec.source, loader, null)) |stripped| {
+            if (transpileSourceWithBunParser(allocator, &handle, spec.source, loader, spec.path, null)) |stripped| {
                 var lowered = stripped;
                 if (try rewriteGeneratedBunWrapImport(allocator, stripped)) |rewritten| {
                     allocator.free(stripped);
@@ -1156,7 +1156,7 @@ fn transpileSource(
     if (try transpileEarlyTranspilerFixture(allocator, trimmed)) |fixture_output| return fixture_output;
     if (try transpileExportElimination(allocator, handle, source_text)) |fixture_output| return fixture_output;
     if (use_bun_parser_probe or shouldUseBunParserForTranspile(source_text, loader, handle)) {
-        return transpileSourceWithBunParser(allocator, handle, source_text, loader, null);
+        return transpileSourceWithBunParser(allocator, handle, source_text, loader, null, null);
     }
 
     var out: std.ArrayList(u8) = .empty;
@@ -1214,6 +1214,7 @@ fn transpileSourceWithBunParser(
     handle: *const TranspilerHandle,
     source_text: []const u8,
     loader: TranspilerLoader,
+    source_path: ?[]const u8,
     has_top_level_await: ?*bool,
 ) ![]u8 {
     home_rt.ast.Expr.Data.Store.create();
@@ -1236,7 +1237,7 @@ fn transpileSourceWithBunParser(
     if (handle.repl_mode and isLikelyReplObjectLiteral(source_text)) {
         repl_source = try std.fmt.allocPrint(allocator, "({s})", .{source_text});
     }
-    var source = home_rt.logger.Source.initPathString(runtimeLoaderName(loader), repl_source orelse source_text);
+    var source = home_rt.logger.Source.initPathString(source_path orelse runtimeLoaderName(loader), repl_source orelse source_text);
     const define = try home_rt.defines.Define.init(ast_allocator, null, null, false, false);
     defer define.deinit();
 
@@ -1355,7 +1356,7 @@ pub fn transpileCorpusSourceWithBunParser(
         .loader = loader,
         .platform = .browser,
     };
-    return transpileSourceWithBunParser(allocator, &handle, source_text, loader, null);
+    return transpileSourceWithBunParser(allocator, &handle, source_text, loader, relative_path, null);
 }
 
 /// Detect module-scope await with the production parser instead of confusing
@@ -1372,7 +1373,7 @@ pub fn corpusSourceHasTopLevelAwait(
         .platform = .browser,
     };
     var has_top_level_await = false;
-    const printed = try transpileSourceWithBunParser(allocator, &handle, source_text, loader, &has_top_level_await);
+    const printed = try transpileSourceWithBunParser(allocator, &handle, source_text, loader, relative_path, &has_top_level_await);
     defer allocator.free(printed);
     return has_top_level_await;
 }
@@ -7500,6 +7501,21 @@ test "adapter lowers Bun.Transpiler top-level using fixture" {
     try std.testing.expect(std.mem.indexOf(u8, output, "const { __callDispose: __callDispose, __using: __using } = globalThis.__home_import(\"bun:wrap\");") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "var p = __using(__bun_temp_ref_5$, await using, 1);") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "export {\n  k,\n  q\n};\n") != null);
+}
+
+test "corpus parser preserves the real source path through using lowering" {
+    const relative_path = "js/node/events/source-path.test.ts";
+    const output = try transpileCorpusSourceWithBunParser(
+        std.testing.allocator,
+        \\using resource = { [Symbol.dispose]() {} };
+        \\globalThis.__captured_filename = __filename;
+    ,
+        relative_path,
+    );
+    defer std.testing.allocator.free(output);
+
+    try std.testing.expect(std.mem.indexOf(u8, output, relative_path) != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "input.ts") == null);
 }
 
 test "adapter makes parser-generated bun wrap imports redeclarable" {
