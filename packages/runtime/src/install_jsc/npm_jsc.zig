@@ -72,9 +72,14 @@ pub const ManifestBindings = struct {
         const registry = registry_str.toUTF8(bun.default_allocator);
         defer registry.deinit();
 
-        const manifest_file = std.fs.cwd().openFile(manifest_filename.slice(), .{}) catch |err| {
+        var manifest_file = bun.sys.File.from(bun.sys.openatA(
+            bun.FD.cwd(),
+            manifest_filename.slice(),
+            bun.O.RDONLY,
+            0,
+        ).unwrap() catch |err| {
             return global.throw("failed to open manifest file \"{s}\": {s}", .{ manifest_filename.slice(), @errorName(err) });
-        };
+        });
         defer manifest_file.close();
 
         const scope: npm.Registry.Scope = .{
@@ -88,7 +93,7 @@ pub const ManifestBindings = struct {
             },
         };
 
-        const maybe_package_manifest = npm.PackageManifest.Serializer.loadByFile(bun.default_allocator, &scope, bun.sys.File.from(manifest_file)) catch |err| {
+        const maybe_package_manifest = npm.PackageManifest.Serializer.loadByFile(bun.default_allocator, &scope, manifest_file) catch |err| {
             return global.throw("failed to load manifest file: {s}", .{@errorName(err)});
         };
 
@@ -97,17 +102,17 @@ pub const ManifestBindings = struct {
         };
 
         var buf: std.ArrayListUnmanaged(u8) = .empty;
-        const writer = buf.writer(bun.default_allocator);
+        defer buf.deinit(bun.default_allocator);
 
         // TODO: we can add more information. for now just versions is fine
 
-        try writer.print("{{\"name\":\"{s}\",\"versions\":[", .{package_manifest.name()});
+        try buf.print(bun.default_allocator, "{{\"name\":\"{s}\",\"versions\":[", .{package_manifest.name()});
 
         for (package_manifest.versions, 0..) |version, i| {
             if (i == package_manifest.versions.len - 1)
-                try writer.print("\"{f}\"]}}", .{version.fmt(package_manifest.string_buf)})
+                try buf.print(bun.default_allocator, "\"{f}\"]}}", .{version.fmt(package_manifest.string_buf)})
             else
-                try writer.print("\"{f}\",", .{version.fmt(package_manifest.string_buf)});
+                try buf.print(bun.default_allocator, "\"{f}\",", .{version.fmt(package_manifest.string_buf)});
         }
 
         var result = bun.String.borrowUTF8(buf.items);

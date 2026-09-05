@@ -132,7 +132,8 @@ comptime {
         // hostedGitInfo fromUrl/parseUrl now have real exports in
         // jsc/js2native_workarounds.zig (the noops returned globalThis).
         "JS2Zig___src_install_jsc_install_binding_zig__bun_install_js_bindings_generate_workaround",
-        "JS2Zig___src_install_npm_zig__PackageManifest_bindings_generate_workaround",
+        // PackageManifest.bindings.generate now has its real export in
+        // js2native_workarounds.zig (the noop left parseManifest undefined).
         "JS2Zig___src_jsc_bindgen_test_zig__getBindgenTestFunctions_workaround",
         // event_loop getActiveTasks now has its real export in js2native_workarounds.zig.
         "JS2Zig___src_jsc_ipc_zig__emitHandleIPCMessage",

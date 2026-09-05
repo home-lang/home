@@ -306,6 +306,10 @@ comptime {
     @export(&host_fn.toJSHostFn(IniTestingAPIs.loadNpmrcFromJS), .{ .name = "JS2Zig___src_ini_ini_zig__IniTestingAPIs_loadNpmrcFromJS" });
 
     // ---- Lazy bindings (`..._workaround`) -------------------------------
+    // PackageManifest.bindings.generate backs
+    // bun:internal-for-testing.npm_manifest_test_helpers. The no-op returned
+    // globalThis, leaving parseManifest undefined in the real install harness.
+    @export(&lazy(npm_jsc.ManifestBindings.generate), .{ .name = "JS2Zig___src_install_npm_zig__PackageManifest_bindings_generate_workaround" });
     @export(&lazyErr(node_os.createNodeOsBinding), .{ .name = "JS2Zig___src_runtime_node_node_os_zig__createNodeOsBinding_workaround" });
     // Bake's internal test API. The generated bun:internal-for-testing module
     // resolves this as a lazy binding; a no-op here made
