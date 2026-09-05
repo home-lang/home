@@ -9814,8 +9814,13 @@ test "Program: mapped prototype conditionals preserve optional generic and rest 
     const consumer =
         \\import * as core from "./barrel.js";
         \\type Mask<Keys extends PropertyKey> = { [K in Keys]?: true };
-        \\interface Schema<Shape extends object = { key: string }> extends core.Trait {
+        \\interface Schema<out Shape extends object = { key: string }> extends core.Trait {
+        \\  shape: Shape;
         \\  clone(def?: { kind: "schema" }, params?: { parent: boolean }): this;
+        \\  catchall<T extends core.Trait>(schema: T): Schema;
+        \\  unrelated<T extends core.Trait>(schema: T): number;
+        \\  narrow<T extends core.Trait>(schema: T): Schema & { extra: string };
+        \\  narrowNoArg(): Schema & { extra: string };
         \\  register<R extends { add(value: Schema, meta: string): void }>(registry: R, ...meta: [string]): this;
         \\  check(...checks: (((value: string) => boolean) | { run(value: string): boolean })[]): this;
         \\  refine<C extends (value: string) => unknown>(check: C, params?: string): this;
@@ -9832,6 +9837,10 @@ test "Program: mapped prototype conditionals preserve optional generic and rest 
         \\    const exactParent: boolean | undefined = params?.parent;
         \\    void exactDef; void exactParent;
         \\    return this;
+        \\  },
+        \\  catchall(catchall) {
+        \\    void catchall;
+        \\    return this.clone({ kind: "schema" });
         \\  },
         \\  register(registry, meta) {
         \\    registry.add(this, meta);
@@ -9864,6 +9873,29 @@ test "Program: mapped prototype conditionals preserve optional generic and rest 
         \\    return this;
         \\  },
         \\});
+        \\core.$constructor<Schema>("InvalidGeneric", () => {}, {
+        \\  catchall(catchall) {
+        \\    void catchall;
+        \\    return "wrong";
+        \\  },
+        \\});
+        \\core.$constructor<Schema>("InvalidReceiver", () => {}, {
+        \\  unrelated(schema) {
+        \\    void schema;
+        \\    return this;
+        \\  },
+        \\});
+        \\core.$constructor<Schema>("InvalidNarrowReceiver", () => {}, {
+        \\  narrow(schema) {
+        \\    void schema;
+        \\    return this;
+        \\  },
+        \\});
+        \\core.$constructor<Schema>("InvalidNarrowNoArgReceiver", () => {}, {
+        \\  narrowNoArg() {
+        \\    return this;
+        \\  },
+        \\});
         \\function lexicalShadow(): void {
         \\  function $constructor<T>(_name: string, proto?: { refine(value: number): number }): void { void proto; }
         \\  $constructor<Schema>("local", { refine(value) { return value + 1; } });
@@ -9891,9 +9923,13 @@ test "Program: mapped prototype conditionals preserve optional generic and rest 
     try expectCompilationLacksDiagnosticCode(compilation, 2304);
     try expectCompilationLacksDiagnosticCode(compilation, 2493);
     try expectCompilationLacksDiagnosticCode(compilation, 2532);
-    try T.expectEqual(@as(usize, 2), compilation.diagnostics.items.len);
-    try T.expectEqual(@as(u32, 2322), compilation.diagnostics.items[0].code);
-    try T.expectEqual(@as(u32, 2339), compilation.diagnostics.items[1].code);
+    try T.expectEqual(@as(usize, 6), compilation.diagnostics.items.len);
+    var assignability_diagnostics: usize = 0;
+    for (compilation.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == 2322) assignability_diagnostics += 1;
+    }
+    try T.expectEqual(@as(usize, 5), assignability_diagnostics);
+    try expectCompilationHasDiagnosticCode(compilation, 2339);
 }
 
 test "Program: namespace imports preserve callbacks through inherited interfaces" {
