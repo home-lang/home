@@ -33225,8 +33225,7 @@ const harness_prelude =
     \\  const kind = reader.u8("kind"); reader.u8("flags"); reader.u8("reserved");
     \\  if (kind !== 1 && kind !== 2 && kind !== 3) throw __home_clone_failure(operation, "deserialize", new TypeError("invalid Blob wire kind"));
     \\  const startValue = reader.u64("offset"); const logicalLength = reader.u64("length");
-    \\  let type = __home_utf8_bytes_to_text(reader.bytes(reader.u32("content type length"), "content type"));
-    \\  if (/^text\//i.test(type) && !/;\s*charset=/i.test(type)) type += ";charset=utf-8";
+    \\  const type = __home_blob_type(__home_utf8_bytes_to_text(reader.bytes(reader.u32("content type length"), "content type")));
     \\  const store = reader.bytes(reader.u32("byte store length"), "byte store");
     \\  const name = __home_utf8_bytes_to_text(reader.bytes(reader.u32("name length"), "name"));
     \\  const lastModified = reader.f64("lastModified");
@@ -34079,6 +34078,12 @@ const harness_prelude =
     \\  const aRegExp = __home_is_regexp(a);
     \\  const bRegExp = __home_is_regexp(b);
     \\  if (aRegExp || bRegExp) return aRegExp && bRegExp && __home_regexp_source_get.call(a) === __home_regexp_source_get.call(b) && __home_regexp_flags_get.call(a) === __home_regexp_flags_get.call(b);
+    \\  if (typeof URL === "function" && (a instanceof URL || b instanceof URL)) {
+    \\    return a instanceof URL && b instanceof URL && String(a.href) === String(b.href);
+    \\  }
+    \\  if (typeof URLSearchParams === "function" && (a instanceof URLSearchParams || b instanceof URLSearchParams)) {
+    \\    return a instanceof URLSearchParams && b instanceof URLSearchParams && String(a) === String(b);
+    \\  }
     \\  if (typeof Headers === "function" && (a instanceof Headers || b instanceof Headers)) {
     \\    return a instanceof Headers && b instanceof Headers && __home_deep_equal(Array.from(a.entries()), Array.from(b.entries()), strict, seen);
     \\  }
@@ -35443,17 +35448,17 @@ const harness_prelude =
     \\      let actualLength;
     \\      if (value !== null && value !== undefined && typeof value.length === "number") actualLength = value.length;
     \\      else if (value !== null && value !== undefined && typeof value.byteLength === "number") actualLength = value.byteLength;
-    \\      else if (value instanceof Map || value instanceof Set || (typeof Blob === "function" && value instanceof Blob)) actualLength = value.size;
-    \\      else if (typeof WeakMap === "function" && value instanceof WeakMap) actualLength = __home_weak_map_size(value);
-    \\      else if (typeof Headers === "function" && value instanceof Headers) actualLength = typeof value.count === "number" ? value.count : Array.from(value).length;
-    \\      else if (typeof FormData === "function" && value instanceof FormData) actualLength = Array.from(value).length;
-    \\      else if (typeof URLSearchParams === "function" && value instanceof URLSearchParams) actualLength = typeof value.size === "number" ? value.size : Array.from(value).length;
     \\      else if (value && value.__home_file_ref === true) {
     \\        const written = (globalThis.__home_written_file_sparse && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_sparse, value.path)) ||
     \\          (globalThis.__home_written_file_bytes && Object.prototype.hasOwnProperty.call(globalThis.__home_written_file_bytes, value.path));
     \\        if (!written && !__home_build_file_exists(value.path)) __home_fail("Expected file to exist");
     \\        actualLength = value.size;
     \\      }
+    \\      else if (value instanceof Map || value instanceof Set || (typeof Blob === "function" && value instanceof Blob)) actualLength = value.size;
+    \\      else if (typeof WeakMap === "function" && value instanceof WeakMap) actualLength = __home_weak_map_size(value);
+    \\      else if (typeof Headers === "function" && value instanceof Headers) actualLength = typeof value.count === "number" ? value.count : Array.from(value).length;
+    \\      else if (typeof FormData === "function" && value instanceof FormData) actualLength = Array.from(value).length;
+    \\      else if (typeof URLSearchParams === "function" && value instanceof URLSearchParams) actualLength = typeof value.size === "number" ? value.size : Array.from(value).length;
     \\      if (actualLength === undefined) __home_fail("Expected value must have a length property");
     \\      __home_assert(actualLength === expected, isNot, "Expected " + __home_format(value) + (isNot ? " not" : "") + " to have length " + String(expected));
     \\    },
@@ -84059,12 +84064,17 @@ const harness_prelude =
     \\    const code = text.charCodeAt(i);
     \\    if (code < 0x20 || code > 0x7e) return "";
     \\  }
+    \\  if (text === "application/webassembly") return "application/wasm";
+    \\  if (text === "application/javascript" || text === "text/javascript" || text === "text/jsx") return "text/javascript;charset=utf-8";
+    \\  if (text === "application/json") return "application/json;charset=utf-8";
+    \\  if (text === "application/x-www-form-urlencoded") return "application/x-www-form-urlencoded;charset=UTF-8";
+    \\  if (text === "text/css") return "text/css;charset=utf-8";
+    \\  if (text === "text/html") return "text/html;charset=utf-8";
+    \\  if (text === "text/plain") return "text/plain;charset=utf-8";
     \\  return text.toLowerCase();
     \\}
-    \\function __home_blob_constructor_type(parts, value) {
-    \\  let type = __home_blob_type(value);
-    \\  if (/^text\//i.test(type) && !/;\s*charset=/i.test(type) && parts.some(part => typeof part === "string")) type += ";charset=utf-8";
-    \\  return type;
+    \\function __home_blob_constructor_type(value) {
+    \\  return __home_blob_type(value);
     \\}
     \\var Blob = function(parts, options) {
     \\  const source = __home_blob_parts(parts);
@@ -84073,7 +84083,7 @@ const harness_prelude =
     \\    this.parts = source.slice();
     \\    this.__home_blob_sparse_parts = sparse.parts;
     \\    this.size = sparse.size;
-    \\    this.type = options && options.type !== undefined ? __home_blob_constructor_type(source, options.type) : "";
+    \\    this.type = options && options.type !== undefined ? __home_blob_constructor_type(options.type) : "";
     \\    return;
     \\  }
     \\  let bytes = [];
@@ -84085,7 +84095,7 @@ const harness_prelude =
     \\  this.parts = source.slice();
     \\  this.__home_blob_bytes = bytes;
     \\  this.size = bytes.length;
-    \\  this.type = options && options.type !== undefined ? __home_blob_constructor_type(source, options.type) : "";
+    \\  this.type = options && options.type !== undefined ? __home_blob_constructor_type(options.type) : "";
     \\};
     \\function __home_blob_sparse_result(blob, operation, enforceSyntheticLimit, limitMessage) {
     \\  try {
@@ -92788,6 +92798,16 @@ fn isBootstrapTypeScriptNonNullAssertion(source: []const u8, idx: usize) bool {
     return isBootstrapNonNullFollower(next);
 }
 
+fn isBootstrapTypeScriptOptionalMarker(source: []const u8, idx: usize) bool {
+    if (source[idx] != '?') return false;
+
+    const previous = previousBootstrapNonSpaceByte(source, idx) orelse return false;
+    if (!isBootstrapIdentifierByte(previous)) return false;
+
+    const next = nextBootstrapNonSpaceByte(source, idx) orelse return false;
+    return next == ':';
+}
+
 fn rewriteBootstrapUsingDeclarationLines(allocator: std.mem.Allocator, source: []const u8) !?[]u8 {
     if (std.mem.indexOf(u8, source, "describe(\"minimum-release-age\"") == null) return null;
     if (std.mem.indexOf(u8, source, "using ") == null) return null;
@@ -93415,6 +93435,10 @@ fn rewriteBootstrapTypeScript(allocator: std.mem.Allocator, source: []const u8) 
                     continue;
                 }
                 if (isBootstrapTypeScriptNonNullAssertion(source, i)) {
+                    i += 1;
+                    continue;
+                }
+                if (isBootstrapTypeScriptOptionalMarker(source, i)) {
                     i += 1;
                     continue;
                 }
@@ -99914,10 +99938,10 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         null;
     defer if (owned_module_source) |buffer| allocator.free(buffer);
     const rewritten_module_source = owned_module_source orelse module_source;
-    const production_lowered_source = if (sourceHasExplicitResourceManagementSyntax(rewritten_module_source) or
-        (std.mem.startsWith(u8, relative_path, "js/deno/") and
-            sourceNeedsBootstrapTypeScriptRewrite(rewritten_module_source, relative_path)))
+    const production_lowered_source: ?[]u8 = if (sourceHasExplicitResourceManagementSyntax(rewritten_module_source))
         try jsc_bootstrap.transpileCorpusSourceWithBunParser(allocator, rewritten_module_source, relative_path)
+    else if (sourceNeedsBootstrapTypeScriptRewrite(rewritten_module_source, relative_path))
+        jsc_bootstrap.transpileCorpusSourceWithBunParser(allocator, rewritten_module_source, relative_path) catch null
     else
         null;
     defer if (production_lowered_source) |buffer| allocator.free(buffer);
@@ -138861,6 +138885,13 @@ test "bootstrap rewrite erases literal Record union annotations" {
 test "bootstrap rewrite erases spy matcher TypeScript annotations" {
     const source =
         \\import { expect, mock, test } from "bun:test";
+        \\expect.extend({
+        \\  optionalFn(fn?: unknown) {
+        \\    return { pass: fn === undefined || typeof fn === "function" };
+        \\  },
+        \\});
+        \\const registry = { handler: function () { return true; } };
+        \\const createSpy = <T extends Function>(fn: CallableFunction<T>): CallableFunction<T> => fn;
         \\const stripAnsi = (str: string) => str.replaceAll(/\x1b\[[0-9;]*m/g, "");
         \\test("spy diff", () => {
         \\  const mockedFn = mock(args => args);
@@ -138877,6 +138908,13 @@ test "bootstrap rewrite erases spy matcher TypeScript annotations" {
     defer prepared.deinit(std.testing.allocator);
 
     try std.testing.expect(prepared.unsupported_reason == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "optionalFn(fn)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "fn?: unknown") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const registry") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "handler") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const createSpy") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "<T extends") == null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "CallableFunction") == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "(str: string)") == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Error | undefined") == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, " as Error") == null);
