@@ -837,7 +837,20 @@ pub const HomeKernelCodegen = struct {
                 {
                     self.pos += 1;
                 }
-                return std.fmt.parseInt(i64, self.text[start..self.pos], 0) catch null;
+                const digits = self.text[start..self.pos];
+                if (std.fmt.parseInt(i64, digits, 0)) |signed| {
+                    return signed;
+                } else |_| {}
+                // A u64 constant above i64::MAX is not an error, it is a bit
+                // pattern with the top bit set — a type tag, a mask, a
+                // canonical high-half address. Parsed only as i64 the constant
+                // was dropped entirely and every use of it resolved to
+                // nothing, which reads as "no such name" rather than as an
+                // out-of-range literal.
+                if (std.fmt.parseInt(u64, digits, 0)) |unsigned| {
+                    return @bitCast(unsigned);
+                } else |_| {}
+                return null;
             }
             if (std.ascii.isAlphabetic(c) or c == '_') {
                 const start = self.pos;
@@ -2465,9 +2478,20 @@ pub const HomeKernelCodegen = struct {
 
     fn foldConst(self: *HomeKernelCodegen, expr: *const ast.Expr) ?i64 {
         switch (expr.*) {
-            // Literals are parsed as i128; anything outside i64 cannot become
-            // a 64-bit immediate, so it is simply not a constant here.
-            .IntegerLiteral => |lit| return std.math.cast(i64, lit.value),
+            // Literals are parsed as i128. Anything that fits in 64 bits is a
+            // constant here, signed or not: a u64 above i64::MAX is not out of
+            // range, it is a bit pattern with the top bit set — an object-type
+            // tag, a mask, a canonical high-half address. Folded only through
+            // std.math.cast(i64, ...) those constants were dropped, and since
+            // a dropped constant is simply absent, every use of one failed to
+            // resolve as though the name had never been declared.
+            .IntegerLiteral => |lit| {
+                if (std.math.cast(i64, lit.value)) |signed| return signed;
+                if (std.math.cast(u64, lit.value)) |unsigned| {
+                    return @bitCast(unsigned);
+                }
+                return null;
+            },
             .BooleanLiteral => |lit| return if (lit.value) @as(i64, 1) else @as(i64, 0),
             .ReflectExpr => |r| {
                 // `@targetIs("aarch64")` is the one builtin whose value is
