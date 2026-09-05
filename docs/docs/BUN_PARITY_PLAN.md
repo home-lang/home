@@ -929,7 +929,8 @@ tractable win this pass: `ERR_INVALID_THIS` for `Request` body methods (faithful
 - **Needs native bindings / parked subsystems:**
   - native `SharedArrayBuffer` on the corpus JSContextRef global →
     `web/atomics.test.ts`
-  - `bun:jsc` `heapStats().objectTypeCounts.string` → `web/request/request-method-getter.test.ts`
+  - ~~`bun:jsc` `heapStats().objectTypeCounts.string` → `web/request/request-method-getter.test.ts`~~
+    closed by routing `Method.toJS` through Bun's cached native HTTP common-string bridge
   - native `Bun.hash` family (wyhash/adler32/crc32/cityHash) → `bun/util/hash.test.js`
   - `bun:ffi` `Bun.FFI.viewSource` → `bun/ffi/ffi-viewSource-non-object.test.ts`
   - webcore body/stream store-detachment (`Response.body` stream,

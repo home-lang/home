@@ -87474,6 +87474,8 @@ const harness_prelude =
     \\    decoder.__home_ignoreBOM = !!(options && options.ignoreBOM);
     \\    decoder.__home_pending_bytes = [];
     \\    decoder.__home_pending_code_unit = null;
+    \\    decoder.__home_native_stream_bytes = [];
+    \\    decoder.__home_native_stream_text = "";
     \\    return decoder;
     \\  };
     \\  TextDecoder.prototype = __home_NativeTextDecoder.prototype;
@@ -87572,10 +87574,6 @@ const harness_prelude =
     \\    error.stack = String(error.stack || error) + "\n    at " + error.operation + " (" + encoding + ", " + String(globalThis.__home_current_filename || "<anonymous module>") + ")\nCaused by: " + causeSummary + (causeStack && !causeStack.includes(causeSummary) ? "\n" + causeStack : "");
     \\    return error;
     \\  }
-    \\  const __home_single_byte_text_encodings = new Set([
-    \\    "ibm866", "iso-8859-3", "iso-8859-6", "iso-8859-7", "iso-8859-8", "iso-8859-8-i",
-    \\    "koi8-u", "windows-874", "windows-1252", "windows-1253", "windows-1255", "windows-1257",
-    \\  ]);
     \\  function __home_decode_utf16_stateful(decoder, bytes, stream) {
     \\    const encoding = decoder.__home_encoding || decoder.encoding || "utf-16le";
     \\    const fatal = decoder.__home_fatal === undefined ? !!decoder.fatal : decoder.__home_fatal;
@@ -87640,39 +87638,6 @@ const harness_prelude =
     \\    if (!ignoreBOM && decoded.charCodeAt(0) === 0xfeff) decoded = decoded.slice(1);
     \\    return decoded;
     \\  }
-    \\  function __home_cjk_fixture_decode(decoder, bytes, stream) {
-    \\    const encoding = decoder.__home_encoding || decoder.encoding || "utf-8";
-    \\    const all = (decoder.__home_pending_bytes || []).concat(bytes);
-    \\    let hex = "";
-    \\    for (const byte of all) hex += (byte & 0xff).toString(16).padStart(2, "0");
-    \\    const fixtures = {
-    \\      "shift_jis:82b182f182c982bf82cd": "こんにちは",
-    \\      "shift_jis:88ea": "一",
-    \\      "euc-jp:c6fccbdcb8ec": "日本語",
-    \\      "euc-jp:8fb0a1": "丂",
-    \\      "big5:a741a66e": "你好",
-    \\      "big5:a440": "一",
-    \\      "euc-kr:bec8b3e7c7cfbcbcbfe4": "안녕하세요",
-    \\      "euc-kr:ece9": "一",
-    \\      "gbk:c4e3bac3cac0bde7": "你好世界",
-    \\      "gbk:d2bb": "一",
-    \\      "gb18030:c4e3bac3": "你好",
-    \\      "gb18030:9439da33": "💩",
-    \\      "iso-2022-jp:1b2442467c4b5c1b2842": "日本",
-    \\      "iso-2022-jp:1b2442306c1b2842": "一",
-    \\    };
-    \\    const key = encoding + ":" + hex;
-    \\    if (Object.prototype.hasOwnProperty.call(fixtures, key)) {
-    \\      decoder.__home_pending_bytes = [];
-    \\      return fixtures[key];
-    \\    }
-    \\    const prefix = encoding + ":" + hex;
-    \\    if (stream && Object.keys(fixtures).some(item => item.startsWith(prefix))) {
-    \\      decoder.__home_pending_bytes = all;
-    \\      return "";
-    \\    }
-    \\    return null;
-    \\  }
     \\  __home_NativeTextDecoder.prototype.decode = function(input, options) {
     \\    const stream = !!(options && options.stream);
     \\    const encoding = this.__home_encoding || this.encoding || "utf-8";
@@ -87718,20 +87683,30 @@ const harness_prelude =
     \\      return decoded;
     \\    }
     \\    if (encoding === "utf-16le" || encoding === "utf-16be") return __home_decode_utf16_stateful(this, bytes, stream);
-    \\    if (__home_single_byte_text_encodings.has(encoding) && typeof globalThis.__home_textDecodeNative === "function") {
+    \\    if (typeof globalThis.__home_textDecodeNative === "function") {
+    \\      const priorBytes = this.__home_native_stream_bytes || [];
+    \\      const priorText = this.__home_native_stream_text || "";
+    \\      const all = priorBytes.concat(bytes);
     \\      let result;
     \\      try {
-    \\        result = globalThis.__home_textDecodeNative(encoding, new Uint8Array(bytes), !stream, fatal, ignoreBOM);
+    \\        result = globalThis.__home_textDecodeNative(encoding, new Uint8Array(all), !stream, fatal, ignoreBOM);
     \\      } catch (cause) {
+    \\        this.__home_native_stream_bytes = [];
+    \\        this.__home_native_stream_text = "";
     \\        throw __home_text_decoder_native_error(encoding, cause);
     \\      }
     \\      if (!result || typeof result.text !== "string") throw __home_text_decoder_native_error(encoding);
-    \\      if (fatal && result.sawError) throw __home_text_decoder_invalid_data(encoding);
-    \\      this.__home_pending_bytes = [];
-    \\      return result.text;
+    \\      if (fatal && result.sawError) {
+    \\        this.__home_native_stream_bytes = [];
+    \\        this.__home_native_stream_text = "";
+    \\        throw __home_text_decoder_invalid_data(encoding);
+    \\      }
+    \\      const decoded = result.text;
+    \\      const output = decoded.startsWith(priorText) ? decoded.slice(priorText.length) : decoded;
+    \\      this.__home_native_stream_bytes = stream ? all : [];
+    \\      this.__home_native_stream_text = stream ? decoded : "";
+    \\      return output;
     \\    }
-    \\    const cjkFixture = __home_cjk_fixture_decode(this, bytes, stream);
-    \\    if (cjkFixture !== null) return cjkFixture;
     \\    this.__home_pending_bytes = [];
     \\    let decoded = __home_text_decoder_decode.call(this, input, options);
     \\    if (!ignoreBOM && decoded.charCodeAt(0) === 0xfeff) decoded = decoded.slice(1);
@@ -95352,26 +95327,6 @@ fn rewriteFetchLeakCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u
     return rewritten;
 }
 
-fn rewriteRequestCloneLeakCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    // The bootstrap runner reports deterministic synthetic RSS, so preserve
-    // every constructor/clone case and GC epoch while bounding duplicate churn.
-    const warmup = try std.mem.replaceOwned(u8, allocator, source, "1000 * ASAN_MULTIPLIER", "64");
-    defer allocator.free(warmup);
-    const rounds = try std.mem.replaceOwned(u8, allocator, warmup, "2000 * ASAN_MULTIPLIER", "32");
-    defer allocator.free(rounds);
-    const clone_batch = try std.mem.replaceOwned(u8, allocator, rounds, "500 * ASAN_MULTIPLIER", "32");
-    defer allocator.free(clone_batch);
-    return std.mem.replaceOwned(u8, allocator, clone_batch, "j < 500;", "j < 32;");
-}
-
-fn rewriteRequestMethodGetterCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    // Preserve every parameterized allocation/access case while bounding the
-    // duplicate iterations around the runner's stable heapStats differential.
-    const clone_reads = try std.mem.replaceOwned(u8, allocator, source, "1024 * 512", "4096");
-    defer allocator.free(clone_reads);
-    return std.mem.replaceOwned(u8, allocator, clone_reads, "1024 * 128", "4096");
-}
-
 fn rewriteStreamsLeakCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     // Keep both buffer-reuse and pipe-RSS tests, including warmup and both
     // measurement epochs, while bounding duplicate event-loop and byte churn.
@@ -99813,10 +99768,6 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
         try rewriteAbortSignalLeakCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/web/fetch/fetch-leak.test.ts"))
         try rewriteFetchLeakCorpus(allocator, module_source)
-    else if (std.mem.eql(u8, relative_path, "js/web/request/request-clone-leak.test.ts"))
-        try rewriteRequestCloneLeakCorpus(allocator, module_source)
-    else if (std.mem.eql(u8, relative_path, "js/web/request/request-method-getter.test.ts"))
-        try rewriteRequestMethodGetterCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/web/streams/streams-leak.test.ts"))
         try rewriteStreamsLeakCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/web/request/request-subclass.test.ts"))
@@ -120478,26 +120429,23 @@ test "bootstrap runner covers Request body text and clone smoke" {
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
-test "bootstrap Request allocation stress preserves the full bounded matrix" {
+test "bootstrap Request allocation stress preserves the unchanged Bun workloads" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
     const cases = [_]struct {
         path: []const u8,
         passed: usize,
-        removed: []const []const u8,
         retained: []const []const u8,
     }{
         .{
             .path = "js/web/request/request-clone-leak.test.ts",
             .passed = 12,
-            .removed = &.{ "1000 * ASAN_MULTIPLIER", "2000 * ASAN_MULTIPLIER", "j < 500;", "500 * ASAN_MULTIPLIER" },
-            .retained = &.{ "i < 64;", "i < 32;", "j < 32;", "process.memoryUsage.rss()" },
+            .retained = &.{ "1000 * ASAN_MULTIPLIER", "2000 * ASAN_MULTIPLIER", "j < 500;", "500 * ASAN_MULTIPLIER", "process.memoryUsage.rss()" },
         },
         .{
             .path = "js/web/request/request-method-getter.test.ts",
             .passed = 6,
-            .removed = &.{ "1024 * 512", "1024 * 128" },
-            .retained = &.{ "i < 4096;", "heapStats()", "request.clone().method", "request.method" },
+            .retained = &.{ "1024 * 512", "1024 * 128", "heapStats()", "request.clone().method", "request.method" },
         },
     };
 
@@ -120515,7 +120463,6 @@ test "bootstrap Request allocation stress preserves the full bounded matrix" {
         var prepared = try prepareCorpusModule(std.testing.allocator, source, case.path);
         defer prepared.deinit(std.testing.allocator);
 
-        for (case.removed) |needle| try std.testing.expect(std.mem.indexOf(u8, prepared.source, needle) == null);
         for (case.retained) |needle| try std.testing.expect(std.mem.indexOf(u8, prepared.source, needle) != null);
 
         var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());

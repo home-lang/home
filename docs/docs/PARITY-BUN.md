@@ -1776,6 +1776,25 @@ auth-response mode switching, optional database/plugin fields, and
 connect-attribute length accounting while using Home's allocator and
 Zig 0.17 map/padding syntax.
 
+Native WebCore parity now preserves non-UTF `TextDecoder` state across
+streaming calls. Each decoder owns its WebKit `TextCodec` until a flushing
+decode or finalization, so split Big5, Shift_JIS, EUC-JP, EUC-KR, GBK,
+GB18030, and ISO-2022-JP sequences decode identically to a whole buffer.
+The corpus bridge no longer contains the former CJK byte-fixture table;
+generic streaming goes through the production codec. The unchanged
+`js/web/encoding/text-decoder-cjk.test.ts` fixture passes all 30 tests, and
+the complete `js/web/encoding` file scan is 8 passed / 0 failed / 0 crashed /
+0 hung.
+
+`http_types.Method.toJS` now calls Bun's native
+`Bun__HTTPMethod__toJS` bridge instead of constructing a fresh `ZigString`
+for every `Request.method` access. That bridge returns the global object's
+cached HTTP common strings. The unchanged
+`js/web/request/request-method-getter.test.ts` workload passes all six
+524,288-clone / 131,072-construction allocation cases, and the unchanged
+`request-clone-leak.test.ts` workload passes all 12 cases with stable RSS.
+The old Request-specific workload-reduction rewrites were removed.
+
 ## Summary
 
 Substrate file-count progress. "Present" is the live Zig file count under

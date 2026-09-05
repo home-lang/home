@@ -17,6 +17,7 @@ lead_surrogate: ?u16 = null,
 ignore_bom: bool = false,
 fatal: bool = false,
 encoding: EncodingLabel = EncodingLabel.@"UTF-8",
+codec: ?*TextCodec = null,
 
 pub const js = jsc.Codegen.JSTextDecoder;
 pub const toJS = js.toJS;
@@ -26,6 +27,7 @@ pub const fromJSDirect = js.fromJSDirect;
 pub const new = bun.TrivialNew(TextDecoder);
 
 pub fn finalize(this: *TextDecoder) void {
+    if (this.codec) |codec| codec.deinit();
     bun.destroy(this);
 }
 
@@ -215,8 +217,6 @@ pub fn decodeWithoutTypeChecks(this: *TextDecoder, globalThis: *jsc.JSGlobalObje
 }
 
 fn decodeSlice(this: *TextDecoder, globalThis: *jsc.JSGlobalObject, buffer_slice: []const u8, comptime flush: bool) bun.JSError!JSValue {
-    const TextCodec = @import("../../jsc/TextCodec.zig").TextCodec;
-
     switch (this.encoding) {
         EncodingLabel.latin1 => {
             if (strings.isAllASCII(buffer_slice)) {
@@ -312,20 +312,18 @@ fn decodeSlice(this: *TextDecoder, globalThis: *jsc.JSGlobalObject, buffer_slice
         else => {
             const encoding_name = EncodingLabel.getLabel(this.encoding);
 
-            // Create codec if we don't have one cached
-            // Note: In production, we might want to cache these per-encoding
-            const codec = TextCodec.create(encoding_name) orelse {
-                // Fallback to empty string if codec creation fails
-                return ZigString.init("").toJS(globalThis);
+            const codec = this.codec orelse codec: {
+                const created = TextCodec.create(encoding_name) orelse
+                    return ZigString.init("").toJS(globalThis);
+                if (!this.ignore_bom) created.stripBOM();
+                this.codec = created;
+                break :codec created;
             };
-            defer codec.deinit();
+            defer if (comptime flush) {
+                codec.deinit();
+                this.codec = null;
+            };
 
-            // Handle BOM stripping if needed
-            if (!this.ignore_bom) {
-                codec.stripBOM();
-            }
-
-            // Decode the data
             const result = codec.decode(buffer_slice, flush, this.fatal);
             defer result.result.deref();
 
@@ -386,6 +384,7 @@ const std = @import("std");
 
 const bun = @import("bun");
 const strings = bun.strings;
+const TextCodec = @import("../../jsc/TextCodec.zig").TextCodec;
 
 const jsc = bun.jsc;
 const ArrayBuffer = jsc.ArrayBuffer;

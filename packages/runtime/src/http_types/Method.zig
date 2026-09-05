@@ -1,9 +1,6 @@
 // Copied from bun/src/http_types/Method.zig at upstream
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
-// Imports rewritten: @import("bun") → local pure Zig string map. The JSC-bridge
-// references (`Map.fromJS`, `@import("../http_jsc/method_jsc.zig").toJS`) are
-// intentionally omitted — they re-land under `src/http_jsc/` in Phase 12.2 once
-// JSC bindings exist.
+// Imports rewritten: @import("bun") → Home's runtime root.
 
 pub const Method = enum(u8) {
     ACL = 0,
@@ -95,7 +92,7 @@ pub const Method = enum(u8) {
 
     pub fn fromNative(str: [*]const u8, str_len: usize) callconv(.c) i16 {
         const method = Method.find(str[0..str_len]) orelse return -1;
-        return @intFromEnum(method);
+        return @backingInt(method);
     }
 
     comptime {
@@ -188,9 +185,7 @@ pub const Method = enum(u8) {
     /// silently defaulted to GET.
     pub const fromJS = Map.fromJS;
 
-    pub fn toJS(this: Method, globalThis: *home_rt.jsc.JSGlobalObject) home_rt.jsc.JSValue {
-        return home_rt.jsc.ZigString.init(@tagName(this)).toJS(globalThis);
-    }
+    pub const toJS = @import("../http_jsc/method_jsc.zig").toJS;
 
     pub const Optional = union(enum) {
         any: void,

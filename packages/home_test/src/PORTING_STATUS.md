@@ -1689,6 +1689,21 @@ throughput. Any port must keep them.
    (`snapshot.zig`). Avoids re-parsing the entire test file when
    updating an inline snapshot. Port the algorithm verbatim.
 
+## Native parity checkpoint: Web encoding and Request allocation
+
+Home now keeps a WebKit `TextCodec` owned by each native `TextDecoder` for
+the lifetime of a streamed decode and resets it on flush. This closes the
+real split-sequence behavior for Big5, Shift_JIS, EUC-JP, EUC-KR, GBK,
+GB18030, and ISO-2022-JP; the corpus harness no longer carries a
+fixture-specific CJK decoder table. The unchanged CJK fixture is 30/30 and
+the eight-file `js/web/encoding` scan is clean.
+
+`Method.toJS` is wired to the upstream `Bun__HTTPMethod__toJS` bridge, so
+native Request method getters reuse the global HTTP common strings. The
+unchanged allocation corpus is 6/6 at its original 524,288 clone reads and
+131,072 constructions, and the full Request clone-leak workload is 12/12
+with stable RSS. Both Request workload-reduction rewrites were deleted.
+
 ---
 
 ## Next steps (suggested order)
