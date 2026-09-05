@@ -1479,6 +1479,28 @@ pub const HomeKernelCodegen = struct {
             // A struct literal has the type it names; this sizes an inferred
             // local's slot to the full struct, not one word.
             .StructLiteral => |lit| return lit.type_name,
+            // Offsetting a pointer yields a pointer. `var ip = packet + 14`
+            // is how this tree walks a frame, and without this the derived
+            // local had no type at all, so every later `ip[n]` and `ip.field`
+            // failed to resolve. Note the backend's `+` is a plain address
+            // add, not a scaled one, so the pointee is carried across
+            // unchanged and byte offsets stay byte offsets.
+            .BinaryExpr => |b| {
+                if (b.op != .Add and b.op != .Sub) return null;
+                const left = self.typeOfLValue(b.left);
+                const right = self.typeOfLValue(b.right);
+                const left_ptr = left != null and isPointerType(splitAlign(left.?).bare);
+                const right_ptr = right != null and isPointerType(splitAlign(right.?).bare);
+                if (b.op == .Sub) {
+                    // The distance between two pointers is a count, not a
+                    // pointer.
+                    if (left_ptr and right_ptr) return "usize";
+                    return if (left_ptr) left else null;
+                }
+                if (left_ptr) return left;
+                if (right_ptr) return right;
+                return null;
+            },
             else => return null,
         }
     }
@@ -4808,6 +4830,53 @@ pub const HomeKernelCodegen = struct {
                         try self.emit().negateReg(.tmp);
                         try self.emit().cmpRegs(.acc, .tmp);
                         try self.emit().condMove(.lt, .acc, .tmp);
+                    },
+                    .MemCpy => {
+                        // @memcpy(dest, src, len), and the two-argument form
+                        // that takes its length from dest's type — the same
+                        // sizing rule as @memset just below, so a fixed-size
+                        // field copies without the caller restating its size.
+                        const dest = r.target;
+                        const src = r.second_arg orelse {
+                            try self.writeAll("    # ERROR: @memcpy needs a source\n");
+                            return;
+                        };
+
+                        // Size before any register is loaded, so a
+                        // destination we cannot measure fails cleanly rather
+                        // than emitting half a copy.
+                        const length_expr: ?*ast.Expr = r.third_arg;
+                        var static_length: usize = 0;
+                        if (length_expr == null) {
+                            const dest_type = self.typeOfLValue(dest) orelse {
+                                try self.writeAll("    # ERROR: @memcpy cannot size this destination\n");
+                                return;
+                            };
+                            const bare = splitAlign(dest_type).bare;
+                            const sized = pointeeType(bare) orelse bare;
+                            static_length = self.sizeOf(sized) orelse {
+                                try self.print("    # ERROR: @memcpy cannot size {s}\n", .{sized});
+                                return;
+                            };
+                        }
+
+                        // Both addresses are stacked before the length is
+                        // evaluated: computing the length runs arbitrary code
+                        // through the accumulator, and the length register is
+                        // not one the pops disturb.
+                        try self.generateExpr(dest);
+                        try self.emit().push(.acc);
+                        try self.generateExpr(src);
+                        try self.emit().push(.acc);
+                        if (length_expr) |len| {
+                            try self.generateExpr(len);
+                        } else {
+                            try self.emit().movImm(@intCast(static_length));
+                        }
+                        try self.emit().movReg(.mem_len, .acc);
+                        try self.emit().pop(.mem_src);
+                        try self.emit().pop(.mem_dst);
+                        try self.emit().memCopy(self.freshLabel());
                     },
                     .MemSet => {
                         // @memset(dest, byte) takes its length from dest's
