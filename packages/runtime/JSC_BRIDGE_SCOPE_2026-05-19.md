@@ -148,7 +148,7 @@ Most heavy lifting is copy-paste and rewrite (`bun.*` → `home_rt.*`); the bind
 ### M5: Validation Against Bun Test Corpus (Days 29–35, 20h)
 **Goal:** Run subset of Bun's test suite; gate on zero regressions  
 **Deliverables:**
-- Copy `~/Code/bun/test/` → `packages/runtime/test/bun-corpus/` (~5,000 tests)
+- Copy `~/Code/bun/test/` → `packages/runtime/test/test/` (~5,000 tests)
 - Rewrite test imports (`Bun.*` → `Home.*`)
 - Filter for non-JSC-dependent tests first (file I/O, encoding, shell, etc.)
 - Run `home test bun-corpus --bail=0 --reporter=junit`
@@ -160,7 +160,7 @@ Most heavy lifting is copy-paste and rewrite (`bun.*` → `home_rt.*`); the bind
 ### M6: Settlers III Full Gate (Days 36–42, 15h)
 **Goal:** Validate that real Bun-derived code passes the Home acceptance gate  
 **Deliverables:**
-- Run `home test packages/runtime/test/bun-corpus/ --summary all` (full suite)
+- Run `home test packages/runtime/test/test/ --summary all` (full suite)
 - Run `home test ~/Code/Apps/settlers-iii` (real app)
 - Fix regressions found
 - Document JSC C++ availability gaps for Linux (if any)

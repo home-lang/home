@@ -4,7 +4,7 @@ import { createRequire } from 'node:module'
 import { PassThrough } from 'node:stream'
 
 const require = createRequire(import.meta.url)
-require('../../packages/runtime/test/bun-corpus/js/node/test/common')
+require('../../packages/runtime/test/test/js/node/test/common')
 const { internalBinding } = require('internal/test/binding')
 const JSStreamSocket = require('internal/js_stream_socket')
 const AsyncContextFrame = require('internal/async_context_frame')

@@ -50,7 +50,7 @@ Honest interpretation:
   [`BUN_ZIG_SOURCE_AUDIT_2026-05-26.md`](./BUN_ZIG_SOURCE_AUDIT_2026-05-26.md).
 - Copied Bun corpus presence is complete for the pinned checkout:
   `/Users/chrisbreuer/Code/bun/test/**/*.test.{ts,js}` and
-  `packages/runtime/test/bun-corpus/**/*.test.{ts,js}` both contain
+  `packages/runtime/test/test/**/*.test.{ts,js}` both contain
   **1720** files, with zero missing and zero extra copied test paths.
 - The last audited integrated baseline is still **552 / 1193 (~46.3%)**:
   Home-import-rewritten, Zig 0.17-clean, build-wired, and tested. Do not
@@ -103,7 +103,7 @@ descriptions:
 | Source presence | The upstream file is copied or mirrored into the repo | copy manifest or audit note |
 | Integrated source | The file is Home-import-rewritten, Zig 0.17-clean, build-wired, and tested | focused build/test result plus porting status |
 | JS-visible API | The API is callable from JavaScript through Home's runtime, not only Zig substrate | fixture or Bun-corpus smoke run by Home |
-| Corpus parity | Upstream Bun tests pass through Home with no local rewrite or skip | `home test packages/runtime/test/bun-corpus/` |
+| Corpus parity | Upstream Bun tests pass through Home with no local rewrite or skip | `home test packages/runtime/test/test/` |
 
 The release goal is corpus parity, not source-file volume.
 
@@ -416,7 +416,7 @@ Goal: make Bun's test suite the merge gate.
 
 Done when:
 
-- `home test packages/runtime/test/bun-corpus/` discovers and runs the
+- `home test packages/runtime/test/test/` discovers and runs the
   copied corpus natively.
 - The runner supports Bun's test shapes used by the corpus:
   `test`, `describe`, `expect`, hooks, snapshots, mocks, retries,
@@ -436,7 +436,7 @@ Current corpus scale for the next ratchet:
 
 | Bucket | Count | Notes |
 |---|---:|---|
-| Copied Bun-style test files in read-only corpus audit | 1735 | `*.test.{ts,js,mjs,cjs}` / `*.spec.{ts,js}` under `packages/runtime/test/bun-corpus` |
+| Copied Bun-style test files in read-only corpus audit | 1735 | `*.test.{ts,js,mjs,cjs}` / `*.spec.{ts,js}` under `packages/runtime/test/test` |
 | `js/` test files | 998 | Largest remaining general-runtime corpus bucket |
 | `regression/` test files | 384 | Broad bug/regression frontier after API ladders mature |
 | `cli/` test files | 150 | CLI/run/install/test subprocess behavior; Pantry divergence must be documented |
@@ -528,9 +528,9 @@ Fresh single-file probes on 2026-06-16 in
 
 | Command | Result | Current blocker |
 |---|---|---|
-| `./zig-out/bin/home-debug test packages/runtime/test/bun-corpus/bundler/transpiler/transpiler.test.js` | **Passes: 120 passed, 0 failed, 22 todo** | None for the promoted file |
-| `./zig-out/bin/home-debug test packages/runtime/test/bun-corpus/bundler/transpiler/decorators.test.ts` | **Passes: 22 passed, 0 failed, 0 todo** | None for the promoted file |
-| `./zig-out/bin/home-debug test packages/runtime/test/bun-corpus/bundler/native-plugin.test.ts` | **Passes: 6 passed, 0 failed, 0 unsupported** | Home now dlopens the built `.node` addon, runs Node-API registration callbacks, exposes N-API externals/functions, calls the Bun native `onBeforeParse` ABI, and routes the generated `bun run dist/index.js` output through the build artifact |
+| `./zig-out/bin/home-debug test packages/runtime/test/test/bundler/transpiler/transpiler.test.js` | **Passes: 120 passed, 0 failed, 22 todo** | None for the promoted file |
+| `./zig-out/bin/home-debug test packages/runtime/test/test/bundler/transpiler/decorators.test.ts` | **Passes: 22 passed, 0 failed, 0 todo** | None for the promoted file |
+| `./zig-out/bin/home-debug test packages/runtime/test/test/bundler/native-plugin.test.ts` | **Passes: 6 passed, 0 failed, 0 unsupported** | Home now dlopens the built `.node` addon, runs Node-API registration callbacks, exposes N-API externals/functions, calls the Bun native `onBeforeParse` ABI, and routes the generated `bun run dist/index.js` output through the build artifact |
 
 Native plugin promotion update on 2026-05-26: the JSC corpus adapter now
 keeps real addon handles alive, exports the small Node-API surface needed
@@ -852,7 +852,7 @@ increments.
 
 **BROAD-CORPUS REFRAME (2026-05-27 recon — pivotal, positive).** There are
 TWO test execution paths and the bun-corpus gate uses the *weaker* one:
-- The bun-corpus gate (`home test packages/runtime/test/bun-corpus`) routes
+- The bun-corpus gate (`home test packages/runtime/test/test`) routes
   every file through the curated `jsc_bootstrap` adapter
   (`packages/home_test/src/adapters/jsc_bootstrap.zig`), which feeds raw `.ts`
   to JSC via **hand-written per-exact-string TS rewrites + import shims** in
@@ -1094,11 +1094,11 @@ Verification target:
 ./pantry/.bin/zig build test -Dfilter=home_test --summary all
 ./pantry/.bin/zig build test -Dfilter=home_rt --summary all
 ./pantry/.bin/zig build debug --summary all
-./zig-out/bin/home-debug test packages/runtime/test/bun-corpus/bundler/transpiler/transpiler.test.js
-./zig-out/bin/home-debug test packages/runtime/test/bun-corpus/bundler/transpiler/decorators.test.ts
-./zig-out/bin/home-debug test packages/runtime/test/bun-corpus/bundler/native-plugin.test.ts
-./zig-out/bin/home test packages/runtime/test/bun-corpus --bun-corpus-native-subset=bundler-core-itbundled
-./zig-out/bin/home test packages/runtime/test/bun-corpus --bun-corpus-native-subset=bundler-transpiler-bootstrap
+./zig-out/bin/home-debug test packages/runtime/test/test/bundler/transpiler/transpiler.test.js
+./zig-out/bin/home-debug test packages/runtime/test/test/bundler/transpiler/decorators.test.ts
+./zig-out/bin/home-debug test packages/runtime/test/test/bundler/native-plugin.test.ts
+./zig-out/bin/home test packages/runtime/test/test --bun-corpus-native-subset=bundler-core-itbundled
+./zig-out/bin/home test packages/runtime/test/test --bun-corpus-native-subset=bundler-transpiler-bootstrap
 bunx --bun pickier docs/BUN_PARITY_PLAN.md docs/PARITY-BUN.md packages/home_test/src/PORTING_STATUS.md
 git diff --check -- docs/BUN_PARITY_PLAN.md docs/PARITY-BUN.md packages/home_test/src/PORTING_STATUS.md
 ```
@@ -1178,7 +1178,7 @@ Use the cheapest gate that proves the claim, then ratchet upward:
 | Runtime source integrated | focused `./pantry/.bin/zig build test -Dfilter=<area>` |
 | JSC bridge behavior changed | focused JSC/runtime test with `-Denable_jsc=true` |
 | API became JS-visible | a Home-run JS fixture or Bun-corpus smoke |
-| Corpus slice improved | `home test packages/runtime/test/bun-corpus/ <slice>` |
+| Corpus slice improved | `home test packages/runtime/test/test/ <slice>` |
 | Baseline docs changed | `rg` sanity for duplicate/stale headline claims |
 
 Full `./pantry/.bin/zig build test --summary all` is the preferred

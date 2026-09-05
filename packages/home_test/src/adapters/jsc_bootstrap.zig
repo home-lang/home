@@ -5538,11 +5538,11 @@ fn readdirSyncNative(
 
     var dir = Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch |err| switch (err) {
         error.FileNotFound => blk: {
-            if (path.len == 0 or path[0] == '/' or std.mem.startsWith(u8, path, "packages/runtime/test/bun-corpus/")) {
+            if (path.len == 0 or path[0] == '/' or std.mem.startsWith(u8, path, "packages/runtime/test/test/")) {
                 setExceptionFmt(actual_ctx, exception, "node:fs.readdirSync() failed: {s}", .{@errorName(err)});
                 return null;
             }
-            const owned = std.fmt.allocPrint(allocator, "packages/runtime/test/bun-corpus/{s}", .{path}) catch |alloc_err| {
+            const owned = std.fmt.allocPrint(allocator, "packages/runtime/test/test/{s}", .{path}) catch |alloc_err| {
                 setExceptionFmt(actual_ctx, exception, "node:fs.readdirSync() failed: {s}", .{@errorName(alloc_err)});
                 return null;
             };
@@ -6384,7 +6384,7 @@ fn jsScriptArg(argv: []const []const u8) ?[]const u8 {
 fn absoluteCorpusPathAlloc(allocator: std.mem.Allocator, relative: []const u8) ![]u8 {
     const cwd = try currentWorkingDirectoryAlloc(allocator);
     defer allocator.free(cwd);
-    return std.fs.path.join(allocator, &.{ cwd, "packages/runtime/test/bun-corpus", relative });
+    return std.fs.path.join(allocator, &.{ cwd, "packages/runtime/test/test", relative });
 }
 
 fn pathExists(path: []const u8) bool {
@@ -6826,7 +6826,7 @@ test "absoluteCorpusPathAlloc joins corpus-relative stat paths under the corpus 
     const resolved = try absoluteCorpusPathAlloc(allocator, "js/node/fs/fs-stats-constructor.test.ts");
     defer allocator.free(resolved);
     try std.testing.expect(std.fs.path.isAbsolute(resolved));
-    try std.testing.expect(std.mem.indexOf(u8, resolved, "packages/runtime/test/bun-corpus/js/node/fs/fs-stats-constructor.test.ts") != null);
+    try std.testing.expect(std.mem.indexOf(u8, resolved, "packages/runtime/test/test/js/node/fs/fs-stats-constructor.test.ts") != null);
 }
 
 test "adapter recognizes HomeUnsupported exceptions" {

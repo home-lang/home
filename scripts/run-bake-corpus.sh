@@ -3,7 +3,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CORPUS="${REPO_ROOT}/packages/runtime/test/bun-corpus"
+CORPUS="${REPO_ROOT}/packages/runtime/test/test"
 DEPENDENCIES="${REPO_ROOT}/packages/runtime/test/bake-dependencies"
 HOME_BIN="${HOME_BIN:-${REPO_ROOT}/zig-out/bin/home-debug}"
 NODE_BIN="${BUN_DEV_SERVER_CLIENT_EXECUTABLE:-$(command -v node || true)}"

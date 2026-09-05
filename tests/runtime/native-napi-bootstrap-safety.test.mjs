@@ -54,7 +54,7 @@ int32_t node_api_module_get_api_version_v1(void) { return 8; }
 napi_value napi_register_module_v1(napi_env env, napi_value exports) { return initialize(env, exports); }
 #endif
 `)
-  const corpus = join(directory, 'packages/runtime/test/bun-corpus')
+  const corpus = join(directory, 'packages/runtime/test/test')
   mkdirSync(corpus, { recursive: true })
   const fixture = join(corpus, 'native-addon-safety.test.js')
   const marker = join(directory, 'constructor-ran')

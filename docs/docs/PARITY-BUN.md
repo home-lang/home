@@ -431,7 +431,7 @@ It becomes behavioral `home test --parallel` parity only after the real
 IPC, worker spawn/reap, result aggregation, fragment merge handling, and
 multi-file corpus smoke run without system Bun delegation.
 
-Bootstrap smoke: `home test packages/runtime/test/bun-corpus
+Bootstrap smoke: `home test packages/runtime/test/test
 --bun-corpus-native-subset=minimal-js` executes four hundred eighteen allowlisted JS
 or plain-syntax TS corpus files through Home's JSC evaluator. On macOS this
 JSC path is now part of the default `./pantry/.bin/zig build test` graph
@@ -592,7 +592,7 @@ acceptance gate.
 Latest measured subset run: `418` files, `3,481` passed, `0` failed,
 `186` todo.
 
-The unfiltered command `home test packages/runtime/test/bun-corpus` now
+The unfiltered command `home test packages/runtime/test/test` now
 uses the same Home-native JSC bootstrap instead of the retired
 `native-js-test-runner-missing` placeholder. It currently executes all
 4,013 discovered Bun test files and fails on the first real failing

@@ -27,7 +27,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TEST_ROOT="$ROOT/packages/runtime/test"
-CORPUS="$TEST_ROOT/bun-corpus"
+CORPUS="$TEST_ROOT/test"
 PLUGIN_SOURCE="$ROOT/packages/runtime/upstream/packages/bun-plugin-svelte"
 PLUGIN_TARGET="$TEST_ROOT/packages/bun-plugin-svelte"
 
@@ -44,7 +44,7 @@ if [[ ! -f "$PLUGIN_SOURCE/package.json" ]]; then
     exit 1
 fi
 
-before="$(git -C "$ROOT" status --porcelain -- packages/runtime/test/bun.lock packages/runtime/test/bun-corpus/bun.lock)"
+before="$(git -C "$ROOT" status --porcelain -- packages/runtime/test/bun.lock packages/runtime/test/test/bun.lock)"
 
 bun install --cwd "$TEST_ROOT" --frozen-lockfile
 
@@ -54,7 +54,7 @@ cp -R "$PLUGIN_SOURCE" "$PLUGIN_TARGET"
 
 bun install --cwd "$CORPUS" --frozen-lockfile
 
-after="$(git -C "$ROOT" status --porcelain -- packages/runtime/test/bun.lock packages/runtime/test/bun-corpus/bun.lock)"
+after="$(git -C "$ROOT" status --porcelain -- packages/runtime/test/bun.lock packages/runtime/test/test/bun.lock)"
 
 if [[ "$before" != "$after" ]]; then
     echo "provision-corpus-deps: a pinned bun.lock changed during provisioning" >&2

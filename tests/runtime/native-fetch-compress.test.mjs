@@ -7,7 +7,7 @@ import { connect, createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { brotliDecompressSync, gunzipSync, inflateSync, zstdDecompressSync } from 'node:zlib'
-import { tls } from '../../packages/runtime/test/bun-corpus/harness.ts'
+import { tls } from '../../packages/runtime/test/test/harness.ts'
 
 assert.match(basename(process.execPath), /^home(?:-debug)?(?:\.exe)?$/)
 const digest = bytes => createHash('sha256').update(bytes).digest('hex')

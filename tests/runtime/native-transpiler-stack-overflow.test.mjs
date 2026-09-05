@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 
 const fixture = new URL(
-  '../../packages/runtime/test/bun-corpus/bundler/transpiler/fixtures/lots-of-for-loop.js',
+  '../../packages/runtime/test/test/bundler/transpiler/fixtures/lots-of-for-loop.js',
   import.meta.url,
 )
 const source = await Bun.file(fixture).text()

@@ -95,7 +95,7 @@ process.on('exit', code => console.log('MAIN_EXIT', code));
 
 // This is the actual Node-core fixture guard: its missing callback must fail
 // even when a worker has already finished, not become a false-positive pass.
-const common = fileURLToPath(new URL('../../packages/runtime/test/bun-corpus/js/node/test/common/index.js', import.meta.url))
+const common = fileURLToPath(new URL('../../packages/runtime/test/test/js/node/test/common/index.js', import.meta.url))
 const missing = run(workerHelper + `
 require(${JSON.stringify(common)}).mustCall();
 await worker(${quietWorker});

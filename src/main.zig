@@ -2292,7 +2292,7 @@ fn runFileViaVMOpts(
 const bun_resolver_fixture_modules = "packages/home_test/fixtures/bun-resolver-node-modules";
 
 fn argsTargetBunResolverTest(args: []const [:0]const u8) bool {
-    const suffix = "packages/runtime/test/bun-corpus/js/bun/resolve/resolve.test.ts";
+    const suffix = "packages/runtime/test/test/js/bun/resolve/resolve.test.ts";
     for (args) |arg| {
         if (std.mem.endsWith(u8, arg, suffix)) return true;
     }
@@ -2413,7 +2413,8 @@ fn runTestsViaVM(allocator_unused: std.mem.Allocator, args: []const [:0]const u8
             normalized[index] = rewritten;
         }
         effective_args = normalized;
-        try std.Io.Threaded.chdir(corpus_root);
+        const checkout_root = std.fs.path.dirname(corpus_root) orelse return error.InvalidCorpusRoot;
+        try std.Io.Threaded.chdir(checkout_root);
     }
 
     const log = try allocator.create(home_rt.logger.Log);
@@ -3940,9 +3941,9 @@ fn printTestUsage() void {
         \\  *_test.zig                      Zig unit test files
         \\
         \\{s}Bun Corpus Bootstrap:{s}
-        \\  home test packages/runtime/test/bun-corpus
+        \\  home test packages/runtime/test/test
         \\                                  Run the full native corpus gate; fails until 100% native parity
-        \\  home test packages/runtime/test/bun-corpus --bun-corpus-native-subset=minimal-js
+        \\  home test packages/runtime/test/test --bun-corpus-native-subset=minimal-js
         \\                                  Run the current allowlisted native JSC smoke subset
         \\
     , .{
@@ -4751,9 +4752,9 @@ fn isJsLikeTestProject(args: []const [:0]const u8) bool {
     return false;
 }
 
-const bun_corpus_marker = "packages/runtime/test/bun-corpus";
-const bun_corpus_marker_child = "packages/runtime/test/bun-corpus/";
-const bun_corpus_marker_embedded_child = "/packages/runtime/test/bun-corpus/";
+const bun_corpus_marker = "packages/runtime/test/test";
+const bun_corpus_marker_child = "packages/runtime/test/test/";
+const bun_corpus_marker_embedded_child = "/packages/runtime/test/test/";
 
 const BunCorpusTarget = union(enum) {
     root: []const u8,
@@ -4768,11 +4769,16 @@ const BunCorpusTarget = union(enum) {
 };
 
 fn bunCorpusTestArgument(allocator: std.mem.Allocator, target: BunCorpusTarget) ![:0]u8 {
-    return switch (target) {
-        .root => home_rt.dupeZ(allocator, u8, "."),
-        .directory => |directory| std.fmt.allocPrintSentinel(allocator, "./{s}", .{directory.relative_path}, 0),
-        .file => |file| std.fmt.allocPrintSentinel(allocator, "./{s}", .{file.relative_path}, 0),
+    const corpus_path, const relative_path = switch (target) {
+        .root => |path| .{ path, null },
+        .directory => |directory| .{ directory.corpus_path, directory.relative_path },
+        .file => |file| .{ file.corpus_path, file.relative_path },
     };
+    const test_root = std.fs.path.basename(corpus_path);
+    return if (relative_path) |relative|
+        std.fmt.allocPrintSentinel(allocator, "./{s}/{s}", .{ test_root, relative }, 0)
+    else
+        std.fmt.allocPrintSentinel(allocator, "./{s}", .{test_root}, 0);
 }
 
 fn isJsLikeCorpusFile(path: []const u8) bool {
@@ -4928,7 +4934,7 @@ fn failBunCorpusSubsetArg(reason: []const u8, value: []const u8) noreturn {
 }
 
 test "bun corpus target parser skips subset flag values" {
-    const args = [_][:0]const u8{ "--bun-corpus-native-subset", "packages/runtime/test/bun-corpus" };
+    const args = [_][:0]const u8{ "--bun-corpus-native-subset", "packages/runtime/test/test" };
     try std.testing.expect(argTargetsBunCorpus(&args) == null);
 }
 
@@ -4949,87 +4955,87 @@ test "ported Bun corpus matrices requiring runtime services use the full native 
 }
 
 test "Bun resolver fixture dependencies are scoped to the exact upstream test" {
-    const relative = [_][:0]const u8{"packages/runtime/test/bun-corpus/js/bun/resolve/resolve.test.ts"};
-    const absolute = [_][:0]const u8{"/tmp/home/packages/runtime/test/bun-corpus/js/bun/resolve/resolve.test.ts"};
-    const unrelated = [_][:0]const u8{"packages/runtime/test/bun-corpus/js/bun/resolve/resolve-test.js"};
+    const relative = [_][:0]const u8{"packages/runtime/test/test/js/bun/resolve/resolve.test.ts"};
+    const absolute = [_][:0]const u8{"/tmp/home/packages/runtime/test/test/js/bun/resolve/resolve.test.ts"};
+    const unrelated = [_][:0]const u8{"packages/runtime/test/test/js/bun/resolve/resolve-test.js"};
     try std.testing.expect(argsTargetBunResolverTest(&relative));
     try std.testing.expect(argsTargetBunResolverTest(&absolute));
     try std.testing.expect(!argsTargetBunResolverTest(&unrelated));
 }
 
 test "bun corpus target parser resolves roots, directories, and descendant files" {
-    const relative_root = [_][:0]const u8{"packages/runtime/test/bun-corpus"};
+    const relative_root = [_][:0]const u8{"packages/runtime/test/test"};
     switch (argTargetsBunCorpus(&relative_root).?) {
-        .root => |path| try std.testing.expectEqualStrings("packages/runtime/test/bun-corpus", path),
+        .root => |path| try std.testing.expectEqualStrings("packages/runtime/test/test", path),
         else => return error.ExpectedBunCorpusRoot,
     }
 
-    const absolute_root = [_][:0]const u8{"/tmp/home/packages/runtime/test/bun-corpus/"};
+    const absolute_root = [_][:0]const u8{"/tmp/home/packages/runtime/test/test/"};
     switch (argTargetsBunCorpus(&absolute_root).?) {
-        .root => |path| try std.testing.expectEqualStrings("/tmp/home/packages/runtime/test/bun-corpus", path),
+        .root => |path| try std.testing.expectEqualStrings("/tmp/home/packages/runtime/test/test", path),
         else => return error.ExpectedBunCorpusRoot,
     }
 
-    const relative_file = [_][:0]const u8{"packages/runtime/test/bun-corpus/js/node/path/join.test.js"};
+    const relative_file = [_][:0]const u8{"packages/runtime/test/test/js/node/path/join.test.js"};
     switch (argTargetsBunCorpus(&relative_file).?) {
         .file => |target| {
-            try std.testing.expectEqualStrings("packages/runtime/test/bun-corpus", target.corpus_path);
+            try std.testing.expectEqualStrings("packages/runtime/test/test", target.corpus_path);
             try std.testing.expectEqualStrings("js/node/path/join.test.js", target.relative_path);
         },
         else => return error.ExpectedBunCorpusFile,
     }
 
-    const absolute_file = [_][:0]const u8{"/tmp/home/packages/runtime/test/bun-corpus/bake/fixtures/deinitialization/test.ts"};
+    const absolute_file = [_][:0]const u8{"/tmp/home/packages/runtime/test/test/bake/fixtures/deinitialization/test.ts"};
     switch (argTargetsBunCorpus(&absolute_file).?) {
         .file => |target| {
-            try std.testing.expectEqualStrings("/tmp/home/packages/runtime/test/bun-corpus", target.corpus_path);
+            try std.testing.expectEqualStrings("/tmp/home/packages/runtime/test/test", target.corpus_path);
             try std.testing.expectEqualStrings("bake/fixtures/deinitialization/test.ts", target.relative_path);
         },
         else => return error.ExpectedBunCorpusFile,
     }
 
-    const relative_directory = [_][:0]const u8{"packages/runtime/test/bun-corpus/cli/install/"};
+    const relative_directory = [_][:0]const u8{"packages/runtime/test/test/cli/install/"};
     switch (argTargetsBunCorpus(&relative_directory).?) {
         .directory => |target| {
-            try std.testing.expectEqualStrings("packages/runtime/test/bun-corpus", target.corpus_path);
+            try std.testing.expectEqualStrings("packages/runtime/test/test", target.corpus_path);
             try std.testing.expectEqualStrings("cli/install", target.relative_path);
         },
         else => return error.ExpectedBunCorpusDirectory,
     }
 
-    const absolute_directory = [_][:0]const u8{"/tmp/home/packages/runtime/test/bun-corpus/js/bun/json5"};
+    const absolute_directory = [_][:0]const u8{"/tmp/home/packages/runtime/test/test/js/bun/json5"};
     switch (argTargetsBunCorpus(&absolute_directory).?) {
         .directory => |target| {
-            try std.testing.expectEqualStrings("/tmp/home/packages/runtime/test/bun-corpus", target.corpus_path);
+            try std.testing.expectEqualStrings("/tmp/home/packages/runtime/test/test", target.corpus_path);
             try std.testing.expectEqualStrings("js/bun/json5", target.relative_path);
         },
         else => return error.ExpectedBunCorpusDirectory,
     }
 
-    const non_corpus = [_][:0]const u8{"packages/runtime/test/bun-corpus-old/foo.test.js"};
+    const non_corpus = [_][:0]const u8{"packages/runtime/test/test-old/foo.test.js"};
     try std.testing.expect(argTargetsBunCorpus(&non_corpus) == null);
 }
 
 test "bun corpus VM arguments preserve explicit path semantics" {
     const allocator = std.testing.allocator;
 
-    const root = try bunCorpusTestArgument(allocator, .{ .root = "packages/runtime/test/bun-corpus" });
+    const root = try bunCorpusTestArgument(allocator, .{ .root = "packages/runtime/test/test" });
     defer allocator.free(root);
-    try std.testing.expectEqualStrings(".", root);
+    try std.testing.expectEqualStrings("./test", root);
 
     const directory = try bunCorpusTestArgument(allocator, .{ .directory = .{
-        .corpus_path = "packages/runtime/test/bun-corpus",
+        .corpus_path = "packages/runtime/test/test",
         .relative_path = "js/node/http",
     } });
     defer allocator.free(directory);
-    try std.testing.expectEqualStrings("./js/node/http", directory);
+    try std.testing.expectEqualStrings("./test/js/node/http", directory);
 
     const file = try bunCorpusTestArgument(allocator, .{ .file = .{
-        .corpus_path = "packages/runtime/test/bun-corpus",
+        .corpus_path = "packages/runtime/test/test",
         .relative_path = "js/node/http/node-http-connect.node.mts",
     } });
     defer allocator.free(file);
-    try std.testing.expectEqualStrings("./js/node/http/node-http-connect.node.mts", file);
+    try std.testing.expectEqualStrings("./test/js/node/http/node-http-connect.node.mts", file);
 }
 
 test "bun corpus subset parser reports missing and unknown values" {
@@ -5047,7 +5053,7 @@ test "bun corpus subset parser reports missing and unknown values" {
 }
 
 test "bun corpus subset parser accepts minimal js" {
-    const args = [_][:0]const u8{ "packages/runtime/test/bun-corpus", "--bun-corpus-native-subset=minimal-js" };
+    const args = [_][:0]const u8{ "packages/runtime/test/test", "--bun-corpus-native-subset=minimal-js" };
     switch (argBunCorpusSubset(&args)) {
         .ok => |subset| try std.testing.expectEqual(home_test.corpus_runner.Subset.minimal_js, subset),
         else => return error.ExpectedSubset,
@@ -5055,7 +5061,7 @@ test "bun corpus subset parser accepts minimal js" {
 }
 
 test "bun corpus subset parser accepts bundler core itBundled" {
-    const args = [_][:0]const u8{ "packages/runtime/test/bun-corpus", "--bun-corpus-native-subset=bundler-core-itbundled" };
+    const args = [_][:0]const u8{ "packages/runtime/test/test", "--bun-corpus-native-subset=bundler-core-itbundled" };
     switch (argBunCorpusSubset(&args)) {
         .ok => |subset| try std.testing.expectEqual(home_test.corpus_runner.Subset.bundler_core_itbundled, subset),
         else => return error.ExpectedSubset,
@@ -5063,7 +5069,7 @@ test "bun corpus subset parser accepts bundler core itBundled" {
 }
 
 test "bun corpus subset parser accepts bundler transpiler bootstrap" {
-    const args = [_][:0]const u8{ "packages/runtime/test/bun-corpus", "--bun-corpus-native-subset=bundler-transpiler-bootstrap" };
+    const args = [_][:0]const u8{ "packages/runtime/test/test", "--bun-corpus-native-subset=bundler-transpiler-bootstrap" };
     switch (argBunCorpusSubset(&args)) {
         .ok => |subset| try std.testing.expectEqual(home_test.corpus_runner.Subset.bundler_transpiler_bootstrap, subset),
         else => return error.ExpectedSubset,

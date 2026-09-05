@@ -41,7 +41,7 @@ APIs, `expect.extend`, asymmetric matchers like
 
 **Partially activated.** The package is now imported by the `home`
 executable for Bun-corpus discovery, so `home test
-packages/runtime/test/bun-corpus/` counts the corpus through
+packages/runtime/test/test/` counts the corpus through
 `packages/home_test/src/corpus.zig` before failing the native gate.
 That keeps the parity check inside Home-owned Zig code instead of
 delegating to system Bun.

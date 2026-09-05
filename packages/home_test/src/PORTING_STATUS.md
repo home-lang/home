@@ -17,7 +17,7 @@ source. The plan below tracks adaptation status file-by-file.
 The Home-side `corpus.zig`, `runner.zig`, and `corpus_runner.zig`
 modules are active and compiled into the `home` executable. `corpus.zig`
 owns discovery and test-file classification for `home test
-packages/runtime/test/bun-corpus/`; `result.zig` owns the native
+packages/runtime/test/test/`; `result.zig` owns the native
 file/run result model; `runner.zig` owns the adapter-neutral
 prepared-file and file-run contracts; `adapters/jsc_bootstrap.zig` owns
 the current JSC bootstrap execution adapter plus the native host-call
@@ -75,8 +75,8 @@ The copied Bun corpus is exact against upstream Bun for
 `*.test.{ts,js,mjs,cjs}` files in this worktree: 1800 upstream paths,
 1800 copied paths, zero missing, and zero extras. The broader Home
 `corpus.zig` discovery guard currently sees 4718 Bun-style test files
-under `packages/runtime/test/bun-corpus`, including `test-*` and
-`*.spec.*` forms, and `home test packages/runtime/test/bun-corpus` walks
+under `packages/runtime/test/test`, including `test-*` and
+`*.spec.*` forms, and `home test packages/runtime/test/test` walks
 those copied source files through the JSC bootstrap. The former exact
 2-file frontier
 (`bundler/transpiler/decorators.test.ts` and
@@ -92,7 +92,7 @@ therefore expected to show only `bundler/native-plugin.test.ts` outside
 the committed subset arrays.
 
 Read-only corpus inventory on 2026-05-26, counted from
-`packages/runtime/test/bun-corpus` using `*.test.{ts,js,mjs,cjs}` and
+`packages/runtime/test/test` using `*.test.{ts,js,mjs,cjs}` and
 `*.spec.{ts,js}` patterns:
 
 | Bucket | Files | Next ownership note |
@@ -201,7 +201,7 @@ alive for the test runtime, calls `plugin_impl*` through Home's
 Bun-compatible `NativePluginABI`, and preserves build inputs while routing
 the generated `bun run dist/index.js` output through the recorded build
 artifact. `./zig-out/bin/home-debug test
-packages/runtime/test/bun-corpus/bundler/native-plugin.test.ts` passes
+packages/runtime/test/test/bundler/native-plugin.test.ts` passes
 with 6 passed, 0 failed, 0 unsupported. This promotes the exact copied
 bundler fixture; broader `napi/` and production `.node` parity remain
 separate corpus gates.

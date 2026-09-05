@@ -182,7 +182,7 @@ Land in parallel:
 2. Rewrite `@import("bun")` → `@import("home_rt")`; `$cpp()` → `home_rt_binding()`
 3. Port binding dispatch stubs to Zig (see Phase 12.2 scope for JSC bridge model)
 4. Add inline tests per Phase 12 requirements (one test per copied file)
-5. Run `home test packages/runtime/test/bun-corpus/js/node/*` to validate
+5. Run `home test packages/runtime/test/test/js/node/*` to validate
 
 ### Approach 2: Minimal Pure-JS (Fallback)
 For **node:path, node:assert, node:test** only:
@@ -217,7 +217,7 @@ For **node:path, node:assert, node:test** only:
 - [ ] Top 3 modules (path, assert, events) land Day 5
 - [ ] 76+ tests passing after path+assert+events
 - [ ] Full 88-test coverage after fs+test land
-- [ ] `home test packages/runtime/test/bun-corpus/ --grep "node-only" --reporter=json` shows 0 failures
+- [ ] `home test packages/runtime/test/test/ --grep "node-only" --reporter=json` shows 0 failures
 - [ ] CI check: no regressions in pure-JS tests (130 baseline)
 
 ---
@@ -248,7 +248,7 @@ packages/runtime/src/node/
 ├── os.ts                    # node:os (6h, bonus)
 └── (others deferred to 12.8)
 
-packages/runtime/test/bun-corpus/js/node/
+packages/runtime/test/test/js/node/
 └── (existing 88 test files, no new files needed)
 ```
 

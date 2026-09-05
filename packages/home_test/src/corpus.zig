@@ -9,7 +9,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const Io = std.Io;
 
-pub const default_root = "packages/runtime/test/bun-corpus";
+pub const default_root = "packages/runtime/test/test";
 pub const expected_copied_bun_test_tree_entries = 12996;
 pub const expected_copied_bun_test_files = 4708;
 pub const tracked_manifest_name = "BUN_TRACKED_FILES.txt";

@@ -194,5 +194,5 @@ git -C /Users/chrisbreuer/Code/bun rev-parse HEAD
 cat packages/runtime/UPSTREAM_SHA.txt
 ./scripts/measure-parity.sh --values
 find /Users/chrisbreuer/Code/bun/test -type f \( -name '*.test.ts' -o -name '*.test.js' \) | wc -l
-find packages/runtime/test/bun-corpus -type f \( -name '*.test.ts' -o -name '*.test.js' \) | wc -l
+find packages/runtime/test/test -type f \( -name '*.test.ts' -o -name '*.test.js' \) | wc -l
 ```

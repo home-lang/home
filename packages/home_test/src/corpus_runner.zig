@@ -2,7 +2,7 @@
 //!
 //! Fast tests keep focused corpus pins in the normal Zig suite, while the
 //! opt-in `HOME_BUN_CORPUS_FULL=1` gate walks every Bun-style test file copied
-//! into `packages/runtime/test/bun-corpus` from Home's source tree.
+//! into `packages/runtime/test/test` from Home's source tree.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -1012,10 +1012,10 @@ const harness_prelude =
     \\function __home_corpus_native_path_candidates(path) {
     \\  const text = String(path || "");
     \\  const candidates = [text];
-    \\  const corpusPrefix = "packages/runtime/test/bun-corpus/";
+    \\  const corpusPrefix = "packages/runtime/test/test/";
     \\  if (text.startsWith(corpusPrefix)) candidates.push(text.slice(corpusPrefix.length));
-    \\  if (text && !text.startsWith("/") && !text.startsWith("packages/runtime/test/bun-corpus/")) candidates.push("packages/runtime/test/bun-corpus/" + text);
-    \\  if (text.startsWith("test/")) candidates.push("packages/runtime/test/bun-corpus/" + text.slice("test/".length));
+    \\  if (text && !text.startsWith("/") && !text.startsWith("packages/runtime/test/test/")) candidates.push("packages/runtime/test/test/" + text);
+    \\  if (text.startsWith("test/")) candidates.push("packages/runtime/test/test/" + text.slice("test/".length));
     \\  return candidates;
     \\}
     \\function __home_fs_mark_dir(path) {
@@ -1416,20 +1416,20 @@ const harness_prelude =
     \\    const runtimePath = __home_build_resolve_entry(text);
     \\    if (runtimePath !== text) {
     \\      candidates.push(runtimePath);
-    \\      if (!runtimePath.startsWith("packages/runtime/test/bun-corpus/")) candidates.push("packages/runtime/test/bun-corpus/" + runtimePath);
+    \\      if (!runtimePath.startsWith("packages/runtime/test/test/")) candidates.push("packages/runtime/test/test/" + runtimePath);
     \\    }
     \\  }
-    \\  const corpusPathIndex = text.indexOf("packages/runtime/test/bun-corpus/");
+    \\  const corpusPathIndex = text.indexOf("packages/runtime/test/test/");
     \\  if (corpusPathIndex > 0) candidates.push(text.slice(corpusPathIndex));
     \\  if (text.startsWith("/")) {
     \\    const corpusRelative = text.replace(/^\/+/, "");
     \\    if (/^(?:js|cli|bundler|regression|napi|internal|integration|bake|web|fixtures)\//.test(corpusRelative)) {
     \\      candidates.push(corpusRelative);
-    \\      candidates.push("packages/runtime/test/bun-corpus/" + corpusRelative);
+    \\      candidates.push("packages/runtime/test/test/" + corpusRelative);
     \\    }
     \\  }
-    \\  if (!text.startsWith("/") && !text.startsWith("packages/runtime/test/bun-corpus/")) candidates.push("packages/runtime/test/bun-corpus/" + text);
-    \\  if (text.startsWith("test/")) candidates.push("packages/runtime/test/bun-corpus/" + text.slice("test/".length));
+    \\  if (!text.startsWith("/") && !text.startsWith("packages/runtime/test/test/")) candidates.push("packages/runtime/test/test/" + text);
+    \\  if (text.startsWith("test/")) candidates.push("packages/runtime/test/test/" + text.slice("test/".length));
     \\  const upstreamSrcIndex = text.indexOf("src/runtime/");
     \\  if (upstreamSrcIndex >= 0) candidates.push("packages/runtime/upstream/" + text.slice(upstreamSrcIndex));
     \\  for (const candidate of candidates) {
@@ -1742,20 +1742,20 @@ const harness_prelude =
     \\      const runtimePath = __home_build_resolve_entry(resolved);
     \\      if (runtimePath !== resolved) {
     \\        candidates.push(runtimePath);
-    \\        if (!runtimePath.startsWith("packages/runtime/test/bun-corpus/")) candidates.push("packages/runtime/test/bun-corpus/" + runtimePath);
+    \\        if (!runtimePath.startsWith("packages/runtime/test/test/")) candidates.push("packages/runtime/test/test/" + runtimePath);
     \\      }
     \\    }
-    \\    const corpusPathIndex = resolved.indexOf("packages/runtime/test/bun-corpus/");
+    \\    const corpusPathIndex = resolved.indexOf("packages/runtime/test/test/");
     \\    if (corpusPathIndex > 0) candidates.push(resolved.slice(corpusPathIndex));
     \\    if (resolved.startsWith("/")) {
     \\      const corpusRelative = resolved.replace(/^\/+/, "");
     \\      if (/^(?:js|cli|bundler|regression|napi|internal|integration|bake|web|fixtures)\//.test(corpusRelative)) {
     \\        candidates.push(corpusRelative);
-    \\        candidates.push("packages/runtime/test/bun-corpus/" + corpusRelative);
+    \\        candidates.push("packages/runtime/test/test/" + corpusRelative);
     \\      }
     \\    }
-    \\    if (!resolved.startsWith("/") && !resolved.startsWith("packages/runtime/test/bun-corpus/")) candidates.push("packages/runtime/test/bun-corpus/" + resolved);
-    \\    if (resolved.startsWith("test/")) candidates.push("packages/runtime/test/bun-corpus/" + resolved.slice("test/".length));
+    \\    if (!resolved.startsWith("/") && !resolved.startsWith("packages/runtime/test/test/")) candidates.push("packages/runtime/test/test/" + resolved);
+    \\    if (resolved.startsWith("test/")) candidates.push("packages/runtime/test/test/" + resolved.slice("test/".length));
     \\    for (const candidate of candidates) {
     \\      try { return Buffer.from(String(globalThis.__home_readFileBytesNative(candidate)), "base64"); }
     \\      catch (error) { continue; }
@@ -2775,7 +2775,7 @@ const harness_prelude =
     \\}
     \\function __home_build_normalize_corpus_module_comments(source) {
     \\  return String(source || "").replace(/^\/\/ ([^\r\n]+)$/gm, function(line, path) {
-    \\    const marker = "packages/runtime/test/bun-corpus/";
+    \\    const marker = "packages/runtime/test/test/";
     \\    const index = String(path).indexOf(marker);
     \\    return index < 0 ? line : "// test/" + String(path).slice(index + marker.length);
     \\  });
@@ -2859,7 +2859,7 @@ const harness_prelude =
     \\}
     \\function __home_build_corpus_native_path(entrypoint) {
     \\  const path = __home_build_normalize(String(entrypoint || ""));
-    \\  const marker = "/packages/runtime/test/bun-corpus/";
+    \\  const marker = "/packages/runtime/test/test/";
     \\  const markerIndex = path.indexOf(marker);
     \\  let workspaceRoot;
     \\  let logicalPath;
@@ -2871,7 +2871,7 @@ const harness_prelude =
     \\    if (!/^(?:js|cli|bundler|regression|napi|internal|integration|bake|web|fixtures)\//.test(logicalPath)) return null;
     \\    workspaceRoot = __home_build_dirname(__home_build_dirname(__home_build_dirname(globalThis.__home_bun_executable || process.execPath)));
     \\  }
-    \\  const actualRoot = workspaceRoot + "/packages/runtime/test/bun-corpus";
+    \\  const actualRoot = workspaceRoot + "/packages/runtime/test/test";
     \\  const canonicalRoot = workspaceRoot + "/test";
     \\  return {
     \\    actualRoot,
@@ -3555,7 +3555,7 @@ const harness_prelude =
     \\      const script = String(nativeOptions.cmd[1]);
     \\      if (/^\/(?:js|cli|bundler|regression|integration|napi|snippets)\//.test(script)) {
     \\        const repoRoot = __home_build_dirname(__home_build_dirname(__home_build_dirname(globalThis.__home_bun_executable || process.execPath)));
-    \\        const candidate = __home_build_join(repoRoot, "packages/runtime/test/bun-corpus", script.slice(1));
+    \\        const candidate = __home_build_join(repoRoot, "packages/runtime/test/test", script.slice(1));
     \\        if (__home_build_file_exists(candidate)) nativeOptions.cmd[1] = candidate;
     \\      }
     \\    }
@@ -5785,7 +5785,7 @@ const harness_prelude =
     \\  if (!target) return null;
     \\  const path = target.startsWith("file:") ? new URL(target).pathname : target.split("?")[0];
     \\  try {
-    \\    const canonicalPath = "packages/runtime/test/bun-corpus/js/web/crypto/keeps-alive-fixture.js";
+    \\    const canonicalPath = "packages/runtime/test/test/js/web/crypto/keeps-alive-fixture.js";
     \\    const source = __home_build_read_text(path) || __home_build_read_text(canonicalPath);
     \\    if (source === null) throw new Error("fixture source was not found");
     \\    for (const algorithm of ["SHA-1", "SHA-256", "SHA-384", "SHA-512"]) if (!source.includes(JSON.stringify(algorithm))) throw new Error("fixture no longer exercises " + algorithm);
@@ -13734,7 +13734,7 @@ const harness_prelude =
     \\  return "";
     \\}
     \\function __home_junit_snapshot_xml(index) {
-    \\  const text = __home_build_read_text("packages/runtime/test/bun-corpus/js/junit-reporter/__snapshots__/junit.test.js.snap") || "";
+    \\  const text = __home_build_read_text("packages/runtime/test/test/js/junit-reporter/__snapshots__/junit.test.js.snap") || "";
     \\  const marker = "exports[`junit reporter more scenarios " + String(index) + "`]";
     \\  const start = text.indexOf(marker);
     \\  if (start < 0) return "";
@@ -17387,7 +17387,7 @@ const harness_prelude =
     \\}
     \\function __home_audit_fixtures_json() {
     \\  if (globalThis.__home_audit_fixtures_cache) return globalThis.__home_audit_fixtures_cache;
-    \\  const text = __home_build_read_text("packages/runtime/test/bun-corpus/cli/install/registry/fixtures/audit/audit-fixtures.json") || "{}";
+    \\  const text = __home_build_read_text("packages/runtime/test/test/cli/install/registry/fixtures/audit/audit-fixtures.json") || "{}";
     \\  try { return globalThis.__home_audit_fixtures_cache = JSON.parse(text); } catch (error) { return globalThis.__home_audit_fixtures_cache = {}; }
     \\}
     \\function __home_audit_sorted_hash(value) {
@@ -30839,7 +30839,7 @@ const harness_prelude =
     \\    }
     \\    function inspectPath(path) {
     \\      const text = String(path || "");
-    \\      if (text.includes("packages/runtime/test/bun-corpus")) return text.replace(/^.*packages\/runtime\/test\/bun-corpus/, "<cwd>/test");
+    \\      if (text.includes("packages/runtime/test/test")) return text.replace(/^.*packages\/runtime\/test\/test/, "<cwd>/test");
     \\      if (!text.startsWith("/") && !text.startsWith("<cwd>/")) return "<cwd>/test/" + text.replace(/^\/+/, "");
     \\      return text;
     \\    }
@@ -34600,7 +34600,7 @@ const harness_prelude =
     \\    if (typeof error.__home_source === "string") message += "\nsource: " + error.__home_source;
     \\    else if (typeof error.stack === "string") {
     \\      const current = String(globalThis.__home_current_filename || "");
-    \\      const corpusMarker = "packages/runtime/test/bun-corpus/";
+    \\      const corpusMarker = "packages/runtime/test/test/";
     \\      const corpusIndex = current.indexOf(corpusMarker);
     \\      const relativeCurrent = corpusIndex >= 0 ? current.slice(corpusIndex + corpusMarker.length) : current;
     \\      const frame = error.stack.split("\n").find(line => (current && line.includes(current)) || (relativeCurrent && line.includes(relativeCurrent)));
@@ -35897,8 +35897,8 @@ const harness_prelude =
     \\      if (String(globalThis.__home_current_filename || "").includes("js/bun/shell/shell-hang.test.ts")) {
     \\        if (typeof globalThis.__home_spawnSyncNative !== "function") __home_unsupported("toRun() native spawn bridge is not installed");
     \\        const args = value.map(String);
-    \\        if (args.length > 0 && !args[0].startsWith("/") && !args[0].startsWith("packages/runtime/test/bun-corpus/")) {
-    \\          args[0] = __home_build_join("packages/runtime/test/bun-corpus", args[0]);
+    \\        if (args.length > 0 && !args[0].startsWith("/") && !args[0].startsWith("packages/runtime/test/test/")) {
+    \\          args[0] = __home_build_join("packages/runtime/test/test", args[0]);
     \\        }
     \\        const env = Object.assign({}, process.env || {});
     \\        env.PATH = "pantry/.bin" + (process.platform === "win32" ? ";" : ":") + String(env.PATH || "");
@@ -39217,7 +39217,7 @@ const harness_prelude =
     \\globalThis.__home_modules["timers"] = __home_node_timers_module;
     \\globalThis.__home_modules["node:timers"] = __home_node_timers_module;
     \\function __home_semver_fixture_prereleases() {
-    \\  const source = __home_build_read_text("packages/runtime/test/bun-corpus/cli/install/semver-fixture.js") || __home_build_read_text("cli/install/semver-fixture.js") || "";
+    \\  const source = __home_build_read_text("packages/runtime/test/test/cli/install/semver-fixture.js") || __home_build_read_text("cli/install/semver-fixture.js") || "";
     \\  const match = String(source).match(/export const unsortedPrereleases\s*=\s*(\[[\s\S]*?\]);/);
     \\  if (!match) return [];
     \\  try { return Function("return " + match[1])(); } catch (error) { return []; }
@@ -44052,10 +44052,10 @@ const harness_prelude =
     \\}
     \\function __home_express_send_file_read(path) {
     \\  const fs = globalThis.__home_modules["node:fs"], text = String(path), candidates = [text];
-    \\  const corpusIndex = text.indexOf("packages/runtime/test/bun-corpus/");
+    \\  const corpusIndex = text.indexOf("packages/runtime/test/test/");
     \\  if (corpusIndex > 0) candidates.push(text.slice(corpusIndex));
     \\  const jsIndex = text.indexOf("/js/");
-    \\  if (jsIndex >= 0) { const relative = text.slice(jsIndex + 1); candidates.push(relative, "packages/runtime/test/bun-corpus/" + relative); }
+    \\  if (jsIndex >= 0) { const relative = text.slice(jsIndex + 1); candidates.push(relative, "packages/runtime/test/test/" + relative); }
     \\  let cause;
     \\  if (typeof globalThis.__home_readFileBytesNative === "function") for (const candidate of candidates) {
     \\    try {
@@ -47829,7 +47829,7 @@ const harness_prelude =
     \\function __home_harness_tls_credentials() {
     \\  try {
     \\    const repoRoot = __home_build_dirname(__home_build_dirname(__home_build_dirname(globalThis.__home_bun_executable || process.execPath)));
-    \\    const source = __home_build_read_text(__home_build_join(repoRoot, "packages/runtime/test/bun-corpus/harness.ts"));
+    \\    const source = __home_build_read_text(__home_build_join(repoRoot, "packages/runtime/test/test/harness.ts"));
     \\    const match = String(source || "").match(/export const tls = Object\.freeze\(\{\s*cert:\s*("(?:\\.|[^"\\])*")\s*,\s*key:\s*("(?:\\.|[^"\\])*")/);
     \\    if (match) return Object.freeze({ cert: JSON.parse(match[1]), key: JSON.parse(match[2]) });
     \\  } catch (error) {}
@@ -47838,7 +47838,7 @@ const harness_prelude =
     \\function __home_harness_invalid_tls_credentials() {
     \\  try {
     \\    const repoRoot = __home_build_dirname(__home_build_dirname(__home_build_dirname(globalThis.__home_bun_executable || process.execPath)));
-    \\    const source = __home_build_read_text(__home_build_join(repoRoot, "packages/runtime/test/bun-corpus/harness.ts"));
+    \\    const source = __home_build_read_text(__home_build_join(repoRoot, "packages/runtime/test/test/harness.ts"));
     \\    const match = String(source || "").match(/export const invalidTls = Object\.freeze\(\{\s*cert:\s*("(?:\\.|[^"\\])*")\s*,\s*key:\s*("(?:\\.|[^"\\])*")/);
     \\    if (match) return Object.freeze({ cert: JSON.parse(match[1]), key: JSON.parse(match[2]) });
     \\  } catch (error) {}
@@ -47847,7 +47847,7 @@ const harness_prelude =
     \\function __home_harness_expired_tls_credentials() {
     \\  try {
     \\    const repoRoot = __home_build_dirname(__home_build_dirname(__home_build_dirname(globalThis.__home_bun_executable || process.execPath)));
-    \\    const source = __home_build_read_text(__home_build_join(repoRoot, "packages/runtime/test/bun-corpus/harness.ts"));
+    \\    const source = __home_build_read_text(__home_build_join(repoRoot, "packages/runtime/test/test/harness.ts"));
     \\    const match = String(source || "").match(/export const expiredTls = Object\.freeze\(\{\s*cert:\s*("(?:\\.|[^"\\])*")\s*,\s*key:\s*("(?:\\.|[^"\\])*")/);
     \\    if (match) return Object.freeze({ cert: JSON.parse(match[1]), key: JSON.parse(match[2]) });
     \\  } catch (error) {}
@@ -53267,7 +53267,7 @@ const harness_prelude =
     \\    this.name = "AssertionError";
     \\    this.code = "ERR_ASSERTION";
     \\    const sourcePath = String(globalThis.__home_current_filename || "");
-    \\    const relativeSourcePath = sourcePath.split("bun-corpus/").pop();
+    \\    const relativeSourcePath = sourcePath.split("packages/runtime/test/test/").pop();
     \\    const sourceFrame = typeof this.stack === "string" ? this.stack.split("\n").find(line => line.includes(".test.") || (sourcePath && line.includes(sourcePath)) || (relativeSourcePath && line.includes(relativeSourcePath))) : null;
     \\    if (sourceFrame) Object.defineProperty(this, "__home_source", { configurable: true, value: sourceFrame.trim() });
     \\    Object.defineProperty(this, "message", { value: message, enumerable: true, configurable: true, writable: true });
@@ -53320,7 +53320,7 @@ const harness_prelude =
     \\    const error = new __home_AssertionError({ message: message || ("Expected " + actualRendered + " to be strictly equal to " + expectedRendered + identityDetail), actual, expected, operator: "strictEqual" });
     \\    const trace = new Error().stack;
     \\    const sourcePath = String(globalThis.__home_current_filename || "");
-    \\    const relativeSourcePath = sourcePath.split("bun-corpus/").pop();
+    \\    const relativeSourcePath = sourcePath.split("packages/runtime/test/test/").pop();
     \\    const sourceFrame = typeof trace === "string" ? trace.split("\n").find(line => line.includes(".test.") || (sourcePath && line.includes(sourcePath)) || (relativeSourcePath && line.includes(relativeSourcePath))) : null;
     \\    if (sourceFrame) Object.defineProperty(error, "__home_source", { configurable: true, value: sourceFrame.trim() });
     \\    throw error;
@@ -53380,7 +53380,7 @@ const harness_prelude =
     \\  }
     \\  if (!didThrow) {
     \\    const trace = new Error().stack;
-    \\    const sourceFrame = typeof trace === "string" ? trace.split("\n").find(line => line.includes(".test.") || line.includes("bun-corpus")) : null;
+    \\    const sourceFrame = typeof trace === "string" ? trace.split("\n").find(line => line.includes(".test.") || line.includes("packages/runtime/test/test")) : null;
     \\    throw new Error((message || "Missing expected exception") + "\nExpression: " + String(fn) + (sourceFrame ? " at " + sourceFrame.trim() : (typeof trace === "string" ? "\n" + trace : "")));
     \\  }
     \\  if (expected instanceof RegExp) {
@@ -54136,7 +54136,7 @@ const harness_prelude =
     \\globalThis.__home_modules["path/posix"] = __home_path_posix;
     \\globalThis.__home_modules["path/win32"] = __home_path_win32;
     \\globalThis.__home_modules["js/node/path/common/fixtures.js"] = { path(name) { return __home_path_posix_join(globalThis.__home_current_dirname, "common", String(name)); } };
-    \\const __home_node_test_fixtures_dir = "packages/runtime/test/bun-corpus/js/node/test/fixtures";
+    \\const __home_node_test_fixtures_dir = "packages/runtime/test/test/js/node/test/fixtures";
     \\function __home_node_fixture_path() { return __home_path_posix_join.apply(undefined, [__home_node_test_fixtures_dir].concat(Array.prototype.slice.call(arguments).map(String))); }
     \\function __home_node_fixture_read_path(path, enc) {
     \\  if (enc === undefined && String(path).endsWith("/simple.wasm")) return Buffer.from([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x07, 0x01, 0x60, 0x02, 0x7f, 0x7f, 0x01, 0x7f, 0x03, 0x02, 0x01, 0x00, 0x07, 0x07, 0x01, 0x03, 0x61, 0x64, 0x64, 0x00, 0x00, 0x0a, 0x09, 0x01, 0x07, 0x00, 0x20, 0x00, 0x20, 0x01, 0x6a, 0x0b]);
@@ -54157,7 +54157,7 @@ const harness_prelude =
     \\  },
     \\  readKey(name, enc) { return __home_node_fixture_read_path(__home_node_fixture_path("keys", String(name)), enc); },
     \\  readKeys(enc) { return Array.prototype.slice.call(arguments, 1).map(name => this.readKey(name, enc)); },
-    \\  utf8TestText: __home_build_read_text("packages/runtime/test/bun-corpus/js/node/test/fixtures/utf8_test_text.txt") || "",
+    \\  utf8TestText: __home_build_read_text("packages/runtime/test/test/js/node/test/fixtures/utf8_test_text.txt") || "",
     \\  get utf8TestTextPath() { return __home_node_fixture_path("utf8_test_text.txt"); },
     \\};
     \\globalThis.__home_modules["../test/common/fixtures"] = __home_node_test_common_fixtures;
@@ -54182,7 +54182,7 @@ const harness_prelude =
     \\globalThis.__home_modules["js/node/test/common/tmpdir.js"] = __home_node_test_common_tmpdir;
     \\let __home_node_test_common_esm_cache = null;
     \\function __home_node_test_common_esm_source() {
-    \\  if (__home_node_test_common_esm_cache === null) __home_node_test_common_esm_cache = globalThis.require("packages/runtime/test/bun-corpus/js/node/test/common/index.js");
+    \\  if (__home_node_test_common_esm_cache === null) __home_node_test_common_esm_cache = globalThis.require("packages/runtime/test/test/js/node/test/common/index.js");
     \\  return __home_node_test_common_esm_cache;
     \\}
     \\const __home_node_test_common_esm = new Proxy({}, {
@@ -54192,7 +54192,7 @@ const harness_prelude =
     \\  getOwnPropertyDescriptor(_target, property) { return __home_node_test_common_esm_cache === null ? undefined : Object.getOwnPropertyDescriptor(__home_node_test_common_esm_cache, property) || { configurable: true, enumerable: true }; },
     \\});
     \\globalThis.__home_modules["js/node/test/common/index.mjs"] = __home_node_test_common_esm;
-    \\globalThis.__home_modules["packages/runtime/test/bun-corpus/js/node/test/common/index.mjs"] = __home_node_test_common_esm;
+    \\globalThis.__home_modules["packages/runtime/test/test/js/node/test/common/index.mjs"] = __home_node_test_common_esm;
     \\globalThis.__home_modules["assert/strict"] = __home_assert_strict;
     \\globalThis.__home_modules["node:assert/strict"] = __home_assert_strict;
     \\globalThis.__home_modules["node-harness"] = {
@@ -58002,7 +58002,7 @@ const harness_prelude =
     \\let __home_crypto_hashes_fixture_cache = null;
     \\function __home_crypto_hashes_fixture() {
     \\  if (Array.isArray(__home_crypto_hashes_fixture_cache)) return __home_crypto_hashes_fixture_cache;
-    \\  const source = __home_build_read_text("packages/runtime/test/bun-corpus/js/node/crypto/fixtures/sign.fixture.ts") || "";
+    \\  const source = __home_build_read_text("packages/runtime/test/test/js/node/crypto/fixtures/sign.fixture.ts") || "";
     \\  const start = source.indexOf("[");
     \\  const end = source.lastIndexOf("]");
     \\  if (start < 0 || end <= start) return (__home_crypto_hashes_fixture_cache = []);
@@ -64267,7 +64267,7 @@ const harness_prelude =
     \\    }
     \\    if (typeof globalThis.__home_statPathNative !== "function") __home_unsupported("node:fs.statSync native bridge is not installed");
     \\    let nativePath = String(path);
-    \\    const corpusPathIndex = nativePath.indexOf("packages/runtime/test/bun-corpus/");
+    \\    const corpusPathIndex = nativePath.indexOf("packages/runtime/test/test/");
     \\    if (corpusPathIndex > 0) nativePath = nativePath.slice(corpusPathIndex);
     \\    return __home_node_fs.__home_make_stats(globalThis.__home_statPathNative(nativePath), bigint);
     \\  },
@@ -72179,7 +72179,7 @@ const harness_prelude =
     \\  assert.deepStrictEqual({ stderr: stderr.trim(), stdout: stdout.trim(), code: stderr ? 1 : 0, signal: null }, Object.assign({ stderr: "", code: 0, signal: null }, expectation || {}));
     \\}
     \\const __home_http_proxy_server_module = { createProxyServer: __home_http_create_proxy_server, startTestServers: __home_http_start_test_servers, checkProxiedRequest: __home_http_check_proxied_request, checkProxiedFetch: __home_http_check_proxied_fetch, runProxiedRequest: __home_http_run_proxied_request, runProxiedPOST: __home_http_run_proxied_post };
-    \\for (const name of ["../common/proxy-server.js", "js/node/test/common/proxy-server.js", "packages/runtime/test/bun-corpus/js/node/test/common/proxy-server.js"]) globalThis.__home_modules[name] = __home_http_proxy_server_module;
+    \\for (const name of ["../common/proxy-server.js", "js/node/test/common/proxy-server.js", "packages/runtime/test/test/js/node/test/common/proxy-server.js"]) globalThis.__home_modules[name] = __home_http_proxy_server_module;
     \\let __home_socket_io_next_sid = 1;
     \\function __home_socket_io_error(phase, sid, error) {
     \\  const cause = error instanceof Error ? error : new Error(String(error)); const action = String(phase || "protocol"); const session = sid ? String(sid) : "<unassigned>"; const operation = "socket.io." + action;
@@ -76747,7 +76747,7 @@ const harness_prelude =
     \\      async readTextFile(path) {
     \\        const rawPath = String(path);
     \\        let text = __home_build_read_text(__home_build_join(__home_build_dirname(String(globalThis.__home_current_filename || "")), rawPath));
-    \\        if (text === null) text = __home_build_read_text("packages/runtime/test/bun-corpus/js/deno/fixtures/" + rawPath);
+    \\        if (text === null) text = __home_build_read_text("packages/runtime/test/test/js/deno/fixtures/" + rawPath);
     \\        if (text === null) text = __home_build_read_text(rawPath);
     \\        if (text === null) throw new Error("No such file: " + String(path));
     \\        return text;
@@ -76885,7 +76885,7 @@ const harness_prelude =
     \\    return "regression/issue/napi-exception-pending-crash/build/Release/test_addon";
     \\  }
     \\  if (globalThis.__home_modules[name]) return name;
-    \\  if (name.startsWith("packages/runtime/test/bun-corpus/")) {
+    \\  if (name.startsWith("packages/runtime/test/test/")) {
     \\    const corpusPath = __home_build_try_file(name) || __home_build_try_directory(name);
     \\    if (corpusPath) return corpusPath;
     \\  }
@@ -82333,7 +82333,7 @@ const harness_prelude =
     \\const __home_http_test_server_module = { createServer: __home_http_test_create_server };
     \\globalThis.__home_modules["http-test-server"] = __home_http_test_server_module;
     \\globalThis.__home_modules["http-test-server.ts"] = __home_http_test_server_module;
-    \\globalThis.__home_modules["packages/runtime/test/bun-corpus/http-test-server.ts"] = __home_http_test_server_module;
+    \\globalThis.__home_modules["packages/runtime/test/test/http-test-server.ts"] = __home_http_test_server_module;
     \\const __home_undici_Response = globalThis.Response;
     \\const __home_undici_Request = globalThis.Request;
     \\const __home_undici_Headers = globalThis.Headers;
@@ -84130,7 +84130,7 @@ const harness_prelude =
     \\__home_ws_module.Server = __home_ws_WebSocketServer;
     \\__home_ws_module.default = __home_ws_WebSocket;
     \\globalThis.__home_modules["ws"] = __home_ws_module;
-    \\for (const name of ["../common/websocket-server", "js/node/test/common/websocket-server", "packages/runtime/test/bun-corpus/js/node/test/common/websocket-server"]) globalThis.__home_modules[name] = __home_ws_WebSocketServer;
+    \\for (const name of ["../common/websocket-server", "js/node/test/common/websocket-server", "packages/runtime/test/test/js/node/test/common/websocket-server"]) globalThis.__home_modules[name] = __home_ws_WebSocketServer;
     \\function __home_allocation_limit() {
     \\  const value = Number(globalThis.__home_synthetic_allocation_limit);
     \\  return Number.isFinite(value) && value >= 0 ? value : Infinity;
@@ -84741,7 +84741,7 @@ const harness_prelude =
     \\    if (encoding === "") return __home_body_text(response.body);
     \\    return __home_body_bytes(response.body).then(bytes => {
     \\      const workerdGzipFixture = encoding === "gzip" && String(globalThis.__home_current_filename || "").endsWith("js/workerd/html-rewriter.test.js")
-    \\        ? __home_build_read_text("packages/runtime/test/bun-corpus/js/web/fetch/fixture.html")
+    \\        ? __home_build_read_text("packages/runtime/test/test/js/web/fetch/fixture.html")
     \\        : null;
     \\      if (bytes.length === 0 && workerdGzipFixture !== null) return workerdGzipFixture;
     \\      try {
@@ -91739,7 +91739,7 @@ fn appendHostedGitInfoCasesPrelude(out: *std.ArrayList(u8), allocator: std.mem.A
     const io = threaded.io();
     const cases_source = try Io.Dir.cwd().readFileAlloc(
         io,
-        "packages/runtime/test/bun-corpus/cli/install/hosted-git-info/cases.ts",
+        "packages/runtime/test/test/cli/install/hosted-git-info/cases.ts",
         allocator,
         std.Io.Limit.limited(2 * 1024 * 1024),
     );
@@ -91824,13 +91824,13 @@ fn appendFileMetadataPrelude(out: *std.ArrayList(u8), allocator: std.mem.Allocat
     if (std.mem.eql(u8, relative_path, "js/bun/shell/env.positionals.test.ts")) {
         try out.appendSlice(
             allocator,
-            "const __home_positionals_repo_root = __home_build_dirname(__home_build_dirname(__home_build_dirname(globalThis.__home_bun_executable || __home_file_process.execPath)));\n__filename = __home_build_join(__home_build_join(__home_positionals_repo_root, \"packages/runtime/test/bun-corpus\"), __filename);\n__dirname = __home_build_dirname(__filename);\n__home_import_meta_path = __filename;\n__home_import_meta_dir = __dirname;\n__home_import_meta_dirname = __dirname;\n__home_file_process.argv = [__home_file_process.execPath, __filename];\n",
+            "const __home_positionals_repo_root = __home_build_dirname(__home_build_dirname(__home_build_dirname(globalThis.__home_bun_executable || __home_file_process.execPath)));\n__filename = __home_build_join(__home_build_join(__home_positionals_repo_root, \"packages/runtime/test/test\"), __filename);\n__dirname = __home_build_dirname(__filename);\n__home_import_meta_path = __filename;\n__home_import_meta_dir = __dirname;\n__home_import_meta_dirname = __dirname;\n__home_file_process.argv = [__home_file_process.execPath, __filename];\n",
         );
     }
     if (std.mem.eql(u8, relative_path, "js/web/console/console-log.test.ts")) {
         try out.appendSlice(
             allocator,
-            "const __home_console_repo_root = __home_build_dirname(__home_build_dirname(__home_build_dirname(globalThis.__home_bun_executable || __home_file_process.execPath)));\n__filename = __home_build_join(__home_build_join(__home_console_repo_root, \"packages/runtime/test/bun-corpus\"), __filename);\n__dirname = __home_build_dirname(__filename);\n__home_import_meta_path = __filename;\n__home_import_meta_dir = __dirname;\n__home_import_meta_dirname = __dirname;\nglobalThis.__home_current_filename = __filename;\nglobalThis.__home_current_dirname = __dirname;\nglobalThis.__home_process_cwd = __dirname;\n",
+            "const __home_console_repo_root = __home_build_dirname(__home_build_dirname(__home_build_dirname(globalThis.__home_bun_executable || __home_file_process.execPath)));\n__filename = __home_build_join(__home_build_join(__home_console_repo_root, \"packages/runtime/test/test\"), __filename);\n__dirname = __home_build_dirname(__filename);\n__home_import_meta_path = __filename;\n__home_import_meta_dir = __dirname;\n__home_import_meta_dirname = __dirname;\nglobalThis.__home_current_filename = __filename;\nglobalThis.__home_current_dirname = __dirname;\nglobalThis.__home_process_cwd = __dirname;\n",
         );
     }
     if (std.mem.eql(u8, relative_path, "js/bun/test/fake-timers/sinonjs/issue-2086.test.ts")) {
@@ -92022,7 +92022,7 @@ fn appendSnapshotPrelude(out: *std.ArrayList(u8), allocator: std.mem.Allocator, 
     const snapshot_basename = try std.fmt.allocPrint(allocator, "{s}.snap", .{basename});
     defer allocator.free(snapshot_basename);
     const snapshot_path = try std.fs.path.join(allocator, &.{
-        "packages/runtime/test/bun-corpus",
+        "packages/runtime/test/test",
         dirname,
         "__snapshots__",
         snapshot_basename,
@@ -95420,7 +95420,7 @@ fn rewriteFileAttributeImports(
                             const query = std.mem.indexOfScalar(u8, specifier_with_query, '?') orelse specifier_with_query.len;
                             const specifier = specifier_with_query[0..query];
                             const normalized_specifier = if (std.mem.startsWith(u8, specifier, "./")) specifier[2..] else specifier;
-                            const asset_path = try std.fs.path.join(allocator, &.{ "packages/runtime/test/bun-corpus", dirname, normalized_specifier });
+                            const asset_path = try std.fs.path.join(allocator, &.{ "packages/runtime/test/test", dirname, normalized_specifier });
                             defer allocator.free(asset_path);
                             try out.appendSlice(allocator, line[0 .. line.len - trimmed.len]);
                             try out.appendSlice(allocator, "const ");
@@ -95591,7 +95591,7 @@ fn rewriteAbortSignalLeakCorpus(allocator: std.mem.Allocator, source: []const u8
     defer threaded.deinit();
     const fixture_source = try Io.Dir.cwd().readFileAlloc(
         threaded.io(),
-        "packages/runtime/test/bun-corpus/js/web/fetch/abortsignal-leak-fixture.ts",
+        "packages/runtime/test/test/js/web/fetch/abortsignal-leak-fixture.ts",
         allocator,
         std.Io.Limit.limited(1024 * 1024),
     );
@@ -97089,11 +97089,11 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         },
         .{
             .needle = "new URL(\"./fixtures/cert.pem\", import.meta.url)",
-            .replacement = "\"packages/runtime/test/bun-corpus/js/bun/http/fixtures/cert.pem\"",
+            .replacement = "\"packages/runtime/test/test/js/bun/http/fixtures/cert.pem\"",
         },
         .{
             .needle = "new URL(\"./fixtures/cert.key\", import.meta.url)",
-            .replacement = "\"packages/runtime/test/bun-corpus/js/bun/http/fixtures/cert.key\"",
+            .replacement = "\"packages/runtime/test/test/js/bun/http/fixtures/cert.key\"",
         },
         .{
             .needle = "import * as http2 from \"http2\";",
@@ -97453,23 +97453,23 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         },
         .{
             .needle = "import source from \"./native_plugin.cc\" with { type: \"file\" };",
-            .replacement = "const source = \"packages/runtime/test/bun-corpus/bundler/native_plugin.cc\";",
+            .replacement = "const source = \"packages/runtime/test/test/bundler/native_plugin.cc\";",
         },
         .{
             .needle = "import notAPlugin from \"./not_native_plugin.cc\" with { type: \"file\" };",
-            .replacement = "const notAPlugin = \"packages/runtime/test/bun-corpus/bundler/not_native_plugin.cc\";",
+            .replacement = "const notAPlugin = \"packages/runtime/test/test/bundler/not_native_plugin.cc\";",
         },
         .{
             .needle = "import source from \"./napi-app/ffi_addon_1.c\" with { type: \"file\" };",
-            .replacement = "const source = \"packages/runtime/test/bun-corpus/napi/napi-app/ffi_addon_1.c\";",
+            .replacement = "const source = \"packages/runtime/test/test/napi/napi-app/ffi_addon_1.c\";",
         },
         .{
             .needle = "import t3 from \"./a.txt\" with { type: \"file\" };",
-            .replacement = "const t3 = \"packages/runtime/test/bun-corpus/regression/issue/16476/a.txt\";",
+            .replacement = "const t3 = \"packages/runtime/test/test/regression/issue/16476/a.txt\";",
         },
         .{
             .needle = "import t1 from \"./a.txt?1\" with { type: \"file\" };",
-            .replacement = "const t1 = \"packages/runtime/test/bun-corpus/regression/issue/16476/a.txt\";",
+            .replacement = "const t1 = \"packages/runtime/test/test/regression/issue/16476/a.txt\";",
         },
         .{
             .needle = "import t2 from \"./a.txt?2\";",
@@ -97477,11 +97477,11 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         },
         .{
             .needle = "import w1 from \"./a.wasm?1\";",
-            .replacement = "const w1 = \"packages/runtime/test/bun-corpus/regression/issue/16476/a.wasm\";",
+            .replacement = "const w1 = \"packages/runtime/test/test/regression/issue/16476/a.wasm\";",
         },
         .{
             .needle = "import w2 from \"./a.wasm?2\";",
-            .replacement = "const w2 = \"packages/runtime/test/bun-corpus/regression/issue/16476/a.wasm\";",
+            .replacement = "const w2 = \"packages/runtime/test/test/regression/issue/16476/a.wasm\";",
         },
         .{
             .needle = "import { BundlerTestInput, itBundled as itBundledBase } from \"./expectBundled\";",
@@ -97505,11 +97505,11 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         },
         .{
             .needle = "import source from \"./native_plugin.cc\" with { type: \"file\" };",
-            .replacement = "const source = \"packages/runtime/test/bun-corpus/bundler/native_plugin.cc\";",
+            .replacement = "const source = \"packages/runtime/test/test/bundler/native_plugin.cc\";",
         },
         .{
             .needle = "import notAPlugin from \"./not_native_plugin.cc\" with { type: \"file\" };",
-            .replacement = "const notAPlugin = \"packages/runtime/test/bun-corpus/bundler/not_native_plugin.cc\";",
+            .replacement = "const notAPlugin = \"packages/runtime/test/test/bundler/not_native_plugin.cc\";",
         },
     };
 
@@ -99268,7 +99268,7 @@ fn rewriteNodeNapiDoCorpus(
     const relative_dir = std.fs.path.dirname(relative_path) orelse return allocator.dupe(u8, source);
     const corpus_dir = try std.fmt.allocPrint(
         allocator,
-        "packages/runtime/test/bun-corpus/{s}",
+        "packages/runtime/test/test/{s}",
         .{relative_dir},
     );
     defer allocator.free(corpus_dir);
@@ -99369,7 +99369,7 @@ fn rewriteSqlMysqlCleanReentryCorpus(allocator: std.mem.Allocator, source: []con
     defer threaded.deinit();
     const wire_frames_path = try Io.Dir.cwd().realPathFileAlloc(
         threaded.io(),
-        "packages/runtime/test/bun-corpus/js/sql/wire-frames.ts",
+        "packages/runtime/test/test/js/sql/wire-frames.ts",
         allocator,
     );
     defer allocator.free(wire_frames_path);
@@ -100305,7 +100305,7 @@ pub fn prepareCorpusModule(allocator: std.mem.Allocator, source: []const u8, rel
     if (std.mem.eql(u8, relative_path, "js/third_party/wpt-h2/run.test.ts")) {
         return .{
             .path = relative_path,
-            .source = try allocator.dupe(u8, "globalThis.__home_import(\"home:wpt-h2-loader\").register(\"packages/runtime/test/bun-corpus/js/third_party/wpt-h2\");"),
+            .source = try allocator.dupe(u8, "globalThis.__home_import(\"home:wpt-h2-loader\").register(\"packages/runtime/test/test/js/third_party/wpt-h2\");"),
             .allow_no_tests = false,
         };
     }
@@ -101241,7 +101241,7 @@ fn recordFailure(
 }
 
 test "native stream iterator corpus predicate covers the exact vendored matrix" {
-    const parallel_root = "packages/runtime/test/bun-corpus/js/node/test/parallel";
+    const parallel_root = "packages/runtime/test/test/js/node/test/parallel";
     const files = try corpus.collectTestFiles(std.testing.io, std.testing.allocator, parallel_root);
     defer corpus.freeTestFiles(std.testing.allocator, files);
 
@@ -101305,7 +101305,7 @@ test "native stream iterator flags are owned and ordered before the fixture" {
 }
 
 test "native fs disposable corpus predicate covers the exact vendored matrix" {
-    const parallel_root = "packages/runtime/test/bun-corpus/js/node/test/parallel";
+    const parallel_root = "packages/runtime/test/test/js/node/test/parallel";
     const files = try corpus.collectTestFiles(std.testing.io, std.testing.allocator, parallel_root);
     defer corpus.freeTestFiles(std.testing.allocator, files);
 
@@ -101327,7 +101327,7 @@ test "native fs disposable corpus predicate covers the exact vendored matrix" {
 }
 
 test "native readable read corpus predicate covers the exact vendored matrix" {
-    const parallel_root = "packages/runtime/test/bun-corpus/js/node/test/parallel";
+    const parallel_root = "packages/runtime/test/test/js/node/test/parallel";
     const files = try corpus.collectTestFiles(std.testing.io, std.testing.allocator, parallel_root);
     defer corpus.freeTestFiles(std.testing.allocator, files);
 
@@ -101346,7 +101346,7 @@ test "native readable read corpus predicate covers the exact vendored matrix" {
 }
 
 test "native built-in alias corpus predicate covers the exact vendored matrix" {
-    const parallel_root = "packages/runtime/test/bun-corpus/js/node/test/parallel";
+    const parallel_root = "packages/runtime/test/test/js/node/test/parallel";
     const files = try corpus.collectTestFiles(std.testing.io, std.testing.allocator, parallel_root);
     defer corpus.freeTestFiles(std.testing.allocator, files);
 
@@ -101368,7 +101368,7 @@ test "native built-in alias corpus predicate covers the exact vendored matrix" {
 }
 
 test "native stream consumers corpus predicate covers the exact vendored fixture" {
-    const parallel_root = "packages/runtime/test/bun-corpus/js/node/test/parallel";
+    const parallel_root = "packages/runtime/test/test/js/node/test/parallel";
     const files = try corpus.collectTestFiles(std.testing.io, std.testing.allocator, parallel_root);
     defer corpus.freeTestFiles(std.testing.allocator, files);
 
@@ -101386,7 +101386,7 @@ test "native stream consumers corpus predicate covers the exact vendored fixture
 }
 
 test "native readable from corpus predicate covers the exact vendored fixture" {
-    const parallel_root = "packages/runtime/test/bun-corpus/js/node/test/parallel";
+    const parallel_root = "packages/runtime/test/test/js/node/test/parallel";
     const files = try corpus.collectTestFiles(std.testing.io, std.testing.allocator, parallel_root);
     defer corpus.freeTestFiles(std.testing.allocator, files);
 
@@ -101404,7 +101404,7 @@ test "native readable from corpus predicate covers the exact vendored fixture" {
 }
 
 test "native module registry corpus predicate covers the exact vendored matrix" {
-    const parallel_root = "packages/runtime/test/bun-corpus/js/node/test/parallel";
+    const parallel_root = "packages/runtime/test/test/js/node/test/parallel";
     const files = try corpus.collectTestFiles(std.testing.io, std.testing.allocator, parallel_root);
     defer corpus.freeTestFiles(std.testing.allocator, files);
 
@@ -101423,7 +101423,7 @@ test "native module registry corpus predicate covers the exact vendored matrix" 
 }
 
 test "native buffer corpus predicate covers primitives and object URL resolution" {
-    const parallel_root = "packages/runtime/test/bun-corpus/js/node/test/parallel";
+    const parallel_root = "packages/runtime/test/test/js/node/test/parallel";
     const files = try corpus.collectTestFiles(std.testing.io, std.testing.allocator, parallel_root);
     defer corpus.freeTestFiles(std.testing.allocator, files);
 
@@ -101447,7 +101447,7 @@ test "native buffer corpus predicate covers primitives and object URL resolution
 
 test "native async hooks corpus routing covers typed thenables" {
     const relative = "js/node/async_hooks/async-local-storage-thenable.test.ts";
-    try Io.Dir.cwd().access(std.testing.io, "packages/runtime/test/bun-corpus/" ++ relative, .{});
+    try Io.Dir.cwd().access(std.testing.io, "packages/runtime/test/test/" ++ relative, .{});
     try std.testing.expect(isNativeAsyncHooksCorpusFile(relative));
     try std.testing.expect(isNativeHomeCorpusFile(relative));
     try std.testing.expectEqual(.test_runner, nativeCorpusMode(relative));
@@ -101461,7 +101461,7 @@ test "native async hooks corpus routing covers typed thenables" {
 
 test "native glob corpus routing covers the exact match matrix" {
     const relative = "js/bun/glob/match.test.ts";
-    try Io.Dir.cwd().access(std.testing.io, "packages/runtime/test/bun-corpus/" ++ relative, .{});
+    try Io.Dir.cwd().access(std.testing.io, "packages/runtime/test/test/" ++ relative, .{});
     try std.testing.expect(isNativeGlobCorpusFile(relative));
     try std.testing.expect(isNativeHomeCorpusFile(relative));
     try std.testing.expectEqual(.test_runner, nativeCorpusMode(relative));
@@ -101475,7 +101475,7 @@ test "native glob corpus routing covers the exact match matrix" {
 }
 
 test "native querystring corpus predicate covers the exact vendored matrix" {
-    const parallel_root = "packages/runtime/test/bun-corpus/js/node/test/parallel";
+    const parallel_root = "packages/runtime/test/test/js/node/test/parallel";
     const files = try corpus.collectTestFiles(std.testing.io, std.testing.allocator, parallel_root);
     defer corpus.freeTestFiles(std.testing.allocator, files);
 
@@ -101497,7 +101497,7 @@ test "native querystring corpus predicate covers the exact vendored matrix" {
 }
 
 test "native node core corpus predicates cover the audited inventory" {
-    const files = try corpus.collectTestFiles(std.testing.io, std.testing.allocator, "packages/runtime/test/bun-corpus/js/node/test/parallel");
+    const files = try corpus.collectTestFiles(std.testing.io, std.testing.allocator, "packages/runtime/test/test/js/node/test/parallel");
     defer corpus.freeTestFiles(std.testing.allocator, files);
     var core_count: usize = 0;
     var node_test_count: usize = 0;
@@ -101618,7 +101618,7 @@ test "native HTTP promise corpus routing covers aborted request cleanup" {
 
 test "native HTTP server corpus routing covers the imported hspec matrix" {
     const relative = "js/bun/http/hspec.test.ts";
-    try Io.Dir.cwd().access(std.testing.io, "packages/runtime/test/bun-corpus/" ++ relative, .{});
+    try Io.Dir.cwd().access(std.testing.io, "packages/runtime/test/test/" ++ relative, .{});
     try std.testing.expect(isNativeHttpServerCorpusFile(relative));
     try std.testing.expect(isNativeHomeCorpusFile(relative));
 
@@ -101656,7 +101656,7 @@ test "native Bun test corpus routing covers require, fake timers, mocks, snapsho
         "js/bun/test/snapshot-tests/snapshots/snapshot.test.ts",
         "js/bun/test/test-failing.test.ts",
     }) |relative| {
-        try Io.Dir.cwd().access(std.testing.io, "packages/runtime/test/bun-corpus/" ++ relative, .{});
+        try Io.Dir.cwd().access(std.testing.io, "packages/runtime/test/test/" ++ relative, .{});
         try std.testing.expect(isNativeBunTestCorpusFile(relative));
         try std.testing.expect(isNativeHomeCorpusFile(relative));
     }
@@ -101702,13 +101702,13 @@ test "native S3 corpus routing covers validated deterministic integration files"
 test "native worker corpus routing covers exact dedicated test directories" {
     inline for (native_web_worker_corpus_files) |file| {
         const relative = "js/web/workers/" ++ file;
-        try Io.Dir.cwd().access(std.testing.io, "packages/runtime/test/bun-corpus/" ++ relative, .{});
+        try Io.Dir.cwd().access(std.testing.io, "packages/runtime/test/test/" ++ relative, .{});
         try std.testing.expect(isNativeWorkerCorpusFile(relative));
         try std.testing.expect(isNativeHomeCorpusFile(relative));
     }
     inline for (native_node_worker_threads_corpus_files) |file| {
         const relative = "js/node/worker_threads/" ++ file;
-        try Io.Dir.cwd().access(std.testing.io, "packages/runtime/test/bun-corpus/" ++ relative, .{});
+        try Io.Dir.cwd().access(std.testing.io, "packages/runtime/test/test/" ++ relative, .{});
         try std.testing.expect(isNativeWorkerCorpusFile(relative));
         try std.testing.expect(isNativeHomeCorpusFile(relative));
     }
@@ -101721,7 +101721,7 @@ test "native worker corpus routing covers exact dedicated test directories" {
 }
 
 test "native worker script corpus routing covers exact Node parallel matrix" {
-    const parallel_root = "packages/runtime/test/bun-corpus/js/node/test/parallel";
+    const parallel_root = "packages/runtime/test/test/js/node/test/parallel";
     inline for (native_worker_script_corpus_files) |file| {
         const relative = "js/node/test/parallel/" ++ file;
         try Io.Dir.cwd().access(std.testing.io, parallel_root ++ "/" ++ file, .{});
@@ -101750,7 +101750,7 @@ test "native corpus disabled body remains visible and contains no active test" {
     const relative = "js/node/test/parallel/test-util-emit-experimental-warning.js";
     try std.testing.expect(nativeCorpusDisabledReason(relative) != null);
     try std.testing.expect(nativeCorpusDisabledReason("js/node/test/parallel/test-util-types.js") == null);
-    const source = try Io.Dir.cwd().readFileAlloc(std.testing.io, "packages/runtime/test/bun-corpus/" ++ relative, std.testing.allocator, .limited(4096));
+    const source = try Io.Dir.cwd().readFileAlloc(std.testing.io, "packages/runtime/test/test/" ++ relative, std.testing.allocator, .limited(4096));
     defer std.testing.allocator.free(source);
     var lines = std.mem.splitScalar(u8, source, '\n');
     while (lines.next()) |raw_line| {
@@ -101880,7 +101880,7 @@ test "bootstrap runner mirrors Listener.getsockname without host binds" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "virtualBootstrapListener") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "getsockname(out)") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 3 or summary.todo != 0) {
         std.debug.print(
@@ -102179,7 +102179,7 @@ test "bootstrap runner mirrors bundler core itBundled subset" {
 
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
-    var summary = try runSubset(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", .bundler_core_itbundled);
+    var summary = try runSubset(threaded.io(), std.testing.allocator, "packages/runtime/test/test", .bundler_core_itbundled);
     defer summary.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(@as(usize, 6), summary.files);
@@ -102261,7 +102261,7 @@ test "mirrored N-API delete-reference supports in-GC finalizers" {
     var summary = try runFile(
         io,
         std.testing.allocator,
-        "packages/runtime/test/bun-corpus",
+        "packages/runtime/test/test",
         "napi/napi-finalizer-delete-ref.test.ts",
     );
     defer summary.deinit(std.testing.allocator);
@@ -102281,7 +102281,7 @@ test "bootstrap runner covers N-API FFI file imports and isolated environments" 
     const io = threaded.io();
     const source = try Io.Dir.cwd().readFileAlloc(
         io,
-        "packages/runtime/test/bun-corpus/napi/napi-value-ffi.test.ts",
+        "packages/runtime/test/test/napi/napi-value-ffi.test.ts",
         std.testing.allocator,
         std.Io.Limit.limited(128 * 1024),
     );
@@ -102293,13 +102293,13 @@ test "bootstrap runner covers N-API FFI file imports and isolated environments" 
     try std.testing.expect(std.mem.indexOf(
         u8,
         prepared.source,
-        "const source = \"packages/runtime/test/bun-corpus/napi/napi-app/ffi_addon_1.c\";",
+        "const source = \"packages/runtime/test/test/napi/napi-app/ffi_addon_1.c\";",
     ) != null);
 
     var summary = try runFile(
         io,
         std.testing.allocator,
-        "packages/runtime/test/bun-corpus",
+        "packages/runtime/test/test",
         "napi/napi-value-ffi.test.ts",
     );
     defer summary.deinit(std.testing.allocator);
@@ -102320,7 +102320,7 @@ test "bootstrap runner mirrors the N-API compatibility matrix" {
     var summary = try runFile(
         threaded.io(),
         std.testing.allocator,
-        "packages/runtime/test/bun-corpus",
+        "packages/runtime/test/test",
         "napi/napi.test.ts",
     );
     defer summary.deinit(std.testing.allocator);
@@ -102344,7 +102344,7 @@ test "bootstrap runner executes Node N-API function argument conformance" {
     var summary = try runFile(
         threaded.io(),
         std.testing.allocator,
-        "packages/runtime/test/bun-corpus",
+        "packages/runtime/test/test",
         "napi/node-napi-tests/test/js-native-api/2_function_arguments/do.test.ts",
     );
     defer summary.deinit(std.testing.allocator);
@@ -102366,7 +102366,7 @@ test "bootstrap runner mirrors bundler drop corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_drop.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/bundler_drop.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_drop.test.ts");
@@ -102389,7 +102389,7 @@ test "bootstrap runner mirrors bundler footer corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_footer.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/bundler_footer.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_footer.test.ts");
@@ -102412,7 +102412,7 @@ test "bootstrap runner mirrors bundler banner corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_banner.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/bundler_banner.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_banner.test.ts");
@@ -102435,7 +102435,7 @@ test "bootstrap runner mirrors bundler comments corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_comments.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/bundler_comments.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_comments.test.ts");
@@ -102458,7 +102458,7 @@ test "bootstrap runner mirrors bundler string corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_string.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/bundler_string.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_string.test.ts");
@@ -102484,7 +102484,7 @@ test "bootstrap runner mirrors bundler env corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_env.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/bundler_env.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_env.test.ts");
@@ -102510,7 +102510,7 @@ test "bootstrap runner mirrors bundler cjs corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_cjs.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/bundler_cjs.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_cjs.test.ts");
@@ -102536,7 +102536,7 @@ test "bootstrap runner mirrors bundler cjs2esm corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_cjs2esm.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/bundler_cjs2esm.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_cjs2esm.test.ts");
@@ -102562,7 +102562,7 @@ test "bootstrap runner mirrors bundler minify Symbol.for corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_minify_symbol_for.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/bundler_minify_symbol_for.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_minify_symbol_for.test.ts");
@@ -102588,7 +102588,7 @@ test "bootstrap runner mirrors bundler minify corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_minify.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/bundler_minify.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_minify.test.ts");
@@ -102614,7 +102614,7 @@ test "bootstrap runner mirrors bundler naming corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_naming.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/bundler_naming.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_naming.test.ts");
@@ -102641,7 +102641,7 @@ test "bootstrap runner mirrors bundler feature flag corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_feature_flag.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/bundler_feature_flag.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_feature_flag.test.ts");
@@ -102667,7 +102667,7 @@ test "bootstrap runner mirrors bundler bun corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_bun.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/bundler_bun.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_bun.test.ts");
@@ -102693,7 +102693,7 @@ test "bootstrap runner mirrors bundler HTML server corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_html_server.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/bundler_html_server.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_html_server.test.ts");
@@ -102719,7 +102719,7 @@ test "bootstrap runner mirrors bundler promiseAll deadcode corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_promiseall_deadcode.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/bundler_promiseall_deadcode.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_promiseall_deadcode.test.ts");
@@ -102745,7 +102745,7 @@ test "bootstrap runner mirrors bundler files option corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_files.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/bundler_files.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_files.test.ts");
@@ -102771,7 +102771,7 @@ test "bootstrap runner mirrors bundler loader corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_loader.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/bundler_loader.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_loader.test.ts");
@@ -102797,7 +102797,7 @@ test "bootstrap runner mirrors bundler browser corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_browser.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/bundler_browser.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_browser.test.ts");
@@ -102824,7 +102824,7 @@ test "bootstrap runner mirrors bundler npm corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_npm.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/bundler_npm.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_npm.test.ts");
@@ -102850,7 +102850,7 @@ test "bootstrap runner mirrors bundler allow unresolved corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_allow_unresolved.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/bundler_allow_unresolved.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_allow_unresolved.test.ts");
@@ -102876,7 +102876,7 @@ test "bootstrap runner mirrors bundler barrel corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_barrel.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/bundler_barrel.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_barrel.test.ts");
@@ -102902,7 +102902,7 @@ test "bootstrap runner mirrors bundler compile autoload corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_compile_autoload.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/bundler_compile_autoload.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_compile_autoload.test.ts");
@@ -102928,7 +102928,7 @@ test "bootstrap runner mirrors bundler compile core corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_compile.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/bundler_compile.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     const marker = "  itBundled(\"compile/VariousBunAPIs\"";
@@ -102959,7 +102959,7 @@ test "bootstrap runner mirrors bundler compile runtime corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_compile.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/bundler_compile.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     const describe_marker = "describe(\"bundler\", () => {\n";
@@ -102995,7 +102995,7 @@ test "bootstrap runner mirrors bundler compile sourcemap env corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_compile.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/bundler_compile.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     const describe_marker = "describe(\"bundler\", () => {\n";
@@ -103031,7 +103031,7 @@ test "bootstrap runner mirrors bundler compile command corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_compile.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/bundler_compile.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     const describe_marker = "describe(\"bundler\", () => {\n";
@@ -103076,7 +103076,7 @@ test "bootstrap runner mirrors Bun.build compile wasm corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bun-build-compile-wasm.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/bun-build-compile-wasm.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bun-build-compile-wasm.test.ts");
@@ -103102,7 +103102,7 @@ test "bootstrap runner mirrors compile internal sourcemap corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/compile-sourcemap-internal.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/compile-sourcemap-internal.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/compile-sourcemap-internal.test.ts");
@@ -103128,7 +103128,7 @@ test "bootstrap runner mirrors Bun.build compile corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bun-build-compile.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/bun-build-compile.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bun-build-compile.test.ts");
@@ -103154,7 +103154,7 @@ test "bootstrap runner mirrors Bun.build compile sourcemap corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bun-build-compile-sourcemap.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/bun-build-compile-sourcemap.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bun-build-compile-sourcemap.test.ts");
@@ -103180,7 +103180,7 @@ test "bootstrap runner mirrors compile Windows metadata validation corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/compile-windows-metadata.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/compile-windows-metadata.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     const outer_marker = "describe.skipIf(!isWindows).concurrent(\"Windows compile metadata\", () => {\n";
@@ -103222,7 +103222,7 @@ test "bootstrap runner mirrors HTML import manifest etag corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/html-import-manifest.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/html-import-manifest.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     const describe_marker = "describe.concurrent(\"bundler\", () => {\n";
@@ -103259,7 +103259,7 @@ test "bootstrap runner mirrors root metafile structure corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/metafile.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/metafile.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     const end_marker = "  test(\"metafile includes format for JS inputs\"";
@@ -103290,7 +103290,7 @@ test "bootstrap runner mirrors root metafile graph corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/metafile.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/metafile.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     const first_case_marker = "  test(\"metafile option returns metafile object\"";
@@ -103327,7 +103327,7 @@ test "bootstrap runner mirrors root metafile option corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/metafile.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/metafile.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     const header_end_marker = "describe(\"bundler metafile\"";
@@ -103364,7 +103364,7 @@ test "bootstrap runner mirrors root metafile markdown CLI corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/metafile.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/metafile.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     const header_end_marker = "describe(\"bundler metafile\"";
@@ -103398,7 +103398,7 @@ test "bootstrap runner mirrors Bun markdown heading IDs corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/md/md-heading-ids.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/md/md-heading-ids.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/md/md-heading-ids.test.ts");
@@ -103432,7 +103432,7 @@ test "bootstrap runner mirrors Bun markdown render callback corpus" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_array_buffer_transfer_locks") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "render: __home_markdown_render") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/md/md-render-callback.test.ts");
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/bun/md/md-render-callback.test.ts");
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 37 or summary.todo != 0) {
@@ -103459,7 +103459,7 @@ test "bootstrap runner mirrors Bun markdown React corpus" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_react_render_to_string") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "react.transitional.element") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/md/md-react.test.ts");
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/bun/md/md-react.test.ts");
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 68 or summary.todo != 0) {
@@ -103488,7 +103488,7 @@ test "bootstrap runner mirrors Bun markdown edge-case corpus" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "hasLeadingReferenceDefinition") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Uint8Array.prototype.copyWithin.call") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/md/md-edge-cases.test.ts");
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/bun/md/md-edge-cases.test.ts");
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 79 or summary.todo != 0) {
@@ -103516,7 +103516,7 @@ test "bootstrap runner mirrors Bun markdown GFM compatibility corpus" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_markdown_fenced_html") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "email_autolink") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/md/gfm-compat.test.ts");
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/bun/md/gfm-compat.test.ts");
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 62 or summary.todo != 0) {
@@ -103544,7 +103544,7 @@ test "bootstrap runner mirrors Bun markdown specification corpus" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_markdown_filter_raw_tags") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_markdown_table_row") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/md/md-spec.test.ts");
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/bun/md/md-spec.test.ts");
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 792 or summary.todo != 0) {
@@ -103566,7 +103566,7 @@ test "bootstrap runner mirrors standalone browser compile corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/standalone.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/standalone.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/standalone.test.ts");
@@ -103592,7 +103592,7 @@ test "bootstrap runner mirrors Bun.build API core corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bun-build-api.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/bun-build-api.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     const describe_marker = "describe(\"Bun.build\", () => {\n";
@@ -103626,7 +103626,7 @@ test "bootstrap runner mirrors Bun.build API error corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bun-build-api.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/bun-build-api.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     const describe_marker = "describe(\"Bun.build\", () => {\n";
@@ -103706,7 +103706,7 @@ test "bootstrap Bun.build target externals preserve cwd-qualified entrypoints" {
     var summary = try runFile(
         threaded.io(),
         std.testing.allocator,
-        "packages/runtime/test/bun-corpus",
+        "packages/runtime/test/test",
         "regression/issue/03844/03844.test.ts",
     );
     defer summary.deinit(std.testing.allocator);
@@ -103729,7 +103729,7 @@ test "bootstrap runner mirrors Bun.build API artifact corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bun-build-api.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/bun-build-api.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     const describe_marker = "describe(\"Bun.build\", () => {\n";
@@ -103766,7 +103766,7 @@ test "bootstrap runner mirrors Bun.build API artifact response corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bun-build-api.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/bun-build-api.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     const describe_marker = "describe(\"Bun.build\", () => {\n";
@@ -103803,7 +103803,7 @@ test "bootstrap runner mirrors Bun.build API loader and plugin corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bun-build-api.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/bun-build-api.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     const describe_marker = "describe(\"Bun.build\", () => {\n";
@@ -103840,7 +103840,7 @@ test "bootstrap runner mirrors Bun.build API hash and html plugin corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bun-build-api.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/bun-build-api.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     const describe_marker = "describe(\"Bun.build\", () => {\n";
@@ -103877,7 +103877,7 @@ test "bootstrap runner mirrors standalone Bun.build API sourcemap corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bun-build-api.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/bun-build-api.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     const describe_marker = "describe(\"Bun.build\", () => {\n";
@@ -103914,7 +103914,7 @@ test "bootstrap runner mirrors Bun.build API tsconfig onEnd corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bun-build-api.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/bun-build-api.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     const describe_marker = "describe(\"Bun.build\", () => {\n";
@@ -103951,7 +103951,7 @@ test "bootstrap runner mirrors full Bun.build API corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bun-build-api.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/bun-build-api.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bun-build-api.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -103976,7 +103976,7 @@ test "bootstrap runner mirrors native plugin basic corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/native-plugin.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/native-plugin.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     const start_marker = "  it(\"works in a basic case\"";
@@ -104010,7 +104010,7 @@ test "bootstrap runner mirrors native plugin concurrency corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/native-plugin.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/native-plugin.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     const first_case_marker = "  it(\"works in a basic case\"";
@@ -104047,7 +104047,7 @@ test "bootstrap runner mirrors native plugin error corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/native-plugin.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/native-plugin.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     const first_case_marker = "  it(\"works in a basic case\"";
@@ -104084,7 +104084,7 @@ test "bootstrap runner mirrors native plugin tail corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/native-plugin.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/native-plugin.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     const first_case_marker = "  it(\"works in a basic case\"";
@@ -104118,7 +104118,7 @@ test "bootstrap runner mirrors bundler compile argv corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/compile-argv.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/compile-argv.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/compile-argv.test.ts");
@@ -104144,7 +104144,7 @@ test "bootstrap runner mirrors bundler compile process execArgv corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/compile-process-execargv.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/compile-process-execargv.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/compile-process-execargv.test.ts");
@@ -104170,7 +104170,7 @@ test "bootstrap runner mirrors bundler decorator metadata corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_decorator_metadata.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/bundler_decorator_metadata.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_decorator_metadata.test.ts");
@@ -104196,7 +104196,7 @@ test "bootstrap runner mirrors bundler compile splitting corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_compile_splitting.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/bundler_compile_splitting.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_compile_splitting.test.ts");
@@ -104222,7 +104222,7 @@ test "bootstrap runner mirrors bundler regressions corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_regressions.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/bundler_regressions.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_regressions.test.ts");
@@ -104248,7 +104248,7 @@ test "bootstrap runner mirrors bundler plugin chain corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_plugin_chain.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/bundler_plugin_chain.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_plugin_chain.test.ts");
@@ -104274,7 +104274,7 @@ test "bootstrap runner mirrors bundler plugin core corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_plugin.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/bundler_plugin.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     const marker = "  // itBundled(\"plugin/ManyPlugins\"";
@@ -104306,7 +104306,7 @@ test "bootstrap runner mirrors bundler plugin onEnd corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_plugin.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/bundler_plugin.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     const describe_marker = "describe(\"bundler\", () => {\n";
@@ -104343,7 +104343,7 @@ test "bootstrap runner mirrors bundler plugin onEnd failure corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_plugin.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/bundler_plugin.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     const describe_marker = "describe(\"bundler\", () => {\n";
@@ -104382,7 +104382,7 @@ test "bootstrap runner mirrors bundler plugin onEnd callback error corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_plugin.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/bundler_plugin.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     const describe_marker = "describe(\"bundler\", () => {\n";
@@ -104419,7 +104419,7 @@ test "bootstrap runner mirrors bundler defer corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_defer.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/bundler_defer.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_defer.test.ts");
@@ -104445,7 +104445,7 @@ test "bootstrap runner mirrors bundler edgecase corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_edgecase.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/bundler_edgecase.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_edgecase.test.ts");
@@ -104472,7 +104472,7 @@ test "bootstrap runner mirrors bundler splitting corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_splitting.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/bundler_splitting.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_splitting.test.ts");
@@ -104498,7 +104498,7 @@ test "bootstrap runner mirrors bundler html corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_html.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/bundler_html.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_html.test.ts");
@@ -104524,7 +104524,7 @@ test "bootstrap runner mirrors bundler jsx corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/bundler_jsx.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/bundler_jsx.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/bundler_jsx.test.ts");
@@ -104551,7 +104551,7 @@ test "bootstrap runner mirrors bundler CSS modules corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/css/css-modules.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/css/css-modules.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/css/css-modules.test.ts");
@@ -104578,7 +104578,7 @@ test "bootstrap runner mirrors bundler CSS is selector corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/css/is-selector-21169.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/css/is-selector-21169.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/css/is-selector-21169.test.ts");
@@ -104605,7 +104605,7 @@ test "bootstrap runner mirrors bundler CSS mask geometry corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/css/mask-geometry-box.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/css/mask-geometry-box.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/css/mask-geometry-box.test.ts");
@@ -104632,7 +104632,7 @@ test "bootstrap runner mirrors bundler CSS view transition corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/css/view-transition-23600.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/css/view-transition-23600.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/css/view-transition-23600.test.ts");
@@ -104659,7 +104659,7 @@ test "bootstrap runner mirrors CSS SmallList grow corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/css/small-list-grow.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/css/small-list-grow.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/css/small-list-grow.test.ts");
@@ -104693,7 +104693,7 @@ test "bootstrap runner mirrors CSS WPT background computed corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/css/wpt/background-computed.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/css/wpt/background-computed.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/css/wpt/background-computed.test.ts");
@@ -104720,7 +104720,7 @@ test "bootstrap runner mirrors CSS WPT color rgb computed corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/css/wpt/color-computed-rgb.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/css/wpt/color-computed-rgb.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/css/wpt/color-computed-rgb.test.ts");
@@ -104747,7 +104747,7 @@ test "bootstrap runner mirrors CSS WPT color computed corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/css/wpt/color-computed.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/css/wpt/color-computed.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/css/wpt/color-computed.test.ts");
@@ -104774,7 +104774,7 @@ test "bootstrap runner mirrors CSS WPT relative out-of-gamut corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/css/wpt/relative_color_out_of_gamut.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/css/wpt/relative_color_out_of_gamut.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/css/wpt/relative_color_out_of_gamut.test.ts");
@@ -104801,7 +104801,7 @@ test "bootstrap runner mirrors esbuild metafile corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/esbuild/metafile.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/esbuild/metafile.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/esbuild/metafile.test.ts");
@@ -104827,7 +104827,7 @@ test "bootstrap runner mirrors esbuild importstar ts corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/esbuild/importstar_ts.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/esbuild/importstar_ts.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/esbuild/importstar_ts.test.ts");
@@ -104853,7 +104853,7 @@ test "bootstrap runner mirrors esbuild importstar corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/esbuild/importstar.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/esbuild/importstar.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/esbuild/importstar.test.ts");
@@ -104880,7 +104880,7 @@ test "bootstrap runner mirrors esbuild splitting corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/esbuild/splitting.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/esbuild/splitting.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/esbuild/splitting.test.ts");
@@ -104907,7 +104907,7 @@ test "bootstrap runner mirrors esbuild packagejson corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/esbuild/packagejson.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/esbuild/packagejson.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/esbuild/packagejson.test.ts");
@@ -104934,7 +104934,7 @@ test "bootstrap runner mirrors esbuild loader corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/esbuild/loader.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/esbuild/loader.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/esbuild/loader.test.ts");
@@ -104961,7 +104961,7 @@ test "bootstrap runner mirrors esbuild tsconfig corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/esbuild/tsconfig.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/esbuild/tsconfig.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/esbuild/tsconfig.test.ts");
@@ -104988,7 +104988,7 @@ test "bootstrap runner mirrors esbuild lower corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/esbuild/lower.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/esbuild/lower.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/esbuild/lower.test.ts");
@@ -105015,7 +105015,7 @@ test "bootstrap runner mirrors esbuild css corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/esbuild/css.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/esbuild/css.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/esbuild/css.test.ts");
@@ -105042,7 +105042,7 @@ test "bootstrap runner mirrors esbuild dce corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/esbuild/dce.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/esbuild/dce.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/esbuild/dce.test.ts");
@@ -105069,7 +105069,7 @@ test "bootstrap runner mirrors esbuild default corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/esbuild/default.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/esbuild/default.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/esbuild/default.test.ts");
@@ -105096,7 +105096,7 @@ test "bootstrap runner mirrors esbuild ts corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/esbuild/ts.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/esbuild/ts.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/esbuild/ts.test.ts");
@@ -105125,7 +105125,7 @@ test "bootstrap runner mirrors transpiler constant fold eqeq corpus" {
     var summary = try runFile(
         threaded.io(),
         std.testing.allocator,
-        "packages/runtime/test/bun-corpus",
+        "packages/runtime/test/test",
         "bundler/transpiler_constant_fold_eqeq.test.ts",
     );
     defer summary.deinit(std.testing.allocator);
@@ -105177,7 +105177,7 @@ test "bootstrap runner mirrors bundler transpiler bootstrap prefix" {
     var summary = Summary{};
     defer summary.deinit(std.testing.allocator);
     for (bundler_transpiler_bootstrap_files[0..13]) |relative| {
-        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/bun-corpus", relative, &summary);
+        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/test", relative, &summary);
     }
 
     try std.testing.expectEqual(@as(usize, 13), summary.files);
@@ -105195,7 +105195,7 @@ test "bootstrap runner mirrors transpiler stack overflow corpus" {
     var summary = try runFile(
         threaded.io(),
         std.testing.allocator,
-        "packages/runtime/test/bun-corpus",
+        "packages/runtime/test/test",
         "bundler/transpiler/transpiler-stack-overflow.test.ts",
     );
     defer summary.deinit(std.testing.allocator);
@@ -105220,7 +105220,7 @@ test "bootstrap runner mirrors late transpiler bootstrap tranche" {
     var summary = Summary{};
     defer summary.deinit(std.testing.allocator);
     for (bundler_transpiler_bootstrap_files[15..18]) |relative| {
-        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/bun-corpus", relative, &summary);
+        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/test", relative, &summary);
     }
 
     try std.testing.expectEqual(@as(usize, 3), summary.files);
@@ -105243,7 +105243,7 @@ test "bootstrap runner mirrors bundler CLI resolver bootstrap tail" {
     var summary = Summary{};
     defer summary.deinit(std.testing.allocator);
     for (bundler_transpiler_bootstrap_files[18..22]) |relative| {
-        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/bun-corpus", relative, &summary);
+        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/test", relative, &summary);
     }
 
     try std.testing.expectEqual(@as(usize, 4), summary.files);
@@ -105434,7 +105434,7 @@ test "bootstrap runner mirrors plugin namespace drive-letter corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/plugin/plugin-namespace-drive-letter.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/plugin/plugin-namespace-drive-letter.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/plugin/plugin-namespace-drive-letter.test.ts");
@@ -105532,7 +105532,7 @@ test "bootstrap runner mirrors bun publish corpus" {
     var summary = try runFile(
         threaded.io(),
         std.testing.allocator,
-        "packages/runtime/test/bun-corpus",
+        "packages/runtime/test/test",
         "cli/install/bun-publish.test.ts",
     );
     defer summary.deinit(std.testing.allocator);
@@ -105585,7 +105585,7 @@ test "bootstrap runner mirrors complete Bun stdin text pipeline reads" {
 
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
-    var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
@@ -105610,7 +105610,7 @@ test "bootstrap runner mirrors duplicate dependency install warnings" {
 
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
-    var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
@@ -105635,7 +105635,7 @@ test "bootstrap runner mirrors vendored hardlink package installs" {
 
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
-    var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
@@ -105660,7 +105660,7 @@ test "bootstrap runner normalizes child process default stdio streams" {
 
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
-    var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 4 or summary.todo != 0) {
@@ -105682,7 +105682,7 @@ test "bootstrap runner preserves import meta main through symlinked entrypoints"
     const path = "regression/issue/08757.test.ts";
     const source = try Io.Dir.cwd().readFileAlloc(
         std.testing.io,
-        "packages/runtime/test/bun-corpus/regression/issue/08757.test.ts",
+        "packages/runtime/test/test/regression/issue/08757.test.ts",
         std.testing.allocator,
         std.Io.Limit.limited(1024 * 1024),
     );
@@ -105697,7 +105697,7 @@ test "bootstrap runner preserves import meta main through symlinked entrypoints"
 
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
-    var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
@@ -105722,7 +105722,7 @@ test "bootstrap runner fails unexpectedly passing todo tests and suites" {
 
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
-    var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
@@ -105744,7 +105744,7 @@ test "bootstrap runner lowers expression dynamic imports exactly once" {
     const path = "regression/issue/09563/09563.test.ts";
     const source = try Io.Dir.cwd().readFileAlloc(
         std.testing.io,
-        "packages/runtime/test/bun-corpus/regression/issue/09563/09563.test.ts",
+        "packages/runtime/test/test/regression/issue/09563/09563.test.ts",
         std.testing.allocator,
         std.Io.Limit.limited(1024 * 1024),
     );
@@ -105758,7 +105758,7 @@ test "bootstrap runner lowers expression dynamic imports exactly once" {
 
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
-    var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
@@ -105781,7 +105781,7 @@ test "bootstrap runtime module directory cache invalidates with causal context" 
     defer threaded.deinit();
     const io = threaded.io();
 
-    var upstream = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "regression/issue/03216.test.ts");
+    var upstream = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "regression/issue/03216.test.ts");
     defer upstream.deinit(std.testing.allocator);
     if (upstream.failed != 0 or upstream.unsupported != 0 or upstream.passed != 1 or upstream.todo != 0) {
         std.debug.print(
@@ -105841,7 +105841,7 @@ test "bootstrap runner mirrors bun update latest color output" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "cli/install/bun-update.test.ts");
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "cli/install/bun-update.test.ts");
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 6 or summary.todo != 0) {
         std.debug.print(
@@ -105870,7 +105870,7 @@ test "bootstrap runner mirrors bun upgrade and workspace package manager corpora
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     for (cases) |case| {
-        var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/test", case.path);
         defer summary.deinit(std.testing.allocator);
         if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != 0) {
             std.debug.print(
@@ -105891,7 +105891,7 @@ test "bootstrap runner mirrors bunx package execution corpus" {
 
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
-    var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", "cli/install/bunx.test.ts");
+    var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/test", "cli/install/bunx.test.ts");
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 33 or summary.todo != 1) {
         std.debug.print(
@@ -105921,7 +105921,7 @@ test "bootstrap runner mirrors current package manager lockfile corpora" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     for (cases) |case| {
-        var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/test", case.path);
         defer summary.deinit(std.testing.allocator);
         if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != 0) {
             std.debug.print(
@@ -105958,7 +105958,7 @@ test "bootstrap runner mirrors current bun run compatibility corpora" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     for (cases) |case| {
-        var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/test", case.path);
         defer summary.deinit(std.testing.allocator);
         if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != case.todo) {
             std.debug.print(
@@ -106378,7 +106378,7 @@ test "bootstrap runner runs the unchanged Bun.color corpus through the native ca
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/css/color.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/css/color.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/css/color.test.ts");
@@ -106417,7 +106417,7 @@ test "bootstrap runner mirrors Bun.Glob match corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/glob/match.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/glob/match.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/glob/match.test.ts");
@@ -106453,7 +106453,7 @@ test "bootstrap runner mirrors Bun.Glob path length corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/glob/path-length.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/glob/path-length.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/glob/path-length.test.ts");
@@ -106482,7 +106482,7 @@ test "bootstrap runner mirrors Bun.Glob scan corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/glob/scan.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/glob/scan.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/glob/scan.test.ts");
@@ -106560,7 +106560,7 @@ test "bootstrap runner mirrors Bun.Glob subprocess leak corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
@@ -106594,7 +106594,7 @@ test "bootstrap runner mirrors Bun.Glob stress corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
@@ -106626,7 +106626,7 @@ test "bootstrap runner mirrors Bun shell native lexer corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/shell/lex.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/shell/lex.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/shell/lex.test.ts");
@@ -106655,7 +106655,7 @@ test "bootstrap runner mirrors Bun shell native parser corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/shell/parse.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/shell/parse.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/shell/parse.test.ts");
@@ -106684,7 +106684,7 @@ test "bootstrap runner mirrors Bun shell assignment pipeline corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/shell/assignments-in-pipeline.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/shell/assignments-in-pipeline.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/shell/assignments-in-pipeline.test.ts");
@@ -106713,7 +106713,7 @@ test "bootstrap runner mirrors Bun shell positional argv corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/shell/env.positionals.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/shell/env.positionals.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/shell/env.positionals.test.ts");
@@ -106723,7 +106723,7 @@ test "bootstrap runner mirrors Bun shell positional argv corpus" {
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const { bunEnv, bunExe } = globalThis.__home_import(\"harness\");") != null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const path = globalThis.__home_import(\"node:path\");") != null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const __home_positionals_repo_root = __home_build_dirname") != null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "\"packages/runtime/test/bun-corpus\"), __filename") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "\"packages/runtime/test/test\"), __filename") != null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "__home_import_meta_dir = __dirname;") != null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "__home_file_process.argv = [__home_file_process.execPath, __filename];") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_shell_positionals_result") != null);
@@ -106749,7 +106749,7 @@ test "bootstrap runner mirrors Bun shell brace expansion corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/shell/brace.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/shell/brace.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/shell/brace.test.ts");
@@ -106781,7 +106781,7 @@ test "bootstrap runner mirrors Bun shell output corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/shell/shelloutput.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/shell/shelloutput.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/shell/shelloutput.test.ts");
@@ -106810,7 +106810,7 @@ test "bootstrap runner mirrors Bun shell instance IO corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/shell/bunshell-instance.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/shell/bunshell-instance.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/shell/bunshell-instance.test.ts");
@@ -106840,7 +106840,7 @@ test "bootstrap runner mirrors Bun shell hang regression corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/shell/shell-hang.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/shell/shell-hang.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/shell/shell-hang.test.ts");
@@ -106869,7 +106869,7 @@ test "bootstrap runner mirrors Bun shell pipeline stack corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/shell/pipeline_stack.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/shell/pipeline_stack.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/shell/pipeline_stack.test.ts");
@@ -106898,7 +106898,7 @@ test "bootstrap runner mirrors Bun shell throw toggles corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/shell/throw.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/shell/throw.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/shell/throw.test.ts");
@@ -106927,7 +106927,7 @@ test "bootstrap runner mirrors Bun shell seq and condition expression corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/shell/shell-seq-condexpr.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/shell/shell-seq-condexpr.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/shell/shell-seq-condexpr.test.ts");
@@ -106955,7 +106955,7 @@ test "bootstrap runner mirrors Bun shell load corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/shell/shell-load.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/shell/shell-load.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/shell/shell-load.test.ts");
@@ -106984,7 +106984,7 @@ test "bootstrap runner mirrors Bun shell command substitution crash corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/shell/shell-cmdsub-crash.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/shell/shell-cmdsub-crash.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/shell/shell-cmdsub-crash.test.ts");
@@ -107017,7 +107017,7 @@ test "bootstrap runner mirrors Bun shell leak args corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/shell/shell-leak-args.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/shell/shell-leak-args.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/shell/shell-leak-args.test.ts");
@@ -107062,7 +107062,7 @@ test "bootstrap runner mirrors Bun shell primitive command corpora" {
 
     var total_passed: usize = 0;
     for (cases) |case| {
-        const full_path = try std.fmt.allocPrint(std.testing.allocator, "packages/runtime/test/bun-corpus/{s}", .{case.path});
+        const full_path = try std.fmt.allocPrint(std.testing.allocator, "packages/runtime/test/test/{s}", .{case.path});
         defer std.testing.allocator.free(full_path);
         const source = try Io.Dir.cwd().readFileAlloc(io, full_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
         defer std.testing.allocator.free(source);
@@ -107111,7 +107111,7 @@ test "bootstrap runner mirrors Bun shell echo and path command corpora" {
 
     var total_passed: usize = 0;
     for (cases) |case| {
-        const full_path = try std.fmt.allocPrint(std.testing.allocator, "packages/runtime/test/bun-corpus/{s}", .{case.path});
+        const full_path = try std.fmt.allocPrint(std.testing.allocator, "packages/runtime/test/test/{s}", .{case.path});
         defer std.testing.allocator.free(full_path);
         const source = try Io.Dir.cwd().readFileAlloc(io, full_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
         defer std.testing.allocator.free(source);
@@ -107193,7 +107193,7 @@ test "bootstrap runner mirrors Bun shell seq command corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/shell/commands/seq.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/shell/commands/seq.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/shell/commands/seq.test.ts");
@@ -107223,7 +107223,7 @@ test "bootstrap runner mirrors Bun shell which command corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/shell/commands/which.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/shell/commands/which.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/shell/commands/which.test.ts");
@@ -107253,7 +107253,7 @@ test "bootstrap runner mirrors Bun shell yes command corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/shell/commands/yes.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/shell/commands/yes.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/shell/commands/yes.test.ts");
@@ -107282,7 +107282,7 @@ test "bootstrap runner mirrors Bun shell mv command corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/shell/commands/mv.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/shell/commands/mv.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/shell/commands/mv.test.ts");
@@ -107312,7 +107312,7 @@ test "bootstrap runner mirrors Bun shell cp command corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/shell/commands/cp.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/shell/commands/cp.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/shell/commands/cp.test.ts");
@@ -107343,7 +107343,7 @@ test "bootstrap runner mirrors Bun shell ls command corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/shell/commands/ls.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/shell/commands/ls.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/shell/commands/ls.test.ts");
@@ -107373,7 +107373,7 @@ test "bootstrap runner mirrors Bun shell rm command corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/shell/commands/rm.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/shell/commands/rm.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/shell/commands/rm.test.ts");
@@ -107404,7 +107404,7 @@ test "bootstrap runner mirrors Bun shell file IO corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/shell/file-io.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/shell/file-io.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/shell/file-io.test.ts");
@@ -107433,7 +107433,7 @@ test "bootstrap runner mirrors Bun shell lazy corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/shell/lazy.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/shell/lazy.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/shell/lazy.test.ts");
@@ -107464,7 +107464,7 @@ test "bootstrap runner mirrors Bun shell default throw corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/shell/bunshell-default.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/shell/bunshell-default.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/shell/bunshell-default.test.ts");
@@ -107494,7 +107494,7 @@ test "bootstrap runner mirrors Bun shell file interpolation corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/shell/bunshell-file.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/shell/bunshell-file.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/shell/bunshell-file.test.ts");
@@ -107523,7 +107523,7 @@ test "bootstrap runner mirrors Bun exec shell corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/shell/exec.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/shell/exec.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/shell/exec.test.ts");
@@ -107552,7 +107552,7 @@ test "bootstrap runner mirrors Bun shell EPIPE corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/shell/epipe.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/shell/epipe.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/shell/epipe.test.ts");
@@ -107580,7 +107580,7 @@ test "bootstrap runner mirrors Bun shell yield corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/shell/yield.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/shell/yield.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/shell/yield.test.ts");
@@ -107608,7 +107608,7 @@ test "bootstrap runner mirrors Bun shell blocking pipe corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/shell/shell-blocking-pipe.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/shell/shell-blocking-pipe.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/shell/shell-blocking-pipe.test.ts");
@@ -107637,7 +107637,7 @@ test "bootstrap runner mirrors Bun shell sentinel hardening corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/shell/shell-sentinel-hardening.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/shell/shell-sentinel-hardening.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/shell/shell-sentinel-hardening.test.ts");
@@ -107665,7 +107665,7 @@ test "bootstrap runner mirrors transpiler tsconfig lifetime corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/transpiler/transpiler-tsconfig-uaf.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/transpiler/transpiler-tsconfig-uaf.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/transpiler/transpiler-tsconfig-uaf.test.ts");
@@ -107696,7 +107696,7 @@ test "bootstrap runner mirrors transpiler REPL mode corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/transpiler/repl-transform.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/transpiler/repl-transform.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/transpiler/repl-transform.test.ts");
@@ -107724,11 +107724,11 @@ test "bootstrap runner mirrors transpiler truncated UTF-8 guard-page corpus" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
     const path = "js/bun/transpiler/transpiler-truncated-utf8.test.ts";
-    const fixture_path = "packages/runtime/test/bun-corpus/js/bun/transpiler/transpiler-truncated-utf8-fixture.ts";
+    const fixture_path = "packages/runtime/test/test/js/bun/transpiler/transpiler-truncated-utf8-fixture.ts";
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
@@ -111397,7 +111397,7 @@ test "bootstrap runner mirrors http2 settings flow-control corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/25589.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/25589.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/25589.test.ts");
@@ -111497,7 +111497,7 @@ test "bootstrap runner mirrors h2c response frame corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/29073.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/29073.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/29073.test.ts");
@@ -111524,7 +111524,7 @@ test "bootstrap runner mirrors frontend files splitting corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/25628.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/25628.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/25628.test.ts");
@@ -111551,7 +111551,7 @@ test "bootstrap runner mirrors timer idleStart corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/25639.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/25639.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/25639.test.ts");
@@ -111577,7 +111577,7 @@ test "bootstrap runner mirrors named expression shadowing corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/25648.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/25648.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/25648.test.ts");
@@ -111603,7 +111603,7 @@ test "bootstrap runner mirrors react fast refresh build corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/25716.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/25716.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/25716.test.ts");
@@ -111630,7 +111630,7 @@ test "bootstrap runner mirrors S3 presign response headers corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/25750.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/25750.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/25750.test.ts");
@@ -111658,7 +111658,7 @@ test "bootstrap runner mirrors S3 list option encoding overflow corpus" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/s3/s3-list-encode-overflow.test.ts");
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/bun/s3/s3-list-encode-overflow.test.ts");
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 5 or summary.todo != 0) {
@@ -111684,7 +111684,7 @@ test "bootstrap runner mirrors S3 ListObjectsV2 corpus" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_s3_parse_list_xml") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "ERR_S3_MISSING_CREDENTIALS") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/s3/s3-list-objects.test.ts");
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/bun/s3/s3-list-objects.test.ts");
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 35 or summary.todo != 1) {
@@ -111707,7 +111707,7 @@ test "bootstrap runner mirrors S3 insecure HTTP endpoint corpus" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/s3/s3-insecure.test.ts");
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/bun/s3/s3-insecure.test.ts");
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
@@ -111733,7 +111733,7 @@ test "bootstrap runner mirrors S3 requester-pays signing corpus" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "x-amz-request-payer") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_s3_request_headers") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/s3/s3-requester-pays.test.ts");
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/bun/s3/s3-requester-pays.test.ts");
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 10 or summary.todo != 0) {
@@ -111759,7 +111759,7 @@ test "bootstrap runner mirrors S3 storage-class signing corpus" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_s3_validate_storage_class") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "x-amz-storage-class") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/s3/s3-storage-class.test.ts");
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/bun/s3/s3-storage-class.test.ts");
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 9 or summary.todo != 0) {
@@ -111785,7 +111785,7 @@ test "bootstrap runner mirrors deterministic S3 umbrella corpus" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "ERR_S3_MISSING_CREDENTIALS") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_s3_multipart_upload_id_fixture") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/s3/s3.test.ts");
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/bun/s3/s3.test.ts");
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 8 or summary.todo != 4) {
@@ -111811,7 +111811,7 @@ test "bootstrap runner mirrors S3 stream cancellation GC corpus" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "stream() {") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "cancelled = true") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/s3/s3-stream-cancel-leak.test.ts");
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/bun/s3/s3-stream-cancel-leak.test.ts");
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
@@ -111833,7 +111833,7 @@ test "bootstrap runner mirrors S3 header injection corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/s3-header-injection.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/s3-header-injection.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/s3-header-injection.test.ts");
@@ -111934,7 +111934,7 @@ test "bootstrap runner mirrors S3 signature order corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/s3-signature-order.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/s3-signature-order.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/s3-signature-order.test.ts");
@@ -111960,7 +111960,7 @@ test "bootstrap runner mirrors S3 signature performance corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/s3-signature-performance.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/s3-signature-performance.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/s3-signature-performance.test.ts");
@@ -111986,7 +111986,7 @@ test "bootstrap runner mirrors logical border radius CSS corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/25785.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/25785.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/25785.test.ts");
@@ -112013,7 +112013,7 @@ test "bootstrap runner mirrors nested logical inset CSS corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/25794.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/25794.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/25794.test.ts");
@@ -112040,7 +112040,7 @@ test "bootstrap runner mirrors http connect pipelined head corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/25862.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/25862.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/25862.test.ts");
@@ -112067,7 +112067,7 @@ test "bootstrap runner mirrors jest fake timer clock corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/25869.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/25869.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/25869.test.ts");
@@ -112094,7 +112094,7 @@ test "bootstrap runner mirrors Bun.write file mode corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/25903.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/25903.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/25903.test.ts");
@@ -112121,7 +112121,7 @@ test "bootstrap runner mirrors SQL transaction returned query corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/26030.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/26030.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/26030.test.ts");
@@ -112181,7 +112181,7 @@ test "bootstrap runner mirrors bun repl corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/26058.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/26058.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/26058.test.ts");
@@ -112208,7 +112208,7 @@ test "bootstrap runner mirrors mysql binary collation corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/26063.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/26063.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/26063.test.ts");
@@ -112236,7 +112236,7 @@ test "bootstrap runner mirrors YAML block list corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/26088.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/26088.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/26088.test.ts");
@@ -112297,7 +112297,7 @@ test "bootstrap runner mirrors mTLS client certificate switching corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/26125.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/26125.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/26125.test.ts");
@@ -112356,7 +112356,7 @@ test "bootstrap runner mirrors terminal async local storage corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/26286.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/26286.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/26286.test.ts");
@@ -112386,7 +112386,7 @@ test "bootstrap runner mirrors bytecode standalone corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/26298.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/26298.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/26298.test.ts");
@@ -113065,7 +113065,7 @@ test "temporary HTTP corpus direct survey" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    const path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", relative });
+    const path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", relative });
     defer std.testing.allocator.free(path);
     const source = try Io.Dir.cwd().readFileAlloc(io, path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
@@ -113091,7 +113091,7 @@ test "bootstrap runner mirrors issue 06946 mixed ESM CJS spawn corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/06946/06946.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/06946/06946.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/06946/06946.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -113112,7 +113112,7 @@ test "bootstrap runner mirrors issue 08965 TypeScript CJS spawn corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/08965/08965.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/08965/08965.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/08965/08965.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -113133,7 +113133,7 @@ test "bootstrap runner mirrors issue 10887 decorator spawn corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/10887.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/10887.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/10887.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -113154,7 +113154,7 @@ test "bootstrap runner mirrors issue 11100 CJS using disposal corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/11100.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/11100.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/11100.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -113175,7 +113175,7 @@ test "bootstrap runner mirrors issue 12548 plugin ts loader corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/12548.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/12548.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/12548.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -113196,7 +113196,7 @@ test "bootstrap runner mirrors issue 12910 import require race corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/12910/12910.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/12910/12910.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/12910/12910.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -113217,7 +113217,7 @@ test "bootstrap runner mirrors issue 15276 npm alias x corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/15276.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/15276.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/15276.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -113238,7 +113238,7 @@ test "bootstrap runner mirrors issue 22243 RedisClient constructor corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/22243.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/22243.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/22243.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -113259,7 +113259,7 @@ test "bootstrap runner mirrors issue 22656 macro collection corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/22656.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/22656.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/22656.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -113280,7 +113280,7 @@ test "bootstrap runner mirrors issue 23275 bunfig BOM corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/23275.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/23275.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/23275.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -113301,7 +113301,7 @@ test "bootstrap runner mirrors issue 23287 array comma value corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/23287-array-comma-value.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/23287-array-comma-value.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/23287-array-comma-value.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -113322,7 +113322,7 @@ test "bootstrap runner mirrors issue 24234 console json formatting corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/24234.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/24234.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/24234.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -113343,7 +113343,7 @@ test "bootstrap runner mirrors issue 25398 nullish spread corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/25398.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/25398.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/25398.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -113364,7 +113364,7 @@ test "bootstrap runner mirrors issue 25609 spread DCE corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/25609.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/25609.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/25609.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -113385,7 +113385,7 @@ test "bootstrap runner mirrors issue 25622 tsconfig paths replacement corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/25622.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/25622.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/25622.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -113406,7 +113406,7 @@ test "bootstrap runner mirrors issue 25707 CJS dynamic import corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/25707.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/25707.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/25707.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -113427,7 +113427,7 @@ test "bootstrap runner mirrors issue 25831 shell ls corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/25831.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/25831.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/25831.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -113448,7 +113448,7 @@ test "bootstrap runner mirrors comma operator this binding corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/comma-operator-this-binding.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/comma-operator-this-binding.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/comma-operator-this-binding.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -113469,7 +113469,7 @@ test "bootstrap runner mirrors plugin sync exception fallback corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/plugin-sync-exception-fallback.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/plugin-sync-exception-fallback.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/plugin-sync-exception-fallback.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -113490,7 +113490,7 @@ test "bootstrap runner mirrors ES decorators corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/transpiler/es-decorators.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/transpiler/es-decorators.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/transpiler/es-decorators.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -113511,7 +113511,7 @@ test "bootstrap runner mirrors template literal corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/transpiler/template-literal.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/transpiler/template-literal.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/transpiler/template-literal.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -113532,7 +113532,7 @@ test "bootstrap runner mirrors preserve strict CJS corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/transpiler/preserve-use-strict-cjs.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/transpiler/preserve-use-strict-cjs.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/transpiler/preserve-use-strict-cjs.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -113557,7 +113557,7 @@ test "bootstrap runner mirrors commonjs invalid run corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/cli/run/commonjs-invalid.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/cli/run/commonjs-invalid.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/run/commonjs-invalid.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -113578,7 +113578,7 @@ test "bootstrap runner mirrors commonjs no export run corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/cli/run/commonjs-no-export.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/cli/run/commonjs-no-export.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/run/commonjs-no-export.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -113599,7 +113599,7 @@ test "bootstrap runner mirrors empty file run corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/cli/run/empty-file.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/cli/run/empty-file.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/run/empty-file.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -113620,7 +113620,7 @@ test "bootstrap runner mirrors jsx symbol collision run corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/cli/run/jsx-symbol-collision.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/cli/run/jsx-symbol-collision.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/run/jsx-symbol-collision.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -113641,7 +113641,7 @@ test "bootstrap runner mirrors shell keepalive run corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/cli/run/shell-keepalive.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/cli/run/shell-keepalive.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/run/shell-keepalive.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -113666,7 +113666,7 @@ test "bootstrap runner mirrors test randomize fixture corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/cli/test/test-randomize.fixture.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/cli/test/test-randomize.fixture.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/test/test-randomize.fixture.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -113691,7 +113691,7 @@ test "bootstrap runner mirrors preload lifecycle hook fixture corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/test/test-fixture-preload-global-lifecycle-hook-test.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/test/test-fixture-preload-global-lifecycle-hook-test.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/test-fixture-preload-global-lifecycle-hook-test.js");
     defer prepared.deinit(std.testing.allocator);
@@ -113716,7 +113716,7 @@ test "bootstrap runner mirrors concurrent immediate fixture corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/test/concurrent_immediate.fixture.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/test/concurrent_immediate.fixture.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/concurrent_immediate.fixture.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -113741,7 +113741,7 @@ test "bootstrap runner mirrors concurrent immediate reporter matrix" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/test/concurrent_immediate.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/test/concurrent_immediate.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/concurrent_immediate.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -113768,7 +113768,7 @@ test "bootstrap runner mirrors concurrent scheduling matrix" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/test/concurrent.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/test/concurrent.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/concurrent.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -113795,7 +113795,7 @@ test "bootstrap runner mirrors describe naming corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/test/describe.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/test/describe.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/describe.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -113821,7 +113821,7 @@ test "bootstrap runner mirrors new snapshot file workflow" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/test/snapshot-tests/new-snapshot.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/test/snapshot-tests/new-snapshot.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/snapshot-tests/new-snapshot.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -113848,7 +113848,7 @@ test "bootstrap runner mirrors stack formatting and diagnostics corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/test/stack.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/test/stack.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/stack.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -113877,7 +113877,7 @@ test "bootstrap runner mirrors failure skip fixture corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/test/failure-skip.fixture.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/test/failure-skip.fixture.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/failure-skip.fixture.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -113902,7 +113902,7 @@ test "bootstrap runner mirrors failure skip hook scheduling matrix" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/test/failure-skip.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/test/failure-skip.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/failure-skip.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -113929,7 +113929,7 @@ test "bootstrap runner mirrors dots reporter matrices" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/test/dots.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/test/dots.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/dots.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -113957,7 +113957,7 @@ test "bootstrap runner mirrors pretty format overflow regression" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/test/pretty-format-overflow.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/test/pretty-format-overflow.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/pretty-format-overflow.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -113983,7 +113983,7 @@ test "bootstrap runner mirrors only failures reporter matrix" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/test/only-failures.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/test/only-failures.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/only-failures.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -114010,7 +114010,7 @@ test "bootstrap runner mirrors jest each GC root regression" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/test/jest-each-gc-root.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/test/jest-each-gc-root.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/jest-each-gc-root.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -114053,7 +114053,7 @@ test "bootstrap runner mirrors only fixture corpus" {
     defer runtime.deinit();
 
     for (fixtures) |fixture| {
-        const absolute = try std.fmt.allocPrint(std.testing.allocator, "packages/runtime/test/bun-corpus/{s}", .{fixture.path});
+        const absolute = try std.fmt.allocPrint(std.testing.allocator, "packages/runtime/test/test/{s}", .{fixture.path});
         defer std.testing.allocator.free(absolute);
         const source = try Io.Dir.cwd().readFileAlloc(io, absolute, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
         defer std.testing.allocator.free(source);
@@ -114080,7 +114080,7 @@ test "bootstrap runner mirrors nested test.only CLI corpus" {
     defer threaded.deinit();
     const source = try Io.Dir.cwd().readFileAlloc(
         threaded.io(),
-        "packages/runtime/test/bun-corpus/js/bun/test/test-only.test.ts",
+        "packages/runtime/test/test/js/bun/test/test-only.test.ts",
         std.testing.allocator,
         std.Io.Limit.limited(1024 * 1024),
     );
@@ -114115,7 +114115,7 @@ test "bootstrap runner mirrors bun test reporter matrix" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_bun_test_multifile_scheduling_fixture") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_bun_test_only_flag_fixture") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/test/bun_test.test.ts");
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/bun/test/bun_test.test.ts");
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 5 or summary.todo != 0) {
@@ -114147,7 +114147,7 @@ test "bootstrap runner mirrors done callback reporter matrices" {
         "js/bun/test/test-error-code-done-callback.test.ts",
     };
     for (fixtures) |fixture| {
-        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", fixture);
+        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", fixture);
         defer summary.deinit(std.testing.allocator);
 
         if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
@@ -114269,7 +114269,7 @@ test "bootstrap runner mirrors empty spawn stdin corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/spawn/spawn-empty-arrayBufferOrBlob.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/spawn/spawn-empty-arrayBufferOrBlob.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/spawn/spawn-empty-arrayBufferOrBlob.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -114291,7 +114291,7 @@ test "bootstrap runner mirrors bun:jsc mimalloc heap statistics corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
@@ -114326,7 +114326,7 @@ test "bootstrap runner mirrors JSC DOMJIT intrinsic stress corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
@@ -114368,7 +114368,7 @@ test "bootstrap runner enforces the Bun static initializer budget" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "sw_vers") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "options.env.DYLD_PRINT_INITIALIZERS") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0) {
@@ -114388,7 +114388,7 @@ test "bootstrap runner mirrors perf_hooks histogram corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
@@ -114423,7 +114423,7 @@ test "bootstrap runner mirrors spawn stdin destroy after exit corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
@@ -114457,7 +114457,7 @@ test "bootstrap runner mirrors node http nested cork corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/node/http/node-http-nested-cork.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/node/http/node-http-nested-cork.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/http/node-http-nested-cork.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -114478,7 +114478,7 @@ test "bootstrap runner mirrors blocklist gc corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/node/net/blocklist-gc.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/node/net/blocklist-gc.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/net/blocklist-gc.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -114499,7 +114499,7 @@ test "bootstrap runner mirrors zlib onerror reentrancy corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/node/zlib/zlib-onerror-reentrancy.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/node/zlib/zlib-onerror-reentrancy.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/zlib/zlib-onerror-reentrancy.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -114520,7 +114520,7 @@ test "bootstrap runner mirrors zlib reset race corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/node/zlib/zlib-reset-race.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/node/zlib/zlib-reset-race.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/zlib/zlib-reset-race.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -114541,7 +114541,7 @@ test "bootstrap runner mirrors transform stream leak corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/web/streams/transform-stream-leak.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/web/streams/transform-stream-leak.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/web/streams/transform-stream-leak.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -114562,7 +114562,7 @@ test "bootstrap runner mirrors bake import-meta negative corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bake/dev/import-meta-inline-negative.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bake/dev/import-meta-inline-negative.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/import-meta-inline-negative.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -114584,7 +114584,7 @@ test "bootstrap runner mirrors bake framework router corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bake/framework-router.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bake/framework-router.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/framework-router.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -114609,7 +114609,7 @@ test "bootstrap runner mirrors bake vfile dev corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bake/dev/vfile.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bake/dev/vfile.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/vfile.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -114634,7 +114634,7 @@ test "bootstrap runner mirrors bake stress dev corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bake/dev/stress.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bake/dev/stress.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/stress.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -114659,7 +114659,7 @@ test "bootstrap runner mirrors bake SSG pages router corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bake/dev/ssg-pages-router.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bake/dev/ssg-pages-router.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/ssg-pages-router.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -114684,7 +114684,7 @@ test "bootstrap runner mirrors bake sourcemap dev corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bake/dev/sourcemap.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bake/dev/sourcemap.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/sourcemap.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -114709,7 +114709,7 @@ test "bootstrap runner mirrors bake server sourcemap dev corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bake/dev/server-sourcemap.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bake/dev/server-sourcemap.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/server-sourcemap.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -114734,7 +114734,7 @@ test "bootstrap runner mirrors bake response transform corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bake/dev/response-to-bake-response.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bake/dev/response-to-bake-response.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/response-to-bake-response.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -114759,7 +114759,7 @@ test "bootstrap runner mirrors bake request cookies dev corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bake/dev/request-cookies.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bake/dev/request-cookies.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/request-cookies.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -114784,7 +114784,7 @@ test "bootstrap runner mirrors bake React SPA dev corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bake/dev/react-spa.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bake/dev/react-spa.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/react-spa.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -114809,7 +114809,7 @@ test "bootstrap runner mirrors bake React response dev corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bake/dev/react-response.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bake/dev/react-response.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/react-response.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -114834,7 +114834,7 @@ test "bootstrap runner mirrors bake production corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bake/dev/production.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bake/dev/production.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/production.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -114859,7 +114859,7 @@ test "bootstrap runner mirrors bake plugins dev corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bake/dev/plugins.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bake/dev/plugins.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/plugins.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -114884,7 +114884,7 @@ test "bootstrap runner mirrors bake incremental graph edge deletion corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bake/dev/incremental-graph-edge-deletion.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bake/dev/incremental-graph-edge-deletion.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/incremental-graph-edge-deletion.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -114909,7 +114909,7 @@ test "bootstrap runner mirrors bake import-meta inline corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bake/dev/import-meta-inline.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bake/dev/import-meta-inline.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/import-meta-inline.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -114934,7 +114934,7 @@ test "bootstrap runner mirrors bake html dev corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bake/dev/html.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bake/dev/html.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/html.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -114959,7 +114959,7 @@ test "bootstrap runner mirrors bake hot dev corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bake/dev/hot.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bake/dev/hot.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/hot.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -114984,7 +114984,7 @@ test "bootstrap runner mirrors bake ESM dev corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bake/dev/esm.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bake/dev/esm.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/esm.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -115009,7 +115009,7 @@ test "bootstrap runner mirrors bake ecosystem dev corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bake/dev/ecosystem.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bake/dev/ecosystem.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/ecosystem.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -115034,7 +115034,7 @@ test "bootstrap runner mirrors bake CSS dev corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bake/dev/css.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bake/dev/css.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/css.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -115059,7 +115059,7 @@ test "bootstrap runner mirrors bake bundle dev corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bake/dev/bundle.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bake/dev/bundle.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev/bundle.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -115084,7 +115084,7 @@ test "bootstrap runner mirrors bake dev-and-prod corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bake/dev-and-prod.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bake/dev-and-prod.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/dev-and-prod.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -115109,7 +115109,7 @@ test "bootstrap runner mirrors issue 27428 stream finished ALS corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/27428.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/27428.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/27428.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -115130,7 +115130,7 @@ test "bootstrap runner mirrors issue 440 global export corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/440.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/440.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/440.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -115151,7 +115151,7 @@ test "bootstrap runner mirrors namespace prototype pollution corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/namespace-prototype-pollution.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/namespace-prototype-pollution.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/namespace-prototype-pollution.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -115172,7 +115172,7 @@ test "bootstrap runner mirrors concurrent dynamic import corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/resolve/concurrent-dynamic-import.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/resolve/concurrent-dynamic-import.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/resolve/concurrent-dynamic-import.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -115193,7 +115193,7 @@ test "bootstrap runner mirrors server stop pending requests corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/server-stop-with-pending-requests.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/server-stop-with-pending-requests.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/server-stop-with-pending-requests.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -115214,7 +115214,7 @@ test "bootstrap runner mirrors YAML bundler corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/bundler/yaml-bundler.test.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/bundler/yaml-bundler.test.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/bundler/yaml-bundler.test.js");
     defer prepared.deinit(std.testing.allocator);
@@ -115235,7 +115235,7 @@ test "bootstrap runner mirrors issue 27389 socket recv corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/27389.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/27389.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/27389.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -115256,7 +115256,7 @@ test "bootstrap runner mirrors issue 29264 bundler error corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/29264.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/29264.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/29264.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -115277,7 +115277,7 @@ test "bootstrap runner mirrors require esm microtask order corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/resolve/require-esm-microtask-order.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/resolve/require-esm-microtask-order.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/resolve/require-esm-microtask-order.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -115298,7 +115298,7 @@ test "bootstrap runner mirrors issue 26632 missing Bun.file corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/26632.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/26632.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/26632.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -115319,7 +115319,7 @@ test "bootstrap runner preserves node url parse query TODO" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/node/url/url-parse-query.test.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/node/url/url-parse-query.test.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/url/url-parse-query.test.js");
     defer prepared.deinit(std.testing.allocator);
@@ -115342,7 +115342,7 @@ test "bootstrap runner mirrors node url parse ipv6 corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/node/url/url-parse-ipv6.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/node/url/url-parse-ipv6.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/url/url-parse-ipv6.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -115364,7 +115364,7 @@ test "bootstrap runner mirrors node url relative corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/node/url/url-relative.test.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/node/url/url-relative.test.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/url/url-relative.test.js");
     defer prepared.deinit(std.testing.allocator);
@@ -115389,7 +115389,7 @@ test "bootstrap runner mirrors node url parse format corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/node/url/url-parse-format.test.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/node/url/url-parse-format.test.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/url/url-parse-format.test.js");
     defer prepared.deinit(std.testing.allocator);
@@ -115414,7 +115414,7 @@ test "bootstrap runner mirrors node url invalid input corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/node/url/url-parse-invalid-input.test.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/node/url/url-parse-invalid-input.test.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/url/url-parse-invalid-input.test.js");
     defer prepared.deinit(std.testing.allocator);
@@ -115439,7 +115439,7 @@ test "bootstrap runner mirrors Windows process signal corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/node/process/process-signal-windows.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/node/process/process-signal-windows.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/process/process-signal-windows.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -115464,7 +115464,7 @@ test "bootstrap runner mirrors Windows URL corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/web/url/url.windows.test.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/web/url/url.windows.test.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/web/url/url.windows.test.js");
     defer prepared.deinit(std.testing.allocator);
@@ -115489,7 +115489,7 @@ test "bootstrap runner mirrors VM SourceTextModule GC corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/node/vm/sourcetextmodule-link-gc.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/node/vm/sourcetextmodule-link-gc.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/vm/sourcetextmodule-link-gc.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -115514,7 +115514,7 @@ test "bootstrap runner mirrors bun-types issue 5396 fixture" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/integration/bun-types/fixture/5396.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/integration/bun-types/fixture/5396.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "integration/bun-types/fixture/5396.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -115535,7 +115535,7 @@ test "bootstrap runner mirrors FormData web corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/web/html/FormData.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/web/html/FormData.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/web/html/FormData.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -115560,7 +115560,7 @@ test "bootstrap runner mirrors FormData set append corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/http/form-data-set-append.test.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/http/form-data-set-append.test.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/http/form-data-set-append.test.js");
     defer prepared.deinit(std.testing.allocator);
@@ -115585,7 +115585,7 @@ test "bootstrap runner mirrors Bun.serve headers corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/http/bun-serve-headers.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/http/bun-serve-headers.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/http/bun-serve-headers.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -115610,7 +115610,7 @@ test "bootstrap runner mirrors Bun.serve response stream sink leak corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/http/serve-response-stream-sink-leak.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/http/serve-response-stream-sink-leak.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/http/serve-response-stream-sink-leak.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -115638,7 +115638,7 @@ test "bootstrap runner mirrors Bun.serve rejected stream flush leak corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/http/serve-stream-reject-flush-leak.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/http/serve-stream-reject-flush-leak.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/http/serve-stream-reject-flush-leak.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -115666,7 +115666,7 @@ test "bootstrap runner mirrors Bun.file TLS configuration leak corpus" {
     defer threaded.deinit();
     const io = threaded.io();
     const path = "js/bun/http/tls-bunfile-leak.test.ts";
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
@@ -115679,7 +115679,7 @@ test "bootstrap runner mirrors Bun.file TLS configuration leak corpus" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "state.ownedBuffers -= 2") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_spawn_tls_bunfile_leak_fixture") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
         std.debug.print(
@@ -115701,7 +115701,7 @@ test "bootstrap runner mirrors WebSocket upgrade AbortSignal GC corpus" {
     defer threaded.deinit();
     const io = threaded.io();
     const path = "js/bun/websocket/websocket-upgrade-signal-gc.test.ts";
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
@@ -115714,7 +115714,7 @@ test "bootstrap runner mirrors WebSocket upgrade AbortSignal GC corpus" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "requestSignal.pendingActivity++") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "requestSignal.pendingActivity--") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
         std.debug.print(
@@ -115735,7 +115735,7 @@ test "bootstrap runner mirrors snapshot serialization corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/test/snapshot-tests/snapshots/more.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/test/snapshot-tests/snapshots/more.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/snapshot-tests/snapshots/more.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -115760,7 +115760,7 @@ test "bootstrap runner mirrors different-directory snapshot corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/test/snapshot-tests/snapshots/more-snapshots/different-directory.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/test/snapshot-tests/snapshots/more-snapshots/different-directory.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/snapshot-tests/snapshots/more-snapshots/different-directory.test.ts");
@@ -115790,7 +115790,7 @@ test "bootstrap runner mirrors Node HTTP early hints CRLF corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/node/http/early-hints-crlf-injection.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/node/http/early-hints-crlf-injection.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/http/early-hints-crlf-injection.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -115815,7 +115815,7 @@ test "bootstrap runner mirrors fetch body clone corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/web/fetch/body-clone.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/web/fetch/body-clone.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/web/fetch/body-clone.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -115840,7 +115840,7 @@ test "bootstrap runner mirrors fetch blob write corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/web/fetch/blob-write.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/web/fetch/blob-write.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/web/fetch/blob-write.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -116112,7 +116112,7 @@ test "bootstrap runner mirrors fetch utf8 bom corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/web/fetch/utf8-bom.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/web/fetch/utf8-bom.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/web/fetch/utf8-bom.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -116134,7 +116134,7 @@ test "bootstrap runner mirrors form-data boundary crash corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/web/fetch/form-data-boundary-crash.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/web/fetch/form-data-boundary-crash.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/web/fetch/form-data-boundary-crash.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -116156,7 +116156,7 @@ test "bootstrap runner mirrors fetch response corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/web/fetch/response.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/web/fetch/response.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/web/fetch/response.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -116178,7 +116178,7 @@ test "bootstrap runner mirrors Bun.serve fetch invalid args corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/http/bun-serve-fetch-invalid-args.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/http/bun-serve-fetch-invalid-args.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/http/bun-serve-fetch-invalid-args.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -116200,7 +116200,7 @@ test "bootstrap runner mirrors getIfPropertyExists corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/http/getIfPropertyExists.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/http/getIfPropertyExists.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/http/getIfPropertyExists.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -116222,7 +116222,7 @@ test "bootstrap runner mirrors Deno V8 error stack corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/deno/v8/error.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/deno/v8/error.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/deno/v8/error.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -116244,7 +116244,7 @@ test "bootstrap runner mirrors bake serve plugins dev server corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bake/serve-plugins-dev-server.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bake/serve-plugins-dev-server.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/serve-plugins-dev-server.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -116519,7 +116519,7 @@ test "bootstrap imported Jest globals keep each names bounded" {
     var summary = try runFile(
         io,
         std.testing.allocator,
-        "packages/runtime/test/bun-corpus",
+        "packages/runtime/test/test",
         "regression/issue/12034/12034.test.js",
     );
     defer summary.deinit(std.testing.allocator);
@@ -116580,7 +116580,7 @@ test "Bun module import rewrite removes runtime transpiler import.meta from upst
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/transpiler/runtime-transpiler.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/transpiler/runtime-transpiler.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/transpiler/runtime-transpiler.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -116597,7 +116597,7 @@ test "bootstrap rewrite lowers decorator metadata fixture" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bundler/transpiler/decorator-metadata.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bundler/transpiler/decorator-metadata.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bundler/transpiler/decorator-metadata.test.ts");
@@ -116844,7 +116844,7 @@ test "bootstrap runner mirrors issue 29225 spawned class inspection" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/29225.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/29225.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/29225.test.ts");
@@ -117086,7 +117086,7 @@ test "bootstrap runner preserves worker message port and argv contracts" {
 test "bootstrap runner preserves worker message port and argv contracts across exact web MessageChannel corpus" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
-    const source_path = "packages/runtime/test/bun-corpus/js/web/workers/message-channel.test.ts";
+    const source_path = "packages/runtime/test/test/js/web/workers/message-channel.test.ts";
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const source = try Io.Dir.cwd().readFileAlloc(threaded.io(), source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
@@ -117113,7 +117113,7 @@ test "bootstrap runner preserves MessagePort pipe task and lifecycle contracts" 
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
     const corpus_relative = "js/web/workers/message-port-pipe.test.ts";
-    const source_path = "packages/runtime/test/bun-corpus/" ++ corpus_relative;
+    const source_path = "packages/runtime/test/test/" ++ corpus_relative;
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const source = try Io.Dir.cwd().readFileAlloc(threaded.io(), source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
@@ -117147,7 +117147,7 @@ test "bootstrap runner releases Worker PerformanceObserver lifecycle state" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
     const corpus_relative = "js/web/workers/performance-observer-leak.test.ts";
-    const source_path = "packages/runtime/test/bun-corpus/" ++ corpus_relative;
+    const source_path = "packages/runtime/test/test/" ++ corpus_relative;
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const source = try Io.Dir.cwd().readFileAlloc(threaded.io(), source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
@@ -117386,7 +117386,7 @@ test "bootstrap runner mirrors issue 29268 MySQL multi-statement result sets" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/29268.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/29268.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/29268.test.ts");
@@ -117411,7 +117411,7 @@ test "bootstrap runner mirrors issue 29283 net socket idle timeouts" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/29283.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/29283.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/29283.test.ts");
@@ -117436,7 +117436,7 @@ test "bootstrap runner mirrors issue 29298 standalone HTML file-loader inlining"
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/29298.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/29298.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/29298.test.ts");
@@ -117462,7 +117462,7 @@ test "bootstrap runner mirrors issue 29371 proxy request-line default ports" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/29371.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/29371.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/29371.test.ts");
@@ -117487,7 +117487,7 @@ test "bootstrap runner mirrors issue 29519 isolate GC subprocesses" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/29519.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/29519.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/29519.test.ts");
@@ -117512,7 +117512,7 @@ test "bootstrap runner mirrors issue 29524 hot atomic writes" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/29524.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/29524.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/29524.test.ts");
@@ -117538,7 +117538,7 @@ test "bootstrap runner mirrors issue 5344 split re-export outputs" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/5344.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/5344.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/5344.test.ts");
@@ -117564,7 +117564,7 @@ test "bootstrap runner mirrors issue 5738 child test hook order" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/5738.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/5738.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/5738.test.ts");
@@ -117590,7 +117590,7 @@ test "bootstrap runner mirrors issue 5961 only child test output" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/5961.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/5961.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/5961.test.ts");
@@ -117616,7 +117616,7 @@ test "bootstrap runner mirrors Atomics.waitAsync timeout corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/atomics-waitasync-wtftimer-uaf.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/atomics-waitasync-wtftimer-uaf.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/atomics-waitasync-wtftimer-uaf.test.ts");
@@ -117642,7 +117642,7 @@ test "bootstrap runner mirrors issue 29684 websocket deflate offers" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/29684.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/29684.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/29684.test.ts");
@@ -117670,7 +117670,7 @@ test "bootstrap runner mirrors issue 3613 websocket protocol selection" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/3613.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/3613.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/3613.test.ts");
@@ -117697,7 +117697,7 @@ test "bootstrap runner mirrors issue 29780 fetch TLS client hello extensions" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/29780.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/29780.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/29780.test.ts");
@@ -117724,7 +117724,7 @@ test "bootstrap runner mirrors issue 29787 stdin stream race fixture" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/29787.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/29787.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/29787.test.ts");
@@ -117766,7 +117766,7 @@ test "bootstrap runner mirrors late Bun parser preload build and install regress
     defer threaded.deinit();
     const io = threaded.io();
     for (cases) |case| {
-        const absolute_path = try std.mem.concat(std.testing.allocator, u8, &.{ "packages/runtime/test/bun-corpus/", case.path });
+        const absolute_path = try std.mem.concat(std.testing.allocator, u8, &.{ "packages/runtime/test/test/", case.path });
         defer std.testing.allocator.free(absolute_path);
         const source = try Io.Dir.cwd().readFileAlloc(io, absolute_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
         defer std.testing.allocator.free(source);
@@ -117791,7 +117791,7 @@ test "bootstrap runner mirrors issue 30205 napi isolate worker outcomes" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/30205.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/30205.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/30205.test.ts");
@@ -117820,7 +117820,7 @@ test "bootstrap runner mirrors napi exception standalone reproducer" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/napi-exception-pending-crash/test-original-crash.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/napi-exception-pending-crash/test-original-crash.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/napi-exception-pending-crash/test-original-crash.js");
@@ -117846,7 +117846,7 @@ test "bootstrap runner mirrors issue 30493 require esm snapshot output" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/30493.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/30493.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/30493.test.ts");
@@ -117872,7 +117872,7 @@ test "bootstrap runner mirrors issue 3192 yarn workspace lock quoting" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/3192.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/3192.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/3192.test.ts");
@@ -117897,7 +117897,7 @@ test "bootstrap runner mirrors cli console depth corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/cli/console-depth.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/cli/console-depth.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/console-depth.test.ts");
@@ -117923,7 +117923,7 @@ test "bootstrap runner mirrors cli bun corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/cli/bun.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/cli/bun.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/bun.test.ts");
@@ -117949,7 +117949,7 @@ test "bootstrap runner mirrors cli BUN_OPTIONS corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/cli/env/bun-options.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/cli/env/bun-options.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/env/bun-options.test.ts");
@@ -117975,7 +117975,7 @@ test "bootstrap runner mirrors cli CI info corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/cli/env/ci-info.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/cli/env/ci-info.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/env/ci-info.test.ts");
@@ -118002,7 +118002,7 @@ test "bootstrap runner mirrors cli heap profile corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/cli/heap-prof.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/cli/heap-prof.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/heap-prof.test.ts");
@@ -118029,7 +118029,7 @@ test "bootstrap runner mirrors cli hot reload corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/cli/hot/hot.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/cli/hot/hot.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/hot/hot.test.ts");
@@ -118056,7 +118056,7 @@ test "bootstrap runner mirrors cli hot many dirs corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/cli/hot/watch-many-dirs.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/cli/hot/watch-many-dirs.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/hot/watch-many-dirs.test.ts");
@@ -118081,7 +118081,7 @@ test "bootstrap runner mirrors cli user agent corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/cli/user-agent.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/cli/user-agent.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/user-agent.test.ts");
@@ -118106,7 +118106,7 @@ test "bootstrap runner mirrors cli watcher trace corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/cli/watch/watcher-trace.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/cli/watch/watcher-trace.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/watch/watcher-trace.test.ts");
@@ -118305,7 +118305,7 @@ test "bootstrap runner mirrors dgram implicit bind corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/28083.test.ts", std.testing.allocator, std.Io.Limit.limited(2 * 1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/28083.test.ts", std.testing.allocator, std.Io.Limit.limited(2 * 1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/28083.test.ts");
@@ -118332,7 +118332,7 @@ test "bootstrap runner disables runtime transpiler cache under inspector" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/28159.test.ts", std.testing.allocator, std.Io.Limit.limited(2 * 1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/28159.test.ts", std.testing.allocator, std.Io.Limit.limited(2 * 1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/28159.test.ts");
@@ -118357,9 +118357,9 @@ test "bootstrap runner mirrors fetch retry abort timeout and DNS result order re
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
     const cases = [_]struct { path: []const u8, relative: []const u8, passed: usize }{
-        .{ .path = "packages/runtime/test/bun-corpus/regression/issue/28706.test.ts", .relative = "regression/issue/28706.test.ts", .passed = 2 },
-        .{ .path = "packages/runtime/test/bun-corpus/regression/issue/28756.test.ts", .relative = "regression/issue/28756.test.ts", .passed = 1 },
-        .{ .path = "packages/runtime/test/bun-corpus/regression/issue/28948.test.ts", .relative = "regression/issue/28948.test.ts", .passed = 7 },
+        .{ .path = "packages/runtime/test/test/regression/issue/28706.test.ts", .relative = "regression/issue/28706.test.ts", .passed = 2 },
+        .{ .path = "packages/runtime/test/test/regression/issue/28756.test.ts", .relative = "regression/issue/28756.test.ts", .passed = 1 },
+        .{ .path = "packages/runtime/test/test/regression/issue/28948.test.ts", .relative = "regression/issue/28948.test.ts", .passed = 7 },
     };
 
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "bun.spawn.runFetchRetryProbe") != null);
@@ -118760,7 +118760,7 @@ test "bootstrap Bun.serve request clones preserve cookies and route params" {
     const io = threaded.io();
     const source = try Io.Dir.cwd().readFileAlloc(
         io,
-        "packages/runtime/test/bun-corpus/regression/issue/18547.test.ts",
+        "packages/runtime/test/test/regression/issue/18547.test.ts",
         std.testing.allocator,
         std.Io.Limit.limited(1024 * 1024),
     );
@@ -118791,7 +118791,7 @@ test "bootstrap runner mirrors Bun Cookie and CookieMap JSON corpus" {
     const path = "js/bun/http/bun-serve-cookies.test.ts";
     const source = try Io.Dir.cwd().readFileAlloc(
         io,
-        "packages/runtime/test/bun-corpus/js/bun/http/bun-serve-cookies.test.ts",
+        "packages/runtime/test/test/js/bun/http/bun-serve-cookies.test.ts",
         std.testing.allocator,
         std.Io.Limit.limited(1024 * 1024),
     );
@@ -118828,7 +118828,7 @@ test "bootstrap runner mirrors Bun.serve cookie integration corpus" {
     const path = "js/bun/cookie/cookie.test.ts";
     const source = try Io.Dir.cwd().readFileAlloc(
         io,
-        "packages/runtime/test/bun-corpus/js/bun/cookie/cookie.test.ts",
+        "packages/runtime/test/test/js/bun/cookie/cookie.test.ts",
         std.testing.allocator,
         std.Io.Limit.limited(1024 * 1024),
     );
@@ -118877,7 +118877,7 @@ test "bootstrap runner completes Bun deadlock regression corpus" {
     defer runtime.deinit();
 
     for (paths) |path| {
-        const absolute_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+        const absolute_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
         defer std.testing.allocator.free(absolute_path);
         const source = try Io.Dir.cwd().readFileAlloc(
             io,
@@ -119641,7 +119641,7 @@ test "bootstrap spawnSync flushes JavaScript entrypoint output before exit" {
     var summary = try runFile(
         threaded.io(),
         std.testing.allocator,
-        "packages/runtime/test/bun-corpus",
+        "packages/runtime/test/test",
         "regression/issue/16702/16702.test.ts",
     );
     defer summary.deinit(std.testing.allocator);
@@ -119703,7 +119703,7 @@ test "bootstrap spawned errors preserve colored template messages and causal con
     var summary = try runFile(
         threaded.io(),
         std.testing.allocator,
-        "packages/runtime/test/bun-corpus",
+        "packages/runtime/test/test",
         "regression/issue/17327.test.ts",
     );
     defer summary.deinit(std.testing.allocator);
@@ -119733,7 +119733,7 @@ test "bootstrap proxied 304 installs reuse cached manifests without hanging" {
 
     const upstream_source = try Io.Dir.cwd().readFileAlloc(
         io,
-        "packages/runtime/test/bun-corpus/regression/issue/17793.test.ts",
+        "packages/runtime/test/test/regression/issue/17793.test.ts",
         std.testing.allocator,
         std.Io.Limit.limited(1024 * 1024),
     );
@@ -119745,7 +119745,7 @@ test "bootstrap proxied 304 installs reuse cached manifests without hanging" {
     var summary = try runFile(
         io,
         std.testing.allocator,
-        "packages/runtime/test/bun-corpus",
+        "packages/runtime/test/test",
         "regression/issue/17793.test.ts",
     );
     defer summary.deinit(std.testing.allocator);
@@ -119771,7 +119771,7 @@ test "bootstrap FileSystemRouter keeps repeated Bun.build state isolated" {
     var summary = try runFile(
         threaded.io(),
         std.testing.allocator,
-        "packages/runtime/test/bun-corpus",
+        "packages/runtime/test/test",
         "regression/issue/18242.test.ts",
     );
     defer summary.deinit(std.testing.allocator);
@@ -119828,7 +119828,7 @@ test "bootstrap node:test preserves null options callbacks" {
     var summary = try runFile(
         threaded.io(),
         std.testing.allocator,
-        "packages/runtime/test/bun-corpus",
+        "packages/runtime/test/test",
         "regression/issue/19412.test.ts",
     );
     defer summary.deinit(std.testing.allocator);
@@ -119922,7 +119922,7 @@ test "bootstrap child_process IPC fixture exits through process kill" {
     const io = threaded.io();
     const source = try Io.Dir.cwd().readFileAlloc(
         io,
-        "packages/runtime/test/bun-corpus/regression/issue/20144/20144.test.ts",
+        "packages/runtime/test/test/regression/issue/20144/20144.test.ts",
         std.testing.allocator,
         std.Io.Limit.limited(1024 * 1024),
     );
@@ -120330,7 +120330,7 @@ test "bootstrap runner preserves rejected-response watchdog progress" {
     var summary = try runFile(
         threaded.io(),
         std.testing.allocator,
-        "packages/runtime/test/bun-corpus",
+        "packages/runtime/test/test",
         "regression/issue/02499/02499.test.ts",
     );
     defer summary.deinit(std.testing.allocator);
@@ -120386,7 +120386,7 @@ test "bootstrap completions BrokenPipe exits cleanly with lifecycle context" {
     var summary = try runFile(
         threaded.io(),
         std.testing.allocator,
-        "packages/runtime/test/bun-corpus",
+        "packages/runtime/test/test",
         "regression/issue/02977.test.ts",
     );
     defer summary.deinit(std.testing.allocator);
@@ -120429,7 +120429,7 @@ test "bootstrap lockfile BrokenPipe exits cleanly with causal lifecycle context"
 
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
-    var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", "regression/issue/05828.test.ts");
+    var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/test", "regression/issue/05828.test.ts");
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
         std.debug.print("lockfile BrokenPipe corpus mismatch: {s}\n", .{summary.first_failure_message});
@@ -120508,7 +120508,7 @@ test "bootstrap Request allocation stress preserves the full bounded matrix" {
     defer runtime.deinit();
 
     for (cases) |case| {
-        const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", case.path });
+        const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", case.path });
         defer std.testing.allocator.free(source_path);
         const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
         defer std.testing.allocator.free(source);
@@ -120536,7 +120536,7 @@ test "bootstrap Request subclass preserves getter dispatch and header failures" 
     defer threaded.deinit();
     const source = try Io.Dir.cwd().readFileAlloc(
         threaded.io(),
-        "packages/runtime/test/bun-corpus/js/web/request/request-subclass.test.ts",
+        "packages/runtime/test/test/js/web/request/request-subclass.test.ts",
         std.testing.allocator,
         std.Io.Limit.limited(1024 * 1024),
     );
@@ -120632,7 +120632,7 @@ test "bootstrap runner mirrors invalid escape sequence diagnostics" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/invalid-escape-sequences.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/invalid-escape-sequences.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/invalid-escape-sequences.test.ts");
@@ -120665,7 +120665,7 @@ test "bootstrap runner mirrors large Bun.write Blob corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/8254.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/8254.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/8254.test.ts");
@@ -120694,7 +120694,7 @@ test "bootstrap runner mirrors Bun.write filesystem corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/io/bun-write.test.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/io/bun-write.test.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/io/bun-write.test.js");
@@ -121427,7 +121427,7 @@ test "bootstrap native stream leak coverage preserves the full bounded matrix" {
     defer threaded.deinit();
     const source = try Io.Dir.cwd().readFileAlloc(
         threaded.io(),
-        "packages/runtime/test/bun-corpus/js/web/streams/streams-leak.test.ts",
+        "packages/runtime/test/test/js/web/streams/streams-leak.test.ts",
         std.testing.allocator,
         std.Io.Limit.limited(1024 * 1024),
     );
@@ -121754,7 +121754,7 @@ test "bootstrap runner preserves exact node JS stream socket contracts" {
     defer threaded.deinit();
 
     for (paths) |path| {
-        var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+        var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/test", path);
         defer summary.deinit(std.testing.allocator);
 
         if (summary.failed != 0 or summary.unsupported != 0) {
@@ -121872,7 +121872,7 @@ test "bootstrap runner preserves net Socket handle-adjacent corpus contracts" {
     defer threaded.deinit();
 
     for (paths) |path| {
-        var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+        var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/test", path);
         defer summary.deinit(std.testing.allocator);
 
         if (summary.failed != 0 or summary.unsupported != 0) {
@@ -121902,7 +121902,7 @@ test "bootstrap runner preserves node sequential network performance and cache c
     defer threaded.deinit();
 
     for (paths) |path| {
-        var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+        var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/test", path);
         defer summary.deinit(std.testing.allocator);
 
         if (summary.failed != 0 or summary.unsupported != 0) {
@@ -121929,7 +121929,7 @@ test "bootstrap runner preserves node sequential fs stream and TLS contracts" {
     defer threaded.deinit();
 
     for (paths) |path| {
-        var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+        var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/test", path);
         defer summary.deinit(std.testing.allocator);
 
         if (summary.failed != 0 or summary.unsupported != 0) {
@@ -121978,7 +121978,7 @@ test "bootstrap runner preserves node timers and TLS foundation contracts" {
     defer threaded.deinit();
 
     for (cases) |case| {
-        var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/test", case.path);
         defer summary.deinit(std.testing.allocator);
 
         if (summary.failed != 0 or summary.unsupported != 0) {
@@ -122019,7 +122019,7 @@ test "bootstrap runner preserves node URL contracts" {
     defer threaded.deinit();
 
     for (cases) |case| {
-        var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/test", case.path);
         defer summary.deinit(std.testing.allocator);
 
         if (summary.failed != 0 or summary.unsupported != 0) {
@@ -122061,7 +122061,7 @@ test "bootstrap runner preserves node util foundation contracts" {
     defer threaded.deinit();
 
     for (cases) |case| {
-        var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/test", case.path);
         defer summary.deinit(std.testing.allocator);
 
         if (summary.failed != 0 or summary.unsupported != 0) {
@@ -122088,7 +122088,7 @@ test "bootstrap runner preserves node V8 contracts" {
     defer threaded.deinit();
 
     for (cases) |case| {
-        var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/test", case.path);
         defer summary.deinit(std.testing.allocator);
 
         if (summary.failed != 0 or summary.unsupported != 0) {
@@ -122118,7 +122118,7 @@ test "bootstrap runner preserves node watch contracts" {
     defer threaded.deinit();
 
     for (cases) |case| {
-        var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/test", case.path);
         defer summary.deinit(std.testing.allocator);
 
         if (summary.failed != 0 or summary.unsupported != 0) {
@@ -122148,7 +122148,7 @@ test "bootstrap runner preserves node worker contracts" {
     defer threaded.deinit();
 
     for (cases) |case| {
-        var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/test", case.path);
         defer summary.deinit(std.testing.allocator);
 
         if (summary.failed != 0 or summary.unsupported != 0) {
@@ -122182,7 +122182,7 @@ test "bootstrap runner preserves node zlib contracts" {
     defer threaded.deinit();
 
     for (cases) |case| {
-        var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/test", case.path);
         defer summary.deinit(std.testing.allocator);
 
         if (summary.failed != 0 or summary.unsupported != 0) {
@@ -122242,7 +122242,7 @@ test "bootstrap runner preserves SQL adapter contracts" {
     defer threaded.deinit();
 
     for (cases) |case| {
-        var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/test", case.path);
         defer summary.deinit(std.testing.allocator);
 
         if (summary.failed != 0 or summary.unsupported != 0) {
@@ -122273,7 +122273,7 @@ test "bootstrap runner preserves node VM lifecycle contracts" {
     defer threaded.deinit();
 
     for (cases) |case| {
-        var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/test", case.path);
         defer summary.deinit(std.testing.allocator);
 
         if (summary.failed != 0 or summary.unsupported != 0) {
@@ -122426,7 +122426,7 @@ test "bootstrap runner mirrors Bake deinitialization fixture corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bake/fixtures/deinitialization/test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bake/fixtures/deinitialization/test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/fixtures/deinitialization/test.ts");
@@ -122484,7 +122484,7 @@ test "bootstrap runner mirrors Bake deinitialization parent corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/bake/deinitialization.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/bake/deinitialization.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "bake/deinitialization.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -122960,7 +122960,7 @@ test "bootstrap web globals preserve Bun realm and subprocess contracts while ca
     defer threaded.deinit();
     const io = threaded.io();
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/web/websocket/websocket-close-connecting.test.ts");
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/web/websocket/websocket-close-connecting.test.ts");
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 4 or summary.todo != 0) {
@@ -123029,7 +123029,7 @@ test "bootstrap runner mirrors native constructor identity corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/jsc/native-constructor-identity.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/jsc/native-constructor-identity.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/jsc/native-constructor-identity.test.ts");
@@ -123059,7 +123059,7 @@ test "bootstrap runner mirrors ShadowRealm corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/jsc/shadow.test.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/jsc/shadow.test.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/jsc/shadow.test.js");
@@ -123229,7 +123229,7 @@ test "bootstrap runner mirrors expectTypeOf doctest corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/test/expect-type-doctest.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/test/expect-type-doctest.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/expect-type-doctest.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -123326,7 +123326,7 @@ test "bootstrap runner mirrors todo fixture corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/test/todo-test-fixture.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/test/todo-test-fixture.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/todo-test-fixture.js");
     defer prepared.deinit(std.testing.allocator);
@@ -123351,7 +123351,7 @@ test "bootstrap runner mirrors compact todo fixture corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/test/todo-test-fixture-2.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/test/todo-test-fixture-2.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/todo-test-fixture-2.js");
     defer prepared.deinit(std.testing.allocator);
@@ -123443,7 +123443,7 @@ test "bootstrap runner mirrors skip fixture corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/test/skip-test-fixture.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/test/skip-test-fixture.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/skip-test-fixture.js");
     defer prepared.deinit(std.testing.allocator);
@@ -123468,7 +123468,7 @@ test "bootstrap runner mirrors mock disposable corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/test/mock-disposable.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/test/mock-disposable.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/mock-disposable.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -123696,7 +123696,7 @@ test "bootstrap runner mirrors WebSocket ErrorEvent corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/web/websocket/error-event.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/web/websocket/error-event.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/web/websocket/error-event.test.ts");
     defer prepared.deinit(std.testing.allocator);
@@ -124049,7 +124049,7 @@ test "bootstrap runner mirrors PNG import loader corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/resolve/png/test-png-import.test.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/resolve/png/test-png-import.test.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/resolve/png/test-png-import.test.js");
@@ -124076,7 +124076,7 @@ test "bootstrap runner mirrors CommonJS esModule annotation corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/resolve/esModule-annotation.test.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/resolve/esModule-annotation.test.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/resolve/esModule-annotation.test.js");
@@ -124103,7 +124103,7 @@ test "bootstrap runner mirrors ES module namespace esModule corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/resolve/esModule.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/resolve/esModule.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/resolve/esModule.test.ts");
@@ -124130,7 +124130,7 @@ test "bootstrap runner mirrors import-meta resolve corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/resolve/import-meta-resolve.test.mjs", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/resolve/import-meta-resolve.test.mjs", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/resolve/import-meta-resolve.test.mjs");
@@ -124161,7 +124161,7 @@ test "bootstrap runner mirrors BuildMessage resolver corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/resolve/build-error.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/resolve/build-error.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/resolve/build-error.test.ts");
@@ -124195,7 +124195,7 @@ test "bootstrap runner mirrors custom condition resolver corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/resolve/import-custom-condition.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/resolve/import-custom-condition.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/resolve/import-custom-condition.test.ts");
@@ -124222,7 +124222,7 @@ test "bootstrap runner mirrors import-query resolver corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/resolve/import-query.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/resolve/import-query.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/resolve/import-query.test.ts");
@@ -124249,7 +124249,7 @@ test "bootstrap runner mirrors load-same query-qualified JS corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/resolve/load-same-js-file-a-lot.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/resolve/load-same-js-file-a-lot.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/resolve/load-same-js-file-a-lot.test.ts");
@@ -124278,7 +124278,7 @@ test "bootstrap runner mirrors memfd disabled fallback corpus" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/memfd-disabled.test.ts");
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/bun/memfd-disabled.test.ts");
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 0 or summary.todo != 2) {
@@ -124301,7 +124301,7 @@ test "bootstrap runner mirrors RuntimeError corpus" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/runtime-error.test.ts");
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/bun/runtime-error.test.ts");
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
@@ -124324,7 +124324,7 @@ test "bootstrap runner mirrors spawn PATH lookup corpus" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/spawn/spawn-path.test.ts");
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/bun/spawn/spawn-path.test.ts");
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
@@ -124347,7 +124347,7 @@ test "bootstrap runner mirrors subprocess kill signal matrix" {
     defer threaded.deinit();
     const io = threaded.io();
     const path = "js/bun/spawn/spawn-kill-signal.test.ts";
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
@@ -124360,7 +124360,7 @@ test "bootstrap runner mirrors subprocess kill signal matrix" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_normalize_signal") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "ERR_INVALID_ARG_TYPE") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 16 or summary.todo != 0) {
         std.debug.print(
@@ -124382,7 +124382,7 @@ test "bootstrap runner mirrors subprocess AbortSignal matrix" {
     defer threaded.deinit();
     const io = threaded.io();
     const path = "js/bun/spawn/spawn-signal.test.ts";
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
@@ -124395,7 +124395,7 @@ test "bootstrap runner mirrors subprocess AbortSignal matrix" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_abort_signal_fixture") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "AbortSignal, \"timeout\"") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 4 or summary.todo != 0) {
         std.debug.print(
@@ -124417,7 +124417,7 @@ test "bootstrap runner mirrors subprocess socketpair shutdown matrix" {
     defer threaded.deinit();
     const io = threaded.io();
     const path = "js/bun/spawn/spawn-socketpair-shutdown.test.ts";
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
@@ -124430,7 +124430,7 @@ test "bootstrap runner mirrors subprocess socketpair shutdown matrix" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "connect_write_pipe") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Bun.stdin.stream().getReader()") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 3 or summary.todo != 0) {
         std.debug.print(
@@ -124452,7 +124452,7 @@ test "bootstrap runner mirrors subprocess maxBuffer and timeout matrix" {
     defer threaded.deinit();
     const io = threaded.io();
     const path = "js/bun/spawn/spawn-maxbuf.test.ts";
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
@@ -124466,7 +124466,7 @@ test "bootstrap runner mirrors subprocess maxBuffer and timeout matrix" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "exitedDueToTimeout") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_pipe_to") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 8 or summary.todo != 0) {
         std.debug.print(
@@ -124488,7 +124488,7 @@ test "bootstrap runner mirrors subprocess waiter-thread resource usage regressio
     defer threaded.deinit();
     const io = threaded.io();
     const path = "js/bun/spawn/spawn_waiter_thread.test.ts";
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
@@ -124501,7 +124501,7 @@ test "bootstrap runner mirrors subprocess waiter-thread resource usage regressio
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "BUN_FEATURE_FLAG_FORCE_WAITER_THREAD") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "WITHOUT_WAITER_THREAD") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
         std.debug.print(
@@ -124523,7 +124523,7 @@ test "bootstrap runner mirrors package-script IPC inheritance regression" {
     defer threaded.deinit();
     const io = threaded.io();
     const path = "js/bun/spawn/bun-ipc-inherit.test.ts";
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
@@ -124535,7 +124535,7 @@ test "bootstrap runner mirrors package-script IPC inheritance regression" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_package_script_ipc_fixture") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "process\\.send") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
         std.debug.print(
@@ -124562,7 +124562,7 @@ test "bootstrap runner mirrors Bun and Node cross-runtime IPC serialization" {
     };
 
     for (cases) |path| {
-        const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+        const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
         defer std.testing.allocator.free(source_path);
         const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
         defer std.testing.allocator.free(source);
@@ -124572,7 +124572,7 @@ test "bootstrap runner mirrors Bun and Node cross-runtime IPC serialization" {
         try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun subprocess IPC bun parent node child integration") == null);
         try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun subprocess IPC node parent bun child integration") == null);
 
-        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
         defer summary.deinit(std.testing.allocator);
         if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
             std.debug.print(
@@ -124596,7 +124596,7 @@ test "bootstrap runner mirrors subprocess IPC channel matrix" {
     defer threaded.deinit();
     const io = threaded.io();
     const path = "js/bun/spawn/spawn.ipc.test.ts";
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
@@ -124608,7 +124608,7 @@ test "bootstrap runner mirrors subprocess IPC channel matrix" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_ipc_channel_fixture") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "pong:") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 8 or summary.todo != 0) {
         std.debug.print(
@@ -124630,7 +124630,7 @@ test "bootstrap runner mirrors comprehensive subprocess matrix" {
     defer threaded.deinit();
     const io = threaded.io();
     const path = "js/bun/spawn/spawn.test.ts";
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(2 * 1024 * 1024));
     defer std.testing.allocator.free(source);
@@ -124643,7 +124643,7 @@ test "bootstrap runner mirrors comprehensive subprocess matrix" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "ReadableStream cannot be used for stdio[") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "fstatSync(fd)") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 126 or summary.todo != 5) {
         std.debug.print(
@@ -124670,7 +124670,7 @@ test "bootstrap runner mirrors subprocess pipe lifecycle leak matrices" {
     };
 
     for (cases) |case| {
-        const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", case.path });
+        const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", case.path });
         defer std.testing.allocator.free(source_path);
         const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
         defer std.testing.allocator.free(source);
@@ -124680,7 +124680,7 @@ test "bootstrap runner mirrors subprocess pipe lifecycle leak matrices" {
         try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun subprocess pipe memory leak integration") == null);
         try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun subprocess PipeReader read-error leak integration") == null);
 
-        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", case.path);
         defer summary.deinit(std.testing.allocator);
         if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != case.todo) {
             std.debug.print(
@@ -124705,7 +124705,7 @@ test "bootstrap runner mirrors unread-stdout subprocess GC regression" {
     defer threaded.deinit();
     const io = threaded.io();
     const path = "js/bun/spawn/spawn-unread-stdout-gc.test.ts";
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
@@ -124717,7 +124717,7 @@ test "bootstrap runner mirrors unread-stdout subprocess GC regression" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_unread_stdout_gc_fixture") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "detached: true") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
         std.debug.print(
@@ -124743,7 +124743,7 @@ test "bootstrap runner mirrors unread subprocess pipe leak lifecycle" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "current.endsWith(\"js/bun/spawn/spawn-noread-leak.test.ts\")") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "return __home_spawn_completed(\"\", \"\", 0)") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
         std.debug.print(
@@ -124768,7 +124768,7 @@ test "bootstrap runner mirrors expected double-connect rejection" {
 
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Double connect attempt rejected before transport re-entry") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
         std.debug.print(
@@ -124791,7 +124791,7 @@ test "bootstrap runner mirrors stale stdin HUP re-arm lifecycle" {
     const io = threaded.io();
     const path = "js/node/process/stdin/process-stdin-stale-hup.test.ts";
 
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
@@ -124803,7 +124803,7 @@ test "bootstrap runner mirrors stale stdin HUP re-arm lifecycle" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_spawn_stale_hup_fixture(options)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "ready\\ndata len=5\\nopened writer fd=101") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
         std.debug.print(
@@ -124831,7 +124831,7 @@ test "bootstrap runner mirrors promisified child-process abort causes" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "error.operation = \"child_process.exec\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "error.phase = \"abort\"") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.allowed_empty_files != 1) {
         std.debug.print(
@@ -124855,7 +124855,7 @@ test "bootstrap runner keeps child-process exec output textual by default" {
 
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_child_process_exec_file_output(output, options)") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.allowed_empty_files != 1) {
         std.debug.print(
@@ -124876,7 +124876,7 @@ test "bootstrap runner mirrors stdin pipe fd and FileSink ownership matrix" {
     defer threaded.deinit();
     const io = threaded.io();
     const path = "js/bun/spawn/spawn-stdin-pipe-fd-leak.test.ts";
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
@@ -124888,7 +124888,7 @@ test "bootstrap runner mirrors stdin pipe fd and FileSink ownership matrix" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_spawn_stdin_sink()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "liveCount() { return 0; }") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 2 or summary.todo != 1) {
         std.debug.print(
@@ -124910,7 +124910,7 @@ test "bootstrap runner mirrors core ReadableStream stdin matrix" {
     defer threaded.deinit();
     const io = threaded.io();
     const path = "js/bun/spawn/spawn-stdin-readable-stream.test.ts";
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(2 * 1024 * 1024));
     defer std.testing.allocator.free(source);
@@ -124923,7 +124923,7 @@ test "bootstrap runner mirrors core ReadableStream stdin matrix" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_collect_readable_stdin") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "'stdin' ReadableStream has already been used") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 21 or summary.todo != 2) {
         std.debug.print(
@@ -124945,7 +124945,7 @@ test "bootstrap runner mirrors ReadableStream stdin integration matrix" {
     defer threaded.deinit();
     const io = threaded.io();
     const path = "js/bun/spawn/spawn-stdin-readable-stream-integration.test.ts";
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(2 * 1024 * 1024));
     defer std.testing.allocator.free(source);
@@ -124956,7 +124956,7 @@ test "bootstrap runner mirrors ReadableStream stdin integration matrix" {
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun subprocess ReadableStream stdin integration") == null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "spawn-stdin-readable-stream-integration.test.ts") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 5 or summary.todo != 0) {
         std.debug.print(
@@ -124978,7 +124978,7 @@ test "bootstrap runner mirrors ReadableStream stdin edge-case matrix" {
     defer threaded.deinit();
     const io = threaded.io();
     const path = "js/bun/spawn/spawn-stdin-readable-stream-edge-cases.test.ts";
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(2 * 1024 * 1024));
     defer std.testing.allocator.free(source);
@@ -124989,7 +124989,7 @@ test "bootstrap runner mirrors ReadableStream stdin edge-case matrix" {
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun subprocess ReadableStream stdin edge cases") == null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_make_spawn_stdin_pull_stream") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 12 or summary.todo != 1) {
         std.debug.print(
@@ -125011,7 +125011,7 @@ test "bootstrap runner mirrors job object regression corpus" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/spawn/job-object-bug.test.ts");
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/bun/spawn/job-object-bug.test.ts");
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
@@ -125034,7 +125034,7 @@ test "bootstrap runner mirrors spawn exit-code corpus" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/spawn/exit-code.test.ts");
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/bun/spawn/exit-code.test.ts");
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 5 or summary.todo != 0) {
@@ -125057,7 +125057,7 @@ test "bootstrap runner mirrors readable stream helper spawn corpus" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/spawn/readablestream-helpers.test.ts");
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/bun/spawn/readablestream-helpers.test.ts");
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 30 or summary.todo != 0) {
@@ -125081,7 +125081,7 @@ test "bootstrap runner mirrors sparse archive extraction corpus" {
     const io = threaded.io();
     const path = "js/bun/archive.test.ts";
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 101 or summary.todo != 1) {
@@ -125104,7 +125104,7 @@ test "bootstrap runner mirrors spawn IPC GC corpus" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/spawn/spawn-ipc-gc.test.ts");
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/bun/spawn/spawn-ipc-gc.test.ts");
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
@@ -125127,7 +125127,7 @@ test "bootstrap runner mirrors spawn many teardown corpus" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/spawn/spawn-many-teardown.test.ts");
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/bun/spawn/spawn-many-teardown.test.ts");
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
@@ -125150,7 +125150,7 @@ test "bootstrap runner mirrors spawn pipe stale fd corpus" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/spawn/spawn-pipe-stale-fd-unregister.test.ts");
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/bun/spawn/spawn-pipe-stale-fd-unregister.test.ts");
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
@@ -125173,7 +125173,7 @@ test "bootstrap runner mirrors spawnSync timeout corpus" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/spawn/spawnSync.test.ts");
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/bun/spawn/spawnSync.test.ts");
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 5 or summary.todo != 1) {
@@ -125196,7 +125196,7 @@ test "bootstrap runner mirrors spawnSync microtask isolation corpus" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/spawn/spawnsync-no-microtask-drain.test.ts");
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/bun/spawn/spawnsync-no-microtask-drain.test.ts");
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 3 or summary.todo != 0) {
@@ -125219,7 +125219,7 @@ test "bootstrap runner mirrors spawnSync event-loop isolation corpus" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/spawn/spawnsync-isolated-event-loop.test.ts");
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/bun/spawn/spawnsync-isolated-event-loop.test.ts");
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 4 or summary.todo != 0) {
@@ -125242,7 +125242,7 @@ test "bootstrap runner mirrors expect.extend preload corpus" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/test/expect-extend-preload.test.ts");
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/bun/test/expect-extend-preload.test.ts");
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
@@ -125270,7 +125270,7 @@ test "bootstrap runner mirrors expect.extend matcher matrix" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "RECEIVED_COLOR(value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "return __home_deep_equal(received, expected, false, new Map())") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/test/expect-extend.test.js");
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/bun/test/expect-extend.test.js");
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 28 or summary.todo != 0) {
@@ -125299,7 +125299,7 @@ test "bootstrap runner mirrors cross-runner expect matcher matrix" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "expect.resolvesTo = __home_expect_async_namespace") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Received message: ") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/test/expect.test.js");
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/bun/test/expect.test.js");
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 398 or summary.todo != 10) {
@@ -125327,7 +125327,7 @@ test "bootstrap runner mirrors cross-runner mock function matrix" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "wrapped.withImplementation") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "if (original && original.__home_is_mock === true) return original") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/test/mock-fn.test.js");
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/bun/test/mock-fn.test.js");
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 54 or summary.todo != 0) {
@@ -125354,7 +125354,7 @@ test "bootstrap runner mirrors Jest spy matcher matrix" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "expect.not.objectContaining") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "toHaveReturned() does not accept arguments") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/test/spyMatchers.test.ts");
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/bun/test/spyMatchers.test.ts");
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 145 or summary.todo != 5) {
@@ -125377,7 +125377,7 @@ test "bootstrap runner mirrors transpiler error GC corpus" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/transpiler/transpiler-error-gc-uaf.test.ts");
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/bun/transpiler/transpiler-error-gc-uaf.test.ts");
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
@@ -125400,7 +125400,7 @@ test "bootstrap runner mirrors base64url buffer corpus" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/util/base64-url-safe-encode.test.ts");
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/bun/util/base64-url-safe-encode.test.ts");
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 5 or summary.todo != 0) {
@@ -125423,7 +125423,7 @@ test "bootstrap runner mirrors CryptoHasher utility corpus" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/util/bun-cryptohasher.test.ts");
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/bun/util/bun-cryptohasher.test.ts");
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 397 or summary.todo != 0) {
@@ -125446,7 +125446,7 @@ test "bootstrap runner mirrors Bun.file utility corpus" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/util/bun-file.test.ts");
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/bun/util/bun-file.test.ts");
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 6 or summary.todo != 0) {
@@ -125469,7 +125469,7 @@ test "bootstrap runner mirrors CSRF utility corpus" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/util/csrf.test.ts");
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/bun/util/csrf.test.ts");
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 24 or summary.todo != 0) {
@@ -125492,7 +125492,7 @@ test "bootstrap runner mirrors FileSink utility corpus" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/util/filesink.test.ts");
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/bun/util/filesink.test.ts");
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 44 or summary.todo != 0) {
@@ -125515,7 +125515,7 @@ test "bootstrap runner mirrors filesystem router utility corpus" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/util/filesystem_router.test.ts");
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/bun/util/filesystem_router.test.ts");
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 22 or summary.todo != 1) {
@@ -125538,7 +125538,7 @@ test "bootstrap runner mirrors fuzzilli REPRL utility corpus" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/util/fuzzilli-reprl.test.ts");
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/bun/util/fuzzilli-reprl.test.ts");
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
@@ -125561,7 +125561,7 @@ test "bootstrap runner mirrors hash utility corpus" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/util/hash.test.js");
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/bun/util/hash.test.js");
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 20 or summary.todo != 0) {
@@ -125584,7 +125584,7 @@ test "bootstrap runner mirrors inspect utility corpus" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/util/inspect.test.js");
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/bun/util/inspect.test.js");
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 72 or summary.todo != 0) {
@@ -125607,7 +125607,7 @@ test "bootstrap runner mirrors password utility corpus" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/util/password.test.ts");
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/bun/util/password.test.ts");
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 76 or summary.todo != 0) {
@@ -125630,7 +125630,7 @@ test "bootstrap runner mirrors reportError utility corpus" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/util/reportError.test.ts");
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/bun/util/reportError.test.ts");
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 2 or summary.todo != 0) {
@@ -125653,7 +125653,7 @@ test "bootstrap runner mirrors stringWidth utility corpus" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/util/stringWidth.test.ts");
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/bun/util/stringWidth.test.ts");
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 143 or summary.todo != 0) {
@@ -125675,7 +125675,7 @@ test "bootstrap runner mirrors lower using bun target resolver corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/resolve/lower-using-bun-target.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/resolve/lower-using-bun-target.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/resolve/lower-using-bun-target.test.ts");
@@ -125702,7 +125702,7 @@ test "bootstrap runner mirrors resolver autoinstall invalid name corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/resolve/resolve-autoinstall-invalid-name.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/resolve/resolve-autoinstall-invalid-name.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/resolve/resolve-autoinstall-invalid-name.test.ts");
@@ -125730,7 +125730,7 @@ test "bootstrap runner mirrors TypeScript package resolver corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/resolve/resolve-ts.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/resolve/resolve-ts.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/resolve/resolve-ts.test.ts");
@@ -125759,7 +125759,7 @@ test "bootstrap runner mirrors bun main entry resolver corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/resolve/bun-main-entry-point.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/resolve/bun-main-entry-point.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/resolve/bun-main-entry-point.test.ts");
@@ -125787,7 +125787,7 @@ test "bootstrap runner mirrors import.meta resolver corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/resolve/import-meta.test.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/resolve/import-meta.test.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/resolve/import-meta.test.js");
@@ -125820,7 +125820,7 @@ test "bootstrap runner mirrors ResolveMessage resolver corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/resolve/resolve-error.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/resolve/resolve-error.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/resolve/resolve-error.test.ts");
@@ -125847,7 +125847,7 @@ test "bootstrap runner mirrors require esm GC root resolver corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/resolve/require-esm-gc-roots.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/resolve/require-esm-gc-roots.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/resolve/require-esm-gc-roots.test.ts");
@@ -125875,7 +125875,7 @@ test "bootstrap runner mirrors JSON5 resolve import loader corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/resolve/json5/json5.test.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/resolve/json5/json5.test.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/resolve/json5/json5.test.js");
@@ -125904,7 +125904,7 @@ test "bootstrap runner mirrors JSON5 API corpus" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/json5/json5.test.ts");
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/bun/json5/json5.test.ts");
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 320 or summary.todo != 0) {
@@ -125930,7 +125930,7 @@ test "bootstrap runner aggregates the nested JSON5 corpus directory" {
     // The two individual files are pinned at 320 and 113 tests respectively.
     // The directory target must select both in sorted order and preserve their
     // aggregate result instead of delegating the path to native `bun test`.
-    var summary = try runDirectory(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/json5");
+    var summary = try runDirectory(io, std.testing.allocator, "packages/runtime/test/test", "js/bun/json5");
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 433 or summary.todo != 0) {
@@ -125961,7 +125961,7 @@ test "bootstrap runner mirrors JSONL parse API corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/jsonl/jsonl-parse.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/jsonl/jsonl-parse.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/jsonl/jsonl-parse.test.ts");
@@ -125975,7 +125975,7 @@ test "bootstrap runner mirrors JSONL parse API corpus" {
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "describe.skip(\"JSONL") == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "test.skip(\"JSONL") == null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/bun/jsonl/jsonl-parse.test.ts");
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/bun/jsonl/jsonl-parse.test.ts");
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 269 or summary.todo != 0) {
@@ -125997,7 +125997,7 @@ test "bootstrap runner mirrors YAML resolve import loader corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/resolve/yaml/yaml.test.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/resolve/yaml/yaml.test.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/resolve/yaml/yaml.test.js");
@@ -126026,7 +126026,7 @@ test "bootstrap runner mirrors TOML resolve import loader corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/resolve/toml/toml.test.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/resolve/toml/toml.test.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/resolve/toml/toml.test.js");
@@ -126055,7 +126055,7 @@ test "bootstrap runner mirrors JSC no-atomize string corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/jsc/string-noAtomize.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/jsc/string-noAtomize.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/jsc/string-noAtomize.test.ts");
@@ -126120,7 +126120,7 @@ test "bootstrap runner mirrors mock.module require.resolve sibling TypeScript co
     defer runtime.deinit();
 
     for (cases) |path| {
-        const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+        const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
         defer std.testing.allocator.free(source_path);
         const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
         defer std.testing.allocator.free(source);
@@ -126152,7 +126152,7 @@ test "bootstrap runner mirrors mock.module live re-export binding corpus" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
@@ -126186,7 +126186,7 @@ test "bootstrap runner mirrors mock.module dynamic and live-binding corpus" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
@@ -127388,7 +127388,7 @@ test "bootstrap runner mirrors exact assert boxed primitive corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
@@ -127416,7 +127416,7 @@ test "bootstrap runner mirrors issue 24329 shell placeholder execution" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
@@ -128296,7 +128296,7 @@ test "bootstrap runner mirrors third-party JWT and utility mini-suite" {
     const io = threaded.io();
 
     for (cases) |case| {
-        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", case.path);
         defer summary.deinit(std.testing.allocator);
 
         if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != case.todo) {
@@ -129112,7 +129112,7 @@ test "bootstrap runner mirrors mixed runtime regression mini-suite" {
     const io = threaded.io();
 
     for (cases) |case| {
-        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", case.path);
         defer summary.deinit(std.testing.allocator);
 
         const passed_matches = summary.passed == case.passed or (case.alternate_passed != null and summary.passed == case.alternate_passed.?);
@@ -129159,7 +129159,7 @@ test "bootstrap runner mirrors issue regression queue mini-suite" {
     const io = threaded.io();
 
     for (cases) |case| {
-        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", case.path);
         defer summary.deinit(std.testing.allocator);
 
         if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != case.todo) {
@@ -129211,7 +129211,7 @@ test "bootstrap runner mirrors late issue regression queue mini-suite" {
     const io = threaded.io();
 
     for (cases) |case| {
-        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", case.path);
         defer summary.deinit(std.testing.allocator);
 
         if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != case.todo) {
@@ -129272,7 +129272,7 @@ test "bootstrap runner mirrors expansion queue tail mini-suite" {
     const io = threaded.io();
 
     for (cases) |case| {
-        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", case.path);
 
         if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != case.todo) {
             std.debug.print(
@@ -129404,7 +129404,7 @@ test "bootstrap runner mirrors Deno encoding corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/deno/encoding/encoding.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/deno/encoding/encoding.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/deno/encoding/encoding.test.ts");
@@ -129432,7 +129432,7 @@ test "bootstrap runner mirrors node util internal inspect corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/node/util/node-inspect-tests/internal-inspect.test.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/node/util/node-inspect-tests/internal-inspect.test.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/util/node-inspect-tests/internal-inspect.test.js");
@@ -129498,7 +129498,7 @@ test "bootstrap runner mirrors utility resolve process queue mini-suite" {
     const io = threaded.io();
 
     for (cases) |case| {
-        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", case.path);
         defer summary.deinit(std.testing.allocator);
 
         if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != case.todo) {
@@ -129551,7 +129551,7 @@ test "bootstrap runner mirrors timers and highlighter queue mini-suite" {
     const io = threaded.io();
 
     for (cases) |case| {
-        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", case.path);
         defer summary.deinit(std.testing.allocator);
 
         if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != case.todo) {
@@ -129670,7 +129670,7 @@ test "bootstrap web globals preserve Bun realm and subprocess contracts" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/web/web-globals.test.js");
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/web/web-globals.test.js");
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 21 or summary.todo != 0) {
@@ -129693,7 +129693,7 @@ test "bootstrap web globals preserve Bun realm and subprocess contracts over Web
     defer threaded.deinit();
     const io = threaded.io();
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/web/websocket/test-ws-bidir-proxy.test.ts");
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/web/websocket/test-ws-bidir-proxy.test.ts");
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
@@ -129708,7 +129708,7 @@ test "bootstrap web globals preserve Bun realm and subprocess contracts over Web
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 
-    var leak_summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/web/websocket/websocket-proxy-tunnel-client-leak.test.ts");
+    var leak_summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/web/websocket/websocket-proxy-tunnel-client-leak.test.ts");
     defer leak_summary.deinit(std.testing.allocator);
 
     if (leak_summary.failed != 0 or leak_summary.unsupported != 0 or leak_summary.passed != 1 or leak_summary.todo != 0) {
@@ -129723,7 +129723,7 @@ test "bootstrap web globals preserve Bun realm and subprocess contracts over Web
     try std.testing.expectEqual(@as(usize, 0), leak_summary.todo);
     try std.testing.expectEqual(@as(usize, 0), leak_summary.unsupported);
 
-    var upgrade_summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/web/websocket/websocket-proxy-tunnel-upgrade-leak.test.ts");
+    var upgrade_summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/web/websocket/websocket-proxy-tunnel-upgrade-leak.test.ts");
     defer upgrade_summary.deinit(std.testing.allocator);
 
     if (upgrade_summary.failed != 0 or upgrade_summary.unsupported != 0 or upgrade_summary.passed != 1 or upgrade_summary.todo != 0) {
@@ -129738,7 +129738,7 @@ test "bootstrap web globals preserve Bun realm and subprocess contracts over Web
     try std.testing.expectEqual(@as(usize, 0), upgrade_summary.todo);
     try std.testing.expectEqual(@as(usize, 0), upgrade_summary.unsupported);
 
-    var unicode_summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/web/websocket/websocket-utf16-headers.test.ts");
+    var unicode_summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/web/websocket/websocket-utf16-headers.test.ts");
     defer unicode_summary.deinit(std.testing.allocator);
 
     if (unicode_summary.failed != 0 or unicode_summary.unsupported != 0 or unicode_summary.passed != 7 or unicode_summary.todo != 0) {
@@ -129753,7 +129753,7 @@ test "bootstrap web globals preserve Bun realm and subprocess contracts over Web
     try std.testing.expectEqual(@as(usize, 0), unicode_summary.todo);
     try std.testing.expectEqual(@as(usize, 0), unicode_summary.unsupported);
 
-    var main_summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/web/websocket/websocket.test.js");
+    var main_summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/web/websocket/websocket.test.js");
     defer main_summary.deinit(std.testing.allocator);
 
     if (main_summary.failed != 0 or main_summary.unsupported != 0 or main_summary.passed != 44 or main_summary.todo != 0) {
@@ -129822,7 +129822,7 @@ test "bootstrap web globals preserve Bun realm and subprocess contracts by valid
     defer threaded.deinit();
     const io = threaded.io();
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/web/websocket/websocket-accept-header-validation.test.ts");
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/web/websocket/websocket-accept-header-validation.test.ts");
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 2 or summary.todo != 0) {
@@ -129837,7 +129837,7 @@ test "bootstrap web globals preserve Bun realm and subprocess contracts by valid
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 
-    var subprotocol_summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/web/websocket/websocket-subprotocol-strict.test.ts");
+    var subprotocol_summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/web/websocket/websocket-subprotocol-strict.test.ts");
     defer subprotocol_summary.deinit(std.testing.allocator);
 
     if (subprotocol_summary.failed != 0 or subprotocol_summary.unsupported != 0 or subprotocol_summary.passed != 18 or subprotocol_summary.todo != 0) {
@@ -129852,7 +129852,7 @@ test "bootstrap web globals preserve Bun realm and subprocess contracts by valid
     try std.testing.expectEqual(@as(usize, 0), subprotocol_summary.todo);
     try std.testing.expectEqual(@as(usize, 0), subprotocol_summary.unsupported);
 
-    var unix_summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/web/websocket/websocket-unix.test.ts");
+    var unix_summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/web/websocket/websocket-unix.test.ts");
     defer unix_summary.deinit(std.testing.allocator);
 
     if (unix_summary.failed != 0 or unix_summary.unsupported != 0 or unix_summary.passed != 7 or unix_summary.todo != 0) {
@@ -129867,7 +129867,7 @@ test "bootstrap web globals preserve Bun realm and subprocess contracts by valid
     try std.testing.expectEqual(@as(usize, 0), unix_summary.todo);
     try std.testing.expectEqual(@as(usize, 0), unix_summary.unsupported);
 
-    var upgrade_summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/web/websocket/websocket-upgrade.test.ts");
+    var upgrade_summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/web/websocket/websocket-upgrade.test.ts");
     defer upgrade_summary.deinit(std.testing.allocator);
 
     if (upgrade_summary.failed != 0 or upgrade_summary.unsupported != 0 or upgrade_summary.passed != 1 or upgrade_summary.todo != 0) {
@@ -129992,7 +129992,7 @@ test "bootstrap web globals preserve Bun realm and subprocess contracts across f
     defer threaded.deinit();
     const io = threaded.io();
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/web/websocket/websocket-client-short-read.test.ts");
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/web/websocket/websocket-client-short-read.test.ts");
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 4 or summary.todo != 0) {
@@ -130015,7 +130015,7 @@ test "bootstrap web globals preserve Bun realm and subprocess contracts across t
     defer threaded.deinit();
     const io = threaded.io();
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/web/websocket/websocket-client.test.ts");
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/web/websocket/websocket-client.test.ts");
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 29 or summary.todo != 0) {
@@ -130038,7 +130038,7 @@ test "bootstrap web globals preserve Bun realm and subprocess contracts across f
     defer threaded.deinit();
     const io = threaded.io();
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/web/websocket/websocket-close-fragmented.test.ts");
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/web/websocket/websocket-close-fragmented.test.ts");
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
@@ -130097,7 +130097,7 @@ test "bootstrap web globals preserve Bun realm and subprocess contracts across c
     defer threaded.deinit();
     const io = threaded.io();
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/web/websocket/websocket-custom-headers.test.ts");
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/web/websocket/websocket-custom-headers.test.ts");
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 10 or summary.todo != 0) {
@@ -130120,7 +130120,7 @@ test "bootstrap web globals preserve Bun realm and subprocess contracts across b
     defer threaded.deinit();
     const io = threaded.io();
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/web/websocket/websocket-permessage-deflate-edge-cases.test.ts");
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/web/websocket/websocket-permessage-deflate-edge-cases.test.ts");
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 5 or summary.todo != 0) {
@@ -130135,7 +130135,7 @@ test "bootstrap web globals preserve Bun realm and subprocess contracts across b
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 
-    var simple_summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/web/websocket/websocket-permessage-deflate-simple.test.ts");
+    var simple_summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/web/websocket/websocket-permessage-deflate-simple.test.ts");
     defer simple_summary.deinit(std.testing.allocator);
 
     if (simple_summary.failed != 0 or simple_summary.unsupported != 0 or simple_summary.passed != 2 or simple_summary.todo != 0) {
@@ -130150,7 +130150,7 @@ test "bootstrap web globals preserve Bun realm and subprocess contracts across b
     try std.testing.expectEqual(@as(usize, 0), simple_summary.todo);
     try std.testing.expectEqual(@as(usize, 0), simple_summary.unsupported);
 
-    var full_summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/web/websocket/websocket-permessage-deflate.test.ts");
+    var full_summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/web/websocket/websocket-permessage-deflate.test.ts");
     defer full_summary.deinit(std.testing.allocator);
 
     if (full_summary.failed != 0 or full_summary.unsupported != 0 or full_summary.passed != 6 or full_summary.todo != 1) {
@@ -130246,7 +130246,7 @@ test "bootstrap web globals preserve Bun realm and subprocess contracts across f
     defer threaded.deinit();
     const io = threaded.io();
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", "js/web/websocket/websocket-pong-fragmented.test.ts");
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", "js/web/websocket/websocket-pong-fragmented.test.ts");
     defer summary.deinit(std.testing.allocator);
 
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 4 or summary.todo != 0) {
@@ -130343,7 +130343,7 @@ test "bootstrap runner mirrors Bun.serve file routes and ranges" {
     defer threaded.deinit();
     const io = threaded.io();
     const path = "js/bun/http/bun-serve-file.test.ts";
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
@@ -130355,7 +130355,7 @@ test "bootstrap runner mirrors Bun.serve file routes and ranges" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_serve_file_response") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_spawn_file_response_safety_fixture") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 66 or summary.todo != 2) {
         std.debug.print(
@@ -130377,7 +130377,7 @@ test "bootstrap runner mirrors Bun.serve static response stress matrix" {
     defer threaded.deinit();
     const io = threaded.io();
     const path = "js/bun/http/bun-serve-static.test.ts";
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
@@ -130395,7 +130395,7 @@ test "bootstrap runner mirrors Bun.serve static response stress matrix" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_static_response_source") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "method === \"GET\" && out.status === 200") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 34 or summary.todo != 0) {
         std.debug.print(
@@ -130417,7 +130417,7 @@ test "bootstrap runner mirrors Bun.serve request body leak stress matrix" {
     defer threaded.deinit();
     const io = threaded.io();
     const path = "js/bun/http/serve-body-leak.test.ts";
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
@@ -130443,7 +130443,7 @@ test "bootstrap runner mirrors Bun.serve request body leak stress matrix" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "state.responseTransfers++") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "request body ownership was not fully released") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 7 or summary.todo != 0) {
         std.debug.print(
@@ -130465,7 +130465,7 @@ test "bootstrap runner mirrors protocol-agnostic Bun.serve matrix" {
     defer threaded.deinit();
     const io = threaded.io();
     const path = "js/bun/http/serve-protocols.test.ts";
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
@@ -130485,7 +130485,7 @@ test "bootstrap runner mirrors protocol-agnostic Bun.serve matrix" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Home Bun.serve protocol fixture stopped with active requests") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "HTTP/3 was requested from a server without HTTP/3 transport") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 20 or summary.todo != 0) {
         std.debug.print(
@@ -130507,7 +130507,7 @@ test "bootstrap runner mirrors full Bun.serve HTTP/3 UDP matrix" {
     defer threaded.deinit();
     const io = threaded.io();
     const path = "js/bun/http/serve-http3.test.ts";
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(2 * 1024 * 1024));
     defer std.testing.allocator.free(source);
@@ -130530,7 +130530,7 @@ test "bootstrap runner mirrors full Bun.serve HTTP/3 UDP matrix" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "response.headers.set(\"Alt-Svc\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Home HTTP/3 active request accounting underflow") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 45 or summary.todo != 0) {
         std.debug.print(
@@ -130591,7 +130591,7 @@ test "bootstrap runner mirrors complete HTTP/3 fetch client and adversarial matr
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "requestedPort > 0 ? requestedPort") != null);
 
     for (cases) |case| {
-        const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", case.path });
+        const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", case.path });
         defer std.testing.allocator.free(source_path);
         const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(2 * 1024 * 1024));
         defer std.testing.allocator.free(source);
@@ -130601,7 +130601,7 @@ test "bootstrap runner mirrors complete HTTP/3 fetch client and adversarial matr
         try std.testing.expect(prepared.unsupported_reason == null);
         for (case.markers) |marker| try std.testing.expect(std.mem.indexOf(u8, prepared.source, marker) != null);
 
-        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", case.path);
         defer summary.deinit(std.testing.allocator);
         if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != 0) {
             std.debug.print(
@@ -130624,7 +130624,7 @@ test "bootstrap runner mirrors the core Bun fetch matrix" {
     defer threaded.deinit();
     const io = threaded.io();
     const path = "js/web/fetch/fetch.test.ts";
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/web/fetch/fetch.test.ts", std.testing.allocator, std.Io.Limit.limited(2 * 1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/web/fetch/fetch.test.ts", std.testing.allocator, std.Io.Limit.limited(2 * 1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
     defer prepared.deinit(std.testing.allocator);
@@ -130640,7 +130640,7 @@ test "bootstrap runner mirrors the core Bun fetch matrix" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "InvalidContentLength") != null);
     try std.testing.expect(!hasUnsupportedModuleSyntax(prepared.source));
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 350 or summary.todo != 0) {
         std.debug.print(
@@ -130662,7 +130662,7 @@ test "bootstrap runner mirrors the Bun fetch TLS matrix" {
     defer threaded.deinit();
     const io = threaded.io();
     const path = "js/web/fetch/fetch.tls.test.ts";
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/web/fetch/fetch.tls.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/web/fetch/fetch.tls.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
     defer prepared.deinit(std.testing.allocator);
@@ -130677,7 +130677,7 @@ test "bootstrap runner mirrors the Bun fetch TLS matrix" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_fetch_abort_signal") != null);
     try std.testing.expect(!hasUnsupportedModuleSyntax(prepared.source));
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 21 or summary.todo != 0) {
         std.debug.print(
@@ -130699,7 +130699,7 @@ test "bootstrap runner mirrors the Bun TLS wildcard hostname matrix" {
     defer threaded.deinit();
     const io = threaded.io();
     const path = "js/web/fetch/fetch.tls.wildcard.test.ts";
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/web/fetch/fetch.tls.wildcard.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/web/fetch/fetch.tls.wildcard.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
     defer prepared.deinit(std.testing.allocator);
@@ -130713,7 +130713,7 @@ test "bootstrap runner mirrors the Bun TLS wildcard hostname matrix" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "ERR_TLS_CERT_ALTNAME_INVALID") != null);
     try std.testing.expect(!hasUnsupportedModuleSyntax(prepared.source));
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 7 or summary.todo != 0) {
         std.debug.print(
@@ -130735,7 +130735,7 @@ test "bootstrap runner mirrors fetch keepalive and TLS pool identity" {
     defer threaded.deinit();
     const io = threaded.io();
     const path = "js/web/fetch/fetch-keepalive.test.ts";
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/web/fetch/fetch-keepalive.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/web/fetch/fetch-keepalive.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
     defer prepared.deinit(std.testing.allocator);
@@ -130747,7 +130747,7 @@ test "bootstrap runner mirrors fetch keepalive and TLS pool identity" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "fetchOptions.keepalive !== false") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "fetchOptions.keepalive === false") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 2 or summary.todo != 0) {
         std.debug.print(
@@ -130769,7 +130769,7 @@ test "bootstrap runner releases intermediate fetch redirect URLs" {
     defer threaded.deinit();
     const io = threaded.io();
     const path = "js/web/fetch/fetch-redirect.test.ts";
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/web/fetch/fetch-redirect.test.ts", std.testing.allocator, std.Io.Limit.limited(2 * 1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/web/fetch/fetch-redirect.test.ts", std.testing.allocator, std.Io.Limit.limited(2 * 1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
     defer prepared.deinit(std.testing.allocator);
@@ -130783,7 +130783,7 @@ test "bootstrap runner releases intermediate fetch redirect URLs" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "redirect: \"follow\", __home_redirect_state: redirectState") != null);
     try std.testing.expect(!hasUnsupportedModuleSyntax(prepared.source));
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 2 or summary.todo != 0) {
         std.debug.print(
@@ -130805,7 +130805,7 @@ test "bootstrap runner releases canceled fetch response stream roots" {
     defer threaded.deinit();
     const io = threaded.io();
     const path = "js/web/fetch/fetch-stream-cancel-leak.test.ts";
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/web/fetch/fetch-stream-cancel-leak.test.ts", std.testing.allocator, std.Io.Limit.limited(2 * 1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/web/fetch/fetch-stream-cancel-leak.test.ts", std.testing.allocator, std.Io.Limit.limited(2 * 1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
     defer prepared.deinit(std.testing.allocator);
@@ -130819,7 +130819,7 @@ test "bootstrap runner releases canceled fetch response stream roots" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "failure.operation = \"fetch.response.stream.lifecycle\"") != null);
     try std.testing.expect(!hasUnsupportedModuleSyntax(prepared.source));
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 2 or summary.todo != 0) {
         std.debug.print(
@@ -130841,7 +130841,7 @@ test "bootstrap runner aborts TLS fetches on timeout deadlines" {
     defer threaded.deinit();
     const io = threaded.io();
     const path = "js/web/fetch/fetch-tls-abortsignal-timeout.test.ts";
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/web/fetch/fetch-tls-abortsignal-timeout.test.ts", std.testing.allocator, std.Io.Limit.limited(2 * 1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/web/fetch/fetch-tls-abortsignal-timeout.test.ts", std.testing.allocator, std.Io.Limit.limited(2 * 1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
     defer prepared.deinit(std.testing.allocator);
@@ -130854,7 +130854,7 @@ test "bootstrap runner aborts TLS fetches on timeout deadlines" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Object.defineProperty(AbortSignal, \"timeout\"") != null);
     try std.testing.expect(!hasUnsupportedModuleSyntax(prepared.source));
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 6 or summary.todo != 0) {
         std.debug.print(
@@ -130876,7 +130876,7 @@ test "bootstrap runner preserves final fetch URLs after redirects" {
     defer threaded.deinit();
     const io = threaded.io();
     const path = "js/web/fetch/fetch-url-after-redirect.test.ts";
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/web/fetch/fetch-url-after-redirect.test.ts", std.testing.allocator, std.Io.Limit.limited(2 * 1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/web/fetch/fetch-url-after-redirect.test.ts", std.testing.allocator, std.Io.Limit.limited(2 * 1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
     defer prepared.deinit(std.testing.allocator);
@@ -130890,7 +130890,7 @@ test "bootstrap runner preserves final fetch URLs after redirects" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "failure.operation = \"node.http.server.response\"") != null);
     try std.testing.expect(!hasUnsupportedModuleSyntax(prepared.source));
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 2 or summary.todo != 0) {
         std.debug.print(
@@ -130912,20 +130912,20 @@ test "bootstrap runner lowers compressed fetch file imports" {
     defer threaded.deinit();
     const io = threaded.io();
     const path = "js/web/fetch/fetch.brotli.test.ts";
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/web/fetch/fetch.brotli.test.ts", std.testing.allocator, std.Io.Limit.limited(2 * 1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/web/fetch/fetch.brotli.test.ts", std.testing.allocator, std.Io.Limit.limited(2 * 1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
     defer prepared.deinit(std.testing.allocator);
 
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "with { type: \"file\" }") == null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "packages/runtime/test/bun-corpus/js/web/fetch/fetch.brotli.test.ts.br") != null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "packages/runtime/test/bun-corpus/js/web/fetch/fetch.brotli.test.ts.gzip") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "packages/runtime/test/test/js/web/fetch/fetch.brotli.test.ts.br") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "packages/runtime/test/test/js/web/fetch/fetch.brotli.test.ts.gzip") != null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "decompress: false") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "error.operation = \"fetch.response.decompress\"") != null);
     try std.testing.expect(!hasUnsupportedModuleSyntax(prepared.source));
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
         std.debug.print(
@@ -130947,7 +130947,7 @@ test "bootstrap runner mirrors fetch leak and lifetime matrix" {
     defer threaded.deinit();
     const io = threaded.io();
     const path = "js/web/fetch/fetch-leak.test.ts";
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/web/fetch/fetch-leak.test.ts", std.testing.allocator, std.Io.Limit.limited(2 * 1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/web/fetch/fetch-leak.test.ts", std.testing.allocator, std.Io.Limit.limited(2 * 1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
     defer prepared.deinit(std.testing.allocator);
@@ -130964,7 +130964,7 @@ test "bootstrap runner mirrors fetch leak and lifetime matrix" {
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "repeat(2000000)") == null);
     try std.testing.expect(!hasUnsupportedModuleSyntax(prepared.source));
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 21 or summary.todo != 1) {
         std.debug.print(
@@ -130986,7 +130986,7 @@ test "bootstrap runner mirrors fetch preconnect lifecycle" {
     defer threaded.deinit();
     const io = threaded.io();
     const path = "js/web/fetch/fetch-preconnect.test.ts";
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/web/fetch/fetch-preconnect.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/web/fetch/fetch-preconnect.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
     defer prepared.deinit(std.testing.allocator);
@@ -130999,7 +130999,7 @@ test "bootstrap runner mirrors fetch preconnect lifecycle" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_fetch_preconnect_pool[poolKey]") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_spawn_fetch_preconnect_fixture(options)") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 12 or summary.todo != 0) {
         std.debug.print(
@@ -131021,7 +131021,7 @@ test "bootstrap runner isolates split CONNECT proxy envelopes" {
     defer threaded.deinit();
     const io = threaded.io();
     const path = "js/web/fetch/fetch-proxy-connect-tunnel-split-envelope.test.ts";
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/web/fetch/fetch-proxy-connect-tunnel-split-envelope.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/web/fetch/fetch-proxy-connect-tunnel-split-envelope.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
     defer prepared.deinit(std.testing.allocator);
@@ -131033,7 +131033,7 @@ test "bootstrap runner isolates split CONNECT proxy envelopes" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "failure.operation = \"fetch.proxy.tunnel.parse\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "partial CONNECT envelope completed early") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
         std.debug.print(
@@ -131055,7 +131055,7 @@ test "bootstrap runner preserves TLS config intern race lifetime" {
     defer threaded.deinit();
     const io = threaded.io();
     const path = "js/web/fetch/fetch-proxy-tls-intern-race.test.ts";
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/web/fetch/fetch-proxy-tls-intern-race.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/web/fetch/fetch-proxy-tls-intern-race.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
     var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
     defer prepared.deinit(std.testing.allocator);
@@ -131068,7 +131068,7 @@ test "bootstrap runner preserves TLS config intern race lifetime" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "failure.operation = \"tls.config.registry\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_spawn_fetch_proxy_tls_intern_race_fixture(options)") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
         std.debug.print(
@@ -131144,7 +131144,7 @@ test "bootstrap runner mirrors complete HTTP/2 client adversarial and lifetime m
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "fetch-http2-leak-fixture.ts") != null);
 
     for (cases) |case| {
-        const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", case.path });
+        const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", case.path });
         defer std.testing.allocator.free(source_path);
         const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(3 * 1024 * 1024));
         defer std.testing.allocator.free(source);
@@ -131154,7 +131154,7 @@ test "bootstrap runner mirrors complete HTTP/2 client adversarial and lifetime m
         try std.testing.expect(prepared.unsupported_reason == null);
         for (case.markers) |marker| try std.testing.expect(std.mem.indexOf(u8, prepared.source, marker) != null);
 
-        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", case.path);
         defer summary.deinit(std.testing.allocator);
         if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != 0) {
             std.debug.print(
@@ -131177,7 +131177,7 @@ test "bootstrap runner mirrors complete node HTTP/2 protocol conformance" {
     defer threaded.deinit();
     const io = threaded.io();
     const path = "js/node/http2/h2-conformance.test.ts";
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(2 * 1024 * 1024));
     defer std.testing.allocator.free(source);
@@ -131196,7 +131196,7 @@ test "bootstrap runner mirrors complete node HTTP/2 protocol conformance" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "const usesModeledTransport = probedPeer && (probedPeer.__home_first_io === \"read\" || probedPeer.__home_http2_server)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "if (rawNetServer && /") == null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 23 or summary.todo != 0) {
         std.debug.print(
@@ -131241,7 +131241,7 @@ test "bootstrap runner mirrors complete node HTTP/2 invalid padding corpus" {
     defer threaded.deinit();
     const io = threaded.io();
     const path = "js/node/http2/node-http2-invalid-padding.test.ts";
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 7 or summary.todo != 0) {
         std.debug.print(
@@ -131263,7 +131263,7 @@ test "bootstrap runner mirrors complete node HTTP/2 compatibility corpus" {
     defer threaded.deinit();
     const io = threaded.io();
     const path = "js/node/http2/node-http2.test.js";
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 287 or summary.todo != 0) {
         std.debug.print(
@@ -131283,7 +131283,7 @@ test "bootstrap runner activates node HTTP/2 compatibility module imports" {
     defer threaded.deinit();
     const io = threaded.io();
     const path = "js/node/http2/node-http2.test.js";
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(4 * 1024 * 1024));
     defer std.testing.allocator.free(source);
@@ -131322,7 +131322,7 @@ test "bootstrap runner mirrors direct React ReadableStream and serve matrix" {
     defer threaded.deinit();
     const io = threaded.io();
     const path = "js/bun/stream/direct-readable-stream.test.tsx";
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
@@ -131340,7 +131340,7 @@ test "bootstrap runner mirrors direct React ReadableStream and serve matrix" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_react_render_to_readable_stream(node, textChunks)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "ReadableStream.prototype, Symbol.asyncIterator") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 537 or summary.todo != 0) {
         std.debug.print(
@@ -131362,7 +131362,7 @@ test "bootstrap runner mirrors HTTP chunked transfer TCP matrix" {
     defer threaded.deinit();
     const io = threaded.io();
     const path = "js/bun/http/http-server-chunking.test.ts";
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
@@ -131377,7 +131377,7 @@ test "bootstrap runner mirrors HTTP chunked transfer TCP matrix" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "setSocketOptions(socket, option, value)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function parseChunkedBody(bytes)") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 11 or summary.todo != 0) {
         std.debug.print(
@@ -131399,7 +131399,7 @@ test "bootstrap runner mirrors HTTP request smuggling hardening matrix" {
     defer threaded.deinit();
     const io = threaded.io();
     const path = "js/bun/http/request-smuggling.test.ts";
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(2 * 1024 * 1024));
     defer std.testing.allocator.free(source);
@@ -131414,7 +131414,7 @@ test "bootstrap runner mirrors HTTP request smuggling hardening matrix" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_net_connect_bun_serve(port, hostname, timeoutMs, connectCallback)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Request body terminated before completion") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 59 or summary.todo != 0) {
         std.debug.print(
@@ -131436,7 +131436,7 @@ test "bootstrap runner mirrors Undici Headers WebIDL matrix" {
     defer threaded.deinit();
     const io = threaded.io();
     const path = "js/web/fetch/headers.undici.test.ts";
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
@@ -131449,7 +131449,7 @@ test "bootstrap runner mirrors Undici Headers WebIDL matrix" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_headers_assert_instance") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_http_response_headers") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 51 or summary.todo != 0) {
         std.debug.print(
@@ -131471,7 +131471,7 @@ test "bootstrap runner mirrors async iterable Response streaming matrix" {
     defer threaded.deinit();
     const io = threaded.io();
     const path = "js/bun/http/async-iterator-stream.test.ts";
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
@@ -131484,7 +131484,7 @@ test "bootstrap runner mirrors async iterable Response streaming matrix" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_async_iterable_throw_fixture") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "this.__home_text = __home_request_body_text(this.body)") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 86 or summary.todo != 0) {
         std.debug.print(
@@ -131506,7 +131506,7 @@ test "bootstrap runner mirrors slow-connect fetch abort matrix" {
     defer threaded.deinit();
     const io = threaded.io();
     const path = "js/bun/io/fetch/fetch-abort-slow-connect.test.ts";
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
@@ -131518,7 +131518,7 @@ test "bootstrap runner mirrors slow-connect fetch abort matrix" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_fetch_wait_for_abort") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "new DOMException(\"The operation was aborted.\", \"AbortError\")") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 3 or summary.todo != 0) {
         std.debug.print(
@@ -131700,7 +131700,7 @@ test "bootstrap runner mirrors Bun h1spec raw HTTP compliance matrix" {
     defer threaded.deinit();
     const io = threaded.io();
     const path = "js/bun/http/hspec.test.ts";
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
@@ -131715,7 +131715,7 @@ test "bootstrap runner mirrors Bun h1spec raw HTTP compliance matrix" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "endsWith(\"js/bun/http/hspec.test.ts\")") == null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "globalThis.__home_modules[\"js/bun/http/http-spec.ts\"]") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
         std.debug.print(
@@ -131737,7 +131737,7 @@ test "bootstrap runner mirrors fetch many-header cap corpus" {
     defer threaded.deinit();
     const io = threaded.io();
     const path = "js/bun/http/fetch-header-count-limit.test.ts";
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
@@ -131751,7 +131751,7 @@ test "bootstrap runner mirrors fetch many-header cap corpus" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_fetch_via_net_server") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "if (!acceptedNames.has(\"host\"))") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 3 or summary.todo != 0) {
         std.debug.print(
@@ -131773,7 +131773,7 @@ test "bootstrap runner mirrors Bun.file and multipart fetch upload corpus" {
     defer threaded.deinit();
     const io = threaded.io();
     const path = "js/bun/http/fetch-file-upload.test.ts";
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
@@ -131788,7 +131788,7 @@ test "bootstrap runner mirrors Bun.file and multipart fetch upload corpus" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_logical_buffer") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_fetch_missing_file_error") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 6 or summary.todo != 0) {
         std.debug.print(
@@ -131810,7 +131810,7 @@ test "bootstrap runner mirrors chunked response trailers corpus" {
     defer threaded.deinit();
     const io = threaded.io();
     const path = "js/web/fetch/chunked-trailing.test.js";
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
@@ -131824,7 +131824,7 @@ test "bootstrap runner mirrors chunked response trailers corpus" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "failure.operation = \"fetch.http1.response.parse\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "failure.receivedBytes") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 23 or summary.todo != 0) {
         std.debug.print(
@@ -131846,7 +131846,7 @@ test "bootstrap runner mirrors client fetch corpus" {
     defer threaded.deinit();
     const io = threaded.io();
     const path = "js/web/fetch/client-fetch.test.ts";
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
@@ -131864,7 +131864,7 @@ test "bootstrap runner mirrors client fetch corpus" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "[Symbol.asyncDispose]()") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_http_body_bytes") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 29 or summary.todo != 2) {
         std.debug.print(
@@ -131886,7 +131886,7 @@ test "bootstrap runner mirrors FormData Content-Length corpus" {
     defer threaded.deinit();
     const io = threaded.io();
     const path = "js/web/fetch/content-length.test.js";
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
@@ -131899,7 +131899,7 @@ test "bootstrap runner mirrors FormData Content-Length corpus" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "serialized.byteLength") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_http_headers_object(request && request.headers") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 1 or summary.todo != 0) {
         std.debug.print(
@@ -131921,7 +131921,7 @@ test "bootstrap runner mirrors fetch cookies corpus" {
     defer threaded.deinit();
     const io = threaded.io();
     const path = "js/web/fetch/cookies.test.ts";
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
@@ -131934,7 +131934,7 @@ test "bootstrap runner mirrors fetch cookies corpus" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "failure.code = \"ERR_INVALID_HTTP_HEADER\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "failure.operation = \"headers.cookie.validate\"") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 3 or summary.todo != 1) {
         std.debug.print(
@@ -131956,7 +131956,7 @@ test "bootstrap runner mirrors fetch argument normalization corpus" {
     defer threaded.deinit();
     const io = threaded.io();
     const path = "js/web/fetch/fetch-args.test.ts";
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
@@ -131970,7 +131970,7 @@ test "bootstrap runner mirrors fetch argument normalization corpus" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "failure.property = property === undefined ? null : String(property)") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Caused by: ") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 47 or summary.todo != 0) {
         std.debug.print(
@@ -131992,7 +131992,7 @@ test "bootstrap runner mirrors fetch request compression corpus" {
     defer threaded.deinit();
     const io = threaded.io();
     const path = "js/web/fetch/fetch-compress.test.ts";
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
@@ -132006,7 +132006,7 @@ test "bootstrap runner mirrors fetch request compression corpus" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "failure.operation = \"fetch.request.compress\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Caused by: ") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 32 or summary.todo != 0) {
         std.debug.print(
@@ -132028,7 +132028,7 @@ test "bootstrap runner mirrors fetch Connection header corpus" {
     defer threaded.deinit();
     const io = threaded.io();
     const path = "js/web/fetch/fetch-connection-header.test.ts";
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
@@ -132042,7 +132042,7 @@ test "bootstrap runner mirrors fetch Connection header corpus" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "request.headers.get(\"connection\") === null") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "request.headers.set(\"Connection\", \"keep-alive\")") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 10 or summary.todo != 0) {
         std.debug.print(
@@ -132064,7 +132064,7 @@ test "bootstrap runner mirrors compressed fetch response corpus" {
     defer threaded.deinit();
     const io = threaded.io();
     const path = "js/web/fetch/fetch-gzip.test.ts";
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
@@ -132098,7 +132098,7 @@ test "bootstrap runner mirrors compressed fetch response corpus" {
     try std.testing.expect(std.mem.indexOf(u8, adapter_source, "fn deflateDecompressNative(") != null);
     try std.testing.expect(std.mem.indexOf(u8, adapter_source, "allocRemaining(allocator, std.Io.Limit.unlimited)") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 24 or summary.todo != 0) {
         std.debug.print(
@@ -132120,7 +132120,7 @@ test "bootstrap runner mirrors fetch streaming lifecycle corpus" {
     defer threaded.deinit();
     const io = threaded.io();
     const path = "js/web/fetch/fetch.stream.test.ts";
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(2 * 1024 * 1024));
     defer std.testing.allocator.free(source);
@@ -132138,7 +132138,7 @@ test "bootstrap runner mirrors fetch streaming lifecycle corpus" {
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_stream_pipeline") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "Caused by: \" + String(underlying.stack || underlying)") != null);
 
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", path);
+    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 110 or summary.todo != 5) {
         std.debug.print(
@@ -132227,7 +132227,7 @@ test "bootstrap runner mirrors HTTP web tail queue mini-suite" {
     const io = threaded.io();
 
     for (cases) |case| {
-        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", case.path);
         defer summary.deinit(std.testing.allocator);
 
         if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != case.todo) {
@@ -132277,7 +132277,7 @@ test "bootstrap runner mirrors minimal core tail utility mini-suite" {
     const io = threaded.io();
 
     for (cases) |case| {
-        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", case.path);
         defer summary.deinit(std.testing.allocator);
 
         if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != case.todo) {
@@ -132328,7 +132328,7 @@ test "bootstrap runner mirrors Deno web regression tail mini-suite" {
     const io = threaded.io();
 
     for (cases) |case| {
-        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", case.path);
         defer summary.deinit(std.testing.allocator);
 
         if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != case.todo) {
@@ -132351,7 +132351,7 @@ test "bootstrap runner mirrors Deno event inspect corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/deno/event/event.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/deno/event/event.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/deno/event/event.test.ts");
@@ -132379,7 +132379,7 @@ test "bootstrap runner mirrors Deno event target window default corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/deno/event/event-target.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/deno/event/event-target.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/deno/event/event-target.test.ts");
@@ -132406,7 +132406,7 @@ test "bootstrap runner mirrors Deno blob inspect corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/deno/fetch/blob.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/deno/fetch/blob.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/deno/fetch/blob.test.ts");
@@ -132433,7 +132433,7 @@ test "bootstrap runner mirrors Deno body form data corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/deno/fetch/body.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/deno/fetch/body.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/deno/fetch/body.test.ts");
@@ -132493,7 +132493,7 @@ test "bootstrap runner mirrors Deno fetch inspect corpus" {
     const io = threaded.io();
 
     for (cases) |case| {
-        const corpus_path = try std.fmt.allocPrint(std.testing.allocator, "packages/runtime/test/bun-corpus/{s}", .{case.path});
+        const corpus_path = try std.fmt.allocPrint(std.testing.allocator, "packages/runtime/test/test/{s}", .{case.path});
         defer std.testing.allocator.free(corpus_path);
         const source = try Io.Dir.cwd().readFileAlloc(io, corpus_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
         defer std.testing.allocator.free(source);
@@ -132529,7 +132529,7 @@ test "bootstrap runner mirrors req.url leak fixture smoke" {
     defer threaded.deinit();
     const upstream_source = try Io.Dir.cwd().readFileAlloc(
         threaded.io(),
-        "packages/runtime/test/bun-corpus/js/bun/http/req-url-leak.test.ts",
+        "packages/runtime/test/test/js/bun/http/req-url-leak.test.ts",
         std.testing.allocator,
         std.Io.Limit.limited(1024 * 1024),
     );
@@ -132611,7 +132611,7 @@ test "bootstrap runner mirrors buffer test utility tail mini-suite" {
     const io = threaded.io();
 
     for (cases) |case| {
-        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", case.path);
         defer summary.deinit(std.testing.allocator);
 
         if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != 0) {
@@ -132705,7 +132705,7 @@ test "bootstrap runner mirrors final minimal core smoke mini-suite" {
     const io = threaded.io();
 
     for (cases) |case| {
-        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", case.path);
         defer summary.deinit(std.testing.allocator);
 
         if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != case.todo) {
@@ -132864,7 +132864,7 @@ test "bootstrap runner preserves node url invalid argument TODOs" {
     defer runtime.deinit();
 
     for (cases) |case| {
-        const full_path = try std.fmt.allocPrint(std.testing.allocator, "packages/runtime/test/bun-corpus/{s}", .{case.path});
+        const full_path = try std.fmt.allocPrint(std.testing.allocator, "packages/runtime/test/test/{s}", .{case.path});
         defer std.testing.allocator.free(full_path);
         const source = try Io.Dir.cwd().readFileAlloc(io, full_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
         defer std.testing.allocator.free(source);
@@ -133021,7 +133021,7 @@ test "bootstrap runner mirrors node path corpus tranche" {
     const io = threaded.io();
 
     for (cases) |case| {
-        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", case.path);
         defer summary.deinit(std.testing.allocator);
 
         if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != case.todo) {
@@ -133062,7 +133062,7 @@ test "bootstrap runner mirrors node URL and path utility tranche" {
     const io = threaded.io();
 
     for (cases) |case| {
-        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", case.path);
+        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", case.path);
         defer summary.deinit(std.testing.allocator);
 
         if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != case.todo) {
@@ -133112,7 +133112,7 @@ test "bootstrap runner preserves node url object TODO and skip registrations" {
     defer runtime.deinit();
 
     for (cases) |case| {
-        const full_path = try std.fmt.allocPrint(std.testing.allocator, "packages/runtime/test/bun-corpus/{s}", .{case.path});
+        const full_path = try std.fmt.allocPrint(std.testing.allocator, "packages/runtime/test/test/{s}", .{case.path});
         defer std.testing.allocator.free(full_path);
         const source = try Io.Dir.cwd().readFileAlloc(io, full_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
         defer std.testing.allocator.free(source);
@@ -133165,7 +133165,7 @@ test "bootstrap runner preserves node url pathToFileURL TODOs" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/node/url/url-pathtofileurl.test.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/node/url/url-pathtofileurl.test.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/url/url-pathtofileurl.test.js");
@@ -133193,7 +133193,7 @@ test "bootstrap runner preserves node url fileURLToPath TODO" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/node/url/url-fileurltopath.test.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/node/url/url-fileurltopath.test.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/url/url-fileurltopath.test.js");
@@ -134001,7 +134001,7 @@ test "corpus module preparation lowers static data-loader imports generically" {
 
 test "UV N-API corpus imports use vendored constants and source assets" {
     for ([_][]const u8{ "napi/uv.test.ts", "napi/uv_stub.test.ts" }) |path| {
-        const source_path = try std.fmt.allocPrint(std.testing.allocator, "packages/runtime/test/bun-corpus/{s}", .{path});
+        const source_path = try std.fmt.allocPrint(std.testing.allocator, "packages/runtime/test/test/{s}", .{path});
         defer std.testing.allocator.free(source_path);
         const source = try Io.Dir.cwd().readFileAlloc(
             std.testing.io,
@@ -134023,7 +134023,7 @@ test "UV N-API corpus imports use vendored constants and source assets" {
 test "issue 00631 lowers legacy harness imports and resource declarations" {
     const source = try Io.Dir.cwd().readFileAlloc(
         std.testing.io,
-        "packages/runtime/test/bun-corpus/regression/issue/00631.test.ts",
+        "packages/runtime/test/test/regression/issue/00631.test.ts",
         std.testing.allocator,
         std.Io.Limit.limited(1024 * 1024),
     );
@@ -134040,7 +134040,7 @@ test "issue 00631 lowers legacy harness imports and resource declarations" {
 test "corpus module preparation lowers first-party undici imports" {
     const source = try Io.Dir.cwd().readFileAlloc(
         std.testing.io,
-        "packages/runtime/test/bun-corpus/js/first_party/undici/undici.test.ts",
+        "packages/runtime/test/test/js/first_party/undici/undici.test.ts",
         std.testing.allocator,
         std.Io.Limit.limited(1024 * 1024),
     );
@@ -134061,7 +134061,7 @@ test "corpus module preparation lowers first-party undici imports" {
 test "corpus module preparation lowers first-party ws proxy imports" {
     const source = try Io.Dir.cwd().readFileAlloc(
         std.testing.io,
-        "packages/runtime/test/bun-corpus/js/first_party/ws/ws-proxy.test.ts",
+        "packages/runtime/test/test/js/first_party/ws/ws-proxy.test.ts",
         std.testing.allocator,
         std.Io.Limit.limited(1024 * 1024),
     );
@@ -134084,7 +134084,7 @@ test "corpus module preparation lowers first-party ws proxy imports" {
 test "corpus module preparation lowers WebSocket proxy imports" {
     const source = try Io.Dir.cwd().readFileAlloc(
         std.testing.io,
-        "packages/runtime/test/bun-corpus/js/web/websocket/websocket-proxy.test.ts",
+        "packages/runtime/test/test/js/web/websocket/websocket-proxy.test.ts",
         std.testing.allocator,
         std.Io.Limit.limited(1024 * 1024),
     );
@@ -137685,7 +137685,7 @@ test "bootstrap rewrite erases minimum release age resource declarations" {
     const io = threaded.io();
     const source = try Io.Dir.cwd().readFileAlloc(
         io,
-        "packages/runtime/test/bun-corpus/cli/install/minimum-release-age.test.ts",
+        "packages/runtime/test/test/cli/install/minimum-release-age.test.ts",
         std.testing.allocator,
         std.Io.Limit.limited(1024 * 1024),
     );
@@ -137724,7 +137724,7 @@ test "bootstrap runner prepares install lifecycle corpus imports" {
     const io = threaded.io();
     const source = try Io.Dir.cwd().readFileAlloc(
         io,
-        "packages/runtime/test/bun-corpus/cli/install/bun-install-lifecycle-scripts.test.ts",
+        "packages/runtime/test/test/cli/install/bun-install-lifecycle-scripts.test.ts",
         std.testing.allocator,
         std.Io.Limit.limited(1024 * 1024),
     );
@@ -137745,7 +137745,7 @@ test "bootstrap preserves install lifecycle throttling and registry readiness" {
 
     const lifecycle_source = try Io.Dir.cwd().readFileAlloc(
         io,
-        "packages/runtime/test/bun-corpus/cli/install/bun-install-lifecycle-scripts.test.ts",
+        "packages/runtime/test/test/cli/install/bun-install-lifecycle-scripts.test.ts",
         std.testing.allocator,
         std.Io.Limit.limited(1024 * 1024),
     );
@@ -137760,7 +137760,7 @@ test "bootstrap preserves install lifecycle throttling and registry readiness" {
 
     const config_source = try Io.Dir.cwd().readFileAlloc(
         io,
-        "packages/runtime/test/bun-corpus/cli/install/config-version.test.ts",
+        "packages/runtime/test/test/cli/install/config-version.test.ts",
         std.testing.allocator,
         std.Io.Limit.limited(1024 * 1024),
     );
@@ -140492,7 +140492,7 @@ test "bootstrap runner mirrors crypto advertised names corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/crypto-names.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/crypto-names.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/crypto-names.test.ts");
@@ -140519,7 +140519,7 @@ test "bootstrap runner lowers crypto sign fixture import from upstream corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/node/crypto/crypto.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/node/crypto/crypto.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var upstream_prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/crypto/crypto.test.ts");
@@ -140563,7 +140563,7 @@ test "bootstrap runner mirrors crypto ECDH corpus surface" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/node/crypto/ecdh.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/node/crypto/ecdh.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var upstream_prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/crypto/ecdh.test.ts");
@@ -140610,7 +140610,7 @@ test "bootstrap runner mirrors crypto hkdf callback null corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/node/crypto/hkdf-callback-null.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/node/crypto/hkdf-callback-null.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/crypto/hkdf-callback-null.test.ts");
@@ -140635,7 +140635,7 @@ test "bootstrap runner mirrors crypto pbkdf2 corpus surface" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/node/crypto/pbkdf2.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/node/crypto/pbkdf2.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var upstream_prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/crypto/pbkdf2.test.ts");
@@ -140684,7 +140684,7 @@ test "bootstrap runner mirrors crypto scrypt corpus surface" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/node/crypto/scrypt.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/node/crypto/scrypt.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/crypto/scrypt.test.ts");
@@ -140709,7 +140709,7 @@ test "bootstrap runner mirrors crypto EC JWK ieee-p1363 corpus surface" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/node/crypto/sign-jwk-ieee-p1363.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/node/crypto/sign-jwk-ieee-p1363.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/crypto/sign-jwk-ieee-p1363.test.ts");
@@ -140735,7 +140735,7 @@ test "bootstrap runner mirrors crypto X509 subclass corpus surface" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/node/crypto/x509-subclass.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/node/crypto/x509-subclass.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/crypto/x509-subclass.test.ts");
@@ -140761,7 +140761,7 @@ test "bootstrap runner mirrors node dgram corpus surface" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/node/dgram/node-dgram.test.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/node/dgram/node-dgram.test.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/dgram/node-dgram.test.js");
@@ -140806,7 +140806,7 @@ test "bootstrap runner mirrors Bun UDP socket matrices" {
     };
 
     for (matrices) |matrix| {
-        const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", matrix.path });
+        const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", matrix.path });
         defer std.testing.allocator.free(source_path);
         const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
         defer std.testing.allocator.free(source);
@@ -140816,7 +140816,7 @@ test "bootstrap runner mirrors Bun UDP socket matrices" {
         try std.testing.expect(prepared.unsupported_reason == null);
         try std.testing.expect(std.mem.indexOf(u8, prepared.source, "native integration") == null);
 
-        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/bun-corpus", matrix.path);
+        var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", matrix.path);
         defer summary.deinit(std.testing.allocator);
         if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != matrix.passed or summary.todo != matrix.todo) {
             std.debug.print(
@@ -140838,7 +140838,7 @@ test "bootstrap runner mirrors diagnostics channel corpus surface" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/node/diagnostics_channel/diagnostics_channel.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/node/diagnostics_channel/diagnostics_channel.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/diagnostics_channel/diagnostics_channel.test.ts");
@@ -140865,7 +140865,7 @@ test "bootstrap runner mirrors node DNS corpus surface" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/node/dns/node-dns.test.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/node/dns/node-dns.test.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/dns/node-dns.test.js");
@@ -140892,7 +140892,7 @@ test "bootstrap runner mirrors node crypto module corpus surface" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/node/crypto/node-crypto.test.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/node/crypto/node-crypto.test.js", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var upstream_prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/crypto/node-crypto.test.js");
@@ -140946,7 +140946,7 @@ test "bootstrap runner mirrors node EventEmitter corpus surface" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/node/events/event-emitter.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/node/events/event-emitter.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/node/events/event-emitter.test.ts");
@@ -140975,12 +140975,12 @@ test "bootstrap runner mirrors CSS system color internals corpus" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    const context_source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/css-system-color-contexts.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const context_source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/css-system-color-contexts.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(context_source);
     var context_prepared = try prepareCorpusModule(std.testing.allocator, context_source, "regression/issue/css-system-color-contexts.test.ts");
     defer context_prepared.deinit(std.testing.allocator);
 
-    const mix_source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/css-system-color-mix-crash.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const mix_source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/css-system-color-mix-crash.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(mix_source);
     var mix_prepared = try prepareCorpusModule(std.testing.allocator, mix_source, "regression/issue/css-system-color-mix-crash.test.ts");
     defer mix_prepared.deinit(std.testing.allocator);
@@ -141010,7 +141010,7 @@ test "bootstrap runner mirrors ctrl-c signal corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/ctrl-c.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/ctrl-c.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/ctrl-c.test.ts");
@@ -141036,7 +141036,7 @@ test "bootstrap runner mirrors hashbang syntax corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/hashbang-still-works.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/hashbang-still-works.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/hashbang-still-works.test.ts");
@@ -141062,7 +141062,7 @@ test "bootstrap runner mirrors JSX template string crash corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/jsx-template-string-crash.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/jsx-template-string-crash.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/jsx-template-string-crash.test.ts");
@@ -141095,7 +141095,7 @@ test "bootstrap runner mirrors malformed integrity install corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/malformed-integrity-base64.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/malformed-integrity-base64.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/malformed-integrity-base64.test.ts");
@@ -141121,7 +141121,7 @@ test "bootstrap runner mirrors minify new Array corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/minify-new-array-with-if.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/minify-new-array-with-if.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/minify-new-array-with-if.test.ts");
@@ -141149,7 +141149,7 @@ test "bootstrap runner mirrors patch bounds install corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/patch-bounds-check.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/patch-bounds-check.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/patch-bounds-check.test.ts");
@@ -141175,7 +141175,7 @@ test "bootstrap runner mirrors postgres null byte corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/postgres-null-byte-injection.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/postgres-null-byte-injection.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/postgres-null-byte-injection.test.ts");
@@ -141201,7 +141201,7 @@ test "bootstrap runner mirrors isArray proxy crash corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/isArray-proxy-crash.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/isArray-proxy-crash.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/isArray-proxy-crash.test.ts");
@@ -141260,7 +141260,7 @@ test "bootstrap runner preserves large process argv vectors" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
@@ -141290,7 +141290,7 @@ test "bootstrap Bun.spawn eval preserves process title without recursive executi
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
@@ -141320,7 +141320,7 @@ test "bootstrap runner mirrors Bun.connect TLS X509 socket matrix" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
@@ -143850,7 +143850,7 @@ test "bootstrap runner supports Readable.fromWeb and sha256 hash parity shape" {
 
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
-    var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/bun-corpus", "regression/issue/09555.test.ts");
+    var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/test", "regression/issue/09555.test.ts");
     defer summary.deinit(std.testing.allocator);
     if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 5 or summary.todo != 0) {
         std.debug.print("Readable.fromWeb ownership corpus mismatch: {s}\n", .{summary.first_failure_message});
@@ -144086,7 +144086,7 @@ test "bootstrap runner mirrors bun install cpu os corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/cli/install/bun-install-cpu-os.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/cli/install/bun-install-cpu-os.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-cpu-os.test.ts");
@@ -144111,7 +144111,7 @@ test "bootstrap runner mirrors bun install native binlink corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/cli/install/bun-install-native-binlink.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/cli/install/bun-install-native-binlink.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-native-binlink.test.ts");
@@ -144136,7 +144136,7 @@ test "bootstrap runner mirrors bun install patch corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/cli/install/bun-install-patch.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/cli/install/bun-install-patch.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-patch.test.ts");
@@ -144162,7 +144162,7 @@ test "bootstrap runner mirrors bun patch lifecycle corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/cli/install/bun-patch.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/cli/install/bun-patch.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-patch.test.ts");
@@ -144188,7 +144188,7 @@ test "bootstrap runner prepares bun pm pkg corpus for native cli" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/cli/install/bun-pm-pkg.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/cli/install/bun-pm-pkg.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-pm-pkg.test.ts");
@@ -144209,7 +144209,7 @@ test "bootstrap runner mirrors bun install pathname trailing slash corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/cli/install/bun-install-pathname-trailing-slash.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/cli/install/bun-install-pathname-trailing-slash.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-pathname-trailing-slash.test.ts");
@@ -144234,7 +144234,7 @@ test "bootstrap runner loads docker-gated bun install proxy corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/cli/install/bun-install-proxy.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/cli/install/bun-install-proxy.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-proxy.test.ts");
@@ -144261,7 +144261,7 @@ test "bootstrap runner prepares bun install registry corpus TypeScript syntax" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/cli/install/bun-install-registry.test.ts", std.testing.allocator, std.Io.Limit.limited(2 * 1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/cli/install/bun-install-registry.test.ts", std.testing.allocator, std.Io.Limit.limited(2 * 1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/install/bun-install-registry.test.ts");
@@ -155856,7 +155856,7 @@ test "bootstrap runner mirrors mock.module missing package resolution corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/test/mock/mock-module-resolve-log.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/test/mock/mock-module-resolve-log.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/test/mock/mock-module-resolve-log.test.ts");
@@ -155885,7 +155885,7 @@ test "bootstrap runner mirrors CommonJS extension loader type corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/require-extensions-override.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/require-extensions-override.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/require-extensions-override.test.ts");
@@ -155915,7 +155915,7 @@ test "bootstrap runner preserves Request manual redirects across server dispatch
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/test-21049.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/test-21049.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/test-21049.test.ts");
@@ -155944,7 +155944,7 @@ test "bootstrap runner invalidates retained HTMLRewriter text chunks" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/regression/issue/text-chunk-null-access.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/regression/issue/text-chunk-null-access.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "regression/issue/text-chunk-null-access.test.ts");
@@ -155972,7 +155972,7 @@ test "bootstrap runner keeps SQL preconnect listeners in memory" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/cli/run/sql-preconnect.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/cli/run/sql-preconnect.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "cli/run/sql-preconnect.test.ts");
@@ -156001,7 +156001,7 @@ test "bootstrap runner mirrors deterministic cron corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/cron/cron.test.ts", std.testing.allocator, std.Io.Limit.limited(4 * 1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/cron/cron.test.ts", std.testing.allocator, std.Io.Limit.limited(4 * 1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/cron/cron.test.ts");
@@ -156030,7 +156030,7 @@ test "bootstrap runner mirrors in-process cron lifecycles" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/cron/in-process-cron.test.ts", std.testing.allocator, std.Io.Limit.limited(2 * 1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/cron/in-process-cron.test.ts", std.testing.allocator, std.Io.Limit.limited(2 * 1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/cron/in-process-cron.test.ts");
@@ -156058,7 +156058,7 @@ test "bootstrap runner mirrors cipher stream and authentication state" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/js/bun/crypto/cipheriv-decipheriv.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/bun/crypto/cipheriv-decipheriv.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/bun/crypto/cipheriv-decipheriv.test.ts");
@@ -156087,7 +156087,7 @@ test "bootstrap runner mirrors V8 compatibility corpus" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/bun-corpus/v8/v8.test.ts", std.testing.allocator, std.Io.Limit.limited(4 * 1024 * 1024));
+    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/v8/v8.test.ts", std.testing.allocator, std.Io.Limit.limited(4 * 1024 * 1024));
     defer std.testing.allocator.free(source);
 
     var prepared = try prepareCorpusModule(std.testing.allocator, source, "v8/v8.test.ts");
@@ -157566,7 +157566,7 @@ test "bootstrap runner preserves Node child_process execution and fork contracts
     for (paths) |path| {
         var summary = Summary{};
         defer summary.deinit(std.testing.allocator);
-        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/bun-corpus", path, &summary);
+        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/test", path, &summary);
         if (summary.failed != 0 or summary.unsupported != 0 or summary.passed == 0 and summary.allowed_empty_files != 1) {
             std.debug.print(
                 "Node child_process corpus mismatch for {s}: failed={} unsupported={} allowed-empty={} message={s}\n",
@@ -158099,7 +158099,7 @@ test "bootstrap HTTP framing corpus tranche contracts" {
     for (paths) |path| {
         var summary = Summary{};
         defer summary.deinit(std.testing.allocator);
-        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/bun-corpus", path, &summary);
+        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/test", path, &summary);
         if (summary.failed != 0 or summary.unsupported != 0) std.debug.print("HTTP framing corpus failure for {s}: failed={} unsupported={} message={s}\n", .{ path, summary.failed, summary.unsupported, summary.first_failure_message });
         try std.testing.expectEqual(@as(usize, 1), summary.files);
         try std.testing.expectEqual(@as(usize, 0), summary.failed);
@@ -158210,7 +158210,7 @@ test "bootstrap HTTP informational corpus tranche contracts" {
     for (paths) |path| {
         var summary = Summary{};
         defer summary.deinit(std.testing.allocator);
-        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/bun-corpus", path, &summary);
+        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/test", path, &summary);
         if (summary.failed != 0 or summary.unsupported != 0) std.debug.print("HTTP informational corpus failure for {s}: failed={} unsupported={} message={s}\n", .{ path, summary.failed, summary.unsupported, summary.first_failure_message });
         try std.testing.expectEqual(@as(usize, 1), summary.files);
         try std.testing.expectEqual(@as(usize, 0), summary.failed);
@@ -158253,7 +158253,7 @@ test "bootstrap HTTP header and IncomingMessage corpus tranche contracts" {
     for (paths) |path| {
         var summary = Summary{};
         defer summary.deinit(std.testing.allocator);
-        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/bun-corpus", path, &summary);
+        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/test", path, &summary);
         if (summary.failed != 0 or summary.unsupported != 0) std.debug.print("HTTP header/IncomingMessage corpus failure for {s}: failed={} unsupported={} message={s}\n", .{ path, summary.failed, summary.unsupported, summary.first_failure_message });
         try std.testing.expectEqual(@as(usize, 1), summary.files);
         try std.testing.expectEqual(@as(usize, 0), summary.failed);
@@ -158296,7 +158296,7 @@ test "bootstrap HTTP validation and keep-alive corpus tranche contracts" {
     for (paths) |path| {
         var summary = Summary{};
         defer summary.deinit(std.testing.allocator);
-        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/bun-corpus", path, &summary);
+        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/test", path, &summary);
         if (summary.failed != 0 or summary.unsupported != 0) std.debug.print("HTTP validation/keep-alive corpus failure for {s}: failed={} unsupported={} message={s}\n", .{ path, summary.failed, summary.unsupported, summary.first_failure_message });
         try std.testing.expectEqual(@as(usize, 1), summary.files);
         try std.testing.expectEqual(@as(usize, 0), summary.failed);
@@ -158339,7 +158339,7 @@ test "bootstrap HTTP limits and outgoing-message corpus tranche contracts" {
     for (paths) |path| {
         var summary = Summary{};
         defer summary.deinit(std.testing.allocator);
-        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/bun-corpus", path, &summary);
+        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/test", path, &summary);
         if (summary.failed != 0 or summary.unsupported != 0) std.debug.print("HTTP limits/outgoing corpus failure for {s}: failed={} unsupported={} message={s}\n", .{ path, summary.failed, summary.unsupported, summary.first_failure_message });
         try std.testing.expectEqual(@as(usize, 1), summary.files);
         try std.testing.expectEqual(@as(usize, 0), summary.failed);
@@ -158382,7 +158382,7 @@ test "bootstrap HTTP outgoing internals parser and flow-control corpus tranche c
     for (paths) |path| {
         var summary = Summary{};
         defer summary.deinit(std.testing.allocator);
-        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/bun-corpus", path, &summary);
+        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/test", path, &summary);
         if (summary.failed != 0 or summary.unsupported != 0) std.debug.print("HTTP outgoing/parser/flow-control corpus failure for {s}: failed={} unsupported={} message={s}\n", .{ path, summary.failed, summary.unsupported, summary.first_failure_message });
         try std.testing.expectEqual(@as(usize, 1), summary.files);
         try std.testing.expectEqual(@as(usize, 0), summary.failed);
@@ -158425,7 +158425,7 @@ test "bootstrap HTTP pipelining and proxy corpus tranche contracts" {
     for (paths) |path| {
         var summary = Summary{};
         defer summary.deinit(std.testing.allocator);
-        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/bun-corpus", path, &summary);
+        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/test", path, &summary);
         if (summary.failed != 0 or summary.unsupported != 0) std.debug.print("HTTP pipelining/proxy corpus failure for {s}: failed={} unsupported={} message={s}\n", .{ path, summary.failed, summary.unsupported, summary.first_failure_message });
         try std.testing.expectEqual(@as(usize, 1), summary.files);
         try std.testing.expectEqual(@as(usize, 0), summary.failed);
@@ -158465,7 +158465,7 @@ test "bootstrap HTTPS proxy tunnel corpus tranche contracts" {
     for (paths) |path| {
         var summary = Summary{};
         defer summary.deinit(std.testing.allocator);
-        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/bun-corpus", path, &summary);
+        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/test", path, &summary);
         if (summary.failed != 0 or summary.unsupported != 0) std.debug.print("HTTPS proxy tunnel corpus failure for {s}: failed={} unsupported={} message={s}\n", .{ path, summary.failed, summary.unsupported, summary.first_failure_message });
         try std.testing.expectEqual(@as(usize, 1), summary.files);
         try std.testing.expectEqual(@as(usize, 0), summary.failed);
@@ -158508,7 +158508,7 @@ test "bootstrap HTTP request lifecycle corpus tranche contracts" {
     for (paths) |path| {
         var summary = Summary{};
         defer summary.deinit(std.testing.allocator);
-        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/bun-corpus", path, &summary);
+        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/test", path, &summary);
         if (summary.failed != 0 or summary.unsupported != 0) std.debug.print("HTTP request lifecycle corpus failure for {s}: failed={} unsupported={} message={s}\n", .{ path, summary.failed, summary.unsupported, summary.first_failure_message });
         try std.testing.expectEqual(@as(usize, 1), summary.files);
         try std.testing.expectEqual(@as(usize, 0), summary.failed);
@@ -158551,7 +158551,7 @@ test "bootstrap HTTP response and server lifecycle corpus tranche contracts" {
     for (paths) |path| {
         var summary = Summary{};
         defer summary.deinit(std.testing.allocator);
-        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/bun-corpus", path, &summary);
+        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/test", path, &summary);
         if (summary.failed != 0 or summary.unsupported != 0) std.debug.print("HTTP response/server lifecycle corpus failure for {s}: failed={} unsupported={} message={s}\n", .{ path, summary.failed, summary.unsupported, summary.first_failure_message });
         try std.testing.expectEqual(@as(usize, 1), summary.files);
         try std.testing.expectEqual(@as(usize, 0), summary.failed);
@@ -158618,7 +158618,7 @@ test "bootstrap HTTP server parser and options corpus tranche contracts" {
     for (paths) |path| {
         var summary = Summary{};
         defer summary.deinit(std.testing.allocator);
-        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/bun-corpus", path, &summary);
+        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/test", path, &summary);
         if (summary.failed != 0 or summary.unsupported != 0) std.debug.print("HTTP server parser/options corpus failure for {s}: failed={} unsupported={} message={s}\n", .{ path, summary.failed, summary.unsupported, summary.first_failure_message });
         try std.testing.expectEqual(@as(usize, 1), summary.files);
         try std.testing.expectEqual(@as(usize, 0), summary.failed);
@@ -158689,7 +158689,7 @@ test "bootstrap HTTP proxy configuration and socket corpus tranche contracts" {
     for (paths) |path| {
         var summary = Summary{};
         defer summary.deinit(std.testing.allocator);
-        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/bun-corpus", path, &summary);
+        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/test", path, &summary);
         if (summary.failed != 0 or summary.unsupported != 0) std.debug.print("HTTP proxy/socket corpus failure for {s}: failed={} unsupported={} message={s}\n", .{ path, summary.failed, summary.unsupported, summary.first_failure_message });
         try std.testing.expectEqual(@as(usize, 1), summary.files);
         try std.testing.expectEqual(@as(usize, 0), summary.failed);
@@ -158732,7 +158732,7 @@ test "bootstrap HTTP status timeout Unix and upgrade corpus tranche contracts" {
     for (paths) |path| {
         var summary = Summary{};
         defer summary.deinit(std.testing.allocator);
-        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/bun-corpus", path, &summary);
+        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/test", path, &summary);
         if (summary.failed != 0 or summary.unsupported != 0) std.debug.print("HTTP status/timeout/Unix/upgrade corpus failure for {s}: failed={} unsupported={} message={s}\n", .{ path, summary.failed, summary.unsupported, summary.first_failure_message });
         try std.testing.expectEqual(@as(usize, 1), summary.files);
         try std.testing.expectEqual(@as(usize, 0), summary.failed);
@@ -158800,7 +158800,7 @@ test "bootstrap HTTP URL writes and HTTP2 transition corpus tranche contracts" {
     for (paths) |path| {
         var summary = Summary{};
         defer summary.deinit(std.testing.allocator);
-        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/bun-corpus", path, &summary);
+        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/test", path, &summary);
         if (summary.failed != 0 or summary.unsupported != 0) std.debug.print("HTTP URL/write/HTTP2 transition corpus failure for {s}: failed={} unsupported={} message={s}\n", .{ path, summary.failed, summary.unsupported, summary.first_failure_message });
         try std.testing.expectEqual(@as(usize, 1), summary.files);
         try std.testing.expectEqual(@as(usize, 0), summary.failed);
@@ -158868,7 +158868,7 @@ test "bootstrap HTTP2 client session and binding corpus tranche contracts" {
     for (paths) |path| {
         var summary = Summary{};
         defer summary.deinit(std.testing.allocator);
-        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/bun-corpus", path, &summary);
+        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/test", path, &summary);
         if (summary.failed != 0 or summary.unsupported != 0) std.debug.print("HTTP2 client/session corpus failure for {s}: failed={} unsupported={} message={s}\n", .{ path, summary.failed, summary.unsupported, summary.first_failure_message });
         try std.testing.expectEqual(@as(usize, 1), summary.files);
         try std.testing.expectEqual(@as(usize, 0), summary.failed);
@@ -158967,7 +158967,7 @@ test "bootstrap HTTP2 client validation upload and compatibility corpus tranche 
     for (paths) |path| {
         var summary = Summary{};
         defer summary.deinit(std.testing.allocator);
-        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/bun-corpus", path, &summary);
+        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/test", path, &summary);
         if (summary.failed != 0 or summary.unsupported != 0) std.debug.print("HTTP2 validation/upload/compat corpus failure for {s}: failed={} unsupported={} message={s}\n", .{ path, summary.failed, summary.unsupported, summary.first_failure_message });
         try std.testing.expectEqual(@as(usize, 1), summary.files);
         try std.testing.expectEqual(@as(usize, 0), summary.failed);
@@ -159010,7 +159010,7 @@ test "bootstrap HTTP2 compatibility request and response corpus tranche contract
     for (paths) |path| {
         var summary = Summary{};
         defer summary.deinit(std.testing.allocator);
-        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/bun-corpus", path, &summary);
+        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/test", path, &summary);
         if (summary.failed != 0 or summary.unsupported != 0) std.debug.print("HTTP2 compatibility request/response corpus failure for {s}: failed={} unsupported={} message={s}\n", .{ path, summary.failed, summary.unsupported, summary.first_failure_message });
         try std.testing.expectEqual(@as(usize, 1), summary.files);
         try std.testing.expectEqual(@as(usize, 0), summary.failed);
@@ -159078,7 +159078,7 @@ test "bootstrap HTTP2 compatibility headers socket and hints corpus tranche cont
     for (paths) |path| {
         var summary = Summary{};
         defer summary.deinit(std.testing.allocator);
-        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/bun-corpus", path, &summary);
+        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/test", path, &summary);
         if (summary.failed != 0 or summary.unsupported != 0) std.debug.print("HTTP2 compatibility headers/socket/hints corpus failure for {s}: failed={} unsupported={} message={s}\n", .{ path, summary.failed, summary.unsupported, summary.first_failure_message });
         try std.testing.expectEqual(@as(usize, 1), summary.files);
         try std.testing.expectEqual(@as(usize, 0), summary.failed);
@@ -159376,7 +159376,7 @@ test "bootstrap HTTP2 CONNECT session and diagnostics corpus tranche contracts" 
     for (paths) |path| {
         var summary = Summary{};
         defer summary.deinit(std.testing.allocator);
-        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/bun-corpus", path, &summary);
+        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/test", path, &summary);
         if (summary.failed != 0 or summary.unsupported != 0) std.debug.print("HTTP2 CONNECT/session/diagnostics corpus failure for {s}: failed={} unsupported={} message={s}\n", .{ path, summary.failed, summary.unsupported, summary.first_failure_message });
         try std.testing.expectEqual(@as(usize, 1), summary.files);
         try std.testing.expectEqual(@as(usize, 0), summary.failed);
@@ -159419,7 +159419,7 @@ test "bootstrap HTTP2 stream settings and fallback corpus tranche contracts" {
     for (paths) |path| {
         var summary = Summary{};
         defer summary.deinit(std.testing.allocator);
-        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/bun-corpus", path, &summary);
+        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/test", path, &summary);
         if (summary.failed != 0 or summary.unsupported != 0) std.debug.print("HTTP2 streams/settings/fallback corpus failure for {s}: failed={} unsupported={} message={s}\n", .{ path, summary.failed, summary.unsupported, summary.first_failure_message });
         try std.testing.expectEqual(@as(usize, 1), summary.files);
         try std.testing.expectEqual(@as(usize, 0), summary.failed);
@@ -159462,7 +159462,7 @@ test "bootstrap HTTP2 validation flow-control and multiplex corpus tranche contr
     for (paths) |path| {
         var summary = Summary{};
         defer summary.deinit(std.testing.allocator);
-        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/bun-corpus", path, &summary);
+        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/test", path, &summary);
         if (summary.failed != 0 or summary.unsupported != 0) std.debug.print("HTTP2 validation/flow-control/multiplex corpus failure for {s}: failed={} unsupported={} message={s}\n", .{ path, summary.failed, summary.unsupported, summary.first_failure_message });
         try std.testing.expectEqual(@as(usize, 1), summary.files);
         try std.testing.expectEqual(@as(usize, 0), summary.failed);
@@ -159510,7 +159510,7 @@ test "bootstrap HTTP2 headers control plane and performance corpus tranche contr
     for (paths) |path| {
         var summary = Summary{};
         defer summary.deinit(std.testing.allocator);
-        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/bun-corpus", path, &summary);
+        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/test", path, &summary);
         if (summary.failed != 0 or summary.unsupported != 0) std.debug.print("HTTP2 headers/control-plane/performance corpus failure for {s}: failed={} unsupported={} message={s}\n", .{ path, summary.failed, summary.unsupported, summary.first_failure_message });
         try std.testing.expectEqual(@as(usize, 1), summary.files);
         try std.testing.expectEqual(@as(usize, 0), summary.failed);
@@ -159553,7 +159553,7 @@ test "bootstrap HTTP2 pipes headers writable and sendfile corpus tranche contrac
     for (paths) |path| {
         var summary = Summary{};
         defer summary.deinit(std.testing.allocator);
-        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/bun-corpus", path, &summary);
+        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/test", path, &summary);
         if (summary.failed != 0 or summary.unsupported != 0) std.debug.print("HTTP2 pipes/headers/writable/sendfile corpus failure for {s}: failed={} unsupported={} message={s}\n", .{ path, summary.failed, summary.unsupported, summary.first_failure_message });
         try std.testing.expectEqual(@as(usize, 1), summary.files);
         try std.testing.expectEqual(@as(usize, 0), summary.failed);
@@ -159596,7 +159596,7 @@ test "bootstrap HTTP2 sendfile ranges metadata and reset corpus tranche contract
     for (paths) |path| {
         var summary = Summary{};
         defer summary.deinit(std.testing.allocator);
-        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/bun-corpus", path, &summary);
+        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/test", path, &summary);
         if (summary.failed != 0 or summary.unsupported != 0) std.debug.print("HTTP2 sendfile/range/metadata/reset corpus failure for {s}: failed={} unsupported={} message={s}\n", .{ path, summary.failed, summary.unsupported, summary.first_failure_message });
         try std.testing.expectEqual(@as(usize, 1), summary.files);
         try std.testing.expectEqual(@as(usize, 0), summary.failed);
@@ -159639,7 +159639,7 @@ test "bootstrap HTTP2 server lifecycle push and reset corpus tranche contracts" 
     for (paths) |path| {
         var summary = Summary{};
         defer summary.deinit(std.testing.allocator);
-        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/bun-corpus", path, &summary);
+        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/test", path, &summary);
         if (summary.failed != 0 or summary.unsupported != 0) std.debug.print("HTTP2 server lifecycle/push/reset corpus failure for {s}: failed={} unsupported={} message={s}\n", .{ path, summary.failed, summary.unsupported, summary.first_failure_message });
         try std.testing.expectEqual(@as(usize, 1), summary.files);
         try std.testing.expectEqual(@as(usize, 0), summary.failed);
@@ -159686,7 +159686,7 @@ test "bootstrap HTTP2 session settings shutdown and socket corpus tranche contra
     for (paths) |path| {
         var summary = Summary{};
         defer summary.deinit(std.testing.allocator);
-        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/bun-corpus", path, &summary);
+        try runRelativeFile(io, std.testing.allocator, &runtime, "packages/runtime/test/test", path, &summary);
         if (summary.failed != 0 or summary.unsupported != 0) std.debug.print("HTTP2 session/settings/shutdown/socket corpus failure for {s}: failed={} unsupported={} message={s}\n", .{ path, summary.failed, summary.unsupported, summary.first_failure_message });
         try std.testing.expectEqual(@as(usize, 1), summary.files);
         try std.testing.expectEqual(@as(usize, 0), summary.failed);
@@ -160057,7 +160057,7 @@ test "bootstrap runner preserves the full body stream matrix" {
     defer threaded.deinit();
     const io = threaded.io();
     const path = "js/web/fetch/body-stream.test.ts";
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
@@ -160081,7 +160081,7 @@ test "bootstrap runner preserves the WebCrypto generateKey vectors" {
     defer threaded.deinit();
     const io = threaded.io();
     const path = "js/bun/crypto/wpt-webcrypto.generateKey.test.ts";
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/bun-corpus", path });
+    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);

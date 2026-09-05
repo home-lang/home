@@ -7,7 +7,7 @@ import { Duplex } from 'node:stream'
 import tls from 'node:tls'
 
 assert.match(basename(process.execPath), /^home(?:-debug)?(?:\.exe)?$/)
-const fixture = name => readFileSync(new URL(`../../packages/runtime/test/bun-corpus/js/node/test/fixtures/keys/${name}`, import.meta.url))
+const fixture = name => readFileSync(new URL(`../../packages/runtime/test/test/js/node/test/fixtures/keys/${name}`, import.meta.url))
 const key = fixture('agent1-key.pem')
 const cert = fixture('agent1-cert.pem')
 

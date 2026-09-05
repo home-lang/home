@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { basename } from 'node:path'
-import { tls } from '../../packages/runtime/test/bun-corpus/harness.ts'
+import { tls } from '../../packages/runtime/test/test/harness.ts'
 
 assert.match(basename(process.execPath), /^home(?:-debug)?(?:\.exe)?$/)
 

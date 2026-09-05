@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Sync Bun's Git-tracked test/ corpus into packages/runtime/test/bun-corpus/ at
+# Sync Bun's Git-tracked test/ corpus into packages/runtime/test/test/ at
 # the pinned upstream SHA. This is the substrate for the Phase 12 acceptance
 # gate; the runtime must eventually pass 100% of these tests (see
 # packages/runtime/README.md "Acceptance gate" section).
@@ -10,7 +10,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUN_REPO="${BUN_REPO:-${HOME}/Code/bun}"
-DEST="${REPO_ROOT}/packages/runtime/test/bun-corpus"
+DEST="${REPO_ROOT}/packages/runtime/test/test"
 PIN_FILE="${DEST}/UPSTREAM_SHA.txt"
 TRACKED_FILE="${DEST}/BUN_TRACKED_FILES.txt"
 MATERIALIZED_FILE="${DEST}/MATERIALIZED_FILES.txt"

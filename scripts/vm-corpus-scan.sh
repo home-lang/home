@@ -12,7 +12,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=scripts/home-bin.sh
 source "$ROOT/scripts/home-bin.sh"
 resolve_home_bin "$ROOT" || { echo "vm-corpus-scan: no Home binary in $ROOT/zig-out/bin" >&2; exit 1; }
-CORPUS="$ROOT/packages/runtime/test/bun-corpus"
+CORPUS="$ROOT/packages/runtime/test/test"
 SUB="${1:-js/node/path}"
 OUT="${2:-/tmp/vm-scan.tsv}"
 TO="${3:-15}"
