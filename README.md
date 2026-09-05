@@ -268,7 +268,7 @@ every successful finite sample without filtering.
 
 | Platform | Workloads with the lowest Home mean | Strongest Home mean lead | Narrowest Home mean lead |
 |---|---:|---:|---:|
-| Apple M3 Pro, macOS ARM64 | 20 / 20 | `startup`: 12.56× faster | `type_predicates_large`: 1.59× faster |
+| Apple M3 Pro, macOS ARM64 | 20 / 20 | `startup`: 11.87× faster | `type_predicates_large`: 1.60× faster |
 | Debian Bookworm, Linux ARM64 | 20 / 20 | `startup`: 21.67× faster | `checkjs_jsdoc`: 1.02× faster |
 
 The latest untimed correctness gate is reported separately from performance:
@@ -278,6 +278,12 @@ The latest untimed correctness gate is reported separately from performance:
 | [Export-list owner and barrel diagnostics](docs/docs/TS_PERFORMANCE.md#indexed-export-queries-and-variable-list-ownership) | 128/128 | 128/128 | 128/128 |
 | [Typed cross-file global ownership](docs/docs/TS_PERFORMANCE.md#typed-cross-file-global-ownership-and-cyclic-provenance-untimed) | 60/60 | 60/60 | 60/60 |
 | [Bound-global visibility](docs/docs/TS_PERFORMANCE.md#typed-cross-file-global-ownership-and-cyclic-provenance-untimed) | 56/56 | 56/56 | 56/56 |
+| [Imported graph type ownership](docs/docs/TS_PERFORMANCE.md#imported-graph-ownership-completion-untimed) | 240/240 | 240/240 | 240/240 |
+| [Imported owner contracts](docs/docs/TS_PERFORMANCE.md#imported-graph-ownership-completion-untimed) | 20/20 | 20/20 | 20/20 |
+| [Nominal class origins](docs/docs/TS_PERFORMANCE.md#imported-graph-ownership-completion-untimed) | 52/52 | 52/52 | 52/52 |
+| [CommonJS type transfer](docs/docs/TS_PERFORMANCE.md#commonjs-and-qualified-projection-performance-recovery) | 66/66 | 66/66 | 66/66 |
+| [CommonJS discovery](docs/docs/TS_PERFORMANCE.md#commonjs-and-qualified-projection-performance-recovery) | 44/44 | 44/44 | 44/44 |
+| [Schema-3 workload admission](docs/docs/TS_PERFORMANCE.md#current-snapshot) | 20/20 | 20/20 | 20/20 |
 | [Returned imported callable controls](docs/docs/TS_PERFORMANCE.md#returned-imported-callable-context) | 2/2 positive; TS2339 + TS2322 | 2/2 positive; TS2339 + TS2322 | 2/2 positive; TS2339 + TS2322 |
 | [Polymorphic mapped receiver controls](docs/docs/TS_PERFORMANCE.md#polymorphic-mapped-receiver-context) | TS2339 + TS2322 | TS2339 + TS2322 | TS2339 + TS2322 |
 

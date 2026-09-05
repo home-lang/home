@@ -10,46 +10,52 @@ Ongoing coverage and optimization work is tracked in
 
 ## Current snapshot
 
-Measured 2026-09-01 at commit `ed8bf949b` on an Apple M3 Pro MacBook Pro
+Measured 2026-09-05 at commit `e4e9d16c2` on an Apple M3 Pro MacBook Pro
 (11 cores, 18 GB RAM, arm64, macOS 27.0). Each value is the mean and sample
 standard deviation of 30 new compiler processes after three warmup rounds.
-The complete raw-result identifier is `20260901T084835Z`. The runner first
+The complete raw-result identifier is `20260905T225537Z`. The runner first
 admitted all 20 selected workloads against version-checked TS **6.0.3**, native
 TS **7.0.2**, and Home. Native TS 7 and `tsgo` are one competitor. All **600
 round files / 1,800 successful finite samples** are retained without filtering.
 
 | Workload | tsc 6.0.3 | native TS 7.0.2 | Home 0.1.0 | Home vs fastest competitor |
 |---|---:|---:|---:|---:|
-| `checkjs_jsdoc` | 203.0 ± 2.3 ms | 55.6 ± 6.7 ms | **31.8 ± 0.5 ms** | **1.75× faster** |
-| `class_hierarchy` | 187.6 ± 9.4 ms | 53.4 ± 2.1 ms | **24.5 ± 1.2 ms** | **2.18× faster** |
-| `commonjs_graph` | 151.2 ± 2.5 ms | 49.1 ± 1.5 ms | **25.5 ± 0.7 ms** | **1.92× faster** |
-| `control_flow` | 187.6 ± 3.9 ms | 59.4 ± 2.1 ms | **26.8 ± 0.8 ms** | **2.21× faster** |
-| `deep_types` | 126.9 ± 2.6 ms | 52.1 ± 1.0 ms | **23.7 ± 0.6 ms** | **2.20× faster** |
-| `destructuring` | 143.1 ± 7.6 ms | 49.8 ± 2.4 ms | **15.9 ± 0.7 ms** | **3.14× faster** |
-| `generic_calls` | 174.6 ± 2.0 ms | 54.1 ± 1.3 ms | **18.5 ± 0.4 ms** | **2.92× faster** |
-| `import_graph` | 128.5 ± 1.3 ms | 45.8 ± 2.1 ms | **19.4 ± 0.4 ms** | **2.36× faster** |
-| `interface_composition` | 201.2 ± 9.4 ms | 63.5 ± 1.7 ms | **38.9 ± 0.7 ms** | **1.63× faster** |
-| `many_files` | 204.9 ± 4.3 ms | 54.0 ± 8.0 ms | **20.2 ± 0.6 ms** | **2.67× faster** |
-| `null_safe_access` | 192.8 ± 9.5 ms | 58.3 ± 1.4 ms | **32.5 ± 3.0 ms** | **1.79× faster** |
-| `overload_resolution` | 205.8 ± 3.6 ms | 67.0 ± 1.5 ms | **25.8 ± 0.5 ms** | **2.60× faster** |
-| `recursive_generics` | 152.6 ± 4.6 ms | 73.2 ± 5.7 ms | **14.2 ± 0.4 ms** | **5.16× faster** |
-| `reexport_graph` | 95.0 ± 1.6 ms | 41.0 ± 0.7 ms | **19.3 ± 1.4 ms** | **2.12× faster** |
-| `startup` | 69.3 ± 27.8 ms | 44.9 ± 20.9 ms | **3.6 ± 1.1 ms** | **12.56× faster** |
-| `structural_objects` | 189.9 ± 2.4 ms | 60.2 ± 1.3 ms | **23.9 ± 0.6 ms** | **2.52× faster** |
-| `tsx_components` | 159.5 ± 6.6 ms | 47.0 ± 1.5 ms | **19.9 ± 0.3 ms** | **2.36× faster** |
-| `type_predicates` | 238.5 ± 9.3 ms | 73.1 ± 4.3 ms | **31.0 ± 2.1 ms** | **2.36× faster** |
-| `type_predicates_large` | 1000.4 ± 27.8 ms | 354.9 ± 20.1 ms | **223.8 ± 10.7 ms** | **1.59× faster** |
-| `variadic_tuples` | 243.4 ± 4.8 ms | 77.5 ± 5.0 ms | **33.1 ± 1.4 ms** | **2.34× faster** |
+| `checkjs_jsdoc` | 273.1 ± 28.9 ms | 66.0 ± 4.8 ms | **37.7 ± 2.3 ms** | **1.75× faster** |
+| `class_hierarchy` | 220.9 ± 28.4 ms | 59.1 ± 1.9 ms | **27.5 ± 3.4 ms** | **2.15× faster** |
+| `commonjs_graph` | 199.1 ± 29.8 ms | 58.5 ± 3.7 ms | **31.2 ± 3.2 ms** | **1.87× faster** |
+| `control_flow` | 213.6 ± 11.8 ms | 67.1 ± 5.6 ms | **29.5 ± 1.9 ms** | **2.27× faster** |
+| `deep_types` | 172.5 ± 21.2 ms | 66.5 ± 8.9 ms | **27.2 ± 6.1 ms** | **2.45× faster** |
+| `destructuring` | 160.8 ± 12.9 ms | 54.9 ± 5.4 ms | **16.8 ± 0.8 ms** | **3.27× faster** |
+| `generic_calls` | 207.5 ± 17.8 ms | 61.2 ± 2.8 ms | **25.2 ± 1.2 ms** | **2.43× faster** |
+| `import_graph` | 159.3 ± 19.2 ms | 56.8 ± 6.5 ms | **27.7 ± 6.1 ms** | **2.05× faster** |
+| `interface_composition` | 238.8 ± 40.9 ms | 74.0 ± 9.5 ms | **39.8 ± 7.2 ms** | **1.86× faster** |
+| `many_files` | 267.8 ± 27.0 ms | 68.8 ± 5.0 ms | **28.7 ± 7.6 ms** | **2.40× faster** |
+| `null_safe_access` | 221.6 ± 13.5 ms | 65.8 ± 5.1 ms | **36.2 ± 2.8 ms** | **1.82× faster** |
+| `overload_resolution` | 231.9 ± 11.4 ms | 72.2 ± 3.5 ms | **26.8 ± 1.1 ms** | **2.70× faster** |
+| `recursive_generics` | 194.9 ± 26.4 ms | 86.4 ± 8.8 ms | **18.3 ± 2.5 ms** | **4.73× faster** |
+| `reexport_graph` | 108.1 ± 19.9 ms | 45.8 ± 2.6 ms | **22.3 ± 2.6 ms** | **2.05× faster** |
+| `startup` | 75.5 ± 4.6 ms | 45.8 ± 3.3 ms | **3.9 ± 0.4 ms** | **11.87× faster** |
+| `structural_objects` | 212.4 ± 18.0 ms | 65.4 ± 5.7 ms | **25.6 ± 1.3 ms** | **2.56× faster** |
+| `tsx_components` | 195.6 ± 28.5 ms | 56.9 ± 12.2 ms | **22.6 ± 3.8 ms** | **2.52× faster** |
+| `type_predicates` | 275.2 ± 22.2 ms | 80.8 ± 5.9 ms | **34.0 ± 2.5 ms** | **2.38× faster** |
+| `type_predicates_large` | 1196.8 ± 150.0 ms | 409.2 ± 31.1 ms | **255.9 ± 16.6 ms** | **1.60× faster** |
+| `variadic_tuples` | 307.6 ± 63.5 ms | 89.7 ± 7.6 ms | **37.1 ± 4.1 ms** | **2.42× faster** |
 
 Home records lower means on **20/20 admitted workloads** and lower paired times
 in **600/600 rounds**. Every row's paired 95% confidence interval for the
 fastest-competitor-minus-Home difference is above zero. The narrowest mean
-lead is **1.59×** on `type_predicates_large`; this is still not evidence of
+lead is **1.60×** on `type_predicates_large`; this is still not evidence of
 universal leadership. These are local
 synthetic results; real projects, other platforms, and broader rejection
 coverage remain separate validation work. Historical snapshots, including
 losses, remain in the checkpoint sections below and are not averaged into this
 table.
+
+One unrelated single-core `zig-js` lifecycle fuzz process ran throughout this
+screen, and the host was not idle. The round-robin order places every compiler
+in every position equally; no sample or workload was rerun or removed. The
+contention is disclosed because absolute times are host-specific even though
+all 600 paired comparisons and their intervals favor Home.
 
 The comparison column always uses the faster of `tsc` and `tsgo`. Ratios
 rounding to `1.00×` are labeled near ties in either direction, not directional
@@ -6806,6 +6812,116 @@ zig build home-tsc -Doptimize=ReleaseFast
 ./zig-out/bin/home-tsc --project /path/to/zod-4.5.2/tsconfig.benchmark.json
 ```
 
+### Imported graph ownership completion (untimed)
+
+Issue [#487](https://github.com/home-lang/home/issues/487), under the
+correctness and performance tracker
+[#416](https://github.com/home-lang/home/issues/416), completes the owner
+semantics required by the timed import and re-export graphs. Commit
+[`e24967873`](https://github.com/home-lang/home/commit/e24967873) preserves
+imported rest-tuple call contracts. Commit
+[`0660cd590`](https://github.com/home-lang/home/commit/0660cd590) retains the
+base reference and the source-owned body of inherited nominal classes, so
+private and protected ownership remains nominal across direct and barrel
+imports. Commit
+[`a572f3acd`](https://github.com/home-lang/home/commit/a572f3acd) prevents a
+function-local interface from merging with a same-named top-level interface
+while preserving legitimate namespace and module declaration merging.
+
+The graph type audit covers 12 declaration families, five import placements,
+both app orders, and positive/negative variants. Every project is compiled by
+all three pinned compilers, so its 240 logical cases produce 720 process
+checks. The adjacent audits independently verify graph discovery, export
+origin ambiguity, generic/rest/readonly imported owners, and direct/inherited
+private and protected nominal origins.
+
+| Untimed owner audit | TypeScript 6.0.3 | Native TypeScript 7.0.2 | Home | Total process checks |
+|---|---:|---:|---:|---:|
+| Graph type ownership | 240/240 | 240/240 | **240/240** | 720/720 |
+| Graph discovery | 28/28 | 28/28 | **28/28** | 84/84 |
+| Export origins | 32/32 | 32/32 | **32/32** | 96/96 |
+| Imported owners | 20/20 | 20/20 | **20/20** | 60/60 |
+| Nominal origins | 52/52 | 52/52 | **52/52** | 156/156 |
+
+These are rejection controls, not throughput samples. No diagnostic is waived,
+and invalid cases append only the targeted misuse to their matching positive
+program. The complete ReleaseFast checker and Program suites pass on the final
+source, along with the version-pinned workload admission gate.
+
+### CommonJS and qualified-projection performance recovery
+
+The full-suite readmission after typed global ownership deliberately exposed
+two independent regressions. Issue
+[#651](https://github.com/home-lang/home/issues/651) found that CommonJS
+providers were being published as script globals, causing every provider owner
+to be relocated into every peer compilation. On the unchanged 128-owner
+positive graph, the then-current `a572f3acd` remained CPU-active for more than
+seven minutes and reached about 7 GiB during sampling. Every worker was in
+`Program.importProgramGlobals`. Commit
+[`d0b9ef0aa`](https://github.com/home-lang/home/commit/d0b9ef0aa) classifies
+whole exports, property exports, and `Object.defineProperty` exports as modules
+before global publication, while preserving script semantics when `module`,
+`exports`, or `Object` is locally shadowed. A loaded-host diagnostic run then
+completed in 0.22 seconds at about 35 MiB peak. Those single runs classify the
+algorithmic fault and fix; they are not comparative benchmark claims.
+
+The first complete 30-round schema-3 screen after that fix, result
+`20260905T223009Z`, retained all samples and honestly reported only **17/20**
+lower Home means. Its CommonJS row was restored and won at 33.4 ± 3.3 ms versus
+57.0 ± 4.0 ms for native TS 7, but three script-heavy rows lost:
+
+| Rejected-as-final discovery screen | Native TS 7.0.2 | Home | Result |
+|---|---:|---:|---:|
+| `null_safe_access` | **67.1 ± 7.7 ms** | 77.4 ± 5.6 ms | Home 1.15× slower |
+| `type_predicates` | **77.2 ± 3.2 ms** | 96.7 ± 9.5 ms | Home 1.25× slower |
+| `type_predicates_large` | **431.8 ± 120.8 ms** | 4875.7 ± 790.3 ms | Home 11.29× slower |
+
+Issue [#652](https://github.com/home-lang/home/issues/652) profiled the exact
+106,496-line large-predicate project. About 85% of samples were in
+`programQualifiedIndexedAssertionDestructuredArrayType`: an imported-array
+recovery fallback scanned the complete HIR for ordinary member reads even when
+the receiver already had a concrete type. Commit
+[`e4e9d16c2`](https://github.com/home-lang/home/commit/e4e9d16c2) limits that
+fallback to its intended unresolved `any` receiver. A permanent regression
+also proves that a prior projected destructuring name cannot override a known,
+same-named local object.
+
+A diagnostic before/after on the unchanged large project fell from
+82,408,298,769 to 3,092,449,057 retired instructions, **26.6× fewer**. The
+corresponding loaded-host single runs were 4.49 and 0.63 seconds and remain
+diagnostic evidence only. The admitted targeted result `20260905T225340Z`
+then recorded Home at **290.6 ± 53.1 ms** versus native TS 7 at
+456.4 ± 40.8 ms, a **1.57×** Home lead across all 30 rounds.
+
+The final complete result `20260905T225537Z`, reported in the
+[current snapshot](#current-snapshot), passed every positive and exact negative
+admission control before timing. Home has the lower mean on **20/20** rows and
+the lower paired time in **600/600** rounds. The narrowest mean lead is
+**1.60×** on `type_predicates_large`; `commonjs_graph` leads by **1.87×**.
+The final Home executable SHA-256 is
+`d13449766d7496dd8e1232bd6103c20a6b6b37f3e0450f7f877c0f03b78124d7`.
+
+All final untimed matrices pass without exclusions: graph types **720/720**,
+graph discovery **84/84**, export origins **96/96**, imported owners **60/60**,
+nominal origins **156/156**, globals **180/180**, bound globals **168/168**,
+CommonJS types **198/198**, and CommonJS discovery **132/132**. Issue
+[#653](https://github.com/home-lang/home/issues/653) updates the structural
+export-list harness expectations to its existing 128-case design; the audit
+passes **384/384** and all **95/95** benchmark harness tests pass. No benchmark
+input, compiler oracle, diagnostic expectation, workload name, identifier, or
+family count is special-cased by either performance fix.
+
+```sh
+python3 bench/vs_tsgo/run.py cold --runs 30 --warmup 3
+python3 bench/vs_tsgo/run.py report bench/vs_tsgo/results/20260905T225537Z
+python3 bench/vs_tsgo/audit_graph_types.py
+python3 bench/vs_tsgo/audit_owners.py
+python3 bench/vs_tsgo/audit_nominal_origins.py
+python3 bench/vs_tsgo/audit_commonjs.py
+python3 bench/vs_tsgo/audit_commonjs_discovery.py
+python3 -m unittest discover -s bench/vs_tsgo -p 'test_*.py'
+```
+
 ### Generic member-assigned callback context
 
 Issue [#627](https://github.com/home-lang/home/issues/627), under
@@ -7252,21 +7368,20 @@ their consumer and reverses the entire explicit root order.
 The final global process total is **180/180** checks and the independent
 bound-global process total is **168/168** checks. The unchanged pinned Zod
 4.5.2 graph remains exactly **600 diagnostics**, so this change does not move
-that separate real-project count. The adjacent imported-owner audit improves
-to **16/20** Home cases, while both competitors pass 20/20; only the two
-rest-signature positive/negative pairs in both root orders remain. The
-nominal-origin audit remains **44/52** for Home versus 52/52 for both
-competitors, with inherited private/protected owners still open. Those
-failures are not waived or folded into this completed global control.
+that separate real-project count. At this #480 checkpoint, the adjacent
+imported-owner audit was **16/20** for Home and the nominal-origin audit was
+**44/52**. The subsequent [#487 completion](#imported-graph-ownership-completion-untimed)
+brings those unchanged audits to 20/20 and 52/52 per compiler, respectively.
 
-Final source gates pass: **4,348/4,348 checker**, **179/179 Program**,
-**187/187 driver**, **69/69 CLI**, and **6/6** directly modified global audit
-tests. ReleaseFast and `zig fmt` pass. The repository-wide benchmark test
-discovery currently passes 92/95; its three failures are unchanged stale
-expectations in `test_audit_export_lists.py` (96 expected cases versus the
-current 128-case audit), outside this change. The required repository-wide
-Pickier run also remains red on existing debt: 20,869 findings across 12,036
-files. The final ReleaseFast `home-tsc` SHA-256 is
+Final source gates for this checkpoint pass: **4,348/4,348 checker**,
+**179/179 Program**, **187/187 driver**, **69/69 CLI**, and **6/6** directly
+modified global audit tests. ReleaseFast and `zig fmt` pass. At this point the
+repository-wide benchmark test discovery passed 92/95; the later
+[#653 harness update](#commonjs-and-qualified-projection-performance-recovery)
+aligns the three stale export-list expectations with the existing 128-case
+audit and brings the suite to 95/95. The required repository-wide Pickier run
+remains red on existing debt: 20,869 findings across 12,036 files. The final
+ReleaseFast `home-tsc` SHA-256 for #480 is
 `92f6cb3f52c05c5791e83ee9c30d077d34dbaef960adbf8e04c8f1452a4c6d5d`.
 
 This is a correctness checkpoint, not a timing claim. ReleaseFast compilation
