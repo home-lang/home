@@ -995,7 +995,7 @@ pub fn build(b: *std.Build) void {
     build_options.addOption(bool, "zig_self_hosted_backend", false);
     build_options.addOption([]const u8, "reported_nodejs_version", "24.0.0");
     build_options.addOption(bool, "baseline", false);
-    build_options.addOption([]const u8, "sha", "");
+    build_options.addOption([]const u8, "sha", "4982b91e3702094330f3be3883354c52b8c01323");
     build_options.addOption(bool, "is_canary", false);
     build_options.addOption([]const u8, "canary_revision", "");
     build_options.addOption([]const u8, "base_path", "");
@@ -1008,8 +1008,8 @@ pub fn build(b: *std.Build) void {
     build_options.addOption(u8, "tracy_callstack_depth", 0);
     build_options.addOption(std.SemanticVersion, "version", .{
         .major = 1,
-        .minor = 3,
-        .patch = 14,
+        .minor = 4,
+        .patch = 0,
     });
     const build_options_module = build_options.createModule();
 

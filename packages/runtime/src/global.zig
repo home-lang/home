@@ -5,15 +5,14 @@
 
 const std = @import("std");
 
-// Report the emulated pin version (Bun 1.4.0 @ git_sha 4982b91e37) rather than
-// a "0.0.0" stub. Use the CLEAN release string (no "-debug" suffix that
-// bun_core/Global.zig adds for Zig debug builds): Home is debug-built but
-// emulates the RELEASE pin, and `isDebug = Bun.version.includes("debug")` in
-// Bun's harness must stay false so version-gated tests match the pin.
-pub const package_json_version = @import("environment.zig").version_string;
-pub const package_json_version_with_canary = package_json_version;
-pub const package_json_version_with_sha = @import("environment.zig").version_string ++ " (" ++ @import("environment.zig").git_sha_short ++ ")";
-pub const package_json_version_with_revision = @import("environment.zig").version_string ++ "+" ++ @import("environment.zig").git_sha_short;
+// Keep public version metadata aligned with Bun's build-mode-aware source of
+// truth. Debug binaries carry the `-debug` suffix used by Bun's harness to
+// select debug-safe test paths; release and canary builds retain their normal
+// pinned forms.
+pub const package_json_version = @import("bun_core/Global.zig").package_json_version;
+pub const package_json_version_with_canary = @import("bun_core/Global.zig").package_json_version_with_canary;
+pub const package_json_version_with_sha = @import("bun_core/Global.zig").package_json_version_with_sha;
+pub const package_json_version_with_revision = @import("bun_core/Global.zig").package_json_version_with_revision;
 
 /// The `Bun v<version> (<os> <arch>)` footer printed to stderr after a run that
 /// left an unhandled error (mirrors Bun's `bun_core/Global.zig`). The native VM

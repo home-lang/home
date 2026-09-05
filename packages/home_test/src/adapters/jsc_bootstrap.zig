@@ -207,6 +207,7 @@ pub const Runtime = struct {
             "__home_textDecodeNative",
             textDecodeNative,
         );
+        Home__JSGlobalObject__addBufferValidators(@ptrCast(self.engine.currentContext()));
         home_rt.jsc.callback.registerCallback(
             self.engine.currentContext(),
             self.engine.currentGlobalObject(),
@@ -714,7 +715,10 @@ const opaques = home_rt.jsc.opaques;
 
 const JSValue = opaques.JSValue;
 const JSContextRef = opaques.JSContextRef;
+const JSGlobalObject = opaques.JSGlobalObject;
 const JSObject = opaques.JSObject;
+
+extern fn Home__JSGlobalObject__addBufferValidators(*JSGlobalObject) void;
 
 // NOTE (2026-06-24): the bake-static / HTML-route serve test harness below was
 // built on the OLD ServerJSStub mock (mock `server.Server`, value-based

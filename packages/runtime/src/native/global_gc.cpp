@@ -6,6 +6,8 @@
 #include "JavaScriptCore/JSCInlines.h"
 #include "JavaScriptCore/JSObjectInlines.h"
 #include "JavaScriptCore/ProxyObject.h"
+#include "JSBuffer.h"
+#include "wtf/SIMDUTF.h"
 #include <wtf/Threading.h>
 
 extern "C" void JSC__JSGlobalObject__addGc(JSC::JSGlobalObject*);
@@ -34,6 +36,78 @@ JSC_DEFINE_HOST_FUNCTION(HomeBunObject_color, (JSC::JSGlobalObject* globalObject
     return BunObject_callback_color(globalObject, callFrame);
 }
 
+static JSC::EncodedJSValue homeValidateBuffer(JSC::JSGlobalObject* globalObject, JSC::CallFrame* callFrame, bool ascii)
+{
+    auto scope = DECLARE_THROW_SCOPE(globalObject->vm());
+    auto value = callFrame->argument(0);
+    const char* ptr = nullptr;
+    size_t byteLength = 0;
+
+    if (auto* view = dynamicDowncast<JSC::JSArrayBufferView>(value)) {
+        if (view->isDetached()) [[unlikely]] {
+            JSC::throwTypeError(globalObject, scope, "ArrayBufferView is detached"_s);
+            return {};
+        }
+        byteLength = view->byteLength();
+        ptr = reinterpret_cast<const char*>(view->vector());
+    } else if (auto* arrayBuffer = dynamicDowncast<JSC::JSArrayBuffer>(value)) {
+        auto* impl = arrayBuffer->impl();
+        if (!impl)
+            return JSC::JSValue::encode(JSC::jsBoolean(true));
+        if (impl->isDetached()) [[unlikely]] {
+            JSC::throwTypeError(globalObject, scope, "Cannot validate on a detached buffer"_s);
+            return {};
+        }
+        byteLength = impl->byteLength();
+        ptr = reinterpret_cast<const char*>(impl->data());
+    } else {
+        JSC::throwTypeError(globalObject, scope, "First argument must be an ArrayBufferView"_s);
+        return {};
+    }
+
+    if (byteLength == 0)
+        return JSC::JSValue::encode(JSC::jsBoolean(true));
+    const bool valid = ascii
+        ? simdutf::validate_ascii(ptr, byteLength)
+        : simdutf::validate_utf8(ptr, byteLength);
+    RELEASE_AND_RETURN(scope, JSC::JSValue::encode(JSC::jsBoolean(valid)));
+}
+
+JSC_DEFINE_HOST_FUNCTION(HomeBuffer_isAscii, (JSC::JSGlobalObject* globalObject, JSC::CallFrame* callFrame))
+{
+    return homeValidateBuffer(globalObject, callFrame, true);
+}
+
+JSC_DEFINE_HOST_FUNCTION(HomeBuffer_isUtf8, (JSC::JSGlobalObject* globalObject, JSC::CallFrame* callFrame))
+{
+    return homeValidateBuffer(globalObject, callFrame, false);
+}
+
+static JSC::EncodedJSValue homeBufferToString(JSC::JSGlobalObject* globalObject, JSC::CallFrame* callFrame, WebCore::BufferEncodingType encoding)
+{
+    auto scope = DECLARE_THROW_SCOPE(globalObject->vm());
+    auto* view = dynamicDowncast<JSC::JSArrayBufferView>(callFrame->argument(0));
+    if (!view) [[unlikely]] {
+        JSC::throwTypeError(globalObject, scope, "First argument must be an ArrayBufferView"_s);
+        return {};
+    }
+    if (view->isDetached()) [[unlikely]] {
+        JSC::throwTypeError(globalObject, scope, "ArrayBufferView is detached"_s);
+        return {};
+    }
+    return WebCore::jsBufferToString(globalObject, scope, view, 0, view->byteLength(), encoding);
+}
+
+JSC_DEFINE_HOST_FUNCTION(HomeBuffer_toHex, (JSC::JSGlobalObject* globalObject, JSC::CallFrame* callFrame))
+{
+    return homeBufferToString(globalObject, callFrame, WebCore::BufferEncodingType::hex);
+}
+
+JSC_DEFINE_HOST_FUNCTION(HomeBuffer_toLatin1, (JSC::JSGlobalObject* globalObject, JSC::CallFrame* callFrame))
+{
+    return homeBufferToString(globalObject, callFrame, WebCore::BufferEncodingType::latin1);
+}
+
 extern "C" void Home__JSGlobalObject__addGc(JSC::JSGlobalObject* globalObject)
 {
     JSC__JSGlobalObject__addGc(globalObject);
@@ -53,6 +127,33 @@ extern "C" void Home__JSGlobalObject__addGc(JSC::JSGlobalObject* globalObject)
     RELEASE_ASSERT(function.isCallable());
 
     globalObject->putDirect(vm, identifier, function, JSC::PropertyAttribute::DontEnum | 0);
+}
+
+// The reduced corpus realm does not instantiate Bun's native-module registry.
+// Install the Buffer operations whose semantics or throughput require native
+// JSC functions, including the validators' dual call/construct behavior.
+extern "C" void Home__JSGlobalObject__addBufferValidators(JSC::JSGlobalObject* globalObject)
+{
+    Home__JSC__ensureCurrentAtomStringTable(globalObject);
+    auto& vm = globalObject->vm();
+    auto asciiName = JSC::Identifier::fromString(vm, "__home_bufferIsAsciiNative"_s);
+    auto utf8Name = JSC::Identifier::fromString(vm, "__home_bufferIsUtf8Native"_s);
+    auto hexName = JSC::Identifier::fromString(vm, "__home_bufferToHexNative"_s);
+    auto latin1Name = JSC::Identifier::fromString(vm, "__home_bufferToLatin1Native"_s);
+    auto* ascii = JSC::JSFunction::create(vm, globalObject, 1, "isAscii"_s,
+        HomeBuffer_isAscii, JSC::ImplementationVisibility::Public,
+        JSC::NoIntrinsic, HomeBuffer_isAscii);
+    auto* utf8 = JSC::JSFunction::create(vm, globalObject, 1, "isUtf8"_s,
+        HomeBuffer_isUtf8, JSC::ImplementationVisibility::Public,
+        JSC::NoIntrinsic, HomeBuffer_isUtf8);
+    auto* hex = JSC::JSFunction::create(vm, globalObject, 1, "toHex"_s,
+        HomeBuffer_toHex, JSC::ImplementationVisibility::Public);
+    auto* latin1 = JSC::JSFunction::create(vm, globalObject, 1, "toLatin1"_s,
+        HomeBuffer_toLatin1, JSC::ImplementationVisibility::Public);
+    globalObject->putDirect(vm, asciiName, ascii, JSC::PropertyAttribute::DontEnum | 0);
+    globalObject->putDirect(vm, utf8Name, utf8, JSC::PropertyAttribute::DontEnum | 0);
+    globalObject->putDirect(vm, hexName, hex, JSC::PropertyAttribute::DontEnum | 0);
+    globalObject->putDirect(vm, latin1Name, latin1, JSC::PropertyAttribute::DontEnum | 0);
 }
 
 // Bun's production global installs this callback through GeneratedBunObject.

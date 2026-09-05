@@ -6322,15 +6322,6 @@ const harness_prelude =
     \\  Promise.resolve().then(() => options.onExit(child, 0, null, null));
     \\  return child;
     \\}
-    \\function __home_spawn_buffer_throughput_fixture(options) {
-    \\  if (!String(globalThis.__home_current_filename || "").endsWith("js/node/buffer.test.js")) return null;
-    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
-    \\  const evalIndex = cmd.indexOf("-e");
-    \\  if (evalIndex < 0 || evalIndex + 1 >= cmd.length) return null;
-    \\  const script = String(cmd[evalIndex + 1] || "");
-    \\  if (!script.includes("hexTimes") || !script.includes("latin1Times") || !script.includes('buf.toString("hex")')) return null;
-    \\  return __home_spawn_completed("{\"hex\":2,\"latin1\":1}\n", "", 0);
-    \\}
     \\function __home_spawn_buffer_copy_fill_detach_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").endsWith("js/node/buffer-copy-fill-detach.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -29437,8 +29428,6 @@ const harness_prelude =
     \\    if (shellBraceBoundsFixture) return shellBraceBoundsFixture;
     \\    const exitFixture = __home_spawn_eval_exit_fixture(options || {});
     \\    if (exitFixture) return exitFixture;
-    \\    const bufferThroughputFixture = __home_spawn_buffer_throughput_fixture(options || {});
-    \\    if (bufferThroughputFixture) return bufferThroughputFixture;
     \\    const bufferCopyFillDetachFixture = __home_spawn_buffer_copy_fill_detach_fixture(options || {});
     \\    if (bufferCopyFillDetachFixture) return bufferCopyFillDetachFixture;
     \\    const asyncLocalStorageFixture = __home_spawn_async_local_storage_fixture(options || {});
@@ -86660,6 +86649,7 @@ const harness_prelude =
     \\    const to = end === undefined ? this.length : Math.max(from, Math.min(this.length, Math.trunc(Number(end)) || 0));
     \\    const view = this.subarray(from, to);
     \\    if (normalized === "hex") {
+    \\      if (typeof globalThis.__home_bufferToHexNative === "function") return globalThis.__home_bufferToHexNative(view);
     \\      let output = "";
     \\      for (let i = 0; i < view.length; i++) output += view[i].toString(16).padStart(2, "0");
     \\      return output;
@@ -86675,6 +86665,7 @@ const harness_prelude =
     \\      return output;
     \\    }
     \\    if (normalized === "latin1" || normalized === "binary") {
+    \\      if (typeof globalThis.__home_bufferToLatin1Native === "function") return globalThis.__home_bufferToLatin1Native(view);
     \\      let output = "";
     \\      for (let i = 0; i < view.length; i++) output += String.fromCharCode(view[i] & 0xff);
     \\      return output;
@@ -86800,8 +86791,8 @@ const harness_prelude =
     \\Buffer.Blob = Blob;
     \\Buffer.File = File;
     \\Buffer.SlowBuffer = Buffer.allocUnsafeSlow;
-    \\Buffer.isAscii = __home_buffer_is_ascii;
-    \\Buffer.isUtf8 = __home_buffer_is_utf8;
+    \\Buffer.isAscii = typeof globalThis.__home_bufferIsAsciiNative === "function" ? globalThis.__home_bufferIsAsciiNative : __home_buffer_is_ascii;
+    \\Buffer.isUtf8 = typeof globalThis.__home_bufferIsUtf8Native === "function" ? globalThis.__home_bufferIsUtf8Native : __home_buffer_is_utf8;
     \\Buffer.resolveObjectURL = __home_resolve_object_url;
     \\let __home_buffer_transcode_reads = 0;
     \\Object.defineProperty(Buffer, "transcode", { configurable: true, enumerable: true, get() { return (++__home_buffer_transcode_reads % 2) === 1 ? undefined : function() { throw new Error("Not implemented"); }; } });
@@ -97427,10 +97418,6 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "export function fillRepeating(dstBuffer, start, end) {",
             .replacement = "function fillRepeating(dstBuffer, start, end) {",
-        },
-        .{
-            .needle = "new isAscii(new Buffer(\"What did the 🦊 say?\"))",
-            .replacement = "isAscii(new Buffer(\"What did the 🦊 say?\"))",
         },
         .{
             .needle = "export function createUser(name: string, age: number): { name: string; age: number } {",
