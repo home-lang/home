@@ -70,6 +70,56 @@ fn textEncodeNative(
     return makeUint8Array(c, utf8);
 }
 
+fn setNumberProperty(ctx: *JSContextRef, object: *JSObject, name: [*:0]const u8, value: u32) void {
+    const key = extern_fns.JSStringCreateWithUTF8CString(name) orelse return;
+    defer extern_fns.JSStringRelease(key);
+    extern_fns.JSObjectSetProperty(ctx, object, key, extern_fns.JSValueMakeNumber(ctx, @floatFromInt(value)), 0, null);
+}
+
+fn makeEncodeIntoResult(ctx: *JSContextRef, read: u32, written: u32) ?*JSValue {
+    const object = extern_fns.JSObjectMake(ctx, null, null) orelse return extern_fns.JSValueMakeNull(ctx);
+    setNumberProperty(ctx, object, "read", read);
+    setNumberProperty(ctx, object, "written", written);
+    return @ptrCast(object);
+}
+
+/// `TextEncoder.prototype.encodeInto(string, Uint8Array)` writes directly into
+/// the destination backing store. Keeping this boundary native is important:
+/// Bun exercises every Unicode scalar and the JS fallback would allocate an
+/// intermediate Uint8Array for every code point.
+fn textEncodeIntoNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this_object: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this_object;
+    _ = exception;
+    const c = ctx orelse return null;
+    if (argument_count < 2) return makeEncodeIntoResult(c, 0, 0);
+    const input = arguments[0] orelse return makeEncodeIntoResult(c, 0, 0);
+    const destination = arguments[1] orelse return makeEncodeIntoResult(c, 0, 0);
+    if (extern_fns.JSValueGetTypedArrayType(c, destination, null) != .kJSTypedArrayTypeUint8Array)
+        return makeEncodeIntoResult(c, 0, 0);
+
+    const string = extern_fns.JSValueToStringCopy(c, input, null) orelse return makeEncodeIntoResult(c, 0, 0);
+    defer extern_fns.JSStringRelease(string);
+    const input_len = extern_fns.JSStringGetLength(string);
+    const destination_object = extern_fns.JSValueToObject(c, destination, null) orelse return makeEncodeIntoResult(c, 0, 0);
+    const destination_len = extern_fns.JSObjectGetTypedArrayByteLength(c, destination_object, null);
+    if (input_len == 0 or destination_len == 0) return makeEncodeIntoResult(c, 0, 0);
+    const destination_ptr = extern_fns.JSObjectGetTypedArrayBytesPtr(c, destination_object, null) orelse
+        return makeEncodeIntoResult(c, 0, 0);
+
+    const input_units = extern_fns.JSStringGetCharactersPtr(string)[0..input_len];
+    const destination_bytes: [*]u8 = @ptrCast(destination_ptr);
+    const result = bun.strings.copyUTF16IntoUTF8(destination_bytes[0..destination_len], input_units);
+    return makeEncodeIntoResult(c, result.read, result.written);
+}
+
 fn makeUint8Array(ctx: *JSContextRef, bytes: []const u8) ?*JSValue {
     const array = extern_fns.JSObjectMakeTypedArray(ctx, .kJSTypedArrayTypeUint8Array, bytes.len, null) orelse
         return extern_fns.JSValueMakeUndefined(ctx);
@@ -101,16 +151,16 @@ fn textDecodeNative(
     if (extern_fns.JSValueGetTypedArrayType(c, value, null) == .kJSTypedArrayTypeNone)
         return jsStringValue(c, "");
     const object = extern_fns.JSValueToObject(c, value, null) orelse return jsStringValue(c, "");
-    const length = extern_fns.JSObjectGetTypedArrayLength(c, object, null);
+    const length = extern_fns.JSObjectGetTypedArrayByteLength(c, object, null);
     if (length == 0) return jsStringValue(c, "");
     const ptr = extern_fns.JSObjectGetTypedArrayBytesPtr(c, object, null) orelse return jsStringValue(c, "");
     const bytes: [*]const u8 = @ptrCast(ptr);
 
-    const allocator = std.heap.page_allocator;
-    const z = allocator.allocSentinel(u8, length, 0) catch return jsStringValue(c, "");
-    defer allocator.free(z);
-    @memcpy(z[0..length], bytes[0..length]);
-    const string = extern_fns.JSStringCreateWithUTF8CString(z.ptr) orelse return jsStringValue(c, "");
+    var stack_allocator = bun.stackFallback(256, std.heap.page_allocator);
+    const allocator = stack_allocator.get();
+    const utf16 = bun.strings.toUTF16AllocForReal(allocator, bytes[0..length], false, false) catch return jsStringValue(c, "");
+    defer allocator.free(utf16);
+    const string = extern_fns.JSStringCreateWithCharacters(utf16.ptr, utf16.len) orelse return jsStringValue(c, "");
     defer extern_fns.JSStringRelease(string);
     return extern_fns.JSValueMakeString(c, string);
 }
@@ -118,6 +168,7 @@ fn textDecodeNative(
 const install_glue =
     \\(function() {
     \\  var encodeFn = globalThis.__home_text_encode;
+    \\  var encodeIntoFn = globalThis.__home_text_encode_into;
     \\  var decodeFn = globalThis.__home_text_decode;
     \\  globalThis.queueMicrotask = function(cb) {
     \\    if (typeof cb !== "function") throw new TypeError("queueMicrotask: argument is not a function");
@@ -126,6 +177,10 @@ const install_glue =
     \\  globalThis.TextEncoder = class TextEncoder {
     \\    get encoding() { return "utf-8"; }
     \\    encode(input) { return encodeFn(input === undefined ? "" : String(input)); }
+    \\    encodeInto(input, destination) {
+    \\      if (!(destination instanceof Uint8Array)) throw new TypeError("TextEncoder.encodeInto requires a Uint8Array destination");
+    \\      return encodeIntoFn(input === undefined ? "" : String(input), destination);
+    \\    }
     \\  };
     \\  globalThis.TextDecoder = class TextDecoder {
     \\    constructor(label) { this._encoding = String(label || "utf-8").toLowerCase(); }
@@ -166,6 +221,7 @@ const install_glue =
     \\    return out;
     \\  };
     \\  delete globalThis.__home_text_encode;
+    \\  delete globalThis.__home_text_encode_into;
     \\  delete globalThis.__home_text_decode;
     \\})();
     \\(function() {
@@ -1318,6 +1374,7 @@ pub fn install(allocator: std.mem.Allocator, ctx: *JSContextRef, global: *JSGlob
     if (comptime !build_options.enable_jsc) return;
 
     callback.registerCallback(ctx, global, "__home_text_encode", textEncodeNative);
+    callback.registerCallback(ctx, global, "__home_text_encode_into", textEncodeIntoNative);
     callback.registerCallback(ctx, global, "__home_text_decode", textDecodeNative);
 
     const result = evaluate.evaluateUtf8Detailed(allocator, ctx, install_glue, "home:web-globals-install", 1) catch return;
@@ -1342,7 +1399,7 @@ test "web globals install exposes the expected surface" {
 
     try std.testing.expect(try evalBool(std.testing.allocator, ctx, "typeof queueMicrotask === 'function' && typeof btoa === 'function' && typeof atob === 'function' && " ++
         "typeof TextEncoder === 'function' && typeof TextDecoder === 'function' && " ++
-        "typeof globalThis.__home_text_encode === 'undefined'"));
+        "typeof globalThis.__home_text_encode === 'undefined' && typeof globalThis.__home_text_encode_into === 'undefined'"));
 }
 
 test "globalThis is an EventTarget (add/remove/dispatchEvent)" {
@@ -1436,8 +1493,13 @@ test "TextEncoder/TextDecoder round-trip UTF-8 including multibyte" {
         "  if (!(a instanceof Uint8Array) || a.length !== 3 || a[0] !== 97) return false;" ++
         "  var e = enc.encode('héllo');" ++ // é = 2 UTF-8 bytes -> length 6
         "  if (e.length !== 6) return false;" ++
+        "  var destination = new Uint8Array(4);" ++
+        "  var partial = enc.encodeInto('😀', destination.subarray(0, 3));" ++
+        "  if (partial.read !== 0 || partial.written !== 0) return false;" ++
+        "  var complete = enc.encodeInto('😀', destination);" ++
+        "  if (complete.read !== 2 || complete.written !== 4 || destination[0] !== 0xf0 || destination[3] !== 0x80) return false;" ++
         "  var dec = new TextDecoder();" ++
-        "  return dec.decode(enc.encode('round → trip ✓')) === 'round → trip ✓';" ++
+        "  return dec.decode(enc.encode('round → trip ✓')) === 'round → trip ✓' && dec.decode(new Uint8Array([0, 97])) === '\\0a';" ++
         "})()"));
 }
 

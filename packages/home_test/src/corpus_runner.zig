@@ -55424,7 +55424,7 @@ const harness_prelude =
     \\  return width;
     \\}
     \\function __home_util_inspect_enter_reference(value, seen) {
-    \\  if (!seen.__home_reference_state) Object.defineProperty(seen, "__home_reference_state", { value: { active: new WeakSet(), ids: new WeakMap(), referenced: new WeakSet(), nextId: 1 } });
+    \\  if (!seen.__home_reference_state) Object.defineProperty(seen, "__home_reference_state", { value: { active: new WeakSet(), ids: new WeakMap(), referenced: new WeakSet(), emitted: new WeakSet(), nextId: 1 } });
     \\  const state = seen.__home_reference_state;
     \\  if (state.active.has(value)) {
     \\    let id = state.ids.get(value);
@@ -55436,8 +55436,15 @@ const harness_prelude =
     \\  return { state, id: null, circular: null };
     \\}
     \\function __home_util_inspect_leave_reference(value, reference, output) {
+    \\  if (reference.state.referenced.has(value)) {
+    \\    const id = reference.state.ids.get(value);
+    \\    if (reference.state.emitted.has(value)) return "[Circular *" + id + "]";
+    \\    reference.state.emitted.add(value);
+    \\    reference.state.active.delete(value);
+    \\    return "<ref *" + id + "> " + output;
+    \\  }
     \\  reference.state.active.delete(value);
-    \\  return reference.state.referenced.has(value) ? "<ref *" + reference.state.ids.get(value) + "> " + output : output;
+    \\  return output;
     \\}
     \\function __home_util_constructor_name(value, fallback) {
     \\  let prototype;
@@ -87409,22 +87416,36 @@ const harness_prelude =
     \\  }
     \\  __home_NativeTextDecoder.prototype.decode = function(input, options) {
     \\    const stream = !!(options && options.stream);
-    \\    let bytes;
-    \\    try {
-    \\      if (input !== undefined && !(input instanceof ArrayBuffer) && !ArrayBuffer.isView(input)) {
-    \\        const error = new TypeError('The "input" argument must be an instance of SharedArrayBuffer, ArrayBuffer, or ArrayBufferView');
-    \\        error.code = "ERR_INVALID_ARG_TYPE";
+    \\    const encoding = this.__home_encoding || this.encoding || "utf-8";
+    \\    const fatal = this.__home_fatal === undefined ? !!this.fatal : this.__home_fatal;
+    \\    const ignoreBOM = this.__home_ignoreBOM === undefined ? !!this.ignoreBOM : this.__home_ignoreBOM;
+    \\    if (input !== undefined && !(input instanceof ArrayBuffer) && !ArrayBuffer.isView(input)) {
+    \\      const error = new TypeError('The "input" argument must be an instance of SharedArrayBuffer, ArrayBuffer, or ArrayBufferView');
+    \\      error.code = "ERR_INVALID_ARG_TYPE";
+    \\      throw error;
+    \\    }
+    \\    if ((encoding === "utf-8" || encoding === "utf8") && !stream && !fatal && (!this.__home_pending_bytes || this.__home_pending_bytes.length === 0)) {
+    \\      try {
+    \\        const nativeInput = input === undefined ? new Uint8Array() : __home_array_buffer_view(input);
+    \\        if (nativeInput) {
+    \\          if (nativeInput.byteLength === 0) return "";
+    \\          let decoded = __home_text_decoder_decode.call(this, nativeInput, options);
+    \\          if (!ignoreBOM && decoded.charCodeAt(0) === 0xfeff) decoded = decoded.slice(1);
+    \\          return decoded;
+    \\        }
+    \\      } catch (error) {
+    \\        if (String(error && error.message || error).toLowerCase().includes("detached")) return "";
     \\        throw error;
     \\      }
+    \\    }
+    \\    let bytes;
+    \\    try {
     \\      const view = input === undefined ? new Uint8Array() : __home_array_buffer_view(input);
     \\      bytes = view ? Array.from(view) : Array.from(input || []);
     \\    } catch (error) {
     \\      if (String(error && error.message || error).toLowerCase().includes("detached")) bytes = [];
     \\      else throw error;
     \\    }
-    \\    const encoding = this.__home_encoding || this.encoding || "utf-8";
-    \\    const fatal = this.__home_fatal === undefined ? !!this.fatal : this.__home_fatal;
-    \\    const ignoreBOM = this.__home_ignoreBOM === undefined ? !!this.ignoreBOM : this.__home_ignoreBOM;
     \\    if (encoding === "replacement") return "\uFFFD";
     \\    if (encoding === "utf-8" || encoding === "utf8") {
     \\      const all = (this.__home_pending_bytes || []).concat(bytes);
@@ -87574,6 +87595,7 @@ const harness_prelude =
     \\}
     \\if (typeof TextEncoder === "function" && TextEncoder.prototype && !TextEncoder.prototype.__home_encode_normalized) {
     \\  const __home_text_encoder_encode = TextEncoder.prototype.encode;
+    \\  const __home_text_encoder_encode_into = TextEncoder.prototype.encodeInto;
     \\  Object.defineProperty(TextEncoder.prototype, "__home_encode_normalized", { value: true });
     \\  TextEncoder.prototype.encode = function(input) {
     \\    return __home_text_encoder_encode.call(this, __home_text_encoder_input(input));
@@ -87584,6 +87606,7 @@ const harness_prelude =
     \\  TextEncoder.prototype.encodeInto = function(input, destination) {
     \\    if (!destination || typeof destination.length !== "number") throw new TypeError("TextEncoder.encodeInto requires a Uint8Array destination");
     \\    const text = __home_text_encoder_input(input);
+    \\    if (typeof __home_text_encoder_encode_into === "function") return __home_text_encoder_encode_into.call(this, text, destination);
     \\    let read = 0;
     \\    let written = 0;
     \\    for (const ch of text) {
