@@ -70557,7 +70557,7 @@ const harness_prelude =
     \\}
     \\function __home_http_proxy_for_request(agent, url) {
     \\  const explicit = agent && agent.proxyEnv && typeof agent.proxyEnv === "object";
-    \\  const env = explicit ? agent.proxyEnv : String(process.env.NODE_USE_ENV_PROXY || "") === "1" ? process.env : null;
+    \\  const env = explicit ? agent.proxyEnv : agent && String(process.env.NODE_USE_ENV_PROXY || "") === "1" ? process.env : null;
     \\  if (!env) return null;
     \\  const noProxy = env.no_proxy !== undefined ? env.no_proxy : env.NO_PROXY;
     \\  if (__home_http_no_proxy_match(url, noProxy)) return null;
@@ -70798,7 +70798,7 @@ const harness_prelude =
     \\      if (!this.__home_dns_checked && typeof options.lookup !== "function") {
     \\        this.__home_dns_checked = true;
     \\        const hostname = String(url.hostname || "").replace(/^\[|\]$/g, "");
-    \\        const invalidHostname = hostname.length > 253 || hostname.split(".").some(label => label.length > 63 || (label && !/^[0-9A-Za-z_-]+$/.test(label)));
+    \\        const invalidHostname = !__home_net_is_ipv6(hostname) && (hostname.length > 253 || hostname.split(".").some(label => label.length > 63 || (label && !/^[0-9A-Za-z_-]+$/.test(label))));
     \\        if (invalidHostname) {
     \\          this.finished = true;
     \\          this.writableEnded = true;
