@@ -1,6 +1,7 @@
 #include "root.h"
 
 #include "JavaScriptCore/Completion.h"
+#include "JavaScriptCore/ErrorInstance.h"
 #include "JavaScriptCore/Exception.h"
 #include "JavaScriptCore/Identifier.h"
 #include "JavaScriptCore/JSCInlines.h"
@@ -12,6 +13,14 @@
 
 extern "C" void JSC__JSGlobalObject__addGc(JSC::JSGlobalObject*);
 BUN_DECLARE_HOST_FUNCTION(BunObject_callback_color);
+
+extern "C" bool Home__JSValue__isErrorFromGlobalObject(JSC::EncodedJSValue encodedValue, JSC::JSGlobalObject* globalObject)
+{
+    if (auto* error = dynamicDowncast<JSC::ErrorInstance>(JSC::JSValue::decode(encodedValue)))
+        return error->globalObject() == globalObject;
+
+    return false;
+}
 
 // Home's reduced C-API realm runs alongside Bun's statically linked JSC
 // bindings without constructing a Bun VirtualMachine. A host callback can run

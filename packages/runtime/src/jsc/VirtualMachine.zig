@@ -3136,9 +3136,9 @@ fn remapOneFrameSlow(this: *VirtualMachine, frame: *jsc.ZigStackFrame, path: []c
     frame.remapped = true;
 }
 
-/// The native (host-function) error constructors whose `new X(...)` construct
-/// divot JSC resolves to the callee in a materialized stack trace. User-defined
-/// `Error` subclasses are NOT here — their divot stays on `new`.
+/// The native error constructors whose `new X(...)` construct divot JSC
+/// resolves to the callee in a materialized stack trace. User-defined Error
+/// subclasses keep the divot on `new`.
 fn isBuiltinErrorConstructorName(name: []const u8) bool {
     const names = [_][]const u8{
         "Error",           "EvalError", "RangeError", "ReferenceError",
@@ -3362,15 +3362,23 @@ pub fn remapZigException(
         exception.collectSourceLines(error_instance, this.global);
     }
 
-    // JSC reports a stack frame's column as the bytecode DIVOT, which for a
-    // `new X(...)` expression points at the `new` keyword rather than the
-    // callee. The formatted `.stack` getter resolves it to the callee, but
-    // `toZigException` (the path Bun.inspect uses) leaves it on `new`, so the
-    // `:line:col` and the source-preview caret landed `"new ".len` too far left.
-    // If the collected top-frame source line shows `new` + whitespace at the
-    // divot, advance the column past it to the callee (preserves the frame's
-    // code_type/name, unlike materializing the lazy `.stack`).
-    if (!top.position.isInvalid() and exception.stack.source_lines_len > 0) {
+    // Home's JSC bridge exposes the construct bytecode divot at `new`, while
+    // Bun's formatted same-realm native Error instances point at the callee.
+    // Keep foreign-realm and eval-originated errors at their original divot:
+    // both behaviors are observable in node:vm and sourceURL output.
+    var top_is_eval_source = top.code_type == .Eval;
+    if (!top_is_eval_source and frames.len > 1) {
+        for (frames[1..]) |frame| {
+            if (frame.code_type == .Eval and frame.source_url.eql(top.source_url)) {
+                top_is_eval_source = true;
+                break;
+            }
+        }
+    }
+    if (error_instance.isErrorFromGlobalObject(this.global) and
+        !top_is_eval_source and
+        !top.position.isInvalid() and exception.stack.source_lines_len > 0)
+    {
         const top_line_no = top.position.line.zeroBased();
         const n: usize = exception.stack.source_lines_len;
         var li: ?usize = null;
@@ -3385,8 +3393,6 @@ pub fn remapZigException(
             const line_utf8 = exception.stack.source_lines_ptr[line_idx].toUTF8(bun.default_allocator);
             defer line_utf8.deinit();
             const raw = line_utf8.slice();
-            // The collected source line can carry a leading newline boundary;
-            // the column is relative to the actual line content.
             var content_start: usize = 0;
             while (content_start < raw.len and (raw[content_start] == '\n' or raw[content_start] == '\r')) content_start += 1;
             const line = raw[content_start..];
@@ -3397,11 +3403,6 @@ pub fn remapZigException(
             {
                 var c = col0 + 3;
                 while (c < line.len and (line[c] == ' ' or line[c] == '\t')) c += 1;
-                // JSC resolves a construct divot to the callee only for NATIVE
-                // error constructors (`new Error()`, `new TypeError()`, …); a
-                // user-defined subclass (`new NamedError()`) keeps the divot on
-                // `new`. Only advance when the callee names a builtin error
-                // constructor, matching the materialized `.stack` getter.
                 var e = c;
                 while (e < line.len and (std.ascii.isAlphanumeric(line[e]) or line[e] == '_' or line[e] == '$')) e += 1;
                 if (isBuiltinErrorConstructorName(line[c..e])) {

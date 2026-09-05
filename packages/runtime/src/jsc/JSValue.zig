@@ -1013,6 +1013,14 @@ pub const JSValue = enum(i64) {
         return JSC__JSValue__isAnyError(this);
     }
 
+    extern fn Home__JSValue__isErrorFromGlobalObject(this: JSValue, global: *JSGlobalObject) bool;
+    pub fn isErrorFromGlobalObject(this: JSValue, global: *JSGlobalObject) bool {
+        if (!this.isCell())
+            return false;
+
+        return Home__JSValue__isErrorFromGlobalObject(this, global);
+    }
+
     extern fn JSC__JSValue__toError_(this: JSValue) JSValue;
     pub fn toError_(this: JSValue) JSValue {
         return JSC__JSValue__toError_(this);
