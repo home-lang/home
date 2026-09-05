@@ -4514,6 +4514,10 @@ pub const Checker = struct {
     /// tsc reports TS2615 from lazy mapped-symbol resolution; Home
     /// materializes eagerly, so this scopes the equivalent cycle signal.
     mapped_indexed_type_eval_depth: u32 = 0,
+    /// Non-zero while lowering a type-parameter default. Dependent indexed
+    /// accesses in defaults must retain their parameter identities until
+    /// declaration-order substitution supplies the effective arguments.
+    type_parameter_default_lower_depth: u32 = 0,
     /// Non-zero while a materialized mapped property's value template is
     /// being lowered.
     mapped_property_eval_depth: u32 = 0,
@@ -9002,7 +9006,7 @@ pub const Checker = struct {
             // are optional; the real entry from `checkTypeAliasDecl`
             // overwrites the body later.
             const default_t: TypeId = if (tpp.default != hir_mod.none_node_id)
-                (self.lowererLowerWithTypeParams(tpp.default) catch types.Primitive.none)
+                (self.lowerTypeParameterDefault(tpp.default) catch types.Primitive.none)
             else
                 types.Primitive.none;
             const tp_id = self.interner.internFreshTypeParameterWithFlags(
@@ -36712,7 +36716,7 @@ pub const Checker = struct {
             else
                 types.Primitive.unknown;
             const def: TypeId = if (tpp.default != hir_mod.none_node_id)
-                try self.lowererLowerWithTypeParams(tpp.default)
+                try self.lowerTypeParameterDefault(tpp.default)
             else
                 types.Primitive.none;
             const tp_id = if (tpp.constraint == hir_mod.none_node_id and tpp.default == hir_mod.none_node_id)
@@ -41368,7 +41372,7 @@ pub const Checker = struct {
             else
                 types.Primitive.unknown;
             const def: TypeId = if (tpp.default != hir_mod.none_node_id)
-                try self.lowererLowerWithTypeParams(tpp.default)
+                try self.lowerTypeParameterDefault(tpp.default)
             else
                 types.Primitive.none;
             const tp_id = if (tpp.constraint == hir_mod.none_node_id and tpp.default == hir_mod.none_node_id)
@@ -65683,7 +65687,7 @@ pub const Checker = struct {
             else
                 types.Primitive.unknown;
             const def: TypeId = if (tpp.default != hir_mod.none_node_id)
-                try self.lowererLowerWithTypeParams(tpp.default)
+                try self.lowerTypeParameterDefault(tpp.default)
             else
                 types.Primitive.none;
             const tp_id = if (tpp.constraint == hir_mod.none_node_id and tpp.default == hir_mod.none_node_id)
@@ -71971,7 +71975,7 @@ pub const Checker = struct {
             else
                 types.Primitive.unknown;
             const def: TypeId = if (tpp.default != hir_mod.none_node_id)
-                try self.lowererLowerWithTypeParams(tpp.default)
+                try self.lowerTypeParameterDefault(tpp.default)
             else
                 types.Primitive.none;
             const tp_id = if (tpp.constraint == hir_mod.none_node_id and tpp.default == hir_mod.none_node_id)
@@ -73767,6 +73771,13 @@ pub const Checker = struct {
             const effective_default = try self.substituteType(payload.default, subs);
             try subs.put(self.gpa, param, effective_default);
         }
+    }
+
+    fn lowerTypeParameterDefault(self: *Checker, type_node: NodeId) CheckError!TypeId {
+        const previous_depth = self.type_parameter_default_lower_depth;
+        self.type_parameter_default_lower_depth +|= 1;
+        defer self.type_parameter_default_lower_depth = previous_depth;
+        return self.lowererLowerWithTypeParams(type_node);
     }
 
     fn genericAliasHasRangeTypeArgCount(self: *Checker, info: GenericAliasInfo) bool {
@@ -78179,6 +78190,16 @@ pub const Checker = struct {
                 if (self.hir.kindOf(ia.object) == .intersection_type and self.containsFreeTypeParameter(obj)) {
                     return self.interner.internIndexedAccess(obj, idx) catch return error.OutOfMemory;
                 }
+                // A type-parameter default is instantiated only after every
+                // earlier effective argument is known. Preserve each
+                // dependent projection as an interned TypeId graph here;
+                // substituting the argument later resolves nested accesses
+                // without revisiting declaration HIR.
+                if (self.type_parameter_default_lower_depth > 0 and
+                    self.containsFreeTypeParameter(obj))
+                {
+                    return self.interner.internIndexedAccess(obj, idx) catch return error.OutOfMemory;
+                }
                 // An indexed access through an array-constrained type
                 // parameter is still dependent on the eventual tuple
                 // argument. Reducing `K[number]` through K's array
@@ -78340,7 +78361,7 @@ pub const Checker = struct {
                     else
                         types.Primitive.unknown;
                     const def: TypeId = if (tpp.default != hir_mod.none_node_id)
-                        try self.lowererLowerWithTypeParams(tpp.default)
+                        try self.lowerTypeParameterDefault(tpp.default)
                     else
                         types.Primitive.none;
                     const tp_id = if (tpp.constraint == hir_mod.none_node_id and tpp.default == hir_mod.none_node_id)
@@ -219505,6 +219526,37 @@ test "checker: nested generic default uses earlier explicit argument" {
     const value_name = try s.sint.intern("value");
     const second_t = s.ti.objectMember(family_t, second_name) orelse return error.TestExpectedEqual;
     try T.expectEqual(types.Primitive.number_t, s.ti.objectMember(second_t, value_name).?);
+}
+
+test "checker: indexed access generic defaults remain symbolic until instantiation" {
+    const s = try newSetup(
+        \\interface BaseDefinition { kind: string }
+        \\interface BaseState { definition: BaseDefinition }
+        \\interface BaseSchema { state: BaseState }
+        \\interface UserDefinition extends BaseDefinition { kind: "user"; id: number }
+        \\interface UserSchema extends BaseSchema { state: { definition: UserDefinition } }
+        \\interface SchemaConstructor<T extends BaseSchema = BaseSchema, D = T["state"]["definition"]> {
+        \\  definition: D;
+        \\  make(definition: D): T;
+        \\}
+        \\declare const bare: SchemaConstructor;
+        \\const bareDefinition: BaseDefinition = bare.definition;
+        \\declare const partial: SchemaConstructor<UserSchema>;
+        \\const userDefinition: UserDefinition = partial.definition;
+        \\partial.make({ kind: "user", id: 1 });
+        \\partial.make({ kind: "user" });
+        \\declare const explicit: SchemaConstructor<UserSchema, string>;
+        \\const explicitDefinition: string = explicit.definition;
+        \\const invalidPrimitive: number = partial.definition;
+        \\const invalidObject: { nope: boolean } = partial.definition;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 3), s.checker.diagnostics.items.len);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.property_missing_required));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.object_literal_excess_property));
 }
 
 test "checker: constrained type argument relates source constraint to target union" {

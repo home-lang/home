@@ -9932,6 +9932,63 @@ test "Program: mapped prototype conditionals preserve optional generic and rest 
     try expectCompilationHasDiagnosticCode(compilation, 2339);
 }
 
+test "Program: imported indexed access defaults instantiate from earlier arguments" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver };
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+
+    const owner =
+        \\export interface BaseDefinition { kind: string }
+        \\export interface BaseState { definition: BaseDefinition }
+        \\export interface BaseSchema { state: BaseState }
+        \\export interface SchemaConstructor<
+        \\  T extends BaseSchema = BaseSchema,
+        \\  D = T["state"]["definition"]
+        \\> {
+        \\  definition: D;
+        \\  make(definition: D): T;
+        \\}
+    ;
+    const consumer =
+        \\import type { BaseDefinition, BaseSchema, SchemaConstructor } from "./owner.js";
+        \\interface UserDefinition extends BaseDefinition { kind: "user"; id: number }
+        \\interface UserSchema extends BaseSchema { state: { definition: UserDefinition } }
+        \\declare const bare: SchemaConstructor;
+        \\const bareDefinition: BaseDefinition = bare.definition;
+        \\declare const partial: SchemaConstructor<UserSchema>;
+        \\const userDefinition: UserDefinition = partial.definition;
+        \\partial.make({ kind: "user", id: 1 });
+        \\partial.make({ kind: "user" });
+        \\const invalidPrimitive: number = partial.definition;
+        \\const invalidObject: { nope: boolean } = partial.definition;
+        \\void bareDefinition; void userDefinition; void invalidPrimitive; void invalidObject;
+    ;
+    try vfs.addFile("/proj/owner.ts", owner);
+    try vfs.addFile("/proj/consumer.ts", consumer);
+    _ = try p.add("/proj/owner.ts", owner);
+    const consumer_id = try p.add("/proj/consumer.ts", consumer);
+
+    try p.compileAll(.{
+        .no_emit = true,
+        .strict_flags = .{ .no_implicit_any = true, .strict_null_checks = true },
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    });
+    const compilation = p.fileById(consumer_id).compilation.?;
+    try T.expectEqual(@as(usize, 3), compilation.diagnostics.items.len);
+    var assignability_diagnostics: usize = 0;
+    var argument_diagnostics: usize = 0;
+    for (compilation.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == 2322) assignability_diagnostics += 1;
+        if (diagnostic.code == 2345) argument_diagnostics += 1;
+    }
+    try T.expectEqual(@as(usize, 2), assignability_diagnostics);
+    try T.expectEqual(@as(usize, 1), argument_diagnostics);
+}
+
 test "Program: generic nested member assignments contextually type callbacks" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();
