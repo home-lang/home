@@ -521,6 +521,9 @@ pub const InlineAsm = struct {
     node: Node,
     /// The assembly instruction string (without quotes)
     instruction: []const u8,
+    /// Whether `instruction` was assembled from adjacent string literals and
+    /// therefore must be released with the rest of the expression.
+    instruction_owned: bool = false,
     /// Outputs, inputs, and clobbers from the `: : :` sections. Empty for
     /// the bare `asm("instr")` form.
     ///
@@ -545,6 +548,7 @@ pub const InlineAsm = struct {
         outputs: []const AsmOperand,
         inputs: []const AsmOperand,
         clobbers: []const []const u8,
+        instruction_owned: bool,
         loc: SourceLocation,
     ) InlineAsm {
         return .{
@@ -553,6 +557,7 @@ pub const InlineAsm = struct {
             .outputs = outputs,
             .inputs = inputs,
             .clobbers = clobbers,
+            .instruction_owned = instruction_owned,
         };
     }
 
@@ -2797,6 +2802,14 @@ pub const Program = struct {
                 for (macro.args) |arg| deinitExpr(arg, allocator);
                 allocator.free(macro.args);
                 allocator.destroy(macro);
+            },
+            .InlineAsm => |inline_asm| {
+                for (inline_asm.outputs) |output| deinitExpr(output.expr, allocator);
+                for (inline_asm.inputs) |input| deinitExpr(input.expr, allocator);
+                if (inline_asm.outputs.len > 0) allocator.free(inline_asm.outputs);
+                if (inline_asm.inputs.len > 0) allocator.free(inline_asm.inputs);
+                if (inline_asm.clobbers.len > 0) allocator.free(inline_asm.clobbers);
+                if (inline_asm.instruction_owned) allocator.free(inline_asm.instruction);
             },
             .StructLiteral => |struct_lit| {
                 struct_lit.deinit(allocator);

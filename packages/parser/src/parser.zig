@@ -7548,6 +7548,8 @@ pub const Parser = struct {
             if (self.check(.String)) {
                 const str_token = self.advance();
                 var instruction = str_token.lexeme[1 .. str_token.lexeme.len - 1];
+                var instruction_owned = false;
+                errdefer if (instruction_owned) self.allocator.free(instruction);
 
                 // Adjacent string literals concatenate, so a multi-instruction
                 // block can be written a line at a time:
@@ -7565,7 +7567,9 @@ pub const Parser = struct {
                     const joined = try self.allocator.alloc(u8, instruction.len + piece.len);
                     @memcpy(joined[0..instruction.len], instruction);
                     @memcpy(joined[instruction.len..], piece);
+                    if (instruction_owned) self.allocator.free(instruction);
                     instruction = joined;
+                    instruction_owned = true;
                 }
 
                 var outputs = std.ArrayList(ast.AsmOperand).empty;
@@ -7622,13 +7626,22 @@ pub const Parser = struct {
                 _ = try self.expect(.RightParen, "Expected ')' after asm block");
 
                 const expr = try self.allocator.create(ast.Expr);
+                errdefer self.allocator.destroy(expr);
+                const output_slice = try outputs.toOwnedSlice(self.allocator);
+                errdefer if (output_slice.len > 0) self.allocator.free(output_slice);
+                const input_slice = try inputs.toOwnedSlice(self.allocator);
+                errdefer if (input_slice.len > 0) self.allocator.free(input_slice);
+                const clobber_slice = try clobbers.toOwnedSlice(self.allocator);
+                errdefer if (clobber_slice.len > 0) self.allocator.free(clobber_slice);
                 expr.* = ast.Expr{ .InlineAsm = ast.InlineAsm.initWithOperands(
                     instruction,
-                    try outputs.toOwnedSlice(self.allocator),
-                    try inputs.toOwnedSlice(self.allocator),
-                    try clobbers.toOwnedSlice(self.allocator),
+                    output_slice,
+                    input_slice,
+                    clobber_slice,
+                    instruction_owned,
                     ast.SourceLocation.fromToken(asm_token),
                 ) };
+                instruction_owned = false;
                 return expr;
             }
 

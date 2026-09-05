@@ -1177,6 +1177,21 @@ test "parser: inline asm volatile paren form (existing)" {
     try testing.expect(expr.* == .InlineAsm);
 }
 
+test "parser: inline asm owns adjacent instructions and operand sections" {
+    const program = try parseSource(
+        testing.allocator,
+        "asm volatile (\"mov \" \"%[input], %[output]\" : [output] \"=r\" (output_value) : [input] \"r\" (input_value) : \"memory\", \"cc\")",
+    );
+    defer program.deinit(testing.allocator);
+
+    const inline_asm = program.statements[0].ExprStmt.InlineAsm;
+    try testing.expectEqualStrings("mov %[input], %[output]", inline_asm.instruction);
+    try testing.expect(inline_asm.instruction_owned);
+    try testing.expectEqual(@as(usize, 1), inline_asm.outputs.len);
+    try testing.expectEqual(@as(usize, 1), inline_asm.inputs.len);
+    try testing.expectEqual(@as(usize, 2), inline_asm.clobbers.len);
+}
+
 // Function type aliases (Issue #51) ----------------------------------------
 //
 // `pub const Name = fn(...) Ret` is routed through the same type-expression

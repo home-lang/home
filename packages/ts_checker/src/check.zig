@@ -155460,6 +155460,22 @@ pub const Checker = struct {
     /// non-literal is returned unchanged.
     fn widenForInference(self: *Checker, t: TypeId) TypeId {
         const flags = self.interner.pool.flagsOf(t);
+        // Union of literals: array literals like `[1, 2, 3]` produce
+        // a numeric indexer typed as `1 | 2 | 3`. Widen each branch
+        // and, if all collapse to the same primitive, return that
+        // primitive directly. Union flags aggregate their members'
+        // literal flags, so this must run before the scalar-literal branch.
+        // Otherwise a heterogeneous `"a" | 10` union is mistaken for a
+        // string literal and collapses to `string`.
+        if (flags.is_union) {
+            const members = self.interner.unionMembers(t);
+            if (members.len == 0) return t;
+            const first = self.widenForInference(members[0]);
+            for (members[1..]) |m| {
+                if (self.widenForInference(m) != first) return t;
+            }
+            return first;
+        }
         if (flags.is_literal) {
             // Generic inference preserves enum-member literals
             // (`NonNullable<E.A>` stays `E.A`). Mutable declarations
@@ -155470,20 +155486,6 @@ pub const Checker = struct {
             if (flags.is_boolean) return types.Primitive.boolean_t;
             if (flags.is_bigint) return types.Primitive.bigint_t;
             return t;
-        }
-        // Union of literals: array literals like `[1, 2, 3]` produce
-        // a numeric indexer typed as `1 | 2 | 3`. Widen each branch
-        // and, if all collapse to the same primitive, return that
-        // primitive directly. Otherwise leave the union shape alone
-        // (the user wrote a heterogeneous array).
-        if (flags.is_union) {
-            const members = self.interner.unionMembers(t);
-            if (members.len == 0) return t;
-            const first = self.widenForInference(members[0]);
-            for (members[1..]) |m| {
-                if (self.widenForInference(m) != first) return t;
-            }
-            return first;
         }
         return t;
     }
@@ -216222,6 +216224,20 @@ test "checker: mutable identifier initializers widen flow literals" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.subsequent_var_type_mismatch));
+}
+
+test "checker: heterogeneous conditional literal unions infer through generic parameters" {
+    const s = try newSetup(
+        \\declare function widening<T>(x: T): T;
+        \\declare function nonWidening<T extends string | number | symbol>(x: T): T;
+        \\function f(cond: boolean) {
+        \\  let x = widening(cond ? "a" : 10);
+        \\  let y = nonWidening(cond ? "a" : 10);
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
 }
 
 test "checker: typeof object excludes branded numeric enums" {
