@@ -2840,9 +2840,13 @@ const harness_prelude =
     \\      return __home_build_fail([__home_build_error(message, null)], shouldThrow, pluginOnEnd);
     \\    }
     \\    const outputs = entrypoints.map(entrypoint => {
-    \\      const outputPath = __home_build_join(String(options.outdir), __home_build_basename(entrypoint).replace(/\.[^.\/]+$/, ".js"));
-    \\      const outputText = __home_build_normalize_corpus_module_comments(__home_build_read_text(outputPath) || "");
-    \\      return new BuildArtifact(outputText, { type: "text/javascript;charset=utf-8", path: outputPath, kind: "entry-point", loader: "js" });
+    \\      const css = /\.css$/i.test(entrypoint);
+    \\      const outputPath = __home_build_join(String(options.outdir), __home_build_basename(entrypoint).replace(/\.[^.\/]+$/, css ? ".css" : ".js"));
+    \\      let nativeOutput = "";
+    \\      try { nativeOutput = String(globalThis.__home_readFileSyncNative(outputPath)); } catch (error) {}
+    \\      const outputText = __home_build_normalize_corpus_module_comments(nativeOutput);
+    \\      __home_build_write_text(outputPath, outputText);
+    \\      return new BuildArtifact(outputText, { type: css ? "text/css;charset=utf-8" : "text/javascript;charset=utf-8", path: outputPath, kind: css ? "asset" : "entry-point", loader: css ? "css" : "js" });
     \\    });
     \\    const result = { success: true, outputs, logs: [] };
     \\    for (const callback of pluginOnEnd) callback(result);
@@ -89834,9 +89838,9 @@ const harness_prelude =
     \\const __home_global_event_target = new EventTarget();
     \\if (!globalThis.window || typeof globalThis.window !== "object") globalThis.window = {};
     \\if (!globalThis.window.crypto) globalThis.window.crypto = globalThis.crypto;
-    \\if (typeof globalThis.addEventListener !== "function") globalThis.addEventListener = function(type, callback, options) { return __home_global_event_target.addEventListener(type, callback, options); };
-    \\if (typeof globalThis.removeEventListener !== "function") globalThis.removeEventListener = function(type, callback, options) { return __home_global_event_target.removeEventListener(type, callback, options); };
-    \\if (typeof globalThis.dispatchEvent !== "function") globalThis.dispatchEvent = function(event) { return __home_global_event_target.dispatchEvent(event); };
+    \\globalThis.addEventListener = function(type, callback, options) { return __home_global_event_target.addEventListener(type, callback, options); };
+    \\globalThis.removeEventListener = function(type, callback, options) { return __home_global_event_target.removeEventListener(type, callback, options); };
+    \\globalThis.dispatchEvent = function(event) { return __home_global_event_target.dispatchEvent(event); };
     \\const __home_global_dispatch_event = globalThis.dispatchEvent;
     \\const __home_global_event_handlers = { error: null, message: null };
     \\for (const __home_handler_type of Object.keys(__home_global_event_handlers)) {
@@ -91305,9 +91309,9 @@ const harness_prelude =
     \\  for (const port of ports) {
     \\    if (!(port instanceof __home_MessagePort)) throw new TypeError("MessageEvent constructor: Expected every item of eventInitDict.ports to be an instance of MessagePort.");
     \\  }
-    \\  const event = Object.create(new.target.prototype);
+    \\  const event = this;
+    \\  Event.call(event, type, init);
     \\  Object.defineProperties(event, {
-    \\    type: { configurable: true, enumerable: true, value: String(type) },
     \\    data: { configurable: true, enumerable: true, value: init.data === undefined ? null : init.data },
     \\    origin: { configurable: true, enumerable: true, value: Object.prototype.hasOwnProperty.call(init, "origin") ? String(init.origin) : "" },
     \\    lastEventId: { configurable: true, enumerable: true, value: Object.prototype.hasOwnProperty.call(init, "lastEventId") ? String(init.lastEventId) : "" },
@@ -91464,7 +91468,7 @@ fn appendHostedGitInfoCasesPrelude(out: *std.ArrayList(u8), allocator: std.mem.A
 
 fn appendFileMetadataPrelude(out: *std.ArrayList(u8), allocator: std.mem.Allocator, relative_path: []const u8, source: []const u8) !void {
     const dirname = std.fs.path.dirname(relative_path) orelse ".";
-    try out.appendSlice(allocator, "globalThis.__home_file_generation = Number(globalThis.__home_file_generation || 0) + 1;\nglobalThis.__home_written_files = Object.create(null);\nglobalThis.__home_written_file_bytes = Object.create(null);\nglobalThis.__home_written_file_sparse = Object.create(null);\nglobalThis.__home_written_file_modes = Object.create(null);\nglobalThis.__home_written_file_times = Object.create(null);\nglobalThis.__home_symlinks = Object.create(null);\nglobalThis.__home_socket_paths = Object.create(null);\nglobalThis.__home_virtual_fds = Object.create(null);\nglobalThis.__home_module_directory_generations = Object.create(null);\nglobalThis.__home_runtime_module_directory_cache = Object.create(null);\nif (globalThis.process && globalThis.process.__home_events) globalThis.process.__home_events = Object.create(null);\nif (globalThis.process) globalThis.process.env = Object.assign({}, globalThis.__home_process_env_baseline || {}); if (globalThis.process && typeof globalThis.__home_process_cwd_function === \"function\") globalThis.process.cwd = globalThis.__home_process_cwd_function;\nError = globalThis.__home_error_constructor_baseline;\nglobalThis.Error = Error;\nError.prepareStackTrace = globalThis.__home_error_prepare_stack_trace_baseline;\nError.stackTraceLimit = globalThis.__home_error_stack_trace_limit_baseline;\nif (typeof __home_reset_worker_threads_state === \"function\") __home_reset_worker_threads_state();\nif (typeof __home_reset_async_hooks === \"function\") __home_reset_async_hooks();\nif (typeof __home_reset_event_emitter_state === \"function\") __home_reset_event_emitter_state();\nif (typeof __home_zlib_module === \"object\") __home_zlib_module.__home_max_output_length = null;\n__home_node_napi_gc_callbacks.length = 0;\n");
+    try out.appendSlice(allocator, "const __home_file_process = globalThis.process;\nglobalThis.__home_file_generation = Number(globalThis.__home_file_generation || 0) + 1;\nglobalThis.__home_written_files = Object.create(null);\nglobalThis.__home_written_file_bytes = Object.create(null);\nglobalThis.__home_written_file_sparse = Object.create(null);\nglobalThis.__home_written_file_modes = Object.create(null);\nglobalThis.__home_written_file_times = Object.create(null);\nglobalThis.__home_symlinks = Object.create(null);\nglobalThis.__home_socket_paths = Object.create(null);\nglobalThis.__home_virtual_fds = Object.create(null);\nglobalThis.__home_module_directory_generations = Object.create(null);\nglobalThis.__home_runtime_module_directory_cache = Object.create(null);\nif (__home_file_process && __home_file_process.__home_events) __home_file_process.__home_events = Object.create(null);\nif (__home_file_process) __home_file_process.env = Object.assign({}, globalThis.__home_process_env_baseline || {}); if (__home_file_process && typeof globalThis.__home_process_cwd_function === \"function\") __home_file_process.cwd = globalThis.__home_process_cwd_function;\nError = globalThis.__home_error_constructor_baseline;\nglobalThis.Error = Error;\nError.prepareStackTrace = globalThis.__home_error_prepare_stack_trace_baseline;\nError.stackTraceLimit = globalThis.__home_error_stack_trace_limit_baseline;\nif (typeof __home_reset_worker_threads_state === \"function\") __home_reset_worker_threads_state();\nif (typeof __home_reset_async_hooks === \"function\") __home_reset_async_hooks();\nif (typeof __home_reset_event_emitter_state === \"function\") __home_reset_event_emitter_state();\nif (typeof __home_zlib_module === \"object\") __home_zlib_module.__home_max_output_length = null;\n__home_node_napi_gc_callbacks.length = 0;\n");
     try out.appendSlice(allocator, "if (globalThis.__home_http_parser_binding && typeof globalThis.__home_default_HTTPParser === \"function\") globalThis.__home_http_parser_binding.HTTPParser = globalThis.__home_default_HTTPParser;\nif (typeof __home_http_parsers === \"object\") __home_http_parsers.max = 1000;\nif (typeof __home_http_emitted_deprecations === \"object\") __home_http_emitted_deprecations.clear();\nif (typeof __home_performance_observers === \"object\") __home_performance_observers.clear();\n");
     try out.appendSlice(allocator, "if (typeof __home_dns_servers_override !== \"undefined\") __home_dns_servers_override = null;\n");
     try out.appendSlice(allocator, "if (typeof __home_http_global_agent !== \"undefined\") { __home_http_global_agent.destroy(); __home_http_global_agent.defaultPort = 80; __home_http_global_agent.protocol = \"http:\"; __home_http_global_agent.maxSockets = Infinity; }\nif (typeof __home_https_global_agent !== \"undefined\") { __home_https_global_agent.destroy(); __home_https_global_agent.defaultPort = 443; __home_https_global_agent.protocol = \"https:\"; __home_https_global_agent.maxSockets = Infinity; }\nif (typeof __home_node_http !== \"undefined\") __home_node_http.globalAgent = __home_http_global_agent;\nif (typeof __home_node_https !== \"undefined\") __home_node_https.globalAgent = __home_https_global_agent;\n");
@@ -91472,7 +91476,7 @@ fn appendFileMetadataPrelude(out: *std.ArrayList(u8), allocator: std.mem.Allocat
     try out.appendSlice(allocator, "if (typeof __home_reset_diagnostics_channels === \"function\") __home_reset_diagnostics_channels();\n");
     if (try envVariableAlloc(allocator, "HOME_BUN_TEST_FILTER")) |test_filter| {
         defer allocator.free(test_filter);
-        try out.appendSlice(allocator, "process.env.HOME_BUN_TEST_FILTER = ");
+        try out.appendSlice(allocator, "__home_file_process.env.HOME_BUN_TEST_FILTER = ");
         try appendJsStringLiteral(out, allocator, test_filter);
         try out.appendSlice(allocator, ";\n");
     }
@@ -91481,8 +91485,8 @@ fn appendFileMetadataPrelude(out: *std.ArrayList(u8), allocator: std.mem.Allocat
     try out.appendSlice(allocator, ";\nvar __dirname = ");
     try appendJsStringLiteral(out, allocator, dirname);
     try out.appendSlice(allocator, ";\nglobalThis.__home_current_filename = __filename;\nglobalThis.__home_current_dirname = __dirname;\nglobalThis.__home_process_cwd = __dirname.startsWith(\"js/node/path\") ? (__dirname === \".\" ? \"/\" : \"/\" + __dirname.replace(/^\\/+/, \"\")) : __dirname;\nBun.main = __filename;\nvar __home_import_meta_path = __filename;\nvar __home_import_meta_dir = __dirname;\nvar __home_import_meta_dirname = __dirname;\nvar __home_import_meta_file = __filename.slice(__filename.lastIndexOf(\"/\") + 1);\nfunction __home_import_meta_resolve(specifier, parent) {\n  const text = String(specifier);\n  if (text.length === 0) throw new Error(\"Cannot resolve empty specifier\");\n  if (text.startsWith(\"node:\")) return text;\n  if (text === \"path\") return \"node:path\";\n  if (text.startsWith(\"bun:\")) return text;\n  if (text.startsWith(\"file:\")) return new URL(text).toString();\n  if (text.startsWith(\"/\")) return parent === undefined ? __home_url_path_to_file_url(text).href : __home_path_posix_normalize(text);\n  if (text.startsWith(\"./\") || text.startsWith(\"../\")) {\n    let baseDir = __home_import_meta_dir;\n    if (parent !== undefined) {\n      let ref = String(parent);\n      if (ref.startsWith(\"file:\")) ref = __home_url_file_url_to_path(ref);\n      const slash = ref.lastIndexOf(\"/\");\n      baseDir = slash >= 0 ? ref.slice(0, slash) : \".\";\n    }\n    const resolved = __home_path_posix_normalize(baseDir.replace(/\\/+$/, \"\") + \"/\" + text);\n    return parent === undefined ? __home_url_path_to_file_url(resolved).href : resolved;\n  }\n  throw new Error(\"Cannot resolve \" + text + \" from \" + String(parent || __home_import_meta_path));\n}\n");
-    try out.appendSlice(allocator, "process.argv = [process.execPath, __filename];\n");
-    try out.appendSlice(allocator, "process.execArgv = Array.from(globalThis.__home_process_exec_argv_baseline || []);\nif (typeof __home_dns_default_result_order !== \"undefined\") __home_dns_default_result_order = \"verbatim\";\n");
+    try out.appendSlice(allocator, "__home_file_process.argv = [__home_file_process.execPath, __filename];\n");
+    try out.appendSlice(allocator, "__home_file_process.execArgv = Array.from(globalThis.__home_process_exec_argv_baseline || []);\nif (typeof __home_dns_default_result_order !== \"undefined\") __home_dns_default_result_order = \"verbatim\";\n");
     const flags_scan = source[0..@min(source.len, 1500)];
     if (std.mem.indexOf(u8, flags_scan, "// Flags:")) |flags_index| {
         const flags_tail = flags_scan[flags_index + "// Flags:".len ..];
@@ -91490,25 +91494,25 @@ fn appendFileMetadataPrelude(out: *std.ArrayList(u8), allocator: std.mem.Allocat
         var flags = std.mem.tokenizeAny(u8, flags_line, " \t\r");
         while (flags.next()) |flag| {
             if (!std.mem.startsWith(u8, flag, "--")) continue;
-            try out.appendSlice(allocator, "if (!process.execArgv.includes(");
+            try out.appendSlice(allocator, "if (!__home_file_process.execArgv.includes(");
             try appendJsStringLiteral(out, allocator, flag);
-            try out.appendSlice(allocator, ")) process.execArgv.push(");
+            try out.appendSlice(allocator, ")) __home_file_process.execArgv.push(");
             try appendJsStringLiteral(out, allocator, flag);
             try out.appendSlice(allocator, ");\n");
         }
     }
     if (std.mem.eql(u8, relative_path, "js/node/test/parallel/test-dns-default-order-ipv4.js")) {
-        try out.appendSlice(allocator, "process.execArgv.push(\"--dns-result-order=ipv4first\"); __home_dns_default_result_order = \"ipv4first\";\n");
+        try out.appendSlice(allocator, "__home_file_process.execArgv.push(\"--dns-result-order=ipv4first\"); __home_dns_default_result_order = \"ipv4first\";\n");
     } else if (std.mem.eql(u8, relative_path, "js/node/test/parallel/test-dns-default-order-ipv6.js")) {
-        try out.appendSlice(allocator, "process.execArgv.push(\"--dns-result-order=ipv6first\"); __home_dns_default_result_order = \"ipv6first\";\n");
+        try out.appendSlice(allocator, "__home_file_process.execArgv.push(\"--dns-result-order=ipv6first\"); __home_dns_default_result_order = \"ipv6first\";\n");
     } else if (std.mem.eql(u8, relative_path, "js/node/test/parallel/test-dns-default-order-verbatim.js")) {
-        try out.appendSlice(allocator, "process.execArgv.push(\"--dns-result-order=verbatim\");\n");
+        try out.appendSlice(allocator, "__home_file_process.execArgv.push(\"--dns-result-order=verbatim\");\n");
     }
     if (std.mem.eql(u8, relative_path, "regression/issue/08757.test.ts")) {
-        try out.appendSlice(allocator, "process.argv = [process.execPath, __filename];\n");
+        try out.appendSlice(allocator, "__home_file_process.argv = [__home_file_process.execPath, __filename];\n");
     }
     if (std.mem.eql(u8, relative_path, "js/web/workers/worker.test.ts")) {
-        try out.appendSlice(allocator, "if (!Array.isArray(process.argv) || process.argv.length < 2) process.argv = [process.execPath, __filename];\n");
+        try out.appendSlice(allocator, "if (!Array.isArray(__home_file_process.argv) || __home_file_process.argv.length < 2) __home_file_process.argv = [__home_file_process.execPath, __filename];\n");
     }
     if (std.mem.eql(u8, dirname, "napi")) {
         try out.appendSlice(allocator, "__home_fs_mark_dir(\"napi-app\"); __home_fs_mark_dir(__home_build_join(__dirname, \"napi-app\"));\n");
@@ -91522,13 +91526,13 @@ fn appendFileMetadataPrelude(out: *std.ArrayList(u8), allocator: std.mem.Allocat
     if (std.mem.eql(u8, relative_path, "js/bun/shell/env.positionals.test.ts")) {
         try out.appendSlice(
             allocator,
-            "const __home_positionals_repo_root = __home_build_dirname(__home_build_dirname(__home_build_dirname(globalThis.__home_bun_executable || process.execPath)));\n__filename = __home_build_join(__home_build_join(__home_positionals_repo_root, \"packages/runtime/test/bun-corpus\"), __filename);\n__dirname = __home_build_dirname(__filename);\n__home_import_meta_path = __filename;\n__home_import_meta_dir = __dirname;\n__home_import_meta_dirname = __dirname;\nprocess.argv = [process.execPath, __filename];\n",
+            "const __home_positionals_repo_root = __home_build_dirname(__home_build_dirname(__home_build_dirname(globalThis.__home_bun_executable || __home_file_process.execPath)));\n__filename = __home_build_join(__home_build_join(__home_positionals_repo_root, \"packages/runtime/test/bun-corpus\"), __filename);\n__dirname = __home_build_dirname(__filename);\n__home_import_meta_path = __filename;\n__home_import_meta_dir = __dirname;\n__home_import_meta_dirname = __dirname;\n__home_file_process.argv = [__home_file_process.execPath, __filename];\n",
         );
     }
     if (std.mem.eql(u8, relative_path, "js/web/console/console-log.test.ts")) {
         try out.appendSlice(
             allocator,
-            "const __home_console_repo_root = __home_build_dirname(__home_build_dirname(__home_build_dirname(globalThis.__home_bun_executable || process.execPath)));\n__filename = __home_build_join(__home_build_join(__home_console_repo_root, \"packages/runtime/test/bun-corpus\"), __filename);\n__dirname = __home_build_dirname(__filename);\n__home_import_meta_path = __filename;\n__home_import_meta_dir = __dirname;\n__home_import_meta_dirname = __dirname;\nglobalThis.__home_current_filename = __filename;\nglobalThis.__home_current_dirname = __dirname;\nglobalThis.__home_process_cwd = __dirname;\n",
+            "const __home_console_repo_root = __home_build_dirname(__home_build_dirname(__home_build_dirname(globalThis.__home_bun_executable || __home_file_process.execPath)));\n__filename = __home_build_join(__home_build_join(__home_console_repo_root, \"packages/runtime/test/bun-corpus\"), __filename);\n__dirname = __home_build_dirname(__filename);\n__home_import_meta_path = __filename;\n__home_import_meta_dir = __dirname;\n__home_import_meta_dirname = __dirname;\nglobalThis.__home_current_filename = __filename;\nglobalThis.__home_current_dirname = __dirname;\nglobalThis.__home_process_cwd = __dirname;\n",
         );
     }
     if (std.mem.eql(u8, relative_path, "js/bun/test/fake-timers/sinonjs/issue-2086.test.ts")) {
@@ -105369,7 +105373,7 @@ test "bootstrap runner preserves import meta main through symlinked entrypoints"
     defer prepared.deinit(std.testing.allocator);
     try std.testing.expect(prepared.unsupported_reason == null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const { bunRun, tmpdirSync } = globalThis.__home_import(\"harness\");") != null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "process.argv = [process.execPath, __filename];") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "__home_file_process.argv = [__home_file_process.execPath, __filename];") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_harness_import_meta_run(path, env)") != null);
 
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
@@ -106402,7 +106406,7 @@ test "bootstrap runner mirrors Bun shell positional argv corpus" {
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const __home_positionals_repo_root = __home_build_dirname") != null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "\"packages/runtime/test/bun-corpus\"), __filename") != null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "__home_import_meta_dir = __dirname;") != null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "process.argv = [process.execPath, __filename];") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "__home_file_process.argv = [__home_file_process.execPath, __filename];") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_shell_positionals_result") != null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_spawn_shell_positionals_fixture") == null);
     try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "filename.includes(\"js/bun/shell/env.positionals.test.ts\")") != null);
@@ -123820,6 +123824,7 @@ test "bootstrap runner mirrors import-meta resolve corpus" {
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "__home_import_meta_resolve(\"adsjfdasdf\")") != null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "__home_import_meta_resolve(\"\")") != null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const process = globalThis.process;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const __home_file_process = globalThis.process;") != null);
 
     var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
     defer runtime.deinit();
