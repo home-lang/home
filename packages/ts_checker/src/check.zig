@@ -30961,6 +30961,312 @@ pub const Checker = struct {
         return null;
     }
 
+    fn contextualFunctionParameterTypeArgumentNode(
+        self: *Checker,
+        function_node: NodeId,
+        parameter_name: hir_mod.StringId,
+    ) CheckError!?NodeId {
+        const parent = self.hir.parentOf(function_node);
+        if (parent == hir_mod.none_node_id or
+            (self.hir.kindOf(parent) != .call_expr and self.hir.kindOf(parent) != .new_expr)) return null;
+        const call = hir_mod.callOf(self.hir, parent);
+        const arguments = hir_mod.callArgs(self.hir, parent);
+        var argument_index: ?usize = null;
+        for (arguments, 0..) |argument, index| {
+            if (argument == function_node) {
+                argument_index = index;
+                break;
+            }
+        }
+        const outer_index = argument_index orelse return null;
+        var parameter_index: usize = 0;
+        var found = false;
+        for (hir_mod.fnParams(self.hir, function_node)) |parameter_node| {
+            if (self.isThisParameter(parameter_node)) continue;
+            const parameter = hir_mod.parameterOf(self.hir, parameter_node);
+            if (parameter.name != hir_mod.none_node_id and
+                self.hir.kindOf(parameter.name) == .identifier and
+                hir_mod.identifierOf(self.hir, parameter.name).name == parameter_name)
+            {
+                found = true;
+                break;
+            }
+            parameter_index += 1;
+        }
+        if (!found) return null;
+        var callee_t = self.hir.typeOf(call.callee);
+        if (callee_t == types.Primitive.none) callee_t = try self.checkExpression(call.callee);
+        if (try self.contextualSignatureForCall(parent, callee_t, arguments)) |outer_sig| {
+            if (self.contextualFunctionParameterTypeArgumentForSignature(
+                outer_sig,
+                outer_index,
+                parameter_index,
+                parent,
+                call.callee,
+            )) |argument| return argument;
+        }
+        const declared_sig = self.firstSignatureType(callee_t) orelse return null;
+        return self.contextualFunctionParameterTypeArgumentForSignature(
+            declared_sig,
+            outer_index,
+            parameter_index,
+            parent,
+            call.callee,
+        );
+    }
+
+    fn contextualFunctionParameterTypeArgumentForSignature(
+        self: *Checker,
+        signature: TypeId,
+        outer_index: usize,
+        parameter_index: usize,
+        call_node: NodeId,
+        callee_node: NodeId,
+    ) ?NodeId {
+        const outer_params = self.interner.signatureParams(signature);
+        if (outer_index >= outer_params.len) return null;
+        const callback_sig = self.firstSignatureType(outer_params[outer_index]) orelse return null;
+        const callback_params = self.interner.signatureParams(callback_sig);
+        if (parameter_index >= callback_params.len) return null;
+        const raw_parameter_t = callback_params[parameter_index];
+        const type_parameters = self.generic_signature_params.get(signature) orelse return null;
+        const type_arguments = hir_mod.callTypeArgs(self.hir, call_node);
+        for (type_parameters, 0..) |type_parameter, index| {
+            if (type_parameter != raw_parameter_t and
+                self.resolvedTypeParameterPlaceholder(type_parameter) != self.resolvedTypeParameterPlaceholder(raw_parameter_t) and
+                !self.sameTypeParameterName(type_parameter, raw_parameter_t)) continue;
+            if (index < type_arguments.len) return type_arguments[index];
+            return self.contextualVariableAnnotationTypeArgumentNode(call_node, callee_node, index);
+        }
+        return null;
+    }
+
+    fn contextualVariableAnnotationTypeArgumentNode(
+        self: *Checker,
+        call_node: NodeId,
+        callee_node: NodeId,
+        argument_index: usize,
+    ) ?NodeId {
+        const parent = self.hir.parentOf(call_node);
+        if (parent == hir_mod.none_node_id) return null;
+        const kind = self.hir.kindOf(parent);
+        if (kind != .var_decl and kind != .let_decl and kind != .const_decl) return null;
+        const variable = hir_mod.varDeclOf(self.hir, parent);
+        if (variable.init != call_node or variable.type_annotation == hir_mod.none_node_id or
+            self.hir.kindOf(variable.type_annotation) != .type_ref) return null;
+        const annotation = hir_mod.typeRefOf(self.hir, variable.type_annotation);
+        const callee_name = switch (self.hir.kindOf(callee_node)) {
+            .identifier => hir_mod.identifierOf(self.hir, callee_node).name,
+            .member_access => hir_mod.memberOf(self.hir, callee_node).name,
+            else => return null,
+        };
+        if (annotation.name != callee_name) return null;
+        const arguments = hir_mod.typeRefArgs(self.hir, variable.type_annotation);
+        return if (argument_index < arguments.len) arguments[argument_index] else null;
+    }
+
+    const ContextualTypeNodeBinding = struct {
+        parameter: hir_mod.StringId,
+        argument: NodeId,
+    };
+
+    const ContextualProjectedType = union(enum) {
+        node: NodeId,
+        type: TypeId,
+    };
+
+    fn contextualBoundTypeNode(
+        self: *Checker,
+        node: NodeId,
+        bindings: []const ContextualTypeNodeBinding,
+    ) NodeId {
+        var current = node;
+        var depth: u8 = 0;
+        while (depth < 16 and current != hir_mod.none_node_id and self.hir.kindOf(current) == .type_ref) : (depth += 1) {
+            const reference = hir_mod.typeRefOf(self.hir, current);
+            if (reference.qualifier_len != 0 or reference.args_len != 0) break;
+            var index = bindings.len;
+            var matched = false;
+            while (index > 0) {
+                index -= 1;
+                if (bindings[index].parameter != reference.name) continue;
+                if (bindings[index].argument == current) return current;
+                current = bindings[index].argument;
+                matched = true;
+                break;
+            }
+            if (!matched) break;
+        }
+        return current;
+    }
+
+    fn contextualProgramQualifiedMemberFromTypeNode(
+        self: *Checker,
+        type_node: NodeId,
+        bindings: []const ContextualTypeNodeBinding,
+        member_name: hir_mod.StringId,
+    ) CheckError!?ContextualProjectedType {
+        const declaration = (try self.programDeclarationForQualifiedInterfaceRef(type_node)) orelse return null;
+        const argument_nodes = hir_mod.typeRefArgs(self.hir, type_node);
+        if (argument_nodes.len > declaration.parameters.len) return null;
+
+        if (self.programDeclarationOwnMember(declaration, member_name)) |member| {
+            if (member.type.* == .parameter) {
+                for (declaration.parameters, 0..) |*parameter, index| {
+                    if (parameter != member.type.parameter or index >= argument_nodes.len) continue;
+                    return .{ .node = self.contextualBoundTypeNode(argument_nodes[index], bindings) };
+                }
+            }
+        }
+
+        const arguments = try self.gpa.alloc(TypeId, declaration.parameters.len);
+        defer self.gpa.free(arguments);
+        @memset(arguments, types.Primitive.unknown);
+        for (argument_nodes, arguments[0..argument_nodes.len]) |argument_node, *argument| {
+            const effective_node = self.contextualBoundTypeNode(argument_node, bindings);
+            const cached = self.hir.typeOf(effective_node);
+            argument.* = if (cached != types.Primitive.none)
+                cached
+            else
+                self.lowererLowerWithTypeParams(effective_node) catch return null;
+        }
+        for (declaration.parameters[argument_nodes.len..], argument_nodes.len..) |parameter, index| {
+            const default = parameter.default orelse return null;
+            arguments[index] = self.lowerProgramExpression(default, declaration, arguments) catch return null;
+        }
+        var active: std.AutoHashMapUnmanaged(*const ProgramClassSchema.Declaration, void) = .empty;
+        defer active.deinit(self.gpa);
+        const projected = (try self.programDeclarationInheritedMemberType(
+            declaration,
+            arguments,
+            member_name,
+            &active,
+            true,
+        )) orelse return null;
+        return .{ .type = projected };
+    }
+
+    fn contextualProjectedMemberFromTypeNode(
+        self: *Checker,
+        raw_type_node: NodeId,
+        bindings: []const ContextualTypeNodeBinding,
+        member_name: hir_mod.StringId,
+        active: *std.AutoHashMapUnmanaged(NodeId, void),
+    ) CheckError!?ContextualProjectedType {
+        const type_node = self.contextualBoundTypeNode(raw_type_node, bindings);
+        if (type_node == hir_mod.none_node_id or self.hir.kindOf(type_node) != .type_ref) return null;
+        const reference = hir_mod.typeRefOf(self.hir, type_node);
+        if (reference.qualifier_len != 0) {
+            return self.contextualProgramQualifiedMemberFromTypeNode(type_node, bindings, member_name);
+        }
+        const declaration = self.findVisibleNamedTypeDecl(type_node, reference.name) orelse return null;
+        if (self.hir.kindOf(declaration) != .interface_decl or active.contains(declaration)) return null;
+        try active.put(self.gpa, declaration, {});
+        defer _ = active.remove(declaration);
+
+        const interface = hir_mod.interfaceOf(self.hir, declaration);
+        const parameter_nodes = self.hir.childSlice(interface.type_params_start, interface.type_params_len);
+        const argument_nodes = hir_mod.typeRefArgs(self.hir, type_node);
+        if (argument_nodes.len > parameter_nodes.len) return null;
+        const local_bindings = try self.gpa.alloc(ContextualTypeNodeBinding, bindings.len + parameter_nodes.len);
+        defer self.gpa.free(local_bindings);
+        @memcpy(local_bindings[0..bindings.len], bindings);
+        var local_len = bindings.len;
+        for (parameter_nodes, 0..) |parameter_node, index| {
+            if (self.hir.kindOf(parameter_node) != .type_parameter) continue;
+            const parameter = hir_mod.typeParameterOf(self.hir, parameter_node);
+            const argument = if (index < argument_nodes.len)
+                argument_nodes[index]
+            else if (parameter.default != hir_mod.none_node_id)
+                parameter.default
+            else
+                continue;
+            local_bindings[local_len] = .{
+                .parameter = parameter.name,
+                .argument = self.contextualBoundTypeNode(argument, local_bindings[0..local_len]),
+            };
+            local_len += 1;
+        }
+        const effective_bindings = local_bindings[0..local_len];
+        for (hir_mod.interfaceMembers(self.hir, declaration)) |member_node| {
+            if (self.hir.kindOf(member_node) != .interface_member) continue;
+            const member = hir_mod.interfaceMemberOf(self.hir, member_node);
+            if (member.name != member_name) continue;
+            return .{ .node = self.contextualBoundTypeNode(member.type_node, effective_bindings) };
+        }
+        for (hir_mod.interfaceExtends(self.hir, declaration)) |base| {
+            if (try self.contextualProjectedMemberFromTypeNode(base, effective_bindings, member_name, active)) |projected| return projected;
+        }
+        return null;
+    }
+
+    fn contextualMemberAssignmentSignatureFromCallTypeArgument(
+        self: *Checker,
+        target: NodeId,
+    ) CheckError!?TypeId {
+        const diagnostic_start = self.diagnostics.items.len;
+        const signature = try self.contextualMemberAssignmentSignatureFromCallTypeArgumentInner(target);
+        if (signature == null) self.diagnostics.shrinkRetainingCapacity(diagnostic_start);
+        return signature;
+    }
+
+    fn contextualMemberAssignmentSignatureFromCallTypeArgumentInner(
+        self: *Checker,
+        target: NodeId,
+    ) CheckError!?TypeId {
+        if (self.hir.kindOf(target) != .member_access) return null;
+        var names: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+        defer names.deinit(self.gpa);
+        var root = target;
+        while (self.hir.kindOf(root) == .member_access) {
+            const member = hir_mod.memberOf(self.hir, root);
+            try names.append(self.gpa, member.name);
+            root = member.object;
+        }
+        if (names.items.len == 0 or self.hir.kindOf(root) != .identifier) return null;
+        const function_node = self.enclosingFunctionLike(root) orelse return null;
+        const root_type_node = try self.contextualFunctionParameterTypeArgumentNode(
+            function_node,
+            hir_mod.identifierOf(self.hir, root).name,
+        );
+        var projected: ContextualProjectedType = .{ .node = root_type_node orelse return null };
+        var active: std.AutoHashMapUnmanaged(NodeId, void) = .empty;
+        defer active.deinit(self.gpa);
+        var index = names.items.len;
+        while (index > 0) {
+            index -= 1;
+            const next: ?ContextualProjectedType = switch (projected) {
+                .node => |type_node| try self.contextualProjectedMemberFromTypeNode(
+                    type_node,
+                    &.{},
+                    names.items[index],
+                    &active,
+                ),
+                .type => |type_id| if (try self.lookupObjectMember(type_id, names.items[index])) |member_t|
+                    .{ .type = member_t }
+                else
+                    null,
+            };
+            if (next == null) {
+                return null;
+            }
+            projected = next.?;
+        }
+        const signature = switch (projected) {
+            .node => |type_node| blk: {
+                const cached = self.hir.typeOf(type_node);
+                const type_id = if (cached != types.Primitive.none)
+                    cached
+                else
+                    self.lowererLowerWithTypeParams(type_node) catch return null;
+                break :blk self.contextualAssignmentSignature(self.resolveGenericType(type_id) catch type_id);
+            },
+            .type => |type_id| self.contextualAssignmentSignature(self.resolveGenericType(type_id) catch type_id),
+        } orelse return null;
+        if (self.containsFreeTypeParameter(signature)) return null;
+        return if (self.interner.signatureReturn(signature) == types.Primitive.void_t) signature else null;
+    }
+
     fn contextualCallArgumentType(
         self: *Checker,
         sig: TypeId,
@@ -107329,7 +107635,7 @@ pub const Checker = struct {
         }
         var active: std.AutoHashMapUnmanaged(*const ProgramClassSchema.Declaration, void) = .empty;
         defer active.deinit(self.gpa);
-        return self.programDeclarationInheritedMemberType(declaration, args, member_name, &active);
+        return self.programDeclarationInheritedMemberType(declaration, args, member_name, &active, false);
     }
 
     fn programDeclarationInheritedMemberType(
@@ -107338,12 +107644,13 @@ pub const Checker = struct {
         args: []const TypeId,
         member_name: hir_mod.StringId,
         active: *std.AutoHashMapUnmanaged(*const ProgramClassSchema.Declaration, void),
+        contextual: bool,
     ) CheckError!?TypeId {
         if (active.contains(declaration)) return null;
         try active.put(self.gpa, declaration, {});
         defer _ = active.remove(declaration);
         const body = declaration.body orelse return null;
-        return self.programExpressionInheritedMemberType(body, declaration, args, member_name, active);
+        return self.programExpressionInheritedMemberType(body, declaration, args, member_name, active, contextual);
     }
 
     fn programExpressionInheritedMemberType(
@@ -107353,25 +107660,28 @@ pub const Checker = struct {
         args: []const TypeId,
         member_name: hir_mod.StringId,
         active: *std.AutoHashMapUnmanaged(*const ProgramClassSchema.Declaration, void),
+        contextual: bool,
     ) CheckError!?TypeId {
         switch (expression.*) {
             .object => |members| {
                 for (members) |member| {
                     if (!std.mem.eql(u8, member.name, self.string_interner.get(member_name))) continue;
-                    return self.lowerProgramExpression(member.type, declaration, args) catch null;
+                    const owner = if (contextual) try self.contextualProgramDeclaration(declaration) else declaration;
+                    return self.lowerProgramExpression(member.type, owner, args) catch null;
                 }
             },
             .indexed_object => |object| {
                 for (object.members) |member| {
                     if (!std.mem.eql(u8, member.name, self.string_interner.get(member_name))) continue;
-                    return self.lowerProgramExpression(member.type, declaration, args) catch null;
+                    const owner = if (contextual) try self.contextualProgramDeclaration(declaration) else declaration;
+                    return self.lowerProgramExpression(member.type, owner, args) catch null;
                 }
             },
             .intersection => |parts| {
                 var index = parts.len;
                 while (index > 0) {
                     index -= 1;
-                    if (try self.programExpressionInheritedMemberType(parts[index], declaration, args, member_name, active)) |member_t| return member_t;
+                    if (try self.programExpressionInheritedMemberType(parts[index], declaration, args, member_name, active, contextual)) |member_t| return member_t;
                 }
             },
             .reference => |reference| {
@@ -107379,14 +107689,16 @@ pub const Checker = struct {
                 const target_args = try self.gpa.alloc(TypeId, reference.declaration.parameters.len);
                 defer self.gpa.free(target_args);
                 @memset(target_args, types.Primitive.unknown);
+                const source_owner = if (contextual) try self.contextualProgramDeclaration(declaration) else declaration;
                 for (reference.arguments, target_args[0..reference.arguments.len]) |argument, *target_arg| {
-                    target_arg.* = self.lowerProgramExpression(argument, declaration, args) catch return null;
+                    target_arg.* = self.lowerProgramExpression(argument, source_owner, args) catch return null;
                 }
+                const target_owner = if (contextual) try self.contextualProgramDeclaration(reference.declaration) else reference.declaration;
                 for (reference.declaration.parameters[reference.arguments.len..], reference.arguments.len..) |parameter, target_index| {
                     const default = parameter.default orelse return null;
-                    target_args[target_index] = self.lowerProgramExpression(default, reference.declaration, target_args) catch return null;
+                    target_args[target_index] = self.lowerProgramExpression(default, target_owner, target_args) catch return null;
                 }
-                return self.programDeclarationInheritedMemberType(reference.declaration, target_args, member_name, active);
+                return self.programDeclarationInheritedMemberType(reference.declaration, target_args, member_name, active, contextual);
             },
             else => {},
         }
@@ -107745,7 +108057,7 @@ pub const Checker = struct {
     fn resolveGenericType(self: *Checker, t: TypeId) CheckError!TypeId {
         if (t >= self.interner.pool.typeCount()) return t;
         const flags = self.interner.pool.flagsOf(t);
-        if (!flags.is_instantiation) return t;
+        if (!flags.is_instantiation and !flags.is_union and !flags.is_intersection) return t;
         if (self.generic_instances.get(t)) |result| return result;
         if (self.generic_expansion_active.contains(t)) return t;
         try self.generic_expansion_active.put(self.gpa, t, {});
@@ -109433,17 +109745,21 @@ pub const Checker = struct {
                     _ = try self.reportCheckJsPrototypeThisMissingMemberAssignment(a.target);
                 }
                 const value_diag_start = self.diagnostics.items.len;
-                var contextual_element_value_t: TypeId = types.Primitive.none;
+                var contextual_assignment_value_t: TypeId = types.Primitive.none;
                 if (a.op == null and
-                    target_kind == .element_access and
+                    (target_kind == .element_access or target_kind == .member_access) and
                     self.isContextualFunctionExpressionLike(a.value))
                 {
-                    if (self.contextualElementAssignmentSignature(target_t)) |target_sig| {
-                        try self.checkFunctionWithContextualSignatureMode(a.value, target_sig, false, &contextual_element_value_t);
+                    const target_sig = if (target_kind == .element_access)
+                        self.contextualAssignmentSignature(target_t)
+                    else
+                        try self.contextualMemberAssignmentSignatureFromCallTypeArgument(a.target);
+                    if (target_sig) |signature| {
+                        try self.checkFunctionWithContextualSignatureMode(a.value, signature, false, &contextual_assignment_value_t);
                     }
                 }
-                var value_t = if (contextual_element_value_t != types.Primitive.none)
-                    contextual_element_value_t
+                var value_t = if (contextual_assignment_value_t != types.Primitive.none)
+                    contextual_assignment_value_t
                 else if (a.op == .logical_and and target_kind == .identifier) logical_rhs: {
                     const target_id = hir_mod.identifierOf(self.hir, a.target);
                     const current = self.lookupNarrow(target_id.name) orelse target_t;
@@ -119298,7 +119614,7 @@ pub const Checker = struct {
         return members[0].type;
     }
 
-    fn contextualElementAssignmentSignature(self: *Checker, t: TypeId) ?TypeId {
+    fn contextualAssignmentSignature(self: *Checker, t: TypeId) ?TypeId {
         if (t >= self.interner.pool.typeCount()) return null;
         const flags = self.interner.pool.flagsOf(t);
         if (!flags.is_union and !flags.is_intersection) {
@@ -119308,6 +119624,7 @@ pub const Checker = struct {
         var selected: TypeId = types.Primitive.none;
         const members = if (flags.is_union) self.interner.unionMembers(t) else self.interner.intersectionMembers(t);
         for (members) |member| {
+            if (member == types.Primitive.undefined_t or member == types.Primitive.null_t) continue;
             const signature = self.firstSignatureType(member) orelse return null;
             if (selected == types.Primitive.none) {
                 selected = signature;
@@ -177272,7 +177589,11 @@ pub const Checker = struct {
         target_t: TypeId,
         relation_already_accepted: bool,
     ) CheckError!bool {
-        for (self.interner.objectMembers(target_t)) |target_member| {
+        // Contextual return inference interns types and may relocate the
+        // object-member pool, so do not retain its borrowed slice in this loop.
+        const target_members = try self.gpa.dupe(types.ObjectMember, self.interner.objectMembers(target_t));
+        defer self.gpa.free(target_members);
+        for (target_members) |target_member| {
             const prop_node = (try self.findObjectLiteralPropNodeForTargetMember(init_node, target_member.name)) orelse continue;
             const property = hir_mod.objectPropertyOf(self.hir, prop_node);
             if (property.value == hir_mod.none_node_id or
@@ -225875,6 +226196,91 @@ test "checker: generic contextual signatures type arrow parameters before return
         \\const list: <A>(x: A) => A[] = x => [x];
         \\type Identity = <A>(value: A) => A;
         \\const identity: Identity = value => value;
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{
+        .strict_null_checks = true,
+        .strict_function_types = true,
+        .no_implicit_any = true,
+    });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 0), b.base.checker.diagnostics.items.len);
+}
+
+test "checker: generic nested member assignments contextually type callbacks" {
+    const b = try newBoundSetup(
+        \\interface Context { label: string }
+        \\interface JsonWriter { write(value: string): void }
+        \\interface ProcessParams { mode: string }
+        \\interface BaseInternals {
+        \\  process?: ((ctx: Context, json: JsonWriter, params: ProcessParams) => void) | undefined;
+        \\}
+        \\interface TypeInternals<O = unknown, I = unknown> extends BaseInternals { output: O; input: I }
+        \\interface Type<O = unknown, I = unknown, Internals extends TypeInternals<O, I> = TypeInternals<O, I>> { _zod: Internals }
+        \\interface WrappedType<Internals extends TypeInternals = TypeInternals> extends Type<any, any, Internals> {}
+        \\interface StringInternals<Input> extends TypeInternals<string, Input> { kind: "string"; traits: Set<string> }
+        \\interface Trait extends WrappedType<StringInternals<string>> {}
+        \\interface Factory<T> { readonly prototype: T }
+        \\declare function Factory<T>(name: string, initialize: (inst: T, def: unknown) => void): Factory<T>;
+        \\const InferredFactory: Factory<Trait> = Factory("inferred", (inst, def) => {
+        \\  inst._zod.process = (ctx, json, params) => {
+        \\    json.write(params.mode);
+        \\    void ctx.missing;
+        \\  };
+        \\  void def;
+        \\});
+        \\const ExplicitFactory = Factory<Trait>("explicit", (inst) => {
+        \\  inst._zod.process = (ctx, json, params) => {
+        \\    const label: string = ctx.label;
+        \\    json.write(params.mode);
+        \\    void label;
+        \\  };
+        \\});
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{
+        .strict_null_checks = true,
+        .strict_function_types = true,
+        .no_implicit_any = true,
+    });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.parameter_implicitly_any));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 1), b.base.checker.diagnostics.items.len);
+}
+
+test "checker: ambiguous member-assigned callback remains uncontextualized" {
+    const b = try newBoundSetup(
+        \\interface Internals { handler: ((value: string) => void) | ((value: number, extra: number) => void) }
+        \\interface Trait { state: Internals }
+        \\interface Factory<T> { readonly prototype: T }
+        \\declare function Factory<T>(initialize: (inst: T) => void): Factory<T>;
+        \\const TraitFactory: Factory<Trait> = Factory((inst) => {
+        \\  inst.state.handler = (value) => void value;
+        \\});
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{
+        .strict_null_checks = true,
+        .strict_function_types = true,
+        .no_implicit_any = true,
+    });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.parameter_implicitly_any));
+    try T.expectEqual(@as(usize, 1), b.base.checker.diagnostics.items.len);
+}
+
+test "checker: contextual return diagnostics keep stable object member storage" {
+    const b = try newBoundSetup(
+        \\interface Options {
+        \\  first: (value: string) => number;
+        \\  second: (value: string) => number;
+        \\}
+        \\declare function accept(options: Options): void;
+        \\accept({
+        \\  first: (value) => value.length,
+        \\  second: (value) => value.length,
+        \\});
     );
     defer destroyBoundSetup(b);
     b.base.checker.setStrictFlags(.{
