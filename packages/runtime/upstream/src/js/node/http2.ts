@@ -336,8 +336,12 @@ const kRawTrailers = Symbol("rawTrailers");
 const kSetHeader = Symbol("setHeader");
 const kAppendHeader = Symbol("appendHeader");
 const kAborted = Symbol("aborted");
+const kPush = Symbol("pushStream");
+const kNeverAnnounced = Symbol("neverAnnounced");
 const kRequest = Symbol("request");
 const kHeadRequest = Symbol("headRequest");
+const kRequestHeaders = Symbol("requestHeaders");
+const kReleaseUnannouncedStream = Symbol("releaseUnannouncedStream");
 const kMaxStreams = 2 ** 32 - 1;
 const kMaxInt = 4294967295;
 const kMaxWindowSize = 2 ** 31 - 1;
@@ -561,6 +565,44 @@ function assertIsArray(value: any, name: string, types?: string): asserts value 
 hideFromStack(assertIsObject);
 hideFromStack(assertIsArray);
 hideFromStack(assertValidHeader);
+
+const kForbiddenConnectionHeaders = new SafeSet([
+  "connection",
+  "upgrade",
+  "http2-settings",
+  "keep-alive",
+  "proxy-connection",
+  "transfer-encoding",
+]);
+function assertNoConnectionHeaders(headers) {
+  for (const name in headers) {
+    const lower = name.toLowerCase();
+    if (
+      kForbiddenConnectionHeaders.has(lower) ||
+      (lower === "te" && String(headers[name]).toLowerCase() !== "trailers")
+    ) {
+      const err = new TypeError(`HTTP/1 Connection specific headers are forbidden: "${lower}"`);
+      err.code = "ERR_HTTP2_INVALID_CONNECTION_HEADERS";
+      throw err;
+    }
+  }
+}
+
+function buildSensitiveNames(headers, sensitives) {
+  const map = {};
+  if (sensitives) {
+    for (let i = 0; i < sensitives.length; i++) map[String(sensitives[i]).toLowerCase()] = true;
+  }
+  for (const name of ObjectKeys(headers)) {
+    const lower = name.toLowerCase();
+    if (lower === "authorization") {
+      map.authorization = true;
+    } else if (lower === "cookie" && typeof headers[name] === "string" && headers[name].length < 20) {
+      map.cookie = true;
+    }
+  }
+  return map;
+}
 
 class Http2ServerRequest extends Readable {
   [kState];
@@ -2113,8 +2155,10 @@ class Http2Stream extends Duplex {
   }
 
   get pushAllowed() {
-    // not implemented yet aka server side
-    return false;
+    const session = this[bunHTTP2Session];
+    return (
+      session != null && session.type === NGHTTP2_SESSION_SERVER && !!session.remoteSettings?.enablePush && !this.destroyed && !this.closed
+    );
   }
   close(code, callback) {
     if ((this[bunHTTP2StreamStatus] & StreamState.Closed) === 0) {
@@ -2150,7 +2194,7 @@ class Http2Stream extends Duplex {
   _destroy(err, callback) {
     const { ending } = this._writableState;
     this.push(null);
-    if (!ending) {
+    if (!ending && !this[kPush]) {
       // If the writable side of the Http2Stream is still open, emit the
       // 'aborted' event and set the aborted flag.
       if (!this.aborted) {
@@ -2194,7 +2238,7 @@ class Http2Stream extends Duplex {
     // will destroy if it has been closed and there are no other open or
     // pending streams. Delay with setImmediate so we don't do it on the
     // nghttp2 stack.
-    if (session && typeof this.#id === "number") {
+    if (session && typeof this.#id === "number" && !this[kNeverAnnounced]) {
       setImmediate(rstNextTick.bind(session, this.#id, rstCode));
     }
 
@@ -2466,8 +2510,61 @@ class ServerHttp2Stream extends Http2Stream {
   constructor(streamId, session, headers) {
     super(streamId, session, headers);
   }
-  pushStream() {
-    throw $ERR_HTTP2_PUSH_DISABLED();
+  pushStream(headers, options, callback) {
+    if (typeof options === "function") {
+      callback = options;
+      options = undefined;
+    }
+    const session = this[bunHTTP2Session];
+    if (session == null || session.destroyed || !this.pushAllowed) throw $ERR_HTTP2_PUSH_DISABLED();
+    validateFunction(callback, "callback");
+    if ((this.id & 1) === 0) {
+      const err = new Error("A push stream cannot initiate another push stream.");
+      err.code = "ERR_HTTP2_NESTED_PUSH";
+      throw err;
+    }
+
+    const parser = session[bunHTTP2Native];
+    if (!parser) throw $ERR_HTTP2_INVALID_STREAM();
+    headers = { ...headers };
+    assertNoConnectionHeaders(headers);
+    const sensitives = headers[sensitiveHeaders];
+    if (sensitives !== undefined && !$isArray(sensitives)) {
+      throw $ERR_INVALID_ARG_VALUE("headers[http2.neverIndex]", sensitives);
+    }
+    const sensitiveNames = buildSensitiveNames(headers, sensitives);
+    const parentHeaders = this[kRequestHeaders] || this[bunHTTP2Headers];
+    if (headers[HTTP2_HEADER_METHOD] === undefined) headers[HTTP2_HEADER_METHOD] = HTTP2_METHOD_GET;
+    if (headers[HTTP2_HEADER_PATH] === undefined) headers[HTTP2_HEADER_PATH] = "/";
+    if (headers[HTTP2_HEADER_SCHEME] === undefined) {
+      headers[HTTP2_HEADER_SCHEME] = parentHeaders?.[HTTP2_HEADER_SCHEME] || this.scheme;
+    }
+    if (headers[HTTP2_HEADER_AUTHORITY] === undefined && parentHeaders) {
+      headers[HTTP2_HEADER_AUTHORITY] = parentHeaders[HTTP2_HEADER_AUTHORITY];
+    }
+
+    const pushId = parser.getNextStream();
+    if (pushId === -1) throw $ERR_HTTP2_OUT_OF_STREAMS();
+    const pushedStream = parser.getStreamContext(pushId);
+    if (pushedStream) {
+      pushedStream[kRequestHeaders] = headers;
+      pushedStream[bunHTTP2Headers] = headers;
+    }
+    try {
+      parser.pushPromise(this.id, pushId, headers, sensitiveNames);
+    } catch (err) {
+      if (pushedStream && !pushedStream.destroyed) {
+        pushedStream[kNeverAnnounced] = true;
+        session[kReleaseUnannouncedStream](pushId);
+        // The stream was never exposed to the callback, so report the
+        // validation failure there without also emitting an unhandled error
+        // from an otherwise unreachable stream object.
+        pushedStream.destroy();
+      }
+      process.nextTick(callback, err);
+      return;
+    }
+    process.nextTick(callback, null, pushedStream, headers);
   }
 
   respondWithFile(path, headers, options) {
@@ -2941,12 +3038,13 @@ class ServerHttp2Session extends Http2Session {
     streamHeaders(
       self: ServerHttp2Session,
       stream: ServerHttp2Stream,
-      rawheaders: string[],
-      sensitiveHeadersValue: string[] | undefined,
+      headersTuple: [string[], Record<string, any>, string[] | undefined],
       flags: number,
     ) {
       if (!self || typeof stream !== "object" || self.closed || stream.closed) return;
-      const headers = toHeaderObject(rawheaders, sensitiveHeadersValue || []);
+      const rawheaders = headersTuple[0];
+      const headers = headersTuple[1];
+      stream[kRequestHeaders] = headers;
       if (headers[HTTP2_HEADER_METHOD] === HTTP2_METHOD_HEAD) {
         stream[kHeadRequest] = true;
       }
@@ -3116,6 +3214,11 @@ class ServerHttp2Session extends Http2Session {
       validOrigins[i] = getOrigin(origins[i], false);
     }
     parser.origin(validOrigins);
+  }
+
+  [kReleaseUnannouncedStream](streamId: number) {
+    this.#connections--;
+    this.#parser?.setStreamContext(streamId, undefined);
   }
 
   constructor(socket: TLSSocket | Socket, options?: Http2ConnectOptions, server?: Http2Server) {
@@ -3384,10 +3487,23 @@ class ClientHttp2Session extends Http2Session {
       if (!self) return;
       self.#connections++;
       if (stream_id % 2 === 0) {
-        // pushStream
-        const stream = new ClientHttp2Session(stream_id, self, null);
-        self.#parser?.setStreamContext(stream_id, stream);
+        return new ClientHttp2Stream(stream_id, self, null);
       }
+    },
+    streamPush(
+      self: ClientHttp2Session,
+      pushId: number,
+      headersTuple: [string[], Record<string, any>, string[] | undefined],
+      flags: number,
+    ) {
+      if (!self) return;
+      const rawheaders = headersTuple[0];
+      const headers = headersTuple[1];
+      const pushedStream = new ClientHttp2Stream(pushId, self, headers);
+      pushedStream[kPush] = true;
+      self.#connections++;
+      self.#parser?.setStreamContext(pushId, pushedStream);
+      self.emit("stream", pushedStream, headers, flags, rawheaders);
     },
     frameError(self: ClientHttp2Session, stream: ClientHttp2Stream, frameType: number, errorCode: number) {
       if (!self || typeof stream !== "object") return;
@@ -3446,12 +3562,12 @@ class ClientHttp2Session extends Http2Session {
     streamHeaders(
       self: ClientHttp2Session,
       stream: ClientHttp2Stream,
-      rawheaders: string[],
-      sensitiveHeadersValue: string[] | undefined,
+      headersTuple: [string[], Record<string, any>, string[] | undefined],
       flags: number,
     ) {
       if (!self || typeof stream !== "object" || stream.rstCode) return;
-      const headers = toHeaderObject(rawheaders, sensitiveHeadersValue || []);
+      const rawheaders = headersTuple[0];
+      const headers = headersTuple[1];
       const status = stream[bunHTTP2StreamStatus];
       const header_status = headers[HTTP2_HEADER_STATUS];
       if (header_status === HTTP_STATUS_CONTINUE) {
@@ -3473,8 +3589,11 @@ class ClientHttp2Session extends Http2Session {
             // 421 Misdirected Request
             removeOriginFromSet(self, stream);
           }
-          self.emit("stream", stream, headers, flags, rawheaders);
-          stream.emit("response", headers, flags, rawheaders);
+          if (stream[kPush]) {
+            stream.emit("push", headers, flags, rawheaders);
+          } else {
+            stream.emit("response", headers, flags, rawheaders);
+          }
         }
       }
     },

@@ -62,7 +62,6 @@ comptime {
     }
 
     for ([_][]const u8{
-        "H2FrameParserPrototype__pushPromise",
         "JS2Zig___src_collections_linear_fifo_zig__TestingAPIs_orderedRemoveProbe",
         "JS2Zig___src_sys_sys_zig__TestingAPIs_translateNtStatusToE",
         "TCPSocketPrototype__getTypeOfService",

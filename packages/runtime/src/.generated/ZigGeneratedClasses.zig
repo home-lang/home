@@ -8734,6 +8734,28 @@ extern fn H2FrameParserPrototype__onFrameErrorSetCachedValue(jsc.JSValue, *jsc.J
           return result;
         }
 
+extern fn H2FrameParserPrototype__onStreamPushSetCachedValue(jsc.JSValue, *jsc.JSGlobalObject, jsc.JSValue) callconv(jsc.conv) void;
+
+        extern fn H2FrameParserPrototype__onStreamPushGetCachedValue(jsc.JSValue) callconv(jsc.conv) jsc.JSValue;
+
+        /// `H2FrameParser.onStreamPush` setter
+        /// This value will be visited by the garbage collector.
+        pub fn onStreamPushSetCached(thisValue: jsc.JSValue, globalObject: *jsc.JSGlobalObject, value: jsc.JSValue) void {
+          jsc.markBinding(@src());
+          H2FrameParserPrototype__onStreamPushSetCachedValue(thisValue, globalObject, value);
+        }
+
+        /// `H2FrameParser.onStreamPush` getter
+        /// This value will be visited by the garbage collector.
+        pub fn onStreamPushGetCached(thisValue: jsc.JSValue) ?jsc.JSValue {
+          jsc.markBinding(@src());
+          const result = H2FrameParserPrototype__onStreamPushGetCachedValue(thisValue);
+          if (result == .zero)
+            return null;
+
+          return result;
+        }
+
     
     pub const gc = enum (u8) {
       context,
@@ -8754,6 +8776,7 @@ onAborted,
 onAltSvc,
 onOrigin,
 onFrameError,
+onStreamPush,
 
         pub fn get(comptime field: gc, thisValue: jsc.JSValue) ?jsc.JSValue {
           const value = switch (field) {
@@ -8775,6 +8798,7 @@ onFrameError,
             .onAltSvc => H2FrameParserPrototype__onAltSvcGetCachedValue(thisValue),
             .onOrigin => H2FrameParserPrototype__onOriginGetCachedValue(thisValue),
             .onFrameError => H2FrameParserPrototype__onFrameErrorGetCachedValue(thisValue),
+            .onStreamPush => H2FrameParserPrototype__onStreamPushGetCachedValue(thisValue),
           };
 
           if (value == .zero) {
@@ -8808,6 +8832,7 @@ onFrameError,
     .onAltSvc => H2FrameParserPrototype__onAltSvcSetCachedValue(thisValue, globalObject, value),
     .onOrigin => H2FrameParserPrototype__onOriginSetCachedValue(thisValue, globalObject, value),
     .onFrameError => H2FrameParserPrototype__onFrameErrorSetCachedValue(thisValue, globalObject, value),
+    .onStreamPush => H2FrameParserPrototype__onStreamPushSetCachedValue(thisValue, globalObject, value),
           }
         }
     };
@@ -8937,6 +8962,11 @@ const JavaScriptCoreBindings = struct {
           if (comptime Environment.enable_logs) log_zig_method("H2FrameParser", "getNextStream", callFrame);
           return @call(bun.callmod_inline, jsc.toJSHostCall, .{globalObject, @src(), H2FrameParser.getNextStream, .{thisValue, globalObject, callFrame}});
         }
+
+        pub fn H2FrameParserPrototype__pushPromise(thisValue: *H2FrameParser, globalObject: *jsc.JSGlobalObject, callFrame: *jsc.CallFrame) callconv(jsc.conv) jsc.JSValue {
+          if (comptime Environment.enable_logs) log_zig_method("H2FrameParser", "pushPromise", callFrame);
+          return @call(bun.callmod_inline, jsc.toJSHostCall, .{globalObject, @src(), H2FrameParser.pushPromise, .{thisValue, globalObject, callFrame}});
+        }
         
         pub fn H2FrameParserPrototype__getStreamContext(thisValue: *H2FrameParser, globalObject: *jsc.JSGlobalObject, callFrame: *jsc.CallFrame) callconv(jsc.conv) jsc.JSValue {
           if (comptime Environment.enable_logs) log_zig_method("H2FrameParser", "getStreamContext", callFrame);
@@ -9054,6 +9084,7 @@ const JavaScriptCoreBindings = struct {
       @export(&JavaScriptCoreBindings.H2FrameParserPrototype__getCurrentState, .{ .name = "H2FrameParserPrototype__getCurrentState" });
       @export(&JavaScriptCoreBindings.H2FrameParserPrototype__getEndAfterHeaders, .{ .name = "H2FrameParserPrototype__getEndAfterHeaders" });
       @export(&JavaScriptCoreBindings.H2FrameParserPrototype__getNextStream, .{ .name = "H2FrameParserPrototype__getNextStream" });
+      @export(&JavaScriptCoreBindings.H2FrameParserPrototype__pushPromise, .{ .name = "H2FrameParserPrototype__pushPromise" });
       @export(&JavaScriptCoreBindings.H2FrameParserPrototype__getStreamContext, .{ .name = "H2FrameParserPrototype__getStreamContext" });
       @export(&JavaScriptCoreBindings.H2FrameParserPrototype__getStreamState, .{ .name = "H2FrameParserPrototype__getStreamState" });
       @export(&JavaScriptCoreBindings.H2FrameParserPrototype__goaway, .{ .name = "H2FrameParserPrototype__goaway" });
