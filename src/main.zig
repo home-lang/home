@@ -1585,8 +1585,8 @@ fn findPantryBinary() ![]const u8 {
     return error.PantryNotFound;
 }
 
-fn fileExtIsJsLike(path: []const u8) bool {
-    const exts = [_][]const u8{ ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts" };
+fn fileExtIsRuntimeLike(path: []const u8) bool {
+    const exts = [_][]const u8{ ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".html" };
     for (exts) |ext| {
         if (std.mem.endsWith(u8, path, ext)) return true;
     }
@@ -1606,11 +1606,12 @@ fn looksLikePackageScriptName(name: []const u8) bool {
 }
 
 fn runJsLikeFile(allocator: std.mem.Allocator, file_path: []const u8, extra_args: []const [:0]const u8) !void {
-    // Full-VM native run (HOME_NATIVE_VM=1): boot Home's VirtualMachine and run
-    // the file through JSC's native module loader (handles ESM). Uses
-    // home_rt.jsc.VirtualMachine directly (no bun.js.zig CLI cone). Experimental,
-    // isolated behind its own flag while validated against the standalone binary.
-    if (build_options.enable_jsc and envFlagSet("HOME_NATIVE_VM")) {
+    // HTML has no legacy compiler or delegated execution path: it is a native
+    // runtime entry point in Bun and must always boot Home's full VM. JS/TS
+    // continues to use the explicit native-runtime gate while parity work is in
+    // progress.
+    const is_html_entrypoint = std.mem.endsWith(u8, file_path, ".html");
+    if (build_options.enable_jsc and (is_html_entrypoint or envFlagSet("HOME_NATIVE_VM"))) {
         runFileViaVM(allocator, file_path, extra_args) catch |err| {
             std.debug.print("{s}error:{s} native VM run failed: {s}\n", .{ Color.Red.code(), Color.Reset.code(), @errorName(err) });
             std.process.exit(1);
@@ -2265,7 +2266,12 @@ fn runFileViaVMOpts(
         if (tz.len > 0) _ = vm.global.setTimeZone(&home_rt.jsc.ZigString.init(tz));
     }
 
-    vm.main_is_html_entrypoint = false;
+    // HTML entry points do not evaluate as ordinary JavaScript modules. Bun's
+    // Run.boot routes them through the internal HTML bootstrap, which imports
+    // the bundle and starts Bun.serve(). The Home-owned VM runner must set the
+    // same discriminator or `home index.html` resolves the file and then exits
+    // successfully without ever starting the development server.
+    vm.main_is_html_entrypoint = b.options.loader(std.fs.path.extension(abs_path)) == .html;
     // Synthetic eval entries are omitted from process.argv, matching
     // `bun -e` (argv = [exe, ...userArgs], no script path).
     vm.main_is_eval_entry = eval_source_text != null;
@@ -2797,8 +2803,8 @@ fn runCommand(allocator: std.mem.Allocator, file_path: []const u8, extra_args: [
         return runShellFile(file_path, extra_args);
     }
 
-    // Route JS / TS files through the runtime delegation shim (Phase 12).
-    if (fileExtIsJsLike(file_path) or
+    // Route JS/TS and HTML entry points through the runtime execution path.
+    if (fileExtIsRuntimeLike(file_path) or
         (build_options.enable_jsc and envFlagSet("HOME_NATIVE_VM") and !isHomeSourceFile(file_path)))
     {
         return runJsLikeFile(allocator, file_path, extra_args);
@@ -6233,14 +6239,19 @@ pub fn main(init: std.process.Init) !void {
     std.process.exit(1);
 }
 
-/// True if `s` names a JS/TS module by extension (used to recognize an
-/// implicit `home <file>` run invocation).
+/// True if `s` names a runtime entry point by extension (used to recognize an
+/// implicit `home <file>` invocation).
 fn looksLikeRunnableFile(s: []const u8) bool {
-    const exts = [_][]const u8{ ".js", ".mjs", ".cjs", ".jsx", ".ts", ".mts", ".cts", ".tsx" };
-    for (exts) |e| {
-        if (std.mem.endsWith(u8, s, e)) return true;
-    }
-    return false;
+    return fileExtIsRuntimeLike(s);
+}
+
+test "implicit runtime entrypoint extensions include HTML" {
+    try std.testing.expect(looksLikeRunnableFile("index.html"));
+    try std.testing.expect(fileExtIsRuntimeLike("index.html"));
+    try std.testing.expect(looksLikeRunnableFile("app.tsx"));
+    try std.testing.expect(fileExtIsRuntimeLike("app.tsx"));
+    try std.testing.expect(!looksLikeRunnableFile("README.md"));
+    try std.testing.expect(!fileExtIsRuntimeLike("README.md"));
 }
 
 /// Match clap's separate-token consumption: optional values use only an
