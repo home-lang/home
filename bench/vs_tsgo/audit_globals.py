@@ -37,6 +37,10 @@ GENERIC_BAD = "const bad: number = Deferred.identity('ok');\n"
 COUNT = "interface Methods { count(value: number): number; }\n"
 MERGED_GOOD = GOOD + "const count: number = methods.count(1);\n"
 MERGED_BAD = "const bad: number = methods.identity('ok');\nmethods.count('bad');\nmethods.missing();\n"
+CYCLIC_LEFT = "interface Left { right: Right; }\ndeclare var left: Left;\n"
+CYCLIC_RIGHT = "interface Right { value: string; left: Left; }\n"
+CYCLIC_GOOD = "const goodValue: string = left.right.value;\nconst goodCycle: Left = left.right.left;\n"
+CYCLIC_BAD = "const badValue: number = left.right.value;\n"
 CODES = ("2322", "2345", "2339")
 
 
@@ -83,6 +87,22 @@ def cases(family: str | None = None) -> list[Case]:
          siblings={"globals.d.ts": "declare var sharedValue: number;\n"})
     pair("sibling-merge", "cross-file", METHODS + VARIABLE, MERGED_GOOD, MERGED_BAD, CODES,
          siblings={"globals.d.ts": COUNT})
+    for order, roots in (
+        ("before", ("left.d.ts", "right.d.ts", "app.ts")),
+        ("after", ("app.ts", "right.d.ts", "left.d.ts")),
+    ):
+        files = {"left.d.ts": CYCLIC_LEFT, "right.d.ts": CYCLIC_RIGHT}
+        for control, statements, expected in (
+            ("positive", CYCLIC_GOOD, ()),
+            ("negative", CYCLIC_GOOD + CYCLIC_BAD, ("2322",)),
+        ):
+            result.append(Case(
+                f"sibling-cycle/script/{order}/{control}",
+                "cross-file",
+                {**files, "app.ts": statements},
+                expected,
+                roots=roots,
+            ))
     return [case for case in result if family is None or case.family == family]
 
 

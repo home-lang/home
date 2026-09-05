@@ -11,26 +11,33 @@ import audit_globals
 class GlobalAuditTests(unittest.TestCase):
     def test_default_keeps_unresolved_cross_file_cases(self):
         cases = audit_globals.cases()
-        self.assertEqual(56, len(cases))
+        self.assertEqual(60, len(cases))
         self.assertEqual(24, len(audit_globals.cases("same-file")))
-        self.assertEqual(32, len(audit_globals.cases("cross-file")))
+        self.assertEqual(36, len(audit_globals.cases("cross-file")))
         self.assertEqual({"same-file", "cross-file"}, {case.family for case in cases})
-        self.assertEqual(56, len({(case.family, case.name) for case in cases}))
+        self.assertEqual(60, len({(case.family, case.name) for case in cases}))
 
     def test_cross_file_cases_cover_both_root_orders(self):
         cases = audit_globals.cases("cross-file")
         before = [case for case in cases if "/before/" in case.name]
         after = [case for case in cases if "/after/" in case.name]
-        self.assertEqual(16, len(before))
-        self.assertEqual(16, len(after))
-        for earlier, later in zip(before, after):
+        self.assertEqual(18, len(before))
+        self.assertEqual(18, len(after))
+        later_by_name = {case.name.replace("/after/", "/before/"): case for case in after}
+        for earlier in before:
+            later = later_by_name[earlier.name]
             self.assertEqual(earlier.expected, later.expected)
             self.assertEqual(earlier.files["app.ts"], later.files["app.ts"])
-            self.assertEqual(earlier.files["a-globals.d.ts"], later.files["z-globals.d.ts"])
             before_roots = json.loads(audit_globals.project_config(earlier))["files"]
             after_roots = json.loads(audit_globals.project_config(later))["files"]
-            self.assertLess(before_roots.index("src/a-globals.d.ts"), before_roots.index("src/app.ts"))
-            self.assertGreater(after_roots.index("src/z-globals.d.ts"), after_roots.index("src/app.ts"))
+            self.assertTrue(all(
+                before_roots.index(f"src/{name}") < before_roots.index("src/app.ts")
+                for name in earlier.files if name != "app.ts"
+            ))
+            self.assertTrue(all(
+                after_roots.index(f"src/{name}") > after_roots.index("src/app.ts")
+                for name in later.files if name != "app.ts"
+            ))
 
     def test_pairs_keep_declarations_and_require_negative_diagnostics(self):
         cases = audit_globals.cases()
