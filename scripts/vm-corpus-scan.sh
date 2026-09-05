@@ -30,9 +30,11 @@ while IFS= read -r f; do
   # file's own process group — the scan then wedges on one file forever instead
   # of recording a hang and moving on. Closing stdin stops a child from waiting
   # on a terminal that is not there.
-  HOME_NATIVE_VM=1 HOME_CORPUS_FULL_VM=1 run_bounded "$TO" "$HOME_BIN" test "$rel" >"$RUNLOG" 2>&1 </dev/null
+  # Bun's own test launcher exports this before starting a Debug executable.
+  # Setting it only from preload.ts is too late for env-omitted child processes:
+  # both Home and the pinned Bun control inherit their original process env.
+  BUN_DEBUG_QUIET_LOGS=1 HOME_NATIVE_VM=1 HOME_CORPUS_FULL_VM=1 run_bounded "$TO" "$HOME_BIN" test "$rel" >"$RUNLOG" 2>&1 </dev/null
   code=$?
-  log=$(cat "$RUNLOG")
   if [[ $code -eq 124 ]]; then
     status=hang; hang=$((hang+1))
   elif [[ $code -eq 125 ]]; then
@@ -41,9 +43,9 @@ while IFS= read -r f; do
     status=oom; oom=$((oom+1))
   elif [[ $code -ge 128 ]]; then
     status=crash; crash=$((crash+1))
-  elif echo "$log" | grep -qE '^\(fail\)'; then
+  elif grep -qE '^\(fail\)' "$RUNLOG"; then
     status=fail; fail=$((fail+1))
-  elif echo "$log" | grep -qE "Cannot find package '|Could not resolve: \"|ENOENT while resolving package '|bun install failed with exit code"; then
+  elif grep -qE "Cannot find package '|Could not resolve: \"|ENOENT while resolving package '|bun install failed with exit code" "$RUNLOG"; then
     # An unresolved npm dependency aborts the file before any test runs. That is
     # the corpus provisioning gap (#618), not a defect in the runtime, and
     # counting it as a crash overstates the crash surface.
@@ -57,10 +59,10 @@ while IFS= read -r f; do
   # capture a one-line crash signature. For panics/segfaults, prefer the first
   # in-tree (home) stack frame — far more actionable than "Segmentation".
   if [[ "$status" == "crash" ]]; then
-    sig=$(echo "$log" | grep -oE '[a-zA-Z0-9_./-]+\.zig:[0-9]+:[0-9]+: 0x[0-9a-f]+ in [^ ]+ \(home\)' | head -1 | sed -E 's/: 0x[0-9a-f]+ in / /; s#packages/runtime/src/##' | cut -c1-110)
-    [[ -z "$sig" ]] && sig=$(echo "$log" | grep -oE 'panic: .*|reached unreachable|Segmentation' | head -1 | cut -c1-110)
+    sig=$(grep -m1 -oE '[a-zA-Z0-9_./-]+\.zig:[0-9]+:[0-9]+: 0x[0-9a-f]+ in [^ ]+ \(home\)' "$RUNLOG" | sed -E 's/: 0x[0-9a-f]+ in / /; s#packages/runtime/src/##' | cut -c1-110)
+    [[ -z "$sig" ]] && sig=$(grep -m1 -oE 'panic: .*|reached unreachable|Segmentation' "$RUNLOG" | cut -c1-110)
   else
-    sig=$(echo "$log" | grep -oE 'panic: .*|error: .*|TODOError: [^@]*' | head -1 | tr '\t' ' ' | cut -c1-110)
+    sig=$(grep -m1 -oE 'panic: .*|error: .*|TODOError: [^@]*' "$RUNLOG" | tr '\t' ' ' | cut -c1-110)
   fi
   printf '%s\t%s\t%s\n' "$status" "$rel" "$sig" >> "$OUT"
 # `*.test.*` also matches sidecars that are not runnable files — `__snapshots__`

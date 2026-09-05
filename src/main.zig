@@ -2403,17 +2403,14 @@ fn runTestsViaVM(allocator_unused: std.mem.Allocator, args: []const [:0]const u8
         const normalized = try allocator.alloc([:0]const u8, args.len);
         rewritten_args = normalized;
         for (args, 0..) |arg, index| {
-            const relative = if (resolveBunCorpusTarget(arg)) |arg_target| switch (arg_target) {
-                .root => ".",
-                .directory => |directory| directory.relative_path,
-                .file => |file| file.relative_path,
-            } else {
+            const rewritten = if (resolveBunCorpusTarget(arg)) |arg_target|
+                try bunCorpusTestArgument(allocator, arg_target)
+            else {
                 normalized[index] = arg;
                 continue;
             };
-            const relative_z = try home_rt.dupeZ(allocator, u8, relative);
-            try rewritten_values.append(allocator, relative_z);
-            normalized[index] = relative_z;
+            try rewritten_values.append(allocator, rewritten);
+            normalized[index] = rewritten;
         }
         effective_args = normalized;
         try std.Io.Threaded.chdir(corpus_root);
@@ -4770,6 +4767,14 @@ const BunCorpusTarget = union(enum) {
     },
 };
 
+fn bunCorpusTestArgument(allocator: std.mem.Allocator, target: BunCorpusTarget) ![:0]u8 {
+    return switch (target) {
+        .root => home_rt.dupeZ(allocator, u8, "."),
+        .directory => |directory| std.fmt.allocPrintSentinel(allocator, "./{s}", .{directory.relative_path}, 0),
+        .file => |file| std.fmt.allocPrintSentinel(allocator, "./{s}", .{file.relative_path}, 0),
+    };
+}
+
 fn isJsLikeCorpusFile(path: []const u8) bool {
     const exts = [_][]const u8{ ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs" };
     for (exts) |ext| {
@@ -5003,6 +5008,28 @@ test "bun corpus target parser resolves roots, directories, and descendant files
 
     const non_corpus = [_][:0]const u8{"packages/runtime/test/bun-corpus-old/foo.test.js"};
     try std.testing.expect(argTargetsBunCorpus(&non_corpus) == null);
+}
+
+test "bun corpus VM arguments preserve explicit path semantics" {
+    const allocator = std.testing.allocator;
+
+    const root = try bunCorpusTestArgument(allocator, .{ .root = "packages/runtime/test/bun-corpus" });
+    defer allocator.free(root);
+    try std.testing.expectEqualStrings(".", root);
+
+    const directory = try bunCorpusTestArgument(allocator, .{ .directory = .{
+        .corpus_path = "packages/runtime/test/bun-corpus",
+        .relative_path = "js/node/http",
+    } });
+    defer allocator.free(directory);
+    try std.testing.expectEqualStrings("./js/node/http", directory);
+
+    const file = try bunCorpusTestArgument(allocator, .{ .file = .{
+        .corpus_path = "packages/runtime/test/bun-corpus",
+        .relative_path = "js/node/http/node-http-connect.node.mts",
+    } });
+    defer allocator.free(file);
+    try std.testing.expectEqualStrings("./js/node/http/node-http-connect.node.mts", file);
 }
 
 test "bun corpus subset parser reports missing and unknown values" {
