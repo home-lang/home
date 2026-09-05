@@ -98526,6 +98526,14 @@ fn supportedNamedImportModule(source: []const u8, start: usize, relative_path: [
         }
     }
 
+    const node_test_fixture_esm = "../common/fixtures.mjs";
+    if (std.mem.startsWith(u8, source[start..], node_test_fixture_esm)) {
+        const end = start + node_test_fixture_esm.len;
+        if (end == source.len or source[end] == '"' or source[end] == '\'') {
+            return .{ .name = "../common/fixtures", .end = end };
+        }
+    }
+
     const modules = [_][]const u8{
         "bun:test",
         "vitest",
@@ -98544,6 +98552,7 @@ fn supportedNamedImportModule(source: []const u8, start: usize, relative_path: [
         "./chooses-ts",
         "harness",
         "../common/index.mjs",
+        "../common/proxy-server.js",
         "../common/fs.js",
         "../common/tmpdir.js",
         "../common/fixtures.js",
