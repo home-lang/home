@@ -696,6 +696,11 @@ header_entries: Headers.Entry.List,
 header_buf: string,
 url: URL,
 connected_url: URL = URL{},
+/// The exact request-identity discriminator used when `connected_url` was
+/// acquired. Redirect handling mutates `url` (and may clear a Host override)
+/// before releasing the previous hop, so recomputing this from current request
+/// state can put the socket in the wrong pool bucket.
+connected_pool_key_hash: u64 = 0,
 allocator: std.mem.Allocator,
 verbose: HTTPVerboseLevel = .none,
 remaining_redirect_count: i8 = default_redirect_count,
@@ -1209,7 +1214,7 @@ pub fn doRedirect(
             null,
             "",
             0,
-            0,
+            this.connected_pool_key_hash,
             null,
         );
     } else {
@@ -1436,7 +1441,7 @@ pub fn onPreconnect(this: *HTTPClient, comptime is_ssl: bool, socket: NewHTTPCon
         null,
         "",
         0,
-        0,
+        this.connected_pool_key_hash,
         null,
     );
 
@@ -2448,7 +2453,7 @@ fn sendProgressUpdateWithoutStageCheck(this: *HTTPClient, comptime is_ssl: bool,
                 tunnel,
                 if (tunnel != null) this.url.hostname else "",
                 if (tunnel != null) this.url.getPortAuto() else 0,
-                if (tunnel != null) this.proxyAuthHash() else 0,
+                this.connected_pool_key_hash,
                 null,
             );
         } else {
@@ -3367,25 +3372,34 @@ pub fn handleResponseMetadata(
                     // References:
                     // https://github.com/nodejs/undici/commit/6805746680d27a5369d7fb67bc05f95a28247d75#diff-ea7696549c3a0b60a4a7e07cc79b6d4e950c7cb1068d47e368a510967d77e7e5R206
                     // https://github.com/denoland/deno/commit/7456255cd10286d71363fc024e51b2662790448a#diff-6e35f325f0a4e1ae3214fde20c9108e9b3531df5d284ba3c93becb99bbfc48d5R70
-                    if (!is_same_origin and this.header_entries.len > 0) {
-                        const headers_to_remove: []const struct {
-                            name: []const u8,
-                            hash: u64,
-                        } = &.{
-                            .{ .name = "Authorization", .hash = authorization_header_hash },
-                            .{ .name = "Proxy-Authorization", .hash = proxy_authorization_header_hash },
-                            .{ .name = "Cookie", .hash = cookie_header_hash },
-                        };
-                        inline for (headers_to_remove) |header| {
-                            const names = this.header_entries.items(.name);
+                    if (!is_same_origin) {
+                        // A user-provided Host header also selects the TLS SNI
+                        // and certificate identity. It belongs to the original
+                        // origin and must not override either identity on the
+                        // redirect destination.
+                        this.hostname = null;
 
-                            for (names, 0..) |name_ptr, i| {
-                                const name = this.headerStr(name_ptr);
-                                if (name.len == header.name.len) {
-                                    const hash = hashHeaderName(name);
-                                    if (hash == header.hash) {
-                                        this.header_entries.orderedRemove(i);
-                                        break;
+                        if (this.header_entries.len > 0) {
+                            const headers_to_remove: []const struct {
+                                name: []const u8,
+                                hash: u64,
+                            } = &.{
+                                .{ .name = "Authorization", .hash = authorization_header_hash },
+                                .{ .name = "Proxy-Authorization", .hash = proxy_authorization_header_hash },
+                                .{ .name = "Cookie", .hash = cookie_header_hash },
+                                .{ .name = "Host", .hash = comptime hashHeaderConst("Host") },
+                            };
+                            inline for (headers_to_remove) |header| {
+                                const names = this.header_entries.items(.name);
+
+                                for (names, 0..) |name_ptr, i| {
+                                    const name = this.headerStr(name_ptr);
+                                    if (name.len == header.name.len) {
+                                        const hash = hashHeaderName(name);
+                                        if (hash == header.hash) {
+                                            this.header_entries.orderedRemove(i);
+                                            break;
+                                        }
                                     }
                                 }
                             }

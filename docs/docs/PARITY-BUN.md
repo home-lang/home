@@ -1824,6 +1824,29 @@ temporary storage, dropping only an incomplete trailing byte, for both
 26/26 with 145 assertions in Debug and ReleaseFast. Across the six focused
 Blob files, both modes pass 65/65 tests and 215 assertions plus four snapshots.
 
+Native fetch connection pooling now records the exact Host/SNI discriminator
+used when a physical connection is acquired and returns the socket to that same
+pool bucket. This permits repeated direct-TLS requests with the same explicit
+Host header to reuse their negotiated connection without allowing a request
+with a different Host identity to borrow it. Cross-origin redirects remove the
+explicit Host header and TLS verification override, so the destination derives
+both its wire Host and certificate identity from the redirected URL. The
+unchanged strict full-VM fixtures pass `fetch-keepalive.test.ts` **2/2 with 5
+assertions** and `fetch.tls.test.ts` **21/21 with 65 assertions** in ReleaseFast.
+
+The complete strict full-VM `js/web/fetch` scan classifies **58 files as passing,
+1 failing, 1 over the 20-second scan bound, and 1 over the scan's 4 GiB RSS
+guard**. The resource classifications are not logical failures: the unchanged
+`fetch-leak.test.ts` completes in about 39 seconds with **21 passes / 1 upstream
+TODO / 0 failures**, and the unchanged 1,025 MiB `fetch-gzip.test.ts` completes
+**24/24** when run outside the directory scanner's generic memory guard. The
+sole failing file is `fetch.test.ts`, at **346/350 with 7,423 assertions** in
+strict full-VM mode. Its remaining redirect-limit contracts are tracked in
+[#649](https://github.com/home-lang/home/issues/649); bodyless Content-Length
+framing and interim-1xx storage reclamation are tracked in
+[#650](https://github.com/home-lang/home/issues/650). Adapter-mode 350/350 output
+is deliberately excluded from the parity claim.
+
 ## Summary
 
 Substrate file-count progress. "Present" is the live Zig file count under

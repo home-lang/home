@@ -749,6 +749,12 @@ pub fn NewHTTPContext(comptime ssl: bool) type {
             client.connected_url = if (client.http_proxy) |proxy| proxy else client.url;
             client.connected_url.hostname = hostname;
 
+            const want_tunnel = client.http_proxy != null and client.url.isHTTPS();
+            // Capture the discriminator that belongs to this physical
+            // connection. A redirect can mutate the request URL and Host/SNI
+            // override before the previous socket is returned to the pool.
+            client.connected_pool_key_hash = if (want_tunnel or (ssl and client.http_proxy == null)) client.proxyAuthHash() else 0;
+
             if (comptime ssl) {
                 if (client.canOfferH2()) {
                     for (this.active_h2_sessions.items) |session| {
@@ -767,7 +773,6 @@ pub fn NewHTTPContext(comptime ssl: bool) type {
             }
 
             if (client.isKeepAlivePossible()) {
-                const want_tunnel = client.http_proxy != null and client.url.isHTTPS();
                 // CONNECT TCP target (writeProxyConnect line 346). The SNI
                 // override (client.hostname) is hashed into proxyAuthHash.
                 const target_hostname: []const u8 = if (want_tunnel) client.url.hostname else "";
@@ -777,7 +782,7 @@ pub fn NewHTTPContext(comptime ssl: bool) type {
                 // override must discriminate the pool key there — not just for
                 // CONNECT tunnels. proxyAuthHash() reduces to the override hash
                 // (or 0) for a non-proxied request.
-                const proxy_auth_hash: u64 = if (want_tunnel or (ssl and client.http_proxy == null)) client.proxyAuthHash() else 0;
+                const proxy_auth_hash = client.connected_pool_key_hash;
 
                 if (this.existingSocket(
                     client.flags.reject_unauthorized,
