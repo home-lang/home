@@ -2791,7 +2791,7 @@ pub fn main(init: std.process.Init) !void {
     defer if (cfg_path_buf) |b| gpa.free(b);
     var loaded_cfg: ?tsconfig_mod.TsConfig = null;
     const explicit_project = opts.project;
-    const should_load_config = opts.project != null or opts.files.len == 0 or opts.show_config;
+    const should_load_config = shouldLoadConfig(opts);
 
     // For an explicit `--project`, validate existence the way upstream
     // does before resolving the config path: a path that names an
@@ -3105,8 +3105,7 @@ pub fn main(init: std.process.Init) !void {
         ts_driver.optionsFromConfig(c)
     else
         .{};
-    compile_opts.strict = opts.strict;
-    compile_opts.no_emit = compile_opts.no_emit or opts.no_emit;
+    applyCommandLineCompileOptions(&compile_opts, opts);
     var resolver_adapter = CheckerResolverAdapter.init(gpa, &resolver);
     defer resolver_adapter.deinit();
     compile_opts.external_resolver = .{
@@ -4083,6 +4082,16 @@ fn computeOutPath(gpa: std.mem.Allocator, src_path: []const u8, out_dir: ?[]cons
     return try std.fmt.allocPrint(gpa, "{s}{s}", .{ stem, ext });
 }
 
+fn shouldLoadConfig(opts: ts_cli.Options) bool {
+    return opts.project != null or opts.files.len == 0 or (opts.show_config and !opts.ignore_config);
+}
+
+fn applyCommandLineCompileOptions(compile_opts: *ts_driver.CompileOptions, opts: ts_cli.Options) void {
+    compile_opts.strict = opts.strict;
+    compile_opts.no_emit = compile_opts.no_emit or opts.no_emit;
+    compile_opts.skip_lib_check = opts.skip_lib_check orelse compile_opts.skip_lib_check;
+}
+
 /// Resolve the path to a tsconfig.json. With an explicit `--project`
 /// (file or directory), use it directly. Otherwise walk upward from
 /// cwd looking for the nearest `tsconfig.json`. Returns a freshly
@@ -4136,6 +4145,29 @@ test "tsc_main: TS5042 project mixed with source files diagnostic" {
         "error TS5042: Option 'project' cannot be mixed with source files on a command line.",
         msg,
     );
+}
+
+test "tsc_main: ignoreConfig only suppresses config discovery beside positional files" {
+    const files = [_][]const u8{"entry.ts"};
+    try std.testing.expect(!shouldLoadConfig(.{ .files = &files }));
+    try std.testing.expect(shouldLoadConfig(.{ .files = &files, .show_config = true }));
+    try std.testing.expect(!shouldLoadConfig(.{ .files = &files, .show_config = true, .ignore_config = true }));
+    try std.testing.expect(shouldLoadConfig(.{ .ignore_config = true }));
+    try std.testing.expect(shouldLoadConfig(.{ .files = &files, .project = "tsconfig.json", .ignore_config = true }));
+}
+
+test "tsc_main: command-line skipLibCheck overrides config in both directions" {
+    var compile_opts: ts_driver.CompileOptions = .{ .skip_lib_check = false };
+    applyCommandLineCompileOptions(&compile_opts, .{ .skip_lib_check = true });
+    try std.testing.expect(compile_opts.skip_lib_check);
+
+    compile_opts.skip_lib_check = true;
+    applyCommandLineCompileOptions(&compile_opts, .{ .skip_lib_check = false });
+    try std.testing.expect(!compile_opts.skip_lib_check);
+
+    compile_opts.skip_lib_check = true;
+    applyCommandLineCompileOptions(&compile_opts, .{});
+    try std.testing.expect(compile_opts.skip_lib_check);
 }
 
 test "tsc_main: TS5058 specified path does not exist diagnostic" {

@@ -2437,7 +2437,13 @@ pub fn checkPreparedSource(c: *Compilation, options: CompileOptions) CompileErro
             break;
         }
     }
+    const suppress_declaration_semantic_diagnostics = options.skip_lib_check and c.is_declaration_file;
     for (checker.diagnostics.items) |d| {
+        // `skipLibCheck` skips semantic diagnostics originating in `.d.ts`
+        // files, but those files still have to be checked so their resolved
+        // metadata survives the driver pass. Lexer/parser/binder diagnostics
+        // were recorded before this boundary and remain visible.
+        if (suppress_declaration_semantic_diagnostics) continue;
         var diag_pos = d.pos orelse c.hir.spanOf(d.node).start;
         var diagnostic_message = d.message;
         if (d.code == ts_checker.check.TsCodes.ts_only_decl_in_js and
@@ -7589,6 +7595,55 @@ test "driver: triple-slash type diagnostics honor suppression" {
         }
         for (c.diagnostics.items) |diagnostic| try T.expect(diagnostic.code != 2688);
     }
+}
+
+test "driver: skipLibCheck suppresses declaration semantics but retains syntax diagnostics" {
+    const declaration_source =
+        \\interface Box { value: string }
+        \\declare const broken: MissingType;
+    ;
+    var checked = try compileSource(T.allocator, declaration_source, .{
+        .no_emit = true,
+        .is_declaration_file = true,
+    });
+    defer {
+        checked.deinit();
+        T.allocator.destroy(checked);
+    }
+    var saw_missing_type = false;
+    for (checked.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == 2304) saw_missing_type = true;
+    }
+    try T.expect(saw_missing_type);
+
+    var skipped = try compileSource(T.allocator, declaration_source, .{
+        .no_emit = true,
+        .is_declaration_file = true,
+        .skip_lib_check = true,
+    });
+    defer {
+        skipped.deinit();
+        T.allocator.destroy(skipped);
+    }
+    for (skipped.diagnostics.items) |diagnostic| try T.expect(diagnostic.code != 2304);
+    try T.expect(skipped.checked_types_ready);
+    const box_name = skipped.interner.lookup("Box") orelse return error.TestExpectedEqual;
+    try T.expect(skipped.checked_types.type_names.contains(box_name));
+
+    var malformed = try compileSource(T.allocator, "declare const broken = ;", .{
+        .no_emit = true,
+        .is_declaration_file = true,
+        .skip_lib_check = true,
+    });
+    defer {
+        malformed.deinit();
+        T.allocator.destroy(malformed);
+    }
+    var saw_syntax_diagnostic = false;
+    for (malformed.diagnostics.items) |diagnostic| {
+        if (diagnostic.phase == .lex or diagnostic.phase == .parse) saw_syntax_diagnostic = true;
+    }
+    try T.expect(saw_syntax_diagnostic);
 }
 
 test "driver: virtual triple-slash types reference resolves through node_modules @types" {

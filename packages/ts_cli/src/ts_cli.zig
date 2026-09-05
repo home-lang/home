@@ -81,6 +81,11 @@ pub const Options = struct {
     project: ?[]const u8 = null,
     /// `--noEmit`.
     no_emit: bool = false,
+    /// `--skipLibCheck`. `null` means defer to tsconfig.
+    skip_lib_check: ?bool = null,
+    /// `--ignoreConfig`. This only suppresses config discovery when source
+    /// files are also supplied; without files, tsc still loads the project.
+    ignore_config: bool = false,
     /// `--watch` / `-w`.
     watch: bool = false,
     /// `--pretty` / `--no-pretty`. `null` means "auto" (TTY detect).
@@ -168,6 +173,10 @@ pub fn parseArgsCtx(gpa: std.mem.Allocator, args: []const []const u8, ctx: *Pars
         const a = args[i];
         if (std.mem.eql(u8, a, "--noEmit")) {
             opts.no_emit = true;
+        } else if (std.mem.eql(u8, a, "--skipLibCheck")) {
+            opts.skip_lib_check = parseOptionalBooleanArg(args, &i);
+        } else if (std.mem.eql(u8, a, "--ignoreConfig")) {
+            opts.ignore_config = parseOptionalBooleanArg(args, &i);
         } else if (std.mem.eql(u8, a, "--watch") or std.mem.eql(u8, a, "-w")) {
             opts.watch = true;
         } else if (std.mem.eql(u8, a, "--pretty")) {
@@ -343,6 +352,23 @@ pub fn parseArgsCtx(gpa: std.mem.Allocator, args: []const []const u8, ctx: *Pars
 fn parseEqFlag(a: []const u8, prefix: []const u8) ?[]const u8 {
     if (std.mem.startsWith(u8, a, prefix)) return a[prefix.len..];
     return null;
+}
+
+/// TypeScript boolean options default to true when present, but consume an
+/// immediately following `true` or `false` value. Other following arguments
+/// remain positional inputs.
+fn parseOptionalBooleanArg(args: []const []const u8, index: *usize) bool {
+    if (index.* + 1 >= args.len) return true;
+    const next = args[index.* + 1];
+    if (std.mem.eql(u8, next, "true")) {
+        index.* += 1;
+        return true;
+    }
+    if (std.mem.eql(u8, next, "false")) {
+        index.* += 1;
+        return false;
+    }
+    return true;
 }
 
 fn configOnlyBooleanOptionName(a: []const u8) ?[]const u8 {
@@ -1319,6 +1345,36 @@ test "parseArgs: --noEmit" {
     const opts = try parseArgs(T.allocator, &argv);
     defer T.allocator.free(opts.files);
     try T.expect(opts.no_emit);
+}
+
+test "parseArgs: boolean library and config flags preserve positional files" {
+    {
+        const argv = [_][]const u8{ "--skipLibCheck", "--ignoreConfig", "src/a.ts" };
+        const opts = try parseArgs(T.allocator, &argv);
+        defer T.allocator.free(opts.files);
+        try T.expectEqual(@as(?bool, true), opts.skip_lib_check);
+        try T.expect(opts.ignore_config);
+        try T.expectEqual(@as(usize, 1), opts.files.len);
+        try T.expectEqualStrings("src/a.ts", opts.files[0]);
+    }
+    {
+        const argv = [_][]const u8{ "--skipLibCheck", "false", "--ignoreConfig", "false", "src/a.ts" };
+        const opts = try parseArgs(T.allocator, &argv);
+        defer T.allocator.free(opts.files);
+        try T.expectEqual(@as(?bool, false), opts.skip_lib_check);
+        try T.expect(!opts.ignore_config);
+        try T.expectEqual(@as(usize, 1), opts.files.len);
+        try T.expectEqualStrings("src/a.ts", opts.files[0]);
+    }
+    {
+        const argv = [_][]const u8{ "--skipLibCheck", "true", "--ignoreConfig", "true", "src/a.ts" };
+        const opts = try parseArgs(T.allocator, &argv);
+        defer T.allocator.free(opts.files);
+        try T.expectEqual(@as(?bool, true), opts.skip_lib_check);
+        try T.expect(opts.ignore_config);
+        try T.expectEqual(@as(usize, 1), opts.files.len);
+        try T.expectEqualStrings("src/a.ts", opts.files[0]);
+    }
 }
 
 test "parseArgs: --watch and -w both work" {
