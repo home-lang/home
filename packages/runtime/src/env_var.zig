@@ -12,6 +12,19 @@ pub const FORCE_COLOR = @import("bun_core/env_var.zig").FORCE_COLOR;
 pub const NO_COLOR = @import("bun_core/env_var.zig").NO_COLOR;
 pub const NODE_USE_SYSTEM_CA = @import("bun_core/env_var.zig").NODE_USE_SYSTEM_CA;
 pub const NODE_PRESERVE_SYMLINKS_MAIN = @import("bun_core/env_var.zig").NODE_PRESERVE_SYMLINKS_MAIN;
+pub const AGENT = @import("bun_core/env_var.zig").AGENT;
+pub const BUN_DEBUG = @import("bun_core/env_var.zig").BUN_DEBUG;
+pub const BUN_DEBUG_ALL = @import("bun_core/env_var.zig").BUN_DEBUG_ALL;
+pub const BUN_DEBUG_QUIET_LOGS = @import("bun_core/env_var.zig").BUN_DEBUG_QUIET_LOGS;
+pub const CLAUDECODE = @import("bun_core/env_var.zig").CLAUDECODE;
+pub const COLORTERM = @import("bun_core/env_var.zig").COLORTERM;
+pub const GITHUB_ACTIONS = @import("bun_core/env_var.zig").GITHUB_ACTIONS;
+pub const REPL_ID = @import("bun_core/env_var.zig").REPL_ID;
+pub const RUNNER_DEBUG = @import("bun_core/env_var.zig").RUNNER_DEBUG;
+pub const TERM = @import("bun_core/env_var.zig").TERM;
+pub const TERM_PROGRAM = @import("bun_core/env_var.zig").TERM_PROGRAM;
+pub const TMUX = @import("bun_core/env_var.zig").TMUX;
+pub const WANTS_LOUD = @import("bun_core/env_var.zig").WANTS_LOUD;
 
 /// Returns the raw env value if set, otherwise null. POSIX-only — the
 /// upstream Bun implementation uses native syscalls on Windows; until

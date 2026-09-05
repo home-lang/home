@@ -403,7 +403,10 @@ pub fn autoTick(this: *EventLoop) void {
         loop.tickWithTimeout(if (ctx.timer.getTimeout(&timespec, ctx)) &timespec else null);
 
         if (comptime Environment.isDebug) {
-            log("tick {D}, timeout: {D}", .{ event_loop_sleep_timer.read(), timespec.ns() });
+            log("tick {f}, timeout: {f}", .{
+                bun.fmt.fmtDurationOneDecimal(event_loop_sleep_timer.read()),
+                bun.fmt.fmtDurationOneDecimal(timespec.ns()),
+            });
         }
     } else {
         loop.tickWithoutIdle();

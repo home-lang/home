@@ -9,8 +9,10 @@ const std = @import("std");
 const builtin = @import("builtin");
 const core_output = @import("bun_core/output.zig");
 
-pub const LogFunction = fn (comptime fmt: []const u8, args: anytype) void;
+pub const LogFunction = core_output.LogFunction;
+pub const Visibility = core_output.Visibility;
 pub const Scoped = core_output.Scoped;
+pub const scoped = core_output.scoped;
 pub const synchronized_start = core_output.synchronized_start;
 pub const synchronized_end = core_output.synchronized_end;
 pub const disableScopedDebugWriter = core_output.disableScopedDebugWriter;
@@ -33,6 +35,7 @@ threadlocal var stdout_writer_buffer: [4096]u8 = undefined;
 threadlocal var stdout_file_writer: ?std.Io.File.Writer = null;
 threadlocal var raw_stdout_file_writer: ?std.Io.File.Writer = null;
 pub var enable_buffering = true;
+threadlocal var core_output_configured = false;
 
 fn colorEnabled(force: ?bool, no_color: bool, is_tty: bool) bool {
     if (force) |enabled| return enabled;
@@ -44,6 +47,18 @@ fn colorEnabled(force: ?bool, no_color: bool, is_tty: bool) bool {
 /// precedence. Copied runtime code reads these facade variables directly, so
 /// they must be configured before the CLI creates a VM.
 pub fn configure() void {
+    if (!core_output_configured) {
+        const File = @import("home").sys.File;
+        core_output.Source.setInit(
+            File.from(@import("home").FD.stdout()),
+            File.from(@import("home").FD.stderr()),
+        );
+        if (comptime @import("home").Environment.enable_logs) {
+            core_output.initScopedDebugWriterAtStartup();
+        }
+        core_output_configured = true;
+    }
+
     const forced: ?bool = if (core_output.Source.getForceColorDepth()) |depth| depth != .none else null;
     const no_color = core_output.Source.isNoColor();
     const stdin_tty = if (builtin.os.tag == .windows)
@@ -277,24 +292,10 @@ pub fn errorWriterBuffered() *std.Io.Writer {
     return &error_file_writer.?.interface;
 }
 
-/// Minimal stub for `bun.Output.Visibility`. Upstream uses `.visible` /
-/// `.hidden` to gate the env-var-driven `BUN_DEBUG_<TAG>` scoped logs.
-pub const Visibility = enum { visible, hidden };
-
-/// Minimal stub for `bun.Output.scoped(tag, visibility)`. Real upstream
-/// returns a fn that prints when `BUN_DEBUG_<tag>` is set; our stub is a
-/// no-op fn matching the `(comptime fmt, args)` signature so callers
-/// compile through. TODO(phase-12-N): wire the env-var gating and the
-/// `<r>`/`<red>` ansi parser.
-pub fn scoped(comptime _: anytype, comptime _: Visibility) fn (comptime []const u8, anytype) void {
-    return struct {
-        fn log(comptime _: []const u8, _: anytype) void {}
-    }.log;
-}
-
 /// Stub for `bun.Output.panic`. Mirrors `std.debug.panic` until Home's
 /// crash handler is brought online.
 pub fn panic(comptime fmt: []const u8, args: anytype) noreturn {
+    @import("home").crash_handler.beginPanic();
     std.debug.panic(fmt, args);
 }
 
@@ -468,7 +469,7 @@ pub const DebugTimer = struct {
         return .{ .timer = @import("home").Timer.start() catch unreachable };
     }
 
-    pub fn format(self: *DebugTimer, w: *std.Io.Writer) std.Io.Writer.Error!void {
+    pub fn format(self: *const DebugTimer, w: *std.Io.Writer) std.Io.Writer.Error!void {
         try w.print("{d}ns", .{self.timer.read()});
     }
 };
@@ -482,6 +483,7 @@ pub const Source = struct {
     pub fn configureThread() void {
         if (configured) return;
         configured = true;
+        core_output.Source.configureThread();
         @import("home").StackCheck.configureThread();
     }
 

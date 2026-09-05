@@ -328,7 +328,7 @@ pub fn readAndProcessData(this: *MySQLConnection, data: []const u8) !void {
             if (err != error.ShortRead) {
                 if (comptime bun.Environment.allow_assert) {
                     if (@errorReturnTrace()) |trace| {
-                        debug("Error: {s}\n{f}", .{ @errorName(err), trace });
+                        debug("Error: {s}{f}", .{ @errorName(err), ErrorReturnTraceFormatter{ .trace = trace } });
                     }
                 }
                 return err;
@@ -349,6 +349,15 @@ pub fn readAndProcessData(this: *MySQLConnection, data: []const u8) !void {
         this._read_buffer.head = 0;
     }
 }
+
+const ErrorReturnTraceFormatter = struct {
+    trace: *const std.builtin.StackTrace,
+
+    pub fn format(this: ErrorReturnTraceFormatter, destination: *std.Io.Writer) std.Io.Writer.Error!void {
+        try destination.writeByte('\n');
+        try std.debug.writeErrorReturnTrace(this.trace, .{ .writer = destination, .mode = .no_color });
+    }
+};
 
 pub fn processPackets(this: *MySQLConnection, comptime Context: type, reader: NewReader(Context)) AnyMySQLError.Error!void {
     while (true) {

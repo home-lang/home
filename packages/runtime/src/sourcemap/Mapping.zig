@@ -140,6 +140,12 @@ pub const List = struct {
         }
     }
 
+    pub fn len(this: *const List) usize {
+        return switch (this.impl) {
+            inline else => |*list| list.len,
+        };
+    }
+
     pub fn find(this: *const List, line: bun.Ordinal, column: bun.Ordinal) ?Mapping {
         switch (this.impl) {
             inline else => |*list, tag| {
@@ -337,16 +343,20 @@ pub inline fn nameIndex(mapping: *const Mapping) i32 {
     return mapping.name_index;
 }
 
+pub const ParseOptions = struct {
+    allow_names: bool = false,
+    sort: bool = false,
+};
+
+const simd_threshold = 128;
+
 pub fn parse(
     allocator: std.mem.Allocator,
     bytes: []const u8,
     estimated_mapping_count: ?usize,
     sources_count: i32,
     input_line_count: usize,
-    options: struct {
-        allow_names: bool = false,
-        sort: bool = false,
-    },
+    options: ParseOptions,
 ) ParseResult {
     debug("parse mappings ({d} bytes)", .{bytes.len});
 
@@ -372,6 +382,31 @@ pub fn parse(
     var needs_sort = false;
     var remain = bytes;
     var has_names = false;
+
+    if (bytes.len >= simd_threshold and !bun.feature_flag.BUN_FEATURE_FLAG_DISABLE_SIMD_SOURCEMAP.get()) {
+        switch (parseSIMD(allocator, bytes, &mapping, sources_count, options)) {
+            .out_of_memory => {
+                return .{ .fail = .{
+                    .msg = "Out of memory",
+                    .err = error.OutOfMemory,
+                    .loc = .{},
+                } };
+            },
+            .done => |result| {
+                generated.lines = .fromZeroBased(result.state.gen_line);
+                generated.columns = .fromZeroBased(result.state.gen_col);
+                original.lines = .fromZeroBased(result.state.orig_line);
+                original.columns = .fromZeroBased(result.state.orig_col);
+                source_index = result.state.src_idx;
+                name_index = result.state.name_idx;
+                needs_sort = result.state.needs_sort != 0;
+                has_names = result.has_names;
+                remain = bytes[result.resume_at..];
+                debug("simd consumed {d}/{d} bytes", .{ result.resume_at, bytes.len });
+            },
+        }
+    }
+
     while (remain.len > 0) {
         if (remain[0] == ';') {
             generated.columns = bun.Ordinal.start;
@@ -581,7 +616,7 @@ pub fn parse(
             .generated = generated,
             .original = original,
             .source_index = source_index,
-            .name_index = name_index,
+            .name_index = if (has_names) name_index else -1,
         }) catch |err| bun.handleOom(err);
     }
 
@@ -595,6 +630,120 @@ pub fn parse(
         .input_line_count = input_line_count,
     } };
 }
+
+const ParseMappingsState = extern struct {
+    gen_line: i32 = 0,
+    gen_col: i32 = 0,
+    orig_line: i32 = 0,
+    orig_col: i32 = 0,
+    src_idx: i32 = 0,
+    name_idx: i32 = 0,
+    needs_sort: i32 = 0,
+    has_names: i32 = 0,
+    fast_blocks: i32 = 0,
+    slow_blocks: i32 = 0,
+};
+
+const SimdResult = union(enum) {
+    done: struct {
+        resume_at: usize,
+        state: ParseMappingsState,
+        has_names: bool,
+    },
+    out_of_memory,
+};
+
+fn parseSIMD(
+    allocator: std.mem.Allocator,
+    bytes: []const u8,
+    mapping: *Mapping.List,
+    sources_count: i32,
+    options: ParseOptions,
+) SimdResult {
+    comptime {
+        assert(@sizeOf(LineColumnOffset) == @sizeOf([2]i32));
+        assert(@alignOf(LineColumnOffset) == @alignOf([2]i32));
+        assert(@offsetOf(LineColumnOffset, "lines") == 0);
+        assert(@offsetOf(LineColumnOffset, "columns") == @sizeOf(i32));
+    }
+
+    const seg_bound = highway_count_mapping_delims(bytes.ptr, bytes.len) +| 1;
+
+    if (options.allow_names) {
+        mapping.ensureWithNames(allocator) catch return .out_of_memory;
+    }
+
+    var state = ParseMappingsState{};
+    var err_at: usize = 0;
+    const base = mapping.len();
+    const rows = switch (mapping.impl) {
+        .without_names => |*list| rows: {
+            list.ensureTotalCapacity(allocator, base +| seg_bound) catch return .out_of_memory;
+            const slices = list.slice();
+            const row_count = highway_parse_mappings(
+                bytes.ptr,
+                bytes.len,
+                @ptrCast(slices.items(.generated).ptr + base),
+                @ptrCast(slices.items(.original).ptr + base),
+                slices.items(.source_index).ptr + base,
+                null,
+                seg_bound,
+                sources_count,
+                &state,
+                &err_at,
+            );
+            list.len = base + row_count;
+            break :rows row_count;
+        },
+        .with_names => |*list| rows: {
+            list.ensureTotalCapacity(allocator, base +| seg_bound) catch return .out_of_memory;
+            const slices = list.slice();
+            const row_count = highway_parse_mappings(
+                bytes.ptr,
+                bytes.len,
+                @ptrCast(slices.items(.generated).ptr + base),
+                @ptrCast(slices.items(.original).ptr + base),
+                slices.items(.source_index).ptr + base,
+                slices.items(.name_index).ptr + base,
+                seg_bound,
+                sources_count,
+                &state,
+                &err_at,
+            );
+            list.len = base + row_count;
+            break :rows row_count;
+        },
+    };
+
+    debug("simd rows={d} seg_bound={d} fast={d} slow={d} blocks", .{
+        rows,
+        seg_bound,
+        state.fast_blocks,
+        state.slow_blocks,
+    });
+
+    if (!options.allow_names) state.name_idx = 0;
+
+    return .{ .done = .{
+        .resume_at = err_at,
+        .state = state,
+        .has_names = options.allow_names and state.has_names != 0,
+    } };
+}
+
+extern fn highway_count_mapping_delims(bytes: [*]const u8, len: usize) usize;
+extern fn highway_parse_mappings(
+    bytes: [*]const u8,
+    len: usize,
+    out_generated: [*]i32,
+    out_original: [*]i32,
+    out_src_idx: [*]i32,
+    out_name_idx: ?[*]i32,
+    cap: usize,
+    sources_count: i32,
+    state: *ParseMappingsState,
+    err_at: *usize,
+) usize;
 
 const std = @import("std");
 

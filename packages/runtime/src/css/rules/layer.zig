@@ -39,6 +39,13 @@ pub const LayerName = struct {
         return true;
     }
 
+    pub fn format(this: *const LayerName, writer: *std.Io.Writer) !void {
+        for (this.v.slice(), 0..) |name, i| {
+            if (i > 0) try writer.writeByte('.');
+            try writer.writeAll(name);
+        }
+    }
+
     pub fn toCss(this: *const LayerName, dest: anytype) !void {
         for (this.v.slice(), 0..) |name, i| {
             if (i > 0) try dest.writeChar('.');

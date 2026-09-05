@@ -12,6 +12,7 @@
 const std = @import("std");
 pub const exe_suffix = if (Environment.isWindows) ".exe" else "";
 const builtin = @import("builtin");
+pub const use_mimalloc = @import("build_options").use_mimalloc;
 
 pub const upstream_sha = "fd0b6f1a271fca0b8124b69f230b100f4d636af6";
 pub var start_time: i128 = 0;
@@ -779,7 +780,7 @@ pub const Timer = struct {
     }
 
     /// Reads the timer value since start or the last reset in nanoseconds.
-    pub fn read(self: *Timer) u64 {
+    pub fn read(self: *const Timer) u64 {
         const current = clockNanos();
         return current -| self.started;
     }
@@ -2061,6 +2062,10 @@ pub fn GenericIndex(comptime backing_int: type, comptime uid: anytype) type {
         pub inline fn get(i: Index) backing_int {
             assert(@intFromEnum(i) != null_value);
             return @intFromEnum(i);
+        }
+
+        pub fn format(i: Index, writer: *std.Io.Writer) !void {
+            try writer.print("{d}", .{i.get()});
         }
 
         pub inline fn toOptional(i: Index) Optional {
@@ -3706,6 +3711,15 @@ pub const crash_handler = struct {
     pub var verbose_error_trace = false;
     pub const handle_oom = @import("crash_handler/handle_oom.zig");
     pub const StoredTrace = @import("crash_handler/StoredTrace.zig").StoredTrace;
+    var panicking = std.atomic.Value(bool).init(false);
+
+    pub fn beginPanic() void {
+        panicking.store(true, .seq_cst);
+    }
+
+    pub fn isPanicking() bool {
+        return panicking.load(.monotonic);
+    }
     // DevServer registers an optional diagnostic dump callback through Bun's
     // crash-handler API. Home's full signal/crash dispatcher is not linked yet,
     // so keep the registration surface inert without pulling in duplicate

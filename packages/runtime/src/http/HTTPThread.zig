@@ -683,7 +683,7 @@ fn processEvents(this: *@This()) noreturn {
 
         var start_time: i128 = 0;
         if (comptime Environment.isDebug) {
-            start_time = 0;
+            start_time = bun.nanoTimestamp();
         }
         Output.flush();
 
@@ -702,8 +702,8 @@ fn processEvents(this: *@This()) noreturn {
 
         // this.loop.run();
         if (comptime Environment.isDebug) {
-            const end: i128 = 0;
-            threadlog("Waited {D}\n", .{@as(i64, @truncate(end - start_time))});
+            const end = bun.nanoTimestamp();
+            threadlog("Waited {f}\n", .{bun.fmt.fmtDurationOneDecimal(@intCast(end - start_time))});
             Output.flush();
         }
     }

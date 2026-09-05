@@ -66,7 +66,7 @@ pub const group = struct {
         if (!getLogEnabled()) return;
 
         var buf: [64]u8 = undefined;
-        var writer = std.fs.File.stdout().writerStreaming(&buf);
+        var writer = std.Io.File.stdout().writerStreaming(std.Options.debug_io, &buf);
 
         printIndent(&writer.interface);
         writer.interface.print("\x1b[32m++ \x1b[0m", .{}) catch {};
@@ -82,7 +82,7 @@ pub const group = struct {
         if (last_was_start) return; //std.fs.File.stdout().writer().print("\x1b[A", .{}) catch {};
 
         var buf: [64]u8 = undefined;
-        var writer = std.fs.File.stdout().writerStreaming(&buf);
+        var writer = std.Io.File.stdout().writerStreaming(std.Options.debug_io, &buf);
         printIndent(&writer.interface);
         writer.interface.print("\x1b[32m{s}\x1b[m\n", .{if (last_was_start) "+-" else "--"}) catch {};
         writer.interface.flush() catch {};
@@ -90,7 +90,7 @@ pub const group = struct {
     pub fn log(comptime fmtt: []const u8, args: anytype) void {
         if (!getLogEnabled()) return;
         var buf: [64]u8 = undefined;
-        var writer = std.fs.File.stdout().writerStreaming(&buf);
+        var writer = std.Io.File.stdout().writerStreaming(std.Options.debug_io, &buf);
         printIndent(&writer.interface);
         writer.interface.print(fmtt ++ "\n", args) catch {};
         writer.interface.flush() catch {};

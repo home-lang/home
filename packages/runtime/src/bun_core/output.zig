@@ -266,7 +266,7 @@ pub const Source = struct {
         @"16m",
     };
     var lazy_color_depth: ColorDepth = .none;
-    var color_depth_once = std.once(getColorDepthOnce);
+    var color_depth_once = bun.once(getColorDepthOnce);
     fn getColorDepthOnce() void {
         if (getForceColorDepth()) |depth| {
             lazy_color_depth = depth;
@@ -372,7 +372,7 @@ pub const Source = struct {
         lazy_color_depth = .none;
     }
     pub fn colorDepth() ColorDepth {
-        color_depth_once.call();
+        color_depth_once.call(.{});
         return lazy_color_depth;
     }
 
@@ -487,10 +487,10 @@ pub fn isAIAgent() bool {
             value = evaluate();
         }
 
-        var once = std.once(setValue);
+        var once = bun.once(setValue);
 
         pub fn isEnabled() bool {
-            once.call();
+            once.call(.{});
             return value;
         }
     };
@@ -854,7 +854,7 @@ fn ScopedLogger(comptime tagname: []const u8, comptime visibility: Visibility) t
 
         var lock = bun.Mutex{};
 
-        var is_visible_once = std.once(evaluateIsVisible);
+        var is_visible_once = bun.once(evaluateIsVisible);
 
         fn evaluateIsVisible() void {
             if (bun.getenvZAnyCase("BUN_DEBUG_" ++ tagname)) |val| {
@@ -877,7 +877,7 @@ fn ScopedLogger(comptime tagname: []const u8, comptime visibility: Visibility) t
         }
 
         pub fn isVisible() bool {
-            is_visible_once.call();
+            is_visible_once.call(.{});
             return !really_disable.load(.monotonic);
         }
 
@@ -1291,7 +1291,7 @@ pub fn initScopedDebugWriterAtStartup() void {
     if (bun.env_var.BUN_DEBUG.get()) |path| {
         if (path.len > 0 and !strings.eql(path, "0") and !strings.eql(path, "false")) {
             if (std.fs.path.dirname(path)) |dir| {
-                std.fs.cwd().makePath(dir) catch {};
+                std.Io.Dir.cwd().createDirPath(std.Options.debug_io, dir) catch {};
             }
 
             // do not use libuv through this code path, since it might not be initialized yet.
@@ -1301,8 +1301,8 @@ pub fn initScopedDebugWriterAtStartup() void {
             const path_fmt = std.mem.replaceOwned(u8, bun.default_allocator, path, "{pid}", pid) catch @panic("failed to allocate path");
             defer bun.default_allocator.free(path_fmt);
 
-            const fd: bun.FD = .fromStdFile(std.fs.cwd().createFile(path_fmt, .{
-                .mode = if (Environment.isPosix) 0o644 else 0,
+            const fd: bun.FD = .fromStdFile(std.Io.Dir.cwd().createFile(std.Options.debug_io, path_fmt, .{
+                .permissions = if (Environment.isPosix) .fromMode(0o644) else .default_file,
             }) catch |open_err| {
                 panic("Failed to open file for debug output: {s} ({s})", .{ @errorName(open_err), path });
             });

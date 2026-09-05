@@ -989,6 +989,7 @@ pub fn build(b: *std.Build) void {
     build_options.addOption(bool, "enable_jsc", enable_jsc);
     build_options.addOption(bool, "use_zig_js", false);
     build_options.addOption(bool, "use_bun_jsc", use_bun_jsc);
+    build_options.addOption(bool, "use_mimalloc", use_bun_jsc);
     build_options.addOption([]const u8, "js_engine", if (enable_jsc) "jsc" else "none");
     build_options.addOption(bool, "enable_macros", enable_macros);
     build_options.addOption(bool, "override_no_export_cpp_apis", false);
@@ -999,7 +1000,7 @@ pub fn build(b: *std.Build) void {
     build_options.addOption(bool, "is_canary", false);
     build_options.addOption([]const u8, "canary_revision", "");
     build_options.addOption([]const u8, "base_path", "");
-    build_options.addOption(bool, "enable_logs", debug_logging);
+    build_options.addOption(bool, "enable_logs", debug_logging or optimize == .Debug);
     build_options.addOption(bool, "enable_asan", enable_sanitize_address);
     build_options.addOption(bool, "enable_fuzzilli", false);
     build_options.addOption(bool, "enable_tinycc", false);
