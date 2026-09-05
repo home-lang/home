@@ -166,6 +166,11 @@ pub const ValkeyClient = struct {
     // Buffer management
     write_buffer: bun.OffsetByteList = .{},
     read_buffer: bun.OffsetByteList = .{},
+    /// First unread byte that may begin the CRLF terminator of a buffered
+    /// top-level scalar reply. Keeping this frontier makes fragmented line
+    /// replies linear instead of re-scanning the accumulated prefix on every
+    /// socket read.
+    read_buffer_line_scan_offset: usize = 0,
 
     /// In-flight commands, after the data has been written to the network socket
     in_flight: Command.PromisePair.Queue,
@@ -531,6 +536,40 @@ pub const ValkeyClient = struct {
         _ = this.flushData();
     }
 
+    fn isLineTerminatedScalar(byte: u8) bool {
+        return switch (protocol.RESPType.fromByte(byte) orelse return false) {
+            .SimpleString, .Error, .Integer, .Double, .Boolean, .BigNumber => true,
+            else => false,
+        };
+    }
+
+    /// Returns true while a buffered top-level scalar still needs its CRLF.
+    /// Other RESP forms retain the general parser path because their partial
+    /// state can include nested values rather than one unambiguous line.
+    fn waitForBufferedLine(this: *ValkeyClient, buffer: []const u8) bool {
+        if (buffer.len == 0 or !isLineTerminatedScalar(buffer[0])) {
+            this.read_buffer_line_scan_offset = 0;
+            return false;
+        }
+
+        // Let ValkeyReader report LineTooLong through the normal failure path.
+        if (buffer.len > protocol.ValkeyReader.max_line_len + 2) {
+            this.read_buffer_line_scan_offset = 0;
+            return false;
+        }
+
+        const scan_start = @min(@max(this.read_buffer_line_scan_offset, 1), buffer.len);
+        if (std.mem.indexOfPos(u8, buffer, scan_start, "\r\n") != null) {
+            this.read_buffer_line_scan_offset = 0;
+            return false;
+        }
+
+        // Revisit the final byte because it may be '\r' followed by a '\n'
+        // in the next socket read.
+        this.read_buffer_line_scan_offset = if (buffer.len > 1) buffer.len - 1 else 1;
+        return true;
+    }
+
     /// Process data received from socket
     ///
     /// Caller refs / derefs.
@@ -544,8 +583,11 @@ pub const ValkeyClient = struct {
             while (true) {
                 const remaining_buffer = this.read_buffer.remaining();
                 if (remaining_buffer.len == 0) {
+                    this.read_buffer_line_scan_offset = 0;
                     break; // Buffer processed completely
                 }
+
+                if (this.waitForBufferedLine(remaining_buffer)) return;
 
                 var reader = protocol.ValkeyReader.init(remaining_buffer);
                 const before_read_pos = reader.pos;
@@ -571,6 +613,7 @@ pub const ValkeyClient = struct {
                 }
 
                 this.read_buffer.consume(@truncate(bytes_consumed));
+                this.read_buffer_line_scan_offset = 0;
 
                 var value_to_handle = value; // Use temp var for defer
                 this.handleResponse(&value_to_handle) catch |err| {
@@ -601,6 +644,12 @@ pub const ValkeyClient = struct {
                         debug("read_buffer: partial message on stack ({d} bytes), switching to buffer", .{current_data_slice.len - before_read_pos});
                     }
                     this.read_buffer.write(this.allocator, current_data_slice[before_read_pos..]) catch @panic("failed to write remaining stack data to buffer");
+                    const remaining_buffer = this.read_buffer.remaining();
+                    if (remaining_buffer.len > 0 and isLineTerminatedScalar(remaining_buffer[0])) {
+                        this.read_buffer_line_scan_offset = if (remaining_buffer.len > 1) remaining_buffer.len - 1 else 1;
+                    } else {
+                        this.read_buffer_line_scan_offset = 0;
+                    }
                     return; // Exit onData, next call will use the buffer path
                 } else {
                     // Any other error is fatal
@@ -971,6 +1020,7 @@ pub const ValkeyClient = struct {
         this.socket = socket;
         this.write_buffer.clearAndFree(this.allocator);
         this.read_buffer.clearAndFree(this.allocator);
+        this.read_buffer_line_scan_offset = 0;
         // A fresh socket has opened, so reset per-connection state. Without
         // this, `send()` would permanently reject with "Connection has failed"
         // after a previous connection exhausted retries (#29925), and the

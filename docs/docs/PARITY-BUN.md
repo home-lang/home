@@ -1876,6 +1876,37 @@ successful connection. The four formerly failing unchanged fixtures pass
 The complete strict full-VM `js/web/websocket` scan is **23/23 files**, with no
 failures, crashes, hangs, dependency gaps, or OOMs.
 
+HTMLRewriter comment replacement now dispatches to lol-html's replace ABI
+instead of inserting the replacement immediately before the original comment.
+The unchanged `html-rewriter.test.js` fixture passes **44 tests / 159
+assertions**, with its two upstream TODOs still reported rather than counted as
+passes. The complete strict full-VM `js/workerd` scan is **3/3 files** in Debug
+and ReleaseFast.
+
+Valkey now retains the scan frontier for an incomplete top-level RESP scalar
+line. Each socket read searches only the newly appended suffix (plus the prior
+last byte for a split CRLF) instead of repeatedly scanning the entire buffered
+prefix. Nested and length-prefixed values continue through the general parser,
+and the existing 512 KiB line limit remains authoritative. The unchanged
+25,000-read incremental fixture passes **1/1 with 6 assertions** in Debug and
+ReleaseFast; the ReleaseFast case completes in about 0.29 seconds, compared
+with about 2.8 seconds before the fix and 0.32 seconds in pinned Bun. The
+complete strict full-VM `js/valkey` scan is **15/15 files** in both modes.
+
+Adjacent complete strict ReleaseFast scans are also clean for `js/deno`
+**16/16**, `js/first_party` **5/5**, and `js/junit-reporter` **1/1**. The latest
+complete `js/node` scan classified 263 of 267 files as ordinary passes. Its
+4 GiB HTTP backpressure entry passes **1/1** unchanged under the fixture's
+legitimate standalone memory envelope (about 6.9 GB maximum RSS); the generic
+4 GB process-group scanner cap had correctly classified it as OOM rather than
+a runtime failure. Each of the other three non-passing files reproduces the
+same result in pinned Bun: `double-connect.test.ts` is a now-stale `.failing`
+annotation whose body succeeds, the live `bun.sh` certificate no longer has
+the asserted OCSP URI in `node-tls-connect.test.ts`, and
+`readline.node.test.ts` reports the same 54 passes / 25 failures / 241
+assertions. These upstream fixture/environment failures are retained as
+failures rather than weakened or counted as Home passes.
+
 ## Summary
 
 Substrate file-count progress. "Present" is the live Zig file count under

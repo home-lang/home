@@ -755,7 +755,7 @@ pub const Comment = opaque {
 
     pub fn replace(comment: *Comment, content: []const u8, is_html: bool) Error!void {
         auto_disable();
-        return switch (lol_html_comment_before(comment, ptrWithoutPanic(content), content.len, is_html)) {
+        return switch (lol_html_comment_replace(comment, ptrWithoutPanic(content), content.len, is_html)) {
             0 => {},
             -1 => error.Fail,
             else => unreachable,

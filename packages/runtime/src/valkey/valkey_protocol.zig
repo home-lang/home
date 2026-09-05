@@ -229,7 +229,7 @@ pub const ValkeyReader = struct {
 
     pub fn readUntilCRLF(self: *ValkeyReader) RedisError![]const u8 {
         const buffer = self.buffer[self.pos..];
-        const limit = @min(buffer.len, MAX_LINE_LEN + 1);
+        const limit = @min(buffer.len, max_line_len + 1);
         for (buffer[0..limit], 0..) |byte, i| {
             if (byte == '\r' and buffer.len > i + 1 and buffer[i + 1] == '\n') {
                 const result = buffer[0..i];
@@ -237,7 +237,7 @@ pub const ValkeyReader = struct {
                 return result;
             }
         }
-        if (buffer.len > MAX_LINE_LEN + 1) {
+        if (buffer.len > max_line_len + 1) {
             return error.LineTooLong;
         }
 
@@ -305,7 +305,7 @@ pub const ValkeyReader = struct {
     const max_nesting_depth = 128;
     // Cap a single RESP line so a CRLF-less server response can't force an
     // unbounded scan of the receive buffer.
-    const MAX_LINE_LEN: usize = 512 * 1024;
+    pub const max_line_len: usize = 512 * 1024;
     /// Maximum accepted length for a single RESP blob (`$`, `=`, `!`), matching
     /// the Redis/Valkey `proto-max-bulk-len` server default of 512 MB.
     const MAX_BULK_LEN: i64 = 512 * 1024 * 1024;
