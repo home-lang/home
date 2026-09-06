@@ -169782,6 +169782,11 @@ pub const Checker = struct {
             const constraint = self.typeParameterConstraint(t) orelse return null;
             return if (constraint == t) null else constraint;
         }
+        if (flags.is_conditional) {
+            const conditional = self.interner.conditionalPayload(t);
+            const reduced = (try self.reduceConditionalSourceOverConstraint(t, conditional)) orelse return null;
+            return (try self.indexedAccessBaseConstraint(reduced, depth + 1)) orelse reduced;
+        }
         if (flags.is_union) {
             const members = self.interner.unionMembers(t);
             const snapshot = try self.gpa.dupe(TypeId, members);
@@ -169987,28 +169992,81 @@ pub const Checker = struct {
             },
             .type_ref => {
                 const ref = hir_mod.typeRefOf(self.hir, node);
-                if (ref.qualifier_len != 0) return null;
                 const args = hir_mod.typeRefArgs(self.hir, node);
-                const decl = self.typeAliasDeclForNameAt(ref.name, node) orelse return null;
+                const decl = (if (ref.qualifier_len == 0)
+                    self.typeAliasDeclForNameAt(ref.name, node)
+                else
+                    try self.qualifiedTypeAliasDeclForRef(node)) orelse return null;
                 const alias = hir_mod.typeAliasOf(self.hir, decl);
                 const params = self.hir.childSlice(alias.type_params_start, alias.type_params_len);
-                if (args.len != params.len or self.hir.kindOf(alias.aliased) != .indexed_access_type) return null;
-                const indexed = hir_mod.indexedAccessTypeOf(self.hir, alias.aliased);
-                const object_name = self.bareTypeNodeName(indexed.object) orelse return null;
-                var object_constraint: ?TypeId = null;
-                for (params, args) |param_node, arg_node| {
-                    if (self.hir.kindOf(param_node) != .type_parameter) continue;
-                    if (hir_mod.typeParameterOf(self.hir, param_node).name != object_name) continue;
-                    object_constraint = (try self.indexedAccessSyntaxBaseConstraint(arg_node, depth + 1)) orelse
-                        try self.lowererLowerWithTypeParams(arg_node);
-                    break;
+                if (args.len != params.len or params.len == 0) return null;
+
+                var effective_args: std.ArrayListUnmanaged(TypeId) = .empty;
+                defer effective_args.deinit(self.gpa);
+                var has_base_constraint = false;
+                for (args) |arg_node| {
+                    const arg_t = try self.lowererLowerWithTypeParams(arg_node);
+                    const base_constraint = (try self.indexedAccessSyntaxBaseConstraint(arg_node, depth + 1)) orelse
+                        (try self.indexedAccessBaseConstraint(arg_t, depth + 1));
+                    if (base_constraint != null) has_base_constraint = true;
+                    try effective_args.append(self.gpa, base_constraint orelse arg_t);
                 }
-                const object_t = object_constraint orelse return null;
-                const index_t = try self.lowererLowerWithTypeParams(indexed.index);
-                return try self.resolveObjectIndexedAccessType(object_t, index_t);
+
+                // Instantiate the alias body with the effective constraints
+                // of its arguments. This is the base-constraint analogue of
+                // ordinary generic-alias instantiation: a conditional alias
+                // such as `T extends Shape ? T["value"] : unknown` can select
+                // its true branch when the outer argument is constrained to
+                // Shape, while an unconstrained argument remains unresolved.
+                if (!has_base_constraint and self.hir.kindOf(alias.aliased) != .indexed_access_type) return null;
+                try self.pushNarrowScope();
+                defer self.popNarrowScope();
+                for (params, effective_args.items) |param_node, effective_arg| {
+                    if (self.hir.kindOf(param_node) != .type_parameter) continue;
+                    try self.recordNarrow(hir_mod.typeParameterOf(self.hir, param_node).name, effective_arg);
+                }
+                const instantiated = try self.lowererLowerWithTypeParams(alias.aliased);
+                return (try self.indexedAccessBaseConstraint(instantiated, depth + 1)) orelse instantiated;
             },
             else => return null,
         }
+    }
+
+    fn qualifiedTypeAliasDeclForRef(self: *Checker, node: NodeId) CheckError!?NodeId {
+        if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .type_ref) return null;
+        const reference = hir_mod.typeRefOf(self.hir, node);
+        const qualifiers = hir_mod.typeRefQualifier(self.hir, node);
+        if (qualifiers.len == 0) return null;
+
+        var path: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+        defer path.deinit(self.gpa);
+        for (qualifiers) |qualifier| {
+            if (self.hir.kindOf(qualifier) != .identifier) return null;
+            try path.append(self.gpa, hir_mod.identifierOf(self.hir, qualifier).name);
+        }
+
+        var alias_path: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+        defer alias_path.deinit(self.gpa);
+        var resolved_path: []const hir_mod.StringId = path.items;
+        if (try self.appendImportEqualsNamespacePathForLocal(&alias_path, path.items[0], node)) {
+            try alias_path.appendSlice(self.gpa, path.items[1..]);
+            resolved_path = alias_path.items;
+        }
+
+        const root = self.rootBlockFor(node);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        const statements = hir_mod.blockStmts(self.hir, root);
+        const absolute = self.findNamespaceByPath(statements, resolved_path) orelse
+            self.findGlobalAugmentedNamespaceByPath(statements, resolved_path);
+        var relative_path: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+        defer relative_path.deinit(self.gpa);
+        const relative = if (absolute == null)
+            try self.findRelativeNamespaceByPath(node, statements, resolved_path, &relative_path)
+        else
+            null;
+        const namespace = absolute orelse relative orelse return null;
+        const declaration = self.findVisibleTypeDeclInNamespace(namespace, reference.name, node) orelse return null;
+        return if (self.hir.kindOf(declaration) == .type_alias_decl) declaration else null;
     }
 
     fn indexedAccessSyntaxRecordValueConstraint(
@@ -270051,6 +270109,35 @@ test "checker: later alias constraints use earlier explicit type arguments" {
         s,
         TsCodes.type_does_not_satisfy_constraint,
         "Type '\"missing\"' does not satisfy the constraint '\"coerce\" | \"when\"'.",
+    ));
+}
+
+test "checker: conditional indexed aliases inherit outer argument constraints" {
+    const s = try newSetup(
+        \\type PropertyKeyLike = string | number | symbol;
+        \\interface Schema<out Output = unknown> { _zod: { output: Output } }
+        \\type OutputOf<T> = T extends { _zod: { output: any } } ? T["_zod"]["output"] : unknown;
+        \\type KeySchema = Schema<PropertyKeyLike>;
+        \\type SafeRecord<Key extends KeySchema> = Record<OutputOf<Key>, unknown>;
+        \\type UnsafeRecord<T> = Record<OutputOf<T>, unknown>;
+        \\namespace core {
+        \\  export type output<T> = T extends { _zod: { output: any } } ? T["_zod"]["output"] : unknown;
+        \\}
+        \\type QualifiedSafeRecord<Key extends KeySchema> = Record<core.output<Key>, unknown>;
+        \\type QualifiedUnsafeRecord<T> = Record<core.output<T>, unknown>;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_does_not_satisfy_constraint));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.type_does_not_satisfy_constraint,
+        "Type 'OutputOf<T>' does not satisfy the constraint 'string | number | symbol'.",
+    ));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.type_does_not_satisfy_constraint,
+        "Type 'core.output<T>' does not satisfy the constraint 'string | number | symbol'.",
     ));
 }
 
