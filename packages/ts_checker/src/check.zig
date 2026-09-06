@@ -117896,7 +117896,84 @@ pub const Checker = struct {
             if (constraint == t) return true;
             return try self.objectSpreadSourceIsValid(constraint);
         }
+        if (flags.is_conditional) {
+            const conditional = self.interner.conditionalPayload(t);
+            if (try self.objectSpreadConditionalBranch(conditional)) |take_true| {
+                return try self.objectSpreadSourceIsValid(
+                    if (take_true) conditional.true_branch else conditional.false_branch,
+                );
+            }
+            return try self.objectSpreadSourceIsValid(conditional.true_branch) and
+                try self.objectSpreadSourceIsValid(conditional.false_branch);
+        }
+        // Mapped types always describe an object shape, including when
+        // their key set is still generic. Their template controls member
+        // values, not whether the resulting type is object-spreadable.
+        if (flags.is_mapped) return true;
         return flags.is_object_type or flags.is_object or flags.is_signature;
+    }
+
+    /// Resolve a conditional branch only when the check type's constraint
+    /// proves the outcome. `null` means both branches remain reachable.
+    fn objectSpreadConditionalBranch(self: *Checker, conditional: types.ConditionalPayload) CheckError!?bool {
+        var check_t = conditional.check_type;
+        if (check_t >= self.interner.pool.typeCount()) return null;
+        const check_flags = self.interner.pool.flagsOf(check_t);
+        if (check_flags.is_type_parameter and !check_flags.is_union and !check_flags.is_intersection) {
+            check_t = self.typeParameterConstraint(check_t) orelse return null;
+        }
+        if (try self.checkerAssignableTo(check_t, conditional.extends_type)) return true;
+        if (!try self.objectSpreadConditionalTypesMayOverlap(check_t, conditional.extends_type, 0)) return false;
+        return null;
+    }
+
+    fn objectSpreadConditionalTypesMayOverlap(self: *Checker, a: TypeId, b: TypeId, depth: u8) CheckError!bool {
+        if (a == b) return true;
+        if (depth >= 16) return true;
+        if (a == types.Primitive.never or b == types.Primitive.never) return false;
+        if (self.typeIsAnyLike(a) or self.typeIsAnyLike(b)) return true;
+        if (a >= self.interner.pool.typeCount() or b >= self.interner.pool.typeCount()) return true;
+
+        const a_flags = self.interner.pool.flagsOf(a);
+        const b_flags = self.interner.pool.flagsOf(b);
+        if (a_flags.is_union) {
+            for (self.interner.unionMembers(a)) |member| {
+                if (try self.objectSpreadConditionalTypesMayOverlap(member, b, depth + 1)) return true;
+            }
+            return false;
+        }
+        if (b_flags.is_union) {
+            for (self.interner.unionMembers(b)) |member| {
+                if (try self.objectSpreadConditionalTypesMayOverlap(a, member, depth + 1)) return true;
+            }
+            return false;
+        }
+        if (a_flags.is_type_parameter and !a_flags.is_intersection) {
+            const constraint = self.typeParameterConstraint(a) orelse return true;
+            if (constraint != a) return try self.objectSpreadConditionalTypesMayOverlap(constraint, b, depth + 1);
+        }
+        if (b_flags.is_type_parameter and !b_flags.is_intersection) {
+            const constraint = self.typeParameterConstraint(b) orelse return true;
+            if (constraint != b) return try self.objectSpreadConditionalTypesMayOverlap(a, constraint, depth + 1);
+        }
+
+        const a_nullish = a_flags.is_null or a_flags.is_undefined or a_flags.is_void;
+        const b_nullish = b_flags.is_null or b_flags.is_undefined or b_flags.is_void;
+        if (a_nullish or b_nullish) {
+            if (!self.strict_flags.strict_null_checks) return true;
+            return a_nullish and b_nullish;
+        }
+        const a_primitive = self.assertionPrimitiveDomain(a);
+        const b_primitive = self.assertionPrimitiveDomain(b);
+        if (a_primitive != null and b_primitive != null) return a_primitive.? == b_primitive.?;
+
+        if (b_primitive != null and
+            (a_flags.is_object or self.assertionObjectConstituentHasNoPrimitiveOverlap(a, b))) return false;
+        if (a_primitive != null and
+            (b_flags.is_object or self.assertionObjectConstituentHasNoPrimitiveOverlap(b, a))) return false;
+        // Unknown structural combinations may overlap through a subtype.
+        // Preserve both branches unless the domains above prove disjoint.
+        return true;
     }
 
     /// Collect the spread-equivalent members of a union spread source
@@ -235682,14 +235759,48 @@ test "checker: object spread rejects primitive-constrained type parameter" {
         \\function h<T extends object | undefined>(arg: T | undefined) {
         \\  return { ...arg };
         \\}
+        \\declare const marker: unique symbol;
+        \\type Replace<Meta, S extends object> = Meta extends typeof marker
+        \\  ? unknown
+        \\  : Meta extends (infer M)[]
+        \\    ? Replace<M, S>[]
+        \\    : Meta extends object
+        \\      ? { [K in keyof Meta]: Replace<Meta[K], S> }
+        \\      : Meta;
+        \\function i<Meta extends object | undefined, S extends object>(arg: Replace<Meta, S> | undefined) {
+        \\  const first = { ...(arg ?? {}) };
+        \\  return { ...first, ...arg };
+        \\}
+        \\declare const outputMarker: unique symbol;
+        \\declare const inputMarker: unique symbol;
+        \\interface SchemaLike { output: unknown; input: unknown }
+        \\type FullReplace<Meta, S extends SchemaLike> = Meta extends typeof outputMarker
+        \\  ? S["output"]
+        \\  : Meta extends typeof inputMarker
+        \\    ? S["input"]
+        \\    : Meta extends (infer M)[]
+        \\      ? FullReplace<M, S>[]
+        \\      : Meta extends (...args: infer P) => infer R
+        \\        ? (...args: { [K in keyof P]: FullReplace<P[K], S> }) => FullReplace<R, S>
+        \\        : Meta extends object
+        \\          ? { [K in keyof Meta]: FullReplace<Meta[K], S> }
+        \\          : Meta;
+        \\function full<Meta extends object | undefined, S extends SchemaLike>(arg: FullReplace<Meta, S> | undefined) {
+        \\  return { ...arg };
+        \\}
+        \\type ObjectChoice<T> = T extends string ? { x: number } : { y: number };
+        \\type PrimitiveChoice<T> = T extends string ? number : boolean;
+        \\function j<T>(arg: ObjectChoice<T>) { return { ...arg }; }
+        \\function k<T>(arg: PrimitiveChoice<T>) { return { ...arg }; }
     );
     defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
     var count: usize = 0;
     for (s.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.spread_types_object_only) count += 1;
     }
-    try T.expectEqual(@as(usize, 1), count);
+    try T.expectEqual(@as(usize, 2), count);
 }
 
 test "checker: object spread accepts logical-and object branch" {
