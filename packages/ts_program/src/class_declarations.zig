@@ -224,7 +224,13 @@ fn classFacts(gpa: std.mem.Allocator, resolver: *resolver_mod.Resolver, sources:
         .declaration_pos = c.hir.spanOf(node).start,
         .class_name = name,
         .type_parameter_names = owned_params,
-        .schema = if (class.type_params_len > 0 or class.extends != 0) try class_schema.collect(gpa, resolver, sources, source, node) else null,
+        // Every exported class can supply exact member contracts to an
+        // importer. Keeping schemas only for generic/derived classes made a
+        // plain class fall back to name-only `any` methods, so callbacks lost
+        // their contextual parameter types across an otherwise ordinary
+        // module boundary.
+        .schema = try class_schema.collect(gpa, resolver, sources, source, node),
+        .schema_member_projection_only = class.type_params_len == 0 and class.extends == 0,
         .members = owned_members,
         .static_members = owned_statics,
     };

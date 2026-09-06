@@ -9923,6 +9923,51 @@ test "Program: supported qualified interface members retain array callback conte
     try expectCompilationHasDiagnosticCode(compilation, 2322);
 }
 
+test "Program: partially transferable imported classes retain contextual methods" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver };
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+
+    const owner =
+        \\export class Doc {
+        \\  closed: Record<string, unknown> = {};
+        \\  indented(fn: (doc: Doc) => void): void { fn(this); }
+        \\}
+    ;
+    const consumer =
+        \\import { Doc } from "./doc.js";
+        \\declare const doc: Doc;
+        \\doc.indented((current) => {
+        \\  const exact: Doc = current;
+        \\  current.missing;
+        \\  current.indented((nested) => {
+        \\    const wrong: number = nested;
+        \\    void exact;
+        \\    void wrong;
+        \\  });
+        \\});
+    ;
+    try vfs.addFile("/proj/doc.ts", owner);
+    try vfs.addFile("/proj/consumer.ts", consumer);
+    _ = try p.add("/proj/doc.ts", owner);
+    const consumer_id = try p.add("/proj/consumer.ts", consumer);
+
+    try p.compileAll(.{
+        .no_emit = true,
+        .strict_flags = .{ .no_implicit_any = true, .strict_null_checks = true },
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    });
+    const compilation = p.fileById(consumer_id).compilation.?;
+    try expectCompilationLacksDiagnosticCode(compilation, 7006);
+    try T.expectEqual(@as(usize, 2), compilation.diagnostics.items.len);
+    try expectCompilationHasDiagnosticCode(compilation, 2322);
+    try expectCompilationHasDiagnosticCode(compilation, 2339);
+}
+
 test "Program: qualified interface assertions project declared array members" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();

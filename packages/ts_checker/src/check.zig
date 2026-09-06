@@ -551,6 +551,10 @@ pub const ProgramExportedClass = struct {
     type_parameter_names: []const []const u8 = &.{},
     /// Borrowed source-owned metadata; consumer integration is staged separately.
     schema: ?*const ProgramClassSchema.Schema = null,
+    /// The schema exists so independently transferable members can be
+    /// projected on demand, but the class does not enter whole-object schema
+    /// substitution. This preserves the established safe fallback boundary.
+    schema_member_projection_only: bool = false,
     is_default: bool = false,
     is_export_assignment_target: bool = false,
     members: []const ProgramExportedClassMember = &.{},
@@ -5408,7 +5412,19 @@ pub const Checker = struct {
     /// in consumer name lookup or structural identity.
     program_definition_names: std.AutoHashMapUnmanaged(TypeId, hir_mod.StringId) = .empty,
     program_type_display_names: std.AutoHashMapUnmanaged(TypeId, hir_mod.StringId) = .empty,
-    program_definition_classes: std.AutoHashMapUnmanaged(TypeId, struct { name: hir_mod.StringId, origin: hir_mod.StringId }) = .empty,
+    program_definition_classes: std.AutoHashMapUnmanaged(TypeId, struct {
+        name: hir_mod.StringId,
+        origin: hir_mod.StringId,
+        declaration: *const ProgramClassSchema.Declaration,
+    }) = .empty,
+    /// Source class declaration for each structurally materialized imported
+    /// instance. This supports on-demand projection of a transferable member
+    /// when an unrelated sibling kept the whole class on its safe fallback.
+    program_class_declarations: std.AutoHashMapUnmanaged(TypeId, *const ProgramClassSchema.Declaration) = .empty,
+    /// Temporary identity used while lowering one projected class member.
+    /// Exact self references resolve to the already materialized receiver,
+    /// avoiding recursive expansion of the unsupported sibling graph.
+    program_contextual_class_receivers: std.AutoHashMapUnmanaged(*const ProgramClassSchema.Declaration, TypeId) = .empty,
     program_local_class_names: std.StringHashMapUnmanaged(void) = .empty,
     program_local_class_names_built: bool = false,
     generic_instances: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
@@ -6042,6 +6058,8 @@ pub const Checker = struct {
         self.program_definition_names.deinit(self.gpa);
         self.program_type_display_names.deinit(self.gpa);
         self.program_definition_classes.deinit(self.gpa);
+        self.program_class_declarations.deinit(self.gpa);
+        self.program_contextual_class_receivers.deinit(self.gpa);
         self.program_local_class_names.deinit(self.gpa);
         self.generic_instances.deinit(self.gpa);
         self.generic_instance_origins.deinit(self.gpa);
@@ -31566,8 +31584,54 @@ pub const Checker = struct {
             if (try self.lookupObjectMember(receiver_t, member.name)) |member_t| {
                 if (self.firstSignatureType(member_t)) |signature| return signature;
             }
+            if (try self.programImportedClassContextualMemberType(receiver_t, member.name)) |member_t| {
+                if (self.firstSignatureType(member_t)) |signature| return signature;
+            }
         }
         return self.firstSignatureType(callee_t);
+    }
+
+    /// Project one callable member from its source-owned class declaration
+    /// when the safe imported instance fallback only retained that member as
+    /// `any`. Unsupported siblings stay unpublished; the requested member is
+    /// lowered in the same contextual-only mode used by qualified interface
+    /// projections.
+    fn programImportedClassContextualMemberType(
+        self: *Checker,
+        receiver_t: TypeId,
+        member_name: hir_mod.StringId,
+    ) CheckError!?TypeId {
+        const declaration = self.program_class_declarations.get(receiver_t) orelse return null;
+        if (self.program_contextual_class_receivers.contains(declaration)) return null;
+        const args = try self.gpa.alloc(TypeId, declaration.parameters.len);
+        defer self.gpa.free(args);
+        @memset(args, types.Primitive.unknown);
+        if (self.alias_type_args.get(receiver_t)) |receiver_args| {
+            if (receiver_args.len == args.len) @memcpy(args, receiver_args);
+        }
+        try self.program_contextual_class_receivers.put(self.gpa, declaration, receiver_t);
+        defer _ = self.program_contextual_class_receivers.remove(declaration);
+        var active: std.AutoHashMapUnmanaged(*const ProgramClassSchema.Declaration, void) = .empty;
+        defer active.deinit(self.gpa);
+        return self.programDeclarationInheritedMemberType(
+            declaration,
+            args,
+            member_name,
+            &active,
+            true,
+        );
+    }
+
+    fn programClassReferenceIsIdentity(ref: ProgramClassSchema.Reference) bool {
+        if (ref.arguments.len != ref.declaration.parameters.len) return false;
+        for (ref.arguments, 0..) |argument, index| {
+            const parameter = switch (argument.*) {
+                .parameter => |value| value,
+                else => return false,
+            };
+            if (parameter != &ref.declaration.parameters[index]) return false;
+        }
+        return true;
     }
 
     fn firstConstructSignatureType(self: *Checker, t: TypeId) ?TypeId {
@@ -108441,6 +108505,8 @@ pub const Checker = struct {
         self.program_generic_definitions.clearRetainingCapacity();
         self.program_contextual_declarations.clearRetainingCapacity();
         self.program_contextual_declarations_active.clearRetainingCapacity();
+        self.program_class_declarations.clearRetainingCapacity();
+        self.program_contextual_class_receivers.clearRetainingCapacity();
         self.program_expression_parameters.clearRetainingCapacity();
         self.program_declaration_type_parameters.clearRetainingCapacity();
         self.program_definition_names.clearRetainingCapacity();
@@ -108509,6 +108575,7 @@ pub const Checker = struct {
         if (self.program_definition_classes.get(reference.origin)) |class| {
             try self.synthetic_program_class_origins.put(self.gpa, result, class.origin);
             try self.class_name_by_instance.put(self.gpa, result, class.name);
+            try self.program_class_declarations.put(self.gpa, result, class.declaration);
             if (args.len > 0) try self.alias_type_args.put(self.gpa, result, try self.diag_arena.allocator().dupe(TypeId, args));
             try self.registerAliasDisplayNameInner(result, class.name, args, true);
         }
@@ -108553,6 +108620,7 @@ pub const Checker = struct {
         if (declaration.is_class) try self.program_definition_classes.put(self.gpa, definition, .{
             .name = self.string_interner.intern(declaration.name) catch return error.OutOfMemory,
             .origin = try self.programSchemaDeclarationOrigin(declaration),
+            .declaration = declaration,
         });
         if (declaration.is_function) try self.recordGenericSignatureParams(body, parameters);
         self.engine.type_resolver = .{ .context = self, .resolve = resolveGenericTypeForEngine };
@@ -108569,6 +108637,7 @@ pub const Checker = struct {
 
     fn programGenericClassReference(self: *Checker, class: ProgramExportedClass, anchor: NodeId) CheckError!?TypeId {
         const schema = class.schema orelse return null;
+        if (class.schema_member_projection_only) return null;
         if (anchor == hir_mod.none_node_id or self.hir.kindOf(anchor) != .type_ref) return null;
         if (!try self.programSchemaSupported(schema)) return null;
         return self.programDeclarationTypeReference(schema.declaration, anchor);
@@ -109017,6 +109086,9 @@ pub const Checker = struct {
                 return sig;
             },
             .reference => |ref| {
+                if (programClassReferenceIsIdentity(ref)) {
+                    if (self.program_contextual_class_receivers.get(ref.declaration)) |receiver_t| return receiver_t;
+                }
                 const contextual_projection = ref.contextual_projection or declaration.contextual_projection;
                 if (ref.contextual_projection) if (ref.contextual_read) |read| {
                     return self.programContextualReadSurface(try self.lowerProgramExpression(read, declaration, args));
@@ -109342,14 +109414,16 @@ pub const Checker = struct {
             });
         }
         var instance_t = self.interner.internObjectType(instance_members.items) catch return error.OutOfMemory;
-        if (exported_class.schema) |schema| {
-            const declaration = schema.declaration;
-            if (declaration.parameters.len == class_params.items.len and
-                try self.programSchemaSupported(schema))
-            {
-                if (declaration.body) |body| {
-                    const schema_t = self.lowerProgramExpression(body, declaration, class_params.items) catch instance_t;
-                    instance_t = self.resolveGenericType(schema_t) catch schema_t;
+        if (!exported_class.schema_member_projection_only) {
+            if (exported_class.schema) |schema| {
+                const declaration = schema.declaration;
+                if (declaration.parameters.len == class_params.items.len and
+                    try self.programSchemaSupported(schema))
+                {
+                    if (declaration.body) |body| {
+                        const schema_t = self.lowerProgramExpression(body, declaration, class_params.items) catch instance_t;
+                        instance_t = self.resolveGenericType(schema_t) catch schema_t;
+                    }
                 }
             }
         }
@@ -109410,6 +109484,9 @@ pub const Checker = struct {
         try self.registerAliasDisplayText(instance_t, display);
         try self.synthetic_program_class_origins.put(self.gpa, instance_t, origin);
         try self.class_name_by_instance.put(self.gpa, instance_t, class_name);
+        if (exported_class.schema) |schema| {
+            try self.program_class_declarations.put(self.gpa, instance_t, schema.declaration);
+        }
         try self.class_name_by_static.put(self.gpa, static_t, class_name);
         // Namespace members do not introduce unqualified names in the
         // importing scope. Only an actual local import binding does.
@@ -109470,6 +109547,9 @@ pub const Checker = struct {
             self.string_interner.get(class_name);
         try self.registerAliasDisplayText(instance_t, display);
         try self.synthetic_program_class_origins.put(self.gpa, instance_t, origin);
+        if (exported_class.schema) |schema| {
+            try self.program_class_declarations.put(self.gpa, instance_t, schema.declaration);
+        }
         return instance_t;
     }
 
