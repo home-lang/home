@@ -687,6 +687,13 @@ pub const LinkerContext = struct {
     pub const prepareCssAstsForChunk = @import("./linker_context/prepareCssAstsForChunk.zig").prepareCssAstsForChunk;
     pub const PrepareCssAstTask = @import("./linker_context/prepareCssAstsForChunk.zig").PrepareCssAstTask;
 
+    pub fn sourceMapOutputDir(c: *const LinkerContext) string {
+        const bundle: *const BundleV2 = @fieldParentPtr("linker", c);
+        if (bundle.transpiler.options.output_dir.len > 0) return bundle.transpiler.options.output_dir;
+        if (bundle.transpiler.options.root_dir.len > 0) return bundle.transpiler.options.root_dir;
+        return c.resolver.fs.top_level_dir;
+    }
+
     pub fn generateSourceMapForChunk(
         c: *LinkerContext,
         isolated_hash: u64,

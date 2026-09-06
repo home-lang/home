@@ -2003,13 +2003,18 @@ balances the retain on the owner thread. A deterministic regression saturates
 every native pool thread, admits two builds in a Worker, proves termination
 cannot cross them, and observes exactly two `AnyTask` cancellations. It passes
 once plus six consecutive Debug processes and in ReleaseFast. The complete
-installation-shaped ReleaseFast runtime regression suite is now **66/66**, and
+installation-shaped ReleaseFast runtime regression suite is now **67/67**, and
 the native `home_rt` gate is **1,827 passed / 19 skipped / 0 failed**. The
 pinned HTML manifest corpus passes **4/4 with 16 assertions and one snapshot**.
-The broader HTML-serving file executes all 16 cases but still has two existing
-Home-only asset URL snapshot failures; pinned Bun passes **16/16**, so that
-separate path-generation gap remains tracked in
-[#675](https://github.com/home-lang/home/issues/675) rather than weakened here.
+The broader HTML-serving file now passes **16/16 with 102 assertions and 9
+snapshots**, matching pinned Bun. Lazy HTML builds establish the entrypoint
+directory as their working/root boundary; in-memory source maps use that root
+when no disk outdir exists, and Home's reduced CSS `display` implementation now
+matches Bun's canonical parser/printer (including default-value omission and
+legacy aliases). The repository-owned native regression locks root-relative
+asset URLs, entry-relative source names, and `display: block` serialization.
+This closes [#675](https://github.com/home-lang/home/issues/675) without fixture
+changes, relaxed assertions, or path normalization in the test.
 
 ## Summary
 

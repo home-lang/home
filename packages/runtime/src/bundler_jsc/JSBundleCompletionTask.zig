@@ -231,6 +231,17 @@ pub const JSBundleCompletionTask = struct {
             transpiler.options.emit_dce_annotations = false;
         }
 
+        // Transpiler.init() gives the resolver a value copy of the initial
+        // options. Keep that copy coherent with the JS API overrides above so
+        // output-relative paths (including source-map sources) use the actual
+        // outdir and rootdir instead of the initial "out" defaults.
+        transpiler.resolver.opts = transpiler.options;
+        if (transpiler.resolver.opts.output_dir.len == 0) {
+            transpiler.resolver.opts.output_dir = if (config.dir.list.items.len > 0)
+                config.dir.slice()
+            else
+                transpiler.fs.top_level_dir;
+        }
         transpiler.configureLinker();
         try transpiler.configureDefines();
 

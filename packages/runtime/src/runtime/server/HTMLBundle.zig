@@ -237,6 +237,15 @@ pub const Route = struct {
         var config: JSBundler.Config = .{};
         errdefer config.deinit(bun.default_allocator);
         try config.entry_points.insert(this.bundle.data.path);
+        // A lazily built route is a self-contained HTML application. Resolve
+        // its generated output paths and source-map names from the entrypoint
+        // directory, independent of the executable/script that created the
+        // server. This also keeps an explicit public path from inheriting the
+        // caller's filesystem depth.
+        if (std.fs.path.dirname(this.bundle.data.path)) |entry_dir| {
+            try config.dir.appendSlice(entry_dir);
+            try config.rootdir.appendSlice(entry_dir);
+        }
         if (vm.transpiler.options.transform_options.serve_public_path) |public_path| {
             if (public_path.len > 0) {
                 try config.public_path.appendSlice(public_path);

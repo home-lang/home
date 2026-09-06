@@ -1290,10 +1290,21 @@ shutdown barrier from dispatch through owner-loop publication. Their completion
 uses an explicit shutdown callback, and HTML routes install all cross-thread
 ownership before scheduling. The deterministic two-build Worker regression
 passes once plus six consecutive Debug processes and in ReleaseFast; the
-installation-shaped ReleaseFast runtime aggregate is **66/66**, native
+installation-shaped ReleaseFast runtime aggregate is **67/67**, native
 `home_rt` is **1,827 passed / 19 skipped / 0 failed**, and the HTML manifest
 corpus is **4/4**. Keep #465 open for the remaining producer-specific task
-families and #569 for poll-parked Blob I/O. The full HTML-serving file remains
-**14/16** in Home versus **16/16** in pinned Bun because two generated CSS/JS
-asset URLs contain excess parent segments; that separate bundler path issue is
-tracked in #675 and is not part of the lifetime patch.
+families and #569 for poll-parked Blob I/O.
+
+## Current HTML Asset-Root and CSS Checkpoint (2026-09-06)
+
+The exact upstream `js/bun/http/bun-serve-html.test.ts` file now passes
+**16/16 with 102 assertions and 9 snapshots** in Home, matching pinned Bun.
+Lazy route builds use the HTML entrypoint directory as their working/root
+boundary, and source-map generation falls back to that explicit root for
+in-memory builds instead of the resolver's initialization-time `out` default.
+Home's reduced `display` property port now implements Bun's canonical
+multi-keyword parser and printer, including omission of the default `flow`
+component and the upstream legacy flex/box aliases. The focused native
+`native-bun-serve-html-assets.test.mjs` regression verifies root-relative
+chunk URLs, entry-relative source-map sources, and canonical `display: block`
+output. This closes #675 with no fixture, snapshot, or assertion changes.
