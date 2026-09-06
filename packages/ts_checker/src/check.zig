@@ -132557,7 +132557,7 @@ pub const Checker = struct {
         const key = self.identifierRootedMemberKey(member_node) orelse return;
         var current = self.lookupMemberNarrow(key) orelse self.hir.typeOf(member_node);
         if (current == types.Primitive.none) current = try self.checkExpression(member_node);
-        const narrowed = self.nonNullishAccessType(current) catch current;
+        const narrowed = self.logicalOrTruthyType(current) catch current;
         if (narrowed != current) try self.recordMemberNarrow(key, narrowed);
     }
 
@@ -247756,6 +247756,34 @@ test "checker: bare truthy narrows optional member to non-undefined" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.type_not_assignable);
     }
+}
+
+test "checker: truthy property narrowing removes impossible never branches" {
+    const s = try newSetup(
+        \\type Primitive = string | number | boolean;
+        \\interface Present { options?: Primitive[] }
+        \\interface Impossible { options?: never }
+        \\declare const issue: Present | Impossible;
+        \\if (issue.options) {
+        \\  issue.options.map(value => value);
+        \\}
+        \\if (issue.options && Array.isArray(issue.options) && issue.options.length > 0) {
+        \\  issue.options.map(value => {
+        \\    const exact: Primitive = value;
+        \\    const wrong: never = value;
+        \\    void exact;
+        \\    void wrong;
+        \\    return value;
+        \\  });
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true, .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), s.checker.diagnostics.items.len);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.parameter_implicitly_any));
 }
 
 test "checker: plain member writes use declared types inside null guards" {
