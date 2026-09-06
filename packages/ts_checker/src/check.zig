@@ -228827,6 +228827,53 @@ test "checker: primitive constraint classification stays shallow" {
     try T.expect(!s.checker.typeParameterConstraintPrefersLiteralInference(parameter_t));
 }
 
+test "checker: exact indexed access requires every union member" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+
+    const kind_name = try s.sint.intern("kind");
+    const other_name = try s.sint.intern("other");
+    const missing_name = try s.sint.intern("missing");
+    const a_t = try s.ti.internStringLiteral(try s.sint.intern("a"));
+    const b_t = try s.ti.internStringLiteral(try s.sint.intern("b"));
+    const kind_key = try s.ti.internStringLiteral(kind_name);
+    const missing_key = try s.ti.internStringLiteral(missing_name);
+    const a_object = try s.ti.internObjectType(&.{.{
+        .name = kind_name,
+        .type = a_t,
+        .is_optional = false,
+        .is_readonly = false,
+        .is_method = false,
+    }});
+    const b_object = try s.ti.internObjectType(&.{.{
+        .name = kind_name,
+        .type = b_t,
+        .is_optional = false,
+        .is_readonly = false,
+        .is_method = false,
+    }});
+    const partial_object = try s.ti.internObjectType(&.{.{
+        .name = other_name,
+        .type = b_t,
+        .is_optional = false,
+        .is_readonly = false,
+        .is_method = false,
+    }});
+    const complete_union = try s.ti.internUnion(&.{ a_object, b_object });
+    const partial_union = try s.ti.internUnion(&.{ a_object, partial_object });
+    const complete_access = try s.ti.internIndexedAccess(complete_union, kind_key);
+    const partial_access = try s.ti.internIndexedAccess(partial_union, kind_key);
+    const missing_access = try s.ti.internIndexedAccess(a_object, missing_key);
+    const expected = try s.ti.internUnion(&.{ a_t, b_t });
+
+    try T.expectEqual(expected, (try s.checker.resolveExactIndexedAccessForArgument(complete_access, 0)).?);
+    try T.expectEqual(expected, (try s.checker.resolveExactIndexedAccessForInfer(complete_access, 0)).?);
+    try T.expect((try s.checker.resolveExactIndexedAccessForArgument(partial_access, 0)) == null);
+    try T.expect((try s.checker.resolveExactIndexedAccessForInfer(partial_access, 0)) == null);
+    try T.expect((try s.checker.resolveExactIndexedAccessForArgument(missing_access, 0)) == null);
+    try T.expect((try s.checker.resolveExactIndexedAccessForInfer(missing_access, 0)) == null);
+}
+
 test "checker: callable union reduction respects predicate targets and receiver types" {
     const s = try newSetup("");
     defer destroySetup(s);
