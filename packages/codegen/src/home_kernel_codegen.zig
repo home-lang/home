@@ -17,6 +17,40 @@ const Lexer = @import("lexer").Lexer;
 const Io = std.Io;
 const kernel_codegen = @import("kernel_codegen.zig");
 const kernel_target = @import("kernel_target.zig");
+
+/// A function's declared parameter list, as far as checking a call against it
+/// needs to know: how many arguments must be given, how many may be, and
+/// whether a variadic tail makes the maximum unbounded.
+///
+/// `required` is smaller than `total` when trailing parameters have defaults.
+/// A call that omits them is not wrong; the defaults are evaluated at the call
+/// site and passed like any other argument.
+const Arity = struct {
+    required: usize,
+    total: usize,
+    variadic: bool,
+
+    fn accepts(self: Arity, given: usize) bool {
+        if (given < self.required) return false;
+        if (self.variadic) return true;
+        return given <= self.total;
+    }
+};
+
+fn arityOf(params: []const ast.Parameter) Arity {
+    var required: usize = 0;
+    var total: usize = 0;
+    var variadic = false;
+    for (params) |p| {
+        if (p.is_variadic) {
+            variadic = true;
+            continue;
+        }
+        total += 1;
+        if (p.default_value == null) required += 1;
+    }
+    return .{ .required = required, .total = total, .variadic = variadic };
+}
 const Arch = kernel_target.Arch;
 const Reg = kernel_target.Reg;
 const Cond = kernel_target.Cond;
@@ -600,6 +634,13 @@ pub const HomeKernelCodegen = struct {
     /// Declared return type of each function, for inferring the type of a
     /// local initialized from a call.
     fn_return_types: std.StringHashMap([]const u8),
+    /// Declared parameter counts, for checking calls against them. A
+    /// variadic function records the count of its fixed parameters and is
+    /// marked so the check becomes a minimum rather than an equality.
+    fn_arity: std.StringHashMap(Arity),
+    /// The declared parameter lists, so a call that omits a defaulted
+    /// parameter can have its default expression emitted in place.
+    fn_params: std.StringHashMap([]const ast.Parameter),
     /// Every function declared in this program. An intrinsic name that the
     /// program also defines resolves to the program's definition, so adding
     /// intrinsics can never silently redirect an existing call.
@@ -682,6 +723,8 @@ pub const HomeKernelCodegen = struct {
         result.loop_continue = "";
         result.declared_fns = std.StringHashMap(void).init(allocator);
         result.fn_return_types = std.StringHashMap([]const u8).init(allocator);
+        result.fn_arity = std.StringHashMap(Arity).init(allocator);
+        result.fn_params = std.StringHashMap([]const ast.Parameter).init(allocator);
         result.globals = std.StringHashMap(i64).init(allocator);
         result.at_top_level = true;
         result.global_vars = std.StringHashMap(GlobalVar).init(allocator);
@@ -710,6 +753,8 @@ pub const HomeKernelCodegen = struct {
         self.locals.deinit();
         self.declared_fns.deinit();
         self.fn_return_types.deinit();
+        self.fn_arity.deinit();
+        self.fn_params.deinit();
         self.globals.deinit();
         self.global_vars.deinit();
         self.global_order.deinit(self.allocator);
@@ -1105,6 +1150,21 @@ pub const HomeKernelCodegen = struct {
 
         for (program.statements) |stmt| {
             switch (stmt) {
+                // An imported function's parameter list, so a call across a
+                // module boundary is checked against it. Recorded under both
+                // the bare name and the qualified one: a call is written
+                // `udp.udp_send(...)` but resolves by the member name, and
+                // two modules can export the same name.
+                .FnDecl => |decl| {
+                    const arity = arityOf(decl.params);
+                    const qualified = try std.fmt.allocPrint(arena, "{s}.{s}", .{ alias, decl.name });
+                    try self.fn_arity.put(qualified, arity);
+                    try self.fn_params.put(qualified, decl.params);
+                    if (!self.fn_arity.contains(decl.name)) {
+                        try self.fn_arity.put(decl.name, arity);
+                        try self.fn_params.put(decl.name, decl.params);
+                    }
+                },
                 .StructDecl => |decl| {
                     const qualified = try std.fmt.allocPrint(arena, "{s}.{s}", .{ alias, decl.name });
                     try self.pending_structs.append(self.allocator, .{
@@ -2205,16 +2265,8 @@ pub const HomeKernelCodegen = struct {
                         // arguments start one register later.
                         // Argument 0 is the hidden destination pointer, so
                         // the visible arguments start at register 1.
-                        var words: usize = 0;
-                        var i: usize = call.args.len;
-                        while (i > 0) {
-                            i -= 1;
-                            words += try self.pushArgument(call.args[i]);
-                        }
-                        for (0..words) |reg_idx| {
-                            const areg = self.emit().argReg(reg_idx + 1) orelse break;
-                            try self.emit().popNamed(areg);
-                        }
+                        try self.checkArity(callee, callee, call.args.len);
+                        try self.emitCallArguments(callee, call.args, 1);
                         try self.emit().pop(.mem_dst);
                         try self.emit().call(try self.functionSymbol(callee));
                         return;
@@ -3473,6 +3525,88 @@ pub const HomeKernelCodegen = struct {
         try self.emitNarrowTo(bare);
     }
 
+    /// Compare a call against the callee's declared parameter list.
+    ///
+    /// A call with the wrong number of arguments used to compile: the extra
+    /// ones were evaluated and pushed, the missing ones left whatever was in
+    /// the argument registers, and the callee read them as parameters. That
+    /// is how net/dhcp.home came to call udp_send with five arguments in a
+    /// different order than the three it takes — a signature that had changed
+    /// underneath it, with nothing to say so.
+    ///
+    /// Only functions this compilation unit has seen declared are checked; a
+    /// name it does not know is left to the linker, which is the existing
+    /// contract for externals.
+    fn checkArity(
+        self: *HomeKernelCodegen,
+        lookup: []const u8,
+        display: []const u8,
+        given: usize,
+    ) !void {
+        const arity = self.fn_arity.get(lookup) orelse return;
+        if (arity.accepts(given)) return;
+        if (arity.variadic or arity.required != arity.total) {
+            try self.print(
+                "    # ERROR: {s} takes {d} to {d} argument(s), called with {d}\n",
+                .{ display, arity.required, arity.total, given },
+            );
+            return;
+        }
+        try self.print(
+            "    # ERROR: {s} takes {d} argument(s), called with {d}\n",
+            .{ display, arity.total, given },
+        );
+    }
+
+    /// Evaluate a call's arguments into the ABI registers, supplying the
+    /// default values of any trailing parameters the call left out.
+    ///
+    /// Arguments are pushed in reverse and popped in order, so the omitted
+    /// defaults — which come last in declaration order — are pushed first.
+    /// `first_reg` is 1 for a call that returns storage, where register 0 is
+    /// the hidden destination pointer.
+    fn emitCallArguments(
+        self: *HomeKernelCodegen,
+        arity_key: []const u8,
+        args: []const *ast.Expr,
+        first_reg: usize,
+    ) !void {
+        const defaults = self.omittedDefaults(arity_key, args.len);
+        var words: usize = 0;
+
+        var d: usize = defaults.len;
+        while (d > 0) {
+            d -= 1;
+            // A parameter with no default that the call omitted has already
+            // been reported by checkArity; there is nothing to push for it.
+            const value = defaults[d].default_value orelse continue;
+            words += try self.pushArgument(value);
+        }
+
+        var i: usize = args.len;
+        while (i > 0) {
+            i -= 1;
+            words += try self.pushArgument(args[i]);
+        }
+
+        for (0..words) |reg_idx| {
+            const areg = self.emit().argReg(reg_idx + first_reg) orelse break;
+            try self.emit().popNamed(areg);
+        }
+    }
+
+    /// The default-value expressions a call omitted, in declaration order.
+    /// Empty when the call supplied every parameter, which is the common case.
+    fn omittedDefaults(
+        self: *HomeKernelCodegen,
+        lookup: []const u8,
+        given: usize,
+    ) []const ast.Parameter {
+        const params = self.fn_params.get(lookup) orelse return &.{};
+        if (given >= params.len) return &.{};
+        return params[given..];
+    }
+
     /// A cast that crosses between integers and floats, which is a conversion
     /// and not a reinterpretation. Returns true when it handled the cast.
     ///
@@ -3762,6 +3896,8 @@ pub const HomeKernelCodegen = struct {
                 if (stmt.FnDecl.return_type) |rt| {
                     try self.fn_return_types.put(stmt.FnDecl.name, rt);
                 }
+                try self.fn_arity.put(stmt.FnDecl.name, arityOf(stmt.FnDecl.params));
+                try self.fn_params.put(stmt.FnDecl.name, stmt.FnDecl.params);
                 try self.collectAssignedNames(stmt.FnDecl.body.statements);
             }
         }
@@ -4426,18 +4562,20 @@ pub const HomeKernelCodegen = struct {
                         // of module-scoped names — `serial.writeChar` and
                         // `vga.writeChar` are different functions.
                         if (self.module_aliases.get(module_name)) |mod_id| {
-                            if (call.args.len > 0) {
-                                var words: usize = 0;
-                                var i: usize = call.args.len;
-                                while (i > 0) {
-                                    i -= 1;
-                                    words += try self.pushArgument(call.args[i]);
-                                }
-                                for (0..words) |reg_idx| {
-                                    const areg = self.emit().argReg(reg_idx) orelse break;
-                                    try self.emit().popNamed(areg);
-                                }
-                            }
+                            // The callee is resolved before the arguments are
+                            // evaluated, because which defaults to supply
+                            // depends on which function this is.
+                            const qualified_callee = try std.fmt.allocPrint(
+                                self.import_arena.allocator(),
+                                "{s}.{s}",
+                                .{ module_name, func_name },
+                            );
+                            const arity_key = if (self.fn_arity.contains(qualified_callee))
+                                qualified_callee
+                            else
+                                func_name;
+                            try self.checkArity(arity_key, qualified_callee, call.args.len);
+                            try self.emitCallArguments(arity_key, call.args, 0);
                             if (isBootEntryPoint(func_name)) {
                                 try self.emit().call(func_name);
                             } else {
@@ -4482,20 +4620,8 @@ pub const HomeKernelCodegen = struct {
                             // into the ABI registers in order. A slice
                             // argument contributes two words, pointer then
                             // length, matching how the callee spills them.
-                            var words: usize = 0;
-                            var i: usize = call.args.len;
-                            while (i > 0) {
-                                i -= 1;
-                                words += try self.pushArgument(call.args[i]);
-                            }
-                            for (0..words) |reg_idx| {
-                                if (self.emit().argReg(reg_idx)) |areg| {
-                                    try self.emit().popNamed(areg);
-                                } else {
-                                    // Arguments beyond six stay on the stack.
-                                    break;
-                                }
-                            }
+                            // Omitted defaults are supplied here too.
+                            try self.emitCallArguments(func_name, call.args, 0);
                         }
 
                         // A name declared in this file resolves to this
@@ -4503,6 +4629,7 @@ pub const HomeKernelCodegen = struct {
                         // external the linker must supply, which fails loudly
                         // if it does not exist.
                         if (self.declared_fns.contains(func_name)) {
+                            try self.checkArity(func_name, func_name, call.args.len);
                             try self.emit().call(try self.functionSymbol(func_name));
                         } else if (try self.isCallableVariable(func_name)) {
                             // Indirect call through a function-pointer
