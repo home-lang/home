@@ -33,6 +33,29 @@ API rows below move only when the behavior is callable through Home's JS
 runtime or a native Home corpus gate; dormant source copies and bootstrap
 harness shims do not count as JS-visible parity.
 
+## Node compatibility identity checkpoint (2026-09-06)
+
+Home's reported Node.js compatibility version is now sourced from one build
+option and pinned to the Bun 1.4.0 engine's exact `26.3.0` value. Both runtime
+environment namespaces, the reduced JSC `process` global, N-API's
+`napi_get_node_version`, package-script child user agents, and publish metadata
+consume that value. A local bunx registry fixture declares
+`engines.node: ">=26.0.0"` and requires exact `process.version === "v26.3.0"`,
+`process.versions.node === "26.3.0"`, `process.release.name === "node"`, and the
+full `npm_config_user_agent`; the package-script regression independently pins
+the same child environment.
+
+Fresh Debug and ReleaseFast builds pass. The ReleaseFast Node N-API conformance
+directory is **55/55 files passing** with zero failures, crashes, hangs,
+dependency gaps, or OOMs; its compiled `test_general` addon now returns the
+same `26.3.0` identity as `process`. The real copied Angular bunx case that
+requires modern Node passes in ReleaseFast. The complete strict bunx file is
+**32 passed / 1 platform skip / 1 failed** only because the live
+`github:piuccio/cowsay` checkout changed its help label; the pinned Bun control
+fails the identical assertion (`Usage: bun` instead of the fixture's stale
+`Usage: cowsay`). Home does not falsify its argv identity to accommodate that
+moving external output.
+
 2026-06-02 compile-frontier note: a broad Bun Zig integration checkpoint
 is in progress across runtime root aliases, package-manager/patch
 substrate, HTTP/H2/H3 carriers, JSC/webcore/API object surfaces, DNS/file

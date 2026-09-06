@@ -6,7 +6,7 @@ import { basename, dirname, join } from 'node:path'
 
 assert.match(basename(process.execPath), /^home(?:-debug)?(?:\.exe)?$/)
 const env = { ...process.env, HOME_NATIVE_VM: '1', HOME_CORPUS_FULL_VM: '1', HOME_NATIVE_RUN: '0', NO_COLOR: '1' }
-for (const key of ['npm_execpath', 'npm_node_execpath', 'npm_lifecycle_event', 'npm_package_name', 'npm_package_version', 'npm_package_json']) delete env[key]
+for (const key of ['npm_config_user_agent', 'npm_execpath', 'npm_node_execpath', 'npm_lifecycle_event', 'npm_package_name', 'npm_package_version', 'npm_package_json']) delete env[key]
 const directory = mkdtempSync(join(tmpdir(), 'home-native-package-run-'))
 function run(args, options = {}) {
   const result = spawnSync(process.execPath, args, { cwd: directory, env, encoding: 'utf8', timeout: 15000, ...options })
@@ -32,6 +32,7 @@ try {
       name: process.env.npm_package_name, version: process.env.npm_package_version,
       packageJson: process.env.npm_package_json, command: process.env.npm_command,
       npmExecPath: process.env.npm_execpath, node: process.env.NODE,
+      userAgent: process.env.npm_config_user_agent,
       nodeExists: require('node:fs').existsSync(process.env.NODE),
     }));
   `)
@@ -62,6 +63,7 @@ try {
       assert.equal(record.command, 'run-script')
       assert.equal(record.script, scripts[record.event])
       assert.equal(realpathSync(record.npmExecPath), realpathSync(process.execPath))
+      assert.equal(record.userAgent, `bun/${Bun.version} npm/? node/v26.3.0 ${process.platform} ${process.arch}`)
       assert.equal(record.nodeExists, true)
       assert.equal(realpathSync(record.node), realpathSync(process.execPath), 'node alias must outlive the CLI process')
       if (process.platform !== 'win32') assert.equal(lstatSync(dirname(dirname(record.node))).mode & 0o777, 0o700)

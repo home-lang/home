@@ -999,7 +999,11 @@ pub fn build(b: *std.Build) void {
     build_options.addOption(bool, "enable_macros", enable_macros);
     build_options.addOption(bool, "override_no_export_cpp_apis", false);
     build_options.addOption(bool, "zig_self_hosted_backend", false);
-    build_options.addOption([]const u8, "reported_nodejs_version", "24.0.0");
+    // Keep every Home-owned Node compatibility surface on the exact version
+    // reported by the pinned Bun 1.4.0 engine (4982b91e37). Environment,
+    // process, package-manager child environments, and N-API all consume this
+    // single build option.
+    build_options.addOption([]const u8, "reported_nodejs_version", "26.3.0");
     build_options.addOption(bool, "baseline", false);
     build_options.addOption([]const u8, "sha", "4982b91e3702094330f3be3883354c52b8c01323");
     build_options.addOption(bool, "is_canary", false);

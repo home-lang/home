@@ -11,13 +11,11 @@
 // snippet (run inside an IIFE so the temporaries are captured as locals and
 // then deleted from the global) assembles `globalThis.process`.
 //
-// `version`/`versions.node` report Bun's pinned Node-compat version
-// (`BUN_REPORTED_NODEJS_VERSION` default `24.0.0`, per
-// `~/Code/bun/src/bun_core/lib.rs`). It is a literal here rather than the
-// runtime's `bun_core/env.reported_nodejs_version` because that decl is
-// gated on a `build_options.reported_nodejs_version` the CLI build does not
-// define. Object inspect-formatting and the full stream surface are
-// deliberate later refinements.
+// `version`/`versions.node` report the pinned Bun engine's Node-compat version
+// through `bun.Environment.reported_nodejs_version`, the same build option
+// consumed by N-API and package-manager child environments. Object
+// inspect-formatting and the full stream surface are deliberate later
+// refinements.
 
 const std = @import("std");
 const bun = @import("bun");
@@ -47,7 +45,7 @@ const arch_name = switch (builtin.cpu.arch) {
     .x86_64 => "x64",
     else => @tagName(builtin.cpu.arch),
 };
-const node_version = "24.0.0";
+const node_version = bun.Environment.reported_nodejs_version;
 
 const stdout_fd: c_int = 1;
 const stderr_fd: c_int = 2;
@@ -626,7 +624,7 @@ test "process install exposes the core surface" {
         "Array.isArray(process.argv) && process.argv.length === 3 && process.argv[0] === 'home' && " ++
         "typeof process.env === 'object' && " ++
         "typeof process.platform === 'string' && typeof process.arch === 'string' && " ++
-        "process.version[0] === 'v' && typeof process.versions.node === 'string' && " ++
+        "process.version === 'v" ++ node_version ++ "' && process.versions.node === '" ++ node_version ++ "' && " ++
         "typeof process.pid === 'number' && " ++
         "typeof process.cwd === 'function' && typeof process.exit === 'function' && " ++
         "typeof process.nextTick === 'function' && " ++

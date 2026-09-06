@@ -228,11 +228,11 @@ carries no host `std.Io`). `home eval "console.log('hello', 1 + 2)"` prints
 **Second Phase-2 global landed (2026-05-27, `97cf14df`): `process`.**
 `jsc/process.zig` (`home_rt.jsc.process_global.install`) exposes the core
 surface real scripts use: `argv` (from the CLI), `env` (libc `environ`),
-`platform`/`arch`/`version`/`versions.node`/`pid` (Node-compat `24.0.0`,
-matching Bun's `BUN_REPORTED_NODEJS_VERSION` default), `cwd()` (libc
+`platform`/`arch`/`version`/`versions.node`/`pid` (the pinned Bun engine's
+Node-compat version, sourced from shared build metadata), `cwd()` (libc
 `getcwd`), `exit(code)`, `nextTick` (microtask), and `stdout`/`stderr`
 `.write`. `home eval "console.log(process.platform, process.version)"` prints
-`darwin v24.0.0`; `process.exit(7)` exits 7. Same register-natives-then-JS-glue
+`darwin v26.3.0`; `process.exit(7)` exits 7. Same register-natives-then-JS-glue
 pattern as `console`; comptime-gated on `enable_jsc`; 3 focused tests.
 
 **Web globals batch landed (2026-05-27, `eeb46b52`): `jsc/web_globals.zig`.**

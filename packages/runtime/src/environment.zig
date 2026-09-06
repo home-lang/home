@@ -201,7 +201,9 @@ pub const version: std.SemanticVersion = .{
     .patch = 0,
 };
 pub const version_string = "1.4.0";
-pub const reported_nodejs_version = "20.0.0";
+/// The single Home-owned source of truth for Node compatibility identity.
+/// The value itself is pinned alongside the Bun engine in `build.zig`.
+pub const reported_nodejs_version = build_options.reported_nodejs_version;
 
 test "environment flags are mutually consistent" {
     var count: usize = 0;
@@ -212,4 +214,8 @@ test "environment flags are mutually consistent" {
     // At least one OS tag must match (unless we're on something exotic).
     try std.testing.expect(count <= 1);
     try std.testing.expect(isPosix != isWindows);
+}
+
+test "reported Node.js version is valid build metadata" {
+    _ = try std.SemanticVersion.parse(reported_nodejs_version);
 }

@@ -23,6 +23,7 @@ const env = {
   BUN_INSTALL_CACHE_DIR: join(directory, 'cache'), NO_PROXY: '127.0.0.1,localhost',
   XDG_CONFIG_HOME: join(directory, 'config'),
 }
+delete env.npm_config_user_agent
 for (const name of ['tmp', 'cache', 'project', 'config']) mkdirSync(join(directory, name))
 // Use synthetic credentials in an isolated config directory. The registry
 // override below must never forward the unrelated registry's token.
@@ -84,13 +85,17 @@ function tarball(files) {
 }
 
 try {
-  const source = '#!/usr/bin/env node\nconsole.log(JSON.stringify({execPath:process.execPath,args:process.argv.slice(2),answer:require("native-bunx-dep"),version:require("./package.json").version}));\n'
+  const source = `#!/usr/bin/env node
+const manifest = require('./package.json');
+if (process.version !== 'v26.3.0') throw new Error('unsupported Node compatibility version: ' + process.version);
+console.log(JSON.stringify({execPath:process.execPath,args:process.argv.slice(2),answer:require('native-bunx-dep'),version:manifest.version,engine:manifest.engines.node,nodeVersion:process.versions.node,release:process.release.name,userAgent:process.env.npm_config_user_agent}));
+`
   const packages = {}
   for (const [name, versions] of Object.entries({ 'native-bunx-fixture': ['1.0.0', '1.0.1'], 'native-bunx-dep': ['1.0.0'] })) {
     packages[name] = {}
     for (const version of versions) {
       const manifest = name === 'native-bunx-fixture'
-        ? { name, version, bin: { 'native-cli': 'bin.cjs' }, dependencies: { 'native-bunx-dep': '1.0.0' } }
+        ? { name, version, bin: { 'native-cli': 'bin.cjs' }, engines: { node: '>=26.0.0' }, dependencies: { 'native-bunx-dep': '1.0.0' } }
         : { name, version, main: 'index.cjs' }
       const bytes = tarball({
         'package.json': JSON.stringify(manifest),
@@ -138,6 +143,10 @@ try {
   const installed = record(await run(['x', '--bun', '--package', 'native-bunx-fixture@1.0.0', 'native-cli', ...args]))
   assert.equal(installed.answer, 42)
   assert.equal(installed.version, '1.0.0')
+  assert.equal(installed.engine, '>=26.0.0')
+  assert.equal(installed.nodeVersion, '26.3.0')
+  assert.equal(installed.release, 'node')
+  assert.equal(installed.userAgent, `bun/${Bun.version} npm/? node/v26.3.0 ${process.platform} ${process.arch}`)
   assert.ok(requests.includes('/native-bunx-fixture'))
   assert.ok(requests.includes('/native-bunx-dep'))
   assert.ok(requests.some(path => path.endsWith('/native-bunx-fixture-1.0.0.tgz')))
