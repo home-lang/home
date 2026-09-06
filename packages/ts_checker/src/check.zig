@@ -78908,6 +78908,7 @@ pub const Checker = struct {
                 const resolves = isPrimitiveTypeNameText(name_str) or
                     self.lookupNarrow(r.name) != null or
                     self.isBuiltinName(r.name) or
+                    self.isDefaultLibTypeOnlyFallbackName(name_str) or
                     (try self.importedTypeRefForLocal(r.name, arg)) != null or
                     (try self.importedReferenceLibTypeForLocal(r.name, arg)) != null or
                     self.typeRefNameExists(r.name) or
@@ -251693,6 +251694,25 @@ test "checker: unresolved annotation walk includes parameterized roots" {
     }
     try T.expect(saw_outer);
     try T.expect(saw_arg);
+}
+
+test "checker: default-lib aliases resolve as nested generic arguments" {
+    const s = try newSetup(
+        \\type Direct = PropertyKey;
+        \\type ThroughRecord = Record<PropertyKey, unknown>;
+        \\type Broken = Record<MissingKey, unknown>;
+        \\const key: PropertyKey = "key";
+        \\const valid: ThroughRecord = { [key]: key };
+        \\void valid;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_find_name));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.cannot_find_name,
+        "Cannot find name 'MissingKey'.",
+    ));
 }
 
 test "checker: unresolved generic annotations do not create TS2403" {
