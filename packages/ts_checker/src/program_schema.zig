@@ -67,6 +67,11 @@ pub const Utility = struct {
     keys: ?*const Expression = null,
 };
 
+pub const BuiltinReference = struct {
+    name: []const u8,
+    arguments: []const *const Expression,
+};
+
 /// Standard-library object identities that can be materialized in every
 /// checker from their stable spelling instead of copying source-owned TypeIds.
 pub const builtin_object_type_names = [_][]const u8{
@@ -87,6 +92,13 @@ pub const builtin_object_type_names = [_][]const u8{
     "Window",              "Worker",
 };
 
+/// Standard-library generic identities whose concrete instantiations can be
+/// reconstructed from type arguments in every consuming checker.
+pub const builtin_generic_type_names = [_][]const u8{
+    "Promise",
+    "PromiseLike",
+};
+
 pub const Expression = union(enum) {
     primitive: types.TypeId,
     /// A deliberately opaque leaf in an otherwise transferable declaration.
@@ -97,6 +109,10 @@ pub const Expression = union(enum) {
     /// consuming checker. Keeping the symbolic name avoids copying checker
     /// TypeIds across source-file type pools.
     builtin_object: []const u8,
+    /// A parameterized standard-library type. The symbolic identity and its
+    /// source-owned arguments cross the Program boundary together; the
+    /// consumer reconstructs its canonical local instantiation.
+    builtin_reference: BuiltinReference,
     parameter: *const Parameter,
     string: []const u8,
     number: f64,
@@ -166,7 +182,7 @@ pub const Schema = struct {
         var visited: std.AutoHashMapUnmanaged(*const Expression, void) = .empty;
         defer visited.deinit(gpa);
         try appendDeclaration(gpa, &pending, declaration);
-        return pendingSupported(gpa, &pending, &visited, declaration.contextual_only, declaration.is_function);
+        return pendingSupported(gpa, &pending, &visited, declaration.contextual_only, declaration.is_function, declaration.contextual_only);
     }
 
     /// Check one prospective leaf before it is embedded in a larger schema.
@@ -177,7 +193,7 @@ pub const Schema = struct {
         var visited: std.AutoHashMapUnmanaged(*const Expression, void) = .empty;
         defer visited.deinit(gpa);
         try pending.append(gpa, expression);
-        return pendingSupported(gpa, &pending, &visited, false, false);
+        return pendingSupported(gpa, &pending, &visited, false, false, true);
     }
 
     fn pendingSupported(
@@ -186,6 +202,7 @@ pub const Schema = struct {
         visited: *std.AutoHashMapUnmanaged(*const Expression, void),
         allow_opaque: bool,
         allow_readonly_record: bool,
+        allow_builtin_reference: bool,
     ) !bool {
         while (pending.pop()) |expr| {
             const entry = try visited.getOrPut(gpa, expr);
@@ -194,6 +211,14 @@ pub const Schema = struct {
                 .unsupported => if (!allow_opaque) return false,
                 .opaque_leaf => if (!allow_opaque) return false,
                 .primitive, .builtin_object, .parameter, .string, .number, .boolean, .polymorphic_this => {},
+                .builtin_reference => |reference| {
+                    // The expression itself is lossless and can be projected
+                    // on demand. Keep it from making a whole declaration
+                    // eligible for eager structural substitution until that
+                    // path preserves generic built-in relation semantics.
+                    if (!allow_builtin_reference) return false;
+                    try pending.appendSlice(gpa, reference.arguments);
+                },
                 .array, .readonly_array, .keyof, .this_type => |element| try pending.append(gpa, element),
                 .object => |members| for (members) |member| {
                     try pending.append(gpa, member.type);

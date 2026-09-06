@@ -83544,6 +83544,13 @@ pub const Checker = struct {
         return t;
     }
 
+    fn lowerProgramBuiltinReference(self: *Checker, name: []const u8, args: []const TypeId) CheckError!?TypeId {
+        if (args.len != 1) return null;
+        if (std.mem.eql(u8, name, "Promise")) return try self.buildStructuralPromise(args[0]);
+        if (std.mem.eql(u8, name, "PromiseLike")) return try self.buildStructuralPromiseLike(args[0]);
+        return null;
+    }
+
     fn lowerBuiltinObjectInstanceType(self: *Checker) ?TypeId {
         const global_t = lib.objectGlobal(&self.lib_cache, self.interner, self.string_interner) catch
             return null;
@@ -108811,6 +108818,15 @@ pub const Checker = struct {
                 self.string_interner.intern("this") catch return error.OutOfMemory,
             ),
             .builtin_object => |name| return self.lowerBuiltinObjectType(name) orelse if (declaration.contextual_only) types.Primitive.any else error.UnsupportedProgramType,
+            .builtin_reference => |reference| {
+                const values = try self.gpa.alloc(TypeId, reference.arguments.len);
+                defer self.gpa.free(values);
+                for (reference.arguments, values) |argument, *value| {
+                    value.* = try self.lowerProgramExpression(argument, declaration, args);
+                }
+                return (try self.lowerProgramBuiltinReference(reference.name, values)) orelse
+                    if (declaration.contextual_only) types.Primitive.any else error.UnsupportedProgramType;
+            },
             .parameter => |parameter| {
                 for (declaration.parameters, args) |*param, arg| if (param == parameter) return arg;
                 return self.programExpressionParameter(parameter);

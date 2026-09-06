@@ -10813,14 +10813,15 @@ test "Program: local multiple heritage retains qualified imported members in fac
     const owner =
         \\import type { LocalPayload } from "./consumer.js";
         \\type Recursive = { [key: string]: Recursive | Record<string, unknown> };
-        \\export interface RemoteBase {
+        \\export interface RemoteBase<T> {
         \\  abort?: boolean;
         \\  unrelated?: (value: Recursive) => void;
+        \\  check(payload: LocalPayload<T>): T | Promise<T>;
         \\}
-        \\export interface Remote<Format extends string = string> extends RemoteBase {
+        \\export interface Remote<Format extends string = string> extends RemoteBase<string> {
         \\  format: Format;
         \\  pattern?: RegExp;
-        \\  attach?: (payload: LocalPayload) => void;
+        \\  attach?: (payload: LocalPayload<string>) => void;
         \\}
         \\type Trait = { state: { def: unknown } };
         \\export interface $constructor<T extends Trait, D = T["state"]["def"]> {
@@ -10832,7 +10833,7 @@ test "Program: local multiple heritage retains qualified imported members in fac
     ;
     const consumer =
         \\import * as api from "./owner.js";
-        \\export interface LocalPayload { value: string }
+        \\export interface LocalPayload<T> { value: T }
         \\interface LocalBase { type: "string" }
         \\interface Combined<Format extends string = string>
         \\  extends LocalBase, api.Remote<Format> {}
@@ -10844,8 +10845,9 @@ test "Program: local multiple heritage retains qualified imported members in fac
         \\  const maybe: boolean | undefined = def.abort;
         \\  const exact: "tag" = def.format;
         \\  def.attach?.({ value: "ok" });
+        \\  const checked: string | Promise<string> = def.check({ value: "ok" });
         \\  inst.state.def = def;
-        \\  void maybe; void exact;
+        \\  void maybe; void exact; void checked;
         \\});
     ;
     const invalid =
@@ -10858,8 +10860,10 @@ test "Program: local multiple heritage retains qualified imported members in fac
         \\interface Item { state: Internals }
         \\export const Item: api.$constructor<Item> = api.$constructor<Item>((inst, def) => {
         \\  const wrong: number = def.format;
+        \\  const wrongReturn: number = def.check({ value: "ok" });
+        \\  def.check({ value: 1 });
         \\  def.missing;
-        \\  void inst; void wrong;
+        \\  void inst; void wrong; void wrongReturn;
         \\});
     ;
     try vfs.addFile("/proj/owner.ts", owner);
@@ -10878,7 +10882,7 @@ test "Program: local multiple heritage retains qualified imported members in fac
     const invalid_compilation = p.fileById(invalid_id).compilation.?;
     try expectCompilationHasDiagnosticCode(invalid_compilation, 2322);
     try expectCompilationHasDiagnosticCode(invalid_compilation, 2339);
-    try T.expectEqual(@as(usize, 2), invalid_compilation.diagnostics.items.len);
+    try T.expectEqual(@as(usize, 4), invalid_compilation.diagnostics.items.len);
 
     var reverse = Program.init(T.allocator, &resolver);
     defer reverse.deinit();
@@ -10894,7 +10898,7 @@ test "Program: local multiple heritage retains qualified imported members in fac
     const reverse_invalid = reverse.fileById(reverse_invalid_id).compilation.?;
     try expectCompilationHasDiagnosticCode(reverse_invalid, 2322);
     try expectCompilationHasDiagnosticCode(reverse_invalid, 2339);
-    try T.expectEqual(@as(usize, 2), reverse_invalid.diagnostics.items.len);
+    try T.expectEqual(@as(usize, 4), reverse_invalid.diagnostics.items.len);
 }
 
 test "Program: inherited imported members project across union constituents" {

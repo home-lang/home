@@ -14,6 +14,12 @@ const builtin_object_type_name_set = blk: {
     break :blk std.StaticStringMap(void).initComptime(entries);
 };
 
+const builtin_generic_type_name_set = blk: {
+    var entries: [schema.builtin_generic_type_names.len]struct { []const u8 } = undefined;
+    for (schema.builtin_generic_type_names, 0..) |name, i| entries[i] = .{name};
+    break :blk std.StaticStringMap(void).initComptime(entries);
+};
+
 pub const Source = struct { path: []const u8, compilation: *driver.Compilation };
 pub const Key = struct { source: usize, node: hir.NodeId };
 const Resolution = union(enum) { declaration: Key, missing, external, unsupported };
@@ -229,6 +235,7 @@ pub const Builder = struct {
             if (entry.found_existing) continue;
             switch (expr.*) {
                 .primitive, .opaque_leaf, .builtin_object, .parameter, .string, .number, .boolean, .object, .indexed_object => {},
+                .builtin_reference => |builtin| try pending.appendSlice(self.gpa, builtin.arguments),
                 .array, .readonly_array => |element| try pending.append(self.gpa, element),
                 .tuple => |elements| for (elements) |element| try pending.append(self.gpa, element.type),
                 .union_type, .intersection => |members| try pending.appendSlice(self.gpa, members),
@@ -659,6 +666,8 @@ pub const Builder = struct {
                         // consumer materialize the same canonical shape.
                         if (args.len == 0 and builtin_object_type_name_set.has(name))
                             return self.expression(.{ .builtin_object = name });
+                        if (args.len > 0 and builtin_generic_type_name_set.has(name))
+                            return self.expression(.{ .builtin_reference = .{ .name = name, .arguments = args } });
                         if (args.len == 2 and std.mem.eql(u8, name, "Record"))
                             return self.expression(.{ .record = .{ .key = args[0], .value = args[1] } });
                         if (args.len == 1 and std.mem.eql(u8, name, "Readonly")) switch (args[0].*) {
@@ -1214,12 +1223,39 @@ test "class schema: built-in RegExp members retain their checker-owned shape" {
     try T.expect(try result.isSupported(T.allocator));
 }
 
+test "class schema: parameterized built-ins retain their arguments" {
+    const graph = try TestGraph.init(&.{.{ .path = "/owner.ts", .text =
+        \\export interface Remote<T> { check(value: T): T | Promise<T>; }
+    }});
+    defer graph.deinit();
+    const result = try graph.class(0, "Remote");
+    defer result.deinit(T.allocator);
+    const function = result.declaration.body.?.object[0].type.function;
+    const promise = function.result.union_type[1].builtin_reference;
+    try T.expectEqualStrings("Promise", promise.name);
+    try T.expectEqual(@as(usize, 1), promise.arguments.len);
+    try T.expect(promise.arguments[0].parameter == &result.declaration.parameters[0]);
+    try T.expect(try schema.Schema.expressionSupported(function.result, T.allocator));
+    try T.expect(!try result.isSupported(T.allocator));
+}
+
 test "class schema: local Array aliases are not replaced by builtin array shapes" {
     const graph = try TestGraph.init(&.{.{ .path = "/owner.ts", .text = "type Array<X> = { item: X }; export declare class Box<T> { value: Array<T>; }" }});
     defer graph.deinit();
     const result = try graph.class(0, "Box");
     defer result.deinit(T.allocator);
     try T.expectEqualStrings("Array", result.declaration.body.?.object[0].type.reference.declaration.name);
+}
+
+test "class schema: local Promise aliases are not replaced by builtin references" {
+    const graph = try TestGraph.init(&.{.{ .path = "/owner.ts", .text = "type Promise<X> = { local: X }; export interface Box<T> { value: Promise<T>; }" }});
+    defer graph.deinit();
+    const result = try graph.class(0, "Box");
+    defer result.deinit(T.allocator);
+    const promise = result.declaration.body.?.object[0].type.reference;
+    try T.expectEqualStrings("Promise", promise.declaration.name);
+    try T.expectEqualStrings("local", promise.declaration.body.?.object[0].name);
+    try T.expect(promise.arguments[0].parameter == &result.declaration.parameters[0]);
 }
 
 test "class schema: unsupported type forms remain explicit beside generic functions and heritage" {
