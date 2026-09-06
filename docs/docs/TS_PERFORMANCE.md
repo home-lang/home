@@ -7461,6 +7461,76 @@ zig build home-tsc -Doptimize=ReleaseFast
 ./zig-out/bin/home-tsc --project /path/to/zod-4.5.2/tsconfig.benchmark.json
 ```
 
+### Parameterized built-in callable transfer
+
+Issue [#657](https://github.com/home-lang/home/issues/657) extends the exact
+member projection from [#656](https://github.com/home-lang/home/issues/656)
+to a callable whose signature contains a parameterized standard-library type.
+The strict two-file source has a circular type import and the inherited method
+`check(payload: LocalPayload<T>): T | Promise<T>`. Before the change, Home
+retained the scalar siblings but reported TS2339 for `check` because Program
+schemas could name checker-owned builtin objects only when they had no type
+arguments.
+
+Commit [`5f31fc7f1`](https://github.com/home-lang/home/commit/5f31fc7f1)
+adds a source-owned builtin-reference expression carrying both the stable
+identity and its argument expressions. The consumer lowers those arguments in
+the declaration's substitution environment and reconstructs `Promise<T>` or
+`PromiseLike<T>` through the same canonical constructors used for ordinary
+annotations. A local declaration still wins resolution: the permanent tests
+verify that a user-defined `Promise<T>` remains a declaration reference.
+
+The support decision preserves three existing contracts. A lossless
+parameterized expression may be lowered for one requested inherited member;
+a contextual-only callable may retain that expression while its unrelated
+opaque leaves keep the callable shell; and a non-contextual whole declaration
+does not become eligible for eager structural substitution merely because its
+thenable leaf is representable. This keeps unsupported owner data out of the
+consumer-wide type registry without degrading the requested method to `any`.
+
+The positive oracle is unchanged between engines. TypeScript 6.0.3, native
+TypeScript 7.0.2, and ReleaseFast Home all report zero diagnostics. Its
+appended negative file changes only four uses: an invalid literal assignment,
+an invalid `string | Promise<string>` result assignment, a numeric payload for
+`LocalPayload<string>`, and a genuinely absent member. Every engine reports
+the same multiset: three TS2322 diagnostics and one TS2339. The Program fixture
+runs the same graph in normal and reverse root order.
+
+The unchanged 106-file Zod 4.5.2 graph was also the admission guard. Two draft
+support policies were measured and rejected rather than hidden:
+
+| Zod 4.5.2 parameterized-callable probe | Diagnostics | Unique identities | Delta from #656 | Decision |
+|---|---:|---:|---:|---|
+| Post-#656 parent | 489 | 484 | — | fixed comparison |
+| All modeled generic builtin families admitted | 577 | 572 | 4 removed; **92 added** | rejected |
+| Thenables projected, contextual callable contract disabled | 645 | 640 | 0 removed; **156 TS7006 added** | rejected |
+| Final contextual/member-only split | **489** | **484** | **0 removed; 0 added** | accepted |
+| Final versus immutable 602 baseline | **489** | **484** | **113 unique removed; 0 added** | retained |
+
+The draft collection-family expansion also failed an existing opacity control
+for `Set<T>`, so #657 certifies only `Promise<T>` and `PromiseLike<T>`. The
+schema representation is extensible, but another family must independently
+prove exact cross-Program semantics and pass the same corpus admission gate.
+No wall-time result is reported: unrelated Zig optimizers shared the machine
+during ReleaseFast builds, and this checkpoint changes correctness rather than
+the timed frontend hot path.
+
+Final gates pass **4,353/4,353** checker tests, **189/189** Program tests, the
+positive and appended-negative three-engine oracles, scoped `pickier`, and
+`git diff --check`. Complete evidence is retained on
+[#657](https://github.com/home-lang/home/issues/657#issuecomment-5556500102).
+The Zod zero-diagnostic gate [#548](https://github.com/home-lang/home/issues/548)
+therefore remains open, and the graph is still excluded from timing.
+
+```sh
+zig build test -Dfilter=ts_checker
+zig build test -Dfilter=ts_program
+zig build home-tsc -Doptimize=ReleaseFast
+./zig-out/bin/home-tsc --project /path/to/cyclic-callable/tsconfig.json
+./zig-out/bin/home-tsc --project /path/to/cyclic-callable/tsconfig.invalid.json
+./zig-out/bin/home-tsc --project /path/to/zod-4.5.2/tsconfig.benchmark.json
+```
+
 ### Typed cross-file global ownership and cyclic provenance (untimed)
 
 Issue [#480](https://github.com/home-lang/home/issues/480), under

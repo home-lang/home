@@ -363,6 +363,16 @@ through a non-generic local child without weakening whole-schema admission:
 | Diagnostics | 523 | **489** | **34 TS2339 removed (6.5%)** |
 | Unique path/line/column/code identities | 518 | **484** | **34 removed; 0 added** |
 
+The parameterized-callable audit then transfers exact `Promise<T>` and
+`PromiseLike<T>` identities through the same inherited-member path without
+admitting unsupported whole declarations:
+
+| [Zod 4.5.2 parameterized-callable audit](docs/docs/TS_PERFORMANCE.md#parameterized-built-in-callable-transfer) | Post-#656 main | #657 main | Change |
+|---|---:|---:|---:|
+| Diagnostics / unique identities | 489 / 484 | **489 / 484** | **0 added; 0 removed** |
+| Focused cyclic callable oracle | Home rejects valid `check` with TS2339 | **Home, TS 6, and TS 7: 0** | exact parameter and `string \| Promise<string>` return retained |
+| Appended invalid control | — | **3× TS2322 + 1× TS2339 in all three** | invalid behavior preserved |
+
 TypeScript 6.0.3 reports zero diagnostics on this graph. Zod remains outside
 the cross-compiler timing table until Home also reaches zero diagnostics.
 
