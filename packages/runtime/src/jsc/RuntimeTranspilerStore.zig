@@ -241,7 +241,11 @@ pub const RuntimeTranspilerStore = struct {
 
         pub fn runFromWorkerThread(work_task: *jsc.WorkPoolTask) void {
             const this: *TranspilerJob = @fieldParentPtr("work_task", work_task);
-            defer this.vm.native_work_pool_jobs.complete();
+            // run() publishes this intrusive job to the JS thread, which may
+            // recycle it before run() returns. Retain the owner separately so
+            // the shutdown-barrier release never reads the recycled job.
+            const vm = this.vm;
+            defer vm.native_work_pool_jobs.complete();
             this.run();
         }
 

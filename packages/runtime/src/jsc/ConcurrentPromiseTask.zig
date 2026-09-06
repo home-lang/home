@@ -40,7 +40,8 @@ pub fn ConcurrentPromiseTask(comptime Context: type) type {
 
         pub fn runFromThreadPool(task: *WorkPoolTask) void {
             var this: *This = @fieldParentPtr("task", task);
-            defer this.event_loop.virtual_machine.native_work_pool_jobs.complete();
+            const vm = this.event_loop.virtual_machine;
+            defer vm.native_work_pool_jobs.complete();
             Context.run(this.ctx);
             this.onFinish();
         }

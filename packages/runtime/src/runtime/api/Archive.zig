@@ -495,14 +495,15 @@ fn AsyncTask(comptime Context: type) type {
 
         fn run(work_task: *jsc.WorkPoolTask) void {
             const this: *Self = @fieldParentPtr("task", work_task);
-            defer this.vm.native_work_pool_jobs.complete();
+            const vm = this.vm;
+            defer vm.native_work_pool_jobs.complete();
             const result = Context.run(&this.ctx);
             // Handle both error union and non-error union return types
             this.ctx.result = if (@typeInfo(@TypeOf(result)) == .error_union)
                 result catch |err| .{ .err = err }
             else
                 result;
-            this.vm.enqueueTaskConcurrent(
+            vm.enqueueTaskConcurrent(
                 this.concurrent_task.from(this, .manual_deinit),
             );
         }

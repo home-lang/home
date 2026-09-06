@@ -1950,11 +1950,22 @@ passes standalone under its unchanged fixture deadline; Prisma's unchanged
 then produces the same **4 passes / 5 upstream skips / 3 fixture failures** in
 Home and pinned Bun because the upstream migration helper swallows its missing
 schema error. Astro's missing parent tsconfig and gRPC's unconfigured Rust
-toolchain also fail identically in pinned Bun. ReleaseFast additionally has a
-nondeterministic pre-result runner exit tracked in
-[#655](https://github.com/home-lang/home/issues/655); the affected files vary
-between scans but pass immediately with unchanged inputs, and are not
-counted as completed parity.
+toolchain also fail identically in pinned Bun. The nondeterministic ReleaseFast
+pre-result runner exit tracked in
+[#655](https://github.com/home-lang/home/issues/655). macOS crash reports
+identified a use-after-recycle in the runtime transpiler: its worker published
+an intrusive job to the JavaScript thread, which could return the job to its
+pool before the worker's deferred shutdown-barrier release reread `job.vm`.
+The worker now retains the VM pointer before publication, as do the four
+sibling async paths with the same ownership shape (generic concurrent Promise
+tasks, Archive tasks, zstd, and PBKDF2). The focused 1,024-module regression
+failed the old ReleaseFast binary by its third run, then passed **64/64** on the
+fixed binary; the unchanged Svelte fixture passed **100/100** consecutive runs
+with **4 tests / 2,002 assertions** per run after failing the old binary by its
+fifth run. The complete strict ReleaseFast `js/third_party` scan is now **117
+ordinary file passes / 2 upstream-environment failures / 1 generic-bound
+overrun / 0 crashes**. The complete installation-shaped ReleaseFast native
+runtime regression suite also passes **65/65**.
 No fixture, workload, deadline, assertion, annotation, or skip was modified.
 
 ## Summary

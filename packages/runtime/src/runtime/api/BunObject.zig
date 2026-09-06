@@ -1963,8 +1963,9 @@ pub const JSZstd = struct {
 
         pub fn runTask(task: *jsc.WorkPoolTask) void {
             const job: *ZstdJob = @fieldParentPtr("task", task);
-            defer job.vm.native_work_pool_jobs.complete();
-            defer job.vm.enqueueTaskConcurrent(jsc.ConcurrentTask.create(job.any_task.task()));
+            const vm = job.vm;
+            defer vm.native_work_pool_jobs.complete();
+            defer vm.enqueueTaskConcurrent(jsc.ConcurrentTask.create(job.any_task.task()));
 
             const input = job.buffer.slice();
             const allocator = bun.default_allocator;

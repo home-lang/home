@@ -53,8 +53,9 @@ pub const Job = struct {
 
     pub fn runTask(task: *jsc.WorkPoolTask) void {
         const job: *PBKDF2.Job = @fieldParentPtr("task", task);
-        defer job.vm.native_work_pool_jobs.complete();
-        defer job.vm.enqueueTaskConcurrent(jsc.ConcurrentTask.create(job.any_task.task()));
+        const vm = job.vm;
+        defer vm.native_work_pool_jobs.complete();
+        defer vm.enqueueTaskConcurrent(jsc.ConcurrentTask.create(job.any_task.task()));
         job.output = bun.default_allocator.alloc(u8, @as(usize, @intCast(job.pbkdf2.length))) catch {
             job.err = BoringSSL.EVP_R_MEMORY_LIMIT_EXCEEDED;
             return;
