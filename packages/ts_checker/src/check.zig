@@ -74472,7 +74472,11 @@ pub const Checker = struct {
             std.mem.eql(u8, raw, "Awaited") or
             std.mem.eql(u8, raw, "Generator") or
             std.mem.eql(u8, raw, "Map") or
+            std.mem.eql(u8, raw, "ReadonlyMap") or
             std.mem.eql(u8, raw, "Set") or
+            std.mem.eql(u8, raw, "ReadonlySet") or
+            std.mem.eql(u8, raw, "WeakMap") or
+            std.mem.eql(u8, raw, "WeakSet") or
             std.mem.eql(u8, raw, "AsyncGenerator"))
         {
             return true;
@@ -77472,16 +77476,27 @@ pub const Checker = struct {
                                 types.Primitive.unknown;
                             return try self.synthesizeGeneratorTypeFull(yield_t, return_t, next_t, std.mem.eql(u8, name_str, "AsyncGenerator"));
                         }
-                        if (std.mem.eql(u8, name_str, "Map") and r.args_len == 2) {
+                        if ((std.mem.eql(u8, name_str, "Map") or std.mem.eql(u8, name_str, "ReadonlyMap")) and r.args_len == 2) {
                             const args = hir_mod.typeRefArgs(self.hir, type_node);
-                            return try self.builtinMapInstanceType(
+                            return try self.builtinMapLikeInstanceType(
+                                try self.lowererLowerWithTypeParams(args[0]),
+                                try self.lowererLowerWithTypeParams(args[1]),
+                                std.mem.eql(u8, name_str, "ReadonlyMap"),
+                            );
+                        }
+                        if ((std.mem.eql(u8, name_str, "Set") or std.mem.eql(u8, name_str, "ReadonlySet")) and r.args_len == 1) {
+                            const args = hir_mod.typeRefArgs(self.hir, type_node);
+                            return try self.builtinSetLikeInstanceType(
+                                try self.lowererLowerWithTypeParams(args[0]),
+                                std.mem.eql(u8, name_str, "ReadonlySet"),
+                            );
+                        }
+                        if (std.mem.eql(u8, name_str, "WeakMap") and r.args_len == 2) {
+                            const args = hir_mod.typeRefArgs(self.hir, type_node);
+                            return try self.builtinWeakMapInstanceType(
                                 try self.lowererLowerWithTypeParams(args[0]),
                                 try self.lowererLowerWithTypeParams(args[1]),
                             );
-                        }
-                        if (std.mem.eql(u8, name_str, "Set") and r.args_len == 1) {
-                            const args = hir_mod.typeRefArgs(self.hir, type_node);
-                            return try self.builtinSetInstanceType(try self.lowererLowerWithTypeParams(args[0]));
                         }
                         if (std.mem.eql(u8, name_str, "WeakSet") and r.args_len == 1) {
                             const args = hir_mod.typeRefArgs(self.hir, type_node);
@@ -140682,6 +140697,10 @@ pub const Checker = struct {
     }
 
     fn builtinMapInstanceType(self: *Checker, key_t: TypeId, value_t: TypeId) CheckError!TypeId {
+        return self.builtinMapLikeInstanceType(key_t, value_t, false);
+    }
+
+    fn builtinMapLikeInstanceType(self: *Checker, key_t: TypeId, value_t: TypeId, is_readonly: bool) CheckError!TypeId {
         // `Map<K, V>` iterates mutable `[K, V]` entry tuples. Preserve that
         // identity so positional destructuring keeps `K` and `V` separate
         // through array spreads and contextual callbacks.
@@ -140720,22 +140739,28 @@ pub const Checker = struct {
         const for_each_cb = self.interner.internSignature(&[_]TypeId{ value_t, key_t }, types.Primitive.void_t, false) catch return error.OutOfMemory;
         const sig_for_each = self.interner.internSignature(&[_]TypeId{for_each_cb}, types.Primitive.void_t, false) catch return error.OutOfMemory;
         try map_members.append(self.gpa, .{ .name = self.string_interner.intern("get") catch return error.OutOfMemory, .type = sig_get, .is_optional = false, .is_readonly = false, .is_method = true });
-        try map_members.append(self.gpa, .{ .name = self.string_interner.intern("set") catch return error.OutOfMemory, .type = sig_set, .is_optional = false, .is_readonly = false, .is_method = true });
         try map_members.append(self.gpa, .{ .name = self.string_interner.intern("has") catch return error.OutOfMemory, .type = sig_has, .is_optional = false, .is_readonly = false, .is_method = true });
-        try map_members.append(self.gpa, .{ .name = self.string_interner.intern("delete") catch return error.OutOfMemory, .type = sig_delete, .is_optional = false, .is_readonly = false, .is_method = true });
-        try map_members.append(self.gpa, .{ .name = self.string_interner.intern("clear") catch return error.OutOfMemory, .type = sig_clear, .is_optional = false, .is_readonly = false, .is_method = true });
+        if (!is_readonly) {
+            try map_members.append(self.gpa, .{ .name = self.string_interner.intern("set") catch return error.OutOfMemory, .type = sig_set, .is_optional = false, .is_readonly = false, .is_method = true });
+            try map_members.append(self.gpa, .{ .name = self.string_interner.intern("delete") catch return error.OutOfMemory, .type = sig_delete, .is_optional = false, .is_readonly = false, .is_method = true });
+            try map_members.append(self.gpa, .{ .name = self.string_interner.intern("clear") catch return error.OutOfMemory, .type = sig_clear, .is_optional = false, .is_readonly = false, .is_method = true });
+        }
         try map_members.append(self.gpa, .{ .name = self.string_interner.intern("forEach") catch return error.OutOfMemory, .type = sig_for_each, .is_optional = false, .is_readonly = false, .is_method = true });
         try map_members.append(self.gpa, .{ .name = self.string_interner.intern("size") catch return error.OutOfMemory, .type = types.Primitive.number_t, .is_optional = false, .is_readonly = true, .is_method = false });
         const map_t = self.interner.internObjectTypeWithIndex(map_members.items, types.Primitive.none, entry_t) catch return error.OutOfMemory;
         // Register the `Map<K, V>` alias display name so TS2322 / TS2345
         // prose renders as `Map<string, number>` instead of the
         // structural shape. Mirrors fixture `iterableArrayPattern26`.
-        const map_name = self.string_interner.intern("Map") catch return map_t;
+        const map_name = self.string_interner.intern(if (is_readonly) "ReadonlyMap" else "Map") catch return map_t;
         self.registerAliasDisplayName(map_t, map_name, &[_]TypeId{ key_t, value_t }) catch {};
         return map_t;
     }
 
     fn builtinSetInstanceType(self: *Checker, value_t: TypeId) CheckError!TypeId {
+        return self.builtinSetLikeInstanceType(value_t, false);
+    }
+
+    fn builtinSetLikeInstanceType(self: *Checker, value_t: TypeId, is_readonly: bool) CheckError!TypeId {
         const entry_union = value_t;
         var entry_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer entry_members.deinit(self.gpa);
@@ -140766,17 +140791,19 @@ pub const Checker = struct {
         const sig_clear = self.interner.internSignature(&[_]TypeId{}, types.Primitive.void_t, false) catch return error.OutOfMemory;
         const for_each_cb = self.interner.internSignature(&[_]TypeId{ value_t, value_t }, types.Primitive.void_t, false) catch return error.OutOfMemory;
         const sig_for_each = self.interner.internSignature(&[_]TypeId{for_each_cb}, types.Primitive.void_t, false) catch return error.OutOfMemory;
-        try members.append(self.gpa, .{ .name = self.string_interner.intern("add") catch return error.OutOfMemory, .type = sig_add, .is_optional = false, .is_readonly = false, .is_method = true });
         try members.append(self.gpa, .{ .name = self.string_interner.intern("has") catch return error.OutOfMemory, .type = sig_has, .is_optional = false, .is_readonly = false, .is_method = true });
-        try members.append(self.gpa, .{ .name = self.string_interner.intern("delete") catch return error.OutOfMemory, .type = sig_has, .is_optional = false, .is_readonly = false, .is_method = true });
-        try members.append(self.gpa, .{ .name = self.string_interner.intern("clear") catch return error.OutOfMemory, .type = sig_clear, .is_optional = false, .is_readonly = false, .is_method = true });
+        if (!is_readonly) {
+            try members.append(self.gpa, .{ .name = self.string_interner.intern("add") catch return error.OutOfMemory, .type = sig_add, .is_optional = false, .is_readonly = false, .is_method = true });
+            try members.append(self.gpa, .{ .name = self.string_interner.intern("delete") catch return error.OutOfMemory, .type = sig_has, .is_optional = false, .is_readonly = false, .is_method = true });
+            try members.append(self.gpa, .{ .name = self.string_interner.intern("clear") catch return error.OutOfMemory, .type = sig_clear, .is_optional = false, .is_readonly = false, .is_method = true });
+        }
         try members.append(self.gpa, .{ .name = self.string_interner.intern("forEach") catch return error.OutOfMemory, .type = sig_for_each, .is_optional = false, .is_readonly = false, .is_method = true });
         try members.append(self.gpa, .{ .name = self.string_interner.intern("size") catch return error.OutOfMemory, .type = types.Primitive.number_t, .is_optional = false, .is_readonly = true, .is_method = false });
         const set_t = self.interner.internObjectTypeWithIndex(members.items, types.Primitive.none, value_t) catch return error.OutOfMemory;
         // Register the `Set<T>` alias display name so TS2322 / TS2345
         // prose renders as `Set<string>` instead of the structural
         // shape.
-        const set_name = self.string_interner.intern("Set") catch return set_t;
+        const set_name = self.string_interner.intern(if (is_readonly) "ReadonlySet" else "Set") catch return set_t;
         self.registerAliasDisplayName(set_t, set_name, &[_]TypeId{value_t}) catch {};
         return set_t;
     }
@@ -140788,14 +140815,18 @@ pub const Checker = struct {
         const set_id = self.string_interner.intern("set") catch return error.OutOfMemory;
         const has_id = self.string_interner.intern("has") catch return error.OutOfMemory;
         const delete_id = self.string_interner.intern("delete") catch return error.OutOfMemory;
-        const get_sig = self.interner.internSignature(&[_]TypeId{key_t}, value_t, false) catch return error.OutOfMemory;
+        const value_or_undefined = self.interner.internUnion(&[_]TypeId{ value_t, types.Primitive.undefined_t }) catch return error.OutOfMemory;
+        const get_sig = self.interner.internSignature(&[_]TypeId{key_t}, value_or_undefined, false) catch return error.OutOfMemory;
         const set_sig = self.interner.internSignature(&[_]TypeId{ key_t, value_t }, types.Primitive.any, false) catch return error.OutOfMemory;
         const bool_sig = self.interner.internSignature(&[_]TypeId{key_t}, types.Primitive.boolean_t, false) catch return error.OutOfMemory;
         try members.append(self.gpa, .{ .name = get_id, .type = get_sig, .is_optional = false, .is_readonly = false, .is_method = true });
         try members.append(self.gpa, .{ .name = set_id, .type = set_sig, .is_optional = false, .is_readonly = false, .is_method = true });
         try members.append(self.gpa, .{ .name = has_id, .type = bool_sig, .is_optional = false, .is_readonly = false, .is_method = true });
         try members.append(self.gpa, .{ .name = delete_id, .type = bool_sig, .is_optional = false, .is_readonly = false, .is_method = true });
-        return self.interner.internObjectType(members.items) catch return error.OutOfMemory;
+        const weak_map_t = self.interner.internObjectType(members.items) catch return error.OutOfMemory;
+        const weak_map_name = self.string_interner.intern("WeakMap") catch return weak_map_t;
+        self.registerAliasDisplayName(weak_map_t, weak_map_name, &[_]TypeId{ key_t, value_t }) catch {};
+        return weak_map_t;
     }
 
     fn builtinWeakSetInstanceType(self: *Checker, value_t: TypeId) CheckError!TypeId {
@@ -267492,6 +267523,28 @@ test "checker: Map and Set core members resolve without TS2339" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.property_does_not_exist);
     }
+}
+
+test "checker: default lib collection type refs preserve readonly and missing-name semantics" {
+    const s = try newSetup(
+        \\const weak: WeakMap<object, boolean> = new WeakMap();
+        \\const weakValue: boolean | undefined = weak.get({});
+        \\const definiteWeakValue: boolean = weak.get({});
+        \\declare const readonlyMap: ReadonlyMap<string, number>;
+        \\declare const readonlySet: ReadonlySet<string>;
+        \\const mapValue: number | undefined = readonlyMap.get("key");
+        \\const setValue: boolean = readonlySet.has("key");
+        \\readonlyMap.set("key", 1);
+        \\readonlySet.add("key");
+        \\declare const missing: MissingCollection<string>;
+        \\void weakValue; void definiteWeakValue; void mapValue; void setValue; void missing;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: typed arrays expose indexed elements and byte lengths" {
