@@ -1282,3 +1282,18 @@ dependency chain in the PR description before editing.
 4. **Bake after bundler.** The sorted full-gate frontier moves naturally
    into `bake/`, and existing runtime source already has Bake lifetime
    carrier work to build on.
+
+## Current Native Bundle-Task Ownership Checkpoint (2026-09-06)
+
+`Bun.build()` and lazy HTML route builds now join the creating VM's native-job
+shutdown barrier from dispatch through owner-loop publication. Their completion
+uses an explicit shutdown callback, and HTML routes install all cross-thread
+ownership before scheduling. The deterministic two-build Worker regression
+passes once plus six consecutive Debug processes and in ReleaseFast; the
+installation-shaped ReleaseFast runtime aggregate is **66/66**, native
+`home_rt` is **1,827 passed / 19 skipped / 0 failed**, and the HTML manifest
+corpus is **4/4**. Keep #465 open for the remaining producer-specific task
+families and #569 for poll-parked Blob I/O. The full HTML-serving file remains
+**14/16** in Home versus **16/16** in pinned Bun because two generated CSS/JS
+asset URLs contain excess parent segments; that separate bundler path issue is
+tracked in #675 and is not part of the lifetime patch.

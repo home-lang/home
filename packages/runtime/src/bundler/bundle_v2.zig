@@ -1866,6 +1866,8 @@ pub const BundleV2 = struct {
 
     pub const JSBundleThread = @import("../bundler_jsc/JSBundleCompletionTask.zig").JSBundleThread;
     pub const createAndScheduleCompletionTask = @import("../bundler_jsc/JSBundleCompletionTask.zig").createAndScheduleCompletionTask;
+    pub const createCompletionTask = @import("../bundler_jsc/JSBundleCompletionTask.zig").createCompletionTask;
+    pub const scheduleCompletionTask = @import("../bundler_jsc/JSBundleCompletionTask.zig").scheduleCompletionTask;
     pub const generateFromJavaScript = @import("../bundler_jsc/JSBundleCompletionTask.zig").generateFromJavaScript;
 
     pub const BuildResult = struct {

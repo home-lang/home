@@ -7,7 +7,7 @@ pub const Result = bv2.BundleV2.Result;
 
 pub const JSBundleThread = BundleThread(JSBundleCompletionTask);
 
-pub fn createAndScheduleCompletionTask(
+pub fn createCompletionTask(
     config: bun.jsc.API.JSBundler.Config,
     plugins: ?*bun.jsc.API.JSBundler.Plugin,
     globalThis: *jsc.JSGlobalObject,
@@ -24,6 +24,7 @@ pub fn createAndScheduleCompletionTask(
         .plugins = plugins,
         .log = Logger.Log.init(bun.default_allocator),
         .task = undefined,
+        .native_job_admitted = false,
     });
     completion.task = JSBundleCompletionTask.TaskCompletion.init(completion);
 
@@ -35,10 +36,29 @@ pub fn createAndScheduleCompletionTask(
     // conditions from creating two
     _ = jsc.WorkPool.get();
 
+    return completion;
+}
+
+pub fn scheduleCompletionTask(completion: *JSBundleCompletionTask) void {
+    const vm = completion.globalThis.bunVM();
+    // The detached bundle thread retains `globalThis`, `jsc_event_loop`, and
+    // per-VM transpiler state until it publishes this completion. User code
+    // cannot begin a build after VM shutdown admission has closed.
+    bun.assert(vm.native_work_pool_jobs.tryAdd());
+    completion.native_job_admitted = true;
+    completion.poll_ref.ref(vm);
     JSBundleThread.singleton.enqueue(completion);
+}
 
-    completion.poll_ref.ref(globalThis.bunVM());
-
+pub fn createAndScheduleCompletionTask(
+    config: bun.jsc.API.JSBundler.Config,
+    plugins: ?*bun.jsc.API.JSBundler.Plugin,
+    globalThis: *jsc.JSGlobalObject,
+    event_loop: *bun.jsc.EventLoop,
+    alloc: std.mem.Allocator,
+) OOM!*JSBundleCompletionTask {
+    const completion = try createCompletionTask(config, plugins, globalThis, event_loop, alloc);
+    scheduleCompletionTask(completion);
     return completion;
 }
 
@@ -69,6 +89,7 @@ pub const JSBundleCompletionTask = struct {
     env: *bun.DotEnv.Loader,
     log: Logger.Log,
     cancelled: bool = false,
+    native_job_admitted: bool,
 
     html_build_task: ?*jsc.API.HTMLBundle.HTMLBundleRoute = null,
 
@@ -221,10 +242,27 @@ pub const JSBundleCompletionTask = struct {
     }
 
     pub fn completeOnBundleThread(completion: *JSBundleCompletionTask) void {
+        const vm = completion.jsc_event_loop.virtual_machine;
+        bun.assert(completion.native_job_admitted);
         completion.jsc_event_loop.enqueueTaskConcurrent(jsc.ConcurrentTask.create(completion.task.task()));
+        completion.native_job_admitted = false;
+        // Publication transfers ownership to the JS thread. Release the VM
+        // barrier only after the task is visible to shutdown cancellation.
+        vm.native_work_pool_jobs.complete();
     }
 
-    pub const TaskCompletion = bun.jsc.AnyTask.New(JSBundleCompletionTask, onComplete);
+    pub const TaskCompletion = bun.jsc.AnyTask.NewWithShutdown(JSBundleCompletionTask, onComplete, cancelForShutdown);
+
+    fn cancelForShutdown(this: *JSBundleCompletionTask) void {
+        bun.assert(!this.native_job_admitted);
+        this.cancelled = true;
+        this.poll_ref.unref(this.globalThis.bunVM());
+        if (this.html_build_task) |route| {
+            route.cancelBuildForShutdown(this);
+            this.html_build_task = null;
+        }
+        this.deref();
+    }
 
     fn deinit(this: *JSBundleCompletionTask) void {
         this.result.deinit();

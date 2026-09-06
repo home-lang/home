@@ -300,7 +300,7 @@ pub const Route = struct {
         }
         config.source_map = .linked;
 
-        const completion_task = try bun.BundleV2.createAndScheduleCompletionTask(
+        const completion_task = try bun.BundleV2.createCompletionTask(
             config,
             plugins,
             global,
@@ -313,12 +313,25 @@ pub const Route = struct {
 
         // While we're building, ensure this doesn't get freed.
         this.ref();
+        bun.BundleV2.scheduleCompletionTask(completion_task);
     }
 
     pub fn onPluginsRejected(this: *Route) !void {
         debug("HTMLBundleRoute(0x{x}) plugins rejected", .{@intFromPtr(this)});
         this.state = .{ .err = bun.logger.Log.init(bun.default_allocator) };
         this.resumePendingResponses();
+    }
+
+    pub fn cancelBuildForShutdown(this: *Route, completion_task: *bun.BundleV2.JSBundleCompletionTask) void {
+        switch (this.state) {
+            .building => |current| bun.assert(current == completion_task),
+            else => bun.assert(false),
+        }
+        // startBundle() retains the route until its bundle completion runs.
+        // VM shutdown cannot resume pending HTTP responses, so clear the
+        // borrowed completion pointer and balance that retain without JS.
+        this.state = .pending;
+        this.deref();
     }
 
     pub fn onComplete(this: *Route, completion_task: *bun.BundleV2.JSBundleCompletionTask) void {

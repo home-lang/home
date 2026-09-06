@@ -1991,6 +1991,26 @@ overrun / 0 crashes**. The complete installation-shaped ReleaseFast native
 runtime regression suite also passes **65/65**.
 No fixture, workload, deadline, assertion, annotation, or skip was modified.
 
+The detached `Bun.build()` bundle thread now participates in the creating
+VM's shutdown barrier. Admission happens before dispatch, completion is
+published to the owner event loop before the barrier is released, and queued
+build results have a native-only shutdown path that releases the promise,
+plugins, configuration, output graph, and keepalive without entering stopped
+JavaScript. Lazy HTML routes now finish installing their completion pointer and
+self-retain before the bundle thread can run, removing the corresponding
+cross-thread setup race; shutdown cancellation clears that route pointer and
+balances the retain on the owner thread. A deterministic regression saturates
+every native pool thread, admits two builds in a Worker, proves termination
+cannot cross them, and observes exactly two `AnyTask` cancellations. It passes
+once plus six consecutive Debug processes and in ReleaseFast. The complete
+installation-shaped ReleaseFast runtime regression suite is now **66/66**, and
+the native `home_rt` gate is **1,827 passed / 19 skipped / 0 failed**. The
+pinned HTML manifest corpus passes **4/4 with 16 assertions and one snapshot**.
+The broader HTML-serving file executes all 16 cases but still has two existing
+Home-only asset URL snapshot failures; pinned Bun passes **16/16**, so that
+separate path-generation gap remains tracked in
+[#675](https://github.com/home-lang/home/issues/675) rather than weakened here.
+
 ## Summary
 
 Substrate file-count progress. "Present" is the live Zig file count under
