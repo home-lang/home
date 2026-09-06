@@ -10111,6 +10111,67 @@ test "Program: imported overload contextual selection preserves ambiguity and mi
     try expectCompilationLacksDiagnosticCode(compilation, 2345);
 }
 
+test "Program: imported Extract conditionals specialize overloaded mapped handlers" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver };
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+
+    const owner =
+        \\export type Kind = "a" | "b";
+        \\export interface A { kind: "a"; a: number }
+        \\export interface B { kind: "b"; b: string }
+        \\export type Item = A | B;
+        \\export type ItemOfKind<K extends Kind> = [Extract<Item, { kind: K }>] extends [never]
+        \\  ? Item
+        \\  : Extract<Item, { kind: K }>;
+        \\export type Missing = ItemOfKind<never>;
+        \\export type Handler = (item: Item, rewritten: boolean) => Item;
+        \\export type Handlers = { [K in Kind]?: (item: ItemOfKind<K>, rewritten: boolean) => Item };
+        \\export declare function visit(item: Item, handler: Handler): Item;
+        \\export declare function visit(item: Item, handlers: Handlers): Item;
+    ;
+    const consumer =
+        \\import { visit, type A, type Missing } from "./owner.js";
+        \\declare const value: A;
+        \\declare const fallback: Missing;
+        \\const fallbackKind: "a" | "b" = fallback.kind;
+        \\const impossible: never = fallback;
+        \\void fallbackKind;
+        \\void impossible;
+        \\visit(value, {
+        \\  a: (item, rewritten) => {
+        \\    const exact: A = item;
+        \\    const wrong: number = item;
+        \\    item.b;
+        \\    rewritten.missing;
+        \\    void exact;
+        \\    void wrong;
+        \\    return item;
+        \\  },
+        \\});
+    ;
+    try vfs.addFile("/proj/owner.ts", owner);
+    try vfs.addFile("/proj/consumer.ts", consumer);
+    _ = try p.add("/proj/owner.ts", owner);
+    const consumer_id = try p.add("/proj/consumer.ts", consumer);
+
+    try p.compileAll(.{
+        .no_emit = true,
+        .strict_flags = .{ .no_implicit_any = true, .strict_null_checks = true },
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    });
+    const compilation = p.fileById(consumer_id).compilation.?;
+    try expectCompilationLacksDiagnosticCode(compilation, 7006);
+    try expectCompilationLacksDiagnosticCode(compilation, 2345);
+    try T.expectEqual(@as(usize, 4), compilation.diagnostics.items.len);
+    try expectCompilationHasDiagnosticCode(compilation, 2322);
+    try expectCompilationHasDiagnosticCode(compilation, 2339);
+}
+
 test "Program: qualified interface assertions project declared array members" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();

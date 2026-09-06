@@ -186,6 +186,7 @@ pub const Builder = struct {
                         .{ .source = source.source, .keys = contextualReadArgument(utility.keys.?, bindings), .mode = .omit }
                     else
                         null,
+                    .extract => null,
                 };
             },
             .intersection => |members| {
@@ -333,6 +334,8 @@ pub const Builder = struct {
             .pick
         else if (args.len == 2 and std.mem.eql(u8, name, "Omit"))
             .omit
+        else if (args.len == 2 and std.mem.eql(u8, name, "Extract"))
+            .extract
         else
             null;
         const utility = kind orelse return null;
@@ -1431,6 +1434,31 @@ test "class schema: mapped conditional aliases retain exported function signatur
     try T.expect(proto[0].mapped.constraint.keyof.parameter == &proto_reference.declaration.parameters[0]);
     try T.expect(proto[1].this_type.parameter == &proto_reference.declaration.parameters[0]);
     try T.expect(function.parameters[3].type.reference.declaration.body.?.object[0].type.* == .typeof_class);
+}
+
+test "class schema: Extract remains lossless through overloaded mapped handlers" {
+    const graph = try TestGraph.init(&.{.{ .path = "/owner.ts", .text =
+        \\export type Kind = "a" | "b";
+        \\export interface A { kind: "a"; a: number }
+        \\export interface B { kind: "b"; b: string }
+        \\export type Item = A | B;
+        \\export type ItemOfKind<K extends Kind> = [Extract<Item, { kind: K }>] extends [never] ? Item : Extract<Item, { kind: K }>;
+        \\export type Handler = (item: Item, rewritten: boolean) => Item;
+        \\export type Handlers = { [K in Kind]?: (item: ItemOfKind<K>, rewritten: boolean) => Item };
+        \\export declare function visit(item: Item, handler: Handler): Item;
+        \\export declare function visit(item: Item, handlers: Handlers): Item;
+    }});
+    defer graph.deinit();
+    const result = try graph.class(0, "visit");
+    defer result.deinit(T.allocator);
+
+    try T.expect(try result.isSupported(T.allocator));
+    const overloads = result.declaration.body.?.intersection;
+    try T.expectEqual(@as(usize, 2), overloads.len);
+    const handlers = overloads[1].function.parameters[1].type.reference.declaration.body.?.mapped;
+    const item_of_kind = handlers.template.function.parameters[0].type.reference.declaration.body.?.conditional;
+    try T.expect(item_of_kind.check.tuple[0].type.utility.kind == .extract);
+    try T.expect(item_of_kind.false_branch.utility.kind == .extract);
 }
 
 test "class schema: qualified imports retain callable shells around opaque leaves" {

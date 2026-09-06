@@ -109108,7 +109108,22 @@ pub const Checker = struct {
                 if (record.readonly) try self.readonly_index_types.put(self.gpa, result, {});
                 return result;
             },
-            .utility => return error.UnsupportedProgramType,
+            .utility => |utility| switch (utility.kind) {
+                .extract => {
+                    const source_t = try self.resolveGenericType(try self.lowerProgramExpression(utility.source, declaration, args));
+                    const target = utility.keys orelse return error.UnsupportedProgramType;
+                    const target_t = try self.lowerProgramExpression(target, declaration, args);
+                    return self.evalConditionalWithDistribution(
+                        source_t,
+                        target_t,
+                        source_t,
+                        types.Primitive.never,
+                        false,
+                        true,
+                    );
+                },
+                .partial, .required, .readonly, .pick, .omit => return error.UnsupportedProgramType,
+            },
             .tuple => |elements| {
                 for (elements) |element| if (element.rest) {
                     const result = try self.gpa.alloc(types.TupleElement, elements.len);

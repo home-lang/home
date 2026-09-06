@@ -60,7 +60,7 @@ pub const Mapped = struct {
 pub const IndexSignature = struct { key: *const Expression, value: *const Expression };
 pub const IndexedObject = struct { members: []const Member, indices: []const IndexSignature };
 pub const Record = struct { key: *const Expression, value: *const Expression, readonly: bool = false };
-pub const UtilityKind = enum { partial, required, readonly, pick, omit };
+pub const UtilityKind = enum { partial, required, readonly, pick, omit, extract };
 pub const Utility = struct {
     kind: UtilityKind,
     source: *const Expression,
@@ -239,7 +239,7 @@ pub const Schema = struct {
                     }
                 },
                 .utility => |utility| {
-                    if (!allow_opaque) return false;
+                    if (utility.kind != .extract and !allow_opaque) return false;
                     try pending.append(gpa, utility.source);
                     if (utility.keys) |keys| try pending.append(gpa, keys);
                 },
