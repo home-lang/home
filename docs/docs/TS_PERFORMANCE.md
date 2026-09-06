@@ -8206,6 +8206,93 @@ zig build -Doptimize=ReleaseFast
 bunx --bun pickier .
 ```
 
+### Imported indexed-access mapped key domains
+
+Issue [#669](https://github.com/home-lang/home/issues/669), under
+[#548](https://github.com/home-lang/home/issues/548), isolates mapped handler
+keys named through a source-owned indexed-access alias. Commit
+[`12e1c1d6c`](https://github.com/home-lang/home/commit/12e1c1d6c46347271311ac54205c242b2831f260)
+resolves the transported mapped constraint before binding it to the mapped
+parameter. When the indexed object resolves to a union, the checker now uses
+the existing exact indexed-access relation, which requires every union member
+to own the key and unions their value types. Non-union objects retain the
+direct named-member path.
+
+This is a general type-graph operation. It does not inspect a package, path,
+alias, property spelling, source location, diagnostic, or callback value. A
+failed access is not widened to `string`, `any`, or an invented property
+domain. Commit
+[`1ea1d2a7a`](https://github.com/home-lang/home/commit/1ea1d2a7a3a5071ddae1db3e2c06b663c2e74d72)
+pins that rule directly: a complete two-member union resolves to `"a" | "b"`,
+while a missing member and a partially covered union return no exact result in
+both argument and conditional-infer paths.
+
+The strict two-file oracle uses a nested discriminant matching Zod's public
+shape without using Zod names or files:
+
+```ts
+interface A { _zod: { def: { type: "a" } }; a: number }
+interface B { _zod: { def: { type: "b" } }; b: string }
+type Item = A | B;
+type Kind = Item["_zod"]["def"]["type"];
+type ItemOfKind<K extends Kind> = Extract<Item, { _zod: { def: { type: K } } }>;
+type Handlers = { [K in Kind]?: (item: ItemOfKind<K>, rewritten: boolean) => Item };
+```
+
+An imported overloaded `visit` call supplies property `a`. Independent
+positive and negative controls verify the exact key domain, callback types,
+and rejected operations:
+
+| Imported indexed-domain control | TypeScript 6.0.3 | Native TypeScript preview | ReleaseFast Home |
+|---|---:|---:|---:|
+| Accepted `Kind` keys | `"a"`, `"b"` | `"a"`, `"b"` | **`"a"`, `"b"`** |
+| Rejected key | TS2322 against `"a" \| "b"` | TS2322 against `"a" \| "b"` | **TS2322 against `"a" \| "b"`** |
+| Property `a` callback item / rewritten value | `A` / `boolean` | `A` / `boolean` | **`A` / `boolean`** |
+| Implicit callback parameters / whole call | no TS7006/TS2345 | no TS7006/TS2345 | **no TS7006/TS2345** |
+| Complete invalid-control multiset | 2× TS2322, 2× TS2339 | 2× TS2322, 2× TS2339 | **2× TS2322, 2× TS2339** |
+
+The unchanged pinned 106-file Zod 4.5.2 graph remains the production
+admission guard:
+
+| Zod 4.5.2 indexed mapped-key audit | #668 main | #669 `12e1c1d6c` | Change |
+|---|---:|---:|---:|
+| All diagnostics | 400 | **400** | **unchanged; 0 added** |
+| Unique diagnostic identities | 395 | **395** | **unchanged; 0 added** |
+| Unique identities versus immutable baseline | 597 | **395** | **202 removed overall; 0 added** |
+
+The #668 baseline and two independent #669 candidate runs are byte-identical,
+with stderr SHA-256
+`0590e3b2b593d2e2c0abb32f9f732d45f6d1701f3c2f906d07975ddf39c0bbc9`.
+The normalized identity SHA-256 remains
+`86df9bf4b128d164b88a96d4dfa2441094dbeeaa514b2587fa73c5ac0f3cdab5`;
+the exact delta is zero removals and zero additions. The distribution remains
+202 TS2345, 70 TS7006, 59 TS2339, 16 TS1361, 12 TS2322, 8 TS2304, 4 TS7031,
+4 TS2554, 4 TS2430, 3 TS2488, 3 TS2411, 2 TS4110, 2 TS2749, 2 TS2741,
+2 TS2698, 2 TS2552, 2 TS2367, 2 TS18048, and 1 TS2571.
+
+The focused gap is closed, but the unchanged corpus proves that another edge
+in Zod's larger handler declaration graph remains unsupported. Zod therefore
+stays outside cross-compiler timing until Home matches TypeScript's
+zero-diagnostic result. Elapsed times are also excluded because the shared
+host was contended; this section makes no performance claim.
+
+Final gates pass the exact three-engine oracle, **195/195** complete Program
+tests, the complete checker suite (including a second pass after the negative
+guard), focused schema and indexed-access tests, ReleaseFast,
+`zig fmt --check`, and `git diff --check`. The required repository-wide
+Pickier run remains red on unchanged existing debt: 22,427 findings (11,834
+errors and 10,593 warnings). Production evidence is retained on
+[#669](https://github.com/home-lang/home/issues/669#issuecomment-5561267845).
+
+```sh
+zig build test -Dfilter=ts_program
+zig build test -Dfilter=ts_checker
+zig build -Doptimize=ReleaseFast
+./zig-out/bin/home-tsc --project=/path/to/indexed-mapped-handler/tsconfig.json --pretty=false
+./zig-out/bin/home-tsc --project=/path/to/zod-4.5.2/tsconfig.benchmark.json --pretty=false
+bunx --bun pickier .
+```
+
 ### Typed cross-file global ownership and cyclic provenance (untimed)
 
 Issue [#480](https://github.com/home-lang/home/issues/480), under

@@ -462,6 +462,17 @@ graphs as approximate whole types:
 | Unique path/line/column/code identities | 395 | **395** | **unchanged; 0 added** |
 | Unique identities versus immutable baseline | 597 | **395** | **202 removed overall; 0 added** |
 
+The indexed-domain audit then resolves source-owned indexed-access aliases
+before mapped-key specialization, preserving exact union coverage and
+rejecting missing or partially covered properties without widening:
+
+| [Zod 4.5.2 indexed mapped-key audit](docs/docs/TS_PERFORMANCE.md#imported-indexed-access-mapped-key-domains) | #668 main | #669 main | Change |
+|---|---:|---:|---:|
+| Diagnostics | 400 | **400** | **unchanged; 0 added** |
+| Unique path/line/column/code identities | 395 | **395** | **unchanged; 0 added** |
+| Focused three-engine oracle | Home rejects valid handler context | **exact 2× TS2322 + 2× TS2339 parity** | no TS7006/TS2345 |
+| Unique identities versus immutable baseline | 597 | **395** | **202 removed overall; 0 added** |
+
 TypeScript 6.0.3 reports zero diagnostics on this graph. Home still reports
 400, so Zod remains outside the cross-compiler timing table until Home also
 reaches zero diagnostics.
