@@ -206,6 +206,11 @@ comptime {
             "lol_html_comment_before",
             "lol_html_comment_is_removed",
             "lol_html_comment_remove",
+            // Added with the HTMLRewriter comment API but never given a noop
+            // here, so a build without .native/liblolhtml.a — which is the
+            // supported configuration this whole list exists for — failed to
+            // link on this one symbol.
+            "lol_html_comment_replace",
             "lol_html_comment_text_get",
             "lol_html_comment_text_set",
             "lol_html_doc_end_append",
