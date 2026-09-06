@@ -117836,7 +117836,9 @@ pub const Checker = struct {
                         if (self.typeParameterConstraint(member)) |constraint| {
                             if (constraint != member and constraint < self.interner.pool.typeCount()) {
                                 const cflags = self.interner.pool.flagsOf(constraint);
-                                if (cflags.is_undefined or cflags.is_null or cflags.is_void) continue;
+                                if (!cflags.is_union and
+                                    !cflags.is_intersection and
+                                    (cflags.is_undefined or cflags.is_null or cflags.is_void)) continue;
                             }
                         }
                     }
@@ -235674,6 +235676,9 @@ test "checker: object spread rejects primitive-constrained type parameter" {
         \\  return { ...arg };
         \\}
         \\function g<T>(arg: T) {
+        \\  return { ...arg };
+        \\}
+        \\function h<T extends object | undefined>(arg: T | undefined) {
         \\  return { ...arg };
         \\}
     );
