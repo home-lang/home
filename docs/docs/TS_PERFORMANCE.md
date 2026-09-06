@@ -8395,6 +8395,115 @@ zig build -Doptimize=ReleaseFast
 bunx --bun pickier .
 ```
 
+### Contextual Extract paths beside opaque siblings
+
+Issue [#671](https://github.com/home-lang/home/issues/671), under
+[#548](https://github.com/home-lang/home/issues/548), follows the qualified
+declaration admission from #670 into a stricter production shape. A useful
+discriminant path and an unsupported sibling such as `Set<string>` can belong
+to the same imported object. Previously the unsupported sibling collapsed the
+mapped callback parameter to an opaque leaf, producing false TS7006 reports.
+Commit
+[`290487c0f`](https://github.com/home-lang/home/commit/290487c0fddb87063ac6463a6256294a079c0b16)
+preserves the discriminant without treating the complete declaration as
+lossless.
+
+The schema builder enables declaration projection specifically while lowering
+mapped callback values. The admitted reference must have a body and cannot be
+a class or declared function. It remains contextual-only, so the unsupported
+declaration is not published as an ordinary complete type.
+
+For contextual `Extract`, the checker follows only paths present in the
+structural target. Source objects retain their member names; target-relevant
+members are projected recursively, unresolved relevant paths become
+`unknown`, and unrelated sibling values remain locally opaque. Declaration
+and generic-parameter identities carry substitutions across aliases. An
+active-declaration set terminates cycles. The projected union then uses the
+ordinary distributive conditional evaluator, so generic discriminants remain
+symbolic until mapped-key specialization. There is no source-name check,
+library-specific branch, or arbitrary recursion-depth limit.
+
+The strict three-module oracle adds an unsupported sibling to both union
+members while leaving the selected path nested beneath `_zod.def.type`:
+
+```ts
+// schemas.ts
+interface A {
+  _zod: { def: { type: "a" }; opaque: Set<string> };
+  a: number;
+}
+interface B {
+  _zod: { def: { type: "b" }; opaque: Set<string> };
+  b: string;
+}
+type Types = A | B;
+
+// visit.ts
+import * as schemas from "./schemas.js";
+type TypeOfKind<K extends "a" | "b"> = Extract<
+  schemas.Types,
+  { _zod: { def: { type: K } } }
+>;
+type Handlers = {
+  [K in "a" | "b"]?: (item: TypeOfKind<K>, rewritten: boolean) => schemas.Types;
+};
+```
+
+The consumer assigns the `a` callback item to `A`, rejects it as `number`,
+reads the missing `b` member, reads a missing member from `rewritten`, and
+includes one invalid mapped key. The exact result is:
+
+| Opaque-sibling three-module control | TypeScript 6.0.3 | Native TypeScript preview | ReleaseFast Home |
+|---|---:|---:|---:|
+| Accepted mapped keys | `"a"`, `"b"` | `"a"`, `"b"` | **`"a"`, `"b"`** |
+| Rejected mapped key | TS2322 | TS2322 | **TS2322** |
+| Callback item / rewritten value | `A` / `boolean` | `A` / `boolean` | **`A` / `boolean`** |
+| Implicit callback parameters / whole call | no TS7006/TS2345 | no TS7006/TS2345 | **no TS7006/TS2345** |
+| Complete invalid-control multiset | 2× TS2322, 2× TS2339 | 2× TS2322, 2× TS2339 | **2× TS2322, 2× TS2339** |
+
+The pinned 106-file Zod 4.5.2 graph confirms that the narrower projection is a
+production improvement rather than a synthetic-only change:
+
+| Zod 4.5.2 contextual-path audit | #670 main | #671 `290487c0f` | Change |
+|---|---:|---:|---:|
+| All diagnostics | 394 | **374** | **20 TS7006 removed; 0 added** |
+| Unique diagnostic identities | 389 | **369** | **20 removed; 0 added** |
+| Unique identities versus immutable baseline | 597 | **369** | **228 removed overall; 0 added** |
+
+The removed identities are eight callback parameters in each of
+`classic/in-out.ts` and `mini/in-out.ts`, plus two callback parameters in each
+of `classic/deep-partial.ts` and `mini/deep-partial.ts`. No diagnostic identity
+was added. Two independent candidate runs are byte-identical, with stderr
+SHA-256
+`5353246e2b9172390011adff013f5807c60da3019b28e34f3d814e50d80fcf80`.
+The normalized identity SHA-256 is
+`30f2defec18b4b81b6795a59a626cd00ffccb69bbdaface112ba1d7d25982bb7`.
+The remaining distribution is 202 TS2345, 53 TS2339, 50 TS7006, 16 TS1361,
+12 TS2322, 8 TS2304, 4 TS7031, 4 TS2554, 4 TS2430, 3 TS2488, 3 TS2411,
+2 TS4110, 2 TS2749, 2 TS2741, 2 TS2698, 2 TS2552, 2 TS2367, 2 TS18048,
+and 1 TS2571.
+
+A bounded Zod closure that exposed crashes in discarded eager projections
+completed normally in 20.57 seconds with the ReleaseFast candidate. Zod still
+has diagnostics while TypeScript reports zero, so it remains outside
+cross-compiler timing. The audit makes no cross-compiler performance claim.
+
+Final gates pass the exact three-engine oracle, **201/201** complete Program
+tests, the complete checker suite, ReleaseFast, `zig fmt --check`, and
+`git diff --check`. The required repository-wide Pickier run remains red on
+unchanged existing debt: 22,427 findings (11,834 errors and 10,593 warnings).
+Production evidence is retained on
+[#671](https://github.com/home-lang/home/issues/671#issuecomment-5561759700).
+
+```sh
+zig build test -Dfilter=ts_program
+zig build test -Dfilter=ts_checker
+zig build home-tsc -Doptimize=ReleaseFast
+./zig-out/bin/home-tsc --project=/path/to/opaque-sibling-handler/tsconfig.json --pretty=false
+./zig-out/bin/home-tsc --project=/path/to/zod-4.5.2/tsconfig.benchmark.json --pretty=false
+bunx --bun pickier .
+```
+
 ### Typed cross-file global ownership and cyclic provenance (untimed)
 
 Issue [#480](https://github.com/home-lang/home/issues/480), under

@@ -484,11 +484,21 @@ projection and opaque-leaf guards:
 | Focused three-module oracle | 2 false TS7006 | **exact 2× TS2322 + 2× TS2339 parity** | no TS7006/TS2345 |
 | Unique identities versus immutable baseline | 597 | **389** | **208 removed overall; 0 added** |
 
+The contextual-path audit then projects only the members required by an
+`Extract` target when an otherwise useful declaration has opaque siblings:
+
+| [Zod 4.5.2 contextual-path audit](docs/docs/TS_PERFORMANCE.md#contextual-extract-paths-beside-opaque-siblings) | #670 main | #671 main | Change |
+|---|---:|---:|---:|
+| Diagnostics | 394 | **374** | **20 TS7006 removed; 0 added** |
+| Unique path/line/column/code identities | 389 | **369** | **20 removed; 0 added** |
+| Focused opaque-sibling oracle | 2 false TS7006 | **exact 2× TS2322 + 2× TS2339 parity** | no TS7006/TS2345 |
+| Unique identities versus immutable baseline | 597 | **369** | **228 removed overall; 0 added** |
+
 TypeScript 6.0.3 reports zero diagnostics on this graph. Home still reports
-394, so Zod remains outside the cross-compiler timing table until Home also
+374, so Zod remains outside the cross-compiler timing table until Home also
 reaches zero diagnostics.
 
-The latest optimization admissions preserve that qualified snapshot while
+The latest optimization admissions preserve that contextual snapshot while
 recording both accepted and rejected probes:
 
 | Optimization probe | Primary fair A/B | Secondary scale | Decision |
