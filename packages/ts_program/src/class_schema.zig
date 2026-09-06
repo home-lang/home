@@ -251,12 +251,11 @@ pub const Builder = struct {
         return true;
     }
 
-    /// Interface schemas may safely retain qualified aliases whose complete
-    /// declaration graph is value-like.  This deliberately excludes object,
-    /// mapped, conditional, and indexed-access projections: those require the
-    /// consumer checker to reproduce source-owned relation semantics, while a
-    /// scalar union is identical in every type pool.
-    fn qualifiedValueAliasSupported(self: *Builder, target: *const schema.Declaration) !bool {
+    /// Qualified aliases are ordinary declaration edges when their complete
+    /// graph is already losslessly representable by the Program schema. Keep
+    /// contextual/projection-only edges, classes, declared functions, records,
+    /// and unsupported built-in instantiations out of whole-type admission.
+    fn qualifiedDeclarationGraphSupported(self: *Builder, target: *const schema.Declaration) !bool {
         if (target.contextual_only or target.is_class or target.is_function) return false;
         var pending: std.ArrayListUnmanaged(*const schema.Expression) = .empty;
         defer pending.deinit(self.gpa);
@@ -271,17 +270,63 @@ pub const Builder = struct {
             const entry = try visited.getOrPut(self.gpa, expr);
             if (entry.found_existing) continue;
             switch (expr.*) {
-                .primitive, .parameter, .string, .number, .boolean => {},
-                .union_type => |members| try pending.appendSlice(self.gpa, members),
+                .primitive, .builtin_object, .parameter, .string, .number, .boolean, .polymorphic_this => {},
+                .array, .readonly_array, .keyof, .this_type => |element| try pending.append(self.gpa, element),
+                .object => |members| for (members) |member| try pending.append(self.gpa, member.type),
+                .indexed_object => |indexed_object| {
+                    for (indexed_object.members) |member| try pending.append(self.gpa, member.type);
+                    for (indexed_object.indices) |index| {
+                        try pending.append(self.gpa, index.key);
+                        try pending.append(self.gpa, index.value);
+                    }
+                },
+                .utility => |utility| {
+                    if (utility.kind != .extract) return false;
+                    try pending.append(self.gpa, utility.source);
+                    if (utility.keys) |keys| try pending.append(self.gpa, keys);
+                },
+                .tuple => |elements| for (elements) |element| try pending.append(self.gpa, element.type),
+                .union_type, .intersection => |members| try pending.appendSlice(self.gpa, members),
+                .function => |function| {
+                    for (function.type_parameters) |parameter| {
+                        if (parameter.constraint) |constraint| try pending.append(self.gpa, constraint);
+                        if (parameter.default) |default| try pending.append(self.gpa, default);
+                    }
+                    if (function.this_type) |receiver| try pending.append(self.gpa, receiver);
+                    for (function.parameters) |parameter| try pending.append(self.gpa, parameter.type);
+                    try pending.append(self.gpa, function.result);
+                    if (function.predicate) |predicate| try pending.append(self.gpa, predicate.target);
+                },
                 .reference => |reference| {
                     if (reference.declaration.contextual_only or
                         reference.declaration.is_class or
-                        reference.declaration.is_function)
+                        reference.declaration.is_function or
+                        reference.projection_only or
+                        reference.contextual_projection)
                         return false;
                     if (reference.declaration.body) |body| try pending.append(self.gpa, body) else return false;
+                    for (reference.declaration.parameters) |parameter| {
+                        if (parameter.constraint) |constraint| try pending.append(self.gpa, constraint);
+                        if (parameter.default) |default| try pending.append(self.gpa, default);
+                    }
                     try pending.appendSlice(self.gpa, reference.arguments);
                 },
-                else => return false,
+                .indexed_access => |indexed| {
+                    try pending.append(self.gpa, indexed.object);
+                    try pending.append(self.gpa, indexed.index);
+                },
+                .conditional => |conditional| {
+                    try pending.append(self.gpa, conditional.check);
+                    try pending.append(self.gpa, conditional.extends_type);
+                    try pending.append(self.gpa, conditional.true_branch);
+                    try pending.append(self.gpa, conditional.false_branch);
+                },
+                .mapped => |mapped| {
+                    try pending.append(self.gpa, mapped.constraint);
+                    try pending.append(self.gpa, mapped.template);
+                },
+                .infer => |parameter| if (parameter.constraint) |constraint| try pending.append(self.gpa, constraint),
+                .opaque_leaf, .builtin_reference, .record, .typeof_class, .unsupported => return false,
             }
         }
         return true;
@@ -686,7 +731,7 @@ pub const Builder = struct {
                         const target = try self.declaration(key);
                         const projection_only = ref.qualifier_len != 0 and
                             !context.allow_opaque and
-                            !try self.qualifiedValueAliasSupported(target);
+                            !try self.qualifiedDeclarationGraphSupported(target);
                         if (ref.qualifier_len != 0 and context.allow_opaque) context.declaration.contextual_only = true;
                         qualified_unresolved = false;
                         return self.expression(.{ .reference = .{
@@ -1134,7 +1179,7 @@ test "class schema: imported aliases use the defining file through reexports" {
     try T.expect(ref.declaration.body.?.object[0].type.parameter == &ref.declaration.parameters[0]);
 }
 
-test "class schema: qualified references become concrete only for supported declarations" {
+test "class schema: qualified references admit supported declaration graphs" {
     const graph = try TestGraph.init(&.{
         .{ .path = "/shapes.ts", .text =
         \\export type Value = string | number;
@@ -1159,8 +1204,9 @@ test "class schema: qualified references become concrete only for supported decl
     const structured_result = try graph.class(1, "StructuredBox");
     defer structured_result.deinit(T.allocator);
     const structured = structured_result.declaration.body.?.object[0].type.reference;
-    try T.expect(structured.projection_only);
+    try T.expect(!structured.projection_only);
     try T.expectEqualStrings("Structured", structured.declaration.name);
+    try T.expect(try structured_result.isSupported(T.allocator));
 
     const callback_result = try graph.class(1, "Callback");
     defer callback_result.deinit(T.allocator);
@@ -1480,6 +1526,45 @@ test "class schema: indexed access key domains survive mapped handlers" {
     try T.expect(kind.index.* == .string);
     try T.expectEqualStrings("type", kind.index.string);
     try T.expect(kind.object.* == .indexed_access);
+}
+
+test "class schema: namespace-qualified handler graphs remain lossless" {
+    const graph = try TestGraph.init(&.{
+        .{ .path = "/schemas.ts", .text =
+        \\export interface A { _zod: { def: { type: "a" } }; a: number }
+        \\export interface B { _zod: { def: { type: "b" } }; b: string }
+        \\export interface TypeDef { type: "a" | "b" }
+        \\export type Types = A | B;
+        \\export type SomeType = Types;
+        },
+        .{ .path = "/visit.ts", .text =
+        \\import * as schemas from "./schemas.js";
+        \\type AnyType = schemas.Types;
+        \\type Kind = schemas.TypeDef["type"];
+        \\type TypeOfKind<K extends Kind> = [Extract<schemas.Types, { _zod: { def: { type: K } } }>] extends [never]
+        \\  ? AnyType
+        \\  : Extract<schemas.Types, { _zod: { def: { type: K } } }>;
+        \\export type Handlers = { [K in Kind]?: (item: TypeOfKind<K>, rewritten: boolean) => AnyType };
+        \\export declare function visit(item: schemas.SomeType, handler: (item: AnyType, rewritten: boolean) => AnyType): AnyType;
+        \\export declare function visit(item: schemas.SomeType, handlers: Handlers): AnyType;
+        },
+    });
+    defer graph.deinit();
+    const result = try graph.class(1, "visit");
+    defer result.deinit(T.allocator);
+
+    try T.expect(try result.isSupported(T.allocator));
+    const overloads = result.declaration.body.?.intersection;
+    try T.expectEqual(@as(usize, 2), overloads.len);
+    const handlers_reference = overloads[1].function.parameters[1].type.reference;
+    try T.expect(!handlers_reference.projection_only);
+    const handlers = handlers_reference.declaration.body.?.mapped;
+    const kind = handlers.constraint.reference.declaration.body.?.indexed_access;
+    try T.expect(!kind.object.reference.projection_only);
+    const item_of_kind = handlers.template.function.parameters[0].type.reference.declaration.body.?.conditional;
+    const extracted = item_of_kind.check.tuple[0].type.utility;
+    try T.expect(extracted.kind == .extract);
+    try T.expect(!extracted.source.reference.projection_only);
 }
 
 test "class schema: qualified imports retain callable shells around opaque leaves" {

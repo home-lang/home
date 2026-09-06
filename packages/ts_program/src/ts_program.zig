@@ -10233,6 +10233,75 @@ test "Program: imported indexed-access key domains specialize nested handlers" {
     try expectCompilationHasDiagnosticCode(compilation, 2339);
 }
 
+test "Program: namespace-qualified handler graphs retain contextual types" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver };
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+
+    const schemas =
+        \\export interface A { _zod: { def: { type: "a" } }; a: number }
+        \\export interface B { _zod: { def: { type: "b" } }; b: string }
+        \\export interface TypeDef { type: "a" | "b" }
+        \\export type Types = A | B;
+        \\export type SomeType = Types;
+    ;
+    const visit =
+        \\import * as schemas from "./schemas.js";
+        \\type AnyType = schemas.Types;
+        \\type Kind = schemas.TypeDef["type"];
+        \\type TypeOfKind<K extends Kind> = [Extract<schemas.Types, { _zod: { def: { type: K } } }>] extends [never]
+        \\  ? AnyType
+        \\  : Extract<schemas.Types, { _zod: { def: { type: K } } }>;
+        \\export type Handlers = { [K in Kind]?: (item: TypeOfKind<K>, rewritten: boolean) => AnyType };
+        \\export declare function visit(item: schemas.SomeType, handler: (item: AnyType, rewritten: boolean) => AnyType): AnyType;
+        \\export declare function visit(item: schemas.SomeType, handlers: Handlers): AnyType;
+    ;
+    const consumer =
+        \\import { visit } from "./visit.js";
+        \\import type { A, TypeDef } from "./schemas.js";
+        \\declare const value: A;
+        \\const keyA: TypeDef["type"] = "a";
+        \\const keyB: TypeDef["type"] = "b";
+        \\const invalidKey: TypeDef["type"] = "c";
+        \\void keyA;
+        \\void keyB;
+        \\void invalidKey;
+        \\visit(value, {
+        \\  a: (item, rewritten) => {
+        \\    const exact: A = item;
+        \\    const wrong: number = item;
+        \\    item.b;
+        \\    rewritten.missing;
+        \\    void exact;
+        \\    void wrong;
+        \\    return item;
+        \\  },
+        \\});
+    ;
+    try vfs.addFile("/proj/schemas.ts", schemas);
+    try vfs.addFile("/proj/visit.ts", visit);
+    try vfs.addFile("/proj/consumer.ts", consumer);
+    _ = try p.add("/proj/schemas.ts", schemas);
+    _ = try p.add("/proj/visit.ts", visit);
+    const consumer_id = try p.add("/proj/consumer.ts", consumer);
+
+    try p.compileAll(.{
+        .no_emit = true,
+        .strict_flags = .{ .no_implicit_any = true, .strict_null_checks = true },
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    });
+    const compilation = p.fileById(consumer_id).compilation.?;
+    try expectCompilationLacksDiagnosticCode(compilation, 7006);
+    try expectCompilationLacksDiagnosticCode(compilation, 2345);
+    try T.expectEqual(@as(usize, 4), compilation.diagnostics.items.len);
+    try expectCompilationHasDiagnosticCode(compilation, 2322);
+    try expectCompilationHasDiagnosticCode(compilation, 2339);
+}
+
 test "Program: qualified interface assertions project declared array members" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();
