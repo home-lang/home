@@ -8293,6 +8293,108 @@ zig build -Doptimize=ReleaseFast
 bunx --bun pickier .
 ```
 
+### Qualified namespace declaration graph admission
+
+Issue [#670](https://github.com/home-lang/home/issues/670), under
+[#548](https://github.com/home-lang/home/issues/548), isolates a three-module
+Program boundary where an exported type graph refers to its dependencies
+through a namespace import. Commit
+[`24f4376f1`](https://github.com/home-lang/home/commit/24f4376f1ed1a1e3c668082f466d11c817ac5bc6)
+replaces the former scalar-union-only rule with an identity-aware proof over
+the complete qualified declaration graph.
+
+The proof admits only expression forms already represented losslessly by the
+Program schema: objects and indexed objects, arrays, tuples, callable types,
+mapped and conditional types, indexed access, `keyof`, exact `Extract`, and
+their declaration and parameter identities. It rejects opaque or unsupported
+leaves, projection-only and contextual-projection edges, contextual-only
+declarations, classes, declared functions, records, `typeof` classes,
+unsupported utilities, and built-in generic approximations. It neither
+flattens a namespace nor substitutes `any`. The existing callable-shell path
+for a qualified opaque leaf remains contextual-only.
+
+The strict oracle separates the declaration owner, the namespace-qualified
+handler owner, and the consumer:
+
+```ts
+// schemas.ts
+interface A { _zod: { def: { type: "a" } }; a: number }
+interface B { _zod: { def: { type: "b" } }; b: string }
+interface TypeDef { type: "a" | "b" }
+type Types = A | B;
+
+// visit.ts
+import * as schemas from "./schemas.js";
+type Kind = schemas.TypeDef["type"];
+type TypeOfKind<K extends Kind> = Extract<
+  schemas.Types,
+  { _zod: { def: { type: K } } }
+>;
+type Handlers = { [K in Kind]?: (item: TypeOfKind<K>, rewritten: boolean) => schemas.Types };
+```
+
+An overloaded `visit` declaration and a third-file handler object retain the
+exact key and callback types:
+
+| Qualified three-module control | TypeScript 6.0.3 | Native TypeScript preview | ReleaseFast Home |
+|---|---:|---:|---:|
+| Accepted keys | `"a"`, `"b"` | `"a"`, `"b"` | **`"a"`, `"b"`** |
+| Rejected key | TS2322 against `"a" \| "b"` | TS2322 against `"a" \| "b"` | **TS2322 against `"a" \| "b"`** |
+| Callback item / rewritten value | `A` / `boolean` | `A` / `boolean` | **`A` / `boolean`** |
+| Implicit callback parameters / whole call | no TS7006/TS2345 | no TS7006/TS2345 | **no TS7006/TS2345** |
+| Complete invalid-control multiset | 2× TS2322, 2× TS2339 | 2× TS2322, 2× TS2339 | **2× TS2322, 2× TS2339** |
+
+Permanent schema coverage also verifies that a fully supported qualified
+object is no longer projection-only, while the existing qualified `Set`
+callback retains its opaque contextual shell.
+
+The unchanged pinned 106-file Zod 4.5.2 graph produces a real improvement:
+
+| Zod 4.5.2 qualified declaration audit | #669 main | #670 `24f4376f1` | Change |
+|---|---:|---:|---:|
+| All diagnostics | 400 | **394** | **6 TS2339 removed; 0 added** |
+| Unique diagnostic identities | 395 | **389** | **6 removed; 0 added** |
+| Unique identities versus immutable baseline | 597 | **389** | **208 removed overall; 0 added** |
+
+The six removed identities are all false TS2339 reports in
+`src/v4/classic/errors.ts`: one at line 61, two at line 62, one at line 65,
+and two at line 66. Two independent candidate runs are byte-identical, with
+stderr SHA-256
+`67875e08fc1bbe6fe9d18a9ac0396cbfe7afa166dd1b71830ab4cd3e705557e6`.
+The normalized identity SHA-256 is
+`dd266a4d67c6f5575d6ab19d80d37d0eec97fa06be26e8eb04cef5113596d643`.
+The remaining distribution is 202 TS2345, 70 TS7006, 53 TS2339, 16 TS1361,
+12 TS2322, 8 TS2304, 4 TS7031, 4 TS2554, 4 TS2430, 3 TS2488, 3 TS2411,
+2 TS4110, 2 TS2749, 2 TS2741, 2 TS2698, 2 TS2552, 2 TS2367, 2 TS18048,
+and 1 TS2571.
+
+A disposable production control replaced only the relevant
+`schemas.Qualified` type spellings in `core/visit.ts` with equivalent named
+imports. Its normalized corpus identity set remains the same as the #670
+candidate; only the edited file's line number shifts. The 16 callback TS7006
+reports in `classic/in-out.ts` and `mini/in-out.ts` are therefore a separate
+downstream graph gap, not attributed to this admission fix.
+
+Zod still has diagnostics while TypeScript reports zero, so it remains
+outside cross-compiler timing. Elapsed times are also excluded because the
+shared host was contended; this section makes no performance claim.
+
+Final gates pass the exact three-engine oracle, **196/196** complete Program
+tests, the complete checker suite, ReleaseFast, `zig fmt --check`, and
+`git diff --check`. The required repository-wide Pickier run remains red on
+unchanged existing debt: 22,427 findings (11,834 errors and 10,593 warnings).
+Production evidence is retained on
+[#670](https://github.com/home-lang/home/issues/670#issuecomment-5561365837).
+
+```sh
+zig build test -Dfilter=ts_program
+zig build test -Dfilter=ts_checker
+zig build -Doptimize=ReleaseFast
+./zig-out/bin/home-tsc --project=/path/to/qualified-handler/tsconfig.json --pretty=false
+./zig-out/bin/home-tsc --project=/path/to/zod-4.5.2/tsconfig.benchmark.json --pretty=false
+bunx --bun pickier .
+```
+
 ### Typed cross-file global ownership and cyclic provenance (untimed)
 
 Issue [#480](https://github.com/home-lang/home/issues/480), under

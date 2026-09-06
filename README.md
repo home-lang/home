@@ -473,8 +473,19 @@ rejecting missing or partially covered properties without widening:
 | Focused three-engine oracle | Home rejects valid handler context | **exact 2× TS2322 + 2× TS2339 parity** | no TS7006/TS2345 |
 | Unique identities versus immutable baseline | 597 | **395** | **202 removed overall; 0 added** |
 
+The qualified-declaration audit then admits namespace-qualified references
+only when their complete Program schema graph is lossless, retaining strict
+projection and opaque-leaf guards:
+
+| [Zod 4.5.2 qualified declaration audit](docs/docs/TS_PERFORMANCE.md#qualified-namespace-declaration-graph-admission) | #669 main | #670 main | Change |
+|---|---:|---:|---:|
+| Diagnostics | 400 | **394** | **6 TS2339 removed; 0 added** |
+| Unique path/line/column/code identities | 395 | **389** | **6 removed; 0 added** |
+| Focused three-module oracle | 2 false TS7006 | **exact 2× TS2322 + 2× TS2339 parity** | no TS7006/TS2345 |
+| Unique identities versus immutable baseline | 597 | **389** | **208 removed overall; 0 added** |
+
 TypeScript 6.0.3 reports zero diagnostics on this graph. Home still reports
-400, so Zod remains outside the cross-compiler timing table until Home also
+394, so Zod remains outside the cross-compiler timing table until Home also
 reaches zero diagnostics.
 
 The latest optimization admissions preserve that qualified snapshot while
