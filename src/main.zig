@@ -3566,13 +3566,23 @@ fn buildCommand(allocator: std.mem.Allocator, options: BuildCliOptions) !void {
 
     const program = try parser.parse();
 
-    // Check for parse errors - if there were errors, the AST may contain invalid data
+    // A parse error is fatal here.
+    //
+    // This used to print a yellow warning and carry on to code generation,
+    // which exited 0. A file whose syntax the parser could not read then
+    // "compiled": the ratchet that counts compiling files counted it, the
+    // build linked whatever partial AST survived, and the only trace was a
+    // line of stderr among thousands. The kernel path does no type checking,
+    // so there is no richer diagnostic to be had by continuing — there is
+    // only a wrong answer arriving with an exit status of zero.
     if (parser.errors.items.len > 0) {
-        std.debug.print("{s}Parse Errors:{s} Found {d} error(s) - code generation may fail\n", .{
-            Color.Yellow.code(),
+        std.debug.print("{s}Parse Errors:{s} {d} error(s) in {s} — refusing to generate code\n", .{
+            Color.Red.code(),
             Color.Reset.code(),
             parser.errors.items.len,
+            file_path,
         });
+        return error.ParseFailed;
     }
 
     // Create comptime value store for compile-time evaluation
