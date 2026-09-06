@@ -373,6 +373,15 @@ admitting unsupported whole declarations:
 | Focused cyclic callable oracle | Home rejects valid `check` with TS2339 | **Home, TS 6, and TS 7: 0** | exact parameter and `string \| Promise<string>` return retained |
 | Appended invalid control | — | **3× TS2322 + 1× TS2339 in all three** | invalid behavior preserved |
 
+The dependent-constraint audit then resolves later generic bounds using the
+effective earlier type arguments before validating literal keys:
+
+| [Zod 4.5.2 dependent-constraint audit](docs/docs/TS_PERFORMANCE.md#dependent-generic-alias-constraint-instantiation) | Post-#657 main | #658 main | Change |
+|---|---:|---:|---:|
+| Diagnostics | 489 | **448** | **41 TS2344 removed (8.4%); 0 added** |
+| Unique path/line/column/code identities | 484 | **443** | **41 removed; 0 added** |
+| TS2344 | 43 | **2** | **41 removed (95.3%)** |
+
 TypeScript 6.0.3 reports zero diagnostics on this graph. Zod remains outside
 the cross-compiler timing table until Home also reaches zero diagnostics.
 

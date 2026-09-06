@@ -7531,6 +7531,73 @@ zig build home-tsc -Doptimize=ReleaseFast
 ./zig-out/bin/home-tsc --project /path/to/zod-4.5.2/tsconfig.benchmark.json
 ```
 
+### Dependent generic-alias constraint instantiation
+
+Issue [#658](https://github.com/home-lang/home/issues/658) addresses the next
+coherent pinned-corpus cluster after #657. Zod's public parameter helpers bind
+a schema type first, then constrain a later key with an expression such as
+`Exclude<keyof T["_zod"]["def"], "type" | "checks" | "error">`. Home checked
+each explicit argument against the constraint captured when the alias was
+declared. That stored graph had already collapsed the indexed/keyof expression
+to a non-free placeholder, so ordinary TypeId substitution could not recover
+the supplied earlier `T`. Valid keys such as `"coerce"` and `"when"` therefore
+produced TS2344.
+
+Commit [`0ffa17565`](https://github.com/home-lang/home/commit/0ffa17565)
+aligns both generic-alias validation paths with the existing function,
+constructor, and Program behavior. Arguments are validated from left to right,
+and each effective argument is added to the substitution environment only
+after its own constraint check. For a local declaration-backed parameter, the
+checker binds those earlier formal parameters in a narrow type scope and
+re-lowers the original constraint syntax. This recovers the exact indexed,
+keyof, conditional, and utility evaluation without matching `Exclude`, any
+property spelling, or any Zod declaration name.
+
+When the resolved bound is a finite string-literal union, TS2344 prose is now
+rendered directly from those literal TypeIds. This prevents unrelated alias
+display names from changing the bound while preserving the ordinary fallback
+for symbolic constraints.
+
+The strict same-file oracle defines a concrete schema with `coerce` and `when`
+properties. TypeScript 6.0.3 and native TypeScript 7.0.2 accept both valid
+instantiations and report exactly one TS2344 for an appended `"missing"` key,
+with constraint `"coerce" | "when"`. ReleaseFast Home now matches that exact
+code count and resolved constraint wording. Removing the invalid line leaves
+all three compilers clean.
+
+The unchanged 106-file Zod configuration supplies the production admission
+gate:
+
+| Zod 4.5.2 dependent-constraint audit | Post-#657 main | #658 candidate | Change |
+|---|---:|---:|---:|
+| All diagnostics | 489 | **448** | **41 removed (8.4%); 0 added** |
+| Unique diagnostic identities | 484 | **443** | **41 removed; 0 added** |
+| TS2344 | 43 | **2** | **41 removed (95.3%)** |
+| Unique identities versus immutable baseline | 597 | **443** | **154 removed; 0 added** |
+
+All 41 current-parent removals are TS2344 diagnostics in
+`src/v4/core/api.ts`; the two remaining TS2344 diagnostics are the separate
+`core.output<Key>` property-key constraint in `core/schemas.ts`. No
+candidate-only identity exists. The Zod graph is still not a valid timing
+input, so [#548](https://github.com/home-lang/home/issues/548) remains open.
+ReleaseFast compilation also shared the host with unrelated Zig builds, and no
+wall-time claim is admitted.
+
+Final gates pass the focused three-engine positive/negative oracle, the broad
+constraint-filtered checker suite, **4,354/4,354** complete checker tests,
+**189/189** Program tests, scoped `pickier`, and `git diff --check`. Exact
+evidence is retained on
+[#658](https://github.com/home-lang/home/issues/658#issuecomment-5556603254).
+
+```sh
+zig build test -Dfilter=ts_checker -Dts-checker-test-filter=constraint
+zig build test -Dfilter=ts_checker
+zig build test -Dfilter=ts_program
+zig build home-tsc -Doptimize=ReleaseFast
+./zig-out/bin/home-tsc --project /path/to/dependent-constraint/tsconfig.json
+./zig-out/bin/home-tsc --project /path/to/zod-4.5.2/tsconfig.benchmark.json
+```
+
 ### Typed cross-file global ownership and cyclic provenance (untimed)
 
 Issue [#480](https://github.com/home-lang/home/issues/480), under
