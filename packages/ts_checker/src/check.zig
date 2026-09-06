@@ -36699,9 +36699,15 @@ pub const Checker = struct {
                         const scoped = try self.scopedGenericInterfaceInfo(node, ref.name);
                         if (scoped orelse self.generic_aliases.get(ref.name)) |info| {
                             const count = @min(args.len, info.params.len);
+                            var substitutions: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+                            defer substitutions.deinit(self.gpa);
+                            const previous_constraint_substitutions = self.current_type_arg_constraint_subs;
+                            self.current_type_arg_constraint_subs = &substitutions;
+                            defer self.current_type_arg_constraint_subs = previous_constraint_substitutions;
                             for (args[0..count], info.params[0..count]) |arg, param| {
                                 const arg_t = try self.lowererLowerWithTypeParams(arg);
                                 try self.checkTypeArgSatisfiesConstraint(arg, param, arg_t);
+                                try substitutions.put(self.gpa, param, arg_t);
                             }
                         }
                     }
@@ -77689,6 +77695,9 @@ pub const Checker = struct {
                         const args = hir_mod.typeRefArgs(self.hir, type_node);
                         var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
                         defer subs.deinit(self.gpa);
+                        const previous_constraint_substitutions = self.current_type_arg_constraint_subs;
+                        self.current_type_arg_constraint_subs = &subs;
+                        defer self.current_type_arg_constraint_subs = previous_constraint_substitutions;
                         const npairs = @min(args.len, info.params.len);
                         var direct_infer_counts: std.AutoHashMapUnmanaged(hir_mod.StringId, u32) = .empty;
                         defer direct_infer_counts.deinit(self.gpa);
@@ -77740,8 +77749,8 @@ pub const Checker = struct {
                                 defer self.circ_ctx_floor = circ_floor_saved;
                                 break :arg_blk try self.lowerTypeArgWithInferConstraint(args[i], info.params[i], &direct_infer_counts);
                             };
-                            try subs.put(self.gpa, info.params[i], arg_t);
                             try self.checkTypeArgSatisfiesConstraint(args[i], info.params[i], arg_t);
+                            try subs.put(self.gpa, info.params[i], arg_t);
                         }
                         // Fill remaining type-parameters with their
                         // declaration-site defaults (`<T, U = number>`)
@@ -144661,6 +144670,31 @@ pub const Checker = struct {
         return self.checkTypeArgSatisfiesConstraintImpl(arg_node, param_t, arg_t, false);
     }
 
+    fn lowerTypeParameterConstraintWithCurrentSubstitutions(
+        self: *Checker,
+        param_t: TypeId,
+    ) CheckError!?TypeId {
+        const substitutions = self.current_type_arg_constraint_subs orelse return null;
+        if (substitutions.count() == 0) return null;
+        const resolved = self.resolvedTypeParameterPlaceholder(param_t);
+        const declaration = self.type_parameter_decl_nodes.get(param_t) orelse
+            self.type_parameter_decl_nodes.get(resolved) orelse return null;
+        if (!self.nodeBelongsToCurrentHir(declaration) or self.hir.kindOf(declaration) != .type_parameter) return null;
+        const constraint_node = hir_mod.typeParameterOf(self.hir, declaration).constraint;
+        if (constraint_node == hir_mod.none_node_id) return null;
+
+        try self.pushNarrowScope();
+        defer self.popNarrowScope();
+        var iterator = substitutions.iterator();
+        while (iterator.next()) |entry| {
+            const formal = self.resolvedTypeParameterPlaceholder(entry.key_ptr.*);
+            if (formal >= self.interner.pool.typeCount() or !self.interner.pool.flagsOf(formal).is_type_parameter) continue;
+            const name = self.interner.typeParameterName(formal) orelse continue;
+            try self.recordNarrow(name, entry.value_ptr.*);
+        }
+        return try self.lowererLowerWithTypeParams(constraint_node);
+    }
+
     fn checkTypeArgSatisfiesConstraintImpl(
         self: *Checker,
         arg_node: NodeId,
@@ -144682,6 +144716,9 @@ pub const Checker = struct {
             self.substituteType(raw_constraint, subs) catch raw_constraint
         else
             raw_constraint;
+        if (try self.lowerTypeParameterConstraintWithCurrentSubstitutions(constraint_param)) |syntax_constraint| {
+            constraint = syntax_constraint;
+        }
         if (constraint == types.Primitive.any or constraint == types.Primitive.unknown) return;
         if (constraint == arg_t) return;
         if (self.containsFreeTypeParameter(constraint)) {
@@ -144762,7 +144799,8 @@ pub const Checker = struct {
         else if (signature_constraint) |info|
             (try self.allocTypeArgSignatureConstraintHeaderName(info)) orelse return
         else
-            (try self.typeArgConstraintTypeName(constraint, false)) orelse
+            (try self.allocSortedStringLiteralUnionName(constraint)) orelse
+                (try self.typeArgConstraintTypeName(constraint, false)) orelse
                 (try self.typeParameterConstraintSourceName(constraint_param)) orelse
                 (try self.allocObjectTypeShape(constraint)) orelse return;
         // Special-case the upstream wording for `extends object`:
@@ -269990,6 +270028,30 @@ test "checker: generic constraint checks preserve branch and keyof provenance" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_does_not_satisfy_constraint));
+}
+
+test "checker: later alias constraints use earlier explicit type arguments" {
+    const s = try newSetup(
+        \\interface Base { _zod: { def: { type: string; checks?: unknown[]; error?: string } } }
+        \\interface StringSchema extends Base {
+        \\  _zod: { def: { type: "string"; checks?: unknown[]; error?: string; coerce: boolean; when?: () => boolean } };
+        \\}
+        \\type ExtraKey<
+        \\  T extends Base,
+        \\  K extends Exclude<keyof T["_zod"]["def"], "type" | "checks" | "error"> = never,
+        \\> = K;
+        \\type Coerce = ExtraKey<StringSchema, "coerce">;
+        \\type When = ExtraKey<StringSchema, "when">;
+        \\type Invalid = ExtraKey<StringSchema, "missing">;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_does_not_satisfy_constraint));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.type_does_not_satisfy_constraint,
+        "Type '\"missing\"' does not satisfy the constraint '\"coerce\" | \"when\"'.",
+    ));
 }
 
 test "checker: signature diagnostics terminate on recursive array aliases" {
