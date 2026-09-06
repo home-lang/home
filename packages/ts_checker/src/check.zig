@@ -9791,7 +9791,7 @@ pub const Checker = struct {
                     } else {
                         try self.applyFlowNarrowSnapshot(&reachable_flow);
                     }
-                } else if (self.statementDefinitelyExits(i.then_branch)) {
+                } else if (self.statementDefinitelyTransfersControl(i.then_branch)) {
                     try self.applyTypeGuard(i.cond, false);
                 } else {
                     try self.applyNullishGuardAssignmentFlow(i.cond, i.then_branch);
@@ -18553,23 +18553,23 @@ pub const Checker = struct {
     /// `continue` as terminal, since either escapes the clause.
     fn caseClauseStatementsExit(self: *Checker, stmts: []const NodeId) bool {
         if (stmts.len == 0) return false;
-        return self.caseClauseStatementExits(stmts[stmts.len - 1]);
+        return self.statementDefinitelyTransfersControl(stmts[stmts.len - 1]);
     }
 
-    fn caseClauseStatementExits(self: *Checker, node: NodeId) bool {
+    fn statementDefinitelyTransfersControl(self: *Checker, node: NodeId) bool {
         if (node == hir_mod.none_node_id) return false;
         return switch (self.hir.kindOf(node)) {
             .return_stmt, .throw_stmt, .break_stmt, .continue_stmt => true,
             .block_stmt => blk: {
                 const stmts = hir_mod.blockStmts(self.hir, node);
                 if (stmts.len == 0) break :blk false;
-                break :blk self.caseClauseStatementExits(stmts[stmts.len - 1]);
+                break :blk self.statementDefinitelyTransfersControl(stmts[stmts.len - 1]);
             },
             .if_stmt => blk: {
                 const i = hir_mod.ifOf(self.hir, node);
                 if (i.else_branch == hir_mod.none_node_id) break :blk false;
-                break :blk self.caseClauseStatementExits(i.then_branch) and
-                    self.caseClauseStatementExits(i.else_branch);
+                break :blk self.statementDefinitelyTransfersControl(i.then_branch) and
+                    self.statementDefinitelyTransfersControl(i.else_branch);
             },
             .switch_stmt => self.switchDefinitelyExits(node),
             else => false,
@@ -106757,11 +106757,20 @@ pub const Checker = struct {
             if (constraint != current) return try self.subtractTypeByPredicate(constraint, target);
         }
         if (current_flags.is_union) {
+            const target_is_unit = target == types.Primitive.null_t or
+                target == types.Primitive.undefined_t or
+                target == types.Primitive.true_lit or
+                target == types.Primitive.false_lit or
+                (target < self.interner.pool.typeCount() and
+                    self.interner.pool.flagsOf(target).is_literal and
+                    !self.interner.pool.flagsOf(target).is_union and
+                    !self.interner.pool.flagsOf(target).is_intersection);
             var kept: std.ArrayListUnmanaged(TypeId) = .empty;
             defer kept.deinit(self.gpa);
             for (self.interner.unionMembers(current)) |member| {
                 const remove = self.typeMatchesPredicateTarget(member, target) or
-                    (!self.isNullishType(member) and
+                    (!target_is_unit and
+                        !self.isNullishType(member) and
                         !self.isNullishType(target) and
                         self.predicateTypesComparable(member, target));
                 if (!remove) try kept.append(self.gpa, member);
@@ -129818,6 +129827,18 @@ pub const Checker = struct {
                 if (ts.catch_param != hir_mod.none_node_id and self.hir.kindOf(ts.catch_param) == .identifier) {
                     if (hir_mod.identifierOf(self.hir, ts.catch_param).name == id.name) return true;
                 }
+            } else if (kind == .for_in_stmt or kind == .for_of_stmt) {
+                const loop = hir_mod.forInOf(self.hir, cur);
+                if (loop.target != hir_mod.none_node_id) {
+                    const target_kind = self.hir.kindOf(loop.target);
+                    const binding = if (target_kind == .var_decl or
+                        target_kind == .let_decl or
+                        target_kind == .const_decl)
+                        hir_mod.varDeclOf(self.hir, loop.target).name
+                    else
+                        loop.target;
+                    if (self.bindingPatternDeclaresName(binding, id.name)) return true;
+                }
             }
 
             const stmts: ?[]const NodeId = switch (kind) {
@@ -130974,9 +130995,9 @@ pub const Checker = struct {
                     if (positive) {
                         try self.recordMemberNarrow(key, types.Primitive.null_t);
                     } else {
-                        const obj_t = self.typeOfIdentifier(m.object);
+                        const obj_t = self.lookupNarrow(obj_id.name) orelse self.typeOfIdentifier(m.object);
                         const current = self.lookupMemberNarrow(key) orelse
-                            (self.interner.objectMember(obj_t, m.name) orelse types.Primitive.any);
+                            (try self.lookupObjectMember(obj_t, m.name)) orelse types.Primitive.any;
                         const narrowed = self.subtractType(current, types.Primitive.null_t) catch current;
                         try self.recordMemberNarrow(key, narrowed);
                     }
@@ -130996,9 +131017,9 @@ pub const Checker = struct {
                         if (positive) {
                             try self.recordMemberNarrow(key, types.Primitive.undefined_t);
                         } else {
-                            const obj_t = self.typeOfIdentifier(m.object);
+                            const obj_t = self.lookupNarrow(obj_id.name) orelse self.typeOfIdentifier(m.object);
                             const current = self.lookupMemberNarrow(key) orelse
-                                (self.interner.objectMember(obj_t, m.name) orelse types.Primitive.any);
+                                (try self.lookupObjectMember(obj_t, m.name)) orelse types.Primitive.any;
                             const narrowed = self.subtractType(current, types.Primitive.undefined_t) catch current;
                             try self.recordMemberNarrow(key, narrowed);
                         }
@@ -131014,9 +131035,9 @@ pub const Checker = struct {
                     if (positive) {
                         try self.recordMemberNarrow(key, lit_t);
                     } else {
-                        const obj_t = self.typeOfIdentifier(m.object);
+                        const obj_t = self.lookupNarrow(obj_id.name) orelse self.typeOfIdentifier(m.object);
                         const current = self.lookupMemberNarrow(key) orelse
-                            (self.interner.objectMember(obj_t, m.name) orelse types.Primitive.any);
+                            (try self.lookupObjectMember(obj_t, m.name)) orelse types.Primitive.any;
                         const narrowed = self.subtractType(current, lit_t) catch current;
                         try self.recordMemberNarrow(key, narrowed);
                     }
@@ -246929,6 +246950,62 @@ test "checker: logical-AND narrows optional member on RHS" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.type_not_assignable);
     }
+}
+
+test "checker: logical-AND narrows for-of bindings on RHS" {
+    const s = try newSetup(
+        \\function acceptsString(value: string): boolean { return value.length > 0; }
+        \\declare const keys: (string | symbol)[];
+        \\for (const key of keys) {
+        \\  const checked = typeof key === "string" && acceptsString(key);
+        \\  acceptsString(key);
+        \\}
+        \\declare const optionalKinds: ("left" | "right" | undefined)[];
+        \\for (const kind of optionalKinds) {
+        \\  if (typeof kind !== "string") continue;
+        \\  acceptsString(kind);
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.argument_type_mismatch));
+}
+
+test "checker: negative member guards subtract from projected union properties" {
+    const s = try newSetup(
+        \\interface BaseIssue { readonly code?: string; readonly path: PropertyKey[] }
+        \\interface TooBig extends BaseIssue { readonly code: "too_big"; maximum: number }
+        \\interface TooSmall extends BaseIssue { readonly code: "too_small"; minimum: number }
+        \\interface UnionEmpty extends BaseIssue { readonly code: "invalid_union"; errors: [] }
+        \\interface UnionErrors extends BaseIssue { readonly code: "invalid_union"; errors: Issue[][] }
+        \\interface InvalidKey extends BaseIssue { readonly code: "invalid_key"; issues: Issue[] }
+        \\interface InvalidElement extends BaseIssue { readonly code: "invalid_element"; issues: Issue[] }
+        \\interface Custom extends BaseIssue { readonly code: "custom"; params?: object }
+        \\type Issue = TooBig | TooSmall | UnionEmpty | UnionErrors | InvalidKey | InvalidElement | Custom;
+        \\declare const issues: Issue[];
+        \\for (const issue of issues) {
+        \\  if (issue.code === "invalid_union" && issue.errors.length) {
+        \\    void issue.errors;
+        \\  } else if (issue.code === "invalid_key") {
+        \\    void issue.issues;
+        \\  } else if (issue.code === "invalid_element") {
+        \\    void issue.issues;
+        \\  }
+        \\}
+        \\declare const keys: (string | symbol)[];
+        \\for (const key of keys) {
+        \\  if (key === "__proto__") continue;
+        \\  const preserved: string | symbol = key;
+        \\  void (key as string); void preserved;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.no_overlap_comparison));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.conversion_may_be_mistake));
 }
 
 test "checker: mixed logical guards join falsy and typeof branches" {
