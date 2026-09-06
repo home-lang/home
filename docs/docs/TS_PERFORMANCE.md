@@ -7961,6 +7961,81 @@ zig build -Doptimize=ReleaseFast
 ./zig-out/bin/home-tsc --project=/path/to/zod-4.5.2/tsconfig.benchmark.json --pretty=false
 ```
 
+### Imported mapped contextual members
+
+Issue [#666](https://github.com/home-lang/home/issues/666), under
+[#548](https://github.com/home-lang/home/issues/548), addresses contextual
+typing for imported mapped object types whose property template is not a
+direct indexed access. For example, in
+`{ [K in Kind]?: (item: Item<K>, rewritten: boolean) => Item }`, the callback
+assigned to property `a` must receive `Item<"a">`.
+
+Before commit
+[`d5292655c`](https://github.com/home-lang/home/commit/d5292655c), the checker
+could recover a mapped key parameter only from a narrowly recognized
+`Object[K]` template. A callable template carried `K` inside the generic
+argument `Item<K>`, so imported object-literal projection left it generic and
+reported a false key assignment plus a false whole-argument TS2345.
+
+The mapped payload now stores the key parameter's declaration identity
+directly. Interning, mapped substitution, Program schema lowering, and
+cross-pool type transfer preserve that identity. Property projection binds it
+to the concrete property string literal before contextualizing the member.
+The mechanism applies to arbitrary nested templates and contains no checks for
+an alias name, property name, source path, diagnostic location, or benchmark
+package.
+
+The strict two-file oracle imports an optional mapped handler type, assigns a
+callback to property `a`, and keeps independent positive and negative controls:
+
+| Imported mapped-handler control | TypeScript 6.0.3 | Native TypeScript preview | ReleaseFast Home |
+|---|---:|---:|---:|
+| Callback item type | `Item<"a">` | `Item<"a">` | **`Item<"a">`** |
+| Implicit callback parameters | no TS7006 | no TS7006 | **no TS7006** |
+| Whole object-literal argument | no TS2345 | no TS2345 | **no TS2345** |
+| Assignment to `number`; missing member on `boolean` | TS2322, TS2339 | TS2322, TS2339 | **TS2322, TS2339** |
+
+The unchanged pinned 106-file Zod 4.5.2 graph is an exact parent/candidate
+admission guard. The parent is `bb52bd4ab`; the candidate is `d5292655c`.
+Complete identities normalize to path, line, column, and diagnostic code:
+
+| Zod 4.5.2 mapped contextual-member audit | Parent `bb52bd4ab` | #666 `d5292655c` | Change |
+|---|---:|---:|---:|
+| All diagnostics | 400 | **400** | **unchanged; 0 added** |
+| Unique diagnostic identities | 395 | **395** | **unchanged; 0 added** |
+| Unique identities versus immutable baseline | 597 | **395** | **202 removed overall; 0 added** |
+
+The normalized identity sets are identical. Parent and candidate stderr are
+also byte-identical, with SHA-256
+`0590e3b2b593d2e2c0abb32f9f732d45f6d1701f3c2f906d07975ddf39c0bbc9`;
+two independent candidate runs match as well. The diagnostic distribution is
+202 TS2345, 70 TS7006, 59 TS2339, 16 TS1361, 12 TS2322, 8 TS2304, 4 TS7031,
+4 TS2554, 4 TS2430, 3 TS2488, 3 TS2411, 2 TS4110, 2 TS2749, 2 TS2741,
+2 TS2698, 2 TS2552, 2 TS2367, 2 TS18048, and 1 TS2571.
+
+Zod still has diagnostics while TypeScript reports zero, so it remains outside
+cross-compiler timing. Timing is also excluded because the release builds and
+audits ran on a contended shared host; this section makes no performance
+claim.
+
+Final gates pass the exact three-engine oracle, the permanent imported
+positive/negative Program regression, the complete Program and checker suites,
+the focused cross-pool transfer regression, ReleaseFast, `zig fmt --check`,
+and `git diff --check`. The required repository-wide Pickier run remains red
+on existing debt: 22,427 findings (11,834 errors and 10,593 warnings).
+Production evidence is retained on
+[#666](https://github.com/home-lang/home/issues/666#issuecomment-5560759824).
+
+```sh
+zig build test -Dfilter=ts_checker -Dts-checker-test-filter='type transfer: every payload kind preserves shared recursive edges and mapped names'
+zig build test -Dfilter=ts_checker
+zig build test -Dfilter=ts_program
+zig build -Doptimize=ReleaseFast
+./zig-out/bin/home-tsc --project=/path/to/mapped-handler-context/tsconfig.json --pretty=false
+./zig-out/bin/home-tsc --project=/path/to/zod-4.5.2/tsconfig.benchmark.json --pretty=false
+bunx --bun pickier .
+```
+
 ### Typed cross-file global ownership and cyclic provenance (untimed)
 
 Issue [#480](https://github.com/home-lang/home/issues/480), under

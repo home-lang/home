@@ -432,6 +432,16 @@ method signatures without admitting an unsupported sibling class graph:
 | Unique path/line/column/code identities | 425 | **395** | **30 removed; 0 added** |
 | Unique identities versus immutable baseline | 597 | **395** | **202 removed; 0 added** |
 
+The mapped-handler audit then retains each mapped key parameter as explicit
+type identity, allowing imported object-literal callback members to specialize
+nested templates by their concrete property key:
+
+| [Zod 4.5.2 mapped contextual-member audit](docs/docs/TS_PERFORMANCE.md#imported-mapped-contextual-members) | Post-#665 main | #666 main | Change |
+|---|---:|---:|---:|
+| Diagnostics | 400 | **400** | **unchanged; 0 added** |
+| Unique path/line/column/code identities | 395 | **395** | **unchanged; 0 added** |
+| Unique identities versus immutable baseline | 597 | **395** | **202 removed overall; 0 added** |
+
 TypeScript 6.0.3 reports zero diagnostics on this graph. Home still reports
 400, so Zod remains outside the cross-compiler timing table until Home also
 reaches zero diagnostics.
