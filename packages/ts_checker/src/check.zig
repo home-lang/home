@@ -162581,6 +162581,7 @@ pub const Checker = struct {
                             !self.signatureOwnsTypeParameter(sig, param_t) and
                             !self.sameTypeParameterName(arg_types[i], param_t) and
                             !try self.sameEnclosingTypeParameterDisplay(args[i], arg_types[i], param_t) and
+                            !try self.typeParameterConstraintAssignableToParam(arg_types[i], param_t) and
                             arg_types[i] != types.Primitive.any and
                             arg_types[i] != types.Primitive.unknown and
                             arg_types[i] != types.Primitive.never and
@@ -247555,6 +247556,36 @@ test "checker: forward type parameter constraints retain transitive declaration 
         if (d.code == TsCodes.type_not_assignable) mismatch_count += 1;
     }
     try T.expectEqual(@as(u32, 12), mismatch_count);
+}
+
+test "checker: overload diagnostics honor transitive generic argument constraints" {
+    const s = try newSetup(
+        \\interface State<Out = unknown> { output: Out }
+        \\type Standard<T> = { input: T; output: T };
+        \\interface SchemaType<
+        \\  Out = unknown,
+        \\  S extends State<Out> = State<Out>,
+        \\> {
+        \\  state: S;
+        \\  standard: Standard<this>;
+        \\}
+        \\class Registry<Schema extends SchemaType = SchemaType> {
+        \\  add<S extends Schema>(schema: S): void {
+        \\    const take: (value: Schema) => void = () => {};
+        \\    take(schema);
+        \\    take(1);
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.argument_type_mismatch,
+        "Argument of type 'number' is not assignable to parameter of type 'Schema'.",
+    ));
 }
 
 test "checker: unconstrained source type parameter carries TS2208 related info" {
