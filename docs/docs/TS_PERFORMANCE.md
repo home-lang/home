@@ -8036,6 +8036,88 @@ zig build -Doptimize=ReleaseFast
 bunx --bun pickier .
 ```
 
+### Imported overloaded object-literal context
+
+Issue [#667](https://github.com/home-lang/home/issues/667), under
+[#548](https://github.com/home-lang/home/issues/548), covers contextual object
+literals passed to an imported overloaded function. Commit
+[`b6f5eef4a`](https://github.com/home-lang/home/commit/b6f5eef4a) transfers a
+multiply declared function as the ordered intersection of its bodyless
+overload signatures. A concrete implementation body is excluded from the
+public call surface, matching the existing local-overload rule.
+
+Contextual checking first keeps arity-compatible signatures, then compares
+only the object literal's declared property names with each corresponding
+parameter. A signature is selected only when exactly one candidate can own
+every declared property. Callback values are not evaluated during this
+selection, so they cannot circularly choose the context that determines their
+own types; ordinary overload resolution still owns complete applicability and
+diagnostics. Unconstrained type parameters, `any`, `unknown`, dynamic computed
+keys, and rest signatures remain possible candidates. The implementation has
+no checks for a package, path, function, alias, property, or diagnostic.
+
+The strict two-file oracle places a generic overload with an optional second
+parameter before the optional mapped-handler overload. Property `a` must
+select the latter and retain the mapped key specialization from #666:
+
+| Imported overloaded-handler control | TypeScript 6.0.3 | Native TypeScript preview | ReleaseFast Home |
+|---|---:|---:|---:|
+| Callback item type | `Item<"a">` | `Item<"a">` | **`Item<"a">`** |
+| Implicit callback parameters | no TS7006 | no TS7006 | **no TS7006** |
+| Whole object-literal argument | no TS2345 | no TS2345 | **no TS2345** |
+| Assignment to `number`; missing member on `boolean` | TS2322, TS2339 | TS2322, TS2339 | **TS2322, TS2339** |
+
+Permanent negative controls cover two signatures that both own property `a`
+and two signatures that both reject property `c`. The ambiguous case retains
+the first declaration's contextual type, matching both TypeScript engines;
+the mismatch leaves its callback parameter implicit-`any` instead of choosing
+an inapplicable overload. Optional mapped members and generic overload-local
+parameters are exercised in the positive control.
+
+The unchanged pinned 106-file Zod 4.5.2 graph is the production admission
+guard. Runs use the same `tsconfig.benchmark.json`; complete identities
+normalize to path, line, column, and diagnostic code:
+
+| Zod 4.5.2 imported-overload object audit | #666 main | #667 `b6f5eef4a` | Change |
+|---|---:|---:|---:|
+| All diagnostics | 400 | **400** | **unchanged; 0 added** |
+| Unique diagnostic identities | 395 | **395** | **unchanged; 0 added** |
+| Unique identities versus immutable baseline | 597 | **395** | **202 removed overall; 0 added** |
+
+The baseline and two independent candidate runs are byte-identical, with
+stderr SHA-256
+`0590e3b2b593d2e2c0abb32f9f732d45f6d1701f3c2f906d07975ddf39c0bbc9`.
+The normalized identity SHA-256 is
+`86df9bf4b128d164b88a96d4dfa2441094dbeeaa514b2587fa73c5ac0f3cdab5`;
+the exact delta is zero removals and zero additions. The distribution remains
+202 TS2345, 70 TS7006, 59 TS2339, 16 TS1361, 12 TS2322, 8 TS2304, 4 TS7031,
+4 TS2554, 4 TS2430, 3 TS2488, 3 TS2411, 2 TS4110, 2 TS2749, 2 TS2741,
+2 TS2698, 2 TS2552, 2 TS2367, 2 TS18048, and 1 TS2571.
+
+Zod's 16 `classic/in-out.ts` and `mini/in-out.ts` callback TS7006 diagnostics
+remain. Its real `VisitHandlers` value template uses a deeper conditional
+`Extract` declaration graph outside this overload-transfer slice; the exact
+standalone overload shape is fixed without approximating that unsupported
+graph. Zod still has diagnostics while TypeScript reports zero, so it remains
+outside cross-compiler timing. Elapsed times are also excluded because the
+shared host was contended; this section makes no performance claim.
+
+Final gates pass the exact three-engine oracle, **193/193** complete Program
+tests, the complete checker suite, ReleaseFast, `zig fmt --check`, and
+`git diff --check`. The required repository-wide Pickier run remains red on
+unchanged existing debt: 22,427 findings (11,834 errors and 10,593 warnings).
+Production evidence is retained on
+[#667](https://github.com/home-lang/home/issues/667#issuecomment-5560965638).
+
+```sh
+zig build test -Dfilter=ts_program
+zig build test -Dfilter=ts_checker
+zig build -Doptimize=ReleaseFast
+./zig-out/bin/home-tsc --project=/path/to/overloaded-mapped-handler/tsconfig.json --pretty=false
+./zig-out/bin/home-tsc --project=/path/to/zod-4.5.2/tsconfig.benchmark.json --pretty=false
+bunx --bun pickier .
+```
+
 ### Typed cross-file global ownership and cyclic provenance (untimed)
 
 Issue [#480](https://github.com/home-lang/home/issues/480), under

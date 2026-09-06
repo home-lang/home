@@ -442,6 +442,16 @@ nested templates by their concrete property key:
 | Unique path/line/column/code identities | 395 | **395** | **unchanged; 0 added** |
 | Unique identities versus immutable baseline | 597 | **395** | **202 removed overall; 0 added** |
 
+The imported-overload audit then transfers ordered bodyless call signatures
+across Program ownership and contextually selects an object-literal overload
+only when arity plus declared property ownership leave one candidate:
+
+| [Zod 4.5.2 imported-overload object audit](docs/docs/TS_PERFORMANCE.md#imported-overloaded-object-literal-context) | #666 main | #667 main | Change |
+|---|---:|---:|---:|
+| Diagnostics | 400 | **400** | **unchanged; 0 added** |
+| Unique path/line/column/code identities | 395 | **395** | **unchanged; 0 added** |
+| Unique identities versus immutable baseline | 597 | **395** | **202 removed overall; 0 added** |
+
 TypeScript 6.0.3 reports zero diagnostics on this graph. Home still reports
 400, so Zod remains outside the cross-compiler timing table until Home also
 reaches zero diagnostics.
