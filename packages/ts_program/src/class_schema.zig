@@ -392,18 +392,24 @@ pub const Builder = struct {
             },
         };
         if (info.name != 0 and c.hir.kindOf(info.name) == .identifier) def.name = c.interner.get(hir.identifierOf(&c.hir, info.name).name);
+        var overload_declarations: ?[]const hir.NodeId = null;
         if ((kind == .fn_decl or kind == .interface_decl) and info.name != 0 and c.hir.kindOf(info.name) == .identifier) {
             const name = hir.identifierOf(&c.hir, info.name).name;
             const symbol = if (kind == .fn_decl) c.module.root.values.get(name) else c.module.root.types.get(name);
             if (symbol) |bound| {
                 if (bound.decls.items.len != 1 and std.mem.indexOfScalar(hir.NodeId, bound.decls.items, key.node) != null) {
-                    def.body = try self.expression(.unsupported);
-                    return def;
+                    if (kind == .fn_decl) {
+                        overload_declarations = bound.decls.items;
+                    } else {
+                        def.body = try self.expression(.unsupported);
+                        return def;
+                    }
                 }
             }
         }
-        def.parameters = try self.arena.alloc(schema.Parameter, info.params.len);
-        for (info.params, def.parameters) |node, *param| param.* = .{ .name = c.interner.get(hir.typeParameterOf(&c.hir, node).name) };
+        const declaration_parameters = if (overload_declarations == null) info.params else &.{};
+        def.parameters = try self.arena.alloc(schema.Parameter, declaration_parameters.len);
+        for (declaration_parameters, def.parameters) |node, *param| param.* = .{ .name = c.interner.get(hir.typeParameterOf(&c.hir, node).name) };
         const allow_opaque = switch (kind) {
             .type_alias_decl => switch (c.hir.kindOf(hir.typeAliasOf(&c.hir, key.node).aliased)) {
                 .fn_type, .constructor_type => true,
@@ -420,7 +426,7 @@ pub const Builder = struct {
             else => false,
         };
         const context: Context = .{ .source = key.source, .declaration = def, .allow_opaque = allow_opaque };
-        for (info.params, def.parameters) |node, *param| {
+        for (declaration_parameters, def.parameters) |node, *param| {
             const value = hir.typeParameterOf(&c.hir, node);
             param.variance = value.variance;
             param.is_const = value.is_const;
@@ -430,7 +436,10 @@ pub const Builder = struct {
         def.body = if (kind == .type_alias_decl)
             try self.lower(context, hir.typeAliasOf(&c.hir, key.node).aliased)
         else if (kind == .fn_decl)
-            try self.functionType(context, &.{}, hir.fnParams(&c.hir, key.node), hir.fnDeclOf(&c.hir, key.node).return_type, false)
+            if (overload_declarations) |declarations|
+                try self.functionOverloadType(context, declarations)
+            else
+                try self.functionType(context, &.{}, hir.fnParams(&c.hir, key.node), hir.fnDeclOf(&c.hir, key.node).return_type, false)
         else if (kind == .var_decl or kind == .let_decl or kind == .const_decl) blk: {
             const variable = hir.varDeclOf(&c.hir, key.node);
             const type_source = if (variable.type_annotation != 0)
@@ -445,6 +454,30 @@ pub const Builder = struct {
         else
             try self.classBody(context, key.node);
         return def;
+    }
+
+    fn functionOverloadType(
+        self: *Builder,
+        context: Context,
+        declarations: []const hir.NodeId,
+    ) !*const schema.Expression {
+        const c = self.sources[context.source].compilation;
+        var signatures: std.ArrayListUnmanaged(*const schema.Expression) = .empty;
+        for (declarations) |node| {
+            if (c.hir.kindOf(node) != .fn_decl) return self.expression(.unsupported);
+            const function = hir.fnDeclOf(&c.hir, node);
+            if (function.body != hir.none_node_id) continue;
+            try signatures.append(self.arena, try self.functionType(
+                context,
+                hir.fnTypeParams(&c.hir, node),
+                hir.fnParams(&c.hir, node),
+                function.return_type,
+                false,
+            ));
+        }
+        if (signatures.items.len == 0) return self.expression(.unsupported);
+        if (signatures.items.len == 1) return signatures.items[0];
+        return self.expression(.{ .intersection = try signatures.toOwnedSlice(self.arena) });
     }
 
     fn interfaceBody(self: *Builder, context: Context, node: hir.NodeId) !*const schema.Expression {

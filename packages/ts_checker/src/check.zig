@@ -31568,12 +31568,21 @@ pub const Checker = struct {
                 for (overload_list.items[0..visible_len]) |sig| {
                     if (!self.callArityFitsSignature(call_node, sig, args)) continue;
                     if (selected != types.Primitive.none) {
-                        return self.firstSignatureType(callee_t);
+                        selected = types.Primitive.none;
+                        break;
                     }
                     selected = sig;
                 }
                 if (selected != types.Primitive.none) return selected;
+                if (try self.uniqueContextualOverloadFromSignatures(
+                    call_node,
+                    overload_list.items[0..visible_len],
+                    args,
+                )) |signature| return signature;
             }
+        }
+        if (try self.uniqueContextualOverloadForObjectLiteral(call_node, callee_t, args)) |signature| {
+            return signature;
         }
         if (self.hir.kindOf(call.callee) == .member_access) {
             const member = hir_mod.memberOf(self.hir, call.callee);
@@ -31589,6 +31598,99 @@ pub const Checker = struct {
             }
         }
         return self.firstSignatureType(callee_t);
+    }
+
+    /// Select an overload for contextual object-literal checking only when
+    /// the literal's declared property set leaves one arity-compatible
+    /// candidate. Value expressions remain unchecked here; ordinary overload
+    /// resolution still owns complete applicability and diagnostics.
+    fn uniqueContextualOverloadForObjectLiteral(
+        self: *Checker,
+        call_node: NodeId,
+        callee_t: TypeId,
+        args: []const NodeId,
+    ) CheckError!?TypeId {
+        if (callee_t >= self.interner.pool.typeCount()) return null;
+        const flags = self.interner.pool.flagsOf(callee_t);
+        if (!flags.is_intersection and !flags.is_object_type) return null;
+
+        var signatures: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer signatures.deinit(self.gpa);
+        try self.collectCallSignatures(callee_t, &signatures);
+        return self.uniqueContextualOverloadFromSignatures(call_node, signatures.items, args);
+    }
+
+    fn uniqueContextualOverloadFromSignatures(
+        self: *Checker,
+        call_node: NodeId,
+        signatures: []const TypeId,
+        args: []const NodeId,
+    ) CheckError!?TypeId {
+        if (signatures.len <= 1) return null;
+
+        var selected = types.Primitive.none;
+        for (signatures) |signature| {
+            if (!self.callArityFitsSignature(call_node, signature, args)) continue;
+            if (!try self.contextualOverloadAcceptsObjectLiteralShape(signature, args)) continue;
+            if (selected != types.Primitive.none) return null;
+            selected = signature;
+        }
+        return if (selected == types.Primitive.none) null else selected;
+    }
+
+    fn contextualOverloadAcceptsObjectLiteralShape(
+        self: *Checker,
+        signature: TypeId,
+        args: []const NodeId,
+    ) CheckError!bool {
+        const params = self.interner.signatureParams(signature);
+        if (self.rest_signatures.contains(signature)) return true;
+        for (args, 0..) |argument, index| {
+            if (index >= params.len or self.hir.kindOf(argument) != .object_literal) continue;
+            for (hir_mod.objectLiteralProps(self.hir, argument)) |property_node| {
+                if (self.hir.kindOf(property_node) != .object_property) continue;
+                const property = hir_mod.objectPropertyOf(self.hir, property_node);
+                const name = if (!property.is_computed and self.hir.kindOf(property.key) == .identifier)
+                    hir_mod.identifierOf(self.hir, property.key).name
+                else
+                    (try self.classMemberNameFromPropertyKey(property.key, property.is_computed)) orelse continue;
+                if (!try self.contextualOverloadParameterAcceptsProperty(params[index], name)) return false;
+            }
+        }
+        return true;
+    }
+
+    fn contextualOverloadParameterAcceptsProperty(
+        self: *Checker,
+        parameter_t: TypeId,
+        name: hir_mod.StringId,
+    ) CheckError!bool {
+        if (parameter_t >= self.interner.pool.typeCount()) return true;
+        const flags = self.interner.pool.flagsOf(parameter_t);
+        if (flags.is_any or flags.is_unknown) return true;
+        if (flags.is_instantiation) {
+            const resolved = try self.resolveGenericType(parameter_t);
+            if (resolved != parameter_t) return self.contextualOverloadParameterAcceptsProperty(resolved, name);
+        }
+        if (flags.is_type_parameter) {
+            const constraint = self.typeParameterConstraint(parameter_t) orelse return true;
+            if (constraint == parameter_t) return true;
+            return self.contextualOverloadParameterAcceptsProperty(constraint, name);
+        }
+        if (flags.is_union or flags.is_intersection) {
+            const members = if (flags.is_union)
+                self.interner.unionMembers(parameter_t)
+            else
+                self.interner.intersectionMembers(parameter_t);
+            for (members) |member| {
+                if (try self.contextualOverloadParameterAcceptsProperty(member, name)) return true;
+            }
+            return false;
+        }
+        if (self.typeIsMappedPayloadType(parameter_t)) {
+            return self.mappedTypeAcceptsPropertyName(parameter_t, name);
+        }
+        return (try self.excessPropertyTargetMemberType(parameter_t, name)) != null;
     }
 
     /// Project one callable member from its source-owned class declaration
