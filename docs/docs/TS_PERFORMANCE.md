@@ -8118,6 +8118,94 @@ zig build -Doptimize=ReleaseFast
 bunx --bun pickier .
 ```
 
+### Imported Extract conditional handlers
+
+Issue [#668](https://github.com/home-lang/home/issues/668), under
+[#548](https://github.com/home-lang/home/issues/548), isolates standard
+`Extract<T, U>` inside an imported conditional mapped-handler alias. Commit
+[`40160d029`](https://github.com/home-lang/home/commit/40160d029) represents
+that utility losslessly in the Program declaration schema and lowers it
+through the existing conditional evaluator as the distributive relation
+`T extends U ? T : never`.
+
+Only `Extract` receives this whole-schema admission because its complete
+semantics are preserved. Existing contextual handling for `Partial`,
+`Required`, `Readonly`, `Pick`, and `Omit` is unchanged. The source union is
+resolved before evaluation, the target retains declaration-owned type
+parameters until mapped-key substitution, and the normal conditional engine
+performs distribution and structural assignability. There is no fabricated
+member surface or check for a package, path, alias, property, or diagnostic.
+
+The strict two-file oracle defines discriminated interfaces `A` and `B`, then
+uses this source-owned alias under the imported overload from #667:
+
+```ts
+type ItemOfKind<K extends Kind> = [Extract<Item, { kind: K }>] extends [never]
+  ? Item
+  : Extract<Item, { kind: K }>;
+type Handlers = { [K in Kind]?: (item: ItemOfKind<K>, rewritten: boolean) => Item };
+```
+
+Property `a` must retain only `A`. A second instantiation,
+`ItemOfKind<never>`, exercises the true fallback branch and must recover the
+complete `A | B` union:
+
+| Imported Extract-handler control | TypeScript 6.0.3 | Native TypeScript preview | ReleaseFast Home |
+|---|---:|---:|---:|
+| Property `a` callback item | `A` | `A` | **`A`** |
+| Nonmatching `B` member | absent | absent | **absent** |
+| `ItemOfKind<never>` fallback | `Item` (`A \| B`) | `Item` (`A \| B`) | **`A \| B`** |
+| Implicit callback parameters / whole call | no TS7006/TS2345 | no TS7006/TS2345 | **no TS7006/TS2345** |
+| Invalid controls | TS2322 x2, TS2339 x2 | TS2322 x2, TS2339 x2 | **TS2322 x2, TS2339 x2** |
+
+The schema regression also proves both `Extract` occurrences survive the
+conditional graph beneath an optional mapped handler and the ordered imported
+overload set. The Program regression owns the concrete cross-file behavior;
+the ambiguity, generic overload, unrelated-property, and optional-member
+controls from #667 remain green.
+
+The unchanged pinned 106-file Zod 4.5.2 graph remains the production
+admission guard:
+
+| Zod 4.5.2 imported-Extract handler audit | #667 main | #668 `40160d029` | Change |
+|---|---:|---:|---:|
+| All diagnostics | 400 | **400** | **unchanged; 0 added** |
+| Unique diagnostic identities | 395 | **395** | **unchanged; 0 added** |
+| Unique identities versus immutable baseline | 597 | **395** | **202 removed overall; 0 added** |
+
+The baseline and two independent candidate runs are byte-identical, with
+stderr SHA-256
+`0590e3b2b593d2e2c0abb32f9f732d45f6d1701f3c2f906d07975ddf39c0bbc9`.
+The normalized identity SHA-256 remains
+`86df9bf4b128d164b88a96d4dfa2441094dbeeaa514b2587fa73c5ac0f3cdab5`;
+the exact delta is zero removals and zero additions. The distribution remains
+202 TS2345, 70 TS7006, 59 TS2339, 16 TS1361, 12 TS2322, 8 TS2304, 4 TS7031,
+4 TS2554, 4 TS2430, 3 TS2488, 3 TS2411, 2 TS4110, 2 TS2749, 2 TS2741,
+2 TS2698, 2 TS2552, 2 TS2367, 2 TS18048, and 1 TS2571.
+
+The unchanged output proves at least one additional edge in Zod's much larger
+`VisitHandlers` source graph remains unsupported; this checkpoint does not
+guess or approximate it. Zod still has diagnostics while TypeScript reports
+zero, so it stays outside cross-compiler timing. Elapsed times are also
+excluded because the shared host was contended; this section makes no
+performance claim.
+
+Final gates pass the exact three-engine oracle, **194/194** complete Program
+tests, the complete checker suite, ReleaseFast, `zig fmt --check`, and
+`git diff --check`. The required repository-wide Pickier run remains red on
+unchanged existing debt: 22,427 findings (11,834 errors and 10,593 warnings).
+Production evidence is retained on
+[#668](https://github.com/home-lang/home/issues/668#issuecomment-5561082067).
+
+```sh
+zig build test -Dfilter=ts_program
+zig build test -Dfilter=ts_checker
+zig build -Doptimize=ReleaseFast
+./zig-out/bin/home-tsc --project=/path/to/imported-conditional-handler/tsconfig.json --pretty=false
+./zig-out/bin/home-tsc --project=/path/to/zod-4.5.2/tsconfig.benchmark.json --pretty=false
+bunx --bun pickier .
+```
+
 ### Typed cross-file global ownership and cyclic provenance (untimed)
 
 Issue [#480](https://github.com/home-lang/home/issues/480), under

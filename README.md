@@ -452,6 +452,16 @@ only when arity plus declared property ownership leave one candidate:
 | Unique path/line/column/code identities | 395 | **395** | **unchanged; 0 added** |
 | Unique identities versus immutable baseline | 597 | **395** | **202 removed overall; 0 added** |
 
+The imported-`Extract` audit then carries standard distributive extraction
+through conditional mapped-handler aliases without admitting other utility
+graphs as approximate whole types:
+
+| [Zod 4.5.2 imported-Extract handler audit](docs/docs/TS_PERFORMANCE.md#imported-extract-conditional-handlers) | #667 main | #668 main | Change |
+|---|---:|---:|---:|
+| Diagnostics | 400 | **400** | **unchanged; 0 added** |
+| Unique path/line/column/code identities | 395 | **395** | **unchanged; 0 added** |
+| Unique identities versus immutable baseline | 597 | **395** | **202 removed overall; 0 added** |
+
 TypeScript 6.0.3 reports zero diagnostics on this graph. Home still reports
 400, so Zod remains outside the cross-compiler timing table until Home also
 reaches zero diagnostics.
