@@ -10650,12 +10650,15 @@ test "Program: imported indexed access defaults instantiate from earlier argumen
     try T.expectEqual(@as(usize, 3), compilation.diagnostics.items.len);
     var assignability_diagnostics: usize = 0;
     var argument_diagnostics: usize = 0;
+    var missing_property_diagnostics: usize = 0;
     for (compilation.diagnostics.items) |diagnostic| {
         if (diagnostic.code == 2322) assignability_diagnostics += 1;
         if (diagnostic.code == 2345) argument_diagnostics += 1;
+        if (diagnostic.code == 2741) missing_property_diagnostics += 1;
     }
-    try T.expectEqual(@as(usize, 2), assignability_diagnostics);
-    try T.expectEqual(@as(usize, 1), argument_diagnostics);
+    try T.expectEqual(@as(usize, 1), assignability_diagnostics);
+    try T.expectEqual(@as(usize, 0), argument_diagnostics);
+    try T.expectEqual(@as(usize, 2), missing_property_diagnostics);
 }
 
 test "Program: imported recursive defaults enforce closed generic constraints" {
@@ -10795,6 +10798,194 @@ test "Program: generic nested member assignments contextually type callbacks" {
     try T.expectEqual(@as(usize, 0), compilation.diagnostics.items.len);
     try expectCompilationLacksDiagnosticCode(invalid_compilation, 7006);
     try expectCompilationHasDiagnosticCode(invalid_compilation, 2339);
+    try T.expectEqual(@as(usize, 1), invalid_compilation.diagnostics.items.len);
+}
+
+test "Program: local multiple heritage retains qualified imported members in factory defaults" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver };
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+
+    const owner =
+        \\export interface RemoteBase { abort?: boolean }
+        \\export interface Remote<Format extends string = string> extends RemoteBase {
+        \\  format: Format;
+        \\  pattern?: RegExp;
+        \\}
+        \\type Trait = { state: { def: unknown } };
+        \\export interface $constructor<T extends Trait, D = T["state"]["def"]> {
+        \\  init(inst: T, def: D): asserts inst is T;
+        \\}
+        \\export function $constructor<T extends Trait, D = T["state"]["def"]>(
+        \\  initialize: (inst: T, def: D) => void
+        \\): $constructor<T, D> { throw new Error(); }
+    ;
+    const consumer =
+        \\import * as api from "./owner.js";
+        \\interface LocalBase { type: "string" }
+        \\interface Combined<Format extends string = string>
+        \\  extends LocalBase, api.Remote<Format> {}
+        \\interface Internals { def: Combined<"tag"> }
+        \\interface Item { state: Internals }
+        \\export const Item: api.$constructor<Item> = api.$constructor<Item>((inst, def) => {
+        \\  def.pattern ??= /tag/;
+        \\  const maybe: boolean | undefined = def.abort;
+        \\  const exact: "tag" = def.format;
+        \\  inst.state.def = def;
+        \\  void maybe; void exact;
+        \\});
+    ;
+    const invalid =
+        \\import * as api from "./owner.js";
+        \\interface LocalBase { type: "string" }
+        \\interface Combined<Format extends string = string>
+        \\  extends LocalBase, api.Remote<Format> {}
+        \\interface Internals { def: Combined<"tag"> }
+        \\interface Item { state: Internals }
+        \\export const Item: api.$constructor<Item> = api.$constructor<Item>((inst, def) => {
+        \\  const wrong: number = def.format;
+        \\  def.missing;
+        \\  void inst; void wrong;
+        \\});
+    ;
+    try vfs.addFile("/proj/owner.ts", owner);
+    try vfs.addFile("/proj/consumer.ts", consumer);
+    try vfs.addFile("/proj/invalid.ts", invalid);
+    _ = try p.add("/proj/owner.ts", owner);
+    const consumer_id = try p.add("/proj/consumer.ts", consumer);
+    const invalid_id = try p.add("/proj/invalid.ts", invalid);
+
+    try p.compileAll(.{
+        .no_emit = true,
+        .strict_flags = .{ .no_implicit_any = true, .strict_null_checks = true },
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    });
+    try T.expectEqual(@as(usize, 0), p.fileById(consumer_id).compilation.?.diagnostics.items.len);
+    const invalid_compilation = p.fileById(invalid_id).compilation.?;
+    try expectCompilationHasDiagnosticCode(invalid_compilation, 2322);
+    try expectCompilationHasDiagnosticCode(invalid_compilation, 2339);
+    try T.expectEqual(@as(usize, 2), invalid_compilation.diagnostics.items.len);
+
+    var reverse = Program.init(T.allocator, &resolver);
+    defer reverse.deinit();
+    const reverse_invalid_id = try reverse.add("/proj/invalid.ts", invalid);
+    const reverse_consumer_id = try reverse.add("/proj/consumer.ts", consumer);
+    _ = try reverse.add("/proj/owner.ts", owner);
+    try reverse.compileAll(.{
+        .no_emit = true,
+        .strict_flags = .{ .no_implicit_any = true, .strict_null_checks = true },
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    });
+    try T.expectEqual(@as(usize, 0), reverse.fileById(reverse_consumer_id).compilation.?.diagnostics.items.len);
+    const reverse_invalid = reverse.fileById(reverse_invalid_id).compilation.?;
+    try expectCompilationHasDiagnosticCode(reverse_invalid, 2322);
+    try expectCompilationHasDiagnosticCode(reverse_invalid, 2339);
+    try T.expectEqual(@as(usize, 2), reverse_invalid.diagnostics.items.len);
+}
+
+test "Program: inherited imported members project across union constituents" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver };
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+
+    const owner =
+        \\export interface Tagged<Tag extends string> { readonly tag: Tag }
+    ;
+    const consumer =
+        \\import * as api from "./owner.js";
+        \\interface Left extends api.Tagged<"left"> { left: number }
+        \\interface Right extends api.Tagged<"right"> { right: string }
+        \\declare const value: Left | Right;
+        \\const tag: "left" | "right" = value.tag;
+        \\if (value.tag === "left") void value.left;
+        \\else if (value.tag === "right") void value.right;
+        \\void tag;
+    ;
+    const invalid =
+        \\import * as api from "./owner.js";
+        \\interface Left extends api.Tagged<"left"> { left: number }
+        \\interface Right extends api.Tagged<"right"> { right: string }
+        \\declare const value: Left | Right;
+        \\const wrong: "left" = value.tag;
+        \\value.missing;
+        \\void wrong;
+    ;
+    try vfs.addFile("/proj/owner.ts", owner);
+    try vfs.addFile("/proj/consumer.ts", consumer);
+    try vfs.addFile("/proj/invalid.ts", invalid);
+    _ = try p.add("/proj/owner.ts", owner);
+    const consumer_id = try p.add("/proj/consumer.ts", consumer);
+    const invalid_id = try p.add("/proj/invalid.ts", invalid);
+
+    try p.compileAll(.{
+        .no_emit = true,
+        .strict_flags = .{ .no_implicit_any = true, .strict_null_checks = true },
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    });
+    try T.expectEqual(@as(usize, 0), p.fileById(consumer_id).compilation.?.diagnostics.items.len);
+    const invalid_compilation = p.fileById(invalid_id).compilation.?;
+    try expectCompilationHasDiagnosticCode(invalid_compilation, 2322);
+    try expectCompilationHasDiagnosticCode(invalid_compilation, 2339);
+    try T.expectEqual(@as(usize, 2), invalid_compilation.diagnostics.items.len);
+}
+
+test "Program: qualified assertions project members through unsupported recursive aliases" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver };
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+
+    const owner =
+        \\export type SchemaType = "object" | "array" | "string" | "number";
+        \\export type Schema = {
+        \\  [key: string]: unknown;
+        \\  type?: SchemaType | SchemaType[];
+        \\  defs?: Record<string, Schema>;
+        \\};
+        \\export type BaseSchema = Schema;
+    ;
+    const consumer =
+        \\import type * as api from "./owner.js";
+        \\declare const source: object;
+        \\const types: api.SchemaType[] = [];
+        \\const type = (source as api.BaseSchema).type;
+        \\for (const member of Array.isArray(type) ? type : [type]) {
+        \\  if (typeof member !== "string") continue;
+        \\  if (!types.includes(member)) types.push(member);
+        \\}
+    ;
+    const invalid =
+        \\import type * as api from "./owner.js";
+        \\declare const source: object;
+        \\const wrong: number = (source as api.BaseSchema).type;
+        \\void wrong;
+    ;
+    try vfs.addFile("/proj/owner.ts", owner);
+    try vfs.addFile("/proj/consumer.ts", consumer);
+    try vfs.addFile("/proj/invalid.ts", invalid);
+    _ = try p.add("/proj/owner.ts", owner);
+    const consumer_id = try p.add("/proj/consumer.ts", consumer);
+    const invalid_id = try p.add("/proj/invalid.ts", invalid);
+
+    try p.compileAll(.{
+        .no_emit = true,
+        .strict_flags = .{ .no_implicit_any = true, .strict_null_checks = true },
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    });
+    try T.expectEqual(@as(usize, 0), p.fileById(consumer_id).compilation.?.diagnostics.items.len);
+    const invalid_compilation = p.fileById(invalid_id).compilation.?;
+    try expectCompilationHasDiagnosticCode(invalid_compilation, 2322);
     try T.expectEqual(@as(usize, 1), invalid_compilation.diagnostics.items.len);
 }
 

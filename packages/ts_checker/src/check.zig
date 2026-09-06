@@ -67375,6 +67375,21 @@ pub const Checker = struct {
                             if (assignable) break;
                         }
                     }
+                    // A redeclared data property is checked with the same
+                    // structural assignability relation as an ordinary
+                    // value assignment. That relation understands recursive
+                    // generic objects, conditional/indexed projections, and
+                    // declared variance that the narrower heritage relater
+                    // intentionally does not model. Keep signatures on the
+                    // dedicated heritage path below so method bivariance and
+                    // strict-function checks retain their existing semantics.
+                    if (optional_ok and
+                        !cm_flags.is_signature and
+                        !pm_flags.is_signature and
+                        try self.checkerAssignableTo(cm.type, pm.type))
+                    {
+                        break;
+                    }
                     const contextual_generic_relation = try self.contextualGenericHeritageSignatureAssignable(cm.type, pm.type);
                     const strict_property_signature_mismatch = contextual_generic_relation == null and
                         !cm.is_method and
@@ -83494,31 +83509,11 @@ pub const Checker = struct {
     }
 
     const builtin_object_type_name_set = blk: {
-        const names = builtinObjectTypeNames();
+        const names = ProgramClassSchema.builtin_object_type_names;
         var entries: [names.len]struct { []const u8 } = undefined;
         for (names, 0..) |name, i| entries[i] = .{name};
         break :blk std.StaticStringMap(void).initComptime(entries);
     };
-
-    fn builtinObjectTypeNames() []const []const u8 {
-        return &.{
-            "Animation",           "ArrayBuffer",           "ArrayBufferView",
-            "AsyncIterable",       "AsyncIterableIterator", "AsyncIterator",
-            "AsyncIteratorObject", "BigInt64Array",         "BigUint64Array",
-            "Boolean",             "Date",                  "Document",
-            "Element",             "Error",                 "Event",
-            "Float16Array",        "Float32Array",          "Float64Array",
-            "Function",            "HTMLElement",           "Int16Array",
-            "Int32Array",          "Int8Array",             "Iterable",
-            "IterableIterator",    "Iterator",              "IteratorObject",
-            "Node",                "Number",                "Object",
-            "PromiseLike",         "RangeError",            "RegExp",
-            "RegExpExecArray",     "RegExpMatchArray",      "SharedArrayBuffer",
-            "SyntaxError",         "TypeError",             "Uint16Array",
-            "Uint32Array",         "Uint8Array",            "Uint8ClampedArray",
-            "Window",              "Worker",
-        };
-    }
 
     fn lowerBuiltinObjectType(self: *Checker, name: []const u8) ?TypeId {
         if (!builtin_object_type_name_set.has(name)) return null;
@@ -107743,6 +107738,23 @@ pub const Checker = struct {
         return self.lowerProgramProjectedArray(member.type, declaration, args);
     }
 
+    /// Resolve one explicitly requested member from a qualified assertion
+    /// even when the complete imported declaration contains an unsupported
+    /// leaf. The declaration graph is followed by identity, so transparent
+    /// aliases and recursive types terminate without truncation. Only the
+    /// requested member is lowered; unrelated record/utility members never
+    /// become an approximate whole-object type.
+    fn programQualifiedAssertionMemberType(
+        self: *Checker,
+        object: NodeId,
+        member_name: hir_mod.StringId,
+    ) CheckError!?TypeId {
+        const kind = self.hir.kindOf(object);
+        if (kind != .as_expr and kind != .type_assertion) return null;
+        const type_node = hir_mod.asExpressionOf(self.hir, object).type_node;
+        return self.programQualifiedInterfaceMemberType(type_node, member_name, null);
+    }
+
     /// Recover one direct object-destructuring binding from an explicit
     /// qualified indexed-access assertion, such as
     /// `const { values } = source as Ns.Container["bag"]`. The indexed
@@ -107884,6 +107896,7 @@ pub const Checker = struct {
         self: *Checker,
         type_node: NodeId,
         member_name: hir_mod.StringId,
+        substitutions: ?*const std.AutoHashMapUnmanaged(TypeId, TypeId),
     ) CheckError!?TypeId {
         const declaration = (try self.programDeclarationForQualifiedInterfaceRef(type_node)) orelse return null;
         const arg_nodes = hir_mod.typeRefArgs(self.hir, type_node);
@@ -107893,8 +107906,14 @@ pub const Checker = struct {
         @memset(args, types.Primitive.unknown);
         for (arg_nodes, args[0..arg_nodes.len]) |arg_node, *arg| {
             const cached = self.hir.typeOf(arg_node);
-            if (cached == types.Primitive.none) return null;
-            arg.* = cached;
+            const raw = if (cached != types.Primitive.none)
+                cached
+            else
+                self.lowererLowerWithTypeParams(arg_node) catch return null;
+            arg.* = if (substitutions) |subs|
+                self.substituteType(raw, subs) catch raw
+            else
+                raw;
         }
         for (declaration.parameters[arg_nodes.len..], arg_nodes.len..) |parameter, index| {
             const default = parameter.default orelse return null;
@@ -107972,18 +107991,20 @@ pub const Checker = struct {
         return null;
     }
 
-    fn programInheritedThisMemberType(
+    fn programInheritedMemberType(
         self: *Checker,
         receiver_t: TypeId,
         member_name: hir_mod.StringId,
         anchor: NodeId,
     ) CheckError!?TypeId {
+        const diagnostic_start = self.diagnostics.items.len;
+        defer self.diagnostics.shrinkRetainingCapacity(diagnostic_start);
         var active: std.AutoHashMapUnmanaged(TypeId, void) = .empty;
         defer active.deinit(self.gpa);
-        return self.programInheritedThisMemberTypeInner(receiver_t, member_name, anchor, &active);
+        return self.programInheritedMemberTypeInner(receiver_t, member_name, anchor, &active);
     }
 
-    fn programInheritedThisMemberTypeInner(
+    fn programInheritedMemberTypeInner(
         self: *Checker,
         receiver_t: TypeId,
         member_name: hir_mod.StringId,
@@ -107991,6 +108012,53 @@ pub const Checker = struct {
         active: *std.AutoHashMapUnmanaged(TypeId, void),
     ) CheckError!?TypeId {
         const receiver = self.resolvedRecursiveInterfaceType(receiver_t);
+        if (receiver < self.interner.pool.typeCount()) {
+            const flags = self.interner.pool.flagsOf(receiver);
+            if (flags.is_union) {
+                const members = try self.gpa.dupe(TypeId, self.interner.unionMembers(receiver));
+                defer self.gpa.free(members);
+                var resolved: std.ArrayListUnmanaged(TypeId) = .empty;
+                defer resolved.deinit(self.gpa);
+                for (members) |member_t| {
+                    const inherited_t = blk: {
+                        if (try self.lookupObjectMember(member_t, member_name)) |direct_t| {
+                            // A whole-union lookup has already rejected this
+                            // access. Do not reconstruct a property from
+                            // distinct private/protected declarations while
+                            // filling only genuinely inherited members.
+                            if (self.unionConstituentMemberInfo(member_t, member_name)) |member| {
+                                if (member.visibility != .public) return null;
+                            }
+                            break :blk direct_t;
+                        }
+                        break :blk (try self.programInheritedMemberTypeInner(
+                            member_t,
+                            member_name,
+                            anchor,
+                            active,
+                        )) orelse return null;
+                    };
+                    try resolved.append(self.gpa, inherited_t);
+                }
+                if (resolved.items.len == 0) return null;
+                return self.interner.internUnion(resolved.items) catch return error.OutOfMemory;
+            }
+            if (flags.is_intersection) {
+                const members = try self.gpa.dupe(TypeId, self.interner.intersectionMembers(receiver));
+                defer self.gpa.free(members);
+                var resolved: std.ArrayListUnmanaged(TypeId) = .empty;
+                defer resolved.deinit(self.gpa);
+                for (members) |member_t| {
+                    const inherited_t = (try self.lookupObjectMember(member_t, member_name)) orelse
+                        (try self.programInheritedMemberTypeInner(member_t, member_name, anchor, active)) orelse
+                        continue;
+                    try resolved.append(self.gpa, inherited_t);
+                }
+                if (resolved.items.len == 0) return null;
+                if (resolved.items.len == 1) return resolved.items[0];
+                return self.interner.internIntersection(resolved.items) catch return error.OutOfMemory;
+            }
+        }
         if (active.contains(receiver)) return null;
         try active.put(self.gpa, receiver, {});
         defer _ = active.remove(receiver);
@@ -108002,12 +108070,35 @@ pub const Checker = struct {
         if (interface.name == hir_mod.none_node_id or self.hir.kindOf(interface.name) != .identifier) return null;
         const name = hir_mod.identifierOf(self.hir, interface.name).name;
         if (self.findVisibleNamedTypeDecl(anchor, name) != declaration) return null;
+
+        var substitutions: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+        defer substitutions.deinit(self.gpa);
+        try self.pushNarrowScope();
+        defer self.popNarrowScope();
+        if (self.generic_interfaces_by_decl.get(declaration)) |info| {
+            if (self.alias_type_args.get(receiver)) |arguments| {
+                const count = @min(info.params.len, arguments.len);
+                for (info.params[0..count], arguments[0..count]) |parameter, argument| {
+                    try substitutions.put(self.gpa, parameter, argument);
+                    if (parameter >= self.interner.pool.typeCount() or
+                        !self.interner.pool.flagsOf(parameter).is_type_parameter)
+                    {
+                        continue;
+                    }
+                    const payload = self.interner.pool.type_parameter_payloads.items[
+                        self.interner.pool.payloadOf(parameter)
+                    ];
+                    try self.recordNarrow(payload.name, argument);
+                }
+            }
+        }
         const extends = hir_mod.interfaceExtends(self.hir, declaration);
         for (extends) |extends_node| {
-            if (try self.programQualifiedInterfaceMemberType(extends_node, member_name)) |member_t| return member_t;
-            const parent_t = self.lowererLowerWithTypeParams(extends_node) catch continue;
+            if (try self.programQualifiedInterfaceMemberType(extends_node, member_name, &substitutions)) |member_t| return member_t;
+            const raw_parent_t = self.lowererLowerWithTypeParams(extends_node) catch continue;
+            const parent_t = self.substituteType(raw_parent_t, &substitutions) catch raw_parent_t;
             if (self.interner.objectMember(parent_t, member_name)) |member_t| return member_t;
-            if (try self.programInheritedThisMemberTypeInner(parent_t, member_name, extends_node, active)) |member_t| return member_t;
+            if (try self.programInheritedMemberTypeInner(parent_t, member_name, extends_node, active)) |member_t| return member_t;
         }
         return null;
     }
@@ -108899,7 +108990,11 @@ pub const Checker = struct {
             .indexed_access => |indexed| {
                 const object_t = try self.lowerProgramExpression(indexed.object, declaration, args);
                 const index_t = try self.lowerProgramExpression(indexed.index, declaration, args);
-                return self.interner.internIndexedAccess(object_t, index_t) catch return error.OutOfMemory;
+                const symbolic = self.interner.internIndexedAccess(object_t, index_t) catch return error.OutOfMemory;
+                if (!self.containsFreeTypeParameter(object_t)) {
+                    if (try self.resolveExactIndexedAccessForArgument(symbolic, 0)) |resolved| return resolved;
+                }
+                return symbolic;
             },
             .keyof => |operand| return self.interner.internKeyof(try self.lowerProgramExpression(operand, declaration, args)) catch return error.OutOfMemory,
             .conditional => |conditional| {
@@ -112829,6 +112924,9 @@ pub const Checker = struct {
                 }
                 obj_t = self.resolvedRecursiveInterfaceType(obj_t);
                 if (obj_t == types.Primitive.any) {
+                    if (try self.programQualifiedAssertionMemberType(m.object, m.name)) |member_t| {
+                        break :blk try self.optionalChainResult(member_t, m.optional or self.expressionIsOptionalChain(m.object));
+                    }
                     if (try self.programQualifiedAssertionArrayMemberType(m.object, m.name)) |member_t| {
                         break :blk try self.optionalChainResult(member_t, m.optional or self.expressionIsOptionalChain(m.object));
                     }
@@ -113298,12 +113396,8 @@ pub const Checker = struct {
                 }
                 const direct_member = (try self.schemaStaticProjectionForKey(obj_t, m.name, 0)) orelse
                     (try self.lookupObjectMember(obj_t, m.name));
-                const member = direct_member orelse if (self.nodeIsThisReference(m.object) and
-                    self.thisInsideObjectLiteralMethod(m.object) and
-                    self.currentThisType() != null)
-                    try self.programInheritedThisMemberType(obj_t, m.name, m.object)
-                else
-                    null;
+                const member = direct_member orelse
+                    try self.programInheritedMemberType(obj_t, m.name, m.object);
                 if (member) |t| {
                     if (self.hir.kindOf(m.object) == .identifier and
                         self.interner.pool.flagsOf(t).is_signature)
@@ -207666,7 +207760,7 @@ test "checker: builtin Function recipe preserves fresh objects and rest signatur
 test "checker: builtin object name index preserves every recipe and exact misses" {
     const s = try newSetup("const value = 1;");
     defer destroySetup(s);
-    for (Checker.builtinObjectTypeNames()) |name| {
+    for (ProgramClassSchema.builtin_object_type_names) |name| {
         try T.expect(s.checker.lowerBuiltinObjectType(name) != null);
         var buffer: [64]u8 = undefined;
         const prefix = try std.fmt.bufPrint(&buffer, "!{s}", .{name});
@@ -210644,6 +210738,68 @@ test "checker: generic heritage treats unknown as a safe top type" {
         TsCodes.interface_incorrectly_extends,
         "Interface 'BadChild' incorrectly extends interface 'Base<string>'.",
     ));
+}
+
+test "checker: recursive generic heritage uses ordinary property assignability" {
+    const s = try newSetup(
+        \\type EnumLike = Readonly<Record<string, string | number>>;
+        \\type InferEnum<T extends EnumLike> = T[keyof T] & {};
+        \\interface IssueBase { readonly code?: string; }
+        \\interface IssueInvalidValue extends IssueBase {
+        \\  readonly code: "invalid_value";
+        \\  readonly values: unknown[];
+        \\}
+        \\interface TypeDef { type: string; }
+        \\interface EnumDef<T extends EnumLike = EnumLike> extends TypeDef {
+        \\  type: "enum";
+        \\  entries: T;
+        \\}
+        \\interface RootInternals {
+        \\  def: TypeDef;
+        \\  values?: Set<string | number> | undefined;
+        \\  pattern: RegExp | undefined;
+        \\  isst: IssueBase;
+        \\  constr: new (def: any) => Type;
+        \\  parent?: Type | undefined;
+        \\}
+        \\interface TypeInternals<out O = unknown, out I = unknown> extends RootInternals {
+        \\  output: O;
+        \\  input: I;
+        \\}
+        \\type Input<T> = T extends { state: { input: any } } ? T["state"]["input"] : unknown;
+        \\type Output<T> = T extends { state: { output: any } } ? T["state"]["output"] : unknown;
+        \\interface StandardTypes<InputType = unknown, OutputType = InputType> {
+        \\  readonly input: InputType;
+        \\  readonly output: OutputType;
+        \\}
+        \\interface StandardProps<InputType = unknown, OutputType = InputType> {
+        \\  readonly version: 1;
+        \\  readonly types?: StandardTypes<InputType, OutputType> | undefined;
+        \\  readonly validate: (value: unknown) => { value: OutputType } | Promise<{ value: OutputType }>;
+        \\}
+        \\type Standard<T> = StandardProps<Input<T>, Output<T>>;
+        \\interface Type<
+        \\  O = unknown,
+        \\  I = unknown,
+        \\  Internals extends TypeInternals<O, I> = TypeInternals<O, I>,
+        \\> {
+        \\  state: Internals;
+        \\  standard: Standard<this>;
+        \\}
+        \\interface EnumInternals<T extends EnumLike = EnumLike>
+        \\  extends TypeInternals<InferEnum<T>, InferEnum<T>> {
+        \\  def: EnumDef<T>;
+        \\  values: Set<string | number>;
+        \\  pattern: RegExp;
+        \\  isst: IssueInvalidValue;
+        \\}
+        \\interface EnumValue<T extends EnumLike = EnumLike> extends Type {
+        \\  state: EnumInternals<T>;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.interface_incorrectly_extends));
 }
 
 test "checker: interface heritage accepts covariant self members" {

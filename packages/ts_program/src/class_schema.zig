@@ -8,6 +8,12 @@ const origins = @import("export_origins.zig");
 const schema = driver.ProgramClassSchema;
 const Primitive = schema.Primitive;
 
+const builtin_object_type_name_set = blk: {
+    var entries: [schema.builtin_object_type_names.len]struct { []const u8 } = undefined;
+    for (schema.builtin_object_type_names, 0..) |name, i| entries[i] = .{name};
+    break :blk std.StaticStringMap(void).initComptime(entries);
+};
+
 pub const Source = struct { path: []const u8, compilation: *driver.Compilation };
 pub const Key = struct { source: usize, node: hir.NodeId };
 const Resolution = union(enum) { declaration: Key, missing, external, unsupported };
@@ -504,8 +510,8 @@ pub const Builder = struct {
                 .declaration = try self.declaration(key),
                 .arguments = &.{},
             } }),
-            .missing => if (std.mem.eql(u8, c.interner.get(name), "Error"))
-                self.expression(.{ .builtin_object = "Error" })
+            .missing => if (builtin_object_type_name_set.has(c.interner.get(name)))
+                self.expression(.{ .builtin_object = c.interner.get(name) })
             else
                 self.expression(.unsupported),
             .external, .unsupported => self.expression(.unsupported),
@@ -651,7 +657,7 @@ pub const Builder = struct {
                         // Built-in object shapes live in each checker's local
                         // type pool. Transfer their stable spelling and let the
                         // consumer materialize the same canonical shape.
-                        if (args.len == 0 and std.mem.eql(u8, name, "Error"))
+                        if (args.len == 0 and builtin_object_type_name_set.has(name))
                             return self.expression(.{ .builtin_object = name });
                         if (args.len == 2 and std.mem.eql(u8, name, "Record"))
                             return self.expression(.{ .record = .{ .key = args[0], .value = args[1] } });
@@ -1193,6 +1199,19 @@ test "class schema: built-in Error heritage retains its checker-owned shape" {
     try T.expectEqual(@as(usize, 2), body.len);
     try T.expectEqualStrings("Error", body[0].builtin_object);
     try T.expect(body[1].object[0].type.parameter == &result.declaration.parameters[0]);
+}
+
+test "class schema: built-in RegExp members retain their checker-owned shape" {
+    const graph = try TestGraph.init(&.{.{ .path = "/owner.ts", .text =
+        \\export interface Pattern { value?: RegExp; }
+    }});
+    defer graph.deinit();
+    const result = try graph.class(0, "Pattern");
+    defer result.deinit(T.allocator);
+    const value = result.declaration.body.?.object[0];
+    try T.expect(value.optional);
+    try T.expectEqualStrings("RegExp", value.type.builtin_object);
+    try T.expect(try result.isSupported(T.allocator));
 }
 
 test "class schema: local Array aliases are not replaced by builtin array shapes" {

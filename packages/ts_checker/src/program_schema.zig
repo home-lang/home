@@ -66,6 +66,27 @@ pub const Utility = struct {
     source: *const Expression,
     keys: ?*const Expression = null,
 };
+
+/// Standard-library object identities that can be materialized in every
+/// checker from their stable spelling instead of copying source-owned TypeIds.
+pub const builtin_object_type_names = [_][]const u8{
+    "Animation",           "ArrayBuffer",           "ArrayBufferView",
+    "AsyncIterable",       "AsyncIterableIterator", "AsyncIterator",
+    "AsyncIteratorObject", "BigInt64Array",         "BigUint64Array",
+    "Boolean",             "Date",                  "Document",
+    "Element",             "Error",                 "Event",
+    "Float16Array",        "Float32Array",          "Float64Array",
+    "Function",            "HTMLElement",           "Int16Array",
+    "Int32Array",          "Int8Array",             "Iterable",
+    "IterableIterator",    "Iterator",              "IteratorObject",
+    "Node",                "Number",                "Object",
+    "PromiseLike",         "RangeError",            "RegExp",
+    "RegExpExecArray",     "RegExpMatchArray",      "SharedArrayBuffer",
+    "SyntaxError",         "TypeError",             "Uint16Array",
+    "Uint32Array",         "Uint8Array",            "Uint8ClampedArray",
+    "Window",              "Worker",
+};
+
 pub const Expression = union(enum) {
     primitive: types.TypeId,
     /// A deliberately opaque leaf in an otherwise transferable declaration.
