@@ -7791,6 +7791,103 @@ zig build -Doptimize=ReleaseFast
 ./zig-out/bin/home-tsc --project=/path/to/zod-4.5.2/tsconfig.benchmark.json --pretty=false
 ```
 
+### Zod collection and generic-relation audit (#662–#664)
+
+Issues [#662](https://github.com/home-lang/home/issues/662),
+[#663](https://github.com/home-lang/home/issues/663), and
+[#664](https://github.com/home-lang/home/issues/664) address six independent
+false positives exposed by the unchanged 106-file Zod 4.5.2 graph. The fixes
+are language-level changes with focused negative controls:
+
+- Commit [`3e4f37c39`](https://github.com/home-lang/home/commit/3e4f37c39)
+  resolves the default-lib `ReadonlyMap`, `ReadonlySet`, `WeakMap`, and
+  `WeakSet` interfaces through the same generic type-reference path as the
+  existing collection types. Read-only collections omit mutators, `WeakMap`
+  lookup retains `undefined`, and genuinely missing collection names remain
+  TS2304 errors.
+- Commits [`127c714e0`](https://github.com/home-lang/home/commit/127c714e0)
+  and [`7e2fcbdb4`](https://github.com/home-lang/home/commit/7e2fcbdb4)
+  validate nullable generic and conditional object-spread sources by their
+  reachable type domains. Mapped object shapes and branches proven unreachable
+  by a conditional constraint are accepted; reachable primitive branches
+  remain TS2698 errors.
+- Commit [`a3a764ae0`](https://github.com/home-lang/home/commit/a3a764ae0)
+  follows a source type parameter's transitive constraint before issuing the
+  strict foreign-type-parameter argument diagnostic. A constrained schema
+  parameter is accepted where its schema constraint is required, while a
+  concrete incompatible argument remains TS2345.
+
+The collection oracle has separate positive and negative projects. The
+positive project exercises all four collection interfaces and their permitted
+members. The negative project checks a missing name, forbidden `ReadonlyMap`
+and `ReadonlySet` mutators, and the optional result of `WeakMap.get`:
+
+| Collection control | TypeScript 6.0.3 | Native TypeScript preview | ReleaseFast Home |
+|---|---:|---:|---:|
+| Valid collection references and members | 0 diagnostics | 0 diagnostics | **0 diagnostics** |
+| Invalid controls | TS2304, TS2339, TS2339, TS2322 | TS2304, TS2339, TS2339, TS2322 | **TS2304, TS2339, TS2339, TS2322** |
+
+The conditional-spread oracle accepts nullable object constraints, recursive
+mapped aliases, a full nested Zod-like conditional alias, and object-only
+conditional branches. Its negative controls contain a primitive-only
+conditional and a mixed object/primitive conditional:
+
+| Object-spread control | TypeScript 6.0.3 | Native TypeScript preview | ReleaseFast Home |
+|---|---:|---:|---:|
+| Valid nullable, mapped, and object-only sources | 0 diagnostics | 0 diagnostics | **0 diagnostics** |
+| Primitive-only and mixed conditionals | 2× TS2698 | 2× TS2698 | **2× TS2698** |
+
+The relation oracle accepts `S extends Schema` when passed to a parameter of
+type `Schema` and retains exactly one TS2345, with the same message, for the
+`number` control in all three engines.
+
+The unchanged production graph supplies the regression gate:
+
+| Zod 4.5.2 collection and generic-relation audit | Post-#661 main | #662 / #663 / #664 main | Change |
+|---|---:|---:|---:|
+| All diagnostics | 436 | **430** | **6 removed; 0 added** |
+| Unique diagnostic identities | 431 | **425** | **6 removed; 0 added** |
+| Unique identities versus immutable baseline | 597 | **425** | **172 removed; 0 added** |
+
+The six removed identities are
+`src/v4/core/memoizer.ts:35:18:TS2304`,
+`src/v4/core/registries.ts:30:9:TS2304`,
+`src/v4/core/registries.ts:40:33:TS2345`,
+`src/v4/core/registries.ts:66:25:TS2698`,
+`src/v4/core/util.ts:150:5:TS2304`, and
+`src/v4/core/util.ts:152:7:TS2304`. No candidate-only identity exists. The
+final distribution is 202 TS2345, 100 TS7006, 59 TS2339, 12 TS2322, 11
+TS1361, 8 TS2304, 4 TS7031, 4 TS2554, 4 TS2430, 3 TS2488, 3 TS2411, 2
+TS4110, 2 TS2749, 2 TS2741, 2 TS2698, 2 TS2552, 2 TS2367, 2 TS18048, and
+1 TS2571.
+
+Zod still has 430 diagnostics while TypeScript reports zero, so
+[#548](https://github.com/home-lang/home/issues/548) remains open and the
+graph is not admitted to cross-compiler timing. Timing was deliberately
+excluded because the ReleaseFast build and audits ran on a contended shared
+host; this section makes no performance claim.
+
+Final gates pass every three-engine positive/negative oracle, all three
+focused regressions, the complete checker suite, the complete Program suite,
+a clean-cache ReleaseFast build, `zig fmt --check`, and `git diff --check`.
+Exact production evidence is retained on
+[#662](https://github.com/home-lang/home/issues/662#issuecomment-5557350752),
+[#663](https://github.com/home-lang/home/issues/663#issuecomment-5557348820),
+and [#664](https://github.com/home-lang/home/issues/664#issuecomment-5557198840).
+
+```sh
+zig build test -Dfilter=ts_checker -Dts-checker-test-filter='default lib collection type refs preserve readonly and missing-name semantics'
+zig build test -Dfilter=ts_checker -Dts-checker-test-filter='object spread rejects primitive-constrained type parameter'
+zig build test -Dfilter=ts_checker -Dts-checker-test-filter='overload diagnostics honor transitive generic argument constraints'
+zig build test -Dfilter=ts_checker
+zig build test -Dfilter=ts_program
+zig build -Doptimize=ReleaseFast
+./zig-out/bin/home-tsc --project=/path/to/collections/tsconfig.json --pretty=false
+./zig-out/bin/home-tsc --project=/path/to/conditional-spread/tsconfig.json --pretty=false
+./zig-out/bin/home-tsc --project=/path/to/property-key/tsconfig.json --pretty=false
+./zig-out/bin/home-tsc --project=/path/to/zod-4.5.2/tsconfig.benchmark.json --pretty=false
+```
+
 ### Typed cross-file global ownership and cyclic provenance (untimed)
 
 Issue [#480](https://github.com/home-lang/home/issues/480), under

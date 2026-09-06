@@ -412,8 +412,20 @@ types:
 | Unique path/line/column/code identities | 435 | **431** | **4 removed; 0 added** |
 | Unique identities versus immutable baseline | 597 | **431** | **166 removed; 0 added** |
 
-TypeScript 6.0.3 reports zero diagnostics on this graph. Zod remains outside
-the cross-compiler timing table until Home also reaches zero diagnostics.
+The collection and generic-relation audit then resolves the default-lib map
+and set families, follows transitive generic constraints during argument
+checking, and evaluates conditional object-spread branches without weakening
+the corresponding negative cases:
+
+| [Zod 4.5.2 collection and generic-relation audit](docs/docs/TS_PERFORMANCE.md#zod-collection-and-generic-relation-audit-662664) | Post-#661 main | #662 / #663 / #664 main | Change |
+|---|---:|---:|---:|
+| Diagnostics | 436 | **430** | **6 removed; 0 added** |
+| Unique path/line/column/code identities | 431 | **425** | **6 removed; 0 added** |
+| Unique identities versus immutable baseline | 597 | **425** | **172 removed; 0 added** |
+
+TypeScript 6.0.3 reports zero diagnostics on this graph. Home still reports
+430, so Zod remains outside the cross-compiler timing table until Home also
+reaches zero diagnostics.
 
 The latest optimization admissions preserve that qualified snapshot while
 recording both accepted and rejected probes:
