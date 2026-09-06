@@ -7322,6 +7322,91 @@ zig build home-tsc -Doptimize=ReleaseFast
 ./zig-out/bin/home-tsc --project /path/to/zod-4.5.2/tsconfig.benchmark.json
 ```
 
+### Inherited generic members and loop-flow narrowing
+
+Issues [#534](https://github.com/home-lang/home/issues/534) and
+[#654](https://github.com/home-lang/home/issues/654), under the pinned Zod
+admission issue [#548](https://github.com/home-lang/home/issues/548), close a
+related set of exact type-information losses. Commit
+[`197ee079f`](https://github.com/home-lang/home/commit/197ee079f) preserves
+generic substitutions while following imported interface heritage, resolves
+inherited members across union and intersection constituents, and lowers an
+explicitly requested member through a qualified recursive alias even when an
+unrelated leaf of the complete object is not yet representable. The lookup is
+declaration-backed and member-specific; it does not approximate the whole
+object, depend on an identifier spelling, or suppress a diagnostic.
+
+The same commit centralizes the builtin object-name contract used by the
+checker and Program schema, including `RegExp`, and transports those exact
+objects across compilation boundaries. Concrete nested indexed accesses are
+reduced only after their object no longer contains a free type parameter.
+Interface data-property overrides use the ordinary structural assignability
+relation, which already models recursive generic objects, conditional and
+indexed projections, and declared variance. Callable properties remain on the
+dedicated heritage path so strict function and method-bivariance behavior is
+unchanged. A full-suite regression found and prevented a draft union fallback
+from reconstructing properties across distinct private or protected
+declarations; only public direct constituents can participate when an
+inherited union member is completed.
+
+Commit [`2e749f76c`](https://github.com/home-lang/home/commit/2e749f76c)
+completes the control-flow side. `for..in` and `for..of` bindings now enter the
+same narrowable-value analysis as ordinary lexical bindings, and an `if`
+branch ending in `continue` or `break` applies its false guard to the reachable
+fallthrough. Negative member guards read the current narrowed receiver and
+use union-aware member projection. Subtracting a unit literal removes only
+that unit; for example, rejecting `"__proto__"` from `string | symbol` does
+not incorrectly remove the entire `string` constituent.
+
+The focused sources are ordinary strict TypeScript reductions. TypeScript
+6.0.3 and native TypeScript 7.0.2 both accept the recursive generic heritage
+and post-`continue` for-of cases with zero diagnostics, and Home now does the
+same. A two-file Program reduction verifies inherited generic defaults and
+union projections across a serialized declaration boundary. Another
+reduction imports the real recursive JSON-schema alias and projects only its
+`type` member; it is also clean.
+
+The production audit checks the unchanged 106 files selected by the pinned
+Zod 4.5.2 strict, no-emit configuration. The immutable pre-change output has
+602 diagnostics and 597 unique `path:line:column:TS-code` identities. The
+ReleaseFast binaries run the complete graph without file, code, diagnostic,
+or path filtering.
+
+| Zod 4.5.2 inherited-member and flow audit | Pre-change main | `197ee079f` + `2e749f76c` | Change |
+|---|---:|---:|---:|
+| All diagnostics | 602 | **523** | **79 removed (13.1%)** |
+| Unique diagnostic identities | 597 | **518** | **79 removed; 0 added** |
+| TS2345 | — | 206 | remaining, not timed |
+| TS7006 | — | 100 | remaining, not timed |
+| TS2339 | — | 95 | remaining, not timed |
+| TS2344 | — | 43 | remaining, not timed |
+
+The remaining 79 diagnostics are spread across smaller code families; the
+full candidate distribution is retained in the issue evidence. The previously
+new TS2352, two `to-json-schema.ts:453` TS2345 diagnostics, and `$ZodEnum`
+TS2430 are absent from the final output. The exact identity diff contains no
+candidate-only key. TypeScript 6.0.3 remains the zero-diagnostic oracle for the
+production graph, so [#548](https://github.com/home-lang/home/issues/548) stays
+open and no cross-compiler timing is admitted yet. Build and audit wall times
+were observed under unrelated CPU load and are deliberately not presented as
+performance results.
+
+Final source gates pass the complete **4,353/4,353** checker suite and
+**187/187** Program suite, the three focused ReleaseFast reductions, scoped
+`pickier`, and `git diff --check`. The exact corpus evidence and provenance are
+recorded on [#534](https://github.com/home-lang/home/issues/534#issuecomment-5556178735),
+[#548](https://github.com/home-lang/home/issues/548#issuecomment-5556178799),
+and [#654](https://github.com/home-lang/home/issues/654#issuecomment-5556178666).
+
+```sh
+zig build test -Dfilter=ts_checker
+zig build test -Dfilter=ts_program
+zig build home-tsc -Doptimize=ReleaseFast
+./zig-out/bin/home-tsc --noEmit --strict --lib es2022 post-continue.ts
+./zig-out/bin/home-tsc --noEmit --strict --lib es2022 recursive-heritage.ts
+./zig-out/bin/home-tsc --project /path/to/zod-4.5.2/tsconfig.benchmark.json
+```
+
 ### Typed cross-file global ownership and cyclic provenance (untimed)
 
 Issue [#480](https://github.com/home-lang/home/issues/480), under

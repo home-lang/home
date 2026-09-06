@@ -346,6 +346,15 @@ declaration-file semantic reporting:
 | Pinned `ignoreConfig` / `skipLibCheck` oracle | exit 139 | **all 6 cases match** | source path preserved; true/false honored |
 | Zod 4.5.2 diagnostics | 600 | **600** | **0 added; 0 removed** |
 
+The next owner/projection and narrowing audit uses the unchanged pinned graph
+and compares complete diagnostic identities rather than only aggregate counts:
+
+| [Zod 4.5.2 inherited-member and flow audit](docs/docs/TS_PERFORMANCE.md#inherited-generic-members-and-loop-flow-narrowing) | Pre-change main | #534 / #654 main | Change |
+|---|---:|---:|---:|
+| Diagnostics | 602 | **523** | **79 removed (13.1%)** |
+| Unique path/line/column/code identities | 597 | **518** | **79 removed; 0 added** |
+| Checker / Program suites | — | **4,353/4,353; 187/187** | pass |
+
 TypeScript 6.0.3 reports zero diagnostics on this graph. Zod remains outside
 the cross-compiler timing table until Home also reaches zero diagnostics.
 
