@@ -28,6 +28,7 @@ const Context = struct {
     declaration: *schema.Declaration,
     locals: []const *const schema.Parameter = &.{},
     allow_opaque: bool = false,
+    allow_contextual_projection: bool = false,
 };
 
 pub fn collect(gpa: std.mem.Allocator, resolver: *resolver_mod.Resolver, sources: []const Source, source: Source, node: hir.NodeId) !*const schema.Schema {
@@ -339,7 +340,12 @@ pub const Builder = struct {
         const result = switch (lowered.*) {
             .reference => |reference| blk: {
                 const contextual_read = try self.contextualReadProjection(reference);
+                const can_project_declaration = (context.allow_contextual_projection or reference.declaration.contextual_only) and
+                    reference.declaration.body != null and
+                    !reference.declaration.is_class and
+                    !reference.declaration.is_function;
                 if (contextual_read == null and
+                    !can_project_declaration and
                     (!allow_structural_default or !try self.contextualShallowStructuralReferenceSupported(reference)))
                     break :blk try self.expression(.opaque_leaf);
                 break :blk try self.expression(.{ .reference = .{
@@ -395,7 +401,13 @@ pub const Builder = struct {
         const locals = try self.arena.alloc(*const schema.Parameter, context.locals.len + parameters.len);
         @memcpy(locals[0..context.locals.len], context.locals);
         @memcpy(locals[context.locals.len..], parameters);
-        return .{ .source = context.source, .declaration = context.declaration, .locals = locals, .allow_opaque = context.allow_opaque };
+        return .{
+            .source = context.source,
+            .declaration = context.declaration,
+            .locals = locals,
+            .allow_opaque = context.allow_opaque,
+            .allow_contextual_projection = context.allow_contextual_projection,
+        };
     }
 
     fn localParameter(context: Context, name: []const u8) ?*const schema.Parameter {
@@ -666,7 +678,13 @@ pub const Builder = struct {
                 this_type = try self.lowerTransferable(function_context, value.type_annotation);
                 continue;
             }
-            try params.append(self.arena, .{ .type = try self.lowerTransferable(function_context, value.type_annotation), .optional = value.flags.is_optional or value.default_value != 0, .rest = value.flags.is_rest });
+            var param_type = try self.lowerTransferable(function_context, value.type_annotation);
+            if (param_type.* == .reference and param_type.reference.declaration.contextual_only) {
+                var contextual_parameter = function_context;
+                contextual_parameter.allow_opaque = true;
+                param_type = try self.lowerTransferable(contextual_parameter, value.type_annotation);
+            }
+            try params.append(self.arena, .{ .type = param_type, .optional = value.flags.is_optional or value.default_value != 0, .rest = value.flags.is_rest });
         }
         const predicate = if (result != 0 and c.hir.kindOf(result) == .type_predicate_type) blk: {
             const value = hir.typePredicateOf(&c.hir, result);
@@ -832,7 +850,11 @@ pub const Builder = struct {
                 const payload = hir.typeParameterOf(&c.hir, parameter_node);
                 const parameter = try self.arena.create(schema.Parameter);
                 parameter.* = .{ .name = c.interner.get(payload.name) };
-                const local_context = try self.extendContext(context, &.{parameter});
+                var local_context = try self.extendContext(context, &.{parameter});
+                if (c.hir.kindOf(mapped.value) == .fn_type or c.hir.kindOf(mapped.value) == .constructor_type) {
+                    local_context.allow_opaque = true;
+                    local_context.allow_contextual_projection = true;
+                }
                 return self.expression(.{ .mapped = .{
                     .parameter = parameter,
                     .constraint = try self.lower(context, mapped.constraint),
@@ -1565,6 +1587,43 @@ test "class schema: namespace-qualified handler graphs remain lossless" {
     const extracted = item_of_kind.check.tuple[0].type.utility;
     try T.expect(extracted.kind == .extract);
     try T.expect(!extracted.source.reference.projection_only);
+}
+
+test "class schema: contextual handler projection preserves paths beside opaque leaves" {
+    const graph = try TestGraph.init(&.{
+        .{ .path = "/schemas.ts", .text =
+        \\export interface A { _zod: { def: { type: "a" }; opaque: Set<string> }; a: number }
+        \\export interface B { _zod: { def: { type: "b" }; opaque: Set<string> }; b: string }
+        \\export interface TypeDef { type: "a" | "b" }
+        \\export type Types = A | B;
+        \\export type SomeType = Types;
+        },
+        .{ .path = "/visit.ts", .text =
+        \\import * as schemas from "./schemas.js";
+        \\type AnyType = schemas.Types;
+        \\type Kind = schemas.TypeDef["type"];
+        \\type TypeOfKind<K extends Kind> = Extract<schemas.Types, { _zod: { def: { type: K } } }>;
+        \\export type Handlers = { [K in Kind]?: (item: TypeOfKind<K>, rewritten: boolean) => AnyType };
+        \\export declare function visit(item: schemas.SomeType, handlers: Handlers): AnyType;
+        },
+    });
+    defer graph.deinit();
+
+    const visit = try graph.class(1, "visit");
+    defer visit.deinit(T.allocator);
+    try T.expect(visit.declaration.contextual_only);
+    try T.expect(try visit.isSupported(T.allocator));
+    const handlers_reference = visit.declaration.body.?.function.parameters[1].type.reference;
+    try T.expect(handlers_reference.contextual_projection);
+    try T.expect(handlers_reference.declaration.contextual_only);
+    const item = handlers_reference.declaration.body.?.mapped.template.function.parameters[0].type;
+    try T.expect(item.* == .reference);
+    try T.expect(item.reference.contextual_projection);
+
+    const handlers = try graph.class(1, "Handlers");
+    defer handlers.deinit(T.allocator);
+    try T.expect(handlers.declaration.contextual_only);
+    try T.expect(try handlers.isSupported(T.allocator));
 }
 
 test "class schema: qualified imports retain callable shells around opaque leaves" {

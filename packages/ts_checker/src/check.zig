@@ -577,6 +577,11 @@ const ProgramDeclarationContext = struct {
 };
 const ProgramTypeError = CheckError || error{UnsupportedProgramType};
 
+const ProgramProjectionBinding = union(enum) {
+    type_id: TypeId,
+    expression: *const ProgramClassSchema.Expression,
+};
+
 pub const ProgramMemberVisibility = enum {
     public,
     protected,
@@ -109029,6 +109034,125 @@ pub const Checker = struct {
         return result;
     }
 
+    fn programContextualProjectionObject(
+        self: *Checker,
+        members: []const ProgramClassSchema.Member,
+        target_t: TypeId,
+        bindings: *std.AutoHashMapUnmanaged(*const ProgramClassSchema.Parameter, ProgramProjectionBinding),
+        active: *std.AutoHashMapUnmanaged(*const ProgramClassSchema.Declaration, void),
+    ) ProgramTypeError!TypeId {
+        const projected = try self.gpa.alloc(types.ObjectMember, members.len);
+        defer self.gpa.free(projected);
+        for (members, projected) |member, *out| {
+            const name = self.string_interner.intern(member.name) catch return error.OutOfMemory;
+            const target_member = if (target_t < self.interner.pool.typeCount())
+                self.interner.objectMember(target_t, name)
+            else
+                null;
+            out.* = .{
+                .name = name,
+                .type = if (target_member) |target|
+                    (try self.programContextualProjectionForTarget(member.type, target, bindings, active)) orelse types.Primitive.unknown
+                else
+                    types.Primitive.any,
+                .is_optional = member.optional,
+                .is_readonly = member.readonly,
+                .is_method = member.method,
+                .visibility = member.visibility,
+            };
+        }
+        return self.interner.internObjectType(projected);
+    }
+
+    fn programContextualProjectionForTarget(
+        self: *Checker,
+        expression: *const ProgramClassSchema.Expression,
+        target_t: TypeId,
+        bindings: *std.AutoHashMapUnmanaged(*const ProgramClassSchema.Parameter, ProgramProjectionBinding),
+        active: *std.AutoHashMapUnmanaged(*const ProgramClassSchema.Declaration, void),
+    ) ProgramTypeError!?TypeId {
+        return switch (expression.*) {
+            .primitive => |type_id| type_id,
+            .string => |value| @as(?TypeId, self.interner.internStringLiteral(self.string_interner.intern(value) catch return error.OutOfMemory) catch return error.OutOfMemory),
+            .number => |value| @as(?TypeId, self.interner.internNumberLiteral(value) catch return error.OutOfMemory),
+            .boolean => |value| @as(?TypeId, self.interner.internBooleanLiteral(value)),
+            .parameter => |parameter| switch (bindings.get(parameter) orelse return null) {
+                .type_id => |type_id| type_id,
+                .expression => |bound| try self.programContextualProjectionForTarget(bound, target_t, bindings, active),
+            },
+            .reference => |reference| blk: {
+                const target = reference.declaration;
+                if (target.is_class or target.is_function or target.body == null or active.contains(target)) break :blk null;
+                var nested: std.AutoHashMapUnmanaged(*const ProgramClassSchema.Parameter, ProgramProjectionBinding) = .empty;
+                defer nested.deinit(self.gpa);
+                var iterator = bindings.iterator();
+                while (iterator.next()) |entry| try nested.put(self.gpa, entry.key_ptr.*, entry.value_ptr.*);
+                for (target.parameters, 0..) |*parameter, index| {
+                    const binding: ProgramProjectionBinding = if (index < reference.arguments.len)
+                        .{ .expression = reference.arguments[index] }
+                    else if (parameter.default) |default|
+                        .{ .expression = default }
+                    else
+                        .{ .type_id = types.Primitive.unknown };
+                    try nested.put(self.gpa, parameter, binding);
+                }
+                try active.put(self.gpa, target, {});
+                defer _ = active.remove(target);
+                break :blk try self.programContextualProjectionForTarget(target.body.?, target_t, &nested, active);
+            },
+            .object => |members| try self.programContextualProjectionObject(members, target_t, bindings, active),
+            .indexed_object => |object| try self.programContextualProjectionObject(object.members, target_t, bindings, active),
+            .union_type => |members| blk: {
+                var projected: std.ArrayListUnmanaged(TypeId) = .empty;
+                defer projected.deinit(self.gpa);
+                for (members) |member| {
+                    const candidate = (try self.programContextualProjectionForTarget(member, target_t, bindings, active)) orelse continue;
+                    try projected.append(self.gpa, candidate);
+                }
+                if (projected.items.len == 0) break :blk types.Primitive.never;
+                if (projected.items.len == 1) break :blk projected.items[0];
+                break :blk self.interner.internUnion(projected.items) catch return error.OutOfMemory;
+            },
+            .intersection => |members| blk: {
+                var parts: std.ArrayListUnmanaged(TypeId) = .empty;
+                defer parts.deinit(self.gpa);
+                for (members) |member| if (try self.programContextualProjectionForTarget(member, target_t, bindings, active)) |part| {
+                    try parts.append(self.gpa, part);
+                };
+                if (parts.items.len == 0) break :blk null;
+                if (parts.items.len == 1) break :blk parts.items[0];
+                break :blk self.interner.internIntersection(parts.items) catch return error.OutOfMemory;
+            },
+            else => null,
+        };
+    }
+
+    fn programContextualExtractProjection(
+        self: *Checker,
+        source: *const ProgramClassSchema.Expression,
+        target_t: TypeId,
+        declaration: *const ProgramClassSchema.Declaration,
+        args: []const TypeId,
+    ) ProgramTypeError!?TypeId {
+        if (!declaration.contextual_projection) return null;
+        var bindings: std.AutoHashMapUnmanaged(*const ProgramClassSchema.Parameter, ProgramProjectionBinding) = .empty;
+        defer bindings.deinit(self.gpa);
+        for (declaration.parameters, args) |*parameter, argument| {
+            try bindings.put(self.gpa, parameter, .{ .type_id = argument });
+        }
+        var active: std.AutoHashMapUnmanaged(*const ProgramClassSchema.Declaration, void) = .empty;
+        defer active.deinit(self.gpa);
+        const projected = (try self.programContextualProjectionForTarget(source, target_t, &bindings, &active)) orelse return null;
+        return @as(?TypeId, try self.evalConditionalWithDistribution(
+            projected,
+            target_t,
+            projected,
+            types.Primitive.never,
+            false,
+            true,
+        ));
+    }
+
     fn lowerProgramExpression(self: *Checker, expression: *const ProgramClassSchema.Expression, declaration: *const ProgramClassSchema.Declaration, args: []const TypeId) ProgramTypeError!TypeId {
         switch (expression.*) {
             .unsupported => return if (declaration.contextual_only) types.Primitive.any else error.UnsupportedProgramType,
@@ -109110,9 +109234,11 @@ pub const Checker = struct {
             },
             .utility => |utility| switch (utility.kind) {
                 .extract => {
-                    const source_t = try self.resolveGenericType(try self.lowerProgramExpression(utility.source, declaration, args));
                     const target = utility.keys orelse return error.UnsupportedProgramType;
                     const target_t = try self.lowerProgramExpression(target, declaration, args);
+                    if (try self.programContextualExtractProjection(utility.source, target_t, declaration, args)) |projected|
+                        return projected;
+                    const source_t = try self.resolveGenericType(try self.lowerProgramExpression(utility.source, declaration, args));
                     return self.evalConditionalWithDistribution(
                         source_t,
                         target_t,
