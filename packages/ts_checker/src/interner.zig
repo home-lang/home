@@ -724,9 +724,27 @@ pub const Interner = struct {
         readonly: types.ModifierState,
         optional: types.ModifierState,
     ) !TypeId {
+        return self.internMappedWithParameter(
+            constraint,
+            template,
+            types.Primitive.none,
+            readonly,
+            optional,
+        );
+    }
+
+    pub fn internMappedWithParameter(
+        self: *Interner,
+        constraint: TypeId,
+        template: TypeId,
+        key_parameter: TypeId,
+        readonly: types.ModifierState,
+        optional: types.ModifierState,
+    ) !TypeId {
         const payload: types.MappedPayload = .{
             .constraint = constraint,
             .template = template,
+            .key_parameter = key_parameter,
             .readonly = readonly,
             .optional = optional,
         };

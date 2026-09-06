@@ -160,6 +160,7 @@ const Builder = struct {
             .mapped_payloads => {
                 const p = try self.payload(.mapped_payloads, id);
                 try output.appendSlice(allocator, &.{ p.constraint, p.template });
+                if (p.key_parameter != types.Primitive.none) try output.append(allocator, p.key_parameter);
             },
             .indexed_access_payloads => {
                 const p = try self.payload(.indexed_access_payloads, id);
@@ -244,7 +245,16 @@ const Builder = struct {
             },
             .mapped_payloads => blk: {
                 const p = try self.payload(.mapped_payloads, id);
-                break :blk try target.internMapped(try self.typeId(p.constraint), try self.typeId(p.template), p.readonly, p.optional);
+                break :blk try target.internMappedWithParameter(
+                    try self.typeId(p.constraint),
+                    try self.typeId(p.template),
+                    if (p.key_parameter == types.Primitive.none)
+                        types.Primitive.none
+                    else
+                        try self.typeId(p.key_parameter),
+                    p.readonly,
+                    p.optional,
+                );
             },
             .indexed_access_payloads => blk: {
                 const p = try self.payload(.indexed_access_payloads, id);
@@ -599,7 +609,7 @@ fn testGraph(ti: *interner.Interner) !TestGraph {
     const conditional = try ti.internConditionalWithDistribution(parameter, object, text, number, false);
     const keyof_type = try ti.internKeyof(object);
     const indexed = try ti.internIndexedAccess(object, parameter);
-    const mapped = try ti.internMapped(keyof_type, indexed, .remove, .add);
+    const mapped = try ti.internMappedWithParameter(keyof_type, indexed, parameter, .remove, .add);
     const template = try ti.internTemplateLiteral(&.{ 10, 20 }, &.{parameter});
     const string_mapping = try ti.internStringMapping(.capitalize, template);
     const elements_start: u32 = @intCast(ti.pool.tuple_element_pool.items.len);
@@ -690,7 +700,13 @@ fn expectGraph(destination: *const interner.Interner, graph: TestGraph, relocati
     const indexed = pool.indexed_access_payloads.items[pool.payloadOf(try relocation.typeId(graph.indexed))];
     try T.expectEqualDeep(types.IndexedAccessPayload{ .object = object, .index = parameter }, indexed);
     const mapped = pool.mapped_payloads.items[pool.payloadOf(try relocation.typeId(graph.mapped))];
-    try T.expectEqualDeep(types.MappedPayload{ .constraint = try relocation.typeId(graph.keyof_type), .template = try relocation.typeId(graph.indexed), .readonly = .remove, .optional = .add }, mapped);
+    try T.expectEqualDeep(types.MappedPayload{
+        .constraint = try relocation.typeId(graph.keyof_type),
+        .template = try relocation.typeId(graph.indexed),
+        .key_parameter = parameter,
+        .readonly = .remove,
+        .optional = .add,
+    }, mapped);
     const template = try relocation.typeId(graph.template);
     try T.expectEqualSlices(u32, &.{ 110, 120 }, destination.templateLiteralTexts(template));
     try T.expectEqualSlices(types.TypeId, &.{parameter}, destination.templateLiteralTypes(template));

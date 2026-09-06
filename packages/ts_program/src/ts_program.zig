@@ -9968,6 +9968,52 @@ test "Program: partially transferable imported classes retain contextual methods
     try expectCompilationHasDiagnosticCode(compilation, 2339);
 }
 
+test "Program: imported mapped handlers specialize contextual members by property key" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver };
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+
+    const owner =
+        \\export type Kind = "a" | "b";
+        \\export interface Item<K extends Kind = Kind> { kind: K; }
+        \\export type Handlers = { [K in Kind]?: (item: Item<K>, rewritten: boolean) => Item };
+        \\export declare function register(handlers: Handlers): void;
+    ;
+    const consumer =
+        \\import { register } from "./owner.js";
+        \\register({
+        \\  a: (item, rewritten) => {
+        \\    const exact: "a" = item.kind;
+        \\    const wrong: number = item;
+        \\    rewritten.missing;
+        \\    void exact;
+        \\    void wrong;
+        \\    return item;
+        \\  },
+        \\});
+    ;
+    try vfs.addFile("/proj/owner.ts", owner);
+    try vfs.addFile("/proj/consumer.ts", consumer);
+    _ = try p.add("/proj/owner.ts", owner);
+    const consumer_id = try p.add("/proj/consumer.ts", consumer);
+
+    try p.compileAll(.{
+        .no_emit = true,
+        .strict_flags = .{ .no_implicit_any = true, .strict_null_checks = true },
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    });
+    const compilation = p.fileById(consumer_id).compilation.?;
+    try expectCompilationLacksDiagnosticCode(compilation, 7006);
+    try expectCompilationLacksDiagnosticCode(compilation, 2345);
+    try T.expectEqual(@as(usize, 2), compilation.diagnostics.items.len);
+    try expectCompilationHasDiagnosticCode(compilation, 2322);
+    try expectCompilationHasDiagnosticCode(compilation, 2339);
+}
+
 test "Program: qualified interface assertions project declared array members" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();

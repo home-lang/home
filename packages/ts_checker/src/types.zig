@@ -183,6 +183,10 @@ pub const MappedPayload = struct {
     constraint: TypeId,
     /// Property type — `T[K]` or whatever the rhs evaluates to.
     template: TypeId,
+    /// Declaration identity of the mapped key parameter. Keeping it explicit
+    /// lets property projection specialize arbitrary nested templates, not
+    /// only templates shaped as a direct indexed access.
+    key_parameter: TypeId = Primitive.none,
     /// `+/- readonly` modifiers.
     readonly: ModifierState,
     /// `+/- ?` modifiers.

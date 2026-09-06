@@ -84649,7 +84649,13 @@ pub const Checker = struct {
                         2 => .remove,
                         else => .none,
                     };
-                    return self.interner.internMapped(constraint_t, template_t, readonly, optional) catch return error.OutOfMemory;
+                    return self.interner.internMappedWithParameter(
+                        constraint_t,
+                        template_t,
+                        tp_id,
+                        readonly,
+                        optional,
+                    ) catch return error.OutOfMemory;
                 }
             } else {
                 const template_t = self.lowererLowerWithTypeParams(m.value) catch types.Primitive.unknown;
@@ -84670,7 +84676,13 @@ pub const Checker = struct {
                         2 => .remove,
                         else => .none,
                     };
-                    return self.interner.internMapped(constraint_t, template_t, readonly, optional) catch return error.OutOfMemory;
+                    return self.interner.internMappedWithParameter(
+                        constraint_t,
+                        template_t,
+                        tp_id,
+                        readonly,
+                        optional,
+                    ) catch return error.OutOfMemory;
                 }
                 if (constraint_flags.is_intersection and
                     (self.containsFreeTypeParameter(constraint_t) or self.containsFreeTypeParameter(template_t)))
@@ -84685,7 +84697,13 @@ pub const Checker = struct {
                         2 => .remove,
                         else => .none,
                     };
-                    return self.interner.internMapped(constraint_t, template_t, readonly, optional) catch return error.OutOfMemory;
+                    return self.interner.internMappedWithParameter(
+                        constraint_t,
+                        template_t,
+                        tp_id,
+                        readonly,
+                        optional,
+                    ) catch return error.OutOfMemory;
                 }
                 return self.lowerer.lower(node);
             }
@@ -84849,7 +84867,13 @@ pub const Checker = struct {
             2 => .remove,
             else => .none,
         };
-        return self.interner.internMapped(constraint_t, template_t, readonly, optional) catch return error.OutOfMemory;
+        return self.interner.internMappedWithParameter(
+            constraint_t,
+            template_t,
+            key_t,
+            readonly,
+            optional,
+        ) catch return error.OutOfMemory;
     }
 
     fn materializeBroadMappedIndexType(
@@ -109138,9 +109162,10 @@ pub const Checker = struct {
                 if (parameter_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(parameter_t).is_type_parameter) {
                     self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(parameter_t)].constraint = constraint_t;
                 }
-                return self.interner.internMapped(
+                return self.interner.internMappedWithParameter(
                     constraint_t,
                     try self.lowerProgramExpression(mapped.template, declaration, args),
+                    parameter_t,
                     @fromBackingInt(@intCast(mapped.readonly)),
                     @fromBackingInt(@intCast(mapped.optional)),
                 ) catch return error.OutOfMemory;
@@ -160832,7 +160857,9 @@ pub const Checker = struct {
     ) CheckError!TypeId {
         const m = self.interner.mappedPayload(mapped_t);
         const raw_indexed = self.mappedTemplateIndexedAccessWithConcreteObject(m.template);
-        const raw_key_tp = if (raw_indexed) |indexed|
+        const raw_key_tp = if (m.key_parameter != types.Primitive.none)
+            m.key_parameter
+        else if (raw_indexed) |indexed|
             indexed.key_tp
         else
             self.mappedTemplateKeyTypeParameter(m.template);
@@ -160996,7 +161023,13 @@ pub const Checker = struct {
             ) catch return error.OutOfMemory;
             return try self.finishSubstitutedMappedType(mapped_t, result, subs);
         }
-        const result = self.interner.internMapped(constraint, template, m.readonly, m.optional) catch return error.OutOfMemory;
+        const result = self.interner.internMappedWithParameter(
+            constraint,
+            template,
+            raw_key_tp,
+            m.readonly,
+            m.optional,
+        ) catch return error.OutOfMemory;
         return try self.finishSubstitutedMappedType(mapped_t, result, subs);
     }
 
@@ -177608,11 +177641,17 @@ pub const Checker = struct {
 
     fn mappedPropertyTargetType(self: *Checker, mapped_t: TypeId, key_name: hir_mod.StringId) CheckError!TypeId {
         const m = self.interner.mappedPayload(mapped_t);
-        if (self.mappedTemplateIndexedAccessWithConcreteObject(m.template)) |indexed| {
+        const key_parameter = if (m.key_parameter != types.Primitive.none)
+            m.key_parameter
+        else if (self.mappedTemplateIndexedAccessWithConcreteObject(m.template)) |indexed|
+            indexed.key_tp
+        else
+            types.Primitive.none;
+        if (key_parameter != types.Primitive.none) {
             const key_lit = self.interner.internStringLiteral(key_name) catch return error.OutOfMemory;
             var key_subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
             defer key_subs.deinit(self.gpa);
-            try key_subs.put(self.gpa, indexed.key_tp, key_lit);
+            try key_subs.put(self.gpa, key_parameter, key_lit);
             return self.substituteType(m.template, &key_subs) catch m.template;
         }
         return m.template;
