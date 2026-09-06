@@ -423,8 +423,17 @@ the corresponding negative cases:
 | Unique path/line/column/code identities | 431 | **425** | **6 removed; 0 added** |
 | Unique identities versus immutable baseline | 597 | **425** | **172 removed; 0 added** |
 
+The imported-class method audit then projects independently transferable
+method signatures without admitting an unsupported sibling class graph:
+
+| [Zod 4.5.2 imported-class method audit](docs/docs/TS_PERFORMANCE.md#partially-transferable-imported-class-methods) | Post-#664 main | #665 main | Change |
+|---|---:|---:|---:|
+| Diagnostics | 430 | **400** | **30 TS7006 removed; 0 added** |
+| Unique path/line/column/code identities | 425 | **395** | **30 removed; 0 added** |
+| Unique identities versus immutable baseline | 597 | **395** | **202 removed; 0 added** |
+
 TypeScript 6.0.3 reports zero diagnostics on this graph. Home still reports
-430, so Zod remains outside the cross-compiler timing table until Home also
+400, so Zod remains outside the cross-compiler timing table until Home also
 reaches zero diagnostics.
 
 The latest optimization admissions preserve that qualified snapshot while

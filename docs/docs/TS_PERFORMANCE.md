@@ -7856,8 +7856,8 @@ The six removed identities are
 `src/v4/core/registries.ts:66:25:TS2698`,
 `src/v4/core/util.ts:150:5:TS2304`, and
 `src/v4/core/util.ts:152:7:TS2304`. No candidate-only identity exists. The
-final distribution is 202 TS2345, 100 TS7006, 59 TS2339, 12 TS2322, 11
-TS1361, 8 TS2304, 4 TS7031, 4 TS2554, 4 TS2430, 3 TS2488, 3 TS2411, 2
+final distribution is 202 TS2345, 100 TS7006, 59 TS2339, 16 TS1361, 12
+TS2322, 8 TS2304, 4 TS7031, 4 TS2554, 4 TS2430, 3 TS2488, 3 TS2411, 2
 TS4110, 2 TS2749, 2 TS2741, 2 TS2698, 2 TS2552, 2 TS2367, 2 TS18048, and
 1 TS2571.
 
@@ -7885,6 +7885,79 @@ zig build -Doptimize=ReleaseFast
 ./zig-out/bin/home-tsc --project=/path/to/collections/tsconfig.json --pretty=false
 ./zig-out/bin/home-tsc --project=/path/to/conditional-spread/tsconfig.json --pretty=false
 ./zig-out/bin/home-tsc --project=/path/to/property-key/tsconfig.json --pretty=false
+./zig-out/bin/home-tsc --project=/path/to/zod-4.5.2/tsconfig.benchmark.json --pretty=false
+```
+
+### Partially transferable imported-class methods
+
+Issue [#665](https://github.com/home-lang/home/issues/665) addresses the
+largest remaining Zod TS7006 family. A plain exported class previously carried
+only shallow member names across a Program boundary. If an unrelated member
+used an unsupported whole-class type graph, callable members therefore
+degraded to `any` and their callback parameters lost contextual types.
+
+Commit [`9fe50f37a`](https://github.com/home-lang/home/commit/9fe50f37a)
+retains source-owned schemas for member projection while preserving the
+existing safe whole-object fallback. When a called member's fallback is not
+callable, the checker lowers only that requested member in contextual mode.
+An exact recursive class reference maps back to the already materialized
+receiver, so nested calls recover the same signature without expanding the
+unsupported sibling graph. The implementation contains no checks for Zod,
+`Doc`, `indented`, a source path, or a diagnostic location.
+
+The first candidate incorrectly allowed those newly collected schemas to
+enter whole-class substitution. Its standalone oracle and Program suite
+passed, but the untouched Zod graph exited 139 before emitting diagnostics;
+that design was rejected and never committed. The admitted projection-only
+design preserves the pre-existing whole-class admission boundary and makes
+the same graph complete normally.
+
+The strict two-file oracle gives the imported class an unsupported mutable
+`Record<string, unknown>` sibling and a self-referential callback method. It
+checks both direct and recursively nested callbacks. Two negative controls
+prove the inferred parameter is the imported class rather than `any`:
+
+| Imported-class method control | TypeScript 6.0.3 | Native TypeScript preview | ReleaseFast Home |
+|---|---:|---:|---:|
+| Direct and nested callback parameters | no TS7006 | no TS7006 | **no TS7006** |
+| Missing member and assignment to `number` | TS2339, TS2322 | TS2339, TS2322 | **TS2339, TS2322** |
+
+The unchanged production graph supplies the admission gate:
+
+| Zod 4.5.2 imported-class method audit | Post-#664 main | #665 main | Change |
+|---|---:|---:|---:|
+| All diagnostics | 430 | **400** | **30 removed; 0 added** |
+| Unique diagnostic identities | 425 | **395** | **30 removed; 0 added** |
+| TS7006 | 100 | **70** | **30 removed** |
+| Unique identities versus immutable baseline | 597 | **395** | **202 removed; 0 added** |
+
+All 30 removals are TS7006 callback parameters in
+`src/v4/core/compile.ts`, at lines 1144, 1152, 1183, 1204, 1238, 1275,
+1277, 1285, 1296, 1455, 1480, 1573, 1578, 1586, 1635, 1637, 1644, 1654,
+1678, 1754, 1805, 1889, 1921, 1950, 1979, 1999, 2034, 2037, 2142, and 2152.
+No candidate-only identity exists. The final distribution is 202
+TS2345, 70 TS7006, 59 TS2339, 16 TS1361, 12 TS2322, 8 TS2304, 4 TS7031,
+4 TS2554, 4 TS2430, 3 TS2488, 3 TS2411, 2 TS4110, 2 TS2749, 2 TS2741,
+2 TS2698, 2 TS2552, 2 TS2367, 2 TS18048, and 1 TS2571.
+
+Two production runs are byte-identical, with stderr SHA-256
+`3212f2598cc37ba0eb8a98a14c0ddfe82158ee4797ee75ec8f5d8565d5414774`.
+Zod still has 400 diagnostics while TypeScript reports zero, so
+[#548](https://github.com/home-lang/home/issues/548) remains open and the
+graph is not admitted to cross-compiler timing. All elapsed times are excluded
+because the shared host was contended; this section makes no performance
+claim.
+
+Final gates pass the exact three-engine oracle, **190/190** complete Program
+tests, the complete checker suite, ReleaseFast, `zig fmt --check`, and
+`git diff --check`. The required repository-wide Pickier run remains red on
+existing debt: 22,427 findings across 12,657 linted files.
+
+```sh
+zig build test -Dfilter=ts_program
+zig build test -Dfilter=ts_checker
+zig build -Doptimize=ReleaseFast
+./zig-out/bin/home-tsc --project=/path/to/imported-method-context/tsconfig.json --pretty=false
 ./zig-out/bin/home-tsc --project=/path/to/zod-4.5.2/tsconfig.benchmark.json --pretty=false
 ```
 
