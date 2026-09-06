@@ -8504,6 +8504,86 @@ zig build home-tsc -Doptimize=ReleaseFast
 bunx --bun pickier .
 ```
 
+### Impossible truthy property branches
+
+Issue [#672](https://github.com/home-lang/home/issues/672), under
+[#548](https://github.com/home-lang/home/issues/548), isolates a core flow
+error found while examining the remaining Zod locale diagnostics. A property
+that is impossible on one union variant can have the static type
+`never | T[] | undefined`. In a truthy branch, Home previously removed only
+the nullish constituent and retained `never | T[]`, blocking normal array
+member lookup and callback context.
+
+Commit
+[`673a648a9`](https://github.com/home-lang/home/commit/673a648a972f8aa3c6f1de4cfa2d1a027d1972aa)
+routes stable member values through the checker's existing semantic truthy
+partition. That partition removes impossible `never` and falsy unit
+constituents while retaining broad primitives whose truthy subsets cannot be
+represented as a narrower type. The fix does not inspect property names,
+array methods, source text, or libraries.
+
+The strict control combines a direct truthy branch with an `Array.isArray`
+chain and one intentional assignment error:
+
+```ts
+type Primitive = string | number | boolean;
+interface Present { options?: Primitive[] }
+interface Impossible { options?: never }
+declare const issue: Present | Impossible;
+
+if (issue.options) {
+  issue.options.map(value => value);
+}
+
+if (issue.options && Array.isArray(issue.options) && issue.options.length > 0) {
+  issue.options.map(value => {
+    const exact: Primitive = value;
+    const wrong: never = value;
+    return value;
+  });
+}
+```
+
+| Truthy-property control | TypeScript 6.0.3 | Native TypeScript preview | ReleaseFast Home |
+|---|---:|---:|---:|
+| Truthy `.map` access | accepted | accepted | **accepted** |
+| `Array.isArray` length/map access | accepted | accepted | **accepted** |
+| Callback value | `Primitive` | `Primitive` | **`Primitive`** |
+| Complete invalid-control multiset | 1× TS2322 | 1× TS2322 | **1× TS2322** |
+| False TS2339 / TS7006 | none | none | **none** |
+
+The production A/B is deliberately reported as a negative result. Two pinned
+106-file Zod 4.5.2 candidate runs are byte-identical to the exact #671 parent:
+
+| Zod 4.5.2 truthy-property audit | #671 main | #672 `673a648a9` | Change |
+|---|---:|---:|---:|
+| All diagnostics | 374 | **374** | **unchanged; 0 added** |
+| Unique diagnostic identities | 369 | **369** | **unchanged; 0 added** |
+| Unique identities versus immutable baseline | 597 | **369** | **228 removed overall; 0 added** |
+
+Raw stderr remains byte-identical with SHA-256
+`5353246e2b9172390011adff013f5807c60da3019b28e34f3d814e50d80fcf80`.
+The unchanged corpus disproves the initial hypothesis that this impossible
+branch caused the 10 locale TS7006 reports; that family requires a separate
+reduction. No performance claim is made while Home and TypeScript differ in
+correctness on Zod.
+
+Final gates pass the exact three-engine oracle, the focused permanent checker
+test, the complete checker suite, **201/201** Program tests, ReleaseFast,
+`zig fmt --check`, and `git diff --check`. The required repository-wide
+Pickier run remains red on unchanged existing debt: 22,427 findings (11,834
+errors and 10,593 warnings). Evidence is retained on
+[#672](https://github.com/home-lang/home/issues/672#issuecomment-5561862625).
+
+```sh
+zig build test -Dfilter=ts_checker
+zig build test -Dfilter=ts_program
+zig build home-tsc -Doptimize=ReleaseFast
+./zig-out/bin/home-tsc --project=/path/to/truthy-property/tsconfig.json --pretty=false
+./zig-out/bin/home-tsc --project=/path/to/zod-4.5.2/tsconfig.benchmark.json --pretty=false
+bunx --bun pickier .
+```
+
 ### Typed cross-file global ownership and cyclic provenance (untimed)
 
 Issue [#480](https://github.com/home-lang/home/issues/480), under

@@ -494,6 +494,16 @@ The contextual-path audit then projects only the members required by an
 | Focused opaque-sibling oracle | 2 false TS7006 | **exact 2× TS2322 + 2× TS2339 parity** | no TS7006/TS2345 |
 | Unique identities versus immutable baseline | 597 | **369** | **228 removed overall; 0 added** |
 
+The truthy-property audit then removes impossible `never` branches through
+the normal flow partitioner, while its unchanged Zod A/B rejects the initial
+locale attribution:
+
+| [Truthy property branch audit](docs/docs/TS_PERFORMANCE.md#impossible-truthy-property-branches) | #671 main | #672 main | Change |
+|---|---:|---:|---:|
+| Focused three-engine oracle | false TS2339 + TS7006 | **exact 1× TS2322 parity** | fixed |
+| Zod diagnostics | 374 | **374** | **unchanged; 0 added** |
+| Zod unique identities | 369 | **369** | **unchanged; 0 added** |
+
 TypeScript 6.0.3 reports zero diagnostics on this graph. Home still reports
 374, so Zod remains outside the cross-compiler timing table until Home also
 reaches zero diagnostics.
