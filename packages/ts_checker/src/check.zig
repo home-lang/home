@@ -109275,7 +109275,7 @@ pub const Checker = struct {
             },
             .mapped => |mapped| {
                 const parameter_t = try self.programExpressionParameter(mapped.parameter);
-                const constraint_t = try self.lowerProgramExpression(mapped.constraint, declaration, args);
+                const constraint_t = try self.resolveGenericType(try self.lowerProgramExpression(mapped.constraint, declaration, args));
                 if (parameter_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(parameter_t).is_type_parameter) {
                     self.interner.pool.type_parameter_payloads.items[self.interner.pool.payloadOf(parameter_t)].constraint = constraint_t;
                 }
@@ -172029,7 +172029,10 @@ pub const Checker = struct {
             object_t = self.typeParameterConstraint(object_t) orelse return null;
             object_t = self.resolveGenericType(object_t) catch object_t;
         }
-        const member_t = (try self.directNamedMemberValueType(object_t, key)) orelse return null;
+        const member_t = if (object_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(object_t).is_union)
+            (try self.resolveObjectIndexedAccessType(object_t, indexed.index)) orelse return null
+        else
+            (try self.directNamedMemberValueType(object_t, key)) orelse return null;
         if (self.containsThisTypeParameter(member_t)) return null;
         return self.resolveGenericType(member_t) catch member_t;
     }
@@ -172048,6 +172051,9 @@ pub const Checker = struct {
         if (object_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(object_t).is_type_parameter) {
             object_t = self.typeParameterConstraint(object_t) orelse return null;
             object_t = self.resolveGenericType(object_t) catch object_t;
+        }
+        if (object_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(object_t).is_union) {
+            return try self.resolveObjectIndexedAccessType(object_t, indexed.index);
         }
         return try self.directNamedMemberValueType(object_t, key);
     }

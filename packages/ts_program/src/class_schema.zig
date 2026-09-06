@@ -1461,6 +1461,27 @@ test "class schema: Extract remains lossless through overloaded mapped handlers"
     try T.expect(item_of_kind.false_branch.utility.kind == .extract);
 }
 
+test "class schema: indexed access key domains survive mapped handlers" {
+    const graph = try TestGraph.init(&.{.{ .path = "/owner.ts", .text =
+        \\export interface A { _zod: { def: { type: "a" } }; a: number }
+        \\export interface B { _zod: { def: { type: "b" } }; b: string }
+        \\export type Item = A | B;
+        \\export type Kind = Item["_zod"]["def"]["type"];
+        \\export type Handlers = { [K in Kind]?: (item: Extract<Item, { _zod: { def: { type: K } } }>) => Item };
+        \\export declare function visit(item: Item, handlers: Handlers): Item;
+    }});
+    defer graph.deinit();
+    const result = try graph.class(0, "visit");
+    defer result.deinit(T.allocator);
+
+    try T.expect(try result.isSupported(T.allocator));
+    const handlers = result.declaration.body.?.function.parameters[1].type.reference.declaration.body.?.mapped;
+    const kind = handlers.constraint.reference.declaration.body.?.indexed_access;
+    try T.expect(kind.index.* == .string);
+    try T.expectEqualStrings("type", kind.index.string);
+    try T.expect(kind.object.* == .indexed_access);
+}
+
 test "class schema: qualified imports retain callable shells around opaque leaves" {
     const graph = try TestGraph.init(&.{
         .{ .path = "/owner.ts", .text =
