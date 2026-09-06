@@ -7665,6 +7665,72 @@ zig build -Doptimize=ReleaseFast
 ./zig-out/bin/home-tsc -p /path/to/zod-4.5.2/tsconfig.benchmark.json
 ```
 
+### Map-entry tuples through array callbacks
+
+Issue [#660](https://github.com/home-lang/home/issues/660) follows the next
+coherent Zod cluster after #659. A `Map<K, V>` iterator yields `[K, V]`, but
+Home synthesized its entry as a generic array-like object with numeric index
+`K | V`. Array spread therefore retained only the union for contextual
+destructuring. The parser also discarded binding elisions, so `[, value]`
+reached every positional consumer as a one-slot pattern.
+
+Commit [`768ae2192`](https://github.com/home-lang/home/commit/768ae2192)
+uses the checker's existing fixed-tuple constructor for mutable Map entries,
+recognizes checker-created tuple origins during binding projection, and keeps
+array-pattern elisions as empty HIR parameter slots. The binder and emitter
+already treat an empty parameter slot as an elision. This restores the tuple
+and source position instead of adding a Zod symbol, callback-chain, property,
+or diagnostic-location exception.
+
+The standalone strict, no-emit oracle uses the same two files and configs for
+Home ReleaseFast, TypeScript 6.0.3, and native TypeScript 7.0.2. The negative
+file differs only by changing the final annotation from `string[]` to
+`number[]`:
+
+| Map spread / callback control | TypeScript 6.0.3 | Native TypeScript 7.0.2 | ReleaseFast Home |
+|---|---:|---:|---:|
+| `[...Map<string, Flags>]`, `filter(([, flags]) => ...)`, `map(([key]) => key)`, assign to `string[]` | 0 diagnostics | 0 diagnostics | **0 diagnostics** |
+| Same pipeline assigned to `number[]` | 1× TS2322 from `string[]` | 1× TS2322 from `string[]` | **1× TS2322 from `string[]`** |
+
+The unchanged 106-file Zod 4.5.2 configuration supplies the production
+admission gate:
+
+| Zod 4.5.2 Map-entry tuple audit | Post-#659 main | #660 candidate | Change |
+|---|---:|---:|---:|
+| All diagnostics | 446 | **440** | **6 removed; 0 added** |
+| Unique diagnostic identities | 441 | **435** | **6 removed; 0 added** |
+| TS2345 | 206 | **203** | **3 removed** |
+| TS2339 | 61 | **59** | **2 removed** |
+| TS2322 | 13 | **12** | **1 removed** |
+| Unique identities versus immutable baseline | 597 | **435** | **162 removed; 0 added** |
+
+The six current-parent removals are the three Map-key TS2345 diagnostics at
+`src/v4/core/schemas.ts:2827/2830`, the two `flags.l` / `flags.r` TS2339
+diagnostics at `schemas.ts:2825`, and the Map-entry destructuring TS2322 at
+`src/v4/core/compile.ts:262`. No candidate-only identity exists. The candidate
+distribution is 203 TS2345, 100 TS7006, 59 TS2339, 16 TS1361, 16 TS2304, 12
+TS2322, and fewer than five diagnostics for every remaining code.
+
+Zod still has 440 diagnostics, so [#548](https://github.com/home-lang/home/issues/548)
+remains open and the graph is not admitted to cross-compiler timing. The
+ReleaseFast build ran on a contended shared host, so its wall time is excluded.
+
+Final gates pass the three-engine positive/negative oracle, the focused
+regression, **4,356/4,356** complete checker tests, the full parser suite,
+**189/189** Program tests, ReleaseFast, scoped `pickier`, `zig fmt --check`,
+and `git diff --check`. Exact evidence is retained on
+[#660](https://github.com/home-lang/home/issues/660#issuecomment-5556844244).
+
+```sh
+zig build test -Dfilter=ts_checker -Dts-checker-test-filter='Map entry tuples retain positions through filter and map callbacks'
+zig build test -Dfilter=ts_checker
+zig build test -Dfilter=ts_parser
+zig build test -Dfilter=ts_program
+zig build -Doptimize=ReleaseFast
+./zig-out/bin/home-tsc --project=/path/to/map-callback-tuples/tsconfig.json --pretty=false
+./zig-out/bin/home-tsc --project=/path/to/zod-4.5.2/tsconfig.benchmark.json --pretty=false
+```
+
 ### Typed cross-file global ownership and cyclic provenance (untimed)
 
 Issue [#480](https://github.com/home-lang/home/issues/480), under

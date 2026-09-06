@@ -392,6 +392,16 @@ weakening the unconstrained `Record` key check:
 | Unique path/line/column/code identities | 443 | **441** | **2 removed; 0 added** |
 | TS2344 | 2 | **0** | **all remaining TS2344 removed** |
 
+The Map-entry tuple audit then preserves `[K, V]` positions through array
+spreads and destructured `filter` / `map` callbacks, including leading
+binding elisions:
+
+| [Zod 4.5.2 Map-entry tuple audit](docs/docs/TS_PERFORMANCE.md#map-entry-tuples-through-array-callbacks) | Post-#659 main | #660 main | Change |
+|---|---:|---:|---:|
+| Diagnostics | 446 | **440** | **6 removed; 0 added** |
+| Unique path/line/column/code identities | 441 | **435** | **6 removed; 0 added** |
+| Unique identities versus immutable baseline | 597 | **435** | **162 removed; 0 added** |
+
 TypeScript 6.0.3 reports zero diagnostics on this graph. Zod remains outside
 the cross-compiler timing table until Home also reaches zero diagnostics.
 
