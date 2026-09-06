@@ -460,6 +460,14 @@ fn splitAlign(type_name: []const u8) struct { bare: []const u8, alignment: ?usiz
 }
 
 /// A slice is written `[]T` and is two words: a pointer then a length.
+/// The declared type of parameter `idx`, or null when the callee's signature
+/// is not known at this point.
+fn declaredParamType(params: ?[]const ast.Parameter, idx: usize) ?[]const u8 {
+    const list = params orelse return null;
+    if (idx >= list.len) return null;
+    return list[idx].type_name;
+}
+
 fn isSliceType(type_name: []const u8) bool {
     return type_name.len > 2 and type_name[0] == '[' and type_name[1] == ']';
 }
@@ -2694,7 +2702,9 @@ pub const HomeKernelCodegen = struct {
             var i: usize = args.len;
             while (i > 0) {
                 i -= 1;
-                words += try self.pushArgument(args[i]);
+                // A call through a function-typed field carries no parameter
+                // list here, so the literal keeps its historical pair form.
+                words += try self.pushArgument(args[i], null);
             }
             for (0..words) |reg_idx| {
                 const areg = self.emit().argReg(reg_idx) orelse break;
@@ -3056,19 +3066,47 @@ pub const HomeKernelCodegen = struct {
         return out;
     }
 
+    /// Whether a string literal handed to a parameter of this declared type
+    /// travels as a (pointer, length) pair rather than a bare address.
+    ///
+    /// Only a real slice parameter — `[]u8`, `[]const u8` — takes the pair.
+    /// `str`/`string` is itself an address, so it takes one word. When the
+    /// callee's signature is unknown (an extern declaration, a call through a
+    /// function pointer) the pair is kept: that is what those interfaces have
+    /// always been given, and narrowing it here would break them silently.
+    fn stringLiteralTravelsAsSlice(self: *HomeKernelCodegen, declared: ?[]const u8) bool {
+        const raw = declared orelse return true;
+        const bare = splitAlign(raw).bare;
+        const resolved = self.resolveAlias(bare) orelse bare;
+        return isSliceType(resolved);
+    }
+
     /// Push one call argument, returning how many machine words it occupies.
     /// Pushes happen in reverse argument order, so within a slice the length
     /// is pushed first and the pointer second — leaving the pointer on top,
     /// which is what pops into the lower-numbered register.
-    fn pushArgument(self: *HomeKernelCodegen, arg: *const ast.Expr) anyerror!usize {
+    fn pushArgument(
+        self: *HomeKernelCodegen,
+        arg: *const ast.Expr,
+        declared: ?[]const u8,
+    ) anyerror!usize {
         // A string literal used where a slice is expected carries its length
-        // with it: the length is known at compile time.
+        // with it: the length is known at compile time. Where the parameter is
+        // a plain address — `u64`, `[*]u8`, `string` — the length must NOT be
+        // pushed. Pushing it unconditionally shifted every later argument down
+        // a register, so `f(x, "lit", y)` silently handed the callee the
+        // literal's length in place of `y`.
         if (arg.* == .StringLiteral) {
-            try self.emit().movImm(@intCast(arg.StringLiteral.value.len));
-            try self.emit().push(.acc);
+            if (self.stringLiteralTravelsAsSlice(declared)) {
+                try self.emit().movImm(@intCast(arg.StringLiteral.value.len));
+                try self.emit().push(.acc);
+                try self.generateExpr(arg);
+                try self.emit().push(.acc);
+                return 2;
+            }
             try self.generateExpr(arg);
             try self.emit().push(.acc);
-            return 2;
+            return 1;
         }
         // `ptr[0..len]` passed to a `[]T` parameter travels as the pair the
         // callee expects. Length first, pointer second: pushes happen in
@@ -3572,6 +3610,7 @@ pub const HomeKernelCodegen = struct {
         first_reg: usize,
     ) !void {
         const defaults = self.omittedDefaults(arity_key, args.len);
+        const params = self.fn_params.get(arity_key);
         var words: usize = 0;
 
         var d: usize = defaults.len;
@@ -3580,13 +3619,13 @@ pub const HomeKernelCodegen = struct {
             // A parameter with no default that the call omitted has already
             // been reported by checkArity; there is nothing to push for it.
             const value = defaults[d].default_value orelse continue;
-            words += try self.pushArgument(value);
+            words += try self.pushArgument(value, defaults[d].type_name);
         }
 
         var i: usize = args.len;
         while (i > 0) {
             i -= 1;
-            words += try self.pushArgument(args[i]);
+            words += try self.pushArgument(args[i], declaredParamType(params, i));
         }
 
         for (0..words) |reg_idx| {
