@@ -7407,6 +7407,60 @@ zig build home-tsc -Doptimize=ReleaseFast
 ./zig-out/bin/home-tsc --project /path/to/zod-4.5.2/tsconfig.benchmark.json
 ```
 
+### Unsupported owner-schema inherited member projection
+
+Issue [#656](https://github.com/home-lang/home/issues/656) follows the
+member-only inheritance work above through one more exact boundary. An
+imported interface can contain readable primitive, builtin-object, and
+callable members while an unrelated recursive indexed alias makes its complete
+schema ineligible for consumer-wide lowering. A non-generic local interface
+extending a generic local wrapper around that owner previously lost the HIR
+declaration needed to continue member projection.
+
+Commit [`ab86dadca`](https://github.com/home-lang/home/commit/ab86dadca)
+recovers that declaration from the receiver's registered local type identity,
+then validates the name against the exact declaration visible at the access
+site. The existing identity-based heritage traversal does the remaining work.
+Whole-schema admission is unchanged, no unsupported leaf becomes `any`, and
+the normal union visibility rules still reject distinct private or protected
+declarations.
+
+The strict two-file oracle contains a circular type import, a recursive
+`Record`-bearing alias, generic local and imported heritage, and a non-generic
+child consumed through a source-owned factory default. TypeScript 6.0.3,
+native TypeScript 7.0.2, and the ReleaseFast Home candidate all accept the
+positive source with zero diagnostics. The Program fixture appends an invalid
+assignment and unknown member and continues to require exactly TS2322 and
+TS2339. Reversing root order preserves the same result.
+
+The unchanged 106-file Zod 4.5.2 audit compares every complete
+`path:line:column:TS-code` identity against both the post-#654 checkpoint and
+the immutable 602-diagnostic baseline:
+
+| Zod 4.5.2 unsupported-owner projection audit | Post-#654 main | #656 candidate | Change |
+|---|---:|---:|---:|
+| All diagnostics | 523 | **489** | **34 removed (6.5%)** |
+| Unique diagnostic identities | 518 | **484** | **34 removed; 0 added** |
+| TS2339 | 95 | **61** | **34 removed (35.8%)** |
+| Unique identities versus immutable baseline | 597 | **484** | **113 removed; 0 added** |
+
+Every current-parent removal is TS2339 on an inherited member such as
+`pattern`, `abort`, or `check`; no candidate-only key exists. The complete
+**4,353/4,353** checker suite and **187/187** Program suite pass, as do the
+ReleaseFast oracle, scoped `pickier`, and `git diff --check`. Build and audit
+wall times were observed under unrelated CPU load and are not admitted as
+frontend performance evidence. The graph remains outside timing comparison
+until [#548](https://github.com/home-lang/home/issues/548) reaches zero
+diagnostics.
+
+```sh
+zig build test -Dfilter=ts_checker
+zig build test -Dfilter=ts_program
+zig build home-tsc -Doptimize=ReleaseFast
+./zig-out/bin/home-tsc --project /path/to/cyclic-owner/tsconfig.json
+./zig-out/bin/home-tsc --project /path/to/zod-4.5.2/tsconfig.benchmark.json
+```
+
 ### Typed cross-file global ownership and cyclic provenance (untimed)
 
 Issue [#480](https://github.com/home-lang/home/issues/480), under

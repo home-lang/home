@@ -355,6 +355,14 @@ and compares complete diagnostic identities rather than only aggregate counts:
 | Unique path/line/column/code identities | 597 | **518** | **79 removed; 0 added** |
 | Checker / Program suites | — | **4,353/4,353; 187/187** | pass |
 
+The exact member-only projection then crosses an unsupported owner schema
+through a non-generic local child without weakening whole-schema admission:
+
+| [Zod 4.5.2 unsupported-owner projection audit](docs/docs/TS_PERFORMANCE.md#unsupported-owner-schema-inherited-member-projection) | Post-#654 main | #656 main | Change |
+|---|---:|---:|---:|
+| Diagnostics | 523 | **489** | **34 TS2339 removed (6.5%)** |
+| Unique path/line/column/code identities | 518 | **484** | **34 removed; 0 added** |
+
 TypeScript 6.0.3 reports zero diagnostics on this graph. Zod remains outside
 the cross-compiler timing table until Home also reaches zero diagnostics.
 
