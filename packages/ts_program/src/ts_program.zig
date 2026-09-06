@@ -10811,30 +10811,39 @@ test "Program: local multiple heritage retains qualified imported members in fac
     defer p.deinit();
 
     const owner =
-        \\export interface RemoteBase { abort?: boolean }
+        \\import type { LocalPayload } from "./consumer.js";
+        \\type Recursive = { [key: string]: Recursive | Record<string, unknown> };
+        \\export interface RemoteBase {
+        \\  abort?: boolean;
+        \\  unrelated?: (value: Recursive) => void;
+        \\}
         \\export interface Remote<Format extends string = string> extends RemoteBase {
         \\  format: Format;
         \\  pattern?: RegExp;
+        \\  attach?: (payload: LocalPayload) => void;
         \\}
         \\type Trait = { state: { def: unknown } };
         \\export interface $constructor<T extends Trait, D = T["state"]["def"]> {
         \\  init(inst: T, def: D): asserts inst is T;
         \\}
-        \\export function $constructor<T extends Trait, D = T["state"]["def"]>(
+        \\export declare function $constructor<T extends Trait, D = T["state"]["def"]>(
         \\  initialize: (inst: T, def: D) => void
-        \\): $constructor<T, D> { throw new Error(); }
+        \\): $constructor<T, D>;
     ;
     const consumer =
         \\import * as api from "./owner.js";
+        \\export interface LocalPayload { value: string }
         \\interface LocalBase { type: "string" }
         \\interface Combined<Format extends string = string>
         \\  extends LocalBase, api.Remote<Format> {}
-        \\interface Internals { def: Combined<"tag"> }
+        \\interface Child extends Combined<"tag"> {}
+        \\interface Internals { def: Child }
         \\interface Item { state: Internals }
         \\export const Item: api.$constructor<Item> = api.$constructor<Item>((inst, def) => {
         \\  def.pattern ??= /tag/;
         \\  const maybe: boolean | undefined = def.abort;
         \\  const exact: "tag" = def.format;
+        \\  def.attach?.({ value: "ok" });
         \\  inst.state.def = def;
         \\  void maybe; void exact;
         \\});
@@ -10844,7 +10853,8 @@ test "Program: local multiple heritage retains qualified imported members in fac
         \\interface LocalBase { type: "string" }
         \\interface Combined<Format extends string = string>
         \\  extends LocalBase, api.Remote<Format> {}
-        \\interface Internals { def: Combined<"tag"> }
+        \\interface Child extends Combined<"tag"> {}
+        \\interface Internals { def: Child }
         \\interface Item { state: Internals }
         \\export const Item: api.$constructor<Item> = api.$constructor<Item>((inst, def) => {
         \\  const wrong: number = def.format;

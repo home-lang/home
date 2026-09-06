@@ -108064,8 +108064,20 @@ pub const Checker = struct {
         defer _ = active.remove(receiver);
         const declaration = if (self.generic_interface_decl_by_instance.get(receiver)) |generic_decl|
             generic_decl
-        else
-            self.program_qualified_interface_decl.get(receiver) orelse return null;
+        else if (self.program_qualified_interface_decl.get(receiver)) |qualified_decl|
+            qualified_decl
+        else blk: {
+            // A non-generic child can inherit an unsupported qualified graph
+            // through one or more local interfaces. Its concrete object may
+            // therefore have no direct qualified-origin marker, but its
+            // registered local type identity still resolves to the exact HIR
+            // declaration. Recover that declaration instead of making whole
+            // schema support a prerequisite for requested-member projection.
+            const receiver_name = self.namedTypeForId(receiver) orelse return null;
+            const local_decl = self.findVisibleNamedTypeDecl(anchor, receiver_name) orelse return null;
+            if (self.hir.kindOf(local_decl) != .interface_decl) return null;
+            break :blk local_decl;
+        };
         const interface = hir_mod.interfaceOf(self.hir, declaration);
         if (interface.name == hir_mod.none_node_id or self.hir.kindOf(interface.name) != .identifier) return null;
         const name = hir_mod.identifierOf(self.hir, interface.name).name;
