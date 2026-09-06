@@ -7731,6 +7731,66 @@ zig build -Doptimize=ReleaseFast
 ./zig-out/bin/home-tsc --project=/path/to/zod-4.5.2/tsconfig.benchmark.json --pretty=false
 ```
 
+### Default-lib aliases in nested type arguments
+
+Issue [#661](https://github.com/home-lang/home/issues/661) addresses the four
+remaining Zod TS2304 diagnostics for `PropertyKey`. Home already resolves this
+default-lib alias in ordinary annotations, but the independent unresolved-name
+sweep for parsed generic arguments did not consult the same default-lib
+type-only registry. It therefore rejected `Record<PropertyKey, unknown>`
+before the normal lowerer could produce `string | number | symbol`.
+
+Commit [`f4aaf50a6`](https://github.com/home-lang/home/commit/f4aaf50a6)
+adds the existing `isDefaultLibTypeOnlyFallbackName` predicate to that generic
+argument resolution path. This is shared by all registered default-lib
+type-only names. It does not special-case Zod, `Record`, `PropertyKey`, a file,
+or a diagnostic location, and it does not classify arbitrary missing names as
+resolved.
+
+The strict, no-emit oracle exercises direct `PropertyKey`, nested
+`Record<PropertyKey, unknown>`, interface members, function parameters and
+returns, and value annotations. Its negative counterpart only adds
+`Record<MissingKey, unknown>`:
+
+| Default-lib type-name control | TypeScript 6.0.3 | Native TypeScript 7.0.2 | ReleaseFast Home |
+|---|---:|---:|---:|
+| Direct and nested `PropertyKey` uses | 0 diagnostics | 0 diagnostics | **0 diagnostics** |
+| Same source plus nested `MissingKey` | 1× TS2304 on `MissingKey` | 1× TS2304 on `MissingKey` | **1× TS2304 on `MissingKey`** |
+
+The unchanged 106-file Zod 4.5.2 graph supplies the production admission gate:
+
+| Zod 4.5.2 nested default-lib alias audit | Post-#660 main | #661 candidate | Change |
+|---|---:|---:|---:|
+| All diagnostics | 440 | **436** | **4 removed; 0 added** |
+| Unique diagnostic identities | 435 | **431** | **4 removed; 0 added** |
+| TS2304 | 16 | **12** | **4 removed** |
+| Unique identities versus immutable baseline | 597 | **431** | **166 removed; 0 added** |
+
+The removals are exactly `src/v4/core/schemas.ts:3118:73:TS2304` and
+`src/v4/core/util.ts:160:33:TS2304`, `400:53:TS2304`, and
+`424:52:TS2304`; no candidate-only identity exists. The candidate distribution
+starts with 203 TS2345, 100 TS7006, 59 TS2339, 16 TS1361, 12 TS2304, and 12
+TS2322. Every remaining code has fewer than five diagnostics.
+
+Zod still has 436 diagnostics, so [#548](https://github.com/home-lang/home/issues/548)
+remains open and the graph is not admitted to cross-compiler timing. The
+ReleaseFast build ran on a contended shared host, so its wall time is excluded.
+
+Final gates pass the three-engine positive/negative oracle, the permanent
+regression, **4,357/4,357** complete checker tests, **189/189** Program tests,
+ReleaseFast, scoped `pickier`, `zig fmt --check`, and `git diff --check`.
+Exact evidence is retained on
+[#661](https://github.com/home-lang/home/issues/661#issuecomment-5556921199).
+
+```sh
+zig build test -Dfilter=ts_checker -Dts-checker-test-filter='default-lib aliases resolve as nested generic arguments'
+zig build test -Dfilter=ts_checker
+zig build test -Dfilter=ts_program
+zig build -Doptimize=ReleaseFast
+./zig-out/bin/home-tsc --project=/path/to/property-key/tsconfig.json --pretty=false
+./zig-out/bin/home-tsc --project=/path/to/zod-4.5.2/tsconfig.benchmark.json --pretty=false
+```
+
 ### Typed cross-file global ownership and cyclic provenance (untimed)
 
 Issue [#480](https://github.com/home-lang/home/issues/480), under

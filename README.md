@@ -402,6 +402,16 @@ binding elisions:
 | Unique path/line/column/code identities | 441 | **435** | **6 removed; 0 added** |
 | Unique identities versus immutable baseline | 597 | **435** | **162 removed; 0 added** |
 
+The nested default-lib alias audit then aligns parsed generic arguments with
+ordinary annotation resolution while retaining TS2304 for genuinely missing
+types:
+
+| [Zod 4.5.2 nested default-lib alias audit](docs/docs/TS_PERFORMANCE.md#default-lib-aliases-in-nested-type-arguments) | Post-#660 main | #661 main | Change |
+|---|---:|---:|---:|
+| Diagnostics | 440 | **436** | **4 TS2304 removed; 0 added** |
+| Unique path/line/column/code identities | 435 | **431** | **4 removed; 0 added** |
+| Unique identities versus immutable baseline | 597 | **431** | **166 removed; 0 added** |
+
 TypeScript 6.0.3 reports zero diagnostics on this graph. Zod remains outside
 the cross-compiler timing table until Home also reaches zero diagnostics.
 
