@@ -498,6 +498,7 @@ pub export fn napi_create_string_utf16(env_: napi_env, str: ?[*]const char16_t, 
 }
 
 pub extern fn napi_create_symbol(env: napi_env, description: napi_value, result: *napi_value) napi_status;
+pub extern fn napi_create_function(env: napi_env, utf8name: [*c]const u8, length: usize, cb: napi_callback, data: ?*anyopaque, result: *napi_value) napi_status;
 pub extern fn napi_create_error(env: napi_env, code: napi_value, msg: napi_value, result: *napi_value) napi_status;
 pub extern fn napi_create_type_error(env: napi_env, code: napi_value, msg: napi_value, result: *napi_value) napi_status;
 pub extern fn napi_create_range_error(env: napi_env, code: napi_value, msg: napi_value, result: *napi_value) napi_status;
@@ -523,6 +524,7 @@ pub extern fn napi_get_value_string_utf16(env: napi_env, value_: napi_value, buf
 pub extern fn napi_coerce_to_bool(env: napi_env, value_: napi_value, result_: ?*napi_value) napi_status;
 pub extern fn napi_coerce_to_number(env: napi_env, value_: napi_value, result_: ?*napi_value) napi_status;
 pub extern fn napi_coerce_to_object(env: napi_env, value_: napi_value, result_: ?*napi_value) napi_status;
+pub extern fn napi_coerce_to_string(env: napi_env, value_: napi_value, result_: ?*napi_value) napi_status;
 pub export fn napi_get_prototype(env_: napi_env, object_: napi_value, result_: ?*napi_value) napi_status {
     log("napi_get_prototype", .{});
     const env = env_ orelse {
@@ -542,15 +544,15 @@ pub export fn napi_get_prototype(env_: napi_env, object_: napi_value, result_: ?
     result.set(env, JSValue.c(jsc.C.JSObjectGetPrototype(env.toJS().ref(), object.asObjectRef())));
     return env.ok();
 }
-// TODO: bind JSC::ownKeys
-// pub export fn napi_get_property_names(env: napi_env, object: napi_value, result: *napi_value) napi_status {
-// log("napi_get_property_names     ", .{});
-// if (!object.isObject()) {
-//         return .object_expected;
-//     }
-
-//     result.* =
-// }
+pub extern fn napi_get_property_names(env: napi_env, object: napi_value, result: *napi_value) napi_status;
+pub extern fn napi_set_property(env: napi_env, object: napi_value, key: napi_value, value: napi_value) napi_status;
+pub extern fn napi_has_property(env: napi_env, object: napi_value, key: napi_value, result: *bool) napi_status;
+pub extern fn napi_get_property(env: napi_env, object: napi_value, key: napi_value, result: *napi_value) napi_status;
+pub extern fn napi_delete_property(env: napi_env, object: napi_value, key: napi_value, result: *bool) napi_status;
+pub extern fn napi_has_own_property(env: napi_env, object: napi_value, key: napi_value, result: *bool) napi_status;
+pub extern fn napi_set_named_property(env: napi_env, object: napi_value, utf8name: [*c]const u8, value: napi_value) napi_status;
+pub extern fn napi_has_named_property(env: napi_env, object: napi_value, utf8name: [*c]const u8, result: *bool) napi_status;
+pub extern fn napi_get_named_property(env: napi_env, object: napi_value, utf8name: [*c]const u8, result: *napi_value) napi_status;
 pub extern fn napi_set_element(env_: napi_env, object_: napi_value, index: c_uint, value_: napi_value) napi_status;
 pub extern fn napi_has_element(env_: napi_env, object_: napi_value, index: c_uint, result_: ?*bool) napi_status;
 pub extern fn napi_get_element(env: napi_env, object: napi_value, index: u32, result: *napi_value) napi_status;
@@ -633,6 +635,14 @@ pub extern fn napi_delete_reference(env: napi_env, ref: napi_ref) napi_status;
 pub extern fn napi_reference_ref(env: napi_env, ref: napi_ref, result: [*c]u32) napi_status;
 pub extern fn napi_reference_unref(env: napi_env, ref: napi_ref, result: [*c]u32) napi_status;
 pub extern fn napi_get_reference_value(env: napi_env, ref: napi_ref, result: *napi_value) napi_status;
+pub extern fn napi_object_freeze(env: napi_env, object: napi_value) napi_status;
+pub extern fn napi_object_seal(env: napi_env, object: napi_value) napi_status;
+pub extern fn node_api_create_buffer_from_arraybuffer(env: napi_env, arraybuffer: napi_value, byte_offset: usize, byte_length: usize, result: *napi_value) napi_status;
+pub extern fn node_api_create_property_key_latin1(env: napi_env, str: [*c]const u8, length: usize, result: *napi_value) napi_status;
+pub extern fn node_api_create_property_key_utf8(env: napi_env, str: [*c]const u8, length: usize, result: *napi_value) napi_status;
+pub extern fn node_api_create_property_key_utf16(env: napi_env, str: [*c]const char16_t, length: usize, result: *napi_value) napi_status;
+pub extern fn node_api_get_module_file_name(env: napi_env, result: *[*c]const u8) napi_status;
+pub extern fn node_api_post_finalizer(env: napi_env, finalize_cb: napi_finalize, finalize_data: ?*anyopaque, finalize_hint: ?*anyopaque) napi_status;
 
 pub export fn napi_open_handle_scope(env_: napi_env, result_: ?*napi_handle_scope) napi_status {
     log("napi_open_handle_scope", .{});
@@ -2100,6 +2110,7 @@ const napi_functions_to_export = .{
     napi_coerce_to_bool,
     napi_coerce_to_number,
     napi_coerce_to_object,
+    napi_coerce_to_string,
     napi_create_array,
     napi_create_array_with_length,
     napi_create_arraybuffer,
@@ -2116,6 +2127,7 @@ const napi_functions_to_export = .{
     napi_create_external,
     napi_create_external_arraybuffer,
     napi_create_external_buffer,
+    napi_create_function,
     napi_create_int32,
     napi_create_int64,
     napi_create_object,
@@ -2134,6 +2146,7 @@ const napi_functions_to_export = .{
     napi_define_properties,
     napi_delete_async_work,
     napi_delete_element,
+    napi_delete_property,
     napi_delete_reference,
     napi_detach_arraybuffer,
     napi_escape_handle,
@@ -2153,7 +2166,10 @@ const napi_functions_to_export = .{
     napi_get_instance_data,
     napi_get_last_error_info,
     napi_get_new_target,
+    napi_get_named_property,
     napi_get_node_version,
+    napi_get_property,
+    napi_get_property_names,
     napi_get_null,
     napi_get_prototype,
     napi_get_reference_value,
@@ -2175,6 +2191,9 @@ const napi_functions_to_export = .{
     napi_get_value_uint32,
     napi_get_version,
     napi_has_element,
+    napi_has_named_property,
+    napi_has_own_property,
+    napi_has_property,
     napi_instanceof,
     napi_is_array,
     napi_is_arraybuffer,
@@ -2191,6 +2210,8 @@ const napi_functions_to_export = .{
     napi_open_callback_scope,
     napi_open_escapable_handle_scope,
     napi_open_handle_scope,
+    napi_object_freeze,
+    napi_object_seal,
     napi_queue_async_work,
     napi_ref_threadsafe_function,
     napi_reference_ref,
@@ -2204,6 +2225,8 @@ const napi_functions_to_export = .{
     napi_run_script,
     napi_set_element,
     napi_set_instance_data,
+    napi_set_named_property,
+    napi_set_property,
     napi_strict_equals,
     napi_throw,
     napi_throw_error,
@@ -2217,6 +2240,12 @@ const napi_functions_to_export = .{
 
     // -- node-api
     node_api_create_syntax_error,
+    node_api_create_buffer_from_arraybuffer,
+    node_api_create_property_key_latin1,
+    node_api_create_property_key_utf16,
+    node_api_create_property_key_utf8,
+    node_api_get_module_file_name,
+    node_api_post_finalizer,
     node_api_symbol_for,
     node_api_throw_syntax_error,
     node_api_create_external_string_latin1,
@@ -2549,16 +2578,16 @@ pub fn fixDeadCodeElimination() void {
         std.mem.doNotOptimizeAway(&fn_name);
     }
 
-    inline for (comptime std.meta.declarations(uv_functions_to_export)) |decl| {
-        std.mem.doNotOptimizeAway(&@field(uv_functions_to_export, decl.name));
+    inline for (comptime std.meta.declarations(uv_functions_to_export)) |decl_name| {
+        std.mem.doNotOptimizeAway(&@field(uv_functions_to_export, decl_name));
     }
 
-    inline for (comptime std.meta.declarations(V8API)) |decl| {
-        std.mem.doNotOptimizeAway(&@field(V8API, decl.name));
+    inline for (comptime std.meta.declarations(V8API)) |decl_name| {
+        std.mem.doNotOptimizeAway(&@field(V8API, decl_name));
     }
 
-    inline for (comptime std.meta.declarations(posix_platform_specific_v8_apis)) |decl| {
-        std.mem.doNotOptimizeAway(&@field(posix_platform_specific_v8_apis, decl.name));
+    inline for (comptime std.meta.declarations(posix_platform_specific_v8_apis)) |decl_name| {
+        std.mem.doNotOptimizeAway(&@field(posix_platform_specific_v8_apis, decl_name));
     }
 
     std.mem.doNotOptimizeAway(&@import("../node/buffer.zig").BufferVectorized.fill);

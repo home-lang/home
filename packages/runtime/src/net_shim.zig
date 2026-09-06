@@ -55,8 +55,8 @@ pub const Address = struct {
             .in = .{
                 .family = std.posix.AF.INET,
                 .port = std.mem.nativeToBig(u16, port),
-                .addr = std.mem.readInt(u32, &bytes, .big),
-                .sa = .{ .addr = std.mem.readInt(u32, &bytes, .big) },
+                .addr = @bitCast(bytes),
+                .sa = .{ .addr = @bitCast(bytes) },
             },
             .in6 = std.mem.zeroes(@FieldType(Address, "in6")),
         };
@@ -85,7 +85,7 @@ pub const Address = struct {
         return switch (addr.family) {
             std.posix.AF.INET => brk: {
                 const in_addr: *const std.posix.sockaddr.in = @ptrCast(@alignCast(addr));
-                const bytes = std.mem.toBytes(std.mem.bigToNative(u32, in_addr.addr));
+                const bytes: [4]u8 = @bitCast(in_addr.addr);
                 break :brk initIp4(bytes, std.mem.bigToNative(u16, in_addr.port));
             },
             std.posix.AF.INET6 => brk: {
@@ -119,4 +119,17 @@ test "Address.initIp6 formats [ip6]:port" {
     const bytes = [_]u8{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 };
     try w.print("{f}", .{Address.initIp6(bytes, 443, 0, 0)});
     try std.testing.expectEqualStrings("[::1]:443", w.buffered());
+}
+
+test "Address.initPosix preserves IPv4 network byte order" {
+    const bytes = [4]u8{ 127, 0, 0, 1 };
+    var sockaddr = std.posix.sockaddr.in{
+        .port = std.mem.nativeToBig(u16, 8080),
+        .addr = @bitCast(bytes),
+    };
+    const address = Address.initPosix(@ptrCast(&sockaddr));
+    var buf: [64]u8 = undefined;
+    var w = std.Io.Writer.fixed(&buf);
+    try w.print("{f}", .{address});
+    try std.testing.expectEqualStrings("127.0.0.1:8080", w.buffered());
 }

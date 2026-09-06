@@ -5531,6 +5531,13 @@ fn testCommand(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
 /// Test options struct
 pub fn main(init: std.process.Init) !void {
     g_io = init.io;
+    if (comptime build_options.enable_jsc) {
+        // The Home CLI does not enter through bun.js.Run, whose shutdown path
+        // normally retains the public N-API/libuv/V8 symbols for dlopen().
+        // Reference the same complete export list from our real entrypoint so
+        // ReleaseFast LTO cannot discard functions used only by native addons.
+        home_rt.api.napi.fixDeadCodeElimination();
+    }
     home_rt.Output.configure();
     // Capture this (main/JS) thread's stack bounds so bun.StackCheck guards can
     // actually measure remaining stack; without this every isSafeToRecurse()

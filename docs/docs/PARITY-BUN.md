@@ -1928,6 +1928,35 @@ ReleaseFast, and the complete strict full-VM `js/sql` scan is **35/35 files** in
 both modes with no failures, crashes, hangs, dependency gaps, or OOMs. No test
 deadline, workload, assertion, annotation, or skip was changed.
 
+ReleaseFast now retains the complete native-addon ABI from Home's real CLI
+entrypoint. The previously dormant Bun retention walker was updated for the
+current Zig declaration API and expanded to cover every N-API/Node-API symbol
+present in Debug; the optimized binary now exports the same **159 symbols**
+with a zero-symbol diff. DuckDB passes **18/18**, Canvas **1/1**, Resvg **3/3
+with 14 assertions**, Rollup v4 **1/1** with its snapshot, and NextAuth **1/1
+with 9 assertions** in ReleaseFast instead of crashing while initializing their
+native modules. Pinned Bun produces the same passing results.
+
+The IPv4 `net.Address` compatibility shim now preserves the sockaddr's network
+byte layout rather than byte-swapping it a second time. Its three focused Zig
+tests pass, and Fastify WebSocket now advertises and connects to `127.0.0.1`
+instead of the invalid `1.0.0.127`, passing **1/1 with 2 assertions** in Debug
+and ReleaseFast.
+
+The complete strict `js/third_party` Debug scan is **116 ordinary file passes / 2
+upstream-environment failures / 2 generic-bound overruns / 0 crashes**. NextAuth
+passes standalone under its unchanged fixture deadline; Prisma's unchanged
+9-million-query case necessarily exceeds the scanner's 30-second generic bound,
+then produces the same **4 passes / 5 upstream skips / 3 fixture failures** in
+Home and pinned Bun because the upstream migration helper swallows its missing
+schema error. Astro's missing parent tsconfig and gRPC's unconfigured Rust
+toolchain also fail identically in pinned Bun. ReleaseFast additionally has a
+nondeterministic pre-result runner exit tracked in
+[#655](https://github.com/home-lang/home/issues/655); the affected files vary
+between scans but pass immediately with unchanged inputs, and are not
+counted as completed parity.
+No fixture, workload, deadline, assertion, annotation, or skip was modified.
+
 ## Summary
 
 Substrate file-count progress. "Present" is the live Zig file count under
