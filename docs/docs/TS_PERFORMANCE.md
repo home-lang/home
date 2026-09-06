@@ -7598,6 +7598,73 @@ zig build home-tsc -Doptimize=ReleaseFast
 ./zig-out/bin/home-tsc --project /path/to/zod-4.5.2/tsconfig.benchmark.json
 ```
 
+### Conditional indexed-alias base constraints
+
+Issue [#659](https://github.com/home-lang/home/issues/659) closes the two
+TS2344 diagnostics left by #658. Zod defines `core.output<T>` as a conditional
+alias: a matching schema selects `T["_zod"]["output"]`, while the false branch
+is `unknown`. Its record key is nevertheless safe because the outer `Key`
+parameter is constrained to a schema whose output is
+`string | number | symbol`. Home preserved the unresolved conditional but did
+not re-evaluate it over that outer constraint, so both safe `Record` key uses
+were rejected.
+
+Commit [`1332e4e6f`](https://github.com/home-lang/home/commit/1332e4e6f)
+extends the existing indexed-access base-constraint path rather than the
+`Record` builtin. A deferred conditional TypeId is substituted with the
+declared constraint of its check parameter and evaluated by the ordinary
+conditional and indexed-access machinery. For source-local generic aliases,
+the same analysis binds every formal parameter to its argument's effective
+base constraint and re-lowers the alias body. Qualified aliases resolve by
+declaration identity through namespace and import-equals paths. Cross-file
+aliases use the already-transferred Program conditional graph. The
+implementation contains no checks for `Record`, `_zod`, `output`, or Zod.
+
+The strict same-file oracle covers unqualified `OutputOf<T>` and qualified
+`core.output<T>` spellings. Each constrained positive uses
+`Key extends Schema<string | number | symbol>`; each negative repeats the
+same alias with an unconstrained `T`:
+
+| Conditional indexed-alias control | TypeScript 6.0.3 | Native TypeScript 7.0.2 | ReleaseFast Home |
+|---|---:|---:|---:|
+| Unqualified constrained record key | 0 diagnostics | 0 diagnostics | **0 diagnostics** |
+| Qualified constrained record key | 0 diagnostics | 0 diagnostics | **0 diagnostics** |
+| Unqualified unconstrained record key | 1× TS2344 | 1× TS2344 | **1× TS2344** |
+| Qualified unconstrained record key | 1× TS2344 | 1× TS2344 | **1× TS2344** |
+
+The unchanged 106-file Zod 4.5.2 configuration is the production admission
+gate:
+
+| Zod 4.5.2 conditional indexed-alias audit | Post-#658 main | #659 candidate | Change |
+|---|---:|---:|---:|
+| All diagnostics | 448 | **446** | **2 removed; 0 added** |
+| Unique diagnostic identities | 443 | **441** | **2 removed; 0 added** |
+| TS2344 | 2 | **0** | **all remaining TS2344 removed** |
+| Unique identities versus immutable baseline | 597 | **441** | **156 removed; 0 added** |
+
+The two current-parent removals are exactly
+`src/v4/core/schemas.ts:3089:20:TS2344` and
+`src/v4/core/schemas.ts:3090:12:TS2344`; no candidate-only identity exists.
+Zod still has 446 other diagnostics, so [#548](https://github.com/home-lang/home/issues/548)
+remains open and this graph is not admitted to cross-compiler timing. The
+ReleaseFast build shared the host with unrelated Zig work, so no wall-time
+claim is reported.
+
+Final gates pass the unqualified and qualified three-engine controls, the
+broad constraint-filtered checker suite, **4,355/4,355** complete checker
+tests, **189/189** Program tests, scoped `pickier`, `zig fmt --check`, and
+`git diff --check`. Exact evidence is retained on
+[#659](https://github.com/home-lang/home/issues/659#issuecomment-5556749453).
+
+```sh
+zig build test -Dfilter=ts_checker -Dts-checker-test-filter=constraint
+zig build test -Dfilter=ts_checker
+zig build test -Dfilter=ts_program
+zig build -Doptimize=ReleaseFast
+./zig-out/bin/home-tsc -p /path/to/conditional-key/tsconfig.json
+./zig-out/bin/home-tsc -p /path/to/zod-4.5.2/tsconfig.benchmark.json
+```
+
 ### Typed cross-file global ownership and cyclic provenance (untimed)
 
 Issue [#480](https://github.com/home-lang/home/issues/480), under

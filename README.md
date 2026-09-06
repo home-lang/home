@@ -382,6 +382,16 @@ effective earlier type arguments before validating literal keys:
 | Unique path/line/column/code identities | 484 | **443** | **41 removed; 0 added** |
 | TS2344 | 43 | **2** | **41 removed (95.3%)** |
 
+The conditional indexed-alias audit then propagates an outer schema
+constraint through both local and imported `output<T>` aliases without
+weakening the unconstrained `Record` key check:
+
+| [Zod 4.5.2 conditional indexed-alias audit](docs/docs/TS_PERFORMANCE.md#conditional-indexed-alias-base-constraints) | Post-#658 main | #659 main | Change |
+|---|---:|---:|---:|
+| Diagnostics | 448 | **446** | **2 TS2344 removed; 0 added** |
+| Unique path/line/column/code identities | 443 | **441** | **2 removed; 0 added** |
+| TS2344 | 2 | **0** | **all remaining TS2344 removed** |
+
 TypeScript 6.0.3 reports zero diagnostics on this graph. Zod remains outside
 the cross-compiler timing table until Home also reaches zero diagnostics.
 
