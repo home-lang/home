@@ -5829,10 +5829,19 @@ pub const Parser = struct {
         defer seen_names.deinit(self.gpa);
         if (self.peek().kind != close_kind) {
             while (true) {
-                // Array elision: `[ , b ]` — for v0 we just skip the
-                // comma and continue (no hole element is emitted).
+                // Array elision: `[ , b ]`. Preserve an empty parameter
+                // slot in the HIR so positional binding consumers keep `b`
+                // at index 1 rather than collapsing it to index 0.
                 if (!is_object and self.peek().kind == .comma) {
-                    _ = self.advance();
+                    const comma = self.advance();
+                    const hole = try self.builder.addParameter(
+                        tokenSpan(comma),
+                        hir_mod.none_node_id,
+                        hir_mod.none_node_id,
+                        hir_mod.none_node_id,
+                        .{},
+                    );
+                    try elements.append(self.gpa, hole);
                     if (self.peek().kind == close_kind) break;
                     continue;
                 }

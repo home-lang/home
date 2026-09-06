@@ -132473,7 +132473,10 @@ pub const Checker = struct {
             for (elements) |e| {
                 if (self.hir.kindOf(e) != .parameter) continue;
                 const ep = hir_mod.parameterOf(self.hir, e);
-                if (ep.name == hir_mod.none_node_id) continue;
+                if (ep.name == hir_mod.none_node_id) {
+                    if (!ep.flags.is_rest) idx += 1;
+                    continue;
+                }
                 const name_kind = self.hir.kindOf(ep.name);
                 if (name_kind == .object_pattern or name_kind == .array_pattern) {
                     var elem_container_t: TypeId = types.Primitive.any;
@@ -132481,11 +132484,11 @@ pub const Checker = struct {
                         const union_elem = self.unionTupleElementAccessAt(container_t, @intCast(idx)) catch null;
                         if (union_elem) |access| {
                             elem_container_t = access.value_type;
-                        } else if (flags.is_tuple) {
+                        } else if (self.isActualTupleType(container_t)) {
                             const tuple_t = self.tupleElementType(container_t, idx);
                             if (tuple_t != types.Primitive.none) {
                                 elem_container_t = tuple_t;
-                            } else {
+                            } else if (flags.is_tuple) {
                                 const payload = self.interner.pool.tuple_payloads.items[self.interner.pool.payloadOf(container_t)];
                                 const elems = self.interner.pool.tuple_element_pool.items[payload.elements_start .. payload.elements_start + payload.elements_len];
                                 if (idx < elems.len) elem_container_t = elems[idx].type;
@@ -132531,6 +132534,9 @@ pub const Checker = struct {
                             elem_t = self.unionWithUndefined(elem_t) catch elem_t;
                         }
                     }
+                } else if (self.isActualTupleType(container_t)) {
+                    const tuple_t = self.tupleElementType(container_t, idx);
+                    if (tuple_t != types.Primitive.none) elem_t = tuple_t;
                 } else if (flags.is_object_type) {
                     const number_index_t = self.interner.objectNumberIndex(container_t);
                     if (number_index_t != types.Primitive.none) {
@@ -140596,17 +140602,10 @@ pub const Checker = struct {
     }
 
     fn builtinMapInstanceType(self: *Checker, key_t: TypeId, value_t: TypeId) CheckError!TypeId {
-        var entry_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
-        defer entry_members.deinit(self.gpa);
-        const zero_id = self.string_interner.intern("0") catch return error.OutOfMemory;
-        const one_id = self.string_interner.intern("1") catch return error.OutOfMemory;
-        const length_id = self.string_interner.intern("length") catch return error.OutOfMemory;
-        try entry_members.append(self.gpa, .{ .name = zero_id, .type = key_t, .is_optional = false, .is_readonly = false, .is_method = false });
-        try entry_members.append(self.gpa, .{ .name = one_id, .type = value_t, .is_optional = false, .is_readonly = false, .is_method = false });
-        const length_t = self.interner.internNumberLiteral(2) catch types.Primitive.number_t;
-        try entry_members.append(self.gpa, .{ .name = length_id, .type = length_t, .is_optional = false, .is_readonly = true, .is_method = false });
-        const entry_union = self.interner.internUnion(&.{ key_t, value_t }) catch types.Primitive.any;
-        const entry_t = self.interner.internObjectTypeWithIndex(entry_members.items, types.Primitive.none, entry_union) catch return error.OutOfMemory;
+        // `Map<K, V>` iterates mutable `[K, V]` entry tuples. Preserve that
+        // identity so positional destructuring keeps `K` and `V` separate
+        // through array spreads and contextual callbacks.
+        const entry_t = try self.internTupleFromTypesWithMinRequired(&.{ key_t, value_t }, 2, false);
 
         var map_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
         defer map_members.deinit(self.gpa);
@@ -267522,6 +267521,25 @@ test "checker: recursive tuple array map contextually types every callback param
     try T.expect(!checkerHasCode(b, TsCodes.binding_element_implicitly_any));
     try T.expect(!checkerHasCode(b, TsCodes.parameter_implicitly_any));
     try T.expect(!checkerHasCode(b, TsCodes.argument_type_mismatch));
+}
+
+test "checker: Map entry tuples retain positions through filter and map callbacks" {
+    const s = try newSetup(
+        \\type Flags = { l?: true; r?: true };
+        \\const entries = new Map<string, Flags>();
+        \\const bothKeys = [...entries]
+        \\  .filter(([, flags]) => flags.l && flags.r)
+        \\  .map(([key]) => key);
+        \\const valid: string[] = bothKeys;
+        \\const invalid: number[] = bothKeys;
+        \\void valid; void invalid;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true, .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.binding_element_implicitly_any));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: array callbacks accept complete lib parameter lists" {
