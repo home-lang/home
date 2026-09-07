@@ -1090,6 +1090,9 @@ pub const AST = struct {
 pub const Parser = struct {
     strpool: []const u8,
     tokens: []const Token,
+    /// Strpool ranges copied from interpolated JS string references. Bytes in
+    /// these ranges are data and must not be reinterpreted as shell syntax.
+    js_string_ranges: []const Token.TextRange,
     alloc: Allocator,
     jsobjs: []JSValue,
     current: u32 = 0,
@@ -1118,6 +1121,7 @@ pub const Parser = struct {
         return .{
             .strpool = lex_result.strpool,
             .tokens = lex_result.tokens,
+            .js_string_ranges = lex_result.js_string_ranges,
             .alloc = allocator,
             .jsobjs = jsobjs,
             .errors = std.array_list.Managed(Error).init(allocator),
@@ -1131,6 +1135,7 @@ pub const Parser = struct {
         const subparser: Parser = .{
             .strpool = this.strpool,
             .tokens = this.tokens,
+            .js_string_ranges = this.js_string_ranges,
             .alloc = this.alloc,
             .jsobjs = this.jsobjs,
             .current = this.current,
@@ -1692,6 +1697,9 @@ pub const Parser = struct {
                     if (hasEqSign(txt)) |eq_idx| {
                         // If it starts with = then it's not valid assignment (e.g. `=FOO`)
                         if (eq_idx == 0) break :var_decl null;
+                        // An `=` spliced in from a JS string interpolation is
+                        // data, not assignment syntax.
+                        if (self.isInterpolatedPosition(txtrng.start + eq_idx)) break :var_decl null;
                         const label = txt[0..eq_idx];
                         if (!isValidVarName(label)) {
                             break :var_decl null;
@@ -1923,6 +1931,13 @@ pub const Parser = struct {
 
     fn text(self: *const Parser, range: Token.TextRange) []const u8 {
         return self.strpool[range.start..range.end];
+    }
+
+    fn isInterpolatedPosition(self: *const Parser, pos: u32) bool {
+        for (self.js_string_ranges) |range| {
+            if (pos >= range.start and pos < range.end) return true;
+        }
+        return false;
     }
 
     fn advance(self: *Parser) Token {
@@ -2281,6 +2296,8 @@ pub const LexResult = struct {
     errors: []LexError,
     tokens: []const Token,
     strpool: []const u8,
+    /// Strpool ranges populated from interpolated JS string references.
+    js_string_ranges: []const Token.TextRange,
 
     pub fn combineErrors(this: *const LexResult, arena: Allocator) []const u8 {
         const errors = this.errors;
@@ -2336,6 +2353,9 @@ pub fn NewLexer(comptime encoding: StringEncoding) type {
         delimit_quote: bool = false,
         in_subshell: ?SubShellKind = null,
         errors: std.array_list.Managed(LexError),
+        /// Bytes appended from `\x08__bunstr_N` references. These remain data
+        /// even when they contain bytes that are shell syntax in source text.
+        js_string_ranges: std.array_list.Managed(Token.TextRange),
 
         /// Contains a list of strings we need to escape
         /// Not owned by this struct
@@ -2379,6 +2399,7 @@ pub fn NewLexer(comptime encoding: StringEncoding) type {
                 .tokens = ArrayList(Token).init(alloc),
                 .strpool = ArrayList(u8).init(alloc),
                 .errors = ArrayList(LexError).init(alloc),
+                .js_string_ranges = ArrayList(Token.TextRange).init(alloc),
                 .string_refs = strings_to_escape,
                 .jsobjs_len = jsobjs_len,
             };
@@ -2389,6 +2410,7 @@ pub fn NewLexer(comptime encoding: StringEncoding) type {
                 .tokens = self.tokens.items,
                 .strpool = self.strpool.items,
                 .errors = self.errors.items,
+                .js_string_ranges = self.js_string_ranges.items,
             };
         }
 
@@ -2406,6 +2428,7 @@ pub fn NewLexer(comptime encoding: StringEncoding) type {
                 .strpool = self.strpool,
                 .tokens = self.tokens,
                 .errors = self.errors,
+                .js_string_ranges = self.js_string_ranges,
                 .in_subshell = kind,
 
                 .word_start = self.word_start,
@@ -2422,6 +2445,7 @@ pub fn NewLexer(comptime encoding: StringEncoding) type {
             self.strpool = sublexer.strpool;
             self.tokens = sublexer.tokens;
             self.errors = sublexer.errors;
+            self.js_string_ranges = sublexer.js_string_ranges;
 
             self.chars = sublexer.chars;
             self.word_start = sublexer.word_start;
@@ -3255,7 +3279,15 @@ pub fn NewLexer(comptime encoding: StringEncoding) type {
                 try self.tokens.append(@unionInit(Token, "DoubleQuotedText", .{ .start = pos, .end = pos }));
                 return;
             }
+            const start = self.j;
             try self.appendStringToStrPool(bunstr);
+            try self.js_string_ranges.append(.{ .start = start, .end = self.j });
+            // Interpolated values are data. Emit a leading tilde as quoted
+            // text so the parser cannot reinterpret it as tilde expansion.
+            if (self.chars.state == .Normal and self.strpool.items[start] == '~') {
+                try self.tokens.append(@unionInit(Token, "DoubleQuotedText", .{ .start = start, .end = self.j }));
+                self.word_start = self.j;
+            }
         }
 
         fn looksLikeJSObjRef(self: *@This()) bool {
@@ -4202,6 +4234,12 @@ pub fn escape8Bit(str: []const u8, outbuf: *std.array_list.Managed(u8), comptime
                 continue :loop;
             }
         }
+        // A raw sentinel followed by `__bunstr_` must never become an
+        // internal interpolation reference when the escaped script is lexed.
+        if (c == SPECIAL_JS_CHAR) {
+            try outbuf.appendSlice(&.{ SPECIAL_JS_CHAR, '"', '"' });
+            continue :loop;
+        }
         try outbuf.append(c);
     }
 
@@ -4232,6 +4270,11 @@ pub fn escapeUtf16(str: []const u16, outbuf: *std.array_list.Managed(u8), compti
                 try outbuf.appendSlice(&[_]u8{ '\\', @intCast(char) });
                 continue :loop;
             }
+        }
+
+        if (char == SPECIAL_JS_CHAR) {
+            try outbuf.appendSlice(&.{ SPECIAL_JS_CHAR, '"', '"' });
+            continue :loop;
         }
 
         const len = bun.strings.encodeWTF8RuneT(&cp_buf, u32, char);

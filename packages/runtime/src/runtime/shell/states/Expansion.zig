@@ -14,12 +14,10 @@ io: IO,
 
 word_idx: u32,
 current_out: std.array_list.Managed(u8),
-/// Byte offsets in `current_out` written by literal brace atoms
-/// (brace_begin / comma / brace_end). Only these positions may act as
-/// brace-expansion syntax; any other `{`/`}`/`,`/`\` byte (from text, $var,
-/// command substitution, or JS `${...}` interpolation) is data and is escaped
-/// before tokenizing so it cannot inject extra argv words.
-brace_meta_offsets: std.array_list.Managed(u32),
+/// Byte offsets in `current_out` written by literal brace or glob atoms. Only
+/// these positions may act as expansion syntax; metacharacters from text,
+/// variables, command substitution, or JS interpolation remain literal data.
+meta_offsets: std.array_list.Managed(u32),
 state: union(enum) {
     normal,
     braces,
@@ -150,17 +148,17 @@ pub fn init(
         .out = out_result,
         .out_idx = 0,
         .current_out = undefined,
-        .brace_meta_offsets = undefined,
+        .meta_offsets = undefined,
         .io = io,
     };
     expansion.current_out = std.array_list.Managed(u8).init(expansion.base.allocator());
-    expansion.brace_meta_offsets = std.array_list.Managed(u32).init(expansion.base.allocator());
+    expansion.meta_offsets = std.array_list.Managed(u32).init(expansion.base.allocator());
 }
 
 pub fn deinit(expansion: *Expansion) void {
     log("Expansion(0x{x}) deinit", .{@intFromPtr(expansion)});
     expansion.current_out.deinit();
-    expansion.brace_meta_offsets.deinit();
+    expansion.meta_offsets.deinit();
     expansion.io.deinit();
     expansion.base.endScope();
 }
@@ -199,13 +197,13 @@ pub fn next(this: *Expansion) Yield {
                             switch (this.current_out.items[0]) {
                                 '/', '\\' => {
                                     bun.handleOom(this.current_out.insertSlice(0, homedir.slice()));
-                                    // Prepending shifts every recorded brace offset.
-                                    for (this.brace_meta_offsets.items) |*off| off.* += @intCast(homedir.slice().len);
+                                    // Prepending shifts every recorded metacharacter offset.
+                                    for (this.meta_offsets.items) |*off| off.* += @intCast(homedir.slice().len);
                                 },
                                 else => {
                                     // TODO: Handle username
                                     bun.handleOom(this.current_out.insert(0, '~'));
-                                    for (this.brace_meta_offsets.items) |*off| off.* += 1;
+                                    for (this.meta_offsets.items) |*off| off.* += 1;
                                 },
                             }
                         } else if (this.has_quoted_empty) {
@@ -249,8 +247,8 @@ pub fn next(this: *Expansion) Yield {
                 {
                     var next_meta: usize = 0;
                     for (this.current_out.items, 0..) |b, i| {
-                        if (next_meta < this.brace_meta_offsets.items.len and
-                            @as(usize, this.brace_meta_offsets.items[next_meta]) == i)
+                        if (next_meta < this.meta_offsets.items.len and
+                            @as(usize, this.meta_offsets.items[next_meta]) == i)
                         {
                             next_meta += 1;
                         } else if (b == '{' or b == '}' or b == ',' or b == '\\') {
@@ -356,14 +354,15 @@ pub fn next(this: *Expansion) Yield {
 fn transitionToGlobState(this: *Expansion) Yield {
     var arena = Arena.init(this.base.allocator());
     this.child_state = .{ .glob = .{ .walker = .{} } };
-    const pattern = this.current_out.items[0..];
+    var pattern = std.array_list.Managed(u8).init(arena.allocator());
+    neutralizeGlobMetachars(&pattern, this.current_out.items, this.meta_offsets.items);
 
     const cwd = this.base.shell.cwd();
 
     switch (GlobWalker.initWithCwd(
         &this.child_state.glob.walker,
         &arena,
-        pattern,
+        pattern.items,
         cwd,
         false,
         false,
@@ -383,6 +382,42 @@ fn transitionToGlobState(this: *Expansion) Yield {
     var task = ShellGlobTask.createOnMainThread(&this.child_state.glob.walker, this);
     task.schedule();
     return .suspended;
+}
+
+/// Copy an assembled word into a glob pattern while neutralizing every glob
+/// metacharacter that did not originate from literal shell source syntax.
+fn neutralizeGlobMetachars(pattern: *std.array_list.Managed(u8), current_out: []const u8, meta_offsets: []const u32) void {
+    bun.handleOom(pattern.ensureTotalCapacity(current_out.len));
+    var next_meta: usize = 0;
+    for (current_out, 0..) |byte, i| {
+        if (next_meta < meta_offsets.len and @as(usize, meta_offsets[next_meta]) == i) {
+            next_meta += 1;
+            bun.handleOom(pattern.append(byte));
+            continue;
+        }
+
+        switch (byte) {
+            '*', '?', '[', ']', '{', '}', ',' => bun.handleOom(pattern.appendSlice(&.{ '[', byte, ']' })),
+            '!' => {
+                const starts_component = pattern.items.len == 0 or
+                    (if (bun.Environment.isWindows)
+                        pattern.items[pattern.items.len - 1] == '/' or pattern.items[pattern.items.len - 1] == '\\'
+                    else
+                        pattern.items[pattern.items.len - 1] == '/');
+                if (starts_component) {
+                    bun.handleOom(pattern.appendSlice("{!}"));
+                } else {
+                    bun.handleOom(pattern.append('!'));
+                }
+            },
+            '\\' => if (comptime bun.Environment.isPosix) {
+                // `[\\]` is a class containing one literal backslash. `[\]`
+                // would instead escape the closing bracket in the glob parser.
+                bun.handleOom(pattern.appendSlice("[\\\\]"));
+            } else bun.handleOom(pattern.append('\\')),
+            else => bun.handleOom(pattern.append(byte)),
+        }
+    }
 }
 
 pub fn expandVarAndCmdSubst(this: *Expansion, start_word_idx: u32) ?Yield {
@@ -593,20 +628,19 @@ fn onGlobWalkDone(this: *Expansion, task: *ShellGlobTask) Yield {
         assert(this.child_state == .glob);
     }
 
-    if (task.err) |*err| {
-        switch (err.*) {
-            .syscall => {
-                this.base.throw(&bun.shell.ShellErr.newSys(task.err.?.syscall));
-            },
-            .unknown => |errtag| {
-                this.base.throw(&.{
-                    .custom = bun.handleOom(this.base.allocator().dupe(u8, @errorName(errtag))),
-                });
-            },
-        }
-    }
+    // A missing path component means the pattern had no matches, not that
+    // glob traversal itself failed. Preserve all other walker errors so the
+    // shell promise rejects with the real errno instead of throwing outside
+    // the expansion state machine.
+    const walk_err: ?ShellGlobTask.Err = if (task.err) |err| switch (err) {
+        .syscall => |sys_err| switch (sys_err.getErrno()) {
+            .NOENT, .NOTDIR => null,
+            else => err,
+        },
+        .unknown => err,
+    } else null;
 
-    if (task.result.items.len == 0) {
+    if (task.result.items.len == 0 or walk_err != null) {
         // In variable assignments, a glob that fails to match should not produce an error, but instead expand to just the pattern
         if (this.parent.ptr.is(Assigns) or (this.parent.ptr.is(Cmd) and this.parent.ptr.as(Cmd).state == .expanding_assigns)) {
             this.pushCurrentOut();
@@ -616,12 +650,19 @@ fn onGlobWalkDone(this: *Expansion, task: *ShellGlobTask) Yield {
             return .{ .expansion = this };
         }
 
-        const msg = bun.handleOom(std.fmt.allocPrint(this.base.allocator(), "no matches found: {s}", .{this.child_state.glob.walker.pattern}));
-        this.state = .{
-            .err = bun.shell.ShellErr{
-                .custom = msg,
-            },
-        };
+        if (walk_err) |err| {
+            this.state = .{ .err = switch (err) {
+                .syscall => |sys_err| bun.shell.ShellErr.newSys(sys_err),
+                .unknown => |errtag| .{
+                    .custom = bun.handleOom(this.base.allocator().dupe(u8, @errorName(errtag))),
+                },
+            } };
+        } else {
+            // The walker sees a protected pattern, but diagnostics must name
+            // the original shell word exactly as the user supplied it.
+            const msg = bun.handleOom(std.fmt.allocPrint(this.base.allocator(), "no matches found: {s}", .{this.current_out.items}));
+            this.state = .{ .err = .{ .custom = msg } };
+        }
         this.child_state.glob.walker.deinit(true);
         this.child_state = .idle;
         return .{ .expansion = this };
@@ -663,23 +704,26 @@ pub fn expandSimpleNoIO(this: *Expansion, atom: *const ast.SimpleAtom, str_list:
             bun.handleOom(str_list.appendSlice(this.expandVarArgv(int)));
         },
         .asterisk => {
+            bun.handleOom(this.meta_offsets.append(@intCast(str_list.items.len)));
             bun.handleOom(str_list.append('*'));
         },
         .double_asterisk => {
+            bun.handleOom(this.meta_offsets.append(@intCast(str_list.items.len)));
+            bun.handleOom(this.meta_offsets.append(@intCast(str_list.items.len + 1)));
             bun.handleOom(str_list.appendSlice("**"));
         },
         .brace_begin => {
             // str_list is `this.current_out` (both callers pass it), so its
             // length is the offset of this literal brace metacharacter.
-            bun.handleOom(this.brace_meta_offsets.append(@intCast(str_list.items.len)));
+            bun.handleOom(this.meta_offsets.append(@intCast(str_list.items.len)));
             bun.handleOom(str_list.append('{'));
         },
         .brace_end => {
-            bun.handleOom(this.brace_meta_offsets.append(@intCast(str_list.items.len)));
+            bun.handleOom(this.meta_offsets.append(@intCast(str_list.items.len)));
             bun.handleOom(str_list.append('}'));
         },
         .comma => {
-            bun.handleOom(this.brace_meta_offsets.append(@intCast(str_list.items.len)));
+            bun.handleOom(this.meta_offsets.append(@intCast(str_list.items.len)));
             bun.handleOom(str_list.append(','));
         },
         .tilde => {
@@ -715,8 +759,8 @@ pub fn pushCurrentOut(this: *Expansion) void {
             this.current_out = std.array_list.Managed(u8).init(this.base.allocator());
         },
     }
-    // current_out was reset; the recorded brace offsets no longer apply.
-    this.brace_meta_offsets.clearRetainingCapacity();
+    // current_out was reset; its recorded metacharacter offsets no longer apply.
+    this.meta_offsets.clearRetainingCapacity();
 }
 
 fn expandVar(this: *const Expansion, label: []const u8) []const u8 {
