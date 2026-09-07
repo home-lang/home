@@ -123,6 +123,7 @@ pub const ArrayBuffer = extern struct {
     pub const Strong = struct {
         array_buffer: ArrayBuffer,
         held: jsc.Strong.Optional = .empty,
+        pinned: bool = false,
 
         pub fn clear(this: *ArrayBuffer.Strong) void {
             var ref: *bun.api.napi.Ref = this.ref orelse return;
@@ -134,6 +135,10 @@ pub const ArrayBuffer = extern struct {
         }
 
         pub fn deinit(this: *ArrayBuffer.Strong) void {
+            if (this.pinned) {
+                this.array_buffer.value.unpinArrayBuffer();
+                this.pinned = false;
+            }
             this.held.deinit();
         }
     };

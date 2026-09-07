@@ -2385,10 +2385,22 @@ fn runTestsViaVM(allocator_unused: std.mem.Allocator, args: []const [:0]const u8
         if (rewritten_args) |values| allocator.free(values);
     }
     var original_cwd: ?[:0]u8 = null;
-    defer if (original_cwd) |cwd| {
-        std.Io.Threaded.chdir(cwd) catch unreachable;
-        allocator.free(cwd);
-    };
+    var previous_pwd: ?[:0]u8 = null;
+    var configured_pwd = false;
+    defer {
+        if (original_cwd) |cwd| {
+            std.Io.Threaded.chdir(cwd) catch unreachable;
+            allocator.free(cwd);
+        }
+        if (configured_pwd) {
+            if (previous_pwd) |value| {
+                _ = setenv("PWD", value.ptr, 1);
+                allocator.free(value);
+            } else {
+                _ = unsetenv("PWD");
+            }
+        }
+    }
 
     if (argTargetsBunCorpus(args)) |target| {
         const corpus_path = switch (target) {
@@ -2415,7 +2427,14 @@ fn runTestsViaVM(allocator_unused: std.mem.Allocator, args: []const [:0]const u8
         }
         effective_args = normalized;
         const checkout_root = std.fs.path.dirname(corpus_root) orelse return error.InvalidCorpusRoot;
+        if (std.c.getenv("PWD")) |raw| {
+            previous_pwd = try home_rt.dupeZ(allocator, u8, std.mem.span(raw));
+        }
+        configured_pwd = true;
         try std.Io.Threaded.chdir(checkout_root);
+        const checkout_root_z = try home_rt.dupeZ(allocator, u8, checkout_root);
+        defer allocator.free(checkout_root_z);
+        if (setenv("PWD", checkout_root_z.ptr, 1) != 0) return error.SetEnvironmentFailed;
     }
 
     const log = try allocator.create(home_rt.logger.Log);

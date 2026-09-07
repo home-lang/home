@@ -522,31 +522,33 @@ fn initRedirections(
                     return .failed;
                 }
 
-                if (interpreter.jsobjs[file.jsbuf.idx].asArrayBuffer(globalObject)) |buf| {
+                const redirect_jsval = interpreter.jsobjs[file.jsbuf.idx];
+                if (redirect_jsval.asArrayBuffer(globalObject)) |buf| {
                     // Each slot gets its own Strong; sharing one across stdin/stdout/stderr
                     // would double-free the heap *Impl in Builtin.deinit().
+                    const mkBuf = struct {
+                        fn call(value: jsc.JSValue, fallback: jsc.ArrayBuffer, globalThis: *jsc.JSGlobalObject) jsc.ArrayBuffer.Strong {
+                            const pinned = value.asPinnedArrayBuffer(globalThis);
+                            return .{
+                                .array_buffer = pinned orelse fallback,
+                                .held = .create(fallback.value, globalThis),
+                                .pinned = pinned != null,
+                            };
+                        }
+                    }.call;
                     if (node.redirect.stdin) {
                         cmd.exec.bltn.stdin.deref();
-                        cmd.exec.bltn.stdin = .{ .arraybuf = .{ .buf = .{
-                            .array_buffer = buf,
-                            .held = .create(buf.value, globalObject),
-                        }, .i = 0 } };
+                        cmd.exec.bltn.stdin = .{ .arraybuf = .{ .buf = mkBuf(redirect_jsval, buf, globalObject), .i = 0 } };
                     }
 
                     if (node.redirect.stdout) {
                         cmd.exec.bltn.stdout.deref();
-                        cmd.exec.bltn.stdout = .{ .arraybuf = .{ .buf = .{
-                            .array_buffer = buf,
-                            .held = .create(buf.value, globalObject),
-                        }, .i = 0 } };
+                        cmd.exec.bltn.stdout = .{ .arraybuf = .{ .buf = mkBuf(redirect_jsval, buf, globalObject), .i = 0 } };
                     }
 
                     if (node.redirect.stderr) {
                         cmd.exec.bltn.stderr.deref();
-                        cmd.exec.bltn.stderr = .{ .arraybuf = .{ .buf = .{
-                            .array_buffer = buf,
-                            .held = .create(buf.value, globalObject),
-                        }, .i = 0 } };
+                        cmd.exec.bltn.stderr = .{ .arraybuf = .{ .buf = mkBuf(redirect_jsval, buf, globalObject), .i = 0 } };
                     }
                 } else if (interpreter.jsobjs[file.jsbuf.idx].as(jsc.WebCore.Body.Value)) |body| {
                     if ((node.redirect.stdout or node.redirect.stderr) and !(body.* == .Blob and !body.Blob.needsToReadFile())) {

@@ -565,22 +565,34 @@ fn initRedirections(this: *Cmd, spawn_args: *Subprocess.SpawnArgs) bun.JSError!?
                     return global.throw("Invalid JS object reference in shell", .{});
                 }
 
-                if (this.base.interpreter.jsobjs[val.idx].asArrayBuffer(global)) |buf| {
+                const jsval = this.base.interpreter.jsobjs[val.idx];
+                if (jsval.asArrayBuffer(global)) |buf| {
                     // Each slot needs its own Strong; copying one Stdio into multiple slots
                     // (e.g. for &>) would alias the same *Impl and double-free in deinit.
+                    const mkOut = struct {
+                        fn call(value: jsc.JSValue, fallback: jsc.ArrayBuffer, globalThis: *jsc.JSGlobalObject) jsc.ArrayBuffer.Strong {
+                            const pinned = value.asPinnedArrayBuffer(globalThis);
+                            return .{
+                                .array_buffer = pinned orelse fallback,
+                                .held = .create(fallback.value, globalThis),
+                                .pinned = pinned != null,
+                            };
+                        }
+                    }.call;
                     const flags = this.node.redirect;
                     if (flags.stdin) {
-                        spawn_args.stdio[stdin_no] = .{ .array_buffer = .{ .array_buffer = buf, .held = .create(buf.value, global) } };
+                        const bytes = bun.handleOom(bun.default_allocator.dupe(u8, buf.byteSlice()));
+                        spawn_args.stdio[stdin_no] = .{ .blob = jsc.WebCore.Blob.Any.fromOwnedSlice(bun.default_allocator, bytes) };
                     }
                     if (flags.duplicate_out) {
-                        spawn_args.stdio[stdout_no] = .{ .array_buffer = .{ .array_buffer = buf, .held = .create(buf.value, global) } };
-                        spawn_args.stdio[stderr_no] = .{ .array_buffer = .{ .array_buffer = buf, .held = .create(buf.value, global) } };
+                        spawn_args.stdio[stdout_no] = .{ .array_buffer = mkOut(jsval, buf, global) };
+                        spawn_args.stdio[stderr_no] = .{ .array_buffer = mkOut(jsval, buf, global) };
                     } else {
                         if (flags.stdout) {
-                            spawn_args.stdio[stdout_no] = .{ .array_buffer = .{ .array_buffer = buf, .held = .create(buf.value, global) } };
+                            spawn_args.stdio[stdout_no] = .{ .array_buffer = mkOut(jsval, buf, global) };
                         }
                         if (flags.stderr) {
-                            spawn_args.stdio[stderr_no] = .{ .array_buffer = .{ .array_buffer = buf, .held = .create(buf.value, global) } };
+                            spawn_args.stdio[stderr_no] = .{ .array_buffer = mkOut(jsval, buf, global) };
                         }
                     }
                 } else if (this.base.interpreter.jsobjs[val.idx].as(jsc.WebCore.Blob)) |blob__| {
@@ -607,7 +619,6 @@ fn initRedirections(this: *Cmd, spawn_args: *Subprocess.SpawnArgs) bun.JSError!?
                         try spawn_args.stdio[stderr_no].extractBlob(global, req.getBodyValue().useAsAnyBlob(), stderr_no);
                     }
                 } else {
-                    const jsval = this.base.interpreter.jsobjs[val.idx];
                     return global.throw("Unknown JS value used in shell: {f}", .{jsval.fmtString(global)});
                 }
             },
