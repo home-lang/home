@@ -1490,7 +1490,7 @@ test "class schema: parameterized built-ins retain their arguments" {
     try T.expectEqual(@as(usize, 1), promise.arguments.len);
     try T.expect(promise.arguments[0].parameter == &result.declaration.parameters[0]);
     try T.expect(try schema.Schema.expressionSupported(function.result, T.allocator));
-    try T.expect(!try result.isSupported(T.allocator));
+    try T.expect(try result.isSupported(T.allocator));
 }
 
 test "class schema: local Array aliases are not replaced by builtin array shapes" {

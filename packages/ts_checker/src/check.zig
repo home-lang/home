@@ -106943,6 +106943,9 @@ pub const Checker = struct {
         if (member == target) return true;
         if (self.typeParameterConstraintMatchesInstanceofTarget(member, target)) return true;
         if (target_class != null and self.classNameForInstanceType(member) == target_class) return true;
+        if (target_class == null and
+            self.promisePayloadType(target) != null and
+            self.promisePayloadType(member) != null) return true;
         return self.directInstanceofTargetExtendsMember(member, target_class);
     }
 
@@ -178048,7 +178051,14 @@ pub const Checker = struct {
         }
         const body_expr = if (self.hir.kindOf(f.body) == .block_stmt) blk: {
             const stmts = hir_mod.blockStmts(self.hir, f.body);
-            if (stmts.len != 1 or self.hir.kindOf(stmts[0]) != .return_stmt) return .{ .return_mismatch = target_t };
+            if (stmts.len != 1 or self.hir.kindOf(stmts[0]) != .return_stmt) {
+                const inferred = try self.contextualFunctionSignatureWithInferredReturn(fn_node, target_t);
+                const inferred_ret = self.interner.signatureReturn(inferred) orelse return .{ .return_mismatch = target_t };
+                return if (try self.contextualFunctionReturnAssignable(inferred_ret, target_ret))
+                    .assignable
+                else
+                    .{ .return_mismatch = target_t };
+            }
             const ret = hir_mod.returnOf(self.hir, stmts[0]);
             if (ret.value == hir_mod.none_node_id) return .{ .return_mismatch = target_t };
             break :blk ret.value;
@@ -251310,6 +251320,27 @@ test "checker: seeded Promise constructor supports instanceof narrowing" {
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.parameter_implicitly_any));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: terminating Promise guard subtracts the promised union member" {
+    const s = try newSetup(
+        \\interface Payload { value: unknown; issues: string[]; }
+        \\declare const result: Payload | Promise<Payload>;
+        \\if (result instanceof Promise) throw new Error("async");
+        \\result.issues.map((issue) => {
+        \\  const exact: string = issue;
+        \\  const wrong: number = issue;
+        \\  void exact; void wrong;
+        \\});
+        \\void result.value;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true, .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.parameter_implicitly_any));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 1), s.checker.diagnostics.items.len);
 }
 
 test "checker: constructor-constrained type parameter supports instanceof" {

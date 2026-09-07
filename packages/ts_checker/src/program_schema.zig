@@ -189,7 +189,7 @@ pub const Schema = struct {
         var visited: std.AutoHashMapUnmanaged(*const Expression, void) = .empty;
         defer visited.deinit(gpa);
         try appendDeclaration(gpa, &pending, declaration);
-        return pendingSupported(gpa, &pending, &visited, declaration.contextual_only, declaration.is_function, declaration.contextual_only);
+        return pendingSupported(gpa, &pending, &visited, declaration.contextual_only, declaration.is_function);
     }
 
     /// Check one prospective leaf before it is embedded in a larger schema.
@@ -200,7 +200,7 @@ pub const Schema = struct {
         var visited: std.AutoHashMapUnmanaged(*const Expression, void) = .empty;
         defer visited.deinit(gpa);
         try pending.append(gpa, expression);
-        return pendingSupported(gpa, &pending, &visited, false, false, true);
+        return pendingSupported(gpa, &pending, &visited, false, false);
     }
 
     fn pendingSupported(
@@ -209,7 +209,6 @@ pub const Schema = struct {
         visited: *std.AutoHashMapUnmanaged(*const Expression, void),
         allow_opaque: bool,
         allow_readonly_record: bool,
-        allow_builtin_reference: bool,
     ) !bool {
         while (pending.pop()) |expr| {
             const entry = try visited.getOrPut(gpa, expr);
@@ -218,14 +217,7 @@ pub const Schema = struct {
                 .unsupported => if (!allow_opaque) return false,
                 .opaque_leaf => if (!allow_opaque) return false,
                 .primitive, .builtin_object, .parameter, .string, .number, .boolean, .polymorphic_this => {},
-                .builtin_reference => |reference| {
-                    // The expression itself is lossless and can be projected
-                    // on demand. Keep it from making a whole declaration
-                    // eligible for eager structural substitution until that
-                    // path preserves generic built-in relation semantics.
-                    if (!allow_builtin_reference) return false;
-                    try pending.appendSlice(gpa, reference.arguments);
-                },
+                .builtin_reference => |reference| try pending.appendSlice(gpa, reference.arguments),
                 .array, .readonly_array, .keyof, .this_type => |element| try pending.append(gpa, element),
                 .object => |members| for (members) |member| {
                     try pending.append(gpa, member.type);

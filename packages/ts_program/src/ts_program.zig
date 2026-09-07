@@ -10714,6 +10714,64 @@ test "Program: returned imported homomorphic union callbacks retain exact member
     try T.expectEqual(@as(u32, 2322), compilation.diagnostics.items[0].code);
 }
 
+test "Program: imported MaybeAsync return narrows after terminating Promise guard" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver };
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+
+    const owner =
+        \\export type MaybeAsync<T> = T | Promise<T>;
+        \\export interface Payload { value: unknown; issues: string[]; }
+        \\export interface SchemaInternals { run(payload: Payload): MaybeAsync<Payload>; }
+        \\export interface Schema { _zod: SchemaInternals; }
+    ;
+    const consumer =
+        \\import type { Schema } from "./owner.js";
+        \\export function parse(schema: Schema): unknown {
+        \\  const result = schema._zod.run({ value: undefined, issues: [] });
+        \\  if (result instanceof Promise) throw new Error("async");
+        \\  result.issues.map((issue) => {
+        \\    const exact: string = issue;
+        \\    const wrong: number = issue;
+        \\    void exact; void wrong;
+        \\  });
+        \\  return result.value;
+        \\}
+        \\export function install(schema: Schema): void {
+        \\  schema._zod.run = (payload) => {
+        \\    if (payload.issues.length > 0) return Promise.resolve(payload);
+        \\    return payload;
+        \\  };
+        \\}
+        \\type ContextualParse = <T extends Schema>(schema: T) => unknown;
+        \\export const contextualParse: ContextualParse = (schema) => {
+        \\  const result = schema._zod.run({ value: undefined, issues: [] });
+        \\  if (result instanceof Promise) throw new Error("async");
+        \\  result.issues.map((issue) => issue.toUpperCase());
+        \\  return result.value;
+        \\};
+    ;
+    try vfs.addFile("/proj/owner.ts", owner);
+    try vfs.addFile("/proj/consumer.ts", consumer);
+    _ = try p.add("/proj/owner.ts", owner);
+    const consumer_id = try p.add("/proj/consumer.ts", consumer);
+
+    try p.compileAll(.{
+        .no_emit = true,
+        .strict_flags = .{ .no_implicit_any = true, .strict_null_checks = true },
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    });
+    const compilation = p.fileById(consumer_id).compilation.?;
+    try expectCompilationLacksDiagnosticCode(compilation, 7006);
+    try expectCompilationLacksDiagnosticCode(compilation, 2339);
+    try T.expectEqual(@as(usize, 1), compilation.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 2322), compilation.diagnostics.items[0].code);
+}
+
 test "Program: imported inherited indexed constraints remain assignable" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();
