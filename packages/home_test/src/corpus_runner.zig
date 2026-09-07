@@ -100120,7 +100120,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/test/failure-skip.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/fake-timers/sinonjs/fake-timers.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Sinon fake timers upstream matrix")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/fake-timers/sinonjs/issue-347.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/jest-each-gc-root.test.ts"))
@@ -100146,11 +100146,11 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/test/test-only.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/test-test.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "bun test CLI runner behavior matrix")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/pretty-format-overflow.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/printing/diffexample.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "bun test diff printer subprocess snapshot")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/snapshot-tests/new-snapshot.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/snapshot-tests/snapshots/snapshot.test.ts"))
@@ -100697,12 +100697,15 @@ fn isNativeBunTestCorpusFile(relative: []const u8) bool {
     return std.mem.eql(u8, relative, "js/bun/resolve/require.test.ts") or
         std.mem.eql(u8, relative, "js/bun/test/expect-extend.test.js") or
         std.mem.eql(u8, relative, "js/bun/test/expect.test.js") or
+        std.mem.eql(u8, relative, "js/bun/test/fake-timers/sinonjs/fake-timers.test.ts") or
         std.mem.eql(u8, relative, "js/bun/test/fake-timers/sinonjs/issue-347.test.ts") or
         std.mem.eql(u8, relative, "js/bun/test/mock/6879/6879.test.ts") or
         std.mem.eql(u8, relative, "js/bun/test/mock/mock-module.test.ts") or
         std.mem.eql(u8, relative, "js/bun/test/mock-fn.test.js") or
+        std.mem.eql(u8, relative, "js/bun/test/printing/diffexample.test.ts") or
         std.mem.eql(u8, relative, "js/bun/test/snapshot-tests/snapshots/snapshot.test.ts") or
-        std.mem.eql(u8, relative, "js/bun/test/test-failing.test.ts");
+        std.mem.eql(u8, relative, "js/bun/test/test-failing.test.ts") or
+        std.mem.eql(u8, relative, "js/bun/test/test-test.test.ts");
 }
 
 fn isNativeBunTestHelperCorpusFile(relative: []const u8) bool {
@@ -101631,12 +101634,15 @@ test "native Bun test corpus routing covers require, interop consumers, fake tim
         "js/bun/resolve/require.test.ts",
         "js/bun/test/expect-extend.test.js",
         "js/bun/test/expect.test.js",
+        "js/bun/test/fake-timers/sinonjs/fake-timers.test.ts",
         "js/bun/test/fake-timers/sinonjs/issue-347.test.ts",
         "js/bun/test/mock/6879/6879.test.ts",
         "js/bun/test/mock/mock-module.test.ts",
         "js/bun/test/mock-fn.test.js",
+        "js/bun/test/printing/diffexample.test.ts",
         "js/bun/test/snapshot-tests/snapshots/snapshot.test.ts",
         "js/bun/test/test-failing.test.ts",
+        "js/bun/test/test-test.test.ts",
     }) |relative| {
         try Io.Dir.cwd().access(std.testing.io, "packages/runtime/test/test/" ++ relative, .{});
         try std.testing.expect(isNativeBunTestCorpusFile(relative));
@@ -101836,14 +101842,31 @@ test "native Bun test fixture harness does not replace the cross-runner interop 
 }
 
 test "native Bun test fixtures retain their upstream bodies instead of TODO rewrites" {
-    const cases = [_]struct { path: []const u8, marker: []const u8 }{
+    const cases = [_]struct { path: []const u8, marker: []const u8, removed_label: []const u8 }{
         .{
             .path = "js/bun/test/test-fixture-diff-indexed-properties.js",
             .marker = "expect(obj).toEqual(objB);",
+            .removed_label = "bun test indexed property diff failure fixture",
         },
         .{
             .path = "js/bun/test/test-interop.js",
             .marker = "jsc.callerSourceOrigin()",
+            .removed_label = "bun test cross-runner interop helper fixture",
+        },
+        .{
+            .path = "js/bun/test/fake-timers/sinonjs/fake-timers.test.ts",
+            .marker = "describe.todo(\"FakeTimers\"",
+            .removed_label = "Sinon fake timers upstream matrix",
+        },
+        .{
+            .path = "js/bun/test/test-test.test.ts",
+            .marker = "objects with property indices doesn't print undefined",
+            .removed_label = "bun test CLI runner behavior matrix",
+        },
+        .{
+            .path = "js/bun/test/printing/diffexample.test.ts",
+            .marker = "test(\"no color\"",
+            .removed_label = "bun test diff printer subprocess snapshot",
         },
     };
     inline for (cases) |case| {
@@ -101852,7 +101875,7 @@ test "native Bun test fixtures retain their upstream bodies instead of TODO rewr
         const rewritten = try rewriteBunTestImport(std.testing.allocator, source, case.path);
         defer std.testing.allocator.free(rewritten);
         try std.testing.expect(std.mem.indexOf(u8, rewritten, case.marker) != null);
-        try std.testing.expect(std.mem.indexOf(u8, rewritten, "test.todo(\"bun test") == null);
+        try std.testing.expect(std.mem.indexOf(u8, rewritten, case.removed_label) == null);
     }
 }
 
@@ -101865,6 +101888,9 @@ test "native Bun test fixtures and interop consumers execute unchanged through t
         .{ .path = "js/bun/test/expect-extend.test.js", .passed = 28 },
         .{ .path = "js/bun/test/mock-fn.test.js", .passed = 72 },
         .{ .path = "js/bun/test/expect.test.js", .passed = 398, .todo = 10 },
+        .{ .path = "js/bun/test/fake-timers/sinonjs/fake-timers.test.ts", .passed = 0, .todo = 438 },
+        .{ .path = "js/bun/test/test-test.test.ts", .passed = 24, .todo = 16 },
+        .{ .path = "js/bun/test/printing/diffexample.test.ts", .passed = 2 },
     };
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
