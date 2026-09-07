@@ -6,6 +6,13 @@
 # macOS honours no `ulimit` memory cap, so without the resident-set watchdog a
 # single runaway file can exhaust the machine.
 #
+# A file that hits either bound is re-run ONCE at a much higher bound before it
+# is recorded. A low bound is what makes a broad scan affordable, but it also
+# manufactures failures: `http-backpressure-max` needs ~46s and ~4.8 GB, and
+# `worker_heap_snapshot_gc` needs ~42s, so both were filed as hangs purely
+# because the first bound was 25s. Escalating only the files that hit a bound
+# keeps the scan fast and stops the bound from being mistaken for a defect.
+#
 # Usage: vm-corpus-scan.sh <subdir-under-corpus> <out.tsv> [timeout-secs]
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -16,47 +23,56 @@ CORPUS="$ROOT/packages/runtime/test/test"
 SUB="${1:-js/node/path}"
 OUT="${2:-/tmp/vm-scan.tsv}"
 TO="${3:-15}"
+TRIAGE_RSS="${HOME_TEST_MAX_RSS_MB:-4096}"
+# Bounds for the confirmation re-run. A corpus file sets its own timeouts (the
+# heap-snapshot test allows itself 120s), so the escalated wall clock has to
+# clear those rather than the scan's triage budget.
+ESC_TO="${VM_SCAN_ESCALATE_SECS:-180}"
+ESC_RSS="${VM_SCAN_ESCALATE_RSS_MB:-6144}"
 
 cd "$ROOT"
 : > "$OUT"
 RUNLOG="$(mktemp -t home-vm-scan.XXXXXX)"
 trap 'rm -f "$RUNLOG"' EXIT
-pass=0 fail=0 crash=0 hang=0 deps=0 oom=0
-while IFS= read -r f; do
-  rel="${f#"$ROOT"/}"
+
+# Run one corpus file under the given bounds; sets `status` and `sig`.
+run_one() {
+  local rel="$1" secs="$2" rss="$3" code
   # Write to a file rather than capturing through a pipe. A test that leaves a
   # server or installer running keeps the pipe's write end open, so command
   # substitution blocks for that grandchild even after the bound has killed the
   # file's own process group — the scan then wedges on one file forever instead
   # of recording a hang and moving on. Closing stdin stops a child from waiting
   # on a terminal that is not there.
-  # Bun's own test launcher exports this before starting a Debug executable.
-  # Setting it only from preload.ts is too late for env-omitted child processes:
-  # both Home and the pinned Bun control inherit their original process env.
-  BUN_DEBUG_QUIET_LOGS=1 HOME_NATIVE_VM=1 HOME_CORPUS_FULL_VM=1 run_bounded "$TO" "$HOME_BIN" test "$rel" >"$RUNLOG" 2>&1 </dev/null
+  # Bun's own test launcher exports BUN_DEBUG_QUIET_LOGS before starting a Debug
+  # executable. Setting it only from preload.ts is too late for env-omitted
+  # child processes: both Home and the pinned Bun control inherit their
+  # original process env.
+  BUN_DEBUG_QUIET_LOGS=1 HOME_NATIVE_VM=1 HOME_CORPUS_FULL_VM=1 HOME_TEST_MAX_RSS_MB="$rss" \
+    run_bounded "$secs" "$HOME_BIN" test "$rel" >"$RUNLOG" 2>&1 </dev/null
   code=$?
   if [[ $code -eq 124 ]]; then
-    status=hang; hang=$((hang+1))
+    status=hang
   elif [[ $code -eq 125 ]]; then
     # Killed at the resident-set ceiling rather than finishing. Reported on its
     # own so a memory blow-up is never silently filed as a crash.
-    status=oom; oom=$((oom+1))
+    status=oom
   elif [[ $code -ge 128 ]]; then
-    status=crash; crash=$((crash+1))
+    status=crash
   elif grep -qE '^\(fail\)' "$RUNLOG"; then
-    status=fail; fail=$((fail+1))
+    status=fail
   elif grep -qE "Cannot find package '|Could not resolve: \"|ENOENT while resolving package '|bun install failed with exit code" "$RUNLOG"; then
     # An unresolved npm dependency aborts the file before any test runs. That is
-    # the corpus provisioning gap (#618), not a defect in the runtime, and
-    # counting it as a crash overstates the crash surface.
-    status=deps; deps=$((deps+1))
+    # a corpus provisioning gap (run scripts/provision-corpus-deps.sh), not a
+    # defect in the runtime, and counting it as a crash overstates the surface.
+    status=deps
   elif [[ $code -eq 0 ]]; then
-    status=pass; pass=$((pass+1))
+    status=pass
   else
     # nonzero exit, no parsed (fail) line — abort/crash before tests ran
-    status=crash; crash=$((crash+1))
+    status=crash
   fi
-  # capture a one-line crash signature. For panics/segfaults, prefer the first
+  # capture a one-line signature. For panics/segfaults, prefer the first
   # in-tree (home) stack frame — far more actionable than "Segmentation".
   if [[ "$status" == "crash" ]]; then
     sig=$(grep -m1 -oE '[a-zA-Z0-9_./-]+\.zig:[0-9]+:[0-9]+: 0x[0-9a-f]+ in [^ ]+ \(home\)' "$RUNLOG" | sed -E 's/: 0x[0-9a-f]+ in / /; s#packages/runtime/src/##' | cut -c1-110)
@@ -64,7 +80,27 @@ while IFS= read -r f; do
   else
     sig=$(grep -m1 -oE 'panic: .*|error: .*|TODOError: [^@]*' "$RUNLOG" | tr '\t' ' ' | cut -c1-110)
   fi
+}
+
+pass=0 fail=0 crash=0 hang=0 deps=0 oom=0
+while IFS= read -r f; do
+  rel="${f#"$ROOT"/}"
+  run_one "$rel" "$TO" "$TRIAGE_RSS"
+  # Only a bound-hit is re-run, and only once: every other status is already a
+  # real observation, and re-running the whole corpus at the high bound would
+  # cost hours.
+  if [[ "$status" == hang || "$status" == oom ]]; then
+    run_one "$rel" "$ESC_TO" "$ESC_RSS"
+  fi
   printf '%s\t%s\t%s\n' "$status" "$rel" "$sig" >> "$OUT"
+  case "$status" in
+    pass) pass=$((pass+1)) ;;
+    fail) fail=$((fail+1)) ;;
+    crash) crash=$((crash+1)) ;;
+    hang) hang=$((hang+1)) ;;
+    deps) deps=$((deps+1)) ;;
+    oom) oom=$((oom+1)) ;;
+  esac
 # `*.test.*` also matches sidecars that are not runnable files — `__snapshots__`
 # holds `<name>.test.ts.snap`, which the runner reports as a crash. Select the
 # executable extensions instead.

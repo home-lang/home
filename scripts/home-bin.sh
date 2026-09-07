@@ -34,6 +34,11 @@ resolve_home_bin() {
 # all. Some upstream tests legitimately allocate hundreds of MB (a >512 MB
 # string-decoder buffer, multi-GB leak probes), and a debug build inflates that
 # further, so one bad file can exhaust the machine and take the session with it.
+#
+# 4096 is a TRIAGE default, not a verdict: at least one corpus file legitimately
+# peaks near 4.8 GB. Don't raise this flat on a small machine — vm-corpus-scan.sh
+# re-runs anything that hits the ceiling at a higher one, so the cheap default
+# stays cheap and a real memory need is still observed rather than misfiled.
 : "${HOME_TEST_MAX_RSS_MB:=4096}"
 
 # Run a command with a wall-clock bound and a memory bound, using timeout's exit
