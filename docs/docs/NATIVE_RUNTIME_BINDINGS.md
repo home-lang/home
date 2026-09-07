@@ -428,7 +428,29 @@ The broader `bun-run` file previously reported 160 pass / 131 fail on the publis
 
 `tests/runtime/native-package-run.test.mjs` verifies native child identity, lifecycle metadata/order, shell-sensitive and empty arguments under both shells, cwd/precedence, extension resolution, failure propagation, stdin transfer, output visible before process exit, actual SIGKILL termination, persistent alias resolution and rejection of unsafe cache permissions/targets. It also passes with `BUN_DESTRUCT_VM_ON_EXIT=1`; the previous published binary fails its native dispatch control. All 11 measured CLI/child-process source files are byte-identical to pin `4982b91e3702094330f3be3883354c52b8c01323`. No corpus expectations, workloads or deadlines were changed. The complete spawn run retains the original 1,000-iteration onExit workload; owned unreferenced descendants are cleaned only after their tested parent exits.
 
-Native build and cached rebuild pass 17/17 steps; scoped Pickier, Zig formatting and whitespace checks pass. Local evidence is retained in `zig-out/package-final-regressions.json`, `package-wide-{baseline,final}.json`, `package-wide-comparison.json`, `package-native-controls.json` and `package-corpus-integrity.json`. This checkpoint is Darwin-only; Linux/Windows execution and cross-compilation remain unverified. [#497](https://github.com/home-lang/home/issues/497) remains open for integration/platform verification, and the complete port remains unfinished under [#66](https://github.com/home-lang/home/issues/66).
+Native build and cached rebuild pass 17/17 steps; scoped Pickier, Zig formatting and whitespace checks pass. Local evidence is retained in `zig-out/package-final-regressions.json`, `package-wide-{baseline,final}.json`, `package-wide-comparison.json`, `package-native-controls.json` and `package-corpus-integrity.json`. This checkpoint is Darwin-only; Linux/Windows execution and cross-compilation remain unverified. The implementation is integrated on `main`, so #497 is closed; platform execution is isolated in [#678](https://github.com/home-lang/home/issues/678), and the complete port remains unfinished under [#66](https://github.com/home-lang/home/issues/66).
+
+### Current-main subprocess integration verification (2026-09-07)
+
+The implementation commits for direct POSIX spawn/setup errors (#493), extra
+stdio pipe/socket ownership (#495), package-script dispatch (#497), and
+Blob/stream input ownership (#499) are all ancestors of `main`. A fresh
+Darwin arm64 ReleaseFast aggregate build passes. Against that artifact, the
+complete unchanged `child_process.test.ts` passes **32 runnable tests / 72
+assertions / 0 failures**, preserving its real `npm-run-all` install and nested
+script workload, with one Windows-only skip and one upstream TODO reported but
+not counted as completed parity. The complete unchanged `spawn.test.ts` passes
+**126 tests / 5,484 assertions / 0 failures**, with its five existing skips
+reported and its original 1,000-iteration lifecycle workload unchanged.
+
+The focused unchanged extra-pipe GC case passes **1 / 1** with all 20 rounds,
+delays, and GC calls intact; the extra-stdio selection passes **16 / 16 / 24
+assertions**. The complete Node timer file passes **20 / 20 / 31 assertions**,
+and its standalone caught-immediate fixture exits successfully. No source
+fixture, assertion, deadline, workload, or skip changed for this verification.
+The four Darwin implementation issues are closed; [#678](https://github.com/home-lang/home/issues/678)
+now owns Linux/Windows execution and any native corrections those runs expose.
+Whole-suite parity remains open under [#66](https://github.com/home-lang/home/issues/66).
 
 ## Native module/eval CLI context and bunfig propagation (#506)
 

@@ -155,17 +155,20 @@ async-shaped Subprocess (`pid`, `exited: Promise`, `stdout`/`stderr` as
 `node:stream` Readables with `text`/`json`/`bytes`/`arrayBuffer`,
 `kill`/`ref`/`unref`). Caveat: `Bun.spawn` is **eager** (runs the child to
 completion, then resolves) — no live streaming / interactive stdin yet.
-The runtime source port also includes
-Bun's POSIX `WaitPidResult`, `posix_spawnattr_t`, and
-`posix_spawn_file_actions_t` wrapper substrate in
-`packages/runtime/src/runtime/api/bun/spawn.zig`, rewritten for Home fd
-aliases and Pantry Zig 0.17's Darwin `std.c.POSIX_SPAWN` flag type; the
-ported `BunSpawn.Attr.set()` now re-derives `detached` from the packed
-`SETSID` flag when the platform exposes it while preserving Bun's
-no-flag fallback for FreeBSD-style targets. The
-actual `spawnZ` / `waitpid` execution glue still requires the
-`posix_spawn_bun` shim and `home_rt.sys.Error` surface before it can
-count as integrated.
+
+The full native VM path separately integrates Bun's POSIX
+`WaitPidResult`, `posix_spawnattr_t`, `posix_spawn_file_actions_t`,
+`spawnZ`, and `waitpid` execution. It propagates direct spawn/setup errno,
+owns extra stdio pipes and caller-transferred descriptors through the correct
+lifetime, validates Blob/stream inputs without panics, and executes real
+package scripts with inherited stdio. Current-main Darwin ReleaseFast gates
+pass the complete unchanged spawn file (**126 pass / 5 existing skips / 0
+fail / 5,484 assertions**) and child-process file (**32 pass / 1 Windows-only
+skip / 1 upstream TODO / 0 fail / 72 assertions**). The full spawn workload
+retains its original 1,000 lifecycle iterations. Linux and Windows execution
+remain explicit work in [#678](https://github.com/home-lang/home/issues/678);
+those unverified platforms and the reduced realm's eager behavior keep this
+row partial.
 
 ### `Bun.$ (shell)`
 

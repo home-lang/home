@@ -1371,3 +1371,27 @@ ReleaseFast tool verification also passes, and native `home_rt` is **1,828
 passed / 19 skipped / 0 failed** with the real-umask unit included. This
 completes #677 and retains one source of truth for the pinned `26.3.0` identity;
 it does not change the remaining full-corpus scope under #66.
+
+## Current Native Subprocess Integration Checkpoint (2026-09-07)
+
+The previously branch-only implementation commits for direct POSIX spawn and
+file-action errors (#493), extra stdio ownership (#495), native package-script
+execution (#497), and Blob/stream input ownership (#499) are now ancestors of
+`main`. The top-level parity ledger therefore treats their Darwin
+implementations as integrated rather than parked substrate.
+
+A fresh Darwin arm64 ReleaseFast aggregate build passes. The complete unchanged
+child-process file is **32 runnable passes / 72 assertions / 0 failures**, with
+one Windows-only skip and one upstream TODO excluded from completion. The
+complete unchanged spawn file is **126 passes / 5,484 assertions / 0 failures**,
+with five existing skips excluded and all 1,000 lifecycle iterations retained.
+The unchanged focused extra-pipe GC case is **1 / 1**, the complete extra-stdio
+input selection is **16 / 16 / 24 assertions**, and the Node timers file is
+**20 / 20 / 31 assertions** plus its passing standalone fixture.
+
+Those four scoped implementation issues are closed. Cross-platform runtime
+execution is not inferred from Darwin or from compilation: Linux/Windows spawn,
+descriptor, libuv, waiter-thread, package-script, and rejected-input ownership
+remain tracked in [#678](https://github.com/home-lang/home/issues/678). No
+workload, assertion, deadline, fixture, or skip was changed, and #66 remains
+open for the wider corpus.
