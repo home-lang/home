@@ -39153,11 +39153,6 @@ const harness_prelude =
     \\globalThis.__home_modules["v8"] = __home_node_v8;
     \\globalThis.__home_modules["node:v8"] = __home_node_v8;
     \\globalThis.__home_modules["v8-heapsnapshot"] = { parseSnapshot: __home_v8_parse_snapshot };
-    \\globalThis.__home_modules["./test-interop.js"] = {
-    \\  default() {
-    \\    return Object.assign({ isBun: true, bunTest: globalThis.__home_bun_test }, globalThis.__home_bun_test);
-    \\  },
-    \\};
     \\globalThis.__home_modules["immutable"] = {
     \\  Map(entries) {
     \\    return new globalThis.Map(entries || []);
@@ -96727,10 +96722,6 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
             .replacement = "const npmStringWidth = globalThis.__home_import(\"string-width\").default;",
         },
         .{
-            .needle = "import test_interop from \"./test-interop.js\";",
-            .replacement = "const test_interop = globalThis.__home_import(\"./test-interop.js\").default;",
-        },
-        .{
             .needle = "import { describe, expect, jest, expect as jestExpect, test } from \"bun:test\";",
             .replacement = "const { describe, expect, jest, test } = globalThis.__home_import(\"bun:test\"); const jestExpect = expect;",
         },
@@ -96741,18 +96732,6 @@ fn rewriteBootstrapModuleImports(allocator: std.mem.Allocator, source: []const u
         .{
             .needle = "import type { FunctionLike } from \"jest-mock\";",
             .replacement = "",
-        },
-        .{
-            .needle = "var { isBun, expect, describe, test, it } = await test_interop();",
-            .replacement = "var { isBun, expect, describe, test, it } = test_interop();",
-        },
-        .{
-            .needle = "var { isBun, test, it, describe, expect, jest, vi, mock, bunTest, spyOn } = await test_interop();",
-            .replacement = "var { isBun, test, it, describe, expect, jest, vi, mock, bunTest, spyOn } = test_interop();",
-        },
-        .{
-            .needle = "var { isBun, describe, test, it, expect, jest, vi, mock, spyOn } = await test_interop();",
-            .replacement = "var { isBun, describe, test, it, expect, jest, vi, mock, spyOn } = test_interop();",
         },
         .{
             .needle = "import { tempDirWithBakeDeps } from \"../bake-harness\";",
@@ -100129,9 +100108,9 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/test/test-failing.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/test-fixture-diff-indexed-properties.js"))
-        try rewriteNativeTodoCorpus(allocator, "bun test indexed property diff failure fixture")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/test-interop.js"))
-        try rewriteNativeTodoCorpus(allocator, "bun test cross-runner interop helper fixture")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/expect-assertions.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/expect-extend.test.js"))
@@ -100716,11 +100695,22 @@ fn isNativeHttpProxyCorpusFile(relative: []const u8) bool {
 
 fn isNativeBunTestCorpusFile(relative: []const u8) bool {
     return std.mem.eql(u8, relative, "js/bun/resolve/require.test.ts") or
+        std.mem.eql(u8, relative, "js/bun/test/expect-extend.test.js") or
+        std.mem.eql(u8, relative, "js/bun/test/expect.test.js") or
         std.mem.eql(u8, relative, "js/bun/test/fake-timers/sinonjs/issue-347.test.ts") or
         std.mem.eql(u8, relative, "js/bun/test/mock/6879/6879.test.ts") or
         std.mem.eql(u8, relative, "js/bun/test/mock/mock-module.test.ts") or
+        std.mem.eql(u8, relative, "js/bun/test/mock-fn.test.js") or
         std.mem.eql(u8, relative, "js/bun/test/snapshot-tests/snapshots/snapshot.test.ts") or
         std.mem.eql(u8, relative, "js/bun/test/test-failing.test.ts");
+}
+
+fn isNativeBunTestHelperCorpusFile(relative: []const u8) bool {
+    return std.mem.eql(u8, relative, "js/bun/test/test-interop.js");
+}
+
+fn isNativeExpectedFailureCorpusFile(relative: []const u8) bool {
+    return std.mem.eql(u8, relative, "js/bun/test/test-fixture-diff-indexed-properties.js");
 }
 
 fn isNativeS3CorpusFile(relative: []const u8) bool {
@@ -100869,6 +100859,8 @@ fn isNativeHomeCorpusFile(relative: []const u8) bool {
         isNativeHttpServerCorpusFile(relative) or
         isNativeHttpProxyCorpusFile(relative) or
         isNativeBunTestCorpusFile(relative) or
+        isNativeBunTestHelperCorpusFile(relative) or
+        isNativeExpectedFailureCorpusFile(relative) or
         isNativeS3CorpusFile(relative) or
         isNativeWorkerCorpusFile(relative) or
         isNativeWorkerScriptCorpusFile(relative);
@@ -100908,6 +100900,7 @@ fn nativeCorpusMode(relative: []const u8) NativeCorpusMode {
         isNativeHttpServerCorpusFile(relative) or
         isNativeHttpProxyCorpusFile(relative) or
         isNativeBunTestCorpusFile(relative) or
+        isNativeExpectedFailureCorpusFile(relative) or
         isNativeBufferPrimitiveCorpusFile(relative) or
         isNativeAsyncHooksCorpusFile(relative) or
         isNativeGlobCorpusFile(relative) or
@@ -100951,6 +100944,28 @@ fn nativeCorpusRunnerFlags(relative: []const u8) []const []const u8 {
 
 fn nativeCorpusProcessSucceeded(term: std.process.Child.Term, timed_out: bool) bool {
     return !timed_out and term.success();
+}
+
+fn nativeExpectedFailureCorpusPassed(
+    relative: []const u8,
+    term: std.process.Child.Term,
+    timed_out: bool,
+    stdout: []const u8,
+    stderr: []const u8,
+) bool {
+    if (!isNativeExpectedFailureCorpusFile(relative) or timed_out) return false;
+    switch (term) {
+        .exited => |code| if (code != 1) return false,
+        else => return false,
+    }
+
+    const counts = nativeCorpusTestCounts(stdout, stderr);
+    if (!counts.observed or counts.passed != 0 or counts.failed != 1 or counts.skipped != 0 or counts.todo != 0) return false;
+    for ([_][]const u8{ stdout, stderr }) |output| {
+        if (std.mem.indexOf(u8, output, "undefined") != null) return false;
+    }
+    return std.mem.indexOf(u8, stdout, "expect(received).toEqual(expected)") != null or
+        std.mem.indexOf(u8, stderr, "expect(received).toEqual(expected)") != null;
 }
 
 fn nativeCorpusSkipReason(stdout: []const u8, stderr: []const u8) ?[]const u8 {
@@ -101101,7 +101116,20 @@ fn runRelativeFile(
         defer native_run.deinit(allocator);
         try appendSummaryStdout(allocator, summary, native_run.stdout);
 
-        if (nativeCorpusProcessSucceeded(native_run.term, native_run.timed_out)) {
+        if (isNativeExpectedFailureCorpusFile(relative)) {
+            if (nativeExpectedFailureCorpusPassed(relative, native_run.term, native_run.timed_out, native_run.stdout, native_run.stderr)) {
+                file_result.passed = 1;
+            } else {
+                file_result.failed = 1;
+                const diagnostic = try std.fmt.allocPrint(
+                    allocator,
+                    "native Home expected-failure fixture did not emit exactly one indexed-property diff without undefined values\nstderr:\n{s}\nstdout:\n{s}",
+                    .{ native_run.stderr, native_run.stdout },
+                );
+                defer allocator.free(diagnostic);
+                try recordFailure(allocator, summary, relative, diagnostic);
+            }
+        } else if (nativeCorpusProcessSucceeded(native_run.term, native_run.timed_out)) {
             if (nativeCorpusDisabledReason(relative)) |reason| {
                 file_result.unsupported = 1;
                 try recordFailure(allocator, summary, relative, reason);
@@ -101598,12 +101626,15 @@ test "native HTTP proxy corpus routing covers the exact local integration file" 
     }) |non_match| try std.testing.expect(!isNativeHttpProxyCorpusFile(non_match));
 }
 
-test "native Bun test corpus routing covers require, fake timers, mocks, snapshots, and test.failing workflows" {
+test "native Bun test corpus routing covers require, interop consumers, fake timers, mocks, snapshots, and test.failing workflows" {
     inline for (.{
         "js/bun/resolve/require.test.ts",
+        "js/bun/test/expect-extend.test.js",
+        "js/bun/test/expect.test.js",
         "js/bun/test/fake-timers/sinonjs/issue-347.test.ts",
         "js/bun/test/mock/6879/6879.test.ts",
         "js/bun/test/mock/mock-module.test.ts",
+        "js/bun/test/mock-fn.test.js",
         "js/bun/test/snapshot-tests/snapshots/snapshot.test.ts",
         "js/bun/test/test-failing.test.ts",
     }) |relative| {
@@ -101615,6 +101646,7 @@ test "native Bun test corpus routing covers require, fake timers, mocks, snapsho
     inline for (.{
         "js/bun/resolve/require.test.js",
         "js/bun/test/fake-timers/sinonjs/issue-347.test.js",
+        "js/bun/test/expect.test.ts",
         "js/bun/test/mock/6879/6879.test.js",
         "js/bun/test/mock/mock-module.test.js",
         "js/bun/test/snapshot-tests/snapshots/snapshot.test.js",
@@ -101623,6 +101655,21 @@ test "native Bun test corpus routing covers require, fake timers, mocks, snapsho
         "js/bun/test/nested/test-failing.test.ts",
         "js/bun/tests/test-failing.test.ts",
     }) |non_match| try std.testing.expect(!isNativeBunTestCorpusFile(non_match));
+}
+
+test "native Bun test fixture routing distinguishes executable helpers and expected failures" {
+    const helper = "js/bun/test/test-interop.js";
+    const expected_failure = "js/bun/test/test-fixture-diff-indexed-properties.js";
+    try Io.Dir.cwd().access(std.testing.io, "packages/runtime/test/test/" ++ helper, .{});
+    try Io.Dir.cwd().access(std.testing.io, "packages/runtime/test/test/" ++ expected_failure, .{});
+    try std.testing.expect(isNativeBunTestHelperCorpusFile(helper));
+    try std.testing.expect(isNativeExpectedFailureCorpusFile(expected_failure));
+    try std.testing.expect(isNativeHomeCorpusFile(helper));
+    try std.testing.expect(isNativeHomeCorpusFile(expected_failure));
+    try std.testing.expectEqual(NativeCorpusMode.script, nativeCorpusMode(helper));
+    try std.testing.expectEqual(NativeCorpusMode.test_runner, nativeCorpusMode(expected_failure));
+    try std.testing.expect(!isNativeBunTestHelperCorpusFile(expected_failure));
+    try std.testing.expect(!isNativeExpectedFailureCorpusFile(helper));
 }
 
 test "native S3 corpus routing covers validated deterministic integration files" {
@@ -101769,6 +101816,78 @@ test "native stream iterator process classification requires a clean exit" {
     try std.testing.expect(!nativeCorpusProcessSucceeded(.{ .exited = 1 }, false));
     try std.testing.expect(!nativeCorpusProcessSucceeded(.{ .unknown = 0 }, false));
     try std.testing.expect(!nativeCorpusProcessSucceeded(.{ .exited = 0 }, true));
+}
+
+test "native Bun test fixture expected failure accepts only the indexed-property diff contract" {
+    const relative = "js/bun/test/test-fixture-diff-indexed-properties.js";
+    const output =
+        "error: expect(received).toEqual(expected)\n" ++
+        " 0 pass\n 1 fail\nRan 1 test across 1 file. [1ms]\n";
+    try std.testing.expect(nativeExpectedFailureCorpusPassed(relative, .{ .exited = 1 }, false, "", output));
+    try std.testing.expect(!nativeExpectedFailureCorpusPassed(relative, .{ .exited = 0 }, false, "", output));
+    try std.testing.expect(!nativeExpectedFailureCorpusPassed(relative, .{ .exited = 1 }, true, "", output));
+    try std.testing.expect(!nativeExpectedFailureCorpusPassed(relative, .{ .exited = 1 }, false, "", output ++ "undefined\n"));
+    try std.testing.expect(!nativeExpectedFailureCorpusPassed(relative, .{ .exited = 1 }, false, "", " 0 pass\n 1 fail\nRan 1 test across 1 file. [1ms]\n"));
+    try std.testing.expect(!nativeExpectedFailureCorpusPassed("js/bun/test/other-fixture.js", .{ .exited = 1 }, false, "", output));
+}
+
+test "native Bun test fixture harness does not replace the cross-runner interop module" {
+    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "__home_modules[\"./test-interop.js\"]") == null);
+}
+
+test "native Bun test fixtures retain their upstream bodies instead of TODO rewrites" {
+    const cases = [_]struct { path: []const u8, marker: []const u8 }{
+        .{
+            .path = "js/bun/test/test-fixture-diff-indexed-properties.js",
+            .marker = "expect(obj).toEqual(objB);",
+        },
+        .{
+            .path = "js/bun/test/test-interop.js",
+            .marker = "jsc.callerSourceOrigin()",
+        },
+    };
+    inline for (cases) |case| {
+        const source = try Io.Dir.cwd().readFileAlloc(std.testing.io, "packages/runtime/test/test/" ++ case.path, std.testing.allocator, .limited(64 * 1024));
+        defer std.testing.allocator.free(source);
+        const rewritten = try rewriteBunTestImport(std.testing.allocator, source, case.path);
+        defer std.testing.allocator.free(rewritten);
+        try std.testing.expect(std.mem.indexOf(u8, rewritten, case.marker) != null);
+        try std.testing.expect(std.mem.indexOf(u8, rewritten, "test.todo(\"bun test") == null);
+    }
+}
+
+test "native Bun test fixtures and interop consumers execute unchanged through the corpus gate" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const cases = [_]struct { path: []const u8, passed: usize, todo: usize = 0 }{
+        .{ .path = "js/bun/test/test-interop.js", .passed = 1 },
+        .{ .path = "js/bun/test/test-fixture-diff-indexed-properties.js", .passed = 1 },
+        .{ .path = "js/bun/test/expect-extend.test.js", .passed = 28 },
+        .{ .path = "js/bun/test/mock-fn.test.js", .passed = 72 },
+        .{ .path = "js/bun/test/expect.test.js", .passed = 398, .todo = 10 },
+    };
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    for (cases) |case| {
+        var summary = try runFile(
+            threaded.io(),
+            std.testing.allocator,
+            "packages/runtime/test/test",
+            case.path,
+        );
+        defer summary.deinit(std.testing.allocator);
+        if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != case.todo) {
+            std.debug.print(
+                "native Bun test fixture mismatch for {s}: passed={} todo={} failed={} unsupported={} message={s}\n",
+                .{ case.path, summary.passed, summary.todo, summary.failed, summary.unsupported, summary.first_failure_message },
+            );
+        }
+        try std.testing.expectEqual(@as(usize, 1), summary.files);
+        try std.testing.expectEqual(case.passed, summary.passed);
+        try std.testing.expectEqual(case.todo, summary.todo);
+        try std.testing.expectEqual(@as(usize, 0), summary.failed);
+        try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+    }
 }
 
 test "bootstrap harness has no fake experimental stream iterator registrations" {
