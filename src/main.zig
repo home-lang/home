@@ -172,6 +172,7 @@ fn printUsage() void {
         \\                     Compare two .d.hm declaration files
         \\  size [path]        Show package/build size report
         \\  run <file|script>  Execute an Home, JS, or TS file (or package.json script)
+        \\  repl               Start the native JavaScript REPL
         \\  build <file>       Compile a Home, JS, or TS entrypoint to a native binary
         \\  watch <file>       Watch file for changes and auto-recompile (hot reload)
         \\  test / t [opts]    Run tests (auto-routes to JS runtime when package.json is present)
@@ -1403,7 +1404,7 @@ fn completionsCommand(shell_name: []const u8) !void {
             \\  COMPREPLY=()
             \\  cur="${COMP_WORDS[COMP_CWORD]}"
             \\  prev="${COMP_WORDS[COMP_CWORD-1]}"
-            \\  commands="init parse ast check explain lint fmt fix dev lsp symbols docs completions doctor clean ci api-diff size run build watch test t profile package pkg publish pack help"
+            \\  commands="init parse ast check explain lint fmt fix dev lsp symbols docs completions doctor clean ci api-diff size run repl build watch test t profile package pkg publish pack help"
             \\  pkg_commands="init add remove update install tools toolchain search info audit dedupe link unlink publish pack version doctor clean size tree why outdated declarations types d.hm api-diff docs run scripts login logout whoami"
             \\  if [[ "${COMP_WORDS[1]}" == "pkg" && ${COMP_CWORD} -eq 2 ]]; then
             \\    COMPREPLY=($(compgen -W "$pkg_commands" -- "$cur"))
@@ -1424,7 +1425,7 @@ fn completionsCommand(shell_name: []const u8) !void {
             \\#compdef home
             \\_home() {
             \\  local -a commands pkg_commands
-            \\  commands=(init parse ast check explain lint fmt fix dev lsp symbols docs completions doctor clean ci api-diff size run build watch test t profile package pkg help)
+            \\  commands=(init parse ast check explain lint fmt fix dev lsp symbols docs completions doctor clean ci api-diff size run repl build watch test t profile package pkg help)
             \\  pkg_commands=(init add remove update install tools toolchain search info audit dedupe link unlink publish pack version doctor clean size tree why outdated declarations types d.hm api-diff docs run scripts login logout whoami)
             \\  if [[ $words[2] == pkg ]]; then
             \\    _describe 'pkg command' pkg_commands
@@ -1440,7 +1441,7 @@ fn completionsCommand(shell_name: []const u8) !void {
 
     if (std.mem.eql(u8, shell_name, "fish")) {
         try writeStdout(
-            \\complete -c home -f -n '__fish_use_subcommand' -a 'init parse ast check explain lint fmt fix dev lsp symbols docs completions doctor clean ci api-diff size run build watch test t profile package pkg help'
+            \\complete -c home -f -n '__fish_use_subcommand' -a 'init parse ast check explain lint fmt fix dev lsp symbols docs completions doctor clean ci api-diff size run repl build watch test t profile package pkg help'
             \\complete -c home -f -n '__fish_seen_subcommand_from pkg' -a 'init add remove update install tools toolchain search info audit dedupe link unlink publish pack version doctor clean size tree why outdated declarations types d.hm api-diff docs run scripts login logout whoami'
             \\
         );
@@ -5750,6 +5751,15 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
 
+    if (isNativeReplCommand(command)) {
+        if (comptime build_options.enable_jsc) {
+            const ctx = try nativePackageCommandContext(args, .RunCommand);
+            try home_rt.cli.ReplCommand.exec(ctx);
+            return;
+        }
+        failJavaScriptCoreDisabled(command);
+    }
+
     if (std.mem.eql(u8, command, "init")) {
         const project_name = if (args.len >= 3) args[2] else null;
         try initCommand(allocator, project_name);
@@ -6295,6 +6305,10 @@ fn looksLikeRunnableFile(s: []const u8) bool {
     return fileExtIsRuntimeLike(s);
 }
 
+fn isNativeReplCommand(command: []const u8) bool {
+    return std.mem.eql(u8, command, "repl");
+}
+
 test "implicit runtime entrypoint extensions include HTML" {
     try std.testing.expect(looksLikeRunnableFile("index.html"));
     try std.testing.expect(fileExtIsRuntimeLike("index.html"));
@@ -6302,6 +6316,11 @@ test "implicit runtime entrypoint extensions include HTML" {
     try std.testing.expect(fileExtIsRuntimeLike("app.tsx"));
     try std.testing.expect(!looksLikeRunnableFile("README.md"));
     try std.testing.expect(!fileExtIsRuntimeLike("README.md"));
+}
+
+test "explicit repl command selects the native JavaScript REPL" {
+    try std.testing.expect(isNativeReplCommand("repl"));
+    try std.testing.expect(!isNativeReplCommand("replay"));
 }
 
 /// Match clap's separate-token consumption: optional values use only an

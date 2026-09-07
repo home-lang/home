@@ -99866,7 +99866,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/plugin/plugins.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/repl/repl.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun REPL subprocess and terminal integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/transpiler/repl-transform.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/transpiler/transpiler-truncated-utf8.test.ts"))
@@ -99930,7 +99930,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/s3/s3-storage-class.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-serve-html-entry.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun HTML entry subprocess server")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-serve-html-manifest.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-serve-html.test.ts"))
@@ -100691,11 +100691,16 @@ fn isNativeHttpServerCorpusFile(relative: []const u8) bool {
 
 fn isNativeHtmlServerCorpusFile(relative: []const u8) bool {
     return std.mem.eql(u8, relative, "js/bun/http/bun-serve-html-manifest.test.ts") or
-        std.mem.eql(u8, relative, "js/bun/http/bun-serve-html.test.ts");
+        std.mem.eql(u8, relative, "js/bun/http/bun-serve-html.test.ts") or
+        std.mem.eql(u8, relative, "js/bun/http/bun-serve-html-entry.test.ts");
 }
 
 fn isNativeServeCorpusFile(relative: []const u8) bool {
     return std.mem.eql(u8, relative, "js/bun/http/serve.test.ts");
+}
+
+fn isNativeReplCorpusFile(relative: []const u8) bool {
+    return std.mem.eql(u8, relative, "js/bun/repl/repl.test.ts");
 }
 
 fn isNativeShellLeakCorpusFile(relative: []const u8) bool {
@@ -100885,6 +100890,7 @@ fn isNativeHomeCorpusFile(relative: []const u8) bool {
         isNativeHttpServerCorpusFile(relative) or
         isNativeHtmlServerCorpusFile(relative) or
         isNativeServeCorpusFile(relative) or
+        isNativeReplCorpusFile(relative) or
         isNativeShellLeakCorpusFile(relative) or
         isNativeWebViewCorpusFile(relative) or
         isNativeHttpProxyCorpusFile(relative) or
@@ -100931,6 +100937,7 @@ fn nativeCorpusMode(relative: []const u8) NativeCorpusMode {
         isNativeHttpServerCorpusFile(relative) or
         isNativeHtmlServerCorpusFile(relative) or
         isNativeServeCorpusFile(relative) or
+        isNativeReplCorpusFile(relative) or
         isNativeShellLeakCorpusFile(relative) or
         isNativeWebViewCorpusFile(relative) or
         isNativeHttpProxyCorpusFile(relative) or
@@ -101879,7 +101886,7 @@ test "native Bun shell leak corpus executes unchanged without TODO rewrite" {
     try std.testing.expectEqual(@as(usize, 0), summary.allowed_empty_files);
 }
 
-test "native Bun HTML server corpus executes manifest and static matrices unchanged" {
+test "native Bun CLI activation: HTML server corpus executes manifest and static matrices unchanged" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
     const cases = [_]struct {
@@ -101900,13 +101907,19 @@ test "native Bun HTML server corpus executes manifest and static matrices unchan
             .removed_label = "Bun HTML static server fixture",
             .passed = 16,
         },
+        .{
+            .path = "js/bun/http/bun-serve-html-entry.test.ts",
+            .marker = "bun *.html",
+            .removed_label = "Bun HTML entry subprocess server",
+            .passed = 6,
+        },
     };
     inline for (cases) |case| {
         try std.testing.expect(isNativeHtmlServerCorpusFile(case.path));
         try std.testing.expect(isNativeHomeCorpusFile(case.path));
         try std.testing.expectEqual(NativeCorpusMode.test_runner, nativeCorpusMode(case.path));
     }
-    try std.testing.expect(!isNativeHtmlServerCorpusFile("js/bun/http/bun-serve-html-entry.test.ts"));
+    try std.testing.expect(!isNativeHtmlServerCorpusFile("js/bun/http/nested/bun-serve-html-entry.test.ts"));
     try std.testing.expect(!isNativeHtmlServerCorpusFile("js/bun/http/bun-serve-html.fixture.ts"));
 
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
@@ -101939,6 +101952,54 @@ test "native Bun HTML server corpus executes manifest and static matrices unchan
         try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
         try std.testing.expectEqual(@as(usize, 0), summary.allowed_empty_files);
     }
+}
+
+test "native Bun CLI activation: REPL corpus executes terminal and subprocess matrix unchanged" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const path = "js/bun/repl/repl.test.ts";
+    try std.testing.expect(isNativeReplCorpusFile(path));
+    try std.testing.expect(isNativeHomeCorpusFile(path));
+    try std.testing.expectEqual(NativeCorpusMode.test_runner, nativeCorpusMode(path));
+    inline for (.{
+        "js/bun/repl/repl.test.js",
+        "js/bun/repl/nested/repl.test.ts",
+        "js/bun/transpiler/repl-transform.test.ts",
+    }) |non_match| try std.testing.expect(!isNativeReplCorpusFile(non_match));
+
+    const source = try Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        "packages/runtime/test/test/" ++ path,
+        std.testing.allocator,
+        .limited(1024 * 1024),
+    );
+    defer std.testing.allocator.free(source);
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, path);
+    defer std.testing.allocator.free(rewritten);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "keeps multi-byte UTF-8 characters typed into the line editor") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Bun REPL subprocess and terminal integration") == null);
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    var summary = try runFile(
+        threaded.io(),
+        std.testing.allocator,
+        "packages/runtime/test/test",
+        path,
+    );
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 117 or summary.todo != 0) {
+        std.debug.print(
+            "native Bun REPL corpus mismatch: passed={} todo={} failed={} unsupported={} message={s}\n",
+            .{ summary.passed, summary.todo, summary.failed, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 117), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+    try std.testing.expectEqual(@as(usize, 0), summary.allowed_empty_files);
 }
 
 test "native HTTP proxy corpus routing covers the exact local integration file" {

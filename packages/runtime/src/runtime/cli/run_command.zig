@@ -1798,6 +1798,11 @@ pub const RunCommand = struct {
                 }
                 unrunnable = .{ .path = path.text, .loader = loader };
             }
+        } else if (strings.hasSuffixComptime(target_name, ".html") and strings.containsChar(target_name, '*')) {
+            // HTML entry points accept glob patterns. Resolution deliberately
+            // fails for the pattern itself; the HTML bundler expands it while
+            // constructing the server routes.
+            return false;
         }
         var original_path: string = "";
         try configurePathForRun(ctx, root, &bundle, &original_path, root.abs_path, ctx.debug.run_in_bun);

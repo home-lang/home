@@ -36,6 +36,15 @@ pub const ByteList = struct {
     ptr: [*]u8,
     len: u32,
     cap: u32,
+
+    pub fn slice(this: ByteList) []u8 {
+        return this.ptr[0..this.len];
+    }
+
+    pub fn deinit(this: *ByteList, allocator: std.mem.Allocator) void {
+        allocator.free(this.ptr[0..this.cap]);
+        this.* = .{ .ptr = undefined, .len = 0, .cap = 0 };
+    }
 };
 
 pub fn decode(destination: []u8, source: []const u8) DecodeResult {

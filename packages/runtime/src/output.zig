@@ -448,6 +448,14 @@ pub fn isStdinTTY() bool {
     return stdin_is_tty;
 }
 
+pub fn isStdoutTTY() bool {
+    return stdout_descriptor_type == .terminal;
+}
+
+pub fn isStderrTTY() bool {
+    return stderr_descriptor_type == .terminal;
+}
+
 pub var is_verbose: bool = false;
 
 pub fn isVerbose() bool {

@@ -120,6 +120,12 @@ const Key = union(enum) {
     // Regular printable character
     char: u8,
 
+    // A complete multi-byte UTF-8 sequence. Only bytes[0..len] are valid.
+    text: struct {
+        bytes: [4]u8,
+        len: u3,
+    },
+
     // Unknown/unhandled
     unknown,
 
@@ -229,11 +235,16 @@ const History = struct {
             content.append('\n') catch return;
         }
 
-        const file = switch (bun.sys.openA(path, bun.O.WRONLY | bun.O.CREAT | bun.O.TRUNC, 0o644)) {
+        const file = switch (bun.sys.openA(path, bun.O.WRONLY | bun.O.CREAT | bun.O.TRUNC, 0o600)) {
             .result => |fd| bun.sys.File{ .handle = fd },
             .err => return,
         };
         defer file.close();
+        if (Environment.isPosix) {
+            // Existing history files keep their old mode across O_TRUNC, so
+            // tighten them explicitly as well as creating new files as 0600.
+            _ = bun.sys.fchmod(file.handle, 0o600);
+        }
         switch (file.writeAll(content.items)) {
             .result => {},
             .err => return,
@@ -362,16 +373,33 @@ const LineEditor = struct {
         self.cursor += slice.len;
     }
 
+    fn prevBoundary(self: *const LineEditor, pos: usize) usize {
+        var i = pos;
+        while (i > 0) {
+            i -= 1;
+            if (self.buffer.items[i] & 0xc0 != 0x80) break;
+        }
+        return i;
+    }
+
+    fn nextBoundary(self: *const LineEditor, pos: usize) usize {
+        if (pos >= self.buffer.items.len) return self.buffer.items.len;
+        const step: usize = @max(@as(usize, strings.wtf8ByteSequenceLength(self.buffer.items[pos])), 1);
+        return @min(pos + step, self.buffer.items.len);
+    }
+
     pub fn deleteChar(self: *LineEditor) void {
         if (self.cursor < self.buffer.items.len) {
-            _ = self.buffer.orderedRemove(self.cursor);
+            const end = self.nextBoundary(self.cursor);
+            self.buffer.replaceRange(self.cursor, end - self.cursor, &.{}) catch unreachable;
         }
     }
 
     pub fn backspace(self: *LineEditor) void {
         if (self.cursor > 0) {
-            self.cursor -= 1;
-            _ = self.buffer.orderedRemove(self.cursor);
+            const start = self.prevBoundary(self.cursor);
+            self.buffer.replaceRange(start, self.cursor - start, &.{}) catch unreachable;
+            self.cursor = start;
         }
     }
 
@@ -419,13 +447,13 @@ const LineEditor = struct {
 
     pub fn moveLeft(self: *LineEditor) void {
         if (self.cursor > 0) {
-            self.cursor -= 1;
+            self.cursor = self.prevBoundary(self.cursor);
         }
     }
 
     pub fn moveRight(self: *LineEditor) void {
         if (self.cursor < self.buffer.items.len) {
-            self.cursor += 1;
+            self.cursor = self.nextBoundary(self.cursor);
         }
     }
 
@@ -464,16 +492,22 @@ const LineEditor = struct {
     }
 
     pub fn swap(self: *LineEditor) void {
-        if (self.cursor > 0 and self.cursor < self.buffer.items.len) {
-            const temp = self.buffer.items[self.cursor - 1];
-            self.buffer.items[self.cursor - 1] = self.buffer.items[self.cursor];
-            self.buffer.items[self.cursor] = temp;
-            self.cursor += 1;
-        } else if (self.cursor > 1 and self.cursor == self.buffer.items.len) {
-            const temp = self.buffer.items[self.cursor - 2];
-            self.buffer.items[self.cursor - 2] = self.buffer.items[self.cursor - 1];
-            self.buffer.items[self.cursor - 1] = temp;
-        }
+        const bounds = if (self.cursor > 0 and self.cursor < self.buffer.items.len)
+            .{ self.prevBoundary(self.cursor), self.cursor, self.nextBoundary(self.cursor) }
+        else if (self.cursor == self.buffer.items.len) blk: {
+            const mid = self.prevBoundary(self.cursor);
+            if (mid == 0) return;
+            break :blk .{ self.prevBoundary(mid), mid, self.cursor };
+        } else return;
+
+        const left_start, const mid, const right_end = bounds;
+        const left_len = mid - left_start;
+        const right_len = right_end - mid;
+        var left: [4]u8 = undefined;
+        @memcpy(left[0..left_len], self.buffer.items[left_start..mid]);
+        std.mem.copyForwards(u8, self.buffer.items[left_start .. left_start + right_len], self.buffer.items[mid..right_end]);
+        @memcpy(self.buffer.items[left_start + right_len .. right_end], left[0..left_len]);
+        self.cursor = right_end;
     }
 
     pub fn getLine(self: *const LineEditor) []const u8 {
@@ -683,7 +717,7 @@ terminal_height: u16 = 24,
 ctrl_c_pressed: bool = false,
 
 // Buffered stdin
-stdin_buf: [256]u8 = .{0}**256,
+stdin_buf: [256]u8 = @splat(0),
 stdin_buf_start: usize = 0,
 stdin_buf_end: usize = 0,
 
@@ -746,10 +780,11 @@ fn setupTerminal(self: *Repl) void {
     // Check for NO_COLOR
     self.use_colors = !bun.env_var.NO_COLOR.get();
 
-    // Get terminal size
-    if (Output.terminal_size.col > 0) {
-        self.terminal_width = Output.terminal_size.col;
-        self.terminal_height = Output.terminal_size.row;
+    // Read the live terminal dimensions. Home's output facade tracks whether
+    // stdout is a TTY, while the native TTY core owns the ioctl-sized window.
+    if (bun.tty.getWindowSize(1)) |size| {
+        self.terminal_width = size.columns;
+        self.terminal_height = size.rows;
     }
 
     // Enable raw mode
@@ -775,10 +810,12 @@ fn restoreTerminal(self: *Repl) void {
 }
 
 /// Global pointer for signal handler to access the VM
-var sigint_vm: ?*jsc.VM = null;
+var sigint_vm = std.atomic.Value(?*jsc.VM).init(null);
 
-fn sigintHandler(_: c_int) callconv(.c) void {
-    if (sigint_vm) |vm| {
+const SignalHandlerArg = if (Environment.isAndroid) c_int else std.posix.SIG;
+
+fn sigintHandler(_: SignalHandlerArg) callconv(.c) void {
+    if (sigint_vm.load(.acquire)) |vm| {
         vm.setExecutionForbidden(true);
     }
 }
@@ -786,7 +823,7 @@ fn sigintHandler(_: c_int) callconv(.c) void {
 /// Temporarily enable SIGINT delivery during blocking promise waits
 fn enableSignalsDuringWait(self: *Repl) void {
     if (self.vm) |vm| {
-        sigint_vm = vm.jsc_vm;
+        sigint_vm.store(vm.jsc_vm, .release);
     }
 
     if (Environment.isPosix) {
@@ -799,7 +836,7 @@ fn enableSignalsDuringWait(self: *Repl) void {
             .mask = bun.sys.sigemptyset(),
             .flags = 0,
         };
-        bun.sys.sigaction(std.posix.SIG.INT, &act, null);
+        bun.sys.sigaction(@intCast(@backingInt(std.posix.SIG.INT)), &act, null);
     }
     // On Windows, ENABLE_PROCESSED_INPUT is already set so Ctrl+C works
 }
@@ -807,7 +844,7 @@ fn enableSignalsDuringWait(self: *Repl) void {
 /// Restore raw terminal mode after promise wait
 fn disableSignalsDuringWait(self: *Repl) void {
     _ = self;
-    sigint_vm = null;
+    sigint_vm.store(null, .release);
 
     if (Environment.isPosix) {
         // Back to raw mode
@@ -819,7 +856,7 @@ fn disableSignalsDuringWait(self: *Repl) void {
             .mask = bun.sys.sigemptyset(),
             .flags = 0,
         };
-        bun.sys.sigaction(std.posix.SIG.INT, &act, null);
+        bun.sys.sigaction(@intCast(@backingInt(std.posix.SIG.INT)), &act, null);
     }
 }
 
@@ -922,6 +959,25 @@ fn readKey(self: *Repl) ?Key {
         return .escape;
     }
 
+    // Preserve non-ASCII input as complete, validated UTF-8 codepoints. Invalid
+    // sequences are discarded without consuming the next independent key.
+    const sequence_len = strings.utf8ByteSequenceLength(byte);
+    if (sequence_len > 1) {
+        var bytes: [4]u8 = @splat(0);
+        bytes[0] = byte;
+        var index: usize = 1;
+        while (index < sequence_len) : (index += 1) {
+            const continuation = self.readByte() orelse return .unknown;
+            if (continuation & 0xc0 != 0x80) {
+                self.stdin_buf_start -= 1;
+                return .unknown;
+            }
+            bytes[index] = continuation;
+        }
+        if (!strings.isValidUTF8(bytes[0..sequence_len])) return .unknown;
+        return .{ .text = .{ .bytes = bytes, .len = sequence_len } };
+    }
+
     return Key.fromByte(byte);
 }
 
@@ -975,7 +1031,8 @@ fn refreshLine(self: *Repl) void {
     }
 
     // Position cursor
-    const cursor_pos = prompt_len + self.line_editor.cursor;
+    const cursor_column = strings.visible.width.exclude_ansi_colors.utf8(line[0..self.line_editor.cursor]);
+    const cursor_pos = prompt_len + cursor_column;
     if (cursor_pos < self.terminal_width) {
         self.write("\r");
         if (cursor_pos > 0) {
@@ -1786,6 +1843,10 @@ pub fn runWithVM(self: *Repl, vm: ?*jsc.VirtualMachine) !void {
             },
             .char => |c| {
                 self.line_editor.insert(c) catch {};
+                self.refreshLine();
+            },
+            .text => |text| {
+                self.line_editor.insertSlice(text.bytes[0..text.len]) catch {};
                 self.refreshLine();
             },
             else => {},

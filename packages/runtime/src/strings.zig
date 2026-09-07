@@ -8,6 +8,7 @@
 const std = @import("std");
 
 pub const percentEncodeWrite = @import("string/immutable.zig").percentEncodeWrite;
+pub const ANSIIterator = @import("string/immutable.zig").ANSIIterator;
 
 pub fn indexOfAnyT(comptime T: type, haystack: []const T, needles: []const T) ?usize {
     for (haystack, 0..) |value, offset| {

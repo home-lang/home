@@ -2579,6 +2579,7 @@ pub const cli = struct {
     pub const which_npm_client = @import("cli/which_npm_client.zig");
     pub const yarn_commands = @import("cli/list-of-yarn-commands.zig");
     pub const RunCommand = @import("runtime/cli/run_command.zig").RunCommand;
+    pub const ReplCommand = @import("runtime/cli/repl_command.zig").ReplCommand;
     pub const BunxCommand = @import("runtime/cli/bunx_command.zig").BunxCommand;
     pub const AddCommand = @import("runtime/cli/add_command.zig").AddCommand;
     pub const BuildCommand = @import("runtime/cli/build_command.zig").BuildCommand;
