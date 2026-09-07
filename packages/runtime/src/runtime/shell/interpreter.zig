@@ -1772,14 +1772,18 @@ pub fn ShellTask(
 
         pub fn onFinish(this: *@This()) void {
             debug("onFinish", .{});
-            if (this.event_loop == .js) {
+            // The completion callback owns the surrounding context and can
+            // destroy it as soon as it is enqueued. Do not read `this` after
+            // publishing the completion to another thread.
+            const event_loop = this.event_loop;
+            if (event_loop == .js) {
                 const ctx: *Ctx = @fieldParentPtr("task", this);
-                this.event_loop.js.enqueueTaskConcurrent(this.concurrent_task.js.from(ctx, .manual_deinit));
+                event_loop.js.enqueueTaskConcurrent(this.concurrent_task.js.from(ctx, .manual_deinit));
             } else {
                 const ctx = this;
-                this.event_loop.mini.enqueueTaskConcurrent(this.concurrent_task.mini.from(ctx, "runFromMainThreadMini"));
+                event_loop.mini.enqueueTaskConcurrent(this.concurrent_task.mini.from(ctx, "runFromMainThreadMini"));
             }
-            this.event_loop.completeNativeWorkPoolJob();
+            event_loop.completeNativeWorkPoolJob();
         }
 
         pub fn runFromThreadPool(task: *WorkPoolTask) void {

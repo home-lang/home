@@ -2,7 +2,7 @@
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
 //
 // Rewritten imports: `@import("bun")` → `@import("home")`.
-// Three upstream chunks are intentionally omitted from this leaf:
+// Two upstream chunks are intentionally omitted from this leaf:
 //
 //   1. `pub const Features = struct { ... }` — the `builtin_modules`
 //      field is `std.enums.EnumSet(bun.jsc.ModuleLoader.HardcodedModule)`
@@ -13,17 +13,15 @@
 //   2. `packed_features_list`, `PackedFeatures`, `packedFeatures()` —
 //      derived from `Features`; parks alongside.
 //
-//   3. `pub const GenerateHeader` — calls `bun.c.uname`, `bun.Semver`,
-//      and `analytics.Platform.version` slicing through `bun.sliceTo`.
-//      Re-attaches with `home_rt.Semver` + a `home_rt.c.uname` shim.
-//
 // What's preserved is the analytics gate (`isEnabled`, `enabled`,
-// `is_ci`), the `EventName` enum, and `validateFeatureName` — exactly
-// the surface `crash_handler.report` and the (future) bunfig parser
-// consume on the JSC-free side.
+// `is_ci`), the `EventName` enum, `validateFeatureName`, and Bun's platform
+// detector used by `/bun:info` and kernel feature gates.
 
 const std = @import("std");
 const home_rt = @import("home");
+const analytics = @import("schema.zig").analytics;
+const Environment = home_rt.Environment;
+const Semver = home_rt.Semver;
 
 const assert = home_rt.assert;
 
@@ -71,6 +69,130 @@ pub const EventName = enum(u8) {
     bundle_start,
     http_start,
     http_build,
+};
+
+const platform_arch = if (Environment.isAarch64) analytics.Architecture.arm else analytics.Architecture.x64;
+
+// TODO: move this code somewhere more appropriate, and remove it from "analytics".
+// This matches Bun's platform metadata and kernel feature detection. `/bun:info`
+// serializes the same schema, including the real host OS version.
+pub const GenerateHeader = struct {
+    pub const GeneratePlatform = struct {
+        var osversion_name: [32]u8 = undefined;
+        var freebsd_os_version: [256]u8 = undefined;
+
+        fn forMac() analytics.Platform {
+            @memset(&osversion_name, 0);
+
+            var platform = analytics.Platform{
+                .os = .macos,
+                .version = &.{},
+                .arch = platform_arch,
+            };
+            var len = osversion_name.len - 1;
+            if (std.c.sysctlbyname("kern.osproductversion", &osversion_name, &len, null, 0) == -1) return platform;
+
+            platform.version = home_rt.sliceTo(&osversion_name, 0);
+            return platform;
+        }
+
+        pub var linux_os_name: if (Environment.isLinux) std.c.utsname else void = undefined;
+        var platform_: analytics.Platform = undefined;
+        pub const Platform = analytics.Platform;
+        var linux_kernel_version: Semver.Version = undefined;
+        var run_once = home_rt.once(struct {
+            fn run() void {
+                if (comptime Environment.isMac) {
+                    platform_ = forMac();
+                } else if (comptime Environment.isLinux) {
+                    platform_ = forLinux();
+
+                    const release = home_rt.sliceTo(&linux_os_name.release, 0);
+                    const sliced_string = Semver.SlicedString.init(release, release);
+                    const result = Semver.Version.parse(sliced_string);
+                    linux_kernel_version = result.version.min();
+                } else if (comptime Environment.isFreeBSD) {
+                    platform_ = forFreeBSD();
+                } else if (Environment.isWindows) {
+                    platform_ = .{
+                        .os = .windows,
+                        .version = &.{},
+                        .arch = platform_arch,
+                    };
+                }
+            }
+        }.run);
+
+        pub fn forOS() analytics.Platform {
+            run_once.call(.{});
+            return platform_;
+        }
+
+        var use_msgx_on_macos_14_or_later: bool = undefined;
+        var detect_use_msgx_once = home_rt.once(detectUseMsgXOnMacOS14OrLater);
+
+        fn detectUseMsgXOnMacOS14OrLater() void {
+            const version = Semver.Version.parseUTF8(forOS().version);
+            use_msgx_on_macos_14_or_later = version.valid and version.version.max().major >= 14;
+        }
+
+        pub export fn Bun__doesMacOSVersionSupportSendRecvMsgX() i32 {
+            if (comptime !Environment.isMac) return 0;
+
+            detect_use_msgx_once.call(.{});
+            return @intFromBool(use_msgx_on_macos_14_or_later);
+        }
+
+        pub fn kernelVersion() Semver.Version {
+            if (comptime !Environment.isLinux) {
+                @compileError("This function is only implemented on Linux");
+            }
+            _ = forOS();
+            return linux_kernel_version;
+        }
+
+        export fn Bun__isEpollPwait2SupportedOnLinuxKernel() i32 {
+            if (comptime !Environment.isLinux) return 0;
+
+            const min_epoll_pwait2 = Semver.Version{
+                .major = 5,
+                .minor = 11,
+                .patch = 0,
+            };
+
+            return switch (kernelVersion().order(min_epoll_pwait2, "", "")) {
+                .gt, .eq => 1,
+                .lt => 0,
+            };
+        }
+
+        fn forLinux() analytics.Platform {
+            linux_os_name = std.mem.zeroes(@TypeOf(linux_os_name));
+            _ = std.c.uname(&linux_os_name);
+
+            const release = home_rt.sliceTo(&linux_os_name.release, 0);
+            if (comptime Environment.isAndroid) {
+                return .{ .os = .android, .version = release, .arch = platform_arch };
+            }
+            if (std.mem.indexOf(u8, release, "microsoft") != null) {
+                return .{ .os = .wsl, .version = release, .arch = platform_arch };
+            }
+            return .{ .os = .linux, .version = release, .arch = platform_arch };
+        }
+
+        fn forFreeBSD() analytics.Platform {
+            // std.posix.uname is backed by the target libc and avoids depending
+            // on Bun's generated translate-c header bundle.
+            const os_name = std.posix.uname();
+            const release = home_rt.sliceTo(&os_name.release, 0);
+            @memcpy(freebsd_os_version[0..release.len], release);
+            return .{
+                .os = .freebsd,
+                .version = freebsd_os_version[0..release.len],
+                .arch = platform_arch,
+            };
+        }
+    };
 };
 
 // ---- Inline tests ------------------------------------------------------

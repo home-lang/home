@@ -923,12 +923,15 @@ pub const ShellGlobTask = struct {
 
     pub fn onFinish(this: *This) void {
         debug("onFinish", .{});
-        if (this.event_loop == .js) {
-            this.event_loop.js.enqueueTaskConcurrent(this.concurrent_task.js.from(this, .manual_deinit));
+        // Publishing transfers ownership to the event-loop thread, which may
+        // immediately free `this`; retain the handle by value first.
+        const event_loop = this.event_loop;
+        if (event_loop == .js) {
+            event_loop.js.enqueueTaskConcurrent(this.concurrent_task.js.from(this, .manual_deinit));
         } else {
-            this.event_loop.mini.enqueueTaskConcurrent(this.concurrent_task.mini.from(this, "runFromMainThreadMini"));
+            event_loop.mini.enqueueTaskConcurrent(this.concurrent_task.mini.from(this, "runFromMainThreadMini"));
         }
-        this.event_loop.completeNativeWorkPoolJob();
+        event_loop.completeNativeWorkPoolJob();
     }
 
     pub fn cancelForShutdown(this: *This) void {

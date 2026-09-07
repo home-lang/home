@@ -5,9 +5,6 @@ pub export var Bun__reported_memory_size: usize = 0;
 const Environment = @import("environment.zig");
 
 fn noop() callconv(.c) void {}
-fn noopInt() callconv(.c) i32 {
-    return 0;
-}
 fn noopSize() callconv(.c) usize {
     return 0;
 }
@@ -42,7 +39,6 @@ fn abortingPanic(message: [*]u8, message_len: usize) callconv(.c) noreturn {
 
 comptime {
     @export(&abortingPanic, .{ .name = "Bun__crashHandler" });
-    @export(&noopInt, .{ .name = "Bun__doesMacOSVersionSupportSendRecvMsgX" });
     // NetworkSink__memoryCost now has its real export (streams.zig NetworkSink,
     // force-referenced once the S3 write path un-stub links the real uploader).
     @export(&noopBool, .{ .name = "Bun__CryptoHasherExtern__isXof" });

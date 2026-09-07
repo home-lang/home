@@ -20,17 +20,9 @@ pub const package_json_version_with_revision = @import("bun_core/Global.zig").pa
 /// lines), so the exact version is irrelevant — only that the line is present.
 pub const unhandled_error_bun_version_string = @import("bun_core/Global.zig").unhandled_error_bun_version_string;
 
-/// `Bun.Global.BunInfo` — used by the server's `/bun:info` route generator.
-/// Full version embeds analytics platform info (not ported); Home returns a
-/// minimal object so the route compiles. The endpoint isn't exercised by basic
-/// Bun.serve({fetch}).
-pub const BunInfo = struct {
-    pub fn generate(comptime Bundler: type, _: Bundler, allocator: std.mem.Allocator) !@import("home").ast.Expr {
-        _ = allocator;
-        const home = @import("home");
-        return home.ast.Expr.init(home.ast.E.Object, .{}, home.logger.Loc.Empty);
-    }
-};
+/// `Bun.Global.BunInfo` — the complete `/bun:info` payload, including Bun's
+/// version and host platform metadata.
+pub const BunInfo = @import("bun_core/Global.zig").BunInfo;
 // Pin-faithful UA ("Bun/<version>", bun_core/Global.zig): the wire
 // User-Agent must equal navigator.userAgent ("Bun/" + version) — Bun's
 // fetch tests assert the equality, and the "Home/0.0.0" rebrand broke

@@ -1,3 +1,5 @@
+const std = @import("std");
+
 pub const us_socket_t = @import("../uws_sys/us_socket_t.zig").us_socket_t;
 pub const us_socket_stream_buffer_t = @import("../uws_sys/us_socket_t.zig").us_socket_stream_buffer_t;
 pub const SocketTLS = @import("../uws_sys/socket.zig").SocketTLS;
@@ -126,6 +128,13 @@ pub const SocketAddress = struct {
     ip: []const u8,
     port: i32,
     is_ipv6: bool,
+
+    pub fn isLoopback(this: SocketAddress) bool {
+        if (std.mem.startsWith(u8, this.ip, "127.")) return true;
+        return std.mem.startsWith(u8, this.ip, "::ffff:127.") or
+            std.mem.eql(u8, this.ip, "::1") or
+            std.mem.eql(u8, this.ip, "0:0:0:0:0:0:0:1");
+    }
 };
 
 pub const Opcode = enum(i32) {

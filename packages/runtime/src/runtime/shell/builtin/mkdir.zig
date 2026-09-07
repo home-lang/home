@@ -291,12 +291,15 @@ pub const ShellMkdirTask = struct {
             }
         }
 
-        if (this.event_loop == .js) {
-            this.event_loop.js.enqueueTaskConcurrent(this.concurrent_task.js.from(this, .manual_deinit));
+        // The queued completion can run and destroy `this` before enqueue
+        // returns. Preserve the loop handle before publishing the completion.
+        const event_loop = this.event_loop;
+        if (event_loop == .js) {
+            event_loop.js.enqueueTaskConcurrent(this.concurrent_task.js.from(this, .manual_deinit));
         } else {
-            this.event_loop.mini.enqueueTaskConcurrent(this.concurrent_task.mini.from(this, "runFromMainThreadMini"));
+            event_loop.mini.enqueueTaskConcurrent(this.concurrent_task.mini.from(this, "runFromMainThreadMini"));
         }
-        this.event_loop.completeNativeWorkPoolJob();
+        event_loop.completeNativeWorkPoolJob();
     }
 
     const MkdirVerboseVTable = struct {

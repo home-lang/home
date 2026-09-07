@@ -268,12 +268,16 @@ pub const ShellTouchTask = struct {
             this.err = err.withPath(filepath).toShellSystemError();
         }
 
-        if (this.event_loop == .js) {
-            this.event_loop.js.enqueueTaskConcurrent(this.concurrent_task.js.from(this, .manual_deinit));
+        // The queued completion owns and may immediately destroy `this` on the
+        // event-loop thread. Keep the handle by value before publishing it so
+        // releasing the VM shutdown admission never dereferences freed task memory.
+        const event_loop = this.event_loop;
+        if (event_loop == .js) {
+            event_loop.js.enqueueTaskConcurrent(this.concurrent_task.js.from(this, .manual_deinit));
         } else {
-            this.event_loop.mini.enqueueTaskConcurrent(this.concurrent_task.mini.from(this, "runFromMainThreadMini"));
+            event_loop.mini.enqueueTaskConcurrent(this.concurrent_task.mini.from(this, "runFromMainThreadMini"));
         }
-        this.event_loop.completeNativeWorkPoolJob();
+        event_loop.completeNativeWorkPoolJob();
     }
 };
 

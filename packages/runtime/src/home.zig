@@ -6449,14 +6449,14 @@ pub const css = struct {
 };
 
 // ---- src/analytics/ ----------------------------------------------------
-// Sixth-wave port batch (2026-05-18). The pure-std schema codec plus
-// the JSC-free analytics gate. `Features` / `PackedFeatures` /
-// `GenerateHeader` stay parked on bun.jsc.ModuleLoader + bun.Semver +
-// bun.c.uname.
+// Sixth-wave port batch (2026-05-18). The pure-std schema codec plus the
+// JSC-free analytics gate. Platform generation is restored for `/bun:info`
+// and kernel feature detection; packed feature telemetry remains separate.
 pub const analytics = struct {
     pub const schema = @import("analytics/schema.zig");
     pub const gate = @import("analytics/analytics.zig");
     pub const Features = @import("analytics/Features.zig");
+    pub const GenerateHeader = gate.GenerateHeader;
 };
 
 // ---- src/*_sys/ --------------------------------------------------------

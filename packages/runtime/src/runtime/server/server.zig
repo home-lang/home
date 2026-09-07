@@ -2007,6 +2007,16 @@ pub fn NewServer(protocol_enum: enum { http, https }, development_kind: enum { d
 
         pub fn onBunInfoRequest(this: *ThisServer, req: *uws.Request, resp: *App.Response) void {
             jsc.markBinding(@src());
+            if (this.config.address != .unix) {
+                const address = resp.getRemoteSocketInfo() orelse {
+                    req.setYield(true);
+                    return;
+                };
+                if (!address.isLoopback()) {
+                    req.setYield(true);
+                    return;
+                }
+            }
             this.pending_requests += 1;
             defer this.pending_requests -= 1;
             req.setYield(false);
@@ -2655,20 +2665,7 @@ pub fn NewServer(protocol_enum: enum { http, https }, development_kind: enum { d
                 if (this.dev_server == null)
                     break :brk false;
 
-                if (resp.getRemoteSocketInfo()) |*address| {
-                    // IPv4 loopback addresses
-                    if (strings.startsWith(address.ip, "127.")) {
-                        break :brk true;
-                    }
-
-                    // IPv6 loopback addresses
-                    if (strings.startsWith(address.ip, "::ffff:127.") or
-                        strings.startsWith(address.ip, "::1") or
-                        strings.eqlComptime(address.ip, "0:0:0:0:0:0:0:1"))
-                    {
-                        break :brk true;
-                    }
-                }
+                if (resp.getRemoteSocketInfo()) |address| if (address.isLoopback()) break :brk true;
 
                 break :brk false;
             };
