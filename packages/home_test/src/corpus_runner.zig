@@ -99940,9 +99940,9 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-server.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun.serve native server socket and abort integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/ffi/cc.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "bun:ffi TinyCC cc integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/ffi/ffi.test.js"))
-        try rewriteNativeTodoCorpus(allocator, "bun:ffi native integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/glob/leak.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/glob/path-length.test.ts"))
@@ -101536,6 +101536,63 @@ test "native addon corpus routing excludes helpers and uses real test files" {
         "js/bun/ffi-other/cc.test.ts",
         "napi-other/napi.test.ts",
     }) |relative| try std.testing.expect(!isNativeAddonTestCorpusFile(relative));
+}
+
+test "native Bun FFI corpus executes unchanged without TODO rewrites" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const cases = [_]struct {
+        path: []const u8,
+        marker: []const u8,
+        removed_label: []const u8,
+        passed: usize,
+        todo: usize,
+    }{
+        .{
+            .path = "js/bun/ffi/cc.test.ts",
+            .marker = "threadsafe JSCallback invoked from a foreign thread",
+            .removed_label = "bun:ffi TinyCC cc integration",
+            .passed = 8,
+            .todo = 10,
+        },
+        .{
+            .path = "js/bun/ffi/ffi.test.js",
+            .marker = "can open more than 63 symbols",
+            .removed_label = "bun:ffi native integration",
+            .passed = 9,
+            .todo = 1,
+        },
+    };
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    for (cases) |case| {
+        const source = try Io.Dir.cwd().readFileAlloc(std.testing.io, "packages/runtime/test/test/" ++ case.path, std.testing.allocator, .limited(1024 * 1024));
+        defer std.testing.allocator.free(source);
+        const rewritten = try rewriteBunTestImport(std.testing.allocator, source, case.path);
+        defer std.testing.allocator.free(rewritten);
+        try std.testing.expect(std.mem.indexOf(u8, rewritten, case.marker) != null);
+        try std.testing.expect(std.mem.indexOf(u8, rewritten, case.removed_label) == null);
+
+        var summary = try runFile(
+            threaded.io(),
+            std.testing.allocator,
+            "packages/runtime/test/test",
+            case.path,
+        );
+        defer summary.deinit(std.testing.allocator);
+        if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != case.todo) {
+            std.debug.print(
+                "native Bun FFI corpus mismatch for {s}: passed={} todo={} failed={} unsupported={} message={s}\n",
+                .{ case.path, summary.passed, summary.todo, summary.failed, summary.unsupported, summary.first_failure_message },
+            );
+        }
+        try std.testing.expectEqual(@as(usize, 1), summary.files);
+        try std.testing.expectEqual(case.passed, summary.passed);
+        try std.testing.expectEqual(case.todo, summary.todo);
+        try std.testing.expectEqual(@as(usize, 0), summary.failed);
+        try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+        try std.testing.expectEqual(@as(usize, 0), summary.allowed_empty_files);
+    }
 }
 
 test "native terminal corpus routing covers the exact PTY matrix" {
