@@ -514,8 +514,18 @@ constraints without admitting opaque imported graphs wholesale:
 | Unique path/line/column/code identities | 369 | **345** | **24 removed; 0 added** |
 | Focused three-engine oracle | false TS7006 / TS2339 | **exact 1× TS2322 parity** | no TS7006/TS2339/TS2344 |
 
+The imported Promise-union audit then admits losslessly serialized
+parameterized built-ins, narrows the false branch of terminating Promise
+guards, and validates actual multi-statement return unions:
+
+| [Zod 4.5.2 imported Promise-union audit](docs/docs/TS_PERFORMANCE.md#imported-promise-union-returns-and-terminating-guards) | #673 main | #687 main | Change |
+|---|---:|---:|---:|
+| Diagnostics | 350 | **348** | **2 TS7006 removed (0.6%); 0 added** |
+| Unique path/line/column/code identities | 345 | **343** | **2 removed; 0 added** |
+| Focused three-engine oracle | valid | **valid + exact 1× TS2322 control** | no TS7006/TS2339 |
+
 TypeScript 6.0.3 reports zero diagnostics on this graph. Home still reports
-350, so Zod remains outside the cross-compiler timing table until Home also
+348, so Zod remains outside the cross-compiler timing table until Home also
 reaches zero diagnostics.
 
 The latest optimization admissions preserve that contextual snapshot while

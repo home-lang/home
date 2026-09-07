@@ -8685,6 +8685,82 @@ zig build home-tsc -Doptimize=ReleaseFast
 bunx --bun pickier .
 ```
 
+### Imported Promise-union returns and terminating guards (untimed)
+
+Issue [#687](https://github.com/home-lang/home/issues/687), under
+[#548](https://github.com/home-lang/home/issues/548) and
+[#416](https://github.com/home-lang/home/issues/416), fixes the complete
+cross-module path for `T | Promise<T>`. Commit
+[`901c0d0ec`](https://github.com/home-lang/home/commit/901c0d0ec203e51c84a4a914d05976728a4b3bcf)
+admits parameterized built-ins that the Program schema already serializes
+losslessly, recognizes the checker's structural Promise marker when
+subtracting an `instanceof Promise` branch, and compares the inferred return
+union of a multi-statement assigned function instead of rejecting that body
+shape unconditionally.
+
+The fair oracle uses separate owner and consumer modules. The owner exports a
+generic `MaybeAsync<T>` alias, payload and schema interfaces; the consumer
+exercises a direct annotation, a generic contextual function alias, a direct
+exported function return, and a member-assigned implementation with both
+synchronous and Promise returns. The invalid control assigns the exact
+`string` callback element to `number`, proving that silence is not caused by
+`any`:
+
+| Multi-module Promise-union oracle | TypeScript 6.0.3 | Native TypeScript preview | ReleaseSafe Home |
+|---|---:|---:|---:|
+| Valid diagnostics | 0 | 0 | **0** |
+| Post-guard payload members | exact | exact | **exact** |
+| Array callback parameter | `string` | `string` | **`string`** |
+| Mixed sync/Promise implementation | accepted | accepted | **accepted** |
+| Complete invalid-control multiset | 1× TS2322 | 1× TS2322 | **1× TS2322** |
+| False TS7006 / TS2339 | none | none | **none** |
+
+The unchanged pinned 106-file Zod 4.5.2 graph supplies the production
+admission gate against the exact post-#673 parent:
+
+| Zod 4.5.2 imported Promise-union audit | #673 `4d5d3d5a9` | #687 `901c0d0ec` | Change |
+|---|---:|---:|---:|
+| All diagnostics | 350 | **348** | **2 removed (0.6%); 0 added** |
+| Unique path/line/column/code identities | 345 | **343** | **2 removed; 0 added** |
+| Removed identities | — | 2 TS7006 | `core/schemas.ts:3167:45`, `3256:45` |
+
+Two sequential ReleaseSafe candidate runs have empty stdout and byte-identical
+diagnostic payloads after excluding the three timing lines. Their SHA-256 is
+`11fa7bc0af25a25aa821eae7a0b26704a821f72b0bdca5adbd350a7f19deec13`;
+wall times were 61.80 and 58.21 seconds. The remaining distribution is
+198 TS2345, 44 TS2339, 37 TS7006, 16 TS1361, 12 TS2322, 8 TS2304,
+4 TS7031, 4 TS2554, 4 TS2430, 3 TS2488, 3 TS2411, 2 TS4110,
+2 TS2749, 2 TS2741, 2 TS2698, 2 TS2552, 2 TS2367, 2 TS18048,
+and 1 TS2571.
+
+The benchmark also rejected two broader approaches. Consumer-side resolved
+type provenance did not change the imported oracle. Projecting a whole opaque
+generic constraint on demand produced 356 diagnostics and 351 unique
+identities: it removed six old identities but added twelve unrelated ones, so
+none of that code was retained. Four `core/parse.ts` TS7006 sites remain after
+the Promise path is exact because their nested
+`ParsePayload.issues: errors.$ZodRawIssue[]` element type is still opaque; that
+separate qualified-type transfer is tracked in
+[#688](https://github.com/home-lang/home/issues/688).
+
+The complete Program and checker targets pass (205 and 4,365 tests), as do
+ReleaseSafe and ReleaseFast builds, `zig fmt --check`, and `git diff --check`.
+Repository-wide Pickier remains at the unchanged baseline of 22,427 findings
+(11,834 errors and 10,593 warnings). Full evidence is retained on
+[#687](https://github.com/home-lang/home/issues/687#issuecomment-5570569763).
+Zod still differs from both TypeScript engines, so this audit makes no
+cross-compiler timing claim.
+
+```sh
+zig build test -Dfilter=ts_program
+zig build test -Dfilter=ts_checker
+zig build -Doptimize=ReleaseSafe
+zig build -Doptimize=ReleaseFast
+./zig-out/bin/home-tsc --project=/path/to/promise-union/tsconfig.json --pretty=false
+./zig-out/bin/home-tsc --project=/path/to/zod-4.5.2/tsconfig.benchmark.json --pretty=false
+bunx --bun pickier .
+```
+
 ### Typed cross-file global ownership and cyclic provenance (untimed)
 
 Issue [#480](https://github.com/home-lang/home/issues/480), under
