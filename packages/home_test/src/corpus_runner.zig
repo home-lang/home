@@ -99932,9 +99932,9 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-serve-html-entry.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun HTML entry subprocess server")
     else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-serve-html-manifest.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun HTML manifest static server")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-serve-html.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun HTML static server fixture")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-serve-static.test.ts"))
         try rewriteBunServeStaticCorpus(allocator, module_source)
     else if (std.mem.eql(u8, relative_path, "js/bun/http/bun-server.test.ts"))
@@ -100688,6 +100688,11 @@ fn isNativeHttpServerCorpusFile(relative: []const u8) bool {
     return std.mem.eql(u8, relative, "js/bun/http/hspec.test.ts");
 }
 
+fn isNativeHtmlServerCorpusFile(relative: []const u8) bool {
+    return std.mem.eql(u8, relative, "js/bun/http/bun-serve-html-manifest.test.ts") or
+        std.mem.eql(u8, relative, "js/bun/http/bun-serve-html.test.ts");
+}
+
 fn isNativeHttpProxyCorpusFile(relative: []const u8) bool {
     return std.mem.eql(u8, relative, "js/bun/http/proxy.test.js") or
         std.mem.eql(u8, relative, "js/bun/http/proxy.test.ts");
@@ -100865,6 +100870,7 @@ fn isNativeHomeCorpusFile(relative: []const u8) bool {
         isNativeHttpTlsCorpusFile(relative) or
         isNativeHttpPromiseCorpusFile(relative) or
         isNativeHttpServerCorpusFile(relative) or
+        isNativeHtmlServerCorpusFile(relative) or
         isNativeHttpProxyCorpusFile(relative) or
         isNativeBunTestCorpusFile(relative) or
         isNativeBunTestHelperCorpusFile(relative) or
@@ -100907,6 +100913,7 @@ fn nativeCorpusMode(relative: []const u8) NativeCorpusMode {
         isNativeHttpTlsCorpusFile(relative) or
         isNativeHttpPromiseCorpusFile(relative) or
         isNativeHttpServerCorpusFile(relative) or
+        isNativeHtmlServerCorpusFile(relative) or
         isNativeHttpProxyCorpusFile(relative) or
         isNativeBunTestCorpusFile(relative) or
         isNativePlatformAuditCorpusFile(relative) or
@@ -101685,6 +101692,68 @@ test "native HTTP server corpus routing covers the imported hspec matrix" {
         "js/bun/http/nested/hspec.test.ts",
         "js/bun/https/hspec.test.ts",
     }) |non_match| try std.testing.expect(!isNativeHttpServerCorpusFile(non_match));
+}
+
+test "native Bun HTML server corpus executes manifest and static matrices unchanged" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const cases = [_]struct {
+        path: []const u8,
+        marker: []const u8,
+        removed_label: []const u8,
+        passed: usize,
+    }{
+        .{
+            .path = "js/bun/http/bun-serve-html-manifest.test.ts",
+            .marker = "serves HTML import with manifest",
+            .removed_label = "Bun HTML manifest static server",
+            .passed = 4,
+        },
+        .{
+            .path = "js/bun/http/bun-serve-html.test.ts",
+            .marker = "concurrent requests to multiple routes during plugin load",
+            .removed_label = "Bun HTML static server fixture",
+            .passed = 16,
+        },
+    };
+    inline for (cases) |case| {
+        try std.testing.expect(isNativeHtmlServerCorpusFile(case.path));
+        try std.testing.expect(isNativeHomeCorpusFile(case.path));
+        try std.testing.expectEqual(NativeCorpusMode.test_runner, nativeCorpusMode(case.path));
+    }
+    try std.testing.expect(!isNativeHtmlServerCorpusFile("js/bun/http/bun-serve-html-entry.test.ts"));
+    try std.testing.expect(!isNativeHtmlServerCorpusFile("js/bun/http/bun-serve-html.fixture.ts"));
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    for (cases) |case| {
+        const source = try Io.Dir.cwd().readFileAlloc(std.testing.io, "packages/runtime/test/test/" ++ case.path, std.testing.allocator, .limited(1024 * 1024));
+        defer std.testing.allocator.free(source);
+        const rewritten = try rewriteBunTestImport(std.testing.allocator, source, case.path);
+        defer std.testing.allocator.free(rewritten);
+        try std.testing.expect(std.mem.indexOf(u8, rewritten, case.marker) != null);
+        try std.testing.expect(std.mem.indexOf(u8, rewritten, case.removed_label) == null);
+
+        var summary = try runFile(
+            threaded.io(),
+            std.testing.allocator,
+            "packages/runtime/test/test",
+            case.path,
+        );
+        defer summary.deinit(std.testing.allocator);
+        if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != 0) {
+            std.debug.print(
+                "native Bun HTML server corpus mismatch for {s}: passed={} todo={} failed={} unsupported={} message={s}\n",
+                .{ case.path, summary.passed, summary.todo, summary.failed, summary.unsupported, summary.first_failure_message },
+            );
+        }
+        try std.testing.expectEqual(@as(usize, 1), summary.files);
+        try std.testing.expectEqual(case.passed, summary.passed);
+        try std.testing.expectEqual(@as(usize, 0), summary.todo);
+        try std.testing.expectEqual(@as(usize, 0), summary.failed);
+        try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+        try std.testing.expectEqual(@as(usize, 0), summary.allowed_empty_files);
+    }
 }
 
 test "native HTTP proxy corpus routing covers the exact local integration file" {
