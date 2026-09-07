@@ -2398,6 +2398,14 @@ pub fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, 
             ctxLog("render", .{});
             this.setResponse(response);
 
+            switch (response.statusCode()) {
+                101, 103, 204, 205, 304 => {
+                    this.doRenderBlob();
+                    return;
+                },
+                else => {},
+            }
+
             this.doRender();
         }
 

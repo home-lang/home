@@ -3093,10 +3093,23 @@ pub const jsc = struct {
                 if (try value.get(globalObject, "certFile")) |v| result.cert_file = try MaybeString.fromJS(globalObject, v);
                 if (try value.get(globalObject, "caFile")) |v| result.ca_file = try MaybeString.fromJS(globalObject, v);
                 if (try value.get(globalObject, "ciphers")) |v| result.ciphers = try MaybeString.fromJS(globalObject, v);
-                if (try value.get(globalObject, "lowMemoryMode")) |v| result.low_memory_mode = v.toBoolean();
-                if (try value.get(globalObject, "requestCert")) |v| result.request_cert = v.toBoolean();
+                if (try value.get(globalObject, "lowMemoryMode")) |v| {
+                    if (!v.isUndefinedOrNull()) {
+                        if (!v.isBoolean()) return globalObject.throwInvalidArguments("TLSOptions.lowMemoryMode must be a boolean", .{});
+                        result.low_memory_mode = v.toBoolean();
+                    }
+                }
+                if (try value.get(globalObject, "requestCert")) |v| {
+                    if (!v.isUndefinedOrNull()) {
+                        if (!v.isBoolean()) return globalObject.throwInvalidArguments("TLSOptions.requestCert must be a boolean", .{});
+                        result.request_cert = v.toBoolean();
+                    }
+                }
                 if (try value.get(globalObject, "rejectUnauthorized")) |v| {
-                    if (!v.isUndefinedOrNull()) result.reject_unauthorized = v.toBoolean();
+                    if (!v.isUndefinedOrNull()) {
+                        if (!v.isBoolean()) return globalObject.throwInvalidArguments("TLSOptions.rejectUnauthorized must be a boolean", .{});
+                        result.reject_unauthorized = v.toBoolean();
+                    }
                 }
                 if (try value.get(globalObject, "secureOptions")) |v| {
                     if (v.isNumber()) result.secure_options = v.toInt32();
