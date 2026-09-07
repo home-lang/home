@@ -504,8 +504,18 @@ locale attribution:
 | Zod diagnostics | 374 | **374** | **unchanged; 0 added** |
 | Zod unique identities | 369 | **369** | **unchanged; 0 added** |
 
+The imported homomorphic-union audit then preserves callback context through
+`Pick`/`Exclude`/partial/intersection pipelines and exact nested indexed
+constraints without admitting opaque imported graphs wholesale:
+
+| [Zod 4.5.2 homomorphic-union callback audit](docs/docs/TS_PERFORMANCE.md#imported-homomorphic-union-callback-context) | #672 main | #673 main | Change |
+|---|---:|---:|---:|
+| Diagnostics | 374 | **350** | **24 removed (6.4%); 0 added** |
+| Unique path/line/column/code identities | 369 | **345** | **24 removed; 0 added** |
+| Focused three-engine oracle | false TS7006 / TS2339 | **exact 1× TS2322 parity** | no TS7006/TS2339/TS2344 |
+
 TypeScript 6.0.3 reports zero diagnostics on this graph. Home still reports
-374, so Zod remains outside the cross-compiler timing table until Home also
+350, so Zod remains outside the cross-compiler timing table until Home also
 reaches zero diagnostics.
 
 The latest optimization admissions preserve that contextual snapshot while

@@ -8584,6 +8584,107 @@ zig build home-tsc -Doptimize=ReleaseFast
 bunx --bun pickier .
 ```
 
+### Imported homomorphic union callback context
+
+Issue [#673](https://github.com/home-lang/home/issues/673), under
+[#548](https://github.com/home-lang/home/issues/548) and
+[#416](https://github.com/home-lang/home/issues/416), isolates imported
+callback context lost through a distributive, homomorphic utility pipeline.
+The source callback receives a union transformed by `Pick`, `Exclude`, a
+partial mapped type, an intersection, and `Record<string, unknown>`. Home
+previously retained the callback shell but lost the readable discriminant and
+array member surface, producing false TS7006 and TS2339 diagnostics.
+
+Commit
+[`a730be062`](https://github.com/home-lang/home/commit/a730be062)
+transfers the utility structure rather than recognizing an application or
+identifier. Program schemas now describe `Exclude`, optional-key coverage,
+and open string-index contributions. The checker reconstructs only the
+proven readable surface, narrows imported unions by their discriminant,
+preserves member `Array.isArray` flow, and resolves exact nested indexed
+constraint proofs from their declaration syntax. Unsupported siblings remain
+opaque and never become approximate whole types.
+
+The strict three-module control mirrors the production ownership boundary:
+
+```ts
+type RawIssue<T extends IssueBase> = T extends any
+  ? Flatten<
+      MakePartial<T, "message" | "path"> &
+        { readonly input: unknown } &
+        Record<string, unknown>
+    >
+  : never;
+
+export type ErrorMap<T extends IssueBase = Issue> =
+  (issue: RawIssue<T>) => string | undefined;
+
+export const error: () => ErrorMap = () => issue => {
+  if (issue.code === "invalid_union" &&
+      issue.options &&
+      Array.isArray(issue.options) &&
+      issue.options.length > 0) {
+    return issue.options.map(value => {
+      const exact: Primitive = value;
+      const wrong: never = value;
+      return `${value}`;
+    }).join(" | ");
+  }
+  return undefined;
+};
+```
+
+| Homomorphic-union three-module control | TypeScript 6.0.3 | Native TypeScript preview | ReleaseFast Home |
+|---|---:|---:|---:|
+| Callback `issue` parameter | contextual | contextual | **contextual** |
+| Discriminated `options` member | accepted | accepted | **accepted** |
+| Array callback `value` | `any` | `any` | **`any`** |
+| Complete invalid-control multiset | 1× TS2322 | 1× TS2322 | **1× TS2322** |
+| False TS7006 / TS2339 / TS2344 | none | none | **none** |
+
+The constraint regression separately covers all five imported nested-index
+forms used by Zod: base schema, check, optional check, string-format union,
+and schema/check intersection. This caught and rejected an earlier broad
+intersection implementation that changed nine unrelated diagnostic messages;
+the retained traversal is confined to semantic constraint proofs.
+
+The pinned 106-file Zod 4.5.2 graph provides the production A/B against the
+exact post-#672 parent:
+
+| Zod 4.5.2 homomorphic-union callback audit | #672 `307892be9` | #673 `a730be062` | Change |
+|---|---:|---:|---:|
+| All diagnostics | 374 | **350** | **24 removed (6.4%); 0 added** |
+| Unique path/line/column/code identities | 369 | **345** | **24 removed; 0 added** |
+| Removed identities | — | 11 TS7006, 9 TS2339, 4 TS2345 | **24 total** |
+
+Two sequential ReleaseSafe candidate runs are byte-identical: stdout is empty
+and stderr SHA-256 is
+`62f115f3549509b7a392e0173a3a285b85b1691d81fc672bed435db4d566a2eb`.
+Their wall times were 68.84 and 71.47 seconds. The remaining distribution is
+198 TS2345, 44 TS2339, 39 TS7006, 16 TS1361, 12 TS2322, 8 TS2304,
+4 TS7031, 4 TS2554, 4 TS2430, 3 TS2488, 3 TS2411, 2 TS4110,
+2 TS2749, 2 TS2741, 2 TS2698, 2 TS2552, 2 TS2367, 2 TS18048,
+and 1 TS2571.
+
+The complete Program and checker targets pass, including all 4,364 checker
+tests. ReleaseSafe and ReleaseFast builds, `zig fmt --check`, and
+`git diff --check` pass. The repository-wide Pickier result is unchanged at
+22,427 existing findings (11,834 errors and 10,593 warnings). Evidence is
+retained on
+[#673](https://github.com/home-lang/home/issues/673#issuecomment-5568630029).
+Zod still differs from both TypeScript engines, so this audit makes no
+cross-compiler timing claim.
+
+```sh
+zig build test -Dfilter=ts_program
+zig build test -Dfilter=ts_checker
+zig build home-tsc -Doptimize=ReleaseSafe
+zig build home-tsc -Doptimize=ReleaseFast
+./zig-out/bin/home-tsc --project=/path/to/homomorphic-union/tsconfig.json --pretty=false
+./zig-out/bin/home-tsc --project=/path/to/zod-4.5.2/tsconfig.benchmark.json --pretty=false
+bunx --bun pickier .
+```
+
 ### Typed cross-file global ownership and cyclic provenance (untimed)
 
 Issue [#480](https://github.com/home-lang/home/issues/480), under
