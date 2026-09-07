@@ -26,68 +26,48 @@ resolve_home_bin() {
     [[ -n "$HOME_BIN" ]]
 }
 
-# Resident-set ceiling for a bounded run, in MB, covering the whole process
-# group. Set to 0 to disable.
-#
-# This is not belt-and-braces: macOS honours neither `ulimit -v` nor `ulimit -d`,
-# so without an explicit poller a runaway corpus file has NO memory ceiling at
-# all. Some upstream tests legitimately allocate hundreds of MB (a >512 MB
-# string-decoder buffer, multi-GB leak probes), and a debug build inflates that
-# further, so one bad file can exhaust the machine and take the session with it.
-#
-# 4096 is a TRIAGE default, not a verdict: at least one corpus file legitimately
-# peaks near 4.8 GB. Don't raise this flat on a small machine — vm-corpus-scan.sh
-# re-runs anything that hits the ceiling at a higher one, so the cheap default
-# stays cheap and a real memory need is still observed rather than misfiled.
-: "${HOME_TEST_MAX_RSS_MB:=4096}"
+# Memory ceiling for a bounded run, in MB, covering the run's whole process
+# tree. This is phys_footprint (the kernel ledger's dirty-memory total), NOT
+# resident-set size -- see the long note at the top of scripts/run-bounded.pl
+# for why RSS is the wrong quantity on macOS and how it took the host down
+# twice. HOME_TEST_MAX_RSS_MB is still honoured as the old spelling.
+# Deliberately NOT defaulted or exported here. The supervisor owns the default,
+# so a caller that sets the ceiling per-run (the corpus scanner's escalated
+# re-run, say) is not shadowed by a value this file exported at source time --
+# which would have silently discarded every per-run ceiling.
 
-# Run a command with a wall-clock bound and a memory bound, using timeout's exit
-# conventions: 124 when the time bound is hit, 128+signal when it dies on one,
-# else its own code. 125 is added for "exceeded the resident-set ceiling".
+# Run a command under the machine lock with a wall-clock and a memory bound,
+# using timeout's exit conventions: 124 on the time bound, 128+signal when it
+# dies on one, else its own code. Additionally 125 for the memory bound, 121
+# when the machine lock could not be taken, and 122 when the host had no room
+# to start.
 #
-# coreutils `timeout` is not present on macOS, which is the only platform the
-# native runtime currently supports — without a fallback every bounded run exits
-# 127 and is misread as a crash. Perl ships with the base system, so use it to
-# fork into its own process group and supervise: a bare kill of the direct child
-# leaves spawned test servers holding their ports, and only the group's summed
-# RSS reflects a test that forks its work into children.
-if command -v gtimeout >/dev/null 2>&1 && [ "${HOME_TEST_MAX_RSS_MB:-0}" = "0" ]; then
-    run_bounded() { gtimeout "$@"; }
-elif command -v timeout >/dev/null 2>&1 && [ "${HOME_TEST_MAX_RSS_MB:-0}" = "0" ]; then
-    run_bounded() { timeout "$@"; }
+# There is deliberately no unguarded branch. The previous version fell back to
+# coreutils `timeout` whenever the memory cap was zero, which meant the one
+# knob that looked like "no memory limit" also silently removed the process-tree
+# cleanup and the machine lock. Every path goes through the supervisor.
+# Resolve this file's own directory at source time. Callers source it from
+# both bash and zsh, and zsh does not set BASH_SOURCE -- getting this wrong
+# silently pointed every bounded run at a nonexistent supervisor, which is a
+# guard that is not there at all. The eval keeps zsh-only syntax away from
+# bash's parser; the final check makes a bad resolution loud instead of latent.
+if [ -n "${BASH_SOURCE:-}" ]; then
+    HOME_BIN_SH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+elif [ -n "${ZSH_VERSION:-}" ]; then
+    HOME_BIN_SH_DIR="$(cd "$(dirname "$(eval 'print -r -- ${(%):-%x}')")" && pwd)"
 else
-    run_bounded() {
-        HOME_TEST_MAX_RSS_MB="${HOME_TEST_MAX_RSS_MB:-4096}" perl -e '
-            my $secs = shift @ARGV;
-            my $max_mb = $ENV{HOME_TEST_MAX_RSS_MB} || 0;
-            my $pid = fork();
-            die "fork: $!" unless defined $pid;
-            if ($pid == 0) { setpgrp(0, 0); exec { $ARGV[0] } @ARGV; exit 127; }
-            my $deadline = time + $secs;
-            while (1) {
-                my $reaped = waitpid($pid, 1);   # WNOHANG
-                if ($reaped == $pid) {
-                    my $status = $?;
-                    exit(($status & 127) ? 128 + ($status & 127) : ($status >> 8));
-                }
-                if (time >= $deadline) {
-                    kill("KILL", -$pid); waitpid($pid, 0); exit 124;
-                }
-                if ($max_mb > 0) {
-                    my $kb = 0;
-                    if (open(my $ps, "-|", "ps", "-axo", "pgid=,rss=")) {
-                        while (<$ps>) {
-                            my ($g, $r) = split;
-                            $kb += $r if defined $r && defined $g && $g eq $pid;
-                        }
-                        close($ps);
-                    }
-                    if ($kb > $max_mb * 1024) {
-                        kill("KILL", -$pid); waitpid($pid, 0); exit 125;
-                    }
-                }
-                select(undef, undef, undef, 0.25);
-            }
-        ' "$@"
-    }
+    HOME_BIN_SH_DIR="$(cd "$(dirname "$0")" && pwd)"
 fi
+if [ ! -f "$HOME_BIN_SH_DIR/run-bounded.pl" ]; then
+    _root="$(git rev-parse --show-toplevel 2>/dev/null)"
+    if [ -n "$_root" ] && [ -f "$_root/scripts/run-bounded.pl" ]; then
+        HOME_BIN_SH_DIR="$_root/scripts"
+    else
+        echo "home-bin: cannot locate run-bounded.pl (looked in $HOME_BIN_SH_DIR)" >&2
+        return 1 2>/dev/null || exit 1
+    fi
+fi
+
+run_bounded() {
+    perl "$HOME_BIN_SH_DIR/run-bounded.pl" "$@"
+}
