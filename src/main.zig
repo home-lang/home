@@ -2368,14 +2368,12 @@ fn runTestsViaVM(allocator_unused: std.mem.Allocator, args: []const [:0]const u8
         }
     };
 
-    // Bun's test configuration is rooted at its `test/` directory. The
-    // mirrored corpus carries that directory's unchanged bunfig.toml and
-    // preload.ts, but Home is normally invoked from the repository root. Run
-    // explicit corpus targets from the corpus root so bunfig discovery,
-    // preload resolution, tsconfig paths, and relative fixtures have exactly
-    // the same base as `cd test && bun test ...` in the upstream checkout.
-    // Merely forwarding the repository-relative path would instead load
-    // Home's root bunfig.toml and silently omit Bun's test preload.
+    // The Bun repository mirror lives at packages/runtime/test while Home's
+    // ported native source lives at packages/runtime/src. Run corpus tests from
+    // packages/runtime so unchanged commands which reference Bun's src/ tree
+    // exercise Home's corresponding source tree. Load the mirrored Bun root
+    // config explicitly so its test root, preload, and package resolution keep
+    // the same relationship they have in Bun's repository.
     var effective_args: []const [:0]const u8 = args;
     var rewritten_args: ?[][:0]const u8 = null;
     var rewritten_values: std.ArrayListUnmanaged([:0]u8) = .empty;
@@ -2413,28 +2411,34 @@ fn runTestsViaVM(allocator_unused: std.mem.Allocator, args: []const [:0]const u8
         const corpus_root = try std.fs.path.resolve(allocator, &.{ cwd, corpus_path });
         defer allocator.free(corpus_root);
 
-        const normalized = try allocator.alloc([:0]const u8, args.len);
+        const mirror_root = std.fs.path.dirname(corpus_root) orelse return error.InvalidCorpusRoot;
+        const runtime_root = std.fs.path.dirname(mirror_root) orelse return error.InvalidCorpusRoot;
+        const config_path = try std.fmt.allocPrintSentinel(allocator, "./{s}/bunfig.toml", .{std.fs.path.basename(mirror_root)}, 0);
+        try rewritten_values.append(allocator, config_path);
+
+        const normalized = try allocator.alloc([:0]const u8, args.len + 2);
         rewritten_args = normalized;
+        normalized[0] = "--config";
+        normalized[1] = config_path;
         for (args, 0..) |arg, index| {
             const rewritten = if (resolveBunCorpusTarget(arg)) |arg_target|
                 try bunCorpusTestArgument(allocator, arg_target)
             else {
-                normalized[index] = arg;
+                normalized[index + 2] = arg;
                 continue;
             };
             try rewritten_values.append(allocator, rewritten);
-            normalized[index] = rewritten;
+            normalized[index + 2] = rewritten;
         }
         effective_args = normalized;
-        const checkout_root = std.fs.path.dirname(corpus_root) orelse return error.InvalidCorpusRoot;
         if (std.c.getenv("PWD")) |raw| {
             previous_pwd = try home_rt.dupeZ(allocator, u8, std.mem.span(raw));
         }
         configured_pwd = true;
-        try std.Io.Threaded.chdir(checkout_root);
-        const checkout_root_z = try home_rt.dupeZ(allocator, u8, checkout_root);
-        defer allocator.free(checkout_root_z);
-        if (setenv("PWD", checkout_root_z.ptr, 1) != 0) return error.SetEnvironmentFailed;
+        try std.Io.Threaded.chdir(runtime_root);
+        const runtime_root_z = try home_rt.dupeZ(allocator, u8, runtime_root);
+        defer allocator.free(runtime_root_z);
+        if (setenv("PWD", runtime_root_z.ptr, 1) != 0) return error.SetEnvironmentFailed;
     }
 
     const log = try allocator.create(home_rt.logger.Log);
@@ -4804,11 +4808,13 @@ fn bunCorpusTestArgument(allocator: std.mem.Allocator, target: BunCorpusTarget) 
         .directory => |directory| .{ directory.corpus_path, directory.relative_path },
         .file => |file| .{ file.corpus_path, file.relative_path },
     };
+    const mirror_root = std.fs.path.dirname(corpus_path) orelse return error.InvalidCorpusRoot;
+    const mirror_name = std.fs.path.basename(mirror_root);
     const test_root = std.fs.path.basename(corpus_path);
     return if (relative_path) |relative|
-        std.fmt.allocPrintSentinel(allocator, "./{s}/{s}", .{ test_root, relative }, 0)
+        std.fmt.allocPrintSentinel(allocator, "./{s}/{s}/{s}", .{ mirror_name, test_root, relative }, 0)
     else
-        std.fmt.allocPrintSentinel(allocator, "./{s}", .{test_root}, 0);
+        std.fmt.allocPrintSentinel(allocator, "./{s}/{s}", .{ mirror_name, test_root }, 0);
 }
 
 fn isJsLikeCorpusFile(path: []const u8) bool {
@@ -5051,21 +5057,21 @@ test "bun corpus VM arguments preserve explicit path semantics" {
 
     const root = try bunCorpusTestArgument(allocator, .{ .root = "packages/runtime/test/test" });
     defer allocator.free(root);
-    try std.testing.expectEqualStrings("./test", root);
+    try std.testing.expectEqualStrings("./test/test", root);
 
     const directory = try bunCorpusTestArgument(allocator, .{ .directory = .{
         .corpus_path = "packages/runtime/test/test",
         .relative_path = "js/node/http",
     } });
     defer allocator.free(directory);
-    try std.testing.expectEqualStrings("./test/js/node/http", directory);
+    try std.testing.expectEqualStrings("./test/test/js/node/http", directory);
 
     const file = try bunCorpusTestArgument(allocator, .{ .file = .{
         .corpus_path = "packages/runtime/test/test",
         .relative_path = "js/node/http/node-http-connect.node.mts",
     } });
     defer allocator.free(file);
-    try std.testing.expectEqualStrings("./test/js/node/http/node-http-connect.node.mts", file);
+    try std.testing.expectEqualStrings("./test/test/js/node/http/node-http-connect.node.mts", file);
 }
 
 test "bun corpus subset parser reports missing and unknown values" {
