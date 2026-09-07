@@ -49,7 +49,9 @@ pub const Loop = struct {
             }
         }
         if (comptime Environment.isFreeBSD) {
-            loop.kqueue_fd = .fromNative(std.posix.kqueue() catch @panic("Failed to create kqueue"));
+            const kq = std.c.kqueue();
+            if (kq < 0) @panic("Failed to create kqueue");
+            loop.kqueue_fd = .fromNative(kq);
             // Register the eventfd waker. udata = 0 → Pollable.tag() == .empty,
             // which onUpdateKQueue treats as a no-op (the wakeup just unblocks
             // the kevent() wait so the pending queue gets drained). EV_CLEAR
@@ -72,14 +74,14 @@ pub const Loop = struct {
         }, onSpawnIOThread, .{}) catch @panic("Failed to spawn IO watcher thread");
         thread.detach();
     }
-    var once = std.once(load);
+    var once = bun.once(load);
 
     pub fn get() *Loop {
         if (Environment.isWindows) {
             @panic("Do not use this API on windows");
         }
 
-        once.call();
+        once.call(.{});
 
         return &loop;
     }
@@ -89,10 +91,22 @@ pub const Loop = struct {
     }
 
     pub fn schedule(this: *Loop, request: *Request) void {
-        bun.assert(!request.scheduled);
-        request.scheduled = true;
+        if (!request.schedule()) return;
         this.pending.push(request);
         this.waker.wake();
+    }
+
+    /// Replace the action for an intrusive request and ensure the I/O thread
+    /// observes it exactly once. If the request is already being dispatched,
+    /// `finishRun` requeues it after the current action has completed. This is
+    /// used by VM teardown to turn a parked read/write registration into a
+    /// close without racing the I/O thread's pending-queue handoff.
+    pub fn scheduleWithCallback(this: *Loop, request: *Request, callback: *const fn (*Request) Action) void {
+        @atomicStore(@TypeOf(request.callback), &request.callback, callback, .seq_cst);
+        if (request.scheduleOrRerun()) {
+            this.pending.push(request);
+            this.waker.wake();
+        }
     }
 
     pub fn tick(this: *Loop) void {
@@ -122,8 +136,9 @@ pub const Loop = struct {
                 var pending = pending_batch.iterator();
 
                 while (pending.next()) |request| {
-                    request.scheduled = false;
-                    switch (request.callback(request)) {
+                    request.beginRun();
+                    const action = @atomicLoad(@TypeOf(request.callback), &request.callback, .seq_cst)(request);
+                    switch (action) {
                         .readable => |readable| {
                             switch (readable.poll.registerForEpoll(readable.tag, this, .poll_readable, true, readable.fd)) {
                                 .err => |err| {
@@ -153,9 +168,12 @@ pub const Loop = struct {
                                 close.poll.unregisterWithFd(this.pollfd(), close.fd);
                                 this.active -= 1;
                             }
+                            request.finishRun(this);
                             close.onDone(close.ctx);
+                            continue;
                         },
                     }
+                    request.finishRun(this);
                 }
             }
 
@@ -220,16 +238,25 @@ pub const Loop = struct {
             var stack_fallback = bun.stackFallback(@sizeOf([256]EventType), bun.default_allocator);
             var events_list: std.array_list.Managed(EventType) = std.array_list.Managed(EventType).initCapacity(stack_fallback.get(), 256) catch unreachable;
             defer events_list.deinit();
+            const PendingClose = struct {
+                request: *Request,
+                action: Action.CloseAction,
+            };
+            var close_list = std.array_list.Managed(PendingClose).init(bun.default_allocator);
+            defer close_list.deinit();
 
             // Process pending requests
             {
                 var pending_batch = this.pending.popBatch();
                 var pending = pending_batch.iterator();
                 bun.handleOom(events_list.ensureUnusedCapacity(pending.batch.count));
+                bun.handleOom(close_list.ensureUnusedCapacity(pending.batch.count));
                 @memset(std.mem.sliceAsBytes(events_list.items.ptr[0..events_list.capacity]), 0);
 
                 while (pending.next()) |request| {
-                    switch (request.callback(request)) {
+                    request.beginRun();
+                    const action = @atomicLoad(@TypeOf(request.callback), &request.callback, .seq_cst)(request);
+                    switch (action) {
                         .readable => |readable| {
                             const i = events_list.items.len;
                             assert(i + 1 <= events_list.capacity);
@@ -270,13 +297,16 @@ pub const Loop = struct {
                                     &events_list.items.ptr[i],
                                 );
                             }
-                            close.onDone(close.ctx);
+                            close_list.appendAssumeCapacity(.{ .request = request, .action = close });
+                            continue;
                         },
                     }
+                    request.finishRun(this);
                 }
             }
 
             const change_count = events_list.items.len;
+            const no_wait = posix.timespec{ .sec = 0, .nsec = 0 };
 
             const rc = keventCall(
                 this.pollfd().cast(),
@@ -287,7 +317,10 @@ pub const Loop = struct {
                 // we set 0 here so that if we get an error on
                 // registration, it becomes errno
                 @intCast(events_list.capacity),
-                null,
+                // A close callback is deliberately deferred until EV_DELETE
+                // and any already-queued event have been consumed. Do not
+                // then wait for unrelated readiness before releasing it.
+                if (close_list.items.len > 0) &no_wait else null,
             );
 
             switch (bun.sys.getErrno(rc)) {
@@ -303,6 +336,15 @@ pub const Loop = struct {
 
             for (current_events) |event| {
                 Poll.onUpdateKQueue(event);
+            }
+
+            // A close callback may release the final owner of its embedded
+            // Poll/Request. Run it only after the EV_DELETE changelist and all
+            // resulting events have been consumed, so neither the kernel nor
+            // this loop can retain a pointer into freed Blob task memory.
+            for (close_list.items) |pending_close| {
+                pending_close.request.finishRun(this);
+                pending_close.action.onDone(pending_close.action.ctx);
             }
         }
     }
@@ -326,8 +368,7 @@ pub const Loop = struct {
             timespec.sec = @intCast(sec);
             timespec.nsec = @intCast(nsec);
         } else {
-            const updated = std.posix.clock_gettime(std.posix.CLOCK.MONOTONIC) catch return;
-            timespec.* = updated;
+            _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, timespec);
         }
     }
 };
@@ -355,7 +396,7 @@ inline fn keventCall(
     if (comptime Environment.isFreeBSD) {
         return std.c.kevent(kq, changes, nchanges, events, nevents, timeout);
     }
-    return posix.system.kevent64(kq, changes, nchanges, events, nevents, 0, timeout);
+    return posix.system.kevent64(kq, changes, nchanges, events, nevents, .{}, timeout);
 }
 
 const EventType = if (Environment.isLinux) linux.epoll_event else KEvent;
@@ -363,7 +404,51 @@ const EventType = if (Environment.isLinux) linux.epoll_event else KEvent;
 pub const Request = struct {
     next: ?*Request = null,
     callback: *const fn (*Request) Action,
-    scheduled: bool = false,
+    state: std.atomic.Value(State) = std.atomic.Value(State).init(.idle),
+
+    const State = enum(u8) {
+        idle,
+        queued,
+        running,
+        rerun,
+    };
+
+    pub fn isScheduled(this: *const Request) bool {
+        return this.state.load(.acquire) != .idle;
+    }
+
+    fn schedule(this: *Request) bool {
+        return this.state.cmpxchgStrong(.idle, .queued, .acq_rel, .acquire) == null;
+    }
+
+    fn scheduleOrRerun(this: *Request) bool {
+        while (true) {
+            switch (this.state.load(.acquire)) {
+                .idle => if (this.state.cmpxchgWeak(.idle, .queued, .acq_rel, .acquire) == null) return true,
+                .queued, .rerun => return false,
+                .running => if (this.state.cmpxchgWeak(.running, .rerun, .acq_rel, .acquire) == null) return false,
+            }
+        }
+    }
+
+    fn beginRun(this: *Request) void {
+        const previous = this.state.cmpxchgStrong(.queued, .running, .acq_rel, .acquire);
+        bun.assert(previous == null);
+    }
+
+    fn finishRun(this: *Request, loop: *Loop) void {
+        while (true) {
+            switch (this.state.load(.acquire)) {
+                .running => if (this.state.cmpxchgWeak(.running, .idle, .acq_rel, .acquire) == null) return,
+                .rerun => if (this.state.cmpxchgWeak(.rerun, .queued, .acq_rel, .acquire) == null) {
+                    loop.pending.push(this);
+                    loop.waker.wake();
+                    return;
+                },
+                .idle, .queued => unreachable,
+            }
+        }
+    }
 
     pub const Queue = bun.UnboundedQueue(Request, .next);
 };
@@ -409,7 +494,7 @@ const Pollable = struct {
 
     pub fn init(t: Tag, p: *Poll) Pollable {
         return Pollable{
-            .value = bun.TaggedPointer.init(p, @intFromEnum(t)),
+            .value = bun.TaggedPointer.init(p, @backingInt(t)),
         };
     }
 
@@ -423,7 +508,7 @@ const Pollable = struct {
 
     pub fn tag(this: Pollable) Tag {
         if (this.value.data == 0) return .empty;
-        return @enumFromInt(this.value.data);
+        return @fromBackingInt(@intCast(this.value.data));
     }
 
     pub fn get(this: Pollable, comptime t: Tag) *Tag.Type(t) {
@@ -626,7 +711,7 @@ pub const Poll = struct {
                 var this: *Pollable.Tag.Type(t) = @alignCast(@fieldParentPtr("io_poll", poll));
                 if (event.flags == std.c.EV.ERROR) {
                     log("error({d}) = {d}", .{ event.ident, event.data });
-                    this.onIOError(bun.sys.Error.fromCode(@enumFromInt(event.data), .kevent));
+                    this.onIOError(bun.sys.Error.fromCode(@fromBackingInt(@intCast(event.data)), .kevent));
                 } else {
                     log("ready({d}) = {d}", .{ event.ident, event.data });
                     this.onReady();

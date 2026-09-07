@@ -532,7 +532,7 @@ pub fn tickQueueWithCount(this: *EventLoop, virtual_machine: *VirtualMachine, co
             // instead of explicit `.@"<typeName>"` arms avoids hard-coding
             // path-derived `@typeName(T)` strings that change when files move.
             else => {
-                bun.Output.panic("Unexpected Task tag: {d}", .{@intFromEnum(task.tag())});
+                bun.Output.panic("Unexpected Task tag: {d}", .{@backingInt(task.tag())});
             },
         }
 
@@ -566,6 +566,8 @@ pub fn cancelForShutdown(task: Task, global: *jsc.JSGlobalObject) bool {
         @field(Task.Tag, @typeName(CopyFilePromiseTask)) => task.get(CopyFilePromiseTask).?.cancelForShutdown(),
         @field(Task.Tag, @typeName(GetAddrInfoRequestTask)) => task.get(GetAddrInfoRequestTask).?.cancelForShutdown(),
         @field(Task.Tag, @typeName(RuntimeTranspilerStore)) => task.get(RuntimeTranspilerStore).?.cancelForShutdown(),
+        @field(Task.Tag, @typeName(ReadFileTask)) => task.get(ReadFileTask).?.cancelForShutdown(),
+        @field(Task.Tag, @typeName(WriteFileTask)) => task.get(WriteFileTask).?.cancelForShutdown(),
         @field(Task.Tag, @typeName(NativeZlib)) => task.get(NativeZlib).?.cancelForShutdown(),
         @field(Task.Tag, @typeName(NativeBrotli)) => task.get(NativeBrotli).?.cancelForShutdown(),
         @field(Task.Tag, @typeName(NativeZstd)) => task.get(NativeZstd).?.cancelForShutdown(),

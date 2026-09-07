@@ -452,7 +452,7 @@ pub const FilePoll = struct {
                 ptr.as(ParentDeathWatchdog).onParentExit();
             },
             else => {
-                const possible_name = Owner.typeNameFromTag(@intFromEnum(ptr.tag()));
+                const possible_name = Owner.typeNameFromTag(@backingInt(ptr.tag()));
                 log("onUpdate " ++ kqueue_or_epoll ++ " (fd: {f}) disconnected? (maybe: {s})", .{ poll.fd, possible_name orelse "<unknown>" });
             },
         }
@@ -1006,7 +1006,7 @@ pub const FilePoll = struct {
                     .udata = @intFromPtr(Pollable.init(this).ptr()),
                     .flags = std.c.EV.ADD | one_shot_flag,
                 },
-                .machport => return .initErr(.{ .errno = @intFromEnum(bun.sys.E.OPNOTSUPP), .syscall = .kevent }),
+                .machport => return .initErr(.{ .errno = @backingInt(bun.sys.E.OPNOTSUPP), .syscall = .kevent }),
                 else => unreachable,
             };
 
@@ -1234,7 +1234,7 @@ pub const FilePoll = struct {
                     .udata = @intFromPtr(Pollable.init(this).ptr()),
                     .flags = std.c.EV.DELETE,
                 },
-                .machport => return .initErr(.{ .errno = @intFromEnum(bun.sys.E.OPNOTSUPP), .syscall = .kevent }),
+                .machport => return .initErr(.{ .errno = @backingInt(bun.sys.E.OPNOTSUPP), .syscall = .kevent }),
                 else => unreachable,
             };
 
@@ -1354,7 +1354,7 @@ pub const KEventWaker = struct {
             0,
             &events,
             events.len,
-            0,
+            .{},
             null,
         );
     }
@@ -1370,7 +1370,9 @@ pub const KEventWaker = struct {
     extern fn io_darwin_schedule_wakeup(bun.mach_port) bool;
 
     pub fn init() !Waker {
-        return initWithFileDescriptor(bun.default_allocator, try std.posix.kqueue());
+        const kq = std.c.kqueue();
+        if (kq < 0) return error.KqueueCreationFailed;
+        return initWithFileDescriptor(bun.default_allocator, kq);
     }
 
     pub fn initWithFileDescriptor(allocator: std.mem.Allocator, kq: i32) !Waker {

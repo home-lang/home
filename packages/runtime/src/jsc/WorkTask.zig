@@ -16,6 +16,16 @@ pub fn WorkTask(comptime Context: type) type {
         const TaskType = WorkPoolTask;
 
         const This = @This();
+        const PollableState = enum(u8) {
+            idle,
+            worker,
+            parking,
+            parked,
+            resume_pending,
+            published,
+            cancelling,
+        };
+
         ctx: *Context,
         task: TaskType = .{ .callback = &runFromThreadPool },
         event_loop: *jsc.EventLoop,
@@ -24,6 +34,12 @@ pub fn WorkTask(comptime Context: type) type {
         concurrent_task: ConcurrentTask = .{},
         async_task_tracker: jsc.Debugger.AsyncTaskTracker,
         native_job_admitted: bool = false,
+        pollable_job: jsc.VirtualMachine.NativePollableWorkPoolJob = .{},
+        pollable_state: std.atomic.Value(PollableState) = std.atomic.Value(PollableState).init(.idle),
+        poll_resume_task: ?*WorkPoolTask = null,
+        poll_close_lock: bun.Mutex = .{},
+        poll_close_condition: bun.threading.Condition = .{},
+        poll_close_complete: bool = false,
 
         // This is a poll because we want it to enter the uSockets loop
         ref: Async.KeepAlive = .{},
@@ -82,12 +98,109 @@ pub fn WorkTask(comptime Context: type) type {
             return true;
         }
 
+        /// Schedule a job which may temporarily leave the work pool and park
+        /// on the process-wide I/O poller. The VM registry owns the job while
+        /// it is parked; each actual work-pool hop separately joins the normal
+        /// shutdown barrier.
+        pub fn schedulePollableWithShutdown(this: *This) bool {
+            const vm = this.event_loop.virtual_machine;
+            this.ref.ref(vm);
+            this.async_task_tracker.didSchedule(this.globalThis);
+            this.pollable_job.cancel_for_shutdown = &cancelPollableJobForShutdown;
+            if (!vm.native_pollable_work_pool_jobs.tryAdd(&this.pollable_job)) return false;
+            if (!vm.native_work_pool_jobs.tryAdd()) {
+                vm.native_pollable_work_pool_jobs.remove(&this.pollable_job);
+                return false;
+            }
+            this.native_job_admitted = true;
+            this.pollable_state.store(.worker, .release);
+            WorkPool.schedule(&this.task);
+            return true;
+        }
+
+        /// Begin the handoff from a running WorkPool callback to `io.Loop`.
+        /// A readiness notification which wins this race records the task and
+        /// lets `finishPollWait` schedule it only after the current callback is
+        /// done touching the context.
+        pub fn beginPollWait(this: *This) void {
+            const previous = this.pollable_state.cmpxchgStrong(.worker, .parking, .acq_rel, .acquire);
+            bun.assert(previous == null);
+        }
+
+        pub fn finishPollWait(this: *This) void {
+            if (this.pollable_state.cmpxchgStrong(.parking, .parked, .acq_rel, .acquire) == null) {
+                bun.assert(this.native_job_admitted);
+                this.native_job_admitted = false;
+                this.event_loop.virtual_machine.native_work_pool_jobs.complete();
+                return;
+            }
+
+            bun.assert(this.pollable_state.load(.acquire) == .resume_pending);
+            const resume_task = this.poll_resume_task orelse @panic("poll resume task missing");
+            this.poll_resume_task = null;
+            this.pollable_state.store(.worker, .release);
+            // The original work-pool admission remains held until this resumed
+            // hop either parks again or publishes its owner-thread completion.
+            WorkPool.schedule(resume_task);
+        }
+
+        /// Called by the process-wide I/O thread. Returns true only when the
+        /// caller should enqueue `resume_task` on the WorkPool itself.
+        pub fn resumeFromPoll(this: *This, resume_task: *WorkPoolTask) bool {
+            while (true) {
+                switch (this.pollable_state.load(.acquire)) {
+                    .parking => {
+                        this.poll_resume_task = resume_task;
+                        if (this.pollable_state.cmpxchgWeak(.parking, .resume_pending, .acq_rel, .acquire) == null)
+                            return false;
+                    },
+                    .parked => {
+                        const vm = this.event_loop.virtual_machine;
+                        if (!vm.native_work_pool_jobs.tryAdd()) return false;
+                        if (this.pollable_state.cmpxchgStrong(.parked, .worker, .acq_rel, .acquire) == null) {
+                            this.native_job_admitted = true;
+                            return true;
+                        }
+                        vm.native_work_pool_jobs.complete();
+                    },
+                    .resume_pending, .cancelling, .published => return false,
+                    .idle, .worker => unreachable,
+                }
+            }
+        }
+
+        pub fn pollClosedForShutdown(this: *This) void {
+            this.poll_close_lock.lock();
+            this.poll_close_complete = true;
+            this.poll_close_condition.broadcast();
+            this.poll_close_lock.unlock();
+        }
+
+        pub fn waitForPollClose(this: *This) void {
+            this.poll_close_lock.lock();
+            defer this.poll_close_lock.unlock();
+            while (!this.poll_close_complete) this.poll_close_condition.wait(&this.poll_close_lock);
+        }
+
         pub fn onFinish(this: *This) void {
             const vm = this.event_loop.virtual_machine;
             const native_job_admitted = this.native_job_admitted;
             this.native_job_admitted = false;
+            if (this.pollable_job.registered) {
+                const previous = this.pollable_state.swap(.published, .acq_rel);
+                bun.assert(previous == .worker);
+                vm.native_pollable_work_pool_jobs.remove(&this.pollable_job);
+            }
             this.event_loop.enqueueTaskConcurrent(this.concurrent_task.from(this, .manual_deinit));
             if (native_job_admitted) vm.native_work_pool_jobs.complete();
+        }
+
+        fn cancelPollableJobForShutdown(job: *jsc.VirtualMachine.NativePollableWorkPoolJob) void {
+            const this: *This = @fieldParentPtr("pollable_job", job);
+            const previous = this.pollable_state.cmpxchgStrong(.parked, .cancelling, .acq_rel, .acquire);
+            bun.assert(previous == null);
+            Context.cancelPollForShutdown(this.ctx, this);
+            this.cancelForShutdown();
         }
 
         pub fn cancelForShutdown(this: *This) void {

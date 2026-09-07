@@ -1308,3 +1308,26 @@ component and the upstream legacy flex/box aliases. The focused native
 `native-bun-serve-html-assets.test.mjs` regression verifies root-relative
 chunk URLs, entry-relative source-map sources, and canonical `display: block`
 output. This closes #675 with no fixture, snapshot, or assertion changes.
+
+## Current Poll-Parked Blob I/O Checkpoint (2026-09-06)
+
+Blob reads and byte-backed writes now register VM ownership before their first
+work-pool dispatch, release the native worker barrier while parked on Bun's
+dedicated process-wide I/O watcher, and reacquire it before every worker re-entry.
+Worker shutdown closes admission, joins active hops, cancels the remaining
+intrusive registry, detaches the kernel poll, and releases fd/Blob/promise
+ownership without dispatching into a stopped VM. The real platform waker and
+read/write readiness probes replace Home's dormant compatibility stubs.
+
+The request handoff is race-safe when readiness and callback replacement overlap;
+Darwin close completion waits until `EV_DELETE` and any queued event are consumed,
+without blocking for unrelated readiness. Reads and writes treat `EAGAIN` as a
+transition to polling rather than retrying an immutable result.
+
+The real-FIFO regression passes six consecutive Debug processes and once in
+ReleaseFast. The complete installation-shaped runtime aggregate passes **68/68**
+in both modes, native `home_rt` passes **1,827 / 19 skipped / 0 failed**, and the
+unchanged upstream `bun-file-read.test.ts`, `blob-write.test.ts`, and
+`worker_blob.test.ts` files pass **16/16**. This completes #569 with no weakened
+test. The optimized regular-file Blob-to-Blob `Bun.write` path is a separate
+confirmed gap under #676 and remains required for #66.

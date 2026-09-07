@@ -224,7 +224,7 @@ pub const sliceTo = std.mem.sliceTo;
 /// Faithful to upstream `bun.zig:3492`.
 pub fn tagName(comptime Enum: type, value: Enum) ?[:0]const u8 {
     return inline for (@typeInfo(Enum).@"enum".field_names, @typeInfo(Enum).@"enum".field_values) |fname, fvalue| {
-        if (@intFromEnum(value) == fvalue) break fname;
+        if (@backingInt(value) == fvalue) break fname;
     } else null;
 }
 /// Faithful to upstream `bun.zig:3676`.
@@ -424,15 +424,28 @@ pub fn csprng(dest: []u8) void {
 pub const Futex = threading.Futex;
 
 pub fn isWritable(fd: FD) PollFlag {
+    if (comptime Environment.isWindows) {
+        var polls = [_]std.os.windows.ws2_32.WSAPOLLFD{.{
+            .fd = fd.asSocketFd(),
+            .events = std.posix.POLL.WRNORM,
+            .revents = 0,
+        }};
+        const rc = std.os.windows.ws2_32.WSAPoll(&polls, 1, 0);
+        const result = (if (rc != std.os.windows.ws2_32.SOCKET_ERROR) @as(usize, @intCast(rc)) else 0) != 0;
+        if (result and polls[0].revents & std.posix.POLL.WRNORM != 0) return .hup;
+        if (result) return .ready;
+        return .not_ready;
+    }
+
+    assert(fd != invalid_fd);
     var polls = [_]std.posix.pollfd{.{
-        .fd = fd.native(),
-        .events = std.posix.POLL.OUT,
+        .fd = fd.cast(),
+        .events = std.posix.POLL.OUT | std.posix.POLL.ERR | std.posix.POLL.HUP,
         .revents = 0,
     }};
-    const count = std.posix.poll(&polls, 0) catch return .not_ready;
-    if (count == 0) return .not_ready;
-    if ((polls[0].revents & (std.posix.POLL.HUP | std.posix.POLL.ERR)) != 0) return .hup;
-    if ((polls[0].revents & std.posix.POLL.OUT) != 0) return .ready;
+    const result = (std.posix.poll(&polls, 0) catch 0) != 0;
+    if (result and polls[0].revents & (std.posix.POLL.HUP | std.posix.POLL.ERR) != 0) return .hup;
+    if (result) return .ready;
     return .not_ready;
 }
 
@@ -607,12 +620,12 @@ pub fn TrivialDeinit(comptime T: type) fn (*T) void {
 const errno_map = errno_map: {
     var max_value = 0;
     for (std.enums.values(sys.SystemErrno)) |v|
-        max_value = @max(max_value, @intFromEnum(v));
+        max_value = @max(max_value, @backingInt(v));
 
     var map: [max_value + 1]anyerror = undefined;
     @memset(&map, error.Unexpected);
     for (std.enums.values(sys.SystemErrno)) |v|
-        map[@intFromEnum(v)] = @field(anyerror, @tagName(v));
+        map[@backingInt(v)] = @field(anyerror, @tagName(v));
 
     break :errno_map map;
 };
@@ -620,7 +633,7 @@ const errno_map = errno_map: {
 /// Faithful to upstream `bun.zig:2854`.
 pub fn errnoToZigErr(err: anytype) anyerror {
     var num = if (@typeInfo(@TypeOf(err)) == .@"enum")
-        @intFromEnum(err)
+        @backingInt(err)
     else
         err;
 
@@ -1574,12 +1587,12 @@ pub const cpp = if (enable_jsc_link) @import(".generated/cpp.zig") else struct {
 
     pub fn JSC__JSValue__coerceToInt32(value: jsc.JSValue, globalThis: *jsc.JSGlobalObject) JSError!i32 {
         _ = globalThis;
-        return @intCast(@intFromEnum(value));
+        return @intCast(@backingInt(value));
     }
 
     pub fn JSC__JSValue__coerceToInt64(value: jsc.JSValue, globalThis: *jsc.JSGlobalObject) JSError!i64 {
         _ = globalThis;
-        return @intFromEnum(value);
+        return @backingInt(value);
     }
 
     pub fn JSC__JSValue__isSymbol(value: jsc.JSValue) bool {
@@ -2056,12 +2069,12 @@ pub fn GenericIndex(comptime backing_int: type, comptime uid: anytype) type {
 
         pub inline fn init(int: backing_int) Index {
             assert(int != null_value);
-            return @enumFromInt(int);
+            return @fromBackingInt(@intCast(int));
         }
 
         pub inline fn get(i: Index) backing_int {
-            assert(@intFromEnum(i) != null_value);
-            return @intFromEnum(i);
+            assert(@backingInt(i) != null_value);
+            return @backingInt(i);
         }
 
         pub fn format(i: Index, writer: *std.Io.Writer) !void {
@@ -2069,7 +2082,7 @@ pub fn GenericIndex(comptime backing_int: type, comptime uid: anytype) type {
         }
 
         pub inline fn toOptional(i: Index) Optional {
-            return @enumFromInt(i.get());
+            return @fromBackingInt(@intCast(i.get()));
         }
 
         pub const Optional = enum(backing_int) {
@@ -2081,7 +2094,7 @@ pub fn GenericIndex(comptime backing_int: type, comptime uid: anytype) type {
             }
 
             pub inline fn unwrap(optional: Optional) ?Index {
-                return if (optional == .none) null else @enumFromInt(@intFromEnum(optional));
+                return if (optional == .none) null else @fromBackingInt(@intCast(@backingInt(optional)));
             }
         };
     };
@@ -3507,25 +3520,12 @@ pub const jsc = struct {
 };
 
 // ---- src/io/ -----------------------------------------------------------
-// Event loop + file poll opaques. The Loop / KeepAlive / FilePoll names
-// are kept so callers can spell their function signatures; full impls
-// land in Phase 12.3.
+// Event-loop and file-poll compatibility namespace.
 pub const io = struct {
-    pub const Waker = struct {
-        pub fn init() !Waker {
-            return .{};
-        }
-
-        pub fn wake(_: *const Waker) void {}
-
-        pub fn wait(_: Waker) bool {
-            return true;
-        }
-
-        pub fn getFd(_: *const Waker) FD {
-            return .invalid;
-        }
-    };
+    pub const Waker = if (Environment.isWindows)
+        @import("io/windows_event_loop.zig").Waker
+    else
+        @import("io/posix_event_loop.zig").Waker;
     // Forward-port: Home's Zig fork removed `std.io.GenericWriter`; this restores
     // it (faithful old API + `adaptToNewApi` bridge to the new `std.Io.Writer`).
     pub const GenericWriter = @import("io_shim.zig").GenericWriter;
@@ -3544,6 +3544,11 @@ pub const io = struct {
     // binary-heap used by the install/PM lifecycle-script scheduler.
     pub const heap = @import("io/heap.zig");
     pub const Loop = if (Environment.isWindows) @import("io/windows_event_loop.zig").Loop else @import("io/posix_event_loop.zig").Loop;
+    // Blob file reads/writes use Bun's dedicated process-wide I/O watcher,
+    // while Async.Loop and pipe readers use the per-thread platform loop.
+    // Keep the two type identities distinct in Home until `Async` is split
+    // from this compatibility namespace.
+    pub const BlobLoop = @import("io/io.zig").Loop;
     pub const KeepAlive = @import("io/posix_event_loop.zig").KeepAlive;
     pub const FilePoll = @import("io/posix_event_loop.zig").FilePoll;
     pub const Closer = struct {
@@ -4244,7 +4249,7 @@ pub fn clone(item: anytype, allocator: std.mem.Allocator) !@TypeOf(item) {
 }
 
 pub fn isRegularFile(mode: anytype) bool {
-    return (mode & std.c.S.IFMT) == std.c.S.IFREG;
+    return S.ISREG(@intCast(mode));
 }
 
 pub const FD = @import("sys/fd.zig").FD;
@@ -4256,8 +4261,17 @@ pub const MimallocArena = @import("bun_alloc/MimallocArena.zig");
 pub const S = sys.S;
 
 pub fn isReadable(fd: FD) PollFlag {
-    _ = fd;
-    return .ready;
+    if (comptime Environment.isWindows) @panic("TODO on Windows");
+    assert(fd != invalid_fd);
+    var polls = [_]std.posix.pollfd{.{
+        .fd = fd.cast(),
+        .events = std.posix.POLL.IN | std.posix.POLL.ERR | std.posix.POLL.HUP,
+        .revents = 0,
+    }};
+    const result = (std.posix.poll(&polls, 0) catch 0) != 0;
+    if (result and polls[0].revents & (std.posix.POLL.HUP | std.posix.POLL.ERR) != 0) return .hup;
+    if (result) return .ready;
+    return .not_ready;
 }
 
 fn toPackedO(number: anytype) std.posix.O {
@@ -5557,7 +5571,7 @@ pub const sys = struct {
     pub fn mkdirat(dir_fd: FD, file_path: []const u8, mode: Mode) Maybe(void) {
         const path_z = std.posix.toPosixPath(file_path) catch {
             return .{ .err = .{
-                .errno = @intFromEnum(E.NAMETOOLONG),
+                .errno = @backingInt(E.NAMETOOLONG),
                 .syscall = .mkdir,
             } };
         };
@@ -5617,7 +5631,7 @@ pub const sys = struct {
     }
 
     fn unexpected(comptime tag: Tag) Error {
-        return .{ .errno = @intFromEnum(E.INVAL), .syscall = tag };
+        return .{ .errno = @backingInt(E.INVAL), .syscall = tag };
     }
 
     /// Map a Zig std.posix error back to the corresponding errno. The earlier
@@ -5629,7 +5643,7 @@ pub const sys = struct {
     /// Build an Error from a known errno value (as returned by `std.c.errno`),
     /// instead of discarding it and reporting EINVAL like `unexpected`.
     fn errFromE(comptime tag: Tag, e: E) Error {
-        return .{ .errno = @intFromEnum(e), .syscall = tag };
+        return .{ .errno = @backingInt(e), .syscall = tag };
     }
 
     fn errnoFromPosix(comptime tag: Tag, err: anyerror) Error {
@@ -5657,7 +5671,7 @@ pub const sys = struct {
             error.BadPathName, error.InvalidUtf8, error.InvalidWtf8 => .INVAL,
             else => return unexpected(tag),
         };
-        return .{ .errno = @intFromEnum(mapped), .syscall = tag };
+        return .{ .errno = @backingInt(mapped), .syscall = tag };
     }
 
     pub fn openat(dir: FD, path_: [:0]const u8, flags: i32, mode: Mode) Maybe(FD) {
@@ -5670,7 +5684,7 @@ pub const sys = struct {
     pub fn openatA(dir: FD, path_: anytype, flags: i32, mode: Mode) Maybe(FD) {
         const path_z = std.posix.toPosixPath(pathBytes(path_)) catch {
             return .{ .err = .{
-                .errno = @intFromEnum(E.NAMETOOLONG),
+                .errno = @backingInt(E.NAMETOOLONG),
                 .syscall = .open,
             } };
         };
@@ -6076,7 +6090,7 @@ pub const sys = struct {
         pub fn readFileFrom(dir_fd: anytype, path_: anytype, allocator: std.mem.Allocator) Maybe(struct { File, []u8 }) {
             const path_z = std.posix.toPosixPath(pathBytes(path_)) catch {
                 return .{ .err = .{
-                    .errno = @intFromEnum(E.NAMETOOLONG),
+                    .errno = @backingInt(E.NAMETOOLONG),
                     .syscall = .open,
                 } };
             };
@@ -6119,7 +6133,7 @@ pub const sys = struct {
         pub fn toSourceAt(dir_fd: anytype, path_: anytype, allocator: std.mem.Allocator, opts: ToSourceOptions) Maybe(logger.Source) {
             const path_z = std.posix.toPosixPath(pathBytes(path_)) catch {
                 return .{ .err = .{
-                    .errno = @intFromEnum(E.NAMETOOLONG),
+                    .errno = @backingInt(E.NAMETOOLONG),
                     .syscall = .open,
                 } };
             };
@@ -7880,12 +7894,12 @@ test "home_rt.css.properties.text packs TextDecorationLine into a byte" {
 }
 
 test "home_rt.jsc enums round-trip their tag values" {
-    try std.testing.expectEqual(@as(u32, 0), @intFromEnum(jsc.JSPromiseRejectionOperation.Reject));
-    try std.testing.expectEqual(@as(u32, 1), @intFromEnum(jsc.JSPromiseRejectionOperation.Handle));
-    try std.testing.expectEqual(@as(i32, 0), @intFromEnum(jsc.ScriptExecutionStatus.running));
-    try std.testing.expectEqual(@as(u8, 0), @intFromEnum(jsc.SourceType.Program));
-    try std.testing.expectEqual(@as(u8, 1), @intFromEnum(jsc.SourceType.Module));
-    try std.testing.expectEqual(@as(u16, 0x40), @intFromEnum(jsc.JSRuntimeType.String));
+    try std.testing.expectEqual(@as(u32, 0), @backingInt(jsc.JSPromiseRejectionOperation.Reject));
+    try std.testing.expectEqual(@as(u32, 1), @backingInt(jsc.JSPromiseRejectionOperation.Handle));
+    try std.testing.expectEqual(@as(i32, 0), @backingInt(jsc.ScriptExecutionStatus.running));
+    try std.testing.expectEqual(@as(u8, 0), @backingInt(jsc.SourceType.Program));
+    try std.testing.expectEqual(@as(u8, 1), @backingInt(jsc.SourceType.Module));
+    try std.testing.expectEqual(@as(u16, 0x40), @backingInt(jsc.JSRuntimeType.String));
 }
 
 test "home_rt.jsc.sizes exposes generated layout constants" {

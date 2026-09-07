@@ -166,7 +166,7 @@ pub fn doReadFile(this: *Blob, comptime Function: anytype, global: *JSGlobalObje
     promise_value.ensureStillAlive();
     handler.promise.strong.set(global, promise_value);
 
-    read_file_task.schedule();
+    if (!read_file_task.schedulePollableWithShutdown()) read_file_task.cancelForShutdown();
 
     debug("doReadFile: read_file_task scheduled", .{});
     return promise_value;
@@ -291,7 +291,7 @@ pub fn doReadFileInternal(this: *Blob, comptime Handler: type, ctx: Handler, com
         this.size,
     ) catch |err| bun.handleOom(err);
     var read_file_task = read_file.ReadFileTask.createOnJSThread(bun.default_allocator, global, file_read);
-    read_file_task.schedule();
+    if (!read_file_task.schedulePollableWithShutdown()) read_file_task.cancelForShutdown();
 }
 
 /// Percent-encode `"`, CR, and LF in a multipart form-data field name or
@@ -1287,7 +1287,7 @@ pub fn writeFileWithSourceDestination(ctx: *jsc.JSGlobalObject, source_blob: *Bl
         const promise_value = promise.asValue(ctx);
         write_file_promise.promise.strong.set(ctx, promise_value);
         promise_value.ensureStillAlive();
-        task.schedule();
+        if (!task.schedulePollableWithShutdown()) task.cancelForShutdown();
         return promise_value;
     }
     // If this is file <> file, we can just copy the file
@@ -5076,7 +5076,27 @@ pub fn FileCloser(comptime This: type) type {
         fn onIORequestClosed(this: *This) void {
             this.io_poll.flags.remove(.was_ever_registered);
             this.task = .{ .callback = &onCloseIORequest };
-            bun.jsc.WorkPool.schedule(&this.task);
+            const io_task = this.io_task orelse return;
+            if (io_task.resumeFromPoll(&this.task)) bun.jsc.WorkPool.schedule(&this.task);
+        }
+
+        fn scheduleCloseForShutdown(request: *io.Request) io.Action {
+            var this: *This = @alignCast(@fieldParentPtr("io_request", request));
+            return io.Action{
+                .close = .{
+                    .ctx = this,
+                    .fd = this.opened_fd,
+                    .onDone = @ptrCast(&onIORequestClosedForShutdown),
+                    .poll = &this.io_poll,
+                    .tag = This.io_tag,
+                },
+            };
+        }
+
+        fn onIORequestClosedForShutdown(this: *This) void {
+            this.io_poll.flags.remove(.was_ever_registered);
+            const io_task = this.io_task orelse return;
+            io_task.pollClosedForShutdown();
         }
 
         fn onCloseIORequest(task: *jsc.WorkPoolTask) void {
@@ -5091,9 +5111,10 @@ pub fn FileCloser(comptime This: type) type {
                 if (this.close_after_io) {
                     this.state.store(ClosingState.closing, .seq_cst);
 
-                    @atomicStore(@TypeOf(this.io_request.callback), &this.io_request.callback, &scheduleClose, .seq_cst);
-                    if (!this.io_request.scheduled)
-                        io.Loop.get().schedule(&this.io_request);
+                    const io_task = this.io_task orelse @panic("Blob close poll without WorkTask");
+                    io_task.beginPollWait();
+                    io.BlobLoop.get().scheduleWithCallback(&this.io_request, &scheduleClose);
+                    io_task.finishPollWait();
                     return true;
                 }
             }
@@ -5111,6 +5132,12 @@ pub fn FileCloser(comptime This: type) type {
             }
 
             return false;
+        }
+
+        pub fn doClosePollForShutdown(this: *This, io_task: anytype) void {
+            this.state.store(ClosingState.closing, .seq_cst);
+            io.BlobLoop.get().scheduleWithCallback(&this.io_request, &scheduleCloseForShutdown);
+            io_task.waitForPollClose();
         }
     };
 }

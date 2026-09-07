@@ -27,6 +27,7 @@ pub const WriteFile = struct {
 
     pub const getFd = FileOpener(@This()).getFd;
     pub const doClose = FileCloser(WriteFile).doClose;
+    pub const doClosePollForShutdown = FileCloser(WriteFile).doClosePollForShutdown;
 
     pub const open_flags = bun.O.WRONLY | bun.O.CREAT | bun.O.TRUNC | bun.O.NONBLOCK;
 
@@ -38,7 +39,8 @@ pub const WriteFile = struct {
     pub fn onReady(this: *WriteFile) void {
         bloblog("WriteFile.onReady()", .{});
         this.task = .{ .callback = &doWriteLoopTask };
-        jsc.WorkPool.schedule(&this.task);
+        const io_task = this.io_task orelse return;
+        if (io_task.resumeFromPoll(&this.task)) jsc.WorkPool.schedule(&this.task);
     }
 
     pub fn onIOError(this: *WriteFile, err: bun.sys.Error) void {
@@ -46,12 +48,12 @@ pub const WriteFile = struct {
         this.errno = bun.errnoToZigErr(err.errno);
         this.system_error = err.toSystemError();
         this.task = .{ .callback = &doWriteLoopTask };
-        jsc.WorkPool.schedule(&this.task);
+        const io_task = this.io_task orelse return;
+        if (io_task.resumeFromPoll(&this.task)) jsc.WorkPool.schedule(&this.task);
     }
 
     pub fn onRequestWritable(request: *io.Request) io.Action {
         bloblog("WriteFile.onRequestWritable()", .{});
-        request.scheduled = false;
         var this: *WriteFile = @fieldParentPtr("io_request", request);
         return io.Action{
             .writable = .{
@@ -66,9 +68,10 @@ pub const WriteFile = struct {
 
     pub fn waitForWritable(this: *WriteFile) void {
         this.close_after_io = true;
-        @atomicStore(@TypeOf(this.io_request.callback), &this.io_request.callback, &onRequestWritable, .seq_cst);
-        if (!this.io_request.scheduled)
-            io.Loop.get().schedule(&this.io_request);
+        const io_task = this.io_task orelse @panic("WriteFile poll without WorkTask");
+        io_task.beginPollWait();
+        io.BlobLoop.get().scheduleWithCallback(&this.io_request, &onRequestWritable);
+        io_task.finishPollWait();
     }
 
     pub fn createWithCtx(
@@ -139,11 +142,10 @@ pub const WriteFile = struct {
                 .err => |err| {
                     switch (err.getErrno()) {
                         bun.io.retry => {
-                            if (!this.could_block) {
-                                // regular files cannot use epoll.
-                                // this is fine on kqueue, but not on epoll.
-                                continue;
-                            }
+                            // EAGAIN is definitive evidence that this fd can
+                            // block. The syscall result above is immutable, so
+                            // retrying it in this loop can only spin forever.
+                            this.could_block = true;
                             this.waitForWritable();
                             return false;
                         },
@@ -208,6 +210,21 @@ pub const WriteFile = struct {
                 io_task.onFinish();
             }
         }
+    }
+
+    pub fn cancelPollForShutdown(this: *WriteFile, io_task: *WriteFileTask) void {
+        this.doClosePollForShutdown(io_task);
+    }
+
+    pub fn cancelForShutdown(this: *WriteFile) void {
+        if (this.opened_fd != invalid_fd and this.isAllowedToClose()) {
+            _ = this.opened_fd.closeAllowingBadFileDescriptor(null);
+            this.opened_fd = invalid_fd;
+        }
+        if (this.system_error) |err| err.deref();
+        this.bytes_blob.store.?.deref();
+        this.file_blob.store.?.deref();
+        bun.destroy(this);
     }
 
     fn runWithFD(this: *WriteFile, fd_: bun.FD) void {
@@ -418,7 +435,7 @@ pub const WriteFileWindows = struct {
             &this.io_request,
             &(std.posix.toPosixPath(path) catch {
                 return this.throw(bun.sys.Error{
-                    .errno = @intFromEnum(bun.sys.E.NAMETOOLONG),
+                    .errno = @backingInt(bun.sys.E.NAMETOOLONG),
                     .syscall = .open,
                 });
             }),
@@ -432,7 +449,7 @@ pub const WriteFileWindows = struct {
             bun.assert(err != .NOENT);
 
             return this.throw(.{
-                .errno = @intFromEnum(err),
+                .errno = @backingInt(err),
                 .path = path,
                 .syscall = .open,
             });
@@ -459,7 +476,7 @@ pub const WriteFileWindows = struct {
             }
 
             switch (this.throw(.{
-                .errno = @intFromEnum(err),
+                .errno = @backingInt(err),
                 .path = this.file_blob.store.?.data.file.pathlike.path.slice(),
                 .syscall = .open,
             })) {

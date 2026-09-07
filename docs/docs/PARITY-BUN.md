@@ -2016,6 +2016,25 @@ asset URLs, entry-relative source names, and `display: block` serialization.
 This closes [#675](https://github.com/home-lang/home/issues/675) without fixture
 changes, relaxed assertions, or path normalization in the test.
 
+Poll-parked Blob reads and writes now have VM-scoped ownership across every
+work-pool, process-wide I/O watcher, and owner-loop transition. Home activates
+the real platform waker and readiness probes, uses an atomic request rerun state
+for callback replacement, and defers Darwin close completion until `EV_DELETE`
+and queued events are consumed. A parked task does not hold the native worker
+barrier indefinitely, but remains in an intrusive VM registry so shutdown can
+cancel it, detach the kernel registration, close owned fds, and release Blob and
+promise roots without JavaScript re-entry. `EAGAIN` now transitions reads and
+writes to polling instead of spinning on an immutable syscall result.
+
+The real-FIFO Worker regression passes six consecutive Debug processes and in
+ReleaseFast. The installation-shaped runtime aggregate is **68/68** in Debug and
+ReleaseFast, native `home_rt` is **1,827 passed / 19 skipped / 0 failed**, and
+three unchanged upstream Blob/Worker files pass **16/16**. This closes
+[#569](https://github.com/home-lang/home/issues/569) without relaxed timeouts,
+workloads, assertions, or skips. The distinct optimized file-to-file
+`Bun.write` gap discovered by the broader audit remains explicit in
+[#676](https://github.com/home-lang/home/issues/676).
+
 ## Summary
 
 Substrate file-count progress. "Present" is the live Zig file count under

@@ -68,6 +68,7 @@ pub const ReadFile = struct {
 
     pub const getFd = FileOpener(@This()).getFd;
     pub const doClose = FileCloser(@This()).doClose;
+    pub const doClosePollForShutdown = FileCloser(@This()).doClosePollForShutdown;
 
     pub fn update(this: *ReadFile) void {
         if (Environment.isWindows) return; //why
@@ -138,10 +139,11 @@ pub const ReadFile = struct {
         // - we don't need to delete from kqueue
         if (comptime Environment.isMac) {
             // unless pending IO has been scheduled in-between.
-            this.close_after_io = this.io_request.scheduled;
+            this.close_after_io = this.io_request.isScheduled();
         }
 
-        jsc.WorkPool.schedule(&this.task);
+        const io_task = this.io_task orelse return;
+        if (io_task.resumeFromPoll(&this.task)) jsc.WorkPool.schedule(&this.task);
     }
 
     pub fn onIOError(this: *ReadFile, err: bun.sys.Error) void {
@@ -154,14 +156,14 @@ pub const ReadFile = struct {
         // - we don't need to delete from kqueue
         if (comptime Environment.isMac) {
             // unless pending IO has been scheduled in-between.
-            this.close_after_io = this.io_request.scheduled;
+            this.close_after_io = this.io_request.isScheduled();
         }
-        jsc.WorkPool.schedule(&this.task);
+        const io_task = this.io_task orelse return;
+        if (io_task.resumeFromPoll(&this.task)) jsc.WorkPool.schedule(&this.task);
     }
 
     pub fn onRequestReadable(request: *io.Request) io.Action {
         bloblog("ReadFile.onRequestReadable", .{});
-        request.scheduled = false;
         var this: *ReadFile = @alignCast(@fieldParentPtr("io_request", request));
         return io.Action{
             .readable = .{
@@ -177,9 +179,10 @@ pub const ReadFile = struct {
     pub fn waitForReadable(this: *ReadFile) void {
         bloblog("ReadFile.waitForReadable", .{});
         this.close_after_io = true;
-        @atomicStore(@TypeOf(this.io_request.callback), &this.io_request.callback, &onRequestReadable, .seq_cst);
-        if (!this.io_request.scheduled)
-            io.Loop.get().schedule(&this.io_request);
+        const io_task = this.io_task orelse @panic("ReadFile poll without WorkTask");
+        io_task.beginPollWait();
+        io.BlobLoop.get().scheduleWithCallback(&this.io_request, &onRequestReadable);
+        io_task.finishPollWait();
     }
 
     fn remainingBuffer(this: *const ReadFile, stack_buffer: []u8) []u8 {
@@ -206,11 +209,10 @@ pub const ReadFile = struct {
                 .err => |err| {
                     switch (err.getErrno()) {
                         bun.io.retry => {
-                            if (!this.could_block) {
-                                // regular files cannot use epoll.
-                                // this is fine on kqueue, but not on epoll.
-                                continue;
-                            }
+                            // EAGAIN is definitive evidence that this fd can
+                            // block. The syscall result above is immutable, so
+                            // retrying it in this loop can only spin forever.
+                            this.could_block = true;
                             retry.* = true;
                             this.read_eof = false;
                             return true;
@@ -310,6 +312,22 @@ pub const ReadFile = struct {
                 io_task.onFinish();
             }
         }
+    }
+
+    pub fn cancelPollForShutdown(this: *ReadFile, io_task: *ReadFileTask) void {
+        this.doClosePollForShutdown(io_task);
+    }
+
+    pub fn cancelForShutdown(this: *ReadFile) void {
+        if (this.opened_fd != invalid_fd and this.isAllowedToClose()) {
+            _ = this.opened_fd.closeAllowingBadFileDescriptor(null);
+            this.opened_fd = invalid_fd;
+        }
+        if (this.system_error) |err| err.deref();
+        this.buffer.clearAndFree(bun.default_allocator);
+        if (this.store) |store| store.deref();
+        this.store = null;
+        bun.destroy(this);
     }
 
     fn resolveSizeAndLastModified(this: *ReadFile, fd: bun.FD) void {

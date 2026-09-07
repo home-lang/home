@@ -859,3 +859,41 @@ resolves the specific
 intermittent original-file observation; Darwin-only platform/integration,
 native dependency ownership and complete logical Bun-suite parity remain open
 under #530 and #66.
+
+## Poll-parked Blob I/O ownership (#569)
+
+`Bun.file(path).text()` and byte-backed `Bun.write(path, data)` now use Bun's
+dedicated process-wide I/O watcher in Home instead of pairing its intrusive
+`Poll`/`Request` types with the generic per-thread loop. Home's async namespace
+also exposes the real platform waker and zero-time read/write readiness probes;
+the former placeholder read probe returned `ready` for every descriptor and
+made a nonblocking FIFO spin permanently on `EAGAIN`.
+
+Each pollable Blob task registers with its creating VM before its first work-pool
+dispatch. Individual worker hops join the existing native shutdown barrier,
+while the longer-lived registry owns the task while it is parked. The
+worker-to-poller handoff has an atomic parking/readiness handshake, so an event
+that arrives during registration cannot schedule the same intrusive task before
+the current callback releases it. Shutdown closes new pollable admission, joins
+active worker hops, detaches every remaining poll registration, closes owned
+descriptors, releases Blob stores and promise roots, and never re-enters the
+stopped JavaScript loop.
+
+The dedicated watcher now has an atomic queued/running/rerun request state.
+Darwin close callbacks run only after `EV_DELETE` and any queued event are
+consumed; close batches use a zero timeout so teardown never waits for unrelated
+readiness. An `EAGAIN` result marks either read or write fd as pollable instead
+of retrying the same immutable syscall result forever.
+
+The deterministic regression uses real FIFOs whose peer holds both ends open
+without transferring data. It proves that blocked reads and buffer-filling
+writes leave the shared work pool, then verifies bounded Worker termination and
+exactly one native cancellation per operation. It passes six consecutive Debug
+processes and ReleaseFast. The complete installation-shaped runtime aggregate
+passes **68/68** in both modes, native `home_rt` passes **1,827 / 19 skipped / 0
+failed**, and the unchanged upstream `bun-file-read.test.ts`, `blob-write.test.ts`,
+and `worker_blob.test.ts` files pass **16/16**. No assertion, workload, deadline,
+or skip was weakened. The separate optimized regular-file Blob-to-Blob copy gap
+found during this audit is tracked honestly in
+[#676](https://github.com/home-lang/home/issues/676); full parity remains open
+under [#66](https://github.com/home-lang/home/issues/66).

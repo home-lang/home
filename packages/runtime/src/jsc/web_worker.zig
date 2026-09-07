@@ -859,7 +859,9 @@ fn shutdown(this: *WebWorker) void {
     // owner-thread completion. Close admission outside the context registry
     // lock and join every admitted job before cancellation or JSC teardown.
     if (vm_to_deinit) |vm| {
+        vm.native_pollable_work_pool_jobs.closeAdmission();
         vm.native_work_pool_jobs.closeAndWait();
+        vm.native_pollable_work_pool_jobs.cancelRemaining();
         @import("../runtime/node/node_fs_stat_watcher.zig").StatWatcherScheduler.shutdown(vm);
     }
 

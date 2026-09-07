@@ -68,6 +68,7 @@ hide_bun_stackframes: bool = true,
 is_printing_plugin: bool = false,
 is_shutting_down: bool = false,
 native_work_pool_jobs: NativeWorkPoolJobs = .{},
+native_pollable_work_pool_jobs: NativePollableWorkPoolJobs = .{},
 plugin_runner: ?PluginRunner = null,
 is_main_thread: bool = false,
 exit_handler: ExitHandler = .{},
@@ -1036,6 +1037,87 @@ pub const NativeWorkPoolJobs = struct {
     }
 };
 
+/// Intrusive ownership registry for jobs which may leave the native work pool
+/// and park on the process-wide I/O poller. A parked job cannot keep the normal
+/// work-pool barrier held (a FIFO may never become ready), but it must remain
+/// owned by its creating VM until the poll registration is detached.
+pub const NativePollableWorkPoolJob = struct {
+    next: ?*NativePollableWorkPoolJob = null,
+    cancel_for_shutdown: ?*const fn (*NativePollableWorkPoolJob) void = null,
+    registered: bool = false,
+};
+
+pub const NativePollableWorkPoolJobs = struct {
+    lock: bun.Mutex = .{},
+    accepting: bool = true,
+    head: ?*NativePollableWorkPoolJob = null,
+    count_: usize = 0,
+
+    pub fn tryAdd(this: *NativePollableWorkPoolJobs, job: *NativePollableWorkPoolJob) bool {
+        this.lock.lock();
+        defer this.lock.unlock();
+        if (!this.accepting) return false;
+        bun.assert(!job.registered);
+        job.next = this.head;
+        job.registered = true;
+        this.head = job;
+        this.count_ += 1;
+        return true;
+    }
+
+    pub fn remove(this: *NativePollableWorkPoolJobs, job: *NativePollableWorkPoolJob) void {
+        this.lock.lock();
+        defer this.lock.unlock();
+        if (!job.registered) return;
+
+        var link = &this.head;
+        while (link.*) |candidate| {
+            if (candidate == job) {
+                link.* = candidate.next;
+                candidate.next = null;
+                candidate.registered = false;
+                bun.assert(this.count_ > 0);
+                this.count_ -= 1;
+                return;
+            }
+            link = &candidate.next;
+        }
+        unreachable;
+    }
+
+    pub fn closeAdmission(this: *NativePollableWorkPoolJobs) void {
+        this.lock.lock();
+        defer this.lock.unlock();
+        this.accepting = false;
+    }
+
+    /// Detach the list under the registry lock, then invoke destructors without
+    /// it. Blob cleanup may close descriptors and wake the I/O thread, so it
+    /// must never run while producer admission is locked.
+    pub fn cancelRemaining(this: *NativePollableWorkPoolJobs) void {
+        this.lock.lock();
+        var job = this.head;
+        this.head = null;
+        this.count_ = 0;
+        var cursor = job;
+        while (cursor) |node| : (cursor = node.next) node.registered = false;
+        this.lock.unlock();
+
+        while (job) |node| {
+            const next = node.next;
+            node.next = null;
+            node.cancel_for_shutdown.?(node);
+            job = next;
+        }
+    }
+
+    pub fn count(this: *NativePollableWorkPoolJobs) usize {
+        this.lock.lock();
+        defer this.lock.unlock();
+        return this.count_;
+    }
+};
+
 extern fn Zig__GlobalObject__destructOnExit(*JSGlobalObject) void;
 extern fn Home__Worker__cancelSnapshotsForVM(*JSGlobalObject) void;
 
@@ -1062,7 +1144,9 @@ pub fn globalExit(this: *VirtualMachine) noreturn {
         // Native jobs retain raw creating-VM state until they publish their
         // owner-thread completion. Close admission and join them before JSC
         // or the event loop is destroyed.
+        this.native_pollable_work_pool_jobs.closeAdmission();
         this.native_work_pool_jobs.closeAndWait();
+        this.native_pollable_work_pool_jobs.cancelRemaining();
         @import("../runtime/node/node_fs_stat_watcher.zig").StatWatcherScheduler.shutdown(this);
         @import("./CppTask.zig").beginScriptExecutionContextShutdown(this.global);
         this.eventLoop().cancelQueuedTasksForShutdown();
