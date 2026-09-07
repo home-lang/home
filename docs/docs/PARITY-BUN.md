@@ -2035,6 +2035,23 @@ workloads, assertions, or skips. The distinct optimized file-to-file
 `Bun.write` gap discovered by the broader audit remains explicit in
 [#676](https://github.com/home-lang/home/issues/676).
 
+Optimized regular-file Blob-to-Blob `Bun.write` now distinguishes an explicit
+slice from an unsliced file whose size was merely observed. Source and
+destination offsets and length caps propagate through the copy workers, return
+the exact copied byte count, preserve a destination prefix, and truncate at the
+actual end of the write. Structured clone version 4 preserves that slice
+identity while accepting older payloads. POSIX retains its clone/copy-file fast
+paths for whole files and uses bounded fallbacks where required; Windows keeps
+`uv_fs_copyfile` for whole files and uses positioned libuv I/O for ranges.
+
+The focused native matrix passes in Debug and ReleaseFast. The unchanged
+upstream `bun-write.test.js` is **33/33**, the two unchanged Blob structured-
+clone/name files are **37/37**, the installation-shaped runtime aggregate is
+**69/69** in both modes, and native `home_rt` is **1,827 passed / 19 skipped / 0
+failed**. This closes [#676](https://github.com/home-lang/home/issues/676)
+without weakening an assertion, workload, deadline, or skip. Full Bun-suite
+parity remains tracked by [#66](https://github.com/home-lang/home/issues/66).
+
 ## Summary
 
 Substrate file-count progress. "Present" is the live Zig file count under

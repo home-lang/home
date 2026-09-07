@@ -1331,3 +1331,22 @@ unchanged upstream `bun-file-read.test.ts`, `blob-write.test.ts`, and
 `worker_blob.test.ts` files pass **16/16**. This completes #569 with no weakened
 test. The optimized regular-file Blob-to-Blob `Bun.write` path is a separate
 confirmed gap under #676 and remains required for #66.
+
+## Current Optimized File-Copy Checkpoint (2026-09-06)
+
+Regular-file Blob-to-Blob `Bun.write` now carries explicit source and
+destination slice identity independently from lazy file-size caches. Structured
+clone version 4 preserves the distinction while decoding prior payload
+versions. Whole-file copies retain platform-native optimized paths; bounded
+copies honor both ranges, return the exact byte count, preserve the destination
+prefix, and truncate at the actual copied end. The shared POSIX bounded
+read/write loop no longer falls through to an unbounded EOF copy, Linux
+unknown-length copy syscalls iterate to EOF, and Windows ranged copies use
+positioned libuv I/O instead of the whole-file copy primitive.
+
+The focused range/count matrix passes in Debug and ReleaseFast. The unchanged
+upstream `bun-write.test.js` passes **33/33**, the unchanged Blob name and
+structured-clone files pass **37/37**, the installation-shaped runtime
+aggregate passes **69/69** in both modes, and native `home_rt` passes **1,827 /
+19 skipped / 0 failed**. This completes #676 without a weakened assertion,
+workload, deadline, or skip. Full logical corpus parity remains open under #66.

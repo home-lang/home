@@ -4,8 +4,12 @@ pub const CopyFile = struct {
     source_file_store: Store.File,
     store: ?*Store = null,
     source_store: ?*Store = null,
-    offset: SizeType = 0,
-    size: SizeType = 0,
+    source_offset: SizeType = 0,
+    source_length: SizeType = Blob.max_size,
+    source_is_sliced: bool = false,
+    destination_offset: SizeType = 0,
+    destination_length: SizeType = Blob.max_size,
+    destination_is_sliced: bool = false,
     max_length: SizeType = Blob.max_size,
     destination_fd: bun.FD = bun.invalid_fd,
     source_fd: bun.FD = bun.invalid_fd,
@@ -13,7 +17,6 @@ pub const CopyFile = struct {
     system_error: ?SystemError = null,
 
     read_len: SizeType = 0,
-    read_off: SizeType = 0,
 
     globalThis: *JSGlobalObject,
 
@@ -28,8 +31,12 @@ pub const CopyFile = struct {
         allocator: std.mem.Allocator,
         store: *Store,
         source_store: *Store,
-        off: SizeType,
-        max_len: SizeType,
+        source_offset: SizeType,
+        source_length: SizeType,
+        source_is_sliced: bool,
+        destination_offset: SizeType,
+        destination_length: SizeType,
+        destination_is_sliced: bool,
         globalThis: *JSGlobalObject,
         mkdirp_if_not_exists: bool,
         destination_mode: ?bun.Mode,
@@ -37,8 +44,12 @@ pub const CopyFile = struct {
         const read_file = bun.new(CopyFile, CopyFile{
             .store = store,
             .source_store = source_store,
-            .offset = off,
-            .max_length = max_len,
+            .source_offset = source_offset,
+            .source_length = source_length,
+            .source_is_sliced = source_is_sliced,
+            .destination_offset = destination_offset,
+            .destination_length = destination_length,
+            .destination_is_sliced = destination_is_sliced,
             .globalThis = globalThis,
             .destination_file_store = store.data.file,
             .source_file_store = source_store.data.file,
@@ -149,8 +160,18 @@ pub const CopyFile = struct {
         }
     }
 
+    fn truncateDestination(this: *CopyFile, length: SizeType) bool {
+        switch (bun.sys.ftruncate(this.destination_fd, @intCast(length))) {
+            .err => |err| {
+                this.system_error = err.toSystemError();
+                return false;
+            },
+            .result => return true,
+        }
+    }
+
     const O = bun.O;
-    const open_destination_flags = O.CLOEXEC | O.CREAT | O.WRONLY | O.TRUNC;
+    const open_destination_flags: i32 = O.CLOEXEC | O.CREAT | O.WRONLY;
     const open_source_flags = O.CLOEXEC | O.RDONLY;
 
     pub fn doOpenFile(this: *CopyFile, comptime which: IOWhich) !void {
@@ -183,7 +204,7 @@ pub const CopyFile = struct {
                 const mode = this.destination_mode orelse jsc.Node.fs.default_permission;
                 this.destination_fd = switch (bun.sys.open(
                     dest,
-                    open_destination_flags,
+                    open_destination_flags | if (this.destination_offset == 0) @as(i32, O.TRUNC) else 0,
                     mode,
                 )) {
                     .result => |result| switch (result.makeLibUVOwnedForSyscall(.open, .close_on_fail)) {
@@ -237,15 +258,9 @@ pub const CopyFile = struct {
         comptime use: TryWith,
         comptime clear_append_if_invalid: bool,
     ) anyerror!void {
-        this.read_off += this.offset;
-
         var remain = @as(usize, this.max_length);
         const unknown_size = remain == Blob.max_size or remain == 0;
-        if (unknown_size) {
-            // sometimes stat lies
-            // let's give it 4096 and see how it goes
-            remain = 4096;
-        }
+        const syscall_length = 4096;
 
         var total_written: usize = 0;
         const src_fd = this.source_fd;
@@ -266,7 +281,7 @@ pub const CopyFile = struct {
                     return bun.errnoToZigErr(err.errno);
                 },
                 .result => {
-                    _ = linux.ftruncate(dest_fd.cast(), @as(std.posix.off_t, @intCast(total_written)));
+                    _ = linux.ftruncate(dest_fd.cast(), @as(std.posix.off_t, @intCast(this.destination_offset +| total_written)));
                     return;
                 },
             }
@@ -275,9 +290,9 @@ pub const CopyFile = struct {
         while (true) {
             // TODO: this should use non-blocking I/O.
             const written = switch (comptime use) {
-                .copy_file_range => linux.copy_file_range(src_fd.cast(), null, dest_fd.cast(), null, remain, 0),
-                .sendfile => linux.sendfile(dest_fd.cast(), src_fd.cast(), null, remain),
-                .splice => bun.linux.splice(src_fd.cast(), null, dest_fd.cast(), null, remain, 0),
+                .copy_file_range => linux.copy_file_range(src_fd.cast(), null, dest_fd.cast(), null, if (unknown_size) syscall_length else remain, 0),
+                .sendfile => linux.sendfile(dest_fd.cast(), src_fd.cast(), null, if (unknown_size) syscall_length else remain),
+                .splice => bun.linux.splice(src_fd.cast(), null, dest_fd.cast(), null, if (unknown_size) syscall_length else remain, 0),
             };
 
             switch (bun.sys.getErrno(written)) {
@@ -294,7 +309,7 @@ pub const CopyFile = struct {
                             return bun.errnoToZigErr(err.errno);
                         },
                         .result => {
-                            _ = linux.ftruncate(dest_fd.cast(), @as(std.posix.off_t, @intCast(total_written)));
+                            _ = linux.ftruncate(dest_fd.cast(), @as(std.posix.off_t, @intCast(this.destination_offset +| total_written)));
                             return;
                         },
                     }
@@ -329,21 +344,21 @@ pub const CopyFile = struct {
                                 return bun.errnoToZigErr(err.errno);
                             },
                             .result => {
-                                _ = linux.ftruncate(dest_fd.cast(), @as(std.posix.off_t, @intCast(total_written)));
+                                _ = linux.ftruncate(dest_fd.cast(), @as(std.posix.off_t, @intCast(this.destination_offset +| total_written)));
                                 return;
                             },
                         }
                     }
 
                     this.system_error = (bun.sys.Error{
-                        .errno = @as(bun.sys.Error.Int, @intCast(@intFromEnum(linux.E.INVAL))),
+                        .errno = @as(bun.sys.Error.Int, @intCast(@backingInt(linux.E.INVAL))),
                         .syscall = TryWith.tag.get(use).?,
                     }).toSystemError();
                     return bun.errnoToZigErr(linux.E.INVAL);
                 },
                 else => |errno| {
                     this.system_error = (bun.sys.Error{
-                        .errno = @as(bun.sys.Error.Int, @intCast(@intFromEnum(errno))),
+                        .errno = @as(bun.sys.Error.Int, @intCast(@backingInt(errno))),
                         .syscall = TryWith.tag.get(use).?,
                     }).toSystemError();
                     return bun.errnoToZigErr(errno);
@@ -351,9 +366,12 @@ pub const CopyFile = struct {
             }
 
             // wrote zero bytes means EOF
-            remain -|= @intCast(written);
             total_written += @intCast(written);
-            if (written == 0 or remain == 0) break;
+            if (written == 0) break;
+            if (!unknown_size) {
+                remain -|= @intCast(written);
+                if (remain == 0) break;
+            }
         }
     }
 
@@ -375,7 +393,7 @@ pub const CopyFile = struct {
                                 this.system_error = err.toSystemError();
                                 return bun.errnoToZigErr(err.errno);
                             },
-                            .result => {},
+                            .result => this.read_len = @truncate(total_written),
                         }
                     },
                     else => {
@@ -436,7 +454,13 @@ pub const CopyFile = struct {
             // First, we attempt to clonefile() on macOS
             // This is the fastest way to copy a file.
             if (comptime Environment.isMac) {
-                if (this.offset == 0 and this.source_file_store.pathlike == .path and this.destination_file_store.pathlike == .path) {
+                if (this.source_offset == 0 and
+                    !this.source_is_sliced and
+                    this.destination_offset == 0 and
+                    !this.destination_is_sliced and
+                    this.source_file_store.pathlike == .path and
+                    this.destination_file_store.pathlike == .path)
+                {
                     do_clonefile: {
                         var path_buf: bun.PathBuffer = undefined;
 
@@ -517,6 +541,28 @@ pub const CopyFile = struct {
 
         if (this.destination_file_store.pathlike == .fd) {}
 
+        if (this.source_offset > 0) {
+            switch (bun.sys.setFileOffset(this.source_fd, this.source_offset)) {
+                .err => |err| {
+                    this.system_error = err.toSystemError();
+                    this.doClose();
+                    return;
+                },
+                .result => {},
+            }
+        }
+
+        if (this.destination_offset > 0) {
+            switch (bun.sys.setFileOffset(this.destination_fd, this.destination_offset)) {
+                .err => |err| {
+                    this.system_error = err.toSystemError();
+                    this.doClose();
+                    return;
+                },
+                .result => {},
+            }
+        }
+
         const stat: bun.Stat = stat_ orelse switch (bun.sys.fstat(this.source_fd)) {
             .result => |result| result,
             .err => |err| {
@@ -532,9 +578,14 @@ pub const CopyFile = struct {
             return;
         }
 
-        if (stat.size != 0) {
-            this.max_length = @max(@min(@as(SizeType, @intCast(stat.size)), this.max_length), this.offset) - this.offset;
+        if (stat.size != 0 or posix.S.ISREG(stat.mode)) {
+            this.max_length = @as(SizeType, @intCast(@max(stat.size, 0))) -| this.source_offset;
+            if (this.source_is_sliced) this.max_length = @min(this.max_length, this.source_length);
+            if (this.destination_is_sliced) this.max_length = @min(this.max_length, this.destination_length);
             if (this.max_length == 0) {
+                if (this.destination_file_store.pathlike == .path or this.destination_offset > 0) {
+                    _ = this.truncateDestination(this.destination_offset);
+                }
                 this.doClose();
                 return;
             }
@@ -544,8 +595,11 @@ pub const CopyFile = struct {
                 this.max_length > bun.sys.preallocate_length and
                 this.max_length != Blob.max_size)
             {
-                bun.sys.preallocate_file(this.destination_fd.cast(), 0, this.max_length) catch {};
+                bun.sys.preallocate_file(this.destination_fd.cast(), this.destination_offset, this.max_length) catch {};
             }
+        } else {
+            if (this.source_is_sliced) this.max_length = @min(this.max_length, this.source_length);
+            if (this.destination_is_sliced) this.max_length = @min(this.max_length, this.destination_length);
         }
 
         if (comptime Environment.isLinux) {
@@ -558,6 +612,9 @@ pub const CopyFile = struct {
                     this.doCopyFileRange(.copy_file_range, false) catch {};
                 }
 
+                if (this.destination_file_store.pathlike == .path or this.destination_offset > 0) {
+                    _ = this.truncateDestination(this.destination_offset +| this.read_len);
+                }
                 this.doClose();
                 return;
             }
@@ -591,19 +648,34 @@ pub const CopyFile = struct {
         }
 
         if (comptime Environment.isMac) {
-            this.doFCopyFileWithReadWriteLoopFallback() catch {
+            const is_bounded = this.source_is_sliced or this.destination_is_sliced;
+            if (is_bounded) {
+                var total_written: u64 = 0;
+                switch (jsc.Node.fs.NodeFS.copyFileUsingReadWriteLoop("", "", this.source_fd, this.destination_fd, this.max_length, &total_written)) {
+                    .err => |err| {
+                        this.system_error = err.toSystemError();
+                        this.doClose();
+                        return;
+                    },
+                    .result => this.read_len = @truncate(total_written),
+                }
+            } else this.doFCopyFileWithReadWriteLoopFallback() catch {
                 this.doClose();
 
                 return;
             };
-            if (stat.size != 0 and @as(SizeType, @intCast(stat.size)) > this.max_length) {
-                _ = darwin.ftruncate(this.destination_fd.cast(), @as(std.posix.off_t, @intCast(this.max_length)));
+            if (!is_bounded and this.read_len == 0 and stat.size > 0) {
+                this.read_len = @truncate(@as(SizeType, @intCast(@max(stat.size, 0))) -| this.source_offset);
+            }
+            if (this.destination_file_store.pathlike == .path or this.destination_offset > 0) {
+                _ = this.truncateDestination(this.destination_offset +| this.read_len);
             }
 
             this.doClose();
         } else if (comptime Environment.isFreeBSD) {
             var total_written: u64 = 0;
-            switch (jsc.Node.fs.NodeFS.copyFileUsingReadWriteLoop("", "", this.source_fd, this.destination_fd, 0, &total_written)) {
+            const is_bounded = this.source_is_sliced or this.destination_is_sliced;
+            switch (jsc.Node.fs.NodeFS.copyFileUsingReadWriteLoop("", "", this.source_fd, this.destination_fd, if (is_bounded) this.max_length else 0, &total_written)) {
                 .err => |err| {
                     this.system_error = err.toSystemError();
                     this.doClose();
@@ -611,11 +683,9 @@ pub const CopyFile = struct {
                 },
                 .result => {},
             }
-            if (stat.size != 0 and @as(SizeType, @intCast(stat.size)) > this.max_length) {
-                _ = bun.sys.ftruncate(this.destination_fd, @intCast(this.max_length));
-                this.read_len = @truncate(@min(total_written, @as(u64, this.max_length)));
-            } else {
-                this.read_len = @truncate(total_written);
+            this.read_len = @truncate(total_written);
+            if (this.destination_file_store.pathlike == .path or this.destination_offset > 0) {
+                _ = this.truncateDestination(this.destination_offset +| this.read_len);
             }
             this.doClose();
         } else {
@@ -634,7 +704,13 @@ pub const CopyFileWindows = struct {
     destination_mode: ?bun.Mode = null,
     event_loop: *jsc.EventLoop,
 
-    size: Blob.SizeType = Blob.max_size,
+    source_offset: Blob.SizeType = 0,
+    source_length: Blob.SizeType = Blob.max_size,
+    source_is_sliced: bool = false,
+    destination_offset: Blob.SizeType = 0,
+    destination_length: Blob.SizeType = Blob.max_size,
+    destination_is_sliced: bool = false,
+    max_length: Blob.SizeType = Blob.max_size,
 
     /// Bytes written, stored for use after async chmod completes
     written_bytes: usize = 0,
@@ -661,8 +737,13 @@ pub const CopyFileWindows = struct {
         }
 
         pub fn read(read_write_loop: *ReadWriteLoop, this: *CopyFileWindows) bun.sys.Maybe(void) {
+            const remaining = this.max_length -| @as(Blob.SizeType, @intCast(read_write_loop.written));
+            const read_capacity = if (this.max_length == Blob.max_size)
+                read_write_loop.read_buf.capacity
+            else
+                @min(read_write_loop.read_buf.capacity, @as(usize, @intCast(remaining)));
             read_write_loop.read_buf.items.len = 0;
-            read_write_loop.uv_buf = libuv.uv_buf_t.init(read_write_loop.read_buf.allocatedSlice());
+            read_write_loop.uv_buf = libuv.uv_buf_t.init(read_write_loop.read_buf.allocatedSlice()[0..read_capacity]);
             const loop = this.event_loop.virtual_machine.event_loop_handle.?;
 
             // This io_request is used for both reading and writing.
@@ -676,7 +757,7 @@ pub const CopyFileWindows = struct {
                 read_write_loop.source_fd.uv(),
                 @ptrCast(&read_write_loop.uv_buf),
                 1,
-                -1,
+                if (this.isRangeCopy()) @intCast(this.source_offset +| @as(Blob.SizeType, @intCast(read_write_loop.written))) else -1,
                 &onRead,
             );
 
@@ -723,7 +804,7 @@ pub const CopyFileWindows = struct {
                 destination_fd.uv(),
                 @ptrCast(&this.read_write_loop.uv_buf),
                 1,
-                -1,
+                if (this.isRangeCopy()) @intCast(this.destination_offset +| @as(Blob.SizeType, @intCast(this.read_write_loop.written))) else -1,
                 &onWrite,
             );
             req.data = @ptrCast(this);
@@ -738,13 +819,13 @@ pub const CopyFileWindows = struct {
         fn onWrite(req: *libuv.fs_t) callconv(.c) void {
             var this: *CopyFileWindows = @fieldParentPtr("io_request", req);
             bun.assert(req.data == @as(?*anyopaque, @ptrCast(this)));
-            const buf = &this.read_write_loop.read_buf.items;
+            const pending_len = this.read_write_loop.uv_buf.slice().len;
 
             const destination_fd = this.read_write_loop.destination_fd;
 
             const rc = req.result;
 
-            bun.sys.syslog("uv_fs_write({f}, {d}) = {d}", .{ destination_fd, buf.len, rc.int() });
+            bun.sys.syslog("uv_fs_write({f}, {d}) = {d}", .{ destination_fd, pending_len, rc.int() });
 
             if (rc.toError(.write)) |err| {
                 this.err = err;
@@ -756,7 +837,7 @@ pub const CopyFileWindows = struct {
 
             this.read_write_loop.written += wrote;
 
-            if (wrote < buf.len) {
+            if (wrote < pending_len) {
                 if (wrote == 0) {
                     // Handle EOF. We can't write any more.
                     this.onReadWriteLoopComplete();
@@ -774,7 +855,7 @@ pub const CopyFileWindows = struct {
                     destination_fd.uv(),
                     @ptrCast(&this.read_write_loop.uv_buf),
                     1,
-                    -1,
+                    if (this.isRangeCopy()) @intCast(this.destination_offset +| @as(Blob.SizeType, @intCast(this.read_write_loop.written))) else -1,
                     &onWrite,
                 );
 
@@ -847,7 +928,12 @@ pub const CopyFileWindows = struct {
         source_file_store: *Store,
         event_loop: *jsc.EventLoop,
         mkdirp_if_not_exists: bool,
-        size_: Blob.SizeType,
+        source_offset: Blob.SizeType,
+        source_length: Blob.SizeType,
+        source_is_sliced: bool,
+        destination_offset: Blob.SizeType,
+        destination_length: Blob.SizeType,
+        destination_is_sliced: bool,
         destination_mode: ?bun.Mode,
     ) jsc.JSValue {
         destination_file_store.ref();
@@ -860,7 +946,16 @@ pub const CopyFileWindows = struct {
             .event_loop = event_loop,
             .mkdirp_if_not_exists = mkdirp_if_not_exists,
             .destination_mode = destination_mode,
-            .size = size_,
+            .source_offset = source_offset,
+            .source_length = source_length,
+            .source_is_sliced = source_is_sliced,
+            .destination_offset = destination_offset,
+            .destination_length = destination_length,
+            .destination_is_sliced = destination_is_sliced,
+            .max_length = @min(
+                if (source_is_sliced) source_length else Blob.max_size,
+                if (destination_is_sliced) destination_length else Blob.max_size,
+            ),
         });
         const promise = result.promise.value();
 
@@ -887,7 +982,7 @@ pub const CopyFileWindows = struct {
                     result.close();
                     return .{
                         .err = .{
-                            .errno = @as(c_int, @intCast(@intFromEnum(bun.sys.SystemErrno.EMFILE))),
+                            .errno = @as(c_int, @intCast(@backingInt(bun.sys.SystemErrno.EMFILE))),
                             .syscall = .open,
                             .path = pathlike.path.slice(),
                         },
@@ -932,6 +1027,12 @@ pub const CopyFileWindows = struct {
             },
         };
 
+        if (this.max_length == 0) {
+            this.event_loop.refConcurrently();
+            this.onReadWriteLoopComplete();
+            return;
+        }
+
         switch (this.read_write_loop.start(this)) {
             .err => |err| {
                 this.throw(err);
@@ -944,6 +1045,11 @@ pub const CopyFileWindows = struct {
     }
 
     fn copyfile(this: *CopyFileWindows) void {
+        if (this.isRangeCopy()) {
+            this.prepareReadWriteLoop();
+            return;
+        }
+
         // This is for making it easier for us to test this code path
         if (bun.feature_flag.BUN_FEATURE_FLAG_DISABLE_UV_FS_COPYFILE.get()) {
             this.prepareReadWriteLoop();
@@ -1046,8 +1152,8 @@ pub const CopyFileWindows = struct {
         if (rc.errno()) |errno| {
             this.throw(.{
                 // #6336
-                .errno = if (errno == @intFromEnum(bun.sys.SystemErrno.EPERM))
-                    @as(c_int, @intCast(@intFromEnum(bun.sys.SystemErrno.ENOENT)))
+                .errno = if (errno == @backingInt(bun.sys.SystemErrno.EPERM))
+                    @as(c_int, @intCast(@backingInt(bun.sys.SystemErrno.ENOENT)))
                 else
                     errno,
                 .syscall = .copyfile,
@@ -1110,9 +1216,11 @@ pub const CopyFileWindows = struct {
 
     pub fn onComplete(this: *CopyFileWindows, written_actual: usize) void {
         var written = written_actual;
-        if (written != @as(@TypeOf(written), @intCast(this.size)) and this.size != Blob.max_size) {
-            this.truncate();
-            written = @intCast(this.size);
+        if (this.max_length != Blob.max_size) {
+            written = @min(written, @as(usize, @intCast(this.max_length)));
+        }
+        if (this.isRangeCopy()) {
+            if (!this.truncate(this.destination_offset +| @as(Blob.SizeType, @intCast(written)))) return;
         }
 
         // Apply destination mode if specified (async)
@@ -1136,7 +1244,7 @@ pub const CopyFileWindows = struct {
 
                 if (rc.errno()) |errno| {
                     // chmod failed to start - reject the promise to report the error
-                    var err = bun.sys.Error.fromCode(@enumFromInt(errno), .chmod);
+                    var err = bun.sys.Error.fromCode(@fromBackingInt(@intCast(errno)), .chmod);
                     const destination = &this.destination_file_store.data.file;
                     if (destination.pathlike == .path) {
                         err = err.withPath(destination.pathlike.path.slice());
@@ -1184,18 +1292,31 @@ pub const CopyFileWindows = struct {
         promise.resolve(globalThis, jsc.JSValue.jsNumberFromUint64(written)) catch {}; // TODO: properly propagate exception upwards
     }
 
-    fn truncate(this: *CopyFileWindows) void {
+    fn isRangeCopy(this: *const CopyFileWindows) bool {
+        return this.source_is_sliced or
+            this.source_offset > 0 or
+            this.destination_is_sliced or
+            this.destination_offset > 0;
+    }
+
+    fn truncate(this: *CopyFileWindows, length: Blob.SizeType) bool {
         // TODO: optimize this
         @branchHint(.cold);
 
         var node_fs: jsc.Node.fs.NodeFS = .{};
-        _ = node_fs.truncate(
+        switch (node_fs.truncate(
             .{
-                .path = this.destination_file_store.data.file.pathlike,
-                .len = @intCast(this.size),
+                .path = .{ .fd = this.read_write_loop.destination_fd },
+                .len = @intCast(length),
             },
             .sync,
-        );
+        )) {
+            .err => |err| {
+                this.throw(err);
+                return false;
+            },
+            .result => return true,
+        }
     }
 
     pub fn deinit(this: *CopyFileWindows) void {
@@ -1215,7 +1336,7 @@ pub const CopyFileWindows = struct {
         var destination = &this.destination_file_store.data.file;
         if (destination.pathlike != .path) {
             this.throw(.{
-                .errno = @as(c_int, @intCast(@intFromEnum(bun.sys.SystemErrno.EINVAL))),
+                .errno = @as(c_int, @intCast(@backingInt(bun.sys.SystemErrno.EINVAL))),
                 .syscall = .mkdir,
             });
             return;
@@ -1259,12 +1380,12 @@ pub const IOWhich = enum {
 };
 
 const unsupported_directory_error = SystemError{
-    .errno = @as(c_int, @intCast(@intFromEnum(bun.sys.SystemErrno.EISDIR))),
+    .errno = @as(c_int, @intCast(@backingInt(bun.sys.SystemErrno.EISDIR))),
     .message = bun.String.static("That doesn't work on folders"),
     .syscall = bun.String.static("fstat"),
 };
 const unsupported_non_regular_file_error = SystemError{
-    .errno = @as(c_int, @intCast(@intFromEnum(bun.sys.SystemErrno.ENOTSUP))),
+    .errno = @as(c_int, @intCast(@backingInt(bun.sys.SystemErrno.ENOTSUP))),
     .message = bun.String.static("Non-regular files aren't supported yet"),
     .syscall = bun.String.static("fstat"),
 };

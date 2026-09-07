@@ -897,3 +897,33 @@ or skip was weakened. The separate optimized regular-file Blob-to-Blob copy gap
 found during this audit is tracked honestly in
 [#676](https://github.com/home-lang/home/issues/676); full parity remains open
 under [#66](https://github.com/home-lang/home/issues/66).
+
+## Optimized `Bun.write` file copies (#676)
+
+Regular-file Blob-to-Blob writes now preserve Bun's optimized whole-file copy
+path without confusing a lazily cached `BunFile.size` with an explicit slice.
+Blob range identity is carried separately from the numeric offset and length,
+including through structured clone version 4; older version 1-3 payloads remain
+readable. Size resolution clamps a bounded slice to the backing file instead of
+expanding it to EOF.
+
+The POSIX copy worker applies source offsets and lengths, destination offsets and
+length caps, exact returned byte counts, prefix preservation, final truncation,
+mode application, `createPath`, and filesystem errors. Whole unsliced files keep
+the native clone/copy-file fast paths. Bounded Darwin and FreeBSD copies use the
+shared read/write primitive, while Linux keeps `copy_file_range`/`sendfile`/
+`splice`; unknown-length Linux copies continue until EOF. The shared bounded
+primitive no longer falls through into its unbounded loop after consuming the
+requested range. Windows passes the same explicit range metadata and uses
+positioned libuv I/O only for ranged copies, retaining `uv_fs_copyfile` for
+whole files.
+
+The focused regression covers observed empty and nonempty destinations, source
+slices, destination slices, combined ranges, exact counts, and a
+structured-cloned source slice. The unchanged upstream `bun-write.test.js`
+passes **33/33**, and the unchanged Blob-name plus structured-clone files pass
+**37/37**, in Debug and ReleaseFast. The installation-shaped runtime aggregate
+passes **69/69** in Debug and ReleaseFast; native `home_rt` passes **1,827 / 19
+skipped / 0 failed**. No assertion, workload, deadline, or skip was weakened.
+This closes [#676](https://github.com/home-lang/home/issues/676); full suite
+parity remains open under [#66](https://github.com/home-lang/home/issues/66).

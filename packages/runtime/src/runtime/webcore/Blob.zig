@@ -27,6 +27,11 @@ reported_estimated_size: usize = 0,
 
 size: SizeType = 0,
 offset: SizeType = 0,
+/// Distinguishes an explicit `BunFile.slice()` window from an unsliced file
+/// whose lazy size has already been resolved. The numeric fields alone cannot
+/// do that: an unsliced existing file and `file.slice(0, file.size)` have the
+/// same offset and size, but only the latter is a bounded write destination.
+is_sliced: bool = false,
 store: ?*Store = null,
 content_type: string = "",
 content_type_allocated: bool = false,
@@ -65,7 +70,8 @@ pub const max_size = std.math.maxInt(SizeType);
 ///    and f64 for `last_modified`. Removed reserved bytes, it's handled by version
 ///    number.
 /// 3: Added File name serialization for File objects (when is_jsdom_file is true)
-const serialization_version: u8 = 3;
+/// 4: Preserve an explicit slice bit and its bounded size for file-backed Blobs.
+const serialization_version: u8 = 4;
 
 comptime {
     _ = Bun__Blob__getSizeForBindings;
@@ -75,6 +81,16 @@ pub const ClosingState = enum(u8) {
     running,
     closing,
 };
+
+/// `size` is also Home's lazy size cache, so a resolved unsliced file can look
+/// numerically identical to a full-range slice. Keep the explicit bit as the
+/// authority and retain the numeric comparison for Blob objects originating
+/// in an older native/structured-clone representation.
+fn hasSliceWindow(this: *const Blob, store: *const Store) bool {
+    if (this.is_sliced or this.offset > 0) return true;
+    const store_size = if (store.data == .file) store.data.file.max_size else store.size();
+    return this.size != Blob.max_size and (store_size == Blob.max_size or this.size != store_size);
+}
 
 pub fn getFormDataEncoding(this: *Blob) ?*bun.FormData.AsyncFormData {
     var content_type_slice: ZigString.Slice = this.getContentType() orelse return null;
@@ -456,6 +472,8 @@ fn _onStructuredCloneSerialize(
     try writer.writeInt(u8, serialization_version, .little);
 
     try writer.writeInt(u64, if (is_memory_backed) 0 else @intCast(this.offset), .little);
+    try writer.writeInt(u64, @intCast(this.size), .little);
+    try writer.writeInt(u8, @intFromBool(this.is_sliced), .little);
 
     try writer.writeInt(u32, @truncate(this.content_type.len), .little);
     try writer.writeAll(this.content_type);
@@ -587,8 +605,11 @@ fn _onStructuredCloneDeserialize(
     const allocator = bun.default_allocator;
 
     const version = try reader.takeInt(u8, .little);
+    if (version < 1 or version > serialization_version) return error.InvalidEnumTag;
 
     const offset = try reader.takeInt(u64, .little);
+    const serialized_size = if (version >= 4) try reader.takeInt(u64, .little) else null;
+    const is_sliced = if (version >= 4) try reader.takeInt(u8, .little) != 0 else false;
 
     const content_type_len = try reader.takeInt(u32, .little);
 
@@ -714,6 +735,7 @@ fn _onStructuredCloneDeserialize(
         }
 
         if (version == 3) break :versions;
+        if (version == 4) break :versions;
     }
 
     bun.assertf(blob.isHeapAllocated(), "expected blob to be heap-allocated", .{});
@@ -724,6 +746,8 @@ fn _onStructuredCloneDeserialize(
     // file/s3 stores report `max_size` here and are bounded by the filesystem
     // read path instead.
     blob.offset = @as(SizeType, @truncate(offset));
+    if (serialized_size) |size| blob.size = @as(SizeType, @truncate(size));
+    blob.is_sliced = is_sliced;
     if (blob.store) |store| {
         const store_size = store.size();
         if (store_size != Blob.max_size) {
@@ -1298,7 +1322,12 @@ pub fn writeFileWithSourceDestination(ctx: *jsc.JSGlobalObject, source_blob: *Bl
                 source_store,
                 ctx.bunVM().eventLoop(),
                 options.mkdirp_if_not_exists orelse true,
+                source_blob.offset,
+                source_blob.size,
+                source_blob.hasSliceWindow(source_store),
+                destination_blob.offset,
                 destination_blob.size,
+                destination_blob.hasSliceWindow(destination_store),
                 options.mode,
             );
         }
@@ -1306,8 +1335,12 @@ pub fn writeFileWithSourceDestination(ctx: *jsc.JSGlobalObject, source_blob: *Bl
             bun.default_allocator,
             destination_store,
             source_store,
+            source_blob.offset,
+            source_blob.size,
+            source_blob.hasSliceWindow(source_store),
             destination_blob.offset,
             destination_blob.size,
+            destination_blob.hasSliceWindow(destination_store),
             ctx,
             options.mkdirp_if_not_exists orelse true,
             options.mode,
@@ -3064,6 +3097,7 @@ pub fn getSliceFrom(this: *Blob, globalThis: *jsc.JSGlobalObject, relativeStart:
     var blob = this.dupe();
     blob.offset = offset;
     blob.size = len;
+    blob.is_sliced = true;
 
     // dupe() deep-copies an allocated content_type; we're about to replace it,
     // so release that copy first to avoid leaking it.
@@ -3507,9 +3541,14 @@ pub fn resolveSize(this: *Blob) void {
             if (store.data.file.seekable != null and store.data.file.max_size != Blob.max_size) {
                 const store_size = store.data.file.max_size;
                 const offset = this.offset;
+                const had_bounded_window = this.is_sliced or this.offset > 0 or this.size != Blob.max_size;
 
                 this.offset = @min(store_size, offset);
-                this.size = store_size -| offset;
+                const available = store_size -| this.offset;
+                this.size = if (had_bounded_window)
+                    @min(this.size, available)
+                else
+                    available;
                 return;
             }
 
