@@ -59,6 +59,10 @@ pub const Builder = struct {
         source: *const schema.Expression,
         keys: ?*const schema.Expression = null,
         mode: ReadMode = .all,
+        transformed: bool = false,
+        optional_keys: ?*const schema.Expression = null,
+        optional_all: bool = false,
+        string_index: ?*const schema.Expression = null,
     };
     const ReadBinding = struct {
         parameter: *const schema.Parameter,
@@ -92,13 +96,22 @@ pub const Builder = struct {
     }
 
     fn contextualReadArgument(expr: *const schema.Expression, bindings: []const ReadBinding) *const schema.Expression {
-        if (expr.* != .parameter) return expr;
-        var index = bindings.len;
-        while (index > 0) {
-            index -= 1;
-            if (bindings[index].parameter == expr.parameter) return bindings[index].argument;
+        var current = expr;
+        var remaining = bindings.len + 1;
+        while (remaining > 0 and current.* == .parameter) : (remaining -= 1) {
+            var index = bindings.len;
+            var next = current;
+            while (index > 0) {
+                index -= 1;
+                if (bindings[index].parameter == current.parameter) {
+                    next = bindings[index].argument;
+                    break;
+                }
+            }
+            if (next == current) break;
+            current = next;
         }
-        return expr;
+        return current;
     }
 
     fn contextualMappedCopiesSource(mapped: schema.Mapped) bool {
@@ -169,48 +182,122 @@ pub const Builder = struct {
                 if (conditional.extends_type.* != .primitive or
                     (conditional.extends_type.primitive != Primitive.any and
                         conditional.extends_type.primitive != Primitive.unknown)) return null;
-                return self.contextualReadCoverage(conditional.true_branch, bindings, active);
+                var coverage = (try self.contextualReadCoverage(conditional.true_branch, bindings, active)) orelse return null;
+                coverage.transformed = true;
+                return coverage;
             },
             .mapped => |mapped| {
                 if (!contextualMappedCopiesSource(mapped)) return null;
-                return self.contextualReadCoverage(mapped.constraint.keyof, bindings, active);
+                const source = contextualReadArgument(mapped.constraint.keyof, bindings);
+                var coverage = (try self.contextualReadCoverage(source, bindings, active)) orelse ReadCoverage{ .source = source };
+                coverage.transformed = true;
+                if (mapped.optional == 1) coverage.optional_all = true;
+                return coverage;
             },
             .utility => |utility| {
-                const source = (try self.contextualReadCoverage(utility.source, bindings, active)) orelse return null;
+                if (utility.kind == .exclude) return null;
+                const source_expression = contextualReadArgument(utility.source, bindings);
+                var source = (try self.contextualReadCoverage(source_expression, bindings, active)) orelse
+                    ReadCoverage{ .source = source_expression };
+                source.transformed = true;
                 return switch (utility.kind) {
-                    .partial, .required, .readonly => source,
-                    .pick => if (source.mode == .all)
-                        .{ .source = source.source, .keys = contextualReadArgument(utility.keys.?, bindings), .mode = .pick }
-                    else
-                        null,
+                    .partial => blk: {
+                        source.optional_all = true;
+                        break :blk source;
+                    },
+                    .required, .readonly => source,
+                    .pick => if (source.mode == .all) blk: {
+                        const raw_keys = utility.keys.?;
+                        if (raw_keys.* == .utility and raw_keys.utility.kind == .exclude) {
+                            const excluded = raw_keys.utility;
+                            if (excluded.source.* == .keyof and
+                                contextualReadExpressionsEqual(
+                                    contextualReadArgument(excluded.source.keyof, bindings),
+                                    source.source,
+                                ))
+                            {
+                                break :blk .{
+                                    .source = source.source,
+                                    .keys = contextualReadArgument(excluded.keys.?, bindings),
+                                    .mode = .omit,
+                                    .transformed = true,
+                                    .optional_keys = source.optional_keys,
+                                    .optional_all = source.optional_all,
+                                };
+                            }
+                        }
+                        break :blk .{
+                            .source = source.source,
+                            .keys = contextualReadArgument(raw_keys, bindings),
+                            .mode = .pick,
+                            .transformed = true,
+                            .optional_keys = source.optional_keys,
+                            .optional_all = source.optional_all,
+                        };
+                    } else null,
                     .omit => if (source.mode == .all)
-                        .{ .source = source.source, .keys = contextualReadArgument(utility.keys.?, bindings), .mode = .omit }
+                        .{
+                            .source = source.source,
+                            .keys = contextualReadArgument(utility.keys.?, bindings),
+                            .mode = .omit,
+                            .transformed = true,
+                            .optional_keys = source.optional_keys,
+                            .optional_all = source.optional_all,
+                        }
                     else
                         null,
-                    .extract => null,
+                    .extract, .exclude => null,
                 };
             },
             .intersection => |members| {
+                var all: ?ReadCoverage = null;
                 var picked: ?ReadCoverage = null;
                 var omitted: ?ReadCoverage = null;
+                var string_index: ?*const schema.Expression = null;
                 for (members) |member| {
-                    const coverage = (try self.contextualReadCoverage(member, bindings, active)) orelse continue;
-                    if (coverage.mode == .all) return coverage;
+                    if (member.* == .record) {
+                        const record = member.record;
+                        const key = contextualReadArgument(record.key, bindings);
+                        if (key.* == .primitive and key.primitive == Primitive.string_t) {
+                            string_index = contextualReadArgument(record.value, bindings);
+                        }
+                        continue;
+                    }
+                    var coverage = (try self.contextualReadCoverage(member, bindings, active)) orelse continue;
+                    coverage.transformed = true;
+                    if (coverage.string_index) |index| string_index = index;
+                    if (coverage.mode == .all and all == null) all = coverage;
                     if (coverage.mode == .pick and picked == null) picked = coverage;
                     if (coverage.mode == .omit and omitted == null) omitted = coverage;
                 }
-                if (picked) |pick| if (omitted) |omit| {
-                    if (pick.source == omit.source and pick.keys == omit.keys) return .{
-                        .source = pick.source,
-                    };
+                var result = all;
+                if (result == null) if (picked) |pick| if (omitted) |omit| {
+                    if (pick.source == omit.source and pick.keys == omit.keys) {
+                        if (pick.optional_all and omit.optional_all) result = .{
+                            .source = pick.source,
+                            .transformed = true,
+                            .optional_all = true,
+                        } else if (pick.optional_all and !omit.optional_all) result = .{
+                            .source = pick.source,
+                            .transformed = true,
+                            .optional_keys = pick.keys,
+                        } else if (!pick.optional_all and !omit.optional_all) result = .{
+                            .source = pick.source,
+                            .transformed = true,
+                        };
+                    }
                 };
+                if (result) |*coverage| {
+                    coverage.string_index = string_index orelse coverage.string_index;
+                    return coverage.*;
+                }
                 return null;
             },
             else => return null,
         }
     }
 
-    fn contextualReadProjection(self: *Builder, reference: schema.Reference) !?*const schema.Expression {
+    fn contextualReadProjection(self: *Builder, reference: schema.Reference) !?ReadCoverage {
         if (reference.arguments.len != reference.declaration.parameters.len or reference.declaration.body == null) return null;
         const bindings = try self.gpa.alloc(ReadBinding, reference.arguments.len);
         defer self.gpa.free(bindings);
@@ -222,7 +309,7 @@ pub const Builder = struct {
         defer active.deinit(self.gpa);
         try active.put(self.gpa, reference.declaration, {});
         const coverage = (try self.contextualReadCoverage(reference.declaration.body.?, bindings, &active)) orelse return null;
-        return if (coverage.mode == .all) coverage.source else null;
+        return if (coverage.mode == .all and coverage.transformed) coverage else null;
     }
 
     fn contextualShallowStructuralReferenceSupported(self: *Builder, reference: schema.Reference) !bool {
@@ -282,7 +369,7 @@ pub const Builder = struct {
                     }
                 },
                 .utility => |utility| {
-                    if (utility.kind != .extract) return false;
+                    if (utility.kind != .extract and utility.kind != .exclude) return false;
                     try pending.append(self.gpa, utility.source);
                     if (utility.keys) |keys| try pending.append(self.gpa, keys);
                 },
@@ -353,7 +440,10 @@ pub const Builder = struct {
                     .arguments = reference.arguments,
                     .projection_only = reference.projection_only,
                     .contextual_projection = true,
-                    .contextual_read = contextual_read,
+                    .contextual_read = if (contextual_read) |read| read.source else null,
+                    .contextual_read_optional_keys = if (contextual_read) |read| read.optional_keys else null,
+                    .contextual_read_optional_all = if (contextual_read) |read| read.optional_all else false,
+                    .contextual_read_string_index = if (contextual_read) |read| read.string_index else null,
                 } });
             },
             else => try self.transferable(lowered),
@@ -387,6 +477,8 @@ pub const Builder = struct {
             .omit
         else if (args.len == 2 and std.mem.eql(u8, name, "Extract"))
             .extract
+        else if (args.len == 2 and std.mem.eql(u8, name, "Exclude"))
+            .exclude
         else
             null;
         const utility = kind orelse return null;
@@ -679,10 +771,25 @@ pub const Builder = struct {
                 continue;
             }
             var param_type = try self.lowerTransferable(function_context, value.type_annotation);
-            if (param_type.* == .reference and param_type.reference.declaration.contextual_only) {
-                var contextual_parameter = function_context;
-                contextual_parameter.allow_opaque = true;
-                param_type = try self.lowerTransferable(contextual_parameter, value.type_annotation);
+            if (param_type.* == .reference) {
+                const reference = param_type.reference;
+                if (try self.contextualReadProjection(reference)) |read| {
+                    context.declaration.contextual_only = true;
+                    param_type = try self.expression(.{ .reference = .{
+                        .declaration = reference.declaration,
+                        .arguments = reference.arguments,
+                        .projection_only = reference.projection_only,
+                        .contextual_projection = true,
+                        .contextual_read = read.source,
+                        .contextual_read_optional_keys = read.optional_keys,
+                        .contextual_read_optional_all = read.optional_all,
+                        .contextual_read_string_index = read.string_index,
+                    } });
+                } else if (reference.declaration.contextual_only) {
+                    var contextual_parameter = function_context;
+                    contextual_parameter.allow_opaque = true;
+                    param_type = try self.lowerTransferable(contextual_parameter, value.type_annotation);
+                }
             }
             try params.append(self.arena, .{ .type = param_type, .optional = value.flags.is_optional or value.default_value != 0, .rest = value.flags.is_rest });
         }
@@ -765,6 +872,13 @@ pub const Builder = struct {
                         // consumer materialize the same canonical shape.
                         if (args.len == 0 and builtin_object_type_name_set.has(name))
                             return self.expression(.{ .builtin_object = name });
+                        if (args.len == 0 and std.mem.eql(u8, name, "PropertyKey")) {
+                            const members = try self.arena.alloc(*const schema.Expression, 3);
+                            members[0] = try self.expression(.{ .primitive = Primitive.string_t });
+                            members[1] = try self.expression(.{ .primitive = Primitive.number_t });
+                            members[2] = try self.expression(.{ .primitive = Primitive.symbol_t });
+                            return self.expression(.{ .union_type = members });
+                        }
                         if (args.len > 0 and builtin_generic_type_name_set.has(name))
                             return self.expression(.{ .builtin_reference = .{ .name = name, .arguments = args } });
                         if (args.len == 2 and std.mem.eql(u8, name, "Record"))
@@ -1259,7 +1373,7 @@ test "class schema: callable utility projections retain a proven read surface" {
     const declaration = result.declaration;
     try T.expect(declaration.contextual_only);
     const default = declaration.parameters[0].default.?.reference;
-    try T.expect(default.contextual_projection);
+    try T.expect(!default.contextual_projection);
     try T.expect(default.contextual_read == null);
     const call = declaration.body.?.object[0].type.function;
     const issue = call.parameters[0].type.reference;
@@ -1280,6 +1394,42 @@ test "class schema: callable utility projections retain a proven read surface" {
     try T.expectEqual(type_count, owner.type_interner.pool.typeCount());
     try T.expectEqual(diagnostics, owner.diagnostics.items.len);
     try T.expect(!owner.checked_types_ready);
+}
+
+test "class schema: homomorphic callable aliases retain imported union reads" {
+    const graph = try TestGraph.init(&.{
+        .{ .path = "/utilities.ts", .text =
+        \\export type Primitive = string | number | bigint | boolean | null | undefined;
+        \\export type Omit<T, K extends keyof T> = Pick<T, Exclude<keyof T, K>>;
+        \\export type InexactPartial<T> = { [P in keyof T]?: T[P] | undefined };
+        \\export type MakePartial<T, K extends keyof T> = Omit<T, K> & InexactPartial<Pick<T, K>>;
+        \\export type Identity<T> = T;
+        \\export type Flatten<T> = Identity<{ [K in keyof T]: T[K] }>;
+        },
+        .{ .path = "/owner.ts", .text =
+        \\import type * as util from "./utilities";
+        \\interface Base { code?: string; path: PropertyKey[]; message: string }
+        \\export interface NoMatch extends Base { code: "invalid_union"; options?: util.Primitive[] }
+        \\interface Other extends Base { code: "other" }
+        \\export type Issue = NoMatch | Other;
+        \\export type Raw<T extends Base> = T extends any
+        \\  ? util.Flatten<util.MakePartial<T, "message" | "path"> & { readonly input: unknown } & Record<string, unknown>>
+        \\  : never;
+        \\export type ErrorMap = (issue: Raw<Issue>) => string | undefined;
+        },
+    });
+    defer graph.deinit();
+
+    const result = try graph.class(1, "ErrorMap");
+    defer result.deinit(T.allocator);
+    try T.expect(result.declaration.contextual_only);
+    const issue = result.declaration.body.?.function.parameters[0].type.reference;
+    try T.expect(issue.contextual_projection);
+    try T.expect(issue.contextual_read != null);
+    try T.expect(!issue.contextual_read_optional_all);
+    try T.expect(issue.contextual_read_optional_keys != null);
+    try T.expect(issue.contextual_read_string_index != null);
+    try T.expect(try result.isSupported(T.allocator));
 }
 
 test "class schema: function signatures retain readonly record domains" {

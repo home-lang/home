@@ -10644,9 +10644,125 @@ test "Program: returned imported callable interfaces retain callback read contra
     });
     const compilation = p.fileById(consumer_id).compilation.?;
     try expectCompilationLacksDiagnosticCode(compilation, 7006);
+    try expectCompilationLacksDiagnosticCode(compilation, 2339);
     try T.expectEqual(@as(usize, 2), compilation.diagnostics.items.len);
-    try T.expectEqual(@as(u32, 2339), compilation.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, 2322), compilation.diagnostics.items[0].code);
     try T.expectEqual(@as(u32, 2322), compilation.diagnostics.items[1].code);
+}
+
+test "Program: returned imported homomorphic union callbacks retain exact members" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver };
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+
+    const utilities =
+        \\export type Primitive = string | number | symbol | bigint | boolean | null | undefined;
+        \\export type Omit<T, K extends keyof T> = Pick<T, Exclude<keyof T, K>>;
+        \\export type InexactPartial<T> = { [P in keyof T]?: T[P] | undefined };
+        \\export type MakePartial<T, K extends keyof T> = Omit<T, K> & InexactPartial<Pick<T, K>>;
+        \\export type Identity<T> = T;
+        \\export type Flatten<T> = Identity<{ [K in keyof T]: T[K] }>;
+    ;
+    const owner =
+        \\import type * as util from "./utilities.js";
+        \\interface IssueBase { readonly code?: string; readonly path: PropertyKey[]; readonly message: string; }
+        \\interface NoMatch extends IssueBase { readonly code: "invalid_union"; readonly options?: util.Primitive[]; readonly inclusive?: true; }
+        \\interface MultipleMatch extends IssueBase { readonly code: "invalid_union"; readonly inclusive: false; readonly matches: number[]; }
+        \\interface Custom extends IssueBase { readonly code: "custom"; }
+        \\type Issue = NoMatch | MultipleMatch | Custom;
+        \\type RawIssue<T extends IssueBase> = T extends any
+        \\  ? util.Flatten<util.MakePartial<T, "message" | "path"> & { readonly input: unknown } & Record<string, unknown>>
+        \\  : never;
+        \\export type ErrorMap<T extends IssueBase = Issue> = (issue: RawIssue<T>) => string | undefined;
+    ;
+    const consumer =
+        \\import type { ErrorMap } from "./owner.js";
+        \\import type { Primitive } from "./utilities.js";
+        \\export const error: () => ErrorMap = () => (issue) => {
+        \\  if (issue.code === "invalid_union" && issue.options && Array.isArray(issue.options) && issue.options.length > 0) {
+        \\    return issue.options.map((value) => {
+        \\      const exact: Primitive = value;
+        \\      const wrong: never = value;
+        \\      void exact; void wrong;
+        \\      return `${value}`;
+        \\    }).join(" | ");
+        \\  }
+        \\  return undefined;
+        \\};
+    ;
+    try vfs.addFile("/proj/utilities.ts", utilities);
+    try vfs.addFile("/proj/owner.ts", owner);
+    try vfs.addFile("/proj/consumer.ts", consumer);
+    _ = try p.add("/proj/utilities.ts", utilities);
+    _ = try p.add("/proj/owner.ts", owner);
+    const consumer_id = try p.add("/proj/consumer.ts", consumer);
+
+    try p.compileAll(.{
+        .no_emit = true,
+        .strict_flags = .{ .no_implicit_any = true, .strict_null_checks = true },
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    });
+    const compilation = p.fileById(consumer_id).compilation.?;
+    try expectCompilationLacksDiagnosticCode(compilation, 7006);
+    try expectCompilationLacksDiagnosticCode(compilation, 2339);
+    try expectCompilationLacksDiagnosticCode(compilation, 2344);
+    try T.expectEqual(@as(usize, 1), compilation.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 2322), compilation.diagnostics.items[0].code);
+}
+
+test "Program: imported inherited indexed constraints remain assignable" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver };
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+
+    const errors =
+        \\export interface IssueBase { readonly code?: string; readonly input?: unknown; readonly path: PropertyKey[]; readonly message: string; }
+        \\export interface InvalidIssue extends IssueBase { readonly code: "invalid"; readonly expected: string; }
+    ;
+    const schemas =
+        \\import type * as errors from "./errors.js";
+        \\export interface BaseInternals { def: { type: string }; isst: errors.IssueBase; registry: WeakMap<object, object>; }
+        \\export interface Internals<O = unknown> extends BaseInternals { output: O; }
+        \\export interface CheckInternals { def: { check: string }; issc?: errors.InvalidIssue; }
+        \\export interface FormatInternals extends Internals<string>, CheckInternals { def: { type: string; check: string }; }
+        \\export interface Standard<T> { value: T; }
+        \\export interface Schema<O = unknown, T extends Internals<O> = Internals<O>> { _zod: T; "~standard": Standard<this>; }
+        \\export interface Check<T extends CheckInternals = CheckInternals> { _zod: T; }
+        \\export interface Format extends Schema { _zod: FormatInternals; }
+        \\export interface Constructor<T> { new(): T; }
+        \\export declare const Schema: Constructor<Schema>;
+    ;
+    const api =
+        \\import type * as errors from "./errors.js";
+        \\import type * as schemas from "./schemas.js";
+        \\type Params<T extends schemas.Schema | schemas.Check, Issue extends errors.IssueBase, K extends keyof T["_zod"]["def"] = never> = Issue;
+        \\export type TypeParams<T extends schemas.Schema = schemas.Schema> = Params<T, NonNullable<T["_zod"]["isst"]>, "type">;
+        \\export type CheckParams<T extends schemas.Check = schemas.Check> = Params<T, NonNullable<T["_zod"]["issc"]>, "check">;
+        \\export type FormatParams<T extends schemas.Format = schemas.Format> = Params<T, NonNullable<T["_zod"]["isst"] | T["_zod"]["issc"]>, "type" | "check">;
+        \\export type CheckFormatParams<T extends schemas.Format = schemas.Format> = Params<T, NonNullable<T["_zod"]["issc"]>, "check">;
+        \\export type CheckTypeParams<T extends schemas.Schema & schemas.Check = schemas.Schema & schemas.Check> = Params<T, NonNullable<T["_zod"]["isst"] | T["_zod"]["issc"]>, "type" | "check">;
+    ;
+    try vfs.addFile("/proj/errors.ts", errors);
+    try vfs.addFile("/proj/schemas.ts", schemas);
+    try vfs.addFile("/proj/api.ts", api);
+    _ = try p.add("/proj/errors.ts", errors);
+    _ = try p.add("/proj/schemas.ts", schemas);
+    const api_id = try p.add("/proj/api.ts", api);
+
+    try p.compileAll(.{
+        .no_emit = true,
+        .strict_flags = .{ .no_implicit_any = true, .strict_null_checks = true },
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    });
+    try expectCompilationLacksDiagnosticCode(p.fileById(api_id).compilation.?, 2344);
 }
 
 test "Program: named imports preserve generic interface method context" {

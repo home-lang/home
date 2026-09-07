@@ -42,6 +42,13 @@ pub const Reference = struct {
     /// Proven source expression whose complete readable-key surface survives
     /// this contextual utility projection.
     contextual_read: ?*const Expression = null,
+    /// Source keys made optional by the contextual utility projection.
+    contextual_read_optional_keys: ?*const Expression = null,
+    /// The contextual utility projection makes every source key optional.
+    contextual_read_optional_all: bool = false,
+    /// Structurally preserved open string-index value contributed by an
+    /// intersection such as `Record<string, unknown>`.
+    contextual_read_string_index: ?*const Expression = null,
 };
 pub const IndexedAccess = struct { object: *const Expression, index: *const Expression };
 pub const Conditional = struct {
@@ -60,7 +67,7 @@ pub const Mapped = struct {
 pub const IndexSignature = struct { key: *const Expression, value: *const Expression };
 pub const IndexedObject = struct { members: []const Member, indices: []const IndexSignature };
 pub const Record = struct { key: *const Expression, value: *const Expression, readonly: bool = false };
-pub const UtilityKind = enum { partial, required, readonly, pick, omit, extract };
+pub const UtilityKind = enum { partial, required, readonly, pick, omit, extract, exclude };
 pub const Utility = struct {
     kind: UtilityKind,
     source: *const Expression,
@@ -239,7 +246,7 @@ pub const Schema = struct {
                     }
                 },
                 .utility => |utility| {
-                    if (utility.kind != .extract and !allow_opaque) return false;
+                    if (utility.kind != .extract and utility.kind != .exclude and !allow_opaque) return false;
                     try pending.append(gpa, utility.source);
                     if (utility.keys) |keys| try pending.append(gpa, keys);
                 },
