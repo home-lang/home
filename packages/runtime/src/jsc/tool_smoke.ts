@@ -89,6 +89,14 @@ if (
     `Home.spawnSync did not apply cwd and environment options: ${JSON.stringify(configured)}`,
   );
 }
+const originalUmask = process.umask();
+try {
+  if (process.umask("077") !== originalUmask || process.umask() !== 0o077) {
+    throw new Error("home-tool process.umask did not update native process state");
+  }
+} finally {
+  process.umask(originalUmask);
+}
 const timed = Home.spawnSync(["sleep", "1"], { timeoutMs: 10 });
 if (!timed.timedOut || timed.exitCode !== null) {
   throw new Error("Home.spawnSync did not enforce its timeout");
@@ -96,4 +104,17 @@ if (!timed.timedOut || timed.exitCode !== null) {
 
 if (process.argv[1] !== "packages/runtime/src/jsc/tool_smoke.ts") {
   throw new Error("home-tool did not expose the script path in process.argv");
+}
+if (
+  process.version !== "v26.3.0" ||
+  process.versions.node !== "26.3.0" ||
+  process.release?.name !== "node"
+) {
+  throw new Error(
+    `home-tool reported inconsistent Node compatibility identity: ${JSON.stringify({
+      version: process.version,
+      node: process.versions.node,
+      release: process.release,
+    })}`,
+  );
 }

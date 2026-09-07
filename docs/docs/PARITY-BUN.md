@@ -33,7 +33,7 @@ API rows below move only when the behavior is callable through Home's JS
 runtime or a native Home corpus gate; dormant source copies and bootstrap
 harness shims do not count as JS-visible parity.
 
-## Node compatibility identity checkpoint (2026-09-06)
+## Node compatibility identity checkpoint (2026-09-07)
 
 Home's reported Node.js compatibility version is now sourced from one build
 option and pinned to the Bun 1.4.0 engine's exact `26.3.0` value. Both runtime
@@ -44,6 +44,18 @@ consume that value. A local bunx registry fixture declares
 `process.versions.node === "26.3.0"`, `process.release.name === "node"`, and the
 full `npm_config_user_agent`; the package-script regression independently pins
 the same child environment.
+
+The separate `home-tool` build-options module now receives that same
+build-level value, and its reduced compatibility root exports it to the shared
+process implementation without importing the full Bun/WebCore runtime. Its
+executable smoke requires exact `v26.3.0`, `26.3.0`, and
+`process.release.name === "node"`. The focused tool build, tool smoke, and
+default aggregate build pass. The same reduced process surface now replaces
+its JavaScript-only umask cache with the real libc mask, preserving query,
+numeric/octal update, validation, previous-value, and restoration semantics.
+Debug and ReleaseFast tool smokes pass, the default build passes, and native
+`home_rt` is **1,828 passed / 19 skipped / 0 failed**. This closes
+[#677](https://github.com/home-lang/home/issues/677).
 
 Fresh Debug and ReleaseFast builds pass. The ReleaseFast Node N-API conformance
 directory is **55/55 files passing** with zero failures, crashes, hangs,

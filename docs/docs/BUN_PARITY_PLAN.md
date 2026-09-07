@@ -1350,3 +1350,24 @@ structured-clone files pass **37/37**, the installation-shaped runtime
 aggregate passes **69/69** in both modes, and native `home_rt` passes **1,827 /
 19 skipped / 0 failed**. This completes #676 without a weakened assertion,
 workload, deadline, or skip. Full logical corpus parity remains open under #66.
+
+## Current Repository-Tool Identity Checkpoint (2026-09-07)
+
+The reduced `home-tool` runtime now consumes the same build-level Node
+compatibility version as the full native runtime. Its deliberately small `bun`
+compatibility leaf exposes only the required Environment identity from the
+tool's own build-options module, so the tool remains independent of WebCore
+while reporting exact `process.version`, `process.versions.node`, and
+`process.release.name` values.
+
+The adjacent reduced-process audit also removed its fake JavaScript-only
+`umask` state. POSIX queries and updates now reach libc, return the previous
+mask, accept validated integer or octal-string input, and restore state in the
+focused tests; invalid input never mutates the native mask.
+
+The focused Debug tool build and two-program smoke pass, as does the default
+`zig build` aggregate that previously failed at `tool_compat.Environment`.
+ReleaseFast tool verification also passes, and native `home_rt` is **1,828
+passed / 19 skipped / 0 failed** with the real-umask unit included. This
+completes #677 and retains one source of truth for the pinned `26.3.0` identity;
+it does not change the remaining full-corpus scope under #66.

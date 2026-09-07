@@ -1,6 +1,11 @@
 const std = @import("std");
 const native_bindings = @import("build-support/native_bindings.zig");
 
+/// Node compatibility identity reported by every Home-owned runtime. Keep the
+/// reduced repository-tool realm and the full Bun-compatible realm on this
+/// single value so build-target boundaries cannot drift independently.
+const reported_nodejs_version = "26.3.0";
+
 /// Compile flags for the vendored SQLite amalgamation (Bun's feature set:
 /// fast, small, threadsafe). Applied only when statically compiling sqlite3.c
 /// on Linux/Windows/cross targets; macOS links the system libsqlite3 instead.
@@ -604,8 +609,10 @@ pub fn build(b: *std.Build) void {
         tool_build_options.addOption(bool, "use_zig_js", tool_use_zig_js);
         tool_build_options.addOption(bool, "use_bun_jsc", false);
         tool_build_options.addOption([]const u8, "js_engine", tool_js_engine);
+        tool_build_options.addOption([]const u8, "reported_nodejs_version", reported_nodejs_version);
         const tool_build_options_module = tool_build_options.createModule();
         const tool_compat_pkg = createPackage(b, "packages/runtime/src/jsc/tool_compat.zig", target, optimize, zig_test_framework);
+        tool_compat_pkg.addImport("build_options", tool_build_options_module);
         const tool_runtime_pkg = createPackage(b, "packages/runtime/src/jsc/tool_runtime.zig", target, optimize, zig_test_framework);
         tool_runtime_pkg.addImport("bun", tool_compat_pkg);
         tool_runtime_pkg.addImport("build_options", tool_build_options_module);
@@ -1003,7 +1010,7 @@ pub fn build(b: *std.Build) void {
     // reported by the pinned Bun 1.4.0 engine (4982b91e37). Environment,
     // process, package-manager child environments, and N-API all consume this
     // single build option.
-    build_options.addOption([]const u8, "reported_nodejs_version", "26.3.0");
+    build_options.addOption([]const u8, "reported_nodejs_version", reported_nodejs_version);
     build_options.addOption(bool, "baseline", false);
     build_options.addOption([]const u8, "sha", "4982b91e3702094330f3be3883354c52b8c01323");
     build_options.addOption(bool, "is_canary", false);

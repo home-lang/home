@@ -1,4 +1,12 @@
 const std = @import("std");
+const build_options = @import("build_options");
+
+/// Minimal environment identity consumed by the shared reduced-JSC process
+/// implementation. The value is injected from the same build-level constant
+/// as the full runtime rather than duplicated in this compatibility leaf.
+pub const Environment = struct {
+    pub const reported_nodejs_version = build_options.reported_nodejs_version;
+};
 
 /// Minimal compatibility leaf for the public-C tool runtime. Keeping this
 /// separate prevents a console/evaluate callback from importing Home's full

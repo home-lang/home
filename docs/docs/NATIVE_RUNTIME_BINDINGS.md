@@ -14,6 +14,33 @@ The source is copied into the build cache so quoted includes use the ABI-matched
 
 This is incremental binding ownership, not an independent C++ runtime build. Moving the remaining bindings, generated headers, and vendor build inputs into Home remains part of [the full Bun port](https://github.com/home-lang/home/issues/66).
 
+## Reduced repository-tool runtime identity (#677)
+
+The independent `home-tool` realm deliberately links only the public-C engine
+leaves, but it now receives Node compatibility identity from the same
+build-level constant as the full Bun-compatible runtime. Its narrow `bun`
+compatibility module exports `Environment.reported_nodejs_version` from the
+tool build-options module rather than importing WebCore or duplicating the
+version. The installed `process` surface exposes matching `version`,
+`versions.node`, and `release.name` fields.
+
+The reduced `process.umask()` is also native now. Queries read and restore the
+actual libc mask; numeric and octal-string updates replace the process mask and
+return its prior value, while invalid values throw before touching native
+state. The executable smoke changes the real mask, observes it, and restores
+the original value in a `finally` block. Windows retains its platform-neutral
+zero result.
+
+`zig build home-tool`, `zig build home-tool-smoke`, and the default `zig build`
+aggregate pass. The smoke executes TypeScript through the built tool and checks
+exact `v26.3.0`, `26.3.0`, and `node` values in addition to module resolution,
+filesystem operations, subprocess environment/cwd behavior, and timeout
+handling. The shared process unit additionally covers native umask mutation,
+octal parsing, invalid-input rejection, and cleanup of the temporary host
+callback. This restores the default build without coupling the tool executable
+to the full runtime. The complete native `home_rt` gate passes **1,828 / 19
+skipped / 0 failed** with the new unit included.
+
 ## Builtin module ownership
 
 The native build also compiles Home's `InternalModuleRegistry.cpp`, `BunWorkerGlobalScope.cpp`, `webcore/JSMessagePort.cpp`, `webcore/JSWorker.cpp`, `webcore/MessagePort.cpp`, `webcore/MessagePortPipe.cpp`, and `webcore/Worker.cpp`, and regenerates the `node:url` and `node:worker_threads` builtins from Home's source. The corresponding external unified objects are excluded. Their other C++ implementations are rebuilt from their ABI-matched external sources; they are not yet Home-owned.

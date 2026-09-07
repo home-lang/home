@@ -240,6 +240,41 @@ fn killNative(
     return extern_fns.JSValueMakeNumber(c, @floatFromInt(rc));
 }
 
+/// `__home_process_umask(mask)` queries (`mask < 0`) or replaces the real
+/// process file-creation mask and returns the previous value. The repository
+/// tool is single-threaded, so the query's set-and-restore sequence cannot race
+/// another Home execution thread.
+fn umaskNative(
+    ctx: ?*JSContextRef,
+    function: ?*JSObject,
+    this_object: ?*JSObject,
+    argument_count: usize,
+    arguments: [*c]const ?*JSValue,
+    exception: extern_fns.ExceptionRef,
+) callconv(.c) ?*JSValue {
+    _ = function;
+    _ = this_object;
+    _ = exception;
+    const c = ctx orelse return null;
+
+    if (comptime builtin.os.tag == .windows) {
+        return extern_fns.JSValueMakeNumber(c, 0);
+    }
+
+    const requested = if (argument_count > 0 and arguments[0] != null)
+        extern_fns.JSValueToNumber(c, arguments[0], null)
+    else
+        -1;
+    if (requested < 0) {
+        const previous = std.c.umask(0);
+        _ = std.c.umask(previous);
+        return extern_fns.JSValueMakeNumber(c, @floatFromInt(previous));
+    }
+
+    const previous = std.c.umask(@intCast(@as(u32, @intFromFloat(requested)) & 0o777));
+    return extern_fns.JSValueMakeNumber(c, @floatFromInt(previous));
+}
+
 /// `__home_process_cpu_usage()` -> { user, system } CPU time in microseconds
 /// for this process (getrusage RUSAGE_SELF), the basis for process.cpuUsage().
 fn cpuUsageNative(
@@ -356,6 +391,7 @@ const install_glue =
     \\  var monoFn = globalThis.__home_process_mono_ns;
     \\  var cpuFn = globalThis.__home_process_cpu_usage;
     \\  var killFn = globalThis.__home_process_kill;
+    \\  var umaskFn = globalThis.__home_process_umask;
     \\  // Signals whose numbers are identical across Linux and macOS/BSD.
     \\  var SIGNALS = { SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGILL: 4, SIGTRAP: 5, SIGABRT: 6, SIGFPE: 8, SIGKILL: 9, SIGSEGV: 11, SIGPIPE: 13, SIGALRM: 14, SIGTERM: 15 };
     \\  var info = infoFn();
@@ -374,6 +410,7 @@ const install_glue =
     \\    arch: info.arch,
     \\    version: info.version,
     \\    versions: { node: info.node },
+    \\    release: { name: "node" },
     \\    config: {
     \\      variables: { v8_enable_i18n_support: 1, asan: 0 },
     \\      target_defaults: { default_configuration: "Release" },
@@ -417,14 +454,18 @@ const install_glue =
     \\      var args = Array.prototype.slice.call(arguments, 1);
     \\      Promise.resolve().then(function() { cb.apply(null, args); });
     \\    },
-    \\    umask: (function() {
-    \\      var current = 0o022;
-    \\      return function(mask) {
-    \\        var previous = current;
-    \\        if (mask !== undefined) current = Number(mask) & 0o777;
-    \\        return previous;
-    \\      };
-    \\    })(),
+    \\    umask: function(mask) {
+    \\      if (mask === undefined) return umaskFn(-1);
+    \\      var parsed;
+    \\      if (typeof mask === "string") {
+    \\        if (!/^[0-7]{1,4}$/.test(mask)) throw new TypeError("The mask must be an octal string or an integer");
+    \\        parsed = parseInt(mask, 8);
+    \\      } else {
+    \\        parsed = Number(mask);
+    \\        if (!Number.isInteger(parsed) || parsed < 0 || parsed > 0o777) throw new TypeError("The mask must be an octal string or an integer");
+    \\      }
+    \\      return umaskFn(parsed);
+    \\    },
     \\    stdout: { write: function(s) { return outWriteFn(String(s)); }, isTTY: false, fd: 1 },
     \\    stderr: { write: function(s) { return errWriteFn(String(s)); }, isTTY: false, fd: 2 },
     \\  };
@@ -472,6 +513,7 @@ const install_glue =
     \\  delete globalThis.__home_process_mono_ns;
     \\  delete globalThis.__home_process_cpu_usage;
     \\  delete globalThis.__home_process_kill;
+    \\  delete globalThis.__home_process_umask;
     \\})();
 ;
 
@@ -492,6 +534,7 @@ pub fn install(allocator: std.mem.Allocator, ctx: *JSContextRef, global: *JSGlob
     callback.registerCallback(ctx, global, "__home_process_mono_ns", monoNsNative);
     callback.registerCallback(ctx, global, "__home_process_cpu_usage", cpuUsageNative);
     callback.registerCallback(ctx, global, "__home_process_kill", killNative);
+    callback.registerCallback(ctx, global, "__home_process_umask", umaskNative);
 
     const result = evaluate.evaluateUtf8Detailed(allocator, ctx, install_glue, "home:process-install", 1) catch return;
     result.deinit(allocator);
@@ -619,20 +662,19 @@ test "process install exposes the core surface" {
     install(std.testing.allocator, ctx, engine.currentGlobalObject(), &argv);
 
     // Shape: process is an object with the expected primitive/array/object members.
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
-        "typeof process === 'object' && " ++
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "typeof process === 'object' && " ++
         "Array.isArray(process.argv) && process.argv.length === 3 && process.argv[0] === 'home' && " ++
         "typeof process.env === 'object' && " ++
         "typeof process.platform === 'string' && typeof process.arch === 'string' && " ++
         "process.version === 'v" ++ node_version ++ "' && process.versions.node === '" ++ node_version ++ "' && " ++
+        "process.release && process.release.name === 'node' && " ++
         "typeof process.pid === 'number' && " ++
         "typeof process.cwd === 'function' && typeof process.exit === 'function' && " ++
         "typeof process.nextTick === 'function' && " ++
         "typeof process.stdout.write === 'function' && typeof process.stderr.write === 'function'"));
 
     // The temporary registration globals were cleaned up.
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
-        "typeof globalThis.__home_process_argv === 'undefined' && " ++
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "typeof globalThis.__home_process_argv === 'undefined' && " ++
         "typeof globalThis.__home_process_static_info === 'undefined'"));
 }
 
@@ -647,8 +689,7 @@ test "process exposes execPath, exitCode, uptime, and hrtime(+bigint)" {
     const argv = [_][]const u8{"home"};
     install(std.testing.allocator, ctx, engine.currentGlobalObject(), &argv);
 
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
-        "(function() {" ++
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "(function() {" ++
         "  if (typeof process.execPath !== 'string' || process.execPath.length === 0) return false;" ++
         "  if (!('exitCode' in process) || process.exitCode !== undefined) return false;" ++
         "  process.exitCode = 3; if (process.exitCode !== 3) return false;" ++
@@ -665,8 +706,7 @@ test "process exposes execPath, exitCode, uptime, and hrtime(+bigint)" {
         "  return cd.user >= 0 && cd.system >= 0;" ++
         "})()"));
 
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
-        "typeof globalThis.__home_process_mono_ns === 'undefined' && typeof globalThis.__home_process_cpu_usage === 'undefined'"));
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "typeof globalThis.__home_process_mono_ns === 'undefined' && typeof globalThis.__home_process_cpu_usage === 'undefined'"));
 }
 
 test "process.emitWarning fires a warning event with code/detail" {
@@ -680,8 +720,7 @@ test "process.emitWarning fires a warning event with code/detail" {
     const argv = [_][]const u8{"home"};
     install(std.testing.allocator, ctx, engine.currentGlobalObject(), &argv);
 
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
-        "(function() {" ++
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "(function() {" ++
         "  if (typeof process.emitWarning !== 'function') return false;" ++
         "  if (process.stdout.fd !== 1 || process.stderr.fd !== 2) return false;" ++
         "  var got = null; process.on('warning', function(w) { got = w; });" ++
@@ -704,8 +743,7 @@ test "process is an EventEmitter (on/once/off/emit/listeners)" {
     const argv = [_][]const u8{"home"};
     install(std.testing.allocator, ctx, engine.currentGlobalObject(), &argv);
 
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
-        "(function() {" ++
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "(function() {" ++
         "  if (typeof process.on !== 'function' || typeof process.emit !== 'function') return false;" ++
         "  var sum = 0; function add(n) { sum += n; }" ++
         "  process.on('tick', add);" ++
@@ -735,8 +773,7 @@ test "process.kill sends signals; signal 0 probes existence" {
     // Note: we never send a real (terminating) signal to ourselves. Signal 0 is
     // a no-op existence probe; named/numeric signals are exercised against a pid
     // that cannot exist so they fail with ESRCH instead of killing the test.
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
-        "(function() {" ++
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "(function() {" ++
         "  if (typeof process.kill !== 'function') return false;" ++
         "  if (process.kill(process.pid, 0) !== true) return false;" ++ // self exists, no-op
         "  var NOPID = 0x7ffffffe;" ++ // far above any real pid
@@ -758,8 +795,7 @@ test "process.report.getReport returns a header echoing platform/arch" {
     const argv = [_][]const u8{"home"};
     install(std.testing.allocator, ctx, engine.currentGlobalObject(), &argv);
 
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
-        "(function() {" ++
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "(function() {" ++
         "  if (typeof process.report !== 'object' || typeof process.report.getReport !== 'function') return false;" ++
         "  var r = process.report.getReport();" ++
         "  if (!r || typeof r.header !== 'object') return false;" ++
@@ -782,8 +818,34 @@ test "process.cwd returns a non-empty absolute path" {
     const argv = [_][]const u8{"home"};
     install(std.testing.allocator, ctx, engine.currentGlobalObject(), &argv);
 
-    try std.testing.expect(try evalBool(std.testing.allocator, ctx,
-        "typeof process.cwd() === 'string' && process.cwd().length > 0 && process.cwd()[0] === '/'"));
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "typeof process.cwd() === 'string' && process.cwd().length > 0 && process.cwd()[0] === '/'"));
+}
+
+test "process.umask reads and updates the native process mask" {
+    if (!build_options.enable_jsc or builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const Engine = @import("engine.zig").Engine;
+    var engine = try Engine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    const ctx = engine.currentContext();
+    const argv = [_][]const u8{"home"};
+    install(std.testing.allocator, ctx, engine.currentGlobalObject(), &argv);
+
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "(function() {" ++
+        "  var before = process.umask();" ++
+        "  try {" ++
+        "    if (process.umask('077') !== before || process.umask() !== 0o077) return false;" ++
+        "    if (process.umask(0o027) !== 0o077 || process.umask() !== 0o027) return false;" ++
+        "    var invalid = 0;" ++
+        "    try { process.umask('089'); } catch (e) { if (e instanceof TypeError) invalid++; }" ++
+        "    try { process.umask(512); } catch (e) { if (e instanceof TypeError) invalid++; }" ++
+        "    return invalid === 2;" ++
+        "  } finally {" ++
+        "    process.umask(before);" ++
+        "  }" ++
+        "})()"));
+    try std.testing.expect(try evalBool(std.testing.allocator, ctx, "typeof globalThis.__home_process_umask === 'undefined'"));
 }
 
 test "process.nextTick runs the callback after the current job" {
