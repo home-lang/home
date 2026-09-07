@@ -99858,7 +99858,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/net/unix-socket-unlink.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/patch/patch.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "bun:internal-for-testing patch internals")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/perf_hooks/histogram.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/plugin/plugin-namespace-drive-letter.test.ts"))
@@ -100703,6 +100703,10 @@ fn isNativeReplCorpusFile(relative: []const u8) bool {
     return std.mem.eql(u8, relative, "js/bun/repl/repl.test.ts");
 }
 
+fn isNativePatchCorpusFile(relative: []const u8) bool {
+    return std.mem.eql(u8, relative, "js/bun/patch/patch.test.ts");
+}
+
 fn isNativeShellLeakCorpusFile(relative: []const u8) bool {
     return std.mem.eql(u8, relative, "js/bun/shell/leak.test.ts");
 }
@@ -100891,6 +100895,7 @@ fn isNativeHomeCorpusFile(relative: []const u8) bool {
         isNativeHtmlServerCorpusFile(relative) or
         isNativeServeCorpusFile(relative) or
         isNativeReplCorpusFile(relative) or
+        isNativePatchCorpusFile(relative) or
         isNativeShellLeakCorpusFile(relative) or
         isNativeWebViewCorpusFile(relative) or
         isNativeHttpProxyCorpusFile(relative) or
@@ -100938,6 +100943,7 @@ fn nativeCorpusMode(relative: []const u8) NativeCorpusMode {
         isNativeHtmlServerCorpusFile(relative) or
         isNativeServeCorpusFile(relative) or
         isNativeReplCorpusFile(relative) or
+        isNativePatchCorpusFile(relative) or
         isNativeShellLeakCorpusFile(relative) or
         isNativeWebViewCorpusFile(relative) or
         isNativeHttpProxyCorpusFile(relative) or
@@ -101996,6 +102002,54 @@ test "native Bun CLI activation: REPL corpus executes terminal and subprocess ma
     }
     try std.testing.expectEqual(@as(usize, 1), summary.files);
     try std.testing.expectEqual(@as(usize, 117), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+    try std.testing.expectEqual(@as(usize, 0), summary.allowed_empty_files);
+}
+
+test "native Bun patch corpus executes diff, apply, and parse matrices unchanged" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const path = "js/bun/patch/patch.test.ts";
+    try std.testing.expect(isNativePatchCorpusFile(path));
+    try std.testing.expect(isNativeHomeCorpusFile(path));
+    try std.testing.expectEqual(NativeCorpusMode.test_runner, nativeCorpusMode(path));
+    inline for (.{
+        "js/bun/patch/patch.test.js",
+        "js/bun/patch/nested/patch.test.ts",
+        "js/bun/patch/patch.fixture.ts",
+    }) |non_match| try std.testing.expect(!isNativePatchCorpusFile(non_match));
+
+    const source = try Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        "packages/runtime/test/test/" ++ path,
+        std.testing.allocator,
+        .limited(1024 * 1024),
+    );
+    defer std.testing.allocator.free(source);
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, path);
+    defer std.testing.allocator.free(rewritten);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "does not crash on truncated ---/+++ header lines") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "bun:internal-for-testing patch internals") == null);
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    var summary = try runFile(
+        threaded.io(),
+        std.testing.allocator,
+        "packages/runtime/test/test",
+        path,
+    );
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 23 or summary.todo != 0) {
+        std.debug.print(
+            "native Bun patch corpus mismatch: passed={} todo={} failed={} unsupported={} message={s}\n",
+            .{ summary.passed, summary.todo, summary.failed, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 23), summary.passed);
     try std.testing.expectEqual(@as(usize, 0), summary.todo);
     try std.testing.expectEqual(@as(usize, 0), summary.failed);
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);

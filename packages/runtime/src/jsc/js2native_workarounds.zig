@@ -278,9 +278,10 @@ comptime {
     @export(&host_fn.toJSHostFn(npm_jsc.architectureIsMatch), .{ .name = "JS2Zig___src_install_npm_zig__Architecture_jsFunctionArchitectureIsMatch" });
     @export(&host_fn.toJSHostFn(npm_jsc.operatingSystemIsMatch), .{ .name = "JS2Zig___src_install_npm_zig__OperatingSystem_jsFunctionOperatingSystemIsMatch" });
 
-    // ---- patch TestingAPIs apply/parse (bun:internal-for-testing patchInternals)
-    // makeDiff stays noop'd (patch.zig's git-diff shell-out uses Zig-0.16
-    // std.process.Child.init). apply/parse are pure file/parse ops — wire them.
+    // ---- patch TestingAPIs (bun:internal-for-testing patchInternals) ----
+    // The patch corpus exercises the real parser, applier, and `git diff
+    // --no-index` generator through these host functions.
+    @export(&host_fn.toJSHostFn(PatchTestingAPIs.makeDiff), .{ .name = "JS2Zig___src_patch_patch_zig__TestingAPIs_makeDiff" });
     @export(&host_fn.toJSHostFn(PatchTestingAPIs.apply), .{ .name = "JS2Zig___src_patch_patch_zig__TestingAPIs_apply" });
     @export(&host_fn.toJSHostFn(PatchTestingAPIs.parse), .{ .name = "JS2Zig___src_patch_patch_zig__TestingAPIs_parse" });
 

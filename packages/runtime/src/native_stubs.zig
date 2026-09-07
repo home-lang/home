@@ -137,9 +137,7 @@ comptime {
         // js2native_workarounds.zig (the noop left the OOM tests unable to
         // lower the limit, so they never threw the OOM they assert on).
         "JS2Zig___src_runtime_api_bun_subprocess_zig__TestingAPIs_injectStdioReadError",
-        // patch TestingAPIs stay noop'd: patch.zig's makeDiff uses Zig-0.16
-        // std.process.Child.init (removed in 0.17) so the impl doesn't compile.
-        "JS2Zig___src_patch_patch_zig__TestingAPIs_makeDiff",
+        // patch TestingAPIs now have real exports in js2native_workarounds.zig.
         "JS2Zig___src_runtime_cli_pack_command_zig__bindings_jsReadTarball",
         "JS2Zig___src_runtime_cli_upgrade_command_zig__upgrade_js_bindings_generate_workaround",
         // getBunServerAllClosedPromise now has a real export in js2native_workarounds.zig.

@@ -72,7 +72,9 @@ pub const TestingAPIs = struct {
             return globalThis.throw("TestingAPIs.parse: expected at least 1 argument, got 0", .{});
         };
         const patchfile_src_bunstr = try patchfile_src_js.toBunString(globalThis);
+        defer patchfile_src_bunstr.deref();
         const patchfile_src = patchfile_src_bunstr.toUTF8(bun.default_allocator);
+        defer patchfile_src.deinit();
 
         var patchfile = parsePatchFile(patchfile_src.slice()) catch |e| {
             if (e == error.hunk_header_integrity_check_failed) {

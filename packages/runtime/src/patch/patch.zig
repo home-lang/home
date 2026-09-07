@@ -84,6 +84,14 @@ pub const PatchFile = struct {
                     if (!isSafePatchPath(part.file_rename.from_path) or !isSafePatchPath(part.file_rename.to_path)) {
                         return bun.sys.Error.fromCode(.INVAL, .rename);
                     }
+                    // The POSIX calls below ultimately operate on fixed-size
+                    // path buffers. Surface the same catchable system error as
+                    // Bun/the OS before any path helper can truncate or panic.
+                    if (part.file_rename.from_path.len >= bun.MAX_PATH_BYTES or
+                        part.file_rename.to_path.len >= bun.MAX_PATH_BYTES)
+                    {
+                        return bun.sys.Error.fromCode(.NAMETOOLONG, .rename);
+                    }
                     const from_path = bun.handleOom(bun.dupeZ(arena.allocator(), u8, part.file_rename.from_path));
                     const to_path = bun.handleOom(bun.dupeZ(arena.allocator(), u8, part.file_rename.to_path));
 
@@ -833,9 +841,20 @@ const PatchLinesParser = struct {
                         this.current_file_patch.before_hash = hashes[0];
                         this.current_file_patch.after_hash = hashes[1];
                     } else if (bun.strings.hasPrefix(line, "--- ")) {
-                        this.current_file_patch.from_path = std.mem.trim(u8, line["--- a/".len..], WHITESPACE);
+                        // Match JavaScript's slice semantics for truncated
+                        // headers: slicing beyond the line yields an empty
+                        // path instead of an out-of-bounds slice.
+                        this.current_file_patch.from_path = std.mem.trim(
+                            u8,
+                            if (line.len >= "--- a/".len) line["--- a/".len..] else "",
+                            WHITESPACE,
+                        );
                     } else if (bun.strings.hasPrefix(line, "+++ ")) {
-                        this.current_file_patch.to_path = std.mem.trim(u8, line["+++ b/".len..], WHITESPACE);
+                        this.current_file_patch.to_path = std.mem.trim(
+                            u8,
+                            if (line.len >= "+++ b/".len) line["+++ b/".len..] else "",
+                            WHITESPACE,
+                        );
                     }
                 },
                 .parsing_hunks => {
@@ -1251,28 +1270,21 @@ pub fn gitDiffInternal(
         allocator.free(new_folder);
     };
 
-    var child_proc = std.process.Child.init(
-        &[_][]const u8{
-            "git",
-            "-c",
-            "core.safecrlf=false",
-            "diff",
-            "--src-prefix=a/",
-            "--dst-prefix=b/",
-            "--ignore-cr-at-eol",
-            "--irreversible-delete",
-            "--full-index",
-            "--no-index",
-            old_folder,
-            new_folder,
-        },
-        allocator,
-    );
-    // unfortunately, git diff returns non-zero exit codes even when it succeeds.
-    // we have to check that stderr was not empty to know if it failed
-    child_proc.stdout_behavior = .Pipe;
-    child_proc.stderr_behavior = .Pipe;
-    var map = std.process.EnvMap.init(allocator);
+    const argv = [_][]const u8{
+        "git",
+        "-c",
+        "core.safecrlf=false",
+        "diff",
+        "--src-prefix=a/",
+        "--dst-prefix=b/",
+        "--ignore-cr-at-eol",
+        "--irreversible-delete",
+        "--full-index",
+        "--no-index",
+        old_folder,
+        new_folder,
+    };
+    var map = std.process.Environ.Map.init(allocator);
     defer map.deinit();
     if (bun.env_var.PATH.get()) |v| try map.put("PATH", v);
     try map.put("GIT_CONFIG_NOSYSTEM", "1");
@@ -1280,27 +1292,28 @@ pub fn gitDiffInternal(
     try map.put("XDG_CONFIG_HOME", "");
     try map.put("USERPROFILE", "");
 
-    child_proc.env_map = &map;
-    var stdout: std.ArrayListUnmanaged(u8) = .empty;
-    var stderr: std.ArrayListUnmanaged(u8) = .empty;
-    var deinit_stdout = true;
-    var deinit_stderr = true;
-    defer {
-        if (deinit_stdout) stdout.deinit(allocator);
-        if (deinit_stderr) stderr.deinit(allocator);
-    }
-    try child_proc.spawn();
-    try child_proc.collectOutput(allocator, &stdout, &stderr, 1024 * 1024 * 4);
-    _ = try child_proc.wait();
-    if (stderr.items.len > 0) {
-        deinit_stderr = false;
-        return .{ .err = stderr.toManaged(allocator) };
-    }
+    var threaded = std.Io.Threaded.init(allocator, .{});
+    defer threaded.deinit();
+    const result = try std.process.run(allocator, threaded.io(), .{
+        .argv = &argv,
+        .environ_map = &map,
+        .stdout_limit = .limited(4 * 1024 * 1024),
+        .stderr_limit = .limited(4 * 1024 * 1024),
+    });
 
-    debug("Before postprocess: {s}\n", .{stdout.items});
-    var stdout_managed = stdout.toManaged(allocator);
+    // Unfortunately, git diff returns a non-zero exit code when it finds a
+    // difference. Match Bun's contract by treating stderr, not the exit code,
+    // as the failure signal.
+    if (result.stderr.len > 0) {
+        allocator.free(result.stdout);
+        return .{ .err = .fromOwnedSlice(allocator, result.stderr) };
+    }
+    allocator.free(result.stderr);
+
+    debug("Before postprocess: {s}\n", .{result.stdout});
+    var stdout_managed = std.array_list.Managed(u8).fromOwnedSlice(allocator, result.stdout);
+    errdefer stdout_managed.deinit();
     try gitDiffPostprocess(&stdout_managed, old_folder, new_folder);
-    deinit_stdout = false;
     return .{ .result = stdout_managed };
 }
 
@@ -1333,79 +1346,68 @@ fn gitDiffPostprocess(stdout: *std.array_list.Managed(u8), old_folder: []const u
     const old_folder_trimmed = std.mem.trim(u8, old_folder, "/");
     const new_folder_trimmed = std.mem.trim(u8, new_folder, "/");
 
-    var old_buf: bun.PathBuffer = undefined;
-    var new_buf: bun.PathBuffer = undefined;
+    if (old_folder_trimmed.len + 3 > bun.MAX_PATH_BYTES or new_folder_trimmed.len + 3 > bun.MAX_PATH_BYTES) {
+        return error.NameTooLong;
+    }
 
-    const @"a/$old_folder/", const @"b/$new_folder/" = brk: {
-        old_buf[0] = 'a';
-        old_buf[1] = '/';
-        @memcpy(old_buf[2..][0..old_folder_trimmed.len], old_folder_trimmed);
-        old_buf[2 + old_folder_trimmed.len] = '/';
+    var prefixed_storage: [4]bun.PathBuffer = undefined;
+    var prefixed_patterns: [4][]const u8 = undefined;
+    const prefixes = [_]u8{ 'a', 'b' };
+    const trimmed_folders = [_][]const u8{ old_folder_trimmed, new_folder_trimmed };
+    for (prefixes, 0..) |prefix, prefix_index| {
+        for (trimmed_folders, 0..) |folder, folder_index| {
+            const pattern_index = prefix_index * trimmed_folders.len + folder_index;
+            const buf = &prefixed_storage[pattern_index];
+            buf[0] = prefix;
+            buf[1] = '/';
+            @memcpy(buf[2..][0..folder.len], folder);
+            buf[2 + folder.len] = '/';
+            prefixed_patterns[pattern_index] = buf[0 .. folder.len + 3];
+        }
+    }
+    const raw_folders = [_][]const u8{ old_folder, new_folder };
 
-        new_buf[0] = 'b';
-        new_buf[1] = '/';
-        @memcpy(new_buf[2..][0..new_folder_trimmed.len], new_folder_trimmed);
-        new_buf[2 + new_folder_trimmed.len] = '/';
-
-        break :brk .{ old_buf[0 .. 2 + old_folder_trimmed.len + 1], new_buf[0 .. 2 + new_folder_trimmed.len + 1] };
-    };
-
-    // const @"$old_folder/" = @"a/$old_folder/"[2..];
-    // const @"$new_folder/" = @"b/$new_folder/"[2..];
-
-    // these vars are here to disambguate `a/$OLD_FOLDER` when $OLD_FOLDER itself contains "a/"
-    // basically if $OLD_FOLDER contains "a/" then the code will replace it
-    // so we need to not run that code path
-    var saw_a_folder: ?usize = null;
-    var saw_b_folder: ?usize = null;
-    var line_idx: u32 = 0;
-
-    var line_iter = std.mem.splitScalar(u8, stdout.items, '\n');
-    while (line_iter.next()) |line| {
-        if (!shouldSkipLine(line)) {
-            if (std.mem.indexOf(u8, line, @"a/$old_folder/")) |idx| {
-                const @"$old_folder/ start" = idx + 2;
-                const line_start = line_iter.index.? - 1 - line.len;
-                line_iter.index.? -= 1 + line.len;
-                try stdout.replaceRange(line_start + @"$old_folder/ start", old_folder_trimmed.len + 1, "");
-                saw_a_folder = line_idx;
-                continue;
+    // Maintain the cursor manually because replacing bytes invalidates a
+    // SplitIterator's borrowed line and stored index. This mirrors Bun's
+    // current implementation and is important when absolute temp paths occur
+    // more than once on one diff header line.
+    var cursor: usize = 0;
+    while (cursor <= stdout.items.len) {
+        const line_start = cursor;
+        const line_end, const next_cursor, const exhausted = if (std.mem.indexOfScalar(u8, stdout.items[cursor..], '\n')) |pos|
+            .{ cursor + pos, cursor + pos + 1, false }
+        else
+            .{ stdout.items.len, stdout.items.len, true };
+        if (!shouldSkipLine(stdout.items[line_start..line_end])) {
+            var replaced = false;
+            for (prefixed_patterns) |pattern| {
+                if (std.mem.indexOf(u8, stdout.items[line_start..line_end], pattern)) |idx| {
+                    // Keep the `a/` or `b/` prefix and remove only the source
+                    // folder plus its trailing slash.
+                    try stdout.replaceRange(line_start + idx + 2, pattern.len - 2, "");
+                    cursor = line_start;
+                    replaced = true;
+                    break;
+                }
             }
-            if (std.mem.indexOf(u8, line, @"b/$new_folder/")) |idx| {
-                const @"$new_folder/ start" = idx + 2;
-                const line_start = line_iter.index.? - 1 - line.len;
-                try stdout.replaceRange(line_start + @"$new_folder/ start", new_folder_trimmed.len + 1, "");
-                line_iter.index.? -= new_folder_trimmed.len + 1;
-                saw_b_folder = line_idx;
-                continue;
-            }
-            if (saw_a_folder == null or saw_a_folder.? != line_idx) {
-                if (std.mem.indexOf(u8, line, old_folder)) |idx| {
-                    if (idx + old_folder.len < line.len and line[idx + old_folder.len] == '/') {
-                        const line_start = line_iter.index.? - 1 - line.len;
-                        line_iter.index.? -= 1 + line.len;
-                        try stdout.replaceRange(line_start + idx, old_folder.len + 1, "");
-                        saw_a_folder = line_idx;
-                        continue;
+            if (replaced) continue;
+
+            for (raw_folders) |folder| {
+                if (folder.len == 0) continue;
+                if (std.mem.indexOf(u8, stdout.items[line_start..line_end], folder)) |idx| {
+                    if (idx + folder.len < line_end - line_start and stdout.items[line_start + idx + folder.len] == '/') {
+                        try stdout.replaceRange(line_start + idx, folder.len + 1, "");
+                        cursor = line_start;
+                        replaced = true;
+                        break;
                     }
                 }
             }
-            if (saw_b_folder == null or saw_b_folder.? != line_idx) {
-                if (std.mem.indexOf(u8, line, new_folder)) |idx| {
-                    if (idx + new_folder.len < line.len and line[idx + new_folder.len] == '/') {
-                        const line_start = line_iter.index.? - 1 - line.len;
-                        line_iter.index.? -= 1 + line.len;
-                        try stdout.replaceRange(line_start + idx, new_folder.len + 1, "");
-                        saw_b_folder = line_idx;
-                        continue;
-                    }
-                }
-            }
+            if (replaced) continue;
         }
 
-        line_idx += 1;
-        saw_a_folder = null;
-        saw_b_folder = null;
+        if (exhausted) break;
+        cursor = next_cursor;
     }
 }
 
