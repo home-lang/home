@@ -270,7 +270,8 @@ pub fn JSSink(comptime SinkType: type, comptime abi_name: []const u8) type {
 
         pub fn onReady(ptr: JSValue, amount: JSValue, offset: JSValue) void {
             jsc.markBinding(@src());
-            return onReadyExtern(ptr, amount, offset);
+            const globalThis = bun.jsc.VirtualMachine.get().global; // TODO: this should be got from a parameter
+            return bun.jsc.fromJSHostCallGeneric(globalThis, @src(), onReadyExtern.*, .{ ptr, amount, offset }) catch return; // TODO: properly propagate exception upwards
         }
 
         pub fn onStart(ptr: JSValue, globalThis: *JSGlobalObject) void {

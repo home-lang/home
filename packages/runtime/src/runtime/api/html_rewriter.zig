@@ -297,7 +297,10 @@ pub const HTMLRewriter = struct {
                 .pending => |pending| {
                     pending.applyBackpressure(bun.default_allocator, &this.output, pending, bytes);
                 },
-                .into_array, .owned, .temporary => {
+                // The destination consumed the bytes even when it reports
+                // transport backpressure. The rewriter has no independent
+                // resume wiring, so treat that result like owned.
+                .into_array, .owned, .temporary, .backpressure => {
                     this.signal.ready(if (this.chunk_size > 0) this.chunk_size else null, null);
                 },
             }

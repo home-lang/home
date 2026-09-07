@@ -99806,7 +99806,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/http/serve-stream-reject-flush-leak.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/http/serve.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun.serve comprehensive native HTTP integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/http/tls-bunfile-leak.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/import-attributes/import-attributes.test.ts"))
@@ -100694,6 +100694,10 @@ fn isNativeHtmlServerCorpusFile(relative: []const u8) bool {
         std.mem.eql(u8, relative, "js/bun/http/bun-serve-html.test.ts");
 }
 
+fn isNativeServeCorpusFile(relative: []const u8) bool {
+    return std.mem.eql(u8, relative, "js/bun/http/serve.test.ts");
+}
+
 fn isNativeShellLeakCorpusFile(relative: []const u8) bool {
     return std.mem.eql(u8, relative, "js/bun/shell/leak.test.ts");
 }
@@ -100880,6 +100884,7 @@ fn isNativeHomeCorpusFile(relative: []const u8) bool {
         isNativeHttpPromiseCorpusFile(relative) or
         isNativeHttpServerCorpusFile(relative) or
         isNativeHtmlServerCorpusFile(relative) or
+        isNativeServeCorpusFile(relative) or
         isNativeShellLeakCorpusFile(relative) or
         isNativeWebViewCorpusFile(relative) or
         isNativeHttpProxyCorpusFile(relative) or
@@ -100925,6 +100930,7 @@ fn nativeCorpusMode(relative: []const u8) NativeCorpusMode {
         isNativeHttpPromiseCorpusFile(relative) or
         isNativeHttpServerCorpusFile(relative) or
         isNativeHtmlServerCorpusFile(relative) or
+        isNativeServeCorpusFile(relative) or
         isNativeShellLeakCorpusFile(relative) or
         isNativeWebViewCorpusFile(relative) or
         isNativeHttpProxyCorpusFile(relative) or
@@ -101775,6 +101781,54 @@ test "native Bun restored server corpus executes unchanged without TODO rewrites
         try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
         try std.testing.expectEqual(@as(usize, 0), summary.allowed_empty_files);
     }
+}
+
+test "native Bun serve corpus executes unchanged without TODO rewrite" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const path = "js/bun/http/serve.test.ts";
+    try std.testing.expect(isNativeServeCorpusFile(path));
+    try std.testing.expect(isNativeHomeCorpusFile(path));
+    try std.testing.expectEqual(NativeCorpusMode.test_runner, nativeCorpusMode(path));
+    inline for (.{
+        "js/bun/http/serve.test.js",
+        "js/bun/http/nested/serve.test.ts",
+        "js/bun/serve.test.ts",
+    }) |non_match| try std.testing.expect(!isNativeServeCorpusFile(non_match));
+
+    const source = try Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        "packages/runtime/test/test/" ++ path,
+        std.testing.allocator,
+        .limited(1024 * 1024),
+    );
+    defer std.testing.allocator.free(source);
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, path);
+    defer std.testing.allocator.free(rewritten);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "applies backpressure to a Response(ReadableStream) body when the client stalls") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Bun.serve comprehensive native HTTP integration") == null);
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    var summary = try runFile(
+        threaded.io(),
+        std.testing.allocator,
+        "packages/runtime/test/test",
+        path,
+    );
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 199 or summary.todo != 2) {
+        std.debug.print(
+            "native Bun serve corpus mismatch: passed={} todo={} failed={} unsupported={} message={s}\n",
+            .{ summary.passed, summary.todo, summary.failed, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 199), summary.passed);
+    try std.testing.expectEqual(@as(usize, 2), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+    try std.testing.expectEqual(@as(usize, 0), summary.allowed_empty_files);
 }
 
 test "native Bun shell leak corpus executes unchanged without TODO rewrite" {

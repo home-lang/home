@@ -825,6 +825,17 @@ pub fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, 
             onFileStreamComplete(ctx, resp);
         }
 
+        /// Forward uWS's drain notification to the streaming response sink.
+        /// RequestContext owns this registration for the stream lifetime so
+        /// the response's single callback userdata always remains this context.
+        pub fn onWritableResponseStream(this: *RequestContext, write_offset: u64, _: *App.Response) bool {
+            ctxLog("onWritableResponseStream({d})", .{write_offset});
+            if (this.sink) |wrapper| {
+                return wrapper.sink.onWritable(write_offset, undefined);
+            }
+            return true;
+        }
+
         pub fn onWritableBytes(this: *RequestContext, write_offset: u64, resp: *App.Response) bool {
             ctxLog("onWritableBytes", .{});
             assert(this.resp == resp);
@@ -1167,6 +1178,11 @@ pub fn NewRequestContext(comptime ssl_enabled: bool, comptime debug_mode: bool, 
                                 response_stream.sink.ctx = null;
                                 this.renderMetadata();
                             }
+
+                            // Keep the response drain callback armed for the
+                            // lifetime of this pending stream. The sink only
+                            // tracks transport backpressure and handles drains.
+                            resp.onWritable(*RequestContext, onWritableResponseStream, this);
 
                             // TODO: should this timeout?
                             const bodyValue = this.response_weakref.get().?.getBodyValue();
