@@ -99864,7 +99864,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/plugin/plugin-namespace-drive-letter.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/plugin/plugins.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun global plugin loader integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/repl/repl.test.ts"))
         try rewriteNativeTodoCorpus(allocator, "Bun REPL subprocess and terminal integration")
     else if (std.mem.eql(u8, relative_path, "js/bun/transpiler/repl-transform.test.ts"))
@@ -100076,7 +100076,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/stream/direct-readable-stream.test.tsx"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/symbols.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun binary symbol import inspection")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/websocket/websocket-upgrade-signal-gc.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/webview/webview.test.ts"))
@@ -100702,6 +100702,7 @@ fn isNativeBunTestCorpusFile(relative: []const u8) bool {
         std.mem.eql(u8, relative, "js/bun/test/mock/6879/6879.test.ts") or
         std.mem.eql(u8, relative, "js/bun/test/mock/mock-module.test.ts") or
         std.mem.eql(u8, relative, "js/bun/test/mock-fn.test.js") or
+        std.mem.eql(u8, relative, "js/bun/plugin/plugins.test.ts") or
         std.mem.eql(u8, relative, "js/bun/test/printing/diffexample.test.ts") or
         std.mem.eql(u8, relative, "js/bun/test/snapshot-tests/snapshots/snapshot.test.ts") or
         std.mem.eql(u8, relative, "js/bun/test/test-failing.test.ts") or
@@ -100710,6 +100711,10 @@ fn isNativeBunTestCorpusFile(relative: []const u8) bool {
 
 fn isNativeBunTestHelperCorpusFile(relative: []const u8) bool {
     return std.mem.eql(u8, relative, "js/bun/test/test-interop.js");
+}
+
+fn isNativePlatformAuditCorpusFile(relative: []const u8) bool {
+    return std.mem.eql(u8, relative, "js/bun/symbols.test.ts");
 }
 
 fn isNativeExpectedFailureCorpusFile(relative: []const u8) bool {
@@ -100863,6 +100868,7 @@ fn isNativeHomeCorpusFile(relative: []const u8) bool {
         isNativeHttpProxyCorpusFile(relative) or
         isNativeBunTestCorpusFile(relative) or
         isNativeBunTestHelperCorpusFile(relative) or
+        isNativePlatformAuditCorpusFile(relative) or
         isNativeExpectedFailureCorpusFile(relative) or
         isNativeS3CorpusFile(relative) or
         isNativeWorkerCorpusFile(relative) or
@@ -100903,6 +100909,7 @@ fn nativeCorpusMode(relative: []const u8) NativeCorpusMode {
         isNativeHttpServerCorpusFile(relative) or
         isNativeHttpProxyCorpusFile(relative) or
         isNativeBunTestCorpusFile(relative) or
+        isNativePlatformAuditCorpusFile(relative) or
         isNativeExpectedFailureCorpusFile(relative) or
         isNativeBufferPrimitiveCorpusFile(relative) or
         isNativeAsyncHooksCorpusFile(relative) or
@@ -100947,6 +100954,10 @@ fn nativeCorpusRunnerFlags(relative: []const u8) []const []const u8 {
 
 fn nativeCorpusProcessSucceeded(term: std.process.Child.Term, timed_out: bool) bool {
     return !timed_out and term.success();
+}
+
+fn nativeCorpusAllowsNoTests(relative: []const u8) bool {
+    return isNativePlatformAuditCorpusFile(relative) and builtin.os.tag != .linux and builtin.os.tag != .windows;
 }
 
 fn nativeExpectedFailureCorpusPassed(
@@ -101143,9 +101154,16 @@ fn runRelativeFile(
                 try recordFailure(allocator, summary, relative, diagnostic);
             } else if (mode == .test_runner) {
                 const counts = nativeCorpusTestCounts(native_run.stdout, native_run.stderr);
-                if (!counts.observed or counts.passed + counts.failed + counts.skipped + counts.todo == 0) {
+                if (!counts.observed) {
                     file_result.unsupported = 1;
                     try recordFailure(allocator, summary, relative, "native Home test runner did not report any executed tests");
+                } else if (counts.passed + counts.failed + counts.skipped + counts.todo == 0) {
+                    if (nativeCorpusAllowsNoTests(relative)) {
+                        summary.allowed_empty_files += 1;
+                    } else {
+                        file_result.unsupported = 1;
+                        try recordFailure(allocator, summary, relative, "native Home test runner did not report any executed tests");
+                    }
                 } else {
                     file_result.passed = counts.passed;
                     file_result.failed = counts.failed;
@@ -101639,6 +101657,7 @@ test "native Bun test corpus routing covers require, interop consumers, fake tim
         "js/bun/test/mock/6879/6879.test.ts",
         "js/bun/test/mock/mock-module.test.ts",
         "js/bun/test/mock-fn.test.js",
+        "js/bun/plugin/plugins.test.ts",
         "js/bun/test/printing/diffexample.test.ts",
         "js/bun/test/snapshot-tests/snapshots/snapshot.test.ts",
         "js/bun/test/test-failing.test.ts",
@@ -101676,6 +101695,17 @@ test "native Bun test fixture routing distinguishes executable helpers and expec
     try std.testing.expectEqual(NativeCorpusMode.test_runner, nativeCorpusMode(expected_failure));
     try std.testing.expect(!isNativeBunTestHelperCorpusFile(expected_failure));
     try std.testing.expect(!isNativeExpectedFailureCorpusFile(helper));
+}
+
+test "native Bun test fixture routing preserves platform-specific binary audits" {
+    const relative = "js/bun/symbols.test.ts";
+    try Io.Dir.cwd().access(std.testing.io, "packages/runtime/test/test/" ++ relative, .{});
+    try std.testing.expect(isNativePlatformAuditCorpusFile(relative));
+    try std.testing.expect(isNativeHomeCorpusFile(relative));
+    try std.testing.expectEqual(NativeCorpusMode.test_runner, nativeCorpusMode(relative));
+    try std.testing.expectEqual(builtin.os.tag != .linux and builtin.os.tag != .windows, nativeCorpusAllowsNoTests(relative));
+    try std.testing.expect(!isNativePlatformAuditCorpusFile("js/bun/symbols.fixture.ts"));
+    try std.testing.expect(!nativeCorpusAllowsNoTests("js/bun/test/empty-file.test.ts"));
 }
 
 test "native S3 corpus routing covers validated deterministic integration files" {
@@ -101868,6 +101898,16 @@ test "native Bun test fixtures retain their upstream bodies instead of TODO rewr
             .marker = "test(\"no color\"",
             .removed_label = "bun test diff printer subprocess snapshot",
         },
+        .{
+            .path = "js/bun/plugin/plugins.test.ts",
+            .marker = "beep:boop returns 42",
+            .removed_label = "Bun global plugin loader integration",
+        },
+        .{
+            .path = "js/bun/symbols.test.ts",
+            .marker = "objdump -T does not include symbols from glibc > 2.17",
+            .removed_label = "Bun binary symbol import inspection",
+        },
     };
     inline for (cases) |case| {
         const source = try Io.Dir.cwd().readFileAlloc(std.testing.io, "packages/runtime/test/test/" ++ case.path, std.testing.allocator, .limited(64 * 1024));
@@ -101882,7 +101922,7 @@ test "native Bun test fixtures retain their upstream bodies instead of TODO rewr
 test "native Bun test fixtures and interop consumers execute unchanged through the corpus gate" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
-    const cases = [_]struct { path: []const u8, passed: usize, todo: usize = 0 }{
+    const cases = [_]struct { path: []const u8, passed: usize, todo: usize = 0, allowed_empty: usize = 0 }{
         .{ .path = "js/bun/test/test-interop.js", .passed = 1 },
         .{ .path = "js/bun/test/test-fixture-diff-indexed-properties.js", .passed = 1 },
         .{ .path = "js/bun/test/expect-extend.test.js", .passed = 28 },
@@ -101891,6 +101931,12 @@ test "native Bun test fixtures and interop consumers execute unchanged through t
         .{ .path = "js/bun/test/fake-timers/sinonjs/fake-timers.test.ts", .passed = 0, .todo = 438 },
         .{ .path = "js/bun/test/test-test.test.ts", .passed = 24, .todo = 16 },
         .{ .path = "js/bun/test/printing/diffexample.test.ts", .passed = 2 },
+        .{ .path = "js/bun/plugin/plugins.test.ts", .passed = 31, .todo = 1 },
+        .{
+            .path = "js/bun/symbols.test.ts",
+            .passed = if (builtin.os.tag == .linux) 2 else if (builtin.os.tag == .windows) 1 else 0,
+            .allowed_empty = if (builtin.os.tag == .linux or builtin.os.tag == .windows) 0 else 1,
+        },
     };
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
@@ -101913,6 +101959,7 @@ test "native Bun test fixtures and interop consumers execute unchanged through t
         try std.testing.expectEqual(case.todo, summary.todo);
         try std.testing.expectEqual(@as(usize, 0), summary.failed);
         try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+        try std.testing.expectEqual(case.allowed_empty, summary.allowed_empty_files);
     }
 }
 
