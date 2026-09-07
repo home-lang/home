@@ -100002,7 +100002,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/shell/lazy.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/shell/leak.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun shell fd and memory leak integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/shell/lex.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/shell/parse.test.ts"))
@@ -100694,6 +100694,10 @@ fn isNativeHtmlServerCorpusFile(relative: []const u8) bool {
         std.mem.eql(u8, relative, "js/bun/http/bun-serve-html.test.ts");
 }
 
+fn isNativeShellLeakCorpusFile(relative: []const u8) bool {
+    return std.mem.eql(u8, relative, "js/bun/shell/leak.test.ts");
+}
+
 fn isNativeWebViewCorpusFile(relative: []const u8) bool {
     return std.mem.eql(u8, relative, "js/bun/webview/webview-chrome-ws.test.ts");
 }
@@ -100876,6 +100880,7 @@ fn isNativeHomeCorpusFile(relative: []const u8) bool {
         isNativeHttpPromiseCorpusFile(relative) or
         isNativeHttpServerCorpusFile(relative) or
         isNativeHtmlServerCorpusFile(relative) or
+        isNativeShellLeakCorpusFile(relative) or
         isNativeWebViewCorpusFile(relative) or
         isNativeHttpProxyCorpusFile(relative) or
         isNativeBunTestCorpusFile(relative) or
@@ -100920,6 +100925,7 @@ fn nativeCorpusMode(relative: []const u8) NativeCorpusMode {
         isNativeHttpPromiseCorpusFile(relative) or
         isNativeHttpServerCorpusFile(relative) or
         isNativeHtmlServerCorpusFile(relative) or
+        isNativeShellLeakCorpusFile(relative) or
         isNativeWebViewCorpusFile(relative) or
         isNativeHttpProxyCorpusFile(relative) or
         isNativeBunTestCorpusFile(relative) or
@@ -101769,6 +101775,54 @@ test "native Bun restored server corpus executes unchanged without TODO rewrites
         try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
         try std.testing.expectEqual(@as(usize, 0), summary.allowed_empty_files);
     }
+}
+
+test "native Bun shell leak corpus executes unchanged without TODO rewrite" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+
+    const path = "js/bun/shell/leak.test.ts";
+    try std.testing.expect(isNativeShellLeakCorpusFile(path));
+    try std.testing.expect(isNativeHomeCorpusFile(path));
+    try std.testing.expectEqual(NativeCorpusMode.test_runner, nativeCorpusMode(path));
+    inline for (.{
+        "js/bun/shell/leak.test.js",
+        "js/bun/shell/nested/leak.test.ts",
+        "js/bun/glob/leak.test.ts",
+    }) |non_match| try std.testing.expect(!isNativeShellLeakCorpusFile(non_match));
+
+    const source = try Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        "packages/runtime/test/test/" ++ path,
+        std.testing.allocator,
+        .limited(1024 * 1024),
+    );
+    defer std.testing.allocator.free(source);
+    const rewritten = try rewriteBunTestImport(std.testing.allocator, source, path);
+    defer std.testing.allocator.free(rewritten);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "fdleak_ls") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "Bun shell fd and memory leak integration") == null);
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    var summary = try runFile(
+        threaded.io(),
+        std.testing.allocator,
+        "packages/runtime/test/test",
+        path,
+    );
+    defer summary.deinit(std.testing.allocator);
+    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 42 or summary.todo != 0) {
+        std.debug.print(
+            "native Bun shell leak corpus mismatch: passed={} todo={} failed={} unsupported={} message={s}\n",
+            .{ summary.passed, summary.todo, summary.failed, summary.unsupported, summary.first_failure_message },
+        );
+    }
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 42), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.todo);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+    try std.testing.expectEqual(@as(usize, 0), summary.allowed_empty_files);
 }
 
 test "native Bun HTML server corpus executes manifest and static matrices unchanged" {
