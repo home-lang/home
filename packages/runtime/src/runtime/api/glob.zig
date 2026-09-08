@@ -27,6 +27,20 @@ const ScanOpts = struct {
         const cwd_str: []const u8 = cwd_str: {
             const cwd_utf8 = cwd_string.toUTF8WithoutRef(allocator);
 
+            // Reject an over-long `cwd` on the INPUT, before it is joined. The
+            // existing check below inspects the joined result, but the join is
+            // what overflows: `joinStringBuf` memcpys into a
+            // `MAX_PATH_BYTES * 2` stack buffer with no bounds check, so a
+            // 100_000-byte cwd panicked with "index out of bounds: index
+            // 100000, len 2048" before the length was ever looked at. Bun
+            // checks here, ahead of both the absolute branch and the join.
+            // `cwd_utf8` is freed explicitly: the `defer` below has not been
+            // registered at this point.
+            if (cwd_utf8.slice().len > bun.MAX_PATH_BYTES) {
+                cwd_utf8.deinit();
+                return globalThis.throw("{s}: invalid `cwd`, longer than {d} bytes", .{ fnName, bun.MAX_PATH_BYTES });
+            }
+
             // If its absolute return as is
             if (ResolvePath.Platform.auto.isAbsolute(cwd_utf8.slice())) {
                 break :cwd_str (try cwd_utf8.cloneIfBorrowed(allocator)).slice();
