@@ -1,0 +1,79 @@
+{
+  "status": "First native regressions fail before source fixes; production build exposed missing native exports and unported interactive I/O. Updated build pending, neither #713 nor #716 accepted complete.",
+  "before_runtime_source": "6053c6c711004aebfcb5dc6bafac9c59ec2037c2",
+  "before_home_sha256": "fbc3cfe5af5e1c020e4aad2e6d4bae74584afbd87de970b1134e3ac653da9e15",
+  "files": [
+    {
+      "source": "local-identity-before.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-packages/local-identity-before.log.gz",
+      "sha256": "53ac16166cf059342c9346dc28763cfa0a95e235f4e8cddbd75e661df8a9ddfc",
+      "uncompressed_bytes": 856
+    },
+    {
+      "source": "native-update-outdated-before.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-packages/native-update-outdated-before.log.gz",
+      "sha256": "aeff7a53788c44b9955f46f99c1466c6829104df38d96f81f898f1ec001d9435",
+      "uncompressed_bytes": 740
+    },
+    {
+      "source": "native-package-identity-lint.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-packages/native-package-identity-lint.log.gz",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "uncompressed_bytes": 0
+    },
+    {
+      "source": "local-identity-workspace-lint.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-packages/local-identity-workspace-lint.log.gz",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "uncompressed_bytes": 0
+    },
+    {
+      "source": "native-update-interactive-lint.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-packages/native-update-interactive-lint.log.gz",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "uncompressed_bytes": 0
+    },
+    {
+      "source": "native-update-render-lint.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-packages/native-update-render-lint.log.gz",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "uncompressed_bytes": 0
+    },
+    {
+      "source": "build-native-local-identity-update.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-packages/build-native-local-identity-update.log.gz",
+      "sha256": "28ba43f969e6fc1b7201eba1fddf62ce714394fd6ccaebd2224b523af5e106e7",
+      "uncompressed_bytes": 4460
+    },
+    {
+      "source": "build-native-update-exports.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-packages/build-native-update-exports.log.gz",
+      "sha256": "4f9523e5b7cba91756e57c95565e06f18afe663f2fdc56611732da621a16f965",
+      "uncompressed_bytes": 4381
+    },
+    {
+      "source": "build-native-update-io.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-packages/build-native-update-io.log.gz",
+      "sha256": "3f3a16d71ccac3a25f7cc9beb439054f5194a1995ed1f407bc746c0955069b8e",
+      "uncompressed_bytes": 4315
+    },
+    {
+      "source": "build-native-update-render.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-packages/build-native-update-render.log.gz",
+      "sha256": "b683a2ec2fed23cd37b7d3461687fcf71ff0eb4c926e80b81d9b642fff9cb5f8",
+      "uncompressed_bytes": 4376
+    },
+    {
+      "source": "8edab4469:tests/runtime/native-local-dependency-identity.test.mjs",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-packages/native-local-dependency-identity.test.mjs.before.gz",
+      "sha256": "223d3122160d6b02f98e98d48e67f7b8619175699dd20f4a71b58b3fcb885119",
+      "uncompressed_bytes": 3954
+    },
+    {
+      "source": "8edab4469:tests/runtime/native-update-outdated.test.mjs",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-packages/native-update-outdated.test.mjs.before.gz",
+      "sha256": "3da1979cd2889ccc66d96f37f1d79de6c24ae66837d2f3c62cb4e0767a493641",
+      "uncompressed_bytes": 3765
+    }
+  ]
+}

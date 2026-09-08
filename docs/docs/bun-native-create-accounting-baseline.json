@@ -161,7 +161,8 @@
     438,
     713,
     714,
-    "https://github.com/home-lang/home/issues/715"
+    "https://github.com/home-lang/home/issues/715",
+    "https://github.com/home-lang/home/issues/716"
   ],
   "retained_native_regressions": {
     "source_commit": "66a6d6e444ed9c6be2817f1b2901b67aacb06f4b",
@@ -1040,5 +1041,36 @@
       "The first pinned-Bun AWS extraction failure remains in the historical evidence; successful Home installation does not replace that result.",
       "Full source inventory execution, upstream CI profile/platform matrix, JSX failures (#438), local dependency duplicates (#713), and independent native build ownership remain open."
     ]
+  },
+  "native_local_identity_and_update_batch": {
+    "issues": [
+      "https://github.com/home-lang/home/issues/713",
+      "https://github.com/home-lang/home/issues/716"
+    ],
+    "status": "Pending production verification. First failures are retained; no parity completion claim.",
+    "source_commits": [
+      "8edab4469",
+      "261764c6a",
+      "052783238",
+      "24bdc3ea3",
+      "2c83f9952"
+    ],
+    "before_failures": [
+      "Local --only-missing install writes two identical package keys with different folder paths.",
+      "Native-mode outdated reports all packages up to date after registry publishes newer version."
+    ],
+    "build_failures": [
+      "Missing Home CLI command exports.",
+      "Legacy array-list version writer.",
+      "Missing synchronized render scope.",
+      "Legacy timestamp function after interactive selection."
+    ],
+    "coverage_planned": [
+      "All four dependency groups and file/relative/absolute folder arguments.",
+      "Explicit aliases, normal replacement, repeated requests for the same package, and workspace-relative paths.",
+      "Real native update/outdated registry requests and integrity-checked gzip archives.",
+      "Interactive decline/accept, synchronized output ordering, --latest selection, frozen install, and original tests."
+    ],
+    "evidence_manifest": "docs/docs/bun-port-evidence/2026-09-08-native-packages/manifest.json"
   }
 }
