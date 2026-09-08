@@ -1338,7 +1338,7 @@ pub const Command = struct {
         // Create command wraps bunx
         const ctx = try Command.init(allocator, log, .CreateCommand);
 
-        var args = try std.process.argsAlloc(allocator);
+        const args = bun.argv;
 
         if (args.len <= 2) {
             Command.Tag.printHelp(.CreateCommand, false);
@@ -1448,6 +1448,10 @@ pub const Command = struct {
         }
 
         try CreateCommand.exec(ctx, example_tag, template);
+    }
+
+    pub fn execCreate(allocator: std.mem.Allocator, log: *logger.Log) !void {
+        try @"bun create"(allocator, log);
     }
 
     pub fn execInfo(allocator: std.mem.Allocator, log: *logger.Log) !void {

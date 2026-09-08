@@ -6256,9 +6256,16 @@ pub fn main(init: std.process.Init) !void {
         try execBunCommand(allocator, "x", args[2..]);
         return;
     }
-    // `home create` — bun create / npm init equivalent.
-    if (std.mem.eql(u8, command, "create")) {
-        try execBunCommand(allocator, "create", args[2..]);
+    // Use the native create command for npm, local and downloaded templates.
+    if (std.mem.eql(u8, command, "create") or std.mem.eql(u8, command, "c")) {
+        if (comptime !build_options.enable_jsc) failJavaScriptCoreDisabled("create");
+        home_rt.ast.Expr.Data.Store.create();
+        home_rt.ast.Stmt.Data.Store.create();
+        home_rt.clap.args.setProcessArgs(args);
+        const runtime_allocator = home_rt.default_allocator;
+        const log = try runtime_allocator.create(home_rt.logger.Log);
+        log.* = home_rt.logger.Log.init(runtime_allocator);
+        try home_rt.cli.Command.execCreate(runtime_allocator, log);
         return;
     }
 
