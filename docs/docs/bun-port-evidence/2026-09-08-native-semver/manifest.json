@@ -1,0 +1,95 @@
+{
+  "status": "Before-fix production outcomes and focused after-fix unit check; native build/batch for 6053c6c71 remains pending.",
+  "files": [
+    {
+      "source": "build-lockfile-diagnostics.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-semver/build-lockfile-diagnostics.log.gz",
+      "sha256": "29790c32704a47d4dfc7544bdcd3569a01651e2aeaab193da0a7b7555b426aef",
+      "uncompressed_bytes": 3335
+    },
+    {
+      "source": "corpus-frozen-diagnostic.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-semver/corpus-frozen-diagnostic.log.gz",
+      "sha256": "d558e03466c289bd66a16c1d3e3ed795c866828bcaa682a3af70a8137edf79ee",
+      "uncompressed_bytes": 315
+    },
+    {
+      "source": "native-frozen-prerelease-before.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-semver/native-frozen-prerelease-before.log.gz",
+      "sha256": "dcde7775d83c510d6f94dd55ad60e98dc643237a8cb339f3ce165139c20f7366",
+      "uncompressed_bytes": 978
+    },
+    {
+      "source": "semver-clone-unit.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-semver/semver-clone-unit.log.gz",
+      "sha256": "68a096dc014b42e8eaebd6d71cee5487e6f4d699c4d6925d977eb75a68c6995b",
+      "uncompressed_bytes": 440
+    },
+    {
+      "source": "semver-clone-focused-unit.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-semver/semver-clone-focused-unit.log.gz",
+      "sha256": "053c43adea0dfaa4d812aba6f4ff4816e75a0807c233a99f7fe446983c0f73a0",
+      "uncompressed_bytes": 227
+    },
+    {
+      "source": "frozen-prerelease-lint.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-semver/frozen-prerelease-lint.log.gz",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "uncompressed_bytes": 0
+    },
+    {
+      "source": "provision-lock-integrity-before.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-semver/provision-lock-integrity-before.log.gz",
+      "sha256": "d02f262a86d12fc140a112faa827c61577a95cfec863082ca21fc806d7958b4d",
+      "uncompressed_bytes": 169
+    },
+    {
+      "source": "provision-lock-integrity-after.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-semver/provision-lock-integrity-after.log.gz",
+      "sha256": "78bb8adddd3294bf9a8935b84f46266267dda5af862d0854722a70a64e79e0f0",
+      "uncompressed_bytes": 174
+    },
+    {
+      "source": "prerelease-frozen-before/manifest.json",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-semver/prerelease-frozen-before/manifest.json.gz",
+      "sha256": "479bc59ee251633b19d99c67693274cda59ed8e032da4fb1e674d038a400f9be",
+      "uncompressed_bytes": 1613
+    },
+    {
+      "source": "prerelease-frozen-before/release-home/install.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-semver/prerelease-frozen-before/release-home/install.log.gz",
+      "sha256": "00dc27a0dd86366b73e49476ad4c03b96b6e778e81b941d6ff692c8838528a07",
+      "uncompressed_bytes": 479
+    },
+    {
+      "source": "prerelease-frozen-before/release-bun/install.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-semver/prerelease-frozen-before/release-bun/install.log.gz",
+      "sha256": "6ad603f70cd1f70a348735f45e662628ed3dc1b6a41e5576583aaf0a700e04e7",
+      "uncompressed_bytes": 485
+    },
+    {
+      "source": "prerelease-frozen-before/inline-bun/install.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-semver/prerelease-frozen-before/inline-bun/install.log.gz",
+      "sha256": "bc2914b344a1c7ef95f7dc9e27d5686d9dbd084f3c48c0e610642bcf03af55b9",
+      "uncompressed_bytes": 262
+    },
+    {
+      "source": "prerelease-frozen-before/external-home/install.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-semver/prerelease-frozen-before/external-home/install.log.gz",
+      "sha256": "cd389156b3a0968dff6dc702c88cff397bf1b07b32275dadf249f031d100f438",
+      "uncompressed_bytes": 343
+    },
+    {
+      "source": "prerelease-frozen-before/inline-home/install.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-semver/prerelease-frozen-before/inline-home/install.log.gz",
+      "sha256": "ae07e40274e4867c52aaf7e509d70115feb86e6df7e785a042f79c7e1434f648",
+      "uncompressed_bytes": 252
+    },
+    {
+      "source": "prerelease-frozen-before/external-bun/install.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-semver/prerelease-frozen-before/external-bun/install.log.gz",
+      "sha256": "9c8d43770914b35adeb8ccad481516ced13653be5ba0760993846d9174e770cf",
+      "uncompressed_bytes": 277
+    }
+  ]
+}

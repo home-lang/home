@@ -908,5 +908,63 @@
       "issue": 714
     },
     "pending_fix": "ab611fa6f: absolute local template dispatch"
+  },
+  "native_prerelease_fix": {
+    "issue": "https://github.com/home-lang/home/issues/715",
+    "source_commit": "6053c6c71",
+    "before_fix_home_sha256": "a0d28143c64b2a0322fb01f00d0c63942d88ee95e924031d1f73b5cbe3404931",
+    "diagnostic_build_steps": "46/46",
+    "cause": "Parsed external tags used current Zig Wyhash; cloning long tags recomputed Bun Wyhash11. Identical prereleases compared unequal.",
+    "full_corpus_first_mismatch": "@verdaccio/config 6.0.0-6-next.76",
+    "minimal_controls": [
+      {
+        "label": "release-home",
+        "exit_code": 0,
+        "lockfile_unchanged": false,
+        "log_sha256": "00dc27a0dd86366b73e49476ad4c03b96b6e778e81b941d6ff692c8838528a07",
+        "executable_sha256": "a0d28143c64b2a0322fb01f00d0c63942d88ee95e924031d1f73b5cbe3404931"
+      },
+      {
+        "label": "release-bun",
+        "exit_code": 0,
+        "lockfile_unchanged": false,
+        "log_sha256": "6ad603f70cd1f70a348735f45e662628ed3dc1b6a41e5576583aaf0a700e04e7",
+        "executable_sha256": "47a87c1dea30da59c2733cce80118ea59bd338c616c6378f1c7f55e5f2b92c87"
+      },
+      {
+        "label": "inline-home",
+        "exit_code": 0,
+        "lockfile_unchanged": false,
+        "log_sha256": "ae07e40274e4867c52aaf7e509d70115feb86e6df7e785a042f79c7e1434f648",
+        "executable_sha256": "a0d28143c64b2a0322fb01f00d0c63942d88ee95e924031d1f73b5cbe3404931"
+      },
+      {
+        "label": "inline-bun",
+        "exit_code": 0,
+        "lockfile_unchanged": false,
+        "log_sha256": "bc2914b344a1c7ef95f7dc9e27d5686d9dbd084f3c48c0e610642bcf03af55b9",
+        "executable_sha256": "47a87c1dea30da59c2733cce80118ea59bd338c616c6378f1c7f55e5f2b92c87"
+      },
+      {
+        "label": "external-home",
+        "exit_code": 1,
+        "lockfile_unchanged": true,
+        "log_sha256": "cd389156b3a0968dff6dc702c88cff397bf1b07b32275dadf249f031d100f438",
+        "executable_sha256": "a0d28143c64b2a0322fb01f00d0c63942d88ee95e924031d1f73b5cbe3404931"
+      },
+      {
+        "label": "external-bun",
+        "exit_code": 0,
+        "lockfile_unchanged": false,
+        "log_sha256": "9c8d43770914b35adeb8ccad481516ced13653be5ba0760993846d9174e770cf",
+        "executable_sha256": "47a87c1dea30da59c2733cce80118ea59bd338c616c6378f1c7f55e5f2b92c87"
+      }
+    ],
+    "fix": "String.stringHash now uses the same upstream Wyhash11 helper as the builder.",
+    "focused_clone_test": "Passed, including preserved prerelease/build hashes and strings, and a different-prerelease rejection.",
+    "broad_standalone_semver_test": "Could not compile formatting tests without bun module; not a pass.",
+    "native_build_and_batch": "Pending. Do not count full frozen provisioning or AWS extraction as repaired yet.",
+    "provisioning_lock_integrity": "9fbd92718 compares actual input bytes; regression failed before fix and passes afterward.",
+    "evidence_manifest": "docs/docs/bun-port-evidence/2026-09-08-native-semver/manifest.json"
   }
 }
