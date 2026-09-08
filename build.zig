@@ -980,14 +980,19 @@ pub fn build(b: *std.Build) void {
 
     // Create build options module for conditional compilation
     const build_options = b.addOptions();
-    // Real lol-html links only when its isolated staticlib is present
-    // (build it with scripts/build-lolhtml.sh). Absent → native_stubs keeps the
-    // noop lol_html_* fallbacks so the build still succeeds (HTMLRewriter no-ops
-    // instead of failing the link on 96 undefined symbols).
+    // HTML rewriting and bundling are part of the JavaScript runtime. A
+    // missing native parser must fail configuration instead of producing a
+    // successful runtime build whose HTML APIs cannot execute.
     const have_lolhtml = blk: {
         // Fork std: filesystem is io-parameterized (std.Io.Dir).
         const io = std.Io.Threaded.global_single_threaded.io();
-        b.root.root_dir.handle.access(io, ".native/liblolhtml.a", .{}) catch break :blk false;
+        b.root.root_dir.handle.access(io, ".native/liblolhtml.a", .{}) catch |err| {
+            if (enable_jsc) {
+                std.debug.print("error: the JavaScript runtime requires .native/liblolhtml.a ({s}); run scripts/build-lolhtml.sh before building\n", .{@errorName(err)});
+                std.process.exit(1);
+            }
+            break :blk false;
+        };
         break :blk true;
     };
     const use_bun_jsc = enable_jsc and linkBunNative(b, home_rt_pkg, target, have_lolhtml);
