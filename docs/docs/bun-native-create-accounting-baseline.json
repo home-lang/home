@@ -1047,7 +1047,7 @@
       "https://github.com/home-lang/home/issues/713",
       "https://github.com/home-lang/home/issues/716"
     ],
-    "status": "Three native runtime regressions pass. Original update 6/6 and interactive 31/31 pass in both runtimes. Original outdated Home 8 pass/8 missing-color failures; Bun 16 pass. Semver output stub replacement rebuild pending.",
+    "status": "Scoped native package work verified; #713 and #716 complete. Full Bun parity remains incomplete.",
     "source_commits": [
       "8edab4469",
       "261764c6a",
@@ -1056,7 +1056,8 @@
       "2c83f9952",
       "6a183ad72",
       "a6d65e2f4",
-      "831196dbd"
+      "831196dbd",
+      "f65eb2279"
     ],
     "before_failures": [
       "Local --only-missing install writes two identical package keys with different folder paths.",
@@ -1083,6 +1084,30 @@
       "The remaining-interactive diagnostic bypassed only the already retained failing outdated assertions for diagnosis; it is not a full regression pass."
     ],
     "output_verification_manifest": "docs/docs/bun-port-evidence/2026-09-08-native-package-output/manifest.json",
-    "local_identity_issue_status": "Closed #713 after complete raw-key/installed-content/frozen-lock regression passed, including the corrected workspace fixture."
+    "local_identity_issue_status": "Closed #713 after complete raw-key/installed-content/frozen-lock regression passed, including the corrected workspace fixture.",
+    "final_verification_manifest": "docs/docs/bun-port-evidence/2026-09-08-native-package-complete/manifest.json",
+    "original_registered_cases": {
+      "update": 6,
+      "outdated_selection": 16,
+      "interactive_update": 31,
+      "semver": 25,
+      "total_per_runtime": 78,
+      "home_failures": 0,
+      "bun_failures": 0,
+      "sources_and_snapshots_unchanged": true
+    },
+    "private_native_regressions": {
+      "local_dependency_identity": "pass",
+      "update_outdated_interactive_real_registry": "pass after correcting optional-cache contract in f65eb2279; same native executable",
+      "frozen_prerelease_integrity": "pass"
+    },
+    "final_limitations": [
+      "The first private run in the archived batch manifest failed an invalid assertion that best-effort asynchronous cache writes must finish before CLI exit; it remains a failed historical result, not rewritten as passing.",
+      "The final private test validates the public --force refresh, installed versions, real archives/integrity, interactive selection and frozen install. It does not require optional disk-cache persistence.",
+      "The original outdated file was filtered to 16 selected cases; 214 filtered cases are not counted as executed or upstream skips.",
+      "The first six original interactive formatting cases assert absence of selected crash diagnostics; their passing does not establish installation behavior.",
+      "Native VM mode is still an architectural gate; default CLI fallback removal, full inventory/platform/CI-profile execution, and independent build ownership remain open."
+    ],
+    "update_outdated_issue_status": "Verified native commands, including 31 original interactive cases and 16 original outdated cases; issue #716 ready to close."
   }
 }

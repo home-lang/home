@@ -1,0 +1,164 @@
+{
+  "status": "Scoped native package work verified; #713 and #716 complete. Full Bun parity remains incomplete.",
+  "runtime_source_commit": "831196dbd919492a334e550a5a9223643a696898",
+  "regression_source_commit": "f65eb2279fbcdf3f86dc32247596ad39d7dfa448",
+  "home_sha256": "ccbce30778cbaedec1446fbf13c5040363919f5ec1bb19149693518268956ce4",
+  "bun_sha256": "47a87c1dea30da59c2733cce80118ea59bd338c616c6378f1c7f55e5f2b92c87",
+  "build_log_sha256": "920497d483eae67f6b4a06b4415780b6f6a372874a2605b1295638e2b84a1bc2",
+  "original_registered_cases": {
+    "update": 6,
+    "outdated_selection": 16,
+    "interactive_update": 31,
+    "semver": 25,
+    "total_per_runtime": 78,
+    "home_failures": 0,
+    "bun_failures": 0,
+    "sources_and_snapshots_unchanged": true
+  },
+  "private_native_regressions": {
+    "local_dependency_identity": "pass",
+    "update_outdated_interactive_real_registry": "pass after correcting optional-cache contract in f65eb2279; same native executable",
+    "frozen_prerelease_integrity": "pass"
+  },
+  "limitations": [
+    "The first private run in the archived batch manifest failed an invalid assertion that best-effort asynchronous cache writes must finish before CLI exit; it remains a failed historical result, not rewritten as passing.",
+    "The final private test validates the public --force refresh, installed versions, real archives/integrity, interactive selection and frozen install. It does not require optional disk-cache persistence.",
+    "The original outdated file was filtered to 16 selected cases; 214 filtered cases are not counted as executed or upstream skips.",
+    "The first six original interactive formatting cases assert absence of selected crash diagnostics; their passing does not establish installation behavior.",
+    "Native VM mode is still an architectural gate; default CLI fallback removal, full inventory/platform/CI-profile execution, and independent build ownership remain open."
+  ],
+  "files": [
+    {
+      "source": "batch-update-home.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-complete/batch-update-home.log.gz",
+      "sha256": "f7f1fedcd37b62959b229efc787004bb48cd24e4f778ec4d4f4c41795de22d1f",
+      "uncompressed_bytes": 1170
+    },
+    {
+      "source": "batch-semver-home.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-complete/batch-semver-home.log.gz",
+      "sha256": "d4ea4583601c9e4759b6c5c056a1cfb826f796916215c9e1937f71c388c09024",
+      "uncompressed_bytes": 2377
+    },
+    {
+      "source": "batch-native-local-dependency-identity.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-complete/batch-native-local-dependency-identity.log.gz",
+      "sha256": "539062a9d376dfa6ffe0cfdec55b4bfce626c5c89614e4bb22f4b23abb28c474",
+      "uncompressed_bytes": 138
+    },
+    {
+      "source": "batch-outdated-home.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-complete/batch-outdated-home.log.gz",
+      "sha256": "dbc39e5665113e90057fb7cc74dab12df4d75bfef9ac3f44ef3b5e109a0b7701",
+      "uncompressed_bytes": 1273
+    },
+    {
+      "source": "batch-update-bun.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-complete/batch-update-bun.log.gz",
+      "sha256": "435eded64b93bbebe0df371d78de2208d9275d2f76678340c5d053be14ecdf52",
+      "uncompressed_bytes": 562
+    },
+    {
+      "source": "batch-interactive-bun.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-complete/batch-interactive-bun.log.gz",
+      "sha256": "21386b3a99be0ce30a54b90ae117f0e52cae54c0ee9add5b85674c97db27ec15",
+      "uncompressed_bytes": 3276
+    },
+    {
+      "source": "batch-outdated-bun.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-complete/batch-outdated-bun.log.gz",
+      "sha256": "0620644a62d9a96b722c06a708bb453a4fde3dcd283ce96002511a58dcdd272c",
+      "uncompressed_bytes": 1143
+    },
+    {
+      "source": "batch-semver-bun.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-complete/batch-semver-bun.log.gz",
+      "sha256": "7fd23c8b9a0d295c0298a8924e10fed71aace90d52f7a0718603145baa761666",
+      "uncompressed_bytes": 1777
+    },
+    {
+      "source": "batch-manifest.json",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-complete/batch-manifest.json.gz",
+      "sha256": "4f703751d8bac4e2ee28d1b3fc5136ad6f4fe15671c58ca170525fe600de31ad",
+      "uncompressed_bytes": 11005
+    },
+    {
+      "source": "batch-native-update-outdated.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-complete/batch-native-update-outdated.log.gz",
+      "sha256": "200754d65f3d51605af5ec9eaa66ce1bd1c9bb965fb4607b8a7fea2f414d5d34",
+      "uncompressed_bytes": 784
+    },
+    {
+      "source": "batch-native-frozen-prerelease.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-complete/batch-native-frozen-prerelease.log.gz",
+      "sha256": "9e618c8c700df5feb8f5d0c794dca2c11356055cc7751687758d550bde2da49d",
+      "uncompressed_bytes": 44
+    },
+    {
+      "source": "batch-interactive-home.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-complete/batch-interactive-home.log.gz",
+      "sha256": "ff01857bee3b8756c9fcfa1822e783ff06bb6a8d54f1288f09ec9e4aac9a5ec5",
+      "uncompressed_bytes": 3912
+    },
+    {
+      "source": "build-native-semver-output.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-complete/build-native-semver-output.log.gz",
+      "sha256": "920497d483eae67f6b4a06b4415780b6f6a372874a2605b1295638e2b84a1bc2",
+      "uncompressed_bytes": 3334
+    },
+    {
+      "source": "verify-native-semver-output-fixed.py",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-complete/verify-native-semver-output-fixed.py.gz",
+      "sha256": "5b58b2e3df8d7eb10852b9eba195a74d06d9335c9995f555338575e6f930c73b",
+      "uncompressed_bytes": 3997
+    },
+    {
+      "source": "native-update-cache-contract.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-complete/native-update-cache-contract.log.gz",
+      "sha256": "3879de2013e756f44f60321c201fee98974ab3e01f647a60a3df0aded7c18180",
+      "uncompressed_bytes": 46
+    },
+    {
+      "source": "native-package-cache-contract-lint.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-complete/native-package-cache-contract-lint.log.gz",
+      "sha256": "9d28594ca8082656d4d4ba05f5c4cf0738e8146fdb9d342cafb03b07f8d733c4",
+      "uncompressed_bytes": 77
+    },
+    {
+      "source": "native-package-archive-verification.json",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-complete/native-package-archive-verification.json.gz",
+      "sha256": "b495e9f5a2977c96494dbe1bd2e051da71e80dc90171557c73365ef60e940cc5",
+      "uncompressed_bytes": 96
+    },
+    {
+      "source": "tests/runtime/native-local-dependency-identity.test.mjs",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-complete/native-local-dependency-identity.test.mjs.gz",
+      "sha256": "e18f50d56b66fd3c84717de0d6fa59b6eb31fb3c9b0a733c6e3a699cd1e23191",
+      "uncompressed_bytes": 5675
+    },
+    {
+      "source": "tests/runtime/native-update-outdated.test.mjs",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-complete/native-update-outdated.test.mjs.gz",
+      "sha256": "32753e131319a1b08504fdef0a73211eae05cd970436d5d8707aed05e7124d80",
+      "uncompressed_bytes": 4564
+    },
+    {
+      "source": "tests/runtime/native-frozen-prerelease.test.mjs",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-complete/native-frozen-prerelease.test.mjs.gz",
+      "sha256": "d7c995dc2b828f2b47faf68bce84581321c531ed0a1838caec434ed32c9e5cad",
+      "uncompressed_bytes": 2403
+    },
+    {
+      "source": "packages/runtime/src/install/npm.zig:1156",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-complete/manifest-cache-source-excerpt.txt.gz",
+      "sha256": "4c1f8c50a16b969f9df10c54cf24527a4ca49629e461b764f46f69781fe240fe",
+      "uncompressed_bytes": 2521
+    },
+    {
+      "source": "generated-verdaccio-db.json",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-complete/generated-verdaccio-db.json.gz",
+      "sha256": "886247fcf530a365b2648af881b4493eda394778d6a50c8e914c067808191c44",
+      "uncompressed_bytes": 55
+    }
+  ]
+}
