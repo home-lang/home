@@ -14,13 +14,13 @@ function run(cwd, args) {
   assert.equal(result.signal, null)
   assert.equal(result.status, 0, `${args.join(' ')}\n${result.stderr}\n${result.stdout}`)
 }
-function check(project, group, value, version) {
+function check(project, group, value, version, installRoot = project) {
   const raw = readFileSync(join(project, 'package.json'), 'utf8')
   // JSON.parse alone would silently discard duplicate keys. This fixture has
   // exactly one dependency with this name, across all dependency groups.
   assert.equal((raw.match(/"leading-flag-dependency"\s*:/g) || []).length, 1, raw)
   assert.equal(JSON.parse(raw)[group][name], value)
-  assert.equal(JSON.parse(readFileSync(join(project, 'node_modules', name, 'package.json'), 'utf8')).version, version)
+  assert.equal(JSON.parse(readFileSync(join(installRoot, 'node_modules', name, 'package.json'), 'utf8')).version, version)
 }
 
 try {
@@ -62,6 +62,25 @@ try {
   run(project, ['add', 'file:../dependency-two'])
   check(project, 'dependencies', 'file:../dependency-two', '2.0.0')
   run(project, ['install', '--frozen-lockfile', '--ignore-scripts'])
+
+  run(project, ['add', 'explicit-alias@file:../dependency-one'])
+  run(project, ['--only-missing', 'add', 'explicit-alias@file:../dependency-two'])
+  assert.equal(JSON.parse(readFileSync(join(project, 'package.json'), 'utf8')).dependencies['explicit-alias'], 'file:../dependency-one')
+  assert.equal(JSON.parse(readFileSync(join(project, 'node_modules', 'explicit-alias', 'package.json'), 'utf8')).version, '1.0.0')
+
+  // Resolve folder arguments against the workspace manifest, not the root.
+  const workspaceRoot = join(directory, 'workspace-root')
+  const workspace = join(workspaceRoot, 'packages', 'app')
+  mkdirSync(workspace, { recursive: true })
+  writeFileSync(join(workspaceRoot, 'package.json'), JSON.stringify({ name: 'workspace-root', workspaces: ['packages/*'] }))
+  writeFileSync(join(workspaceRoot, 'bunfig.toml'), '[install]\nlinker = "hoisted"\n')
+  const workspaceOriginal = `file:${relative(workspace, join(directory, 'dependencies-file', 'dependency-one'))}`
+  const workspaceTarget = `file:${relative(workspace, join(directory, 'dependencies-file', 'dependency-two'))}`
+  writeFileSync(join(workspace, 'package.json'), JSON.stringify({ name: 'workspace-app', devDependencies: { [name]: workspaceOriginal } }))
+  run(workspace, ['install', '--ignore-scripts'])
+  run(workspace, ['--only-missing', 'add', workspaceTarget])
+  check(workspace, 'devDependencies', workspaceOriginal, '1.0.0', workspaceRoot)
+  run(workspace, ['install', '--frozen-lockfile', '--ignore-scripts'])
 } finally {
   rmSync(directory, { recursive: true, force: true })
 }

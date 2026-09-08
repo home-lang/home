@@ -98,14 +98,15 @@ pub const UpdateInteractiveCommand = struct {
         const new_package_json_source = try manager.allocator.dupe(u8, package_json_writer.ctx.writtenWithoutTrailingZero());
 
         // Write the updated package.json
-        const write_file = std.fs.cwd().createFile(package_json_path, .{}) catch |err| {
+        const io = std.Io.Threaded.global_single_threaded.io();
+        const write_file = std.Io.Dir.cwd().createFile(io, package_json_path, .{}) catch |err| {
             manager.allocator.free(new_package_json_source);
             Output.errGeneric("Failed to write package.json at {s}: {s}", .{ package_json_path, @errorName(err) });
             return err;
         };
-        defer write_file.close();
+        defer write_file.close(io);
 
-        write_file.writeAll(new_package_json_source) catch |err| {
+        write_file.writeStreamingAll(io, new_package_json_source) catch |err| {
             manager.allocator.free(new_package_json_source);
             Output.errGeneric("Failed to write package.json at {s}: {s}", .{ package_json_path, @errorName(err) });
             return err;
@@ -729,9 +730,9 @@ pub const UpdateInteractiveCommand = struct {
         var outdated_packages = std.array_list.Managed(OutdatedPackage).init(allocator);
         defer outdated_packages.deinit();
 
-        var version_buf = std.array_list.Managed(u8).init(allocator);
+        var version_buf = std.Io.Writer.Allocating.init(allocator);
         defer version_buf.deinit();
-        const version_writer = version_buf.writer();
+        const version_writer = &version_buf.writer;
 
         for (workspace_pkg_ids) |workspace_pkg_id| {
             const pkg_deps = pkg_dependencies[workspace_pkg_id];
@@ -788,15 +789,15 @@ pub const UpdateInteractiveCommand = struct {
 
                 version_buf.clearRetainingCapacity();
                 try version_writer.print("{f}", .{resolution.value.npm.version.fmt(string_buf)});
-                const current_version_buf = try allocator.dupe(u8, version_buf.items);
+                const current_version_buf = try allocator.dupe(u8, version_buf.written());
 
                 version_buf.clearRetainingCapacity();
                 try version_writer.print("{f}", .{update_version.version.fmt(manifest.string_buf)});
-                const update_version_buf = try allocator.dupe(u8, version_buf.items);
+                const update_version_buf = try allocator.dupe(u8, version_buf.written());
 
                 version_buf.clearRetainingCapacity();
                 try version_writer.print("{f}", .{latest.version.fmt(manifest.string_buf)});
-                const latest_version_buf = try allocator.dupe(u8, version_buf.items);
+                const latest_version_buf = try allocator.dupe(u8, version_buf.written());
 
                 // Already filtered by version.order check above
 

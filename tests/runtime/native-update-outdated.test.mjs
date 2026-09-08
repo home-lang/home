@@ -7,7 +7,7 @@ import { basename, join } from 'node:path'
 assert.match(basename(process.execPath), /^home(?:-debug)?(?:\.exe)?$/)
 const directory = mkdtempSync(join(tmpdir(), 'home-native-update-'))
 const name = 'native-update-fixture'
-const versions = ['1.0.0', '1.1.0', '2.0.0']
+const versions = ['1.0.0', '1.1.0', '1.2.0', '2.0.0']
 const archives = new Map()
 for (const version of versions) {
   const bytes = await new Bun.Archive({
@@ -39,8 +39,10 @@ const server = Bun.serve({
   },
 })
 const env = { ...process.env, HOME_NATIVE_VM: '1', NO_COLOR: '1', BUN_INSTALL_CACHE_DIR: join(directory, 'cache') }
-async function run(args) {
-  const child = Bun.spawn([process.execPath, ...args], { cwd: directory, env, stdout: 'pipe', stderr: 'pipe' })
+async function run(args, input) {
+  const child = Bun.spawn([process.execPath, ...args], {
+    cwd: directory, env, stdout: 'pipe', stderr: 'pipe', stdin: input === undefined ? 'ignore' : new Blob([input]),
+  })
   const timeout = setTimeout(() => child.kill('SIGKILL'), 15000)
   try {
     const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
@@ -69,16 +71,24 @@ try {
   assert.match(outdated, /1\.0\.0/)
   assert.match(outdated, /1\.1\.0/)
   assert.ok(requests.slice(before).includes(`/${name}`), 'outdated must consult the registry')
+  await run(['update', '--interactive'], 'n\n')
+  assert.equal(installed(), '1.0.0')
+  assert.equal(requestedVersion(), '^1.0.0')
   await run(['update'])
   assert.equal(installed(), '1.1.0')
   assert.equal(requestedVersion(), '^1.1.0')
   published = 3
+  await run(['update', '--interactive'], 'a\n')
+  assert.equal(installed(), '1.2.0')
+  assert.equal(requestedVersion(), '^1.2.0')
+  published = 4
   await run(['--latest', 'update', name])
   assert.equal(installed(), '2.0.0')
   assert.equal(requestedVersion(), '^2.0.0')
   await run(['install', '--frozen-lockfile'])
   assert.ok(requests.includes('/1.0.0.tgz'))
   assert.ok(requests.includes('/1.1.0.tgz'))
+  assert.ok(requests.includes('/1.2.0.tgz'))
   assert.ok(requests.includes('/2.0.0.tgz'))
 } finally {
   await server.stop(true)
