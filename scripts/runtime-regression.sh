@@ -33,6 +33,14 @@ if [[ -z "$HOME_BIN" || ! -x "$HOME_BIN" ]]; then
     exit 0
 fi
 
+# A debug build writes its [sys]/[fs]/[loop] trace to the SAME stdout the tests
+# read back. Several of these tests spawn the binary and JSON.parse its output,
+# so without this the trace is prepended to every payload and the file fails on
+# a syntax error that has nothing to do with the runtime — 14 of 69 in one run,
+# all of them phantom. Bun's own test launcher exports this before starting a
+# Debug executable; do the same, and export it so spawned children inherit it.
+export BUN_DEBUG_QUIET_LOGS="${BUN_DEBUG_QUIET_LOGS:-1}"
+
 TEST_DIR="$ROOT/tests/runtime"
 shopt -s nullglob
 tests=("$TEST_DIR"/*.test.mjs)
