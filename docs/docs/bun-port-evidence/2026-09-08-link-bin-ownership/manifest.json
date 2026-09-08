@@ -1,0 +1,37 @@
+{
+  "issue": "https://github.com/home-lang/home/issues/718",
+  "status": "Confirmed logical failure in Home and pinned Bun; not fixed. Unlinking an older provider removes the current provider bin.",
+  "runtime_source": "e56d48e8d32618a24083349b22d7e76fd65ee1e8",
+  "files": [
+    {
+      "source": "link-bin-ownership/bun-fixture.tar.gz",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-link-bin-ownership/bun-fixture.tar.gz",
+      "sha256": "03cba88100d5f8fa98f6c206f3d9e38d82b825cc20692e2f2be9d78b1cb7b5bd",
+      "uncompressed_bytes": 20480
+    },
+    {
+      "source": "link-bin-ownership/home-fixture.tar.gz",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-link-bin-ownership/home-fixture.tar.gz",
+      "sha256": "01d3495be0c1047bd76fbf60f5e04b005589434e2e94658b86e0b1a2e7be5317",
+      "uncompressed_bytes": 20480
+    },
+    {
+      "source": "link-bin-ownership/manifest.json",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-link-bin-ownership/manifest.json.gz",
+      "sha256": "a13215d4a96d79a367d0e72e1a94a9d27ce22efb502e5dc4369f4e7057c38d60",
+      "uncompressed_bytes": 3861
+    },
+    {
+      "source": "link-bin-ownership.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-link-bin-ownership/link-bin-ownership.log.gz",
+      "sha256": "4d03f136612781c4cd16999afdff2f21ded772ae80673a092ff02683968d047e",
+      "uncompressed_bytes": 3188
+    },
+    {
+      "source": "diagnose-link-bin-ownership.py",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-link-bin-ownership/diagnose-link-bin-ownership.py.gz",
+      "sha256": "7d19ff425bdd711f6718c67ee361282e2e8795975e259ad96c7be01371b58fb3",
+      "uncompressed_bytes": 2142
+    }
+  ]
+}

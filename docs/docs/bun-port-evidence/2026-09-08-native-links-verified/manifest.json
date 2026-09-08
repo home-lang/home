@@ -1,5 +1,5 @@
 {
-  "status": "Native-mode supported link/unlink lifecycle verified; full Bun port remains incomplete.",
+  "status": "Native activation and tested link/unlink lifecycles verified; shared executable ownership bug remains open in #718.",
   "source_commit": "e56d48e8d32618a24083349b22d7e76fd65ee1e8",
   "home_sha256": "56ea320b3204e0ab5535991c6088c6e2043fa84f26b54fcaacf6d68484fc6296",
   "bun_sha256": "47a87c1dea30da59c2733cce80118ea59bd338c616c6378f1c7f55e5f2b92c87",
@@ -151,5 +151,6 @@
       "sha256": "8ed58b812d6a7da6e3b30f9e6d55ae26f47093f1173de984de985c52ff4da3f8",
       "uncompressed_bytes": 55
     }
-  ]
+  ],
+  "logical_followup_issue": "https://github.com/home-lang/home/issues/718"
 }

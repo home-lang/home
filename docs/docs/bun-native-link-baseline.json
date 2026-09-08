@@ -1,7 +1,7 @@
 {
   "issue": "https://github.com/home-lang/home/issues/717",
   "parent": "https://github.com/home-lang/home/issues/66",
-  "status": "Native-mode supported link/unlink lifecycle verified; full Bun port remains incomplete.",
+  "status": "Native activation and tested link/unlink lifecycles verified; shared executable ownership bug remains open in #718.",
   "source_commits": [
     "f3a1e348a",
     "b6bea0d7c",
@@ -41,5 +41,10 @@
     "native-update-outdated",
     "native-frozen-prerelease"
   ],
-  "verified_evidence_manifest": "docs/docs/bun-port-evidence/2026-09-08-native-links-verified/manifest.json"
+  "verified_evidence_manifest": "docs/docs/bun-port-evidence/2026-09-08-native-links-verified/manifest.json",
+  "logical_followup": {
+    "issue": "https://github.com/home-lang/home/issues/718",
+    "status": "Confirmed logical failure in Home and pinned Bun; not fixed. Unlinking an older provider removes the current provider bin.",
+    "evidence_manifest": "docs/docs/bun-port-evidence/2026-09-08-link-bin-ownership/manifest.json"
+  }
 }
