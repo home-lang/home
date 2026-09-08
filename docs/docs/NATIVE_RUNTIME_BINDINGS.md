@@ -1586,3 +1586,12 @@ report format verifies totals and units; live positive and deliberately bounded
 negative controls return 0 and 125 respectively. The default memory limit and
 host-pressure checks are retained. Production and harness builds are now run
 sequentially under that corrected supervisor; no original test deadline changed.
+
+The corrected measurement also exposed a real build cost: the ordinary Home
+compile command requested `-femit-docs` because `getEmittedDocs()` was called on
+the installed executable while constructing the optional docs step. Documentation
+now uses a dedicated artifact sharing the same root module and generated inputs;
+`zig build docs` remains available. The ordinary native compiler invocation is
+verified to omit documentation emission. Production, focused harness and the
+explicit docs target are undergoing sequential verification with unchanged
+runtime settings and test deadlines. No memory-limited attempt is a passing build.

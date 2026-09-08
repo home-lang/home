@@ -2332,9 +2332,17 @@ pub fn build(b: *std.Build) void {
     const release_fast_step = b.step("release-fast", "Build Home compiler in ReleaseFast mode with LTO (max perf, no runtime safety)");
     release_fast_step.dependOn(&install_release_fast.step);
 
-    // Documentation generation
+    // Requesting emitted docs changes the compile command even when the docs
+    // step is not selected. Keep that work off the installed executable so
+    // ordinary builds and native test builds do not also generate API docs.
+    // The dedicated artifact shares all module imports and generated inputs.
+    const docs_exe = b.addExecutable(.{
+        .name = "home-docs",
+        .root_module = exe.root_module,
+    });
+    docs_exe.step.dependOn(&exe.step);
     const docs_install = b.addInstallDirectory(.{
-        .source_dir = exe.getEmittedDocs(),
+        .source_dir = docs_exe.getEmittedDocs(),
         .install_dir = .prefix,
         .install_subdir = "docs",
     });
