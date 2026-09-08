@@ -1108,3 +1108,66 @@ external native build ownership remain under
 
 Verified optimized Home executable SHA-256:
 `65a1dadf074f6d9a4fa613b6795f7bbd44c8254d328d4960bc38909e7f7c87d7`.
+
+## Native Request corpus and isolated engine dispatch (#697)
+
+All four tracked files under `js/web/request` now route to Home's production
+native test runner. This covers Request construction/body cloning, subclass
+getter and invalid-header dispatch, clone/allocation stress, and method-string
+allocation. The prior bootstrap-only stress/subclass unit coverage is replaced
+by complete native file execution with exact pass counts and retained-source
+checks for every workload, memory threshold, type import and subclass behavior.
+No source file, loop count, assertion, timeout, skip or memory counter changes.
+
+The public file, directory, subset and full-gate entry points now initialize the
+bootstrap VM only for files that still require that adapter. Native corpus files
+launch Home directly without constructing the unused bootstrap context or
+loading its prelude. A mixed-dispatch regression retains coverage for both
+native Request execution and the remaining bootstrap microtask path.
+
+Before routing changes, strict-native Home and pinned Bun each pass all four
+unchanged files: **12 clone/allocation tests, six method-allocation tests, two
+subclass tests, and four construction/body tests**. With the final Home binary,
+the ordinary Request directory command reports **four files / 24 passes / zero
+failures / zero TODOs / zero unsupported cases**. The ordinary shell integration
+route remains **378 passes / 83 upstream TODOs / zero failures**.
+
+Direct native profiling with `/usr/bin/time -l` preserves the complete stress
+workloads and records peak physical footprints of **22,594,376 bytes** for clone
+stress and **194,872,232 bytes** for method-allocation stress. Those files pass
+**12/12 / 12 assertions** and **6/6 / six assertions**, respectively. The ordinary
+clone route reports RSS deltas of **0–13 MB**, below its unchanged 30 MB threshold.
+These are measurements of the real native execution path. They do not claim a
+repair to the obsolete bootstrap Request implementation, whose earlier stress
+execution reached a 14.4 GB peak and was interrupted.
+
+The harness has a dedicated `test-home-harness` build step and optional
+`-Dhome-test-test-filter=<substring>` selector. The default selector is empty;
+full harness registration is retained. Its test entry point explicitly retains
+the real native VM, generated-class and N-API registration exports required by
+the linked C++ objects. It discovers nested test modules independently of the
+facade smoke tests and rejects a run containing only its registration hook.
+
+The focused command `zig build test-home-harness
+-Dhome-test-test-filter="native Request" -Doptimize=ReleaseFast -Denable_jsc=true
+-j2 --summary all` passes **23/23 build steps and 4/4 tests**. Independent
+metadata inspection confirms the four are the registration guard and the three
+named Request routing, full-matrix execution and mixed-engine dispatch
+regressions. The actual run takes seven seconds; an earlier registration-only
+run received no coverage credit. The complete original Request workloads are
+executed by the matrix regression. Formatting, documentation Pickier and
+whitespace checks pass, and the pinned tracked-source audit retains 12,990
+identical regular files, five identical symlinks, one differing expectations
+file and zero missing paths.
+
+The adjacent Headers/Response activation and fixture-process context are tracked
+in [#698](https://github.com/home-lang/home/issues/698).
+
+The optimized build passes **46/46 steps**. Complete aggregate and Bun parity
+remain unverified; other adapters, native dependency/build ownership and
+[#694](https://github.com/home-lang/home/issues/694) remain under
+[#202](https://github.com/home-lang/home/issues/202) and
+[#66](https://github.com/home-lang/home/issues/66).
+
+Verified optimized Home executable SHA-256:
+`acc4837aed857184e7b3d1107e48126c1c0d819e8ae85ff2a61ddb6215ea567f`.

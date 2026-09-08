@@ -100383,9 +100383,7 @@ pub fn runSubset(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8, 
 
     var summary = Summary{};
     for (filesForSubset(subset)) |relative| {
-        var runtime = try jsc_bootstrap.Runtime.init(allocator, harness_prelude);
-        defer runtime.deinit();
-        try runRelativeFile(io, allocator, &runtime, corpus_path, relative, &summary);
+        try runIsolatedRelativeFile(io, allocator, corpus_path, relative, &summary);
     }
 
     return summary;
@@ -100410,12 +100408,10 @@ pub fn runGate(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8) !S
     const show_progress = bunCorpusProgressEnabled();
     const range = bunCorpusRange(test_files.len);
     for (test_files[range.start..range.end], range.start..) |relative, index| {
-        var runtime = try jsc_bootstrap.Runtime.init(allocator, harness_prelude);
-        defer runtime.deinit();
         if (show_progress) {
             std.debug.print("[home-bun-corpus] {d}/{d} {s}\n", .{ index + 1, test_files.len, relative });
         }
-        try runRelativeFile(io, allocator, &runtime, corpus_path, relative, &summary);
+        try runIsolatedRelativeFile(io, allocator, corpus_path, relative, &summary);
     }
 
     return summary;
@@ -100444,14 +100440,12 @@ pub fn runDirectory(
     var summary = Summary{};
     const show_progress = bunCorpusProgressEnabled();
     for (test_files, 0..) |directory_relative, index| {
-        var runtime = try jsc_bootstrap.Runtime.init(allocator, harness_prelude);
-        defer runtime.deinit();
         const corpus_relative = try std.fs.path.join(allocator, &.{ relative_directory, directory_relative });
         defer allocator.free(corpus_relative);
         if (show_progress) {
             std.debug.print("[home-bun-corpus] {d}/{d} {s}\n", .{ index + 1, test_files.len, corpus_relative });
         }
-        try runRelativeFile(io, allocator, &runtime, corpus_path, corpus_relative, &summary);
+        try runIsolatedRelativeFile(io, allocator, corpus_path, corpus_relative, &summary);
     }
 
     return summary;
@@ -100521,11 +100515,8 @@ pub fn runFile(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8, re
         };
     }
 
-    var runtime = try jsc_bootstrap.Runtime.init(allocator, harness_prelude);
-    defer runtime.deinit();
-
     var summary = Summary{};
-    try runRelativeFile(io, allocator, &runtime, corpus_path, relative, &summary);
+    try runIsolatedRelativeFile(io, allocator, corpus_path, relative, &summary);
     return summary;
 }
 
@@ -100703,6 +100694,13 @@ fn isNativeShellLeakCorpusFile(relative: []const u8) bool {
 
 fn isNativeShellIntegrationCorpusFile(relative: []const u8) bool {
     return std.mem.eql(u8, relative, "js/bun/shell/bunshell.test.ts");
+}
+
+fn isNativeRequestCorpusFile(relative: []const u8) bool {
+    return std.mem.eql(u8, relative, "js/web/request/request.test.ts") or
+        std.mem.eql(u8, relative, "js/web/request/request-clone-leak.test.ts") or
+        std.mem.eql(u8, relative, "js/web/request/request-method-getter.test.ts") or
+        std.mem.eql(u8, relative, "js/web/request/request-subclass.test.ts");
 }
 
 fn isNativeWebViewCorpusFile(relative: []const u8) bool {
@@ -100895,6 +100893,7 @@ fn isNativeHomeCorpusFile(relative: []const u8) bool {
         isNativeShellLeakCorpusFile(relative) or
         isNativeShellIntegrationCorpusFile(relative) or
         isNativeWebViewCorpusFile(relative) or
+        isNativeRequestCorpusFile(relative) or
         isNativeHttpProxyCorpusFile(relative) or
         isNativeBunTestCorpusFile(relative) or
         isNativeBunTestHelperCorpusFile(relative) or
@@ -100944,6 +100943,7 @@ fn nativeCorpusMode(relative: []const u8) NativeCorpusMode {
         isNativeShellLeakCorpusFile(relative) or
         isNativeShellIntegrationCorpusFile(relative) or
         isNativeWebViewCorpusFile(relative) or
+        isNativeRequestCorpusFile(relative) or
         isNativeHttpProxyCorpusFile(relative) or
         isNativeBunTestCorpusFile(relative) or
         isNativePlatformAuditCorpusFile(relative) or
@@ -101120,10 +101120,25 @@ fn appendSummaryStdout(allocator: std.mem.Allocator, summary: *Summary, stdout: 
     summary.stdout_owned = true;
 }
 
+fn runIsolatedRelativeFile(
+    io: Io,
+    allocator: std.mem.Allocator,
+    corpus_path: []const u8,
+    relative: []const u8,
+    summary: *Summary,
+) !void {
+    if (isNativeHomeCorpusFile(relative)) {
+        return runRelativeFile(io, allocator, null, corpus_path, relative, summary);
+    }
+    var runtime = try jsc_bootstrap.Runtime.init(allocator, harness_prelude);
+    defer runtime.deinit();
+    return runRelativeFile(io, allocator, &runtime, corpus_path, relative, summary);
+}
+
 fn runRelativeFile(
     io: Io,
     allocator: std.mem.Allocator,
-    runtime: *jsc_bootstrap.Runtime,
+    runtime: ?*jsc_bootstrap.Runtime,
     corpus_path: []const u8,
     relative: []const u8,
     summary: *Summary,
@@ -101243,7 +101258,8 @@ fn runRelativeFile(
         return;
     }
 
-    var file_run = try runtime.runFile(allocator, prepared.fileSpec());
+    const bootstrap = runtime orelse return error.MissingBootstrapRuntime;
+    var file_run = try bootstrap.runFile(allocator, prepared.fileSpec());
     defer file_run.deinit(allocator);
 
     const r = file_run.result;
@@ -121086,7 +121102,23 @@ test "bootstrap runner covers Request body text and clone smoke" {
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
-test "bootstrap Request allocation stress preserves the unchanged Bun workloads" {
+test "native Request routing covers the complete upstream directory" {
+    const files = try corpus.collectTrackedDirectoryTestFiles(std.testing.io, std.testing.allocator, "packages/runtime/test/test", "js/web/request");
+    defer corpus.freeTestFiles(std.testing.allocator, files);
+    try std.testing.expectEqual(@as(usize, 4), files.len);
+    for (files) |file| {
+        const path = try std.fs.path.join(std.testing.allocator, &.{ "js/web/request", file });
+        defer std.testing.allocator.free(path);
+        try std.testing.expect(isNativeRequestCorpusFile(path));
+        try std.testing.expect(isNativeHomeCorpusFile(path));
+        try std.testing.expectEqual(NativeCorpusMode.test_runner, nativeCorpusMode(path));
+    }
+    inline for (.{ "js/web/request/nested/request.test.ts", "js/web/request/request.fixture.ts", "js/web/request/request.test.js" }) |path| {
+        try std.testing.expect(!isNativeRequestCorpusFile(path));
+    }
+}
+
+test "native Request matrices preserve unchanged workloads and subclass dispatch" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
     const cases = [_]struct {
@@ -121097,75 +121129,61 @@ test "bootstrap Request allocation stress preserves the unchanged Bun workloads"
         .{
             .path = "js/web/request/request-clone-leak.test.ts",
             .passed = 12,
-            .retained = &.{ "1000 * ASAN_MULTIPLIER", "2000 * ASAN_MULTIPLIER", "j < 500;", "500 * ASAN_MULTIPLIER", "process.memoryUsage.rss()" },
+            .retained = &.{ "1000 * ASAN_MULTIPLIER", "2000 * ASAN_MULTIPLIER", "j < 500;", "500 * ASAN_MULTIPLIER", "process.memoryUsage.rss()", "isASAN ? 64 : 30" },
         },
         .{
             .path = "js/web/request/request-method-getter.test.ts",
             .passed = 6,
-            .retained = &.{ "1024 * 512", "1024 * 128", "heapStats()", "request.clone().method", "request.method" },
+            .retained = &.{ "1024 * 512", "1024 * 128", "heapStats()", "request.clone().method", "request.method", "toBeLessThan(512)" },
+        },
+        .{
+            .path = "js/web/request/request-subclass.test.ts",
+            .passed = 2,
+            .retained = &.{ "undici-types", "constructor(input: string", "class MyRequest extends Request", "get method()", "Bun.serve({", "i < 1e4", "Invalid header name" },
+        },
+        .{
+            .path = "js/web/request/request.test.ts",
+            .passed = 4,
+            .retained = &.{ "signal: undefined", "signal: null", "clone() does not lock original body", "Promise.all([request.text(), cloned.text()])" },
         },
     };
 
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
-    const io = threaded.io();
-    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
-    defer runtime.deinit();
-
     for (cases) |case| {
         const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", case.path });
         defer std.testing.allocator.free(source_path);
-        const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
+        const source = try Io.Dir.cwd().readFileAlloc(threaded.io(), source_path, std.testing.allocator, .limited(1024 * 1024));
         defer std.testing.allocator.free(source);
-        var prepared = try prepareCorpusModule(std.testing.allocator, source, case.path);
-        defer prepared.deinit(std.testing.allocator);
+        for (case.retained) |needle| try std.testing.expect(std.mem.indexOf(u8, source, needle) != null);
 
-        for (case.retained) |needle| try std.testing.expect(std.mem.indexOf(u8, prepared.source, needle) != null);
-
-        var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
-        defer file_run.deinit(std.testing.allocator);
-        if (file_run.result.status() != .passed) {
-            std.debug.print("Request stress regression failed for {s}: {s}\n", .{ case.path, file_run.result.first_failure_message });
+        var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/test", case.path);
+        defer summary.deinit(std.testing.allocator);
+        if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != 0) {
+            std.debug.print("native Request mismatch for {s}: passed={} failed={} todo={} unsupported={} message={s}\n", .{ case.path, summary.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message });
         }
-        try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-        try std.testing.expectEqual(case.passed, file_run.result.passed);
+        try std.testing.expectEqual(@as(usize, 1), summary.files);
+        try std.testing.expectEqual(case.passed, summary.passed);
+        try std.testing.expectEqual(@as(usize, 0), summary.failed);
+        try std.testing.expectEqual(@as(usize, 0), summary.todo);
+        try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+        try std.testing.expectEqual(@as(usize, 0), summary.allowed_empty_files);
     }
 }
 
-test "bootstrap Request subclass preserves getter dispatch and header failures" {
+test "native Request dispatch and bootstrap dispatch retain their execution engines" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
-
-    const path = "js/web/request/request-subclass.test.ts";
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
-    const source = try Io.Dir.cwd().readFileAlloc(
-        threaded.io(),
-        "packages/runtime/test/test/js/web/request/request-subclass.test.ts",
-        std.testing.allocator,
-        std.Io.Limit.limited(1024 * 1024),
-    );
-    defer std.testing.allocator.free(source);
-    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
-    defer prepared.deinit(std.testing.allocator);
-
-    try std.testing.expect(prepared.unsupported_reason == null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "undici-types") == null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "constructor(input: string") == null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "class MyRequest extends Request") != null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "get method()") != null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Bun.serve({") != null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "i < 1e4") != null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Invalid header name") != null);
-
-    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
-    defer runtime.deinit();
-    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
-    defer file_run.deinit(std.testing.allocator);
-    if (file_run.result.status() != .passed) {
-        std.debug.print("Request subclass regression failed: {s}\n", .{file_run.result.first_failure_message});
+    inline for (.{
+        .{ .path = "js/web/request/request.test.ts", .passed = 4 },
+        .{ .path = "js/web/timers/microtask.test.js", .passed = 2 },
+    }) |case| {
+        var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/test", case.path);
+        defer summary.deinit(std.testing.allocator);
+        try std.testing.expectEqual(@as(usize, case.passed), summary.passed);
+        try std.testing.expectEqual(@as(usize, 0), summary.failed + summary.todo + summary.unsupported);
     }
-    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 2), file_run.result.passed);
 }
 
 test "bootstrap runner covers FormData Request multipart content type" {

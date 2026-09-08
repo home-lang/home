@@ -347,6 +347,11 @@ pub fn build(b: *std.Build) void {
         "ts-checker-test-filter",
         "Only compile/run ts_checker tests whose name contains this substring",
     );
+    const home_test_test_filter = b.option(
+        []const u8,
+        "home-test-test-filter",
+        "Only compile/run home_test tests whose name contains this substring",
+    );
     const home_rt_test_filter = b.option(
         []const u8,
         "home-rt-test-filter",
@@ -1675,11 +1680,19 @@ pub fn build(b: *std.Build) void {
     const run_bundler_compat_tests = b.addRunArtifact(bundler_compat_tests);
     dependOnTest(test_step, &run_bundler_compat_tests.step, test_filter, "bundler_compat");
 
-    // home_test: only the public facade is wired in.
-    const home_test_tests = b.addTest(.{ .root_module = home_test_pkg });
+    // Keep the native harness ABI exports independent of test selection.
+    const home_test_test_filters: []const []const u8 = if (home_test_test_filter) |needle| &.{needle} else &.{};
+    const home_test_test_root = createPackage(b, "packages/home_test/src/test_root.zig", target, optimize, zig_test_framework);
+    home_test_test_root.addImport("bun", compat_pkg);
+    home_test_test_root.addImport("home", home_rt_pkg);
+    home_test_test_root.addImport("home_rt", home_rt_pkg);
+    home_test_test_root.addImport("build_options", build_options_module);
+    const home_test_tests = b.addTest(.{ .root_module = home_test_test_root, .filters = home_test_test_filters });
     const run_home_test_tests = b.addRunArtifact(home_test_tests);
     run_home_test_tests.step.dependOn(&install_home_exe.step);
     dependOnTest(test_step, &run_home_test_tests.step, test_filter, "home_test");
+    const home_test_step = b.step("test-home-harness", "Run the Home test harness unit artifact");
+    home_test_step.dependOn(&run_home_test_tests.step);
 
     const home_test_bun_tier0_tests = b.addTest(.{
         .root_module = home_test_bun_tier0_pkg,
