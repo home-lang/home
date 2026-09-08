@@ -1311,3 +1311,67 @@ aggregate/parity and the observed Request/Chrome deadline failures remain under
 
 Verified optimized Home executable SHA-256:
 `68fcba6aed61397b1fe94fe1c2e4291644e68324c6ee4097f2a9f5adfabc181f`.
+
+## Native Blob corpus and prototype/child substitute removal (#700)
+
+All six original `js/web/fetch/blob*.test.ts` files now execute in Home's native
+test runner. They cover array fast paths and mutation, copy-on-write behavior,
+File and Bun.file name ownership, allocation failures, file writes/stat/snapshots,
+Blob module imports, UTF-16 decoding and sliced-body streaming.
+
+The bootstrap adapter no longer intercepts the UTF-16 child process and computes
+a substitute result. It also no longer overrides `Object.defineProperty` to
+store an `Array.prototype[1]` descriptor separately or looks up that simulated
+descriptor while collecting Blob parts. Both definitions, their call sites and
+the synthetic descriptor lookup are removed. The original native array test
+installs and deletes the actual prototype getter and asserts its invocation.
+
+The focused matrix executes every original file, including both 2,000-iteration
+File/Bun.file ownership loops, real child processes, post-GC reads, original
+allocation-limit APIs and buffer sizes, and the unchanged snapshots. The former
+bootstrap getter substitute test is replaced with removal/workload checks; the
+bootstrap byte-storage and copy-on-read regression remains selected to verify
+the shared code after removing the global property override.
+
+The next HTML web activation/removal batch is
+[#702](https://github.com/home-lang/home/issues/702). Its five original files have
+separate native Home/Bun baselines of **145 passes / one upstream platform skip /
+zero failures / 530 assertions per runtime**, using the previously published
+`04644b2d0` Home binary. That batch includes removal of fabricated FormData JSON
+child output and a fabricated RSS-result branch. The original native file-error
+child measures **100 iterations / 1.77 MB growth**, within its original 10 MB
+non-ASAN threshold. The Linux-only multipart memory case is skipped upstream on
+this macOS host and receives no implementation credit.
+
+Final optimized verification passes **46/46 build steps** and **23/23 focused
+harness steps / 4/4 tests**. Independent metadata identifies the six-file matrix,
+retained bootstrap storage regression, removal/workload checks and registration
+guard. The ordinary grouped Blob command reports **65 passes / zero failures /
+zero TODOs / zero unsupported cases**, preserving all four original snapshots.
+The previously established pinned Bun controls cover the same 65 tests with
+215 assertions and four snapshots.
+
+Adjacent ordinary routes pass in this run: body/stream **9,467 passes / four
+upstream skips**, Headers/Response **170/170**, Request **24/24**, bootstrap
+FormData **5/5** and microtasks **2/2**. All report zero unexpected failures and
+zero unsupported cases. The earlier Request deadline failure remains open in
+[#701](https://github.com/home-lang/home/issues/701); this successful run does
+not establish its cause or repair it.
+
+The source audit now checks mirrored contents directly against Git blob objects
+at pin `4982b91e3702094330f3be3883354c52b8c01323`, including raw symlink targets
+and executable modes. It verifies **12,990 identical regular files, five
+identical symlinks, zero missing paths and zero executable-mode differences**;
+the sole content difference is the historical `expectations.txt` metadata.
+Zig formatting, documentation Pickier and whitespace checks pass.
+
+This completes [#700](https://github.com/home-lang/home/issues/700)'s native Blob
+activation and substitute removal. [#202](https://github.com/home-lang/home/issues/202)
+now explicitly labels its old adapter-based green result as historical evidence,
+not proof of logical parity. Full native aggregate execution, remaining semantic
+substitutes and native build ownership are still incomplete under
+[#66](https://github.com/home-lang/home/issues/66), as are the Request and Chrome
+deadline investigations in #701 and [#694](https://github.com/home-lang/home/issues/694).
+
+Verified optimized Home executable SHA-256:
+`e444d3378dc349b89bf786228995209ae9f6e88d40ceb8ce80d34c12d7c90c65`.

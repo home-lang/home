@@ -5346,25 +5346,6 @@ const harness_prelude =
     \\  child[Symbol.asyncDispose] = function() { return child.exited.then(() => undefined); };
     \\  return child;
     \\}
-    \\function __home_spawn_blob_utf16_bom_fixture(options) {
-    \\  if (!String(globalThis.__home_current_filename || "").includes("js/web/fetch/blob.test.ts")) return null;
-    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
-    \\  const evalIndex = cmd.indexOf("-e");
-    \\  const script = evalIndex >= 0 ? String(cmd[evalIndex + 1] || "") : "";
-    \\  if (evalIndex < 0 || !script.includes("slice(1).text()") || !script.includes("oddJson") || !script.includes("alignedText")) return null;
-    \\  try {
-    \\    const oddText = __home_blob_bytes_to_text(new Uint8Array([0x41, 0xff, 0xfe, 0x68, 0x00, 0x69, 0x00]).slice(1));
-    \\    const oddJson = JSON.parse(__home_blob_bytes_to_text(new Uint8Array([0x41, 0xff, 0xfe, 0x34, 0x00, 0x32, 0x00]).slice(1)));
-    \\    const alignedText = __home_blob_bytes_to_text(new Uint8Array([0xff, 0xfe, 0x68, 0x00, 0x69, 0x00]));
-    \\    return __home_spawn_completed(JSON.stringify({ oddText, oddJson, alignedText }) + "\n", "", 0);
-    \\  } catch (cause) {
-    \\    const error = new Error("Blob UTF-16 child evaluation failed", { cause });
-    \\    error.code = "ERR_BLOB_CHILD_DECODE";
-    \\    error.operation = "blob.child.decode";
-    \\    error.stack = String(error.stack || error) + "\nCaused by: " + String(cause && cause.stack || cause);
-    \\    return __home_spawn_completed("", String(error.stack) + "\n", 1);
-    \\  }
-    \\}
     \\function __home_spawn_s3_multipart_upload_id_fixture(options) {
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
     \\  const evalIndex = cmd.indexOf("-e") >= 0 ? cmd.indexOf("-e") : cmd.indexOf("--eval");
@@ -29179,8 +29160,6 @@ const harness_prelude =
     \\    if (messagePortContextFixture) return messagePortContextFixture;
     \\    const performanceObserverLeakFixture = __home_spawn_performance_observer_leak_fixture(options || {});
     \\    if (performanceObserverLeakFixture) return performanceObserverLeakFixture;
-    \\    const blobUtf16BomFixture = __home_spawn_blob_utf16_bom_fixture(options || {});
-    \\    if (blobUtf16BomFixture) return blobUtf16BomFixture;
     \\    const fetchAbortQueuedFixture = __home_spawn_fetch_abort_queued_fixture(options || {});
     \\    if (fetchAbortQueuedFixture) return fetchAbortQueuedFixture;
     \\    const fetchAbortStreamBodyFixture = __home_spawn_fetch_abort_stream_body_fixture(options || {});
@@ -84278,15 +84257,6 @@ const harness_prelude =
     \\  Object.defineProperty(array, array.length, { value, writable: true, enumerable: true, configurable: true });
     \\  return array.length;
     \\}
-    \\const __home_object_define_property = Object.defineProperty;
-    \\Object.defineProperty = function(target, property, descriptor) {
-    \\  if (String(globalThis.__home_current_filename || "").includes("js/web/fetch/blob-array-fast-path.test.ts") && target === Array.prototype && String(property) === "1") {
-    \\    globalThis.__home_array_prototype_index_descriptors = globalThis.__home_array_prototype_index_descriptors || Object.create(null);
-    \\    globalThis.__home_array_prototype_index_descriptors[String(property)] = descriptor || {};
-    \\    return target;
-    \\  }
-    \\  return __home_object_define_property(target, property, descriptor);
-    \\};
     \\function __home_blob_parts(parts) {
     \\  if (parts === undefined || parts === null) return [];
     \\  if (typeof parts === "string") throw new TypeError("Blob constructor argument must be an array");
@@ -84295,10 +84265,6 @@ const harness_prelude =
     \\    const out = [];
     \\    for (let i = 0; i < parts.length; i++) {
     \\      if (i in parts) __home_array_append(out, parts[i]);
-    \\      else {
-    \\        const descriptor = globalThis.__home_array_prototype_index_descriptors && globalThis.__home_array_prototype_index_descriptors[String(i)];
-    \\        if (descriptor && typeof descriptor.get === "function") __home_array_append(out, descriptor.get.call(parts));
-    \\      }
     \\    }
     \\    return out;
     \\  }
@@ -100700,6 +100666,15 @@ fn isNativeBodyCorpusFile(relative: []const u8) bool {
         std.mem.eql(u8, relative, "js/web/fetch/request-cyclic-reference.test.ts");
 }
 
+fn isNativeBlobCorpusFile(relative: []const u8) bool {
+    return std.mem.eql(u8, relative, "js/web/fetch/blob-array-fast-path.test.ts") or
+        std.mem.eql(u8, relative, "js/web/fetch/blob-cow.test.ts") or
+        std.mem.eql(u8, relative, "js/web/fetch/blob-file-name-ownership.test.ts") or
+        std.mem.eql(u8, relative, "js/web/fetch/blob-oom.test.ts") or
+        std.mem.eql(u8, relative, "js/web/fetch/blob-write.test.ts") or
+        std.mem.eql(u8, relative, "js/web/fetch/blob.test.ts");
+}
+
 fn isNativeWebViewCorpusFile(relative: []const u8) bool {
     return std.mem.eql(u8, relative, "js/bun/webview/webview.test.ts") or
         std.mem.eql(u8, relative, "js/bun/webview/webview-chrome.test.ts") or
@@ -100893,6 +100868,7 @@ fn isNativeHomeCorpusFile(relative: []const u8) bool {
         isNativeRequestCorpusFile(relative) or
         isNativeHeadersResponseCorpusFile(relative) or
         isNativeBodyCorpusFile(relative) or
+        isNativeBlobCorpusFile(relative) or
         isNativeHttpProxyCorpusFile(relative) or
         isNativeBunTestCorpusFile(relative) or
         isNativeBunTestHelperCorpusFile(relative) or
@@ -100945,6 +100921,7 @@ fn nativeCorpusMode(relative: []const u8) NativeCorpusMode {
         isNativeRequestCorpusFile(relative) or
         isNativeHeadersResponseCorpusFile(relative) or
         isNativeBodyCorpusFile(relative) or
+        isNativeBlobCorpusFile(relative) or
         isNativeHttpProxyCorpusFile(relative) or
         isNativeBunTestCorpusFile(relative) or
         isNativePlatformAuditCorpusFile(relative) or
@@ -116491,26 +116468,35 @@ test "native body corpus removes clone substitutes and retains ownership workloa
     }
 }
 
-test "bootstrap runner mirrors fetch blob write corpus" {
+test "native Blob corpus executes all six original files with allocation and snapshot checks" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
-
-    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    const allocator = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(allocator, .{});
     defer threaded.deinit();
-    const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/web/fetch/blob-write.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
-    defer std.testing.allocator.free(source);
-    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/web/fetch/blob-write.test.ts");
-    defer prepared.deinit(std.testing.allocator);
-    try std.testing.expect(prepared.unsupported_reason == null);
-
-    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
-    defer runtime.deinit();
-    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
-    defer file_run.deinit(std.testing.allocator);
-
-    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 10), file_run.result.passed);
-    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+    const cases = [_]struct { path: []const u8, passed: usize }{
+        .{ .path = "js/web/fetch/blob-array-fast-path.test.ts", .passed = 11 },
+        .{ .path = "js/web/fetch/blob-cow.test.ts", .passed = 1 },
+        .{ .path = "js/web/fetch/blob-file-name-ownership.test.ts", .passed = 1 },
+        .{ .path = "js/web/fetch/blob-oom.test.ts", .passed = 16 },
+        .{ .path = "js/web/fetch/blob-write.test.ts", .passed = 10 },
+        .{ .path = "js/web/fetch/blob.test.ts", .passed = 26 },
+    };
+    for (cases) |case| {
+        try std.testing.expect(isNativeBlobCorpusFile(case.path));
+        try std.testing.expect(isNativeHomeCorpusFile(case.path));
+        try std.testing.expectEqual(NativeCorpusMode.test_runner, nativeCorpusMode(case.path));
+        var summary = try runFile(threaded.io(), allocator, "packages/runtime/test/test", case.path);
+        defer summary.deinit(allocator);
+        if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != 0) {
+            std.debug.print("native Blob corpus mismatch for {s}: passed={} failed={} todo={} unsupported={} message={s}\n", .{ case.path, summary.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message });
+        }
+        try std.testing.expectEqual(@as(usize, 1), summary.files);
+        try std.testing.expectEqual(case.passed, summary.passed);
+        try std.testing.expectEqual(@as(usize, 0), summary.failed + summary.todo + summary.unsupported + summary.allowed_empty_files);
+    }
+    for ([_][]const u8{ "js/web/fetch/blob.fixture.ts", "js/web/fetch/blob.test.js", "js/deno/blob/blob.test.ts" }) |path| {
+        try std.testing.expect(!isNativeBlobCorpusFile(path));
+    }
 }
 
 test "bootstrap runner imports TypeScript Blob modules with source-aware errors" {
@@ -121257,7 +121243,7 @@ test "bootstrap runner covers FormData Request multipart content type" {
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
-test "bootstrap runner covers Blob byte storage and copy-on-read" {
+test "native Blob corpus migration retains bootstrap byte storage and copy-on-read" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
     const source =
@@ -121381,41 +121367,24 @@ test "bootstrap runner mirrors Bun.write filesystem corpus" {
     try std.testing.expectEqual(@as(usize, 33), file_run.result.passed);
 }
 
-test "bootstrap runner covers Blob array prototype indexed getter" {
-    if (!build_options.enable_jsc) return error.SkipZigTest;
-
-    const source =
-        \\import { expect, test } from "bun:test";
-        \\
-        \\test("Blob consults indexed prototype getters without mutating through them", async () => {
-        \\  let calls = 0;
-        \\  Object.defineProperty(Array.prototype, 1, {
-        \\    get() {
-        \\      calls++;
-        \\      return "intercepted";
-        \\    },
-        \\    configurable: true,
-        \\  });
-        \\  try {
-        \\    const blob = new Blob(["x", , "z"]);
-        \\    expect(await blob.text()).toBe("xinterceptedz");
-        \\    expect(calls).toBe(1);
-        \\  } finally {
-        \\    delete Array.prototype[1];
-        \\  }
-        \\});
-    ;
-    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/web/fetch/blob-array-fast-path.test.ts");
-    defer prepared.deinit(std.testing.allocator);
-
-    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
-    defer runtime.deinit();
-
-    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
-    defer file_run.deinit(std.testing.allocator);
-
-    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+test "native Blob corpus removes substitutes and retains prototype and ownership workloads" {
+    const allocator = std.testing.allocator;
+    for ([_][]const u8{ "__home_spawn_blob_utf16_bom_fixture", "__home_array_prototype_index_descriptors", "__home_object_define_property", "js/web/fetch/blob-array-fast-path.test.ts", "js/web/fetch/blob.test.ts" }) |needle| {
+        try std.testing.expect(std.mem.indexOf(u8, harness_prelude, needle) == null);
+    }
+    const cases = [_]struct { path: []const u8, retained: []const []const u8 }{
+        .{ .path = "blob-array-fast-path.test.ts", .retained = &.{ "Object.defineProperty(Array.prototype, 1", "expect(calls).toBe(1)", "delete (Array.prototype as any)[1]", "i < 10000", "arr.push(\"pad\")" } },
+        .{ .path = "blob-file-name-ownership.test.ts", .retained = &.{ "i < 2000", "Buffer.alloc(512", "structuredClone(f)", "Bun.gc(true)", "await using proc = Bun.spawn", "await bytesClone.text()", "await fileClone.text()", "expect(exitCode).toBe(0)" } },
+        .{ .path = "blob-oom.test.ts", .retained = &.{ "setSyntheticAllocationLimitForTesting(128 * 1024 * 1024)", "64 * 1024 * 1024", "setSyntheticAllocationLimitForTesting(4 * 1024 * 1024)", "Bun.gc(true)", "longer than 2^32-1 characters", ".not.toThrow()" } },
+        .{ .path = "blob.test.ts", .retained = &.{ "oddJson", "alignedText", "slice(1).text()", "Bun.spawn" } },
+    };
+    for (cases) |case| {
+        const path = try std.fs.path.join(allocator, &.{ "packages/runtime/test/test/js/web/fetch", case.path });
+        defer allocator.free(path);
+        const source = try Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(1024 * 1024));
+        defer allocator.free(source);
+        for (case.retained) |needle| try std.testing.expect(std.mem.indexOf(u8, source, needle) != null);
+    }
 }
 
 test "bootstrap runner covers Response body text smoke" {
