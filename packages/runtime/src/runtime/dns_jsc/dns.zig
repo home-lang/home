@@ -3620,7 +3620,16 @@ pub const Resolver = struct {
         if (addr_str.length() == 0) {
             return globalThis.throwInvalidArgumentType("lookupService", "address", "non-empty string");
         }
-        const addr_s = addr_str.getZigString(globalThis).slice();
+        // `ZigString.slice()` asserts the string is 8-bit and panics on a UTF-16
+        // one, so a non-ASCII address killed the process where Node and Bun
+        // throw ERR_INVALID_ARG_VALUE. Bun's live implementation takes a
+        // transcoding slice here (dns.rs `global_lookup_service`); its stale
+        // Zig carried this same panic, which is what Home was ported from.
+        // Every other string argument in this file already goes through
+        // toSlice.
+        var addr_slice = addr_str.toSlice(globalThis, bun.default_allocator);
+        defer addr_slice.deinit();
+        const addr_s = addr_slice.slice();
 
         const port_value = arguments.ptr[1];
         const port: u16 = try port_value.toPortNumber(globalThis);
