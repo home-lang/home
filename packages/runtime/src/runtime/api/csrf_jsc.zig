@@ -55,10 +55,22 @@ pub fn csrf__generate(globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFra
     var expires_in: u64 = csrf.DEFAULT_EXPIRATION_MS;
     var encoding: csrf.TokenFormat = .base64url;
     var algorithm: jsc.API.Bun.Crypto.EVP.Algorithm = csrf.DEFAULT_ALGORITHM;
+    var session_id: ?jsc.ZigString.Slice = null;
+    defer if (session_id) |s| s.deinit();
 
     if (args.len > 1 and args[1].isObject()) {
         const options_value = args[1];
         if (try options_value.getOptionalInt(globalObject, "expiresIn", u64)) |v| expires_in = v;
+
+        // Mirrors `get_optional_slice` in Bun's csrf_jsc.rs: missing/undefined/null
+        // means "not bound to a session", a non-string throws ERR_INVALID_ARG_TYPE,
+        // and an empty string is rejected outright.
+        if (try options_value.getOptional(globalObject, "sessionId", jsc.ZigString.Slice)) |session_id_slice| {
+            session_id = session_id_slice;
+            if (session_id_slice.len == 0) {
+                return globalObject.throwInvalidArguments("sessionId must be a non-empty string", .{});
+            }
+        }
 
         if (try options_value.get(globalObject, "encoding")) |encoding_js| {
             const encoding_enum = try jsc.Node.Encoding.fromJSWithDefaultOnEmpty(encoding_js, globalObject, .base64url) orelse {
@@ -89,6 +101,7 @@ pub fn csrf__generate(globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFra
     var token_buffer: [512]u8 = @splat(0);
     const token_bytes = csrf.generate(.{
         .secret = if (secret) |s| s.slice() else globalObject.bunVM().rareData().defaultCSRFSecret(),
+        .session_id = if (session_id) |s| s.slice() else "",
         .expires_in_ms = expires_in,
         .encoding = encoding,
         .algorithm = algorithm,
@@ -121,6 +134,8 @@ pub fn csrf__verify(globalObject: *jsc.JSGlobalObject, call_frame: *jsc.CallFram
 
     var secret: ?jsc.ZigString.Slice = null;
     defer if (secret) |s| s.deinit();
+    var session_id: ?jsc.ZigString.Slice = null;
+    defer if (session_id) |s| s.deinit();
     var max_age: u64 = csrf.DEFAULT_EXPIRATION_MS;
     var encoding: csrf.TokenFormat = .base64url;
     var algorithm: jsc.API.Bun.Crypto.EVP.Algorithm = csrf.DEFAULT_ALGORITHM;
@@ -133,6 +148,16 @@ pub fn csrf__verify(globalObject: *jsc.JSGlobalObject, call_frame: *jsc.CallFram
                 return globalObject.throwInvalidArguments("Secret must be a non-empty string", .{});
             }
             secret = secretSlice;
+        }
+
+        // Mirrors `get_optional_slice` in Bun's csrf_jsc.rs: missing/undefined/null
+        // means "not bound to a session", a non-string throws ERR_INVALID_ARG_TYPE,
+        // and an empty string is rejected outright.
+        if (try options_value.getOptional(globalObject, "sessionId", jsc.ZigString.Slice)) |session_id_slice| {
+            session_id = session_id_slice;
+            if (session_id_slice.len == 0) {
+                return globalObject.throwInvalidArguments("sessionId must be a non-empty string", .{});
+            }
         }
 
         if (try options_value.getOptionalInt(globalObject, "maxAge", u64)) |v| max_age = v;
@@ -165,6 +190,7 @@ pub fn csrf__verify(globalObject: *jsc.JSGlobalObject, call_frame: *jsc.CallFram
     const is_valid = csrf.verify(.{
         .token = token.slice(),
         .secret = if (secret) |s| s.slice() else globalObject.bunVM().rareData().defaultCSRFSecret(),
+        .session_id = if (session_id) |s| s.slice() else "",
         .max_age_ms = max_age,
         .encoding = encoding,
         .algorithm = algorithm,

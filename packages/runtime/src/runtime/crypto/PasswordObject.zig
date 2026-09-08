@@ -80,8 +80,15 @@ pub const PasswordObject = struct {
 
                                     const memory_cost = try memory_value.coerce(i32, globalObject);
 
-                                    if (memory_cost < 1) {
-                                        return globalObject.throwInvalidArguments("Memory cost must be greater than 0", .{});
+                                    // argon2 requires `memoryCost >= 8 * parallelism`; Bun
+                                    // hard-codes `parallelism = 1` (see `Argon2Params.toParams`
+                                    // below), so the floor is 8. Reject here, on the caller's
+                                    // stack, instead of letting the KDF fail with
+                                    // `WeakParameters` later -- for the async `hash` that is a
+                                    // promise rejection, not a throw. Mirrors Bun
+                                    // PasswordObject.rs:142-149.
+                                    if (memory_cost < 8) {
+                                        return globalObject.throwInvalidArguments("Memory cost must be at least 8", .{});
                                     }
 
                                     argon.memory_cost = @as(u32, @intCast(memory_cost));
@@ -293,8 +300,14 @@ pub const PasswordObject = struct {
                 // Bound the encoded cost parameters before verifying: the hash is
                 // attacker-controllable, and a crafted `$argon2id$...$m=...,t=...,p=...$`
                 // would otherwise force a huge memory/time allocation (DoS).
+                //
+                // An over-limit hash is an error, not a silent non-match: Bun returns
+                // `WeakParameters` from the same pre-scan (pwhash.rs:243-245, ceilings
+                // MAX_VERIFY_MEMORY_COST / MAX_VERIFY_TIME_COST / MAX_VERIFY_PARALLELISM
+                // at pwhash.rs:50-52), so callers can tell "wrong password" apart from
+                // "this hash is not something we will ever verify".
                 if (!argon2ParamsWithinLimits(previous_hash)) {
-                    return false;
+                    return error.WeakParameters;
                 }
                 pwhash.argon2.strVerify(previous_hash, password, .{ .allocator = allocator }, cryptoIo()) catch |err| {
                     if (err == error.PasswordVerificationFailed) {

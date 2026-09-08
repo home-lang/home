@@ -210,7 +210,7 @@ const install_glue =
     \\      var mc = algorithm.memoryCost;
     \\      if (mc !== undefined && mc !== null) {
     \\        if (typeof mc !== "number") throw new TypeError("memoryCost must be a number");
-    \\        if (mc < 1) throw new RangeError("Memory cost must be greater than 0");
+    \\        if (mc < 8) throw new RangeError("Memory cost must be at least 8");
     \\        m = mc | 0;
     \\      }
     \\      return [id, t, m];

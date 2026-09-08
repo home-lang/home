@@ -51,6 +51,16 @@ pub fn parse(
         return globalThis.throwValue(try log.toJS(globalThis, default_allocator, "Failed to parse toml"));
     };
 
+    // `Lexer.expect` logs a token mismatch through `addRangeError` and then
+    // falls through to `next()` for error recovery, so the parser can return
+    // `Ok` with a partial AST. Inspecting only the result discarded the logged
+    // diagnostic and leaked bogus values (`a = [1 2]` came back as
+    // `{"a":[1]}`), so check the log on the success path too. Mirrors Bun
+    // 4982b91e37 src/runtime/api/TOMLObject.rs:29-31 (oven-sh/bun#31252).
+    if (log.hasErrors()) {
+        return globalThis.throwValue(try log.toJS(globalThis, default_allocator, "Failed to parse toml"));
+    }
+
     // for now...
     const buffer_writer = js_printer.BufferWriter.init(allocator);
     var writer = js_printer.BufferPrinter.init(buffer_writer);

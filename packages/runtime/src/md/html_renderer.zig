@@ -5,7 +5,6 @@ pub const HtmlRenderer = struct {
     image_nesting_level: u32 = 0,
     saved_img_title: []const u8 = "",
     tag_filter: bool = false,
-    tag_filter_raw_depth: u32 = 0,
     autolink_headings: bool = false,
     heading_buf: std.ArrayListUnmanaged(u8) = .empty,
     heading_tracker: helpers.HeadingIdTracker = helpers.HeadingIdTracker.init(false),
@@ -376,8 +375,6 @@ pub const HtmlRenderer = struct {
             },
             .html => {
                 if (self.tag_filter) {
-                    // Track entry/exit of disallowed tag raw zones
-                    self.updateTagFilterRawDepth(content);
                     self.writeHtmlWithTagFilter(content);
                 } else {
                     self.write(content);
@@ -396,14 +393,7 @@ pub const HtmlRenderer = struct {
                 }
                 if (start < content.len) self.writeHtmlEscaped(content[start..]);
             },
-            else => {
-                // When inside a tag-filtered disallowed tag, emit text as raw
-                if (self.tag_filter and self.tag_filter_raw_depth > 0) {
-                    self.write(content);
-                } else {
-                    self.writeHtmlEscaped(content);
-                }
-            },
+            else => self.writeHtmlEscaped(content),
         }
     }
 
@@ -428,27 +418,6 @@ pub const HtmlRenderer = struct {
             };
         } else {
             self.out.writeByte(b);
-        }
-    }
-
-    /// Track whether we're inside a disallowed tag's raw zone.
-    /// When an opening disallowed tag is seen, increment depth.
-    /// When a closing disallowed tag is seen, decrement depth.
-    fn updateTagFilterRawDepth(self: *HtmlRenderer, content: []const u8) void {
-        if (content.len < 2 or content[0] != '<') return;
-        if (content[1] == '/') {
-            // Closing tag
-            if (isDisallowedTag(content) and self.tag_filter_raw_depth > 0) {
-                self.tag_filter_raw_depth -= 1;
-            }
-        } else {
-            // Opening tag (not self-closing)
-            if (isDisallowedTag(content)) {
-                // Check if NOT self-closing (doesn't end with "/>")
-                if (content[content.len - 2] != '/' or content[content.len - 1] != '>') {
-                    self.tag_filter_raw_depth += 1;
-                }
-            }
         }
     }
 
@@ -687,8 +656,8 @@ pub const HtmlRenderer = struct {
         const end = pos + tag.len;
         if (end >= content.len) return true;
         return switch (content[end]) {
-            '>', ' ', '\t', '\n', '/' => true,
-            else => false,
+            '>', '/' => true,
+            else => helpers.isWhitespace(content[end]),
         };
     }
 

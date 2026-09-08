@@ -21,6 +21,9 @@ pub const Error = error{
 pub const GenerateOptions = struct {
     /// Secret key to use for signing
     secret: []const u8,
+    /// Per-principal associated data mixed into the HMAC; an empty slice
+    /// means the token is not bound to any principal
+    session_id: []const u8 = "",
     /// How long the token should be valid (in milliseconds)
     expires_in_ms: u64 = DEFAULT_EXPIRATION_MS,
     /// Format to encode the token in
@@ -35,6 +38,9 @@ pub const VerifyOptions = struct {
     token: []const u8,
     /// Secret key used to sign the token
     secret: []const u8,
+    /// Per-principal associated data mixed into the HMAC; an empty slice
+    /// means the token is not bound to any principal
+    session_id: []const u8 = "",
     /// Maximum age of the token in milliseconds
     max_age_ms: u64 = DEFAULT_EXPIRATION_MS,
     /// Encoding to use for the token
@@ -57,6 +63,30 @@ pub const TokenFormat = enum {
         };
     }
 };
+
+/// Sign `payload` with `secret`, mixing an optional per-principal `session_id`
+/// into the HMAC input as `payload || session_id`. Mirrors Bun's
+/// `src/csrf/lib.rs`: the session id is never written into the token, and the
+/// fixed 32-byte payload prefix keeps the concatenation unambiguous.
+///
+/// Returns null when the digest could not be produced (unsupported algorithm or
+/// allocation failure); both callers already treat null as failure.
+fn signPayload(
+    secret: []const u8,
+    payload: []const u8,
+    session_id: []const u8,
+    algorithm: jsc.API.Bun.Crypto.EVP.Algorithm,
+    out: *[boring.EVP_MAX_MD_SIZE]u8,
+) ?[]const u8 {
+    if (session_id.len == 0) {
+        return hmac.generate(secret, payload, algorithm, out);
+    }
+    const msg = bun.default_allocator.alloc(u8, payload.len + session_id.len) catch return null;
+    defer bun.default_allocator.free(msg);
+    @memcpy(msg[0..payload.len], payload);
+    @memcpy(msg[payload.len..], session_id);
+    return hmac.generate(secret, msg, algorithm, out);
+}
 
 /// Generate a new CSRF token
 ///
@@ -88,9 +118,11 @@ pub fn generate(
     @memcpy(payload_buf[8..24], &nonce);
     @memcpy(payload_buf[24..32], &expires_in_bytes);
 
-    // Sign the payload
+    // Sign the payload. A session id is mixed into the HMAC input as
+    // `payload || session_id` but never written to the token; the fixed
+    // 32-byte payload prefix keeps the concatenation unambiguous.
     var digest_buf: [boring.EVP_MAX_MD_SIZE]u8 = @splat(0);
-    const digest = hmac.generate(options.secret, &payload_buf, options.algorithm, &digest_buf) orelse
+    const digest = signPayload(options.secret, &payload_buf, options.session_id, options.algorithm, &digest_buf) orelse
         return Error.TokenCreationFailed;
 
     // Create the final token: timestamp|nonce|expires_in|signature in out_buffer
@@ -192,7 +224,7 @@ pub fn verify(options: VerifyOptions) bool {
 
     // Verify the signature
     var expected_signature: [boring.EVP_MAX_MD_SIZE]u8 = @splat(0);
-    const signature = hmac.generate(options.secret, payload, options.algorithm, &expected_signature) orelse
+    const signature = signPayload(options.secret, payload, options.session_id, options.algorithm, &expected_signature) orelse
         return false;
 
     // Compare signatures in constant time
