@@ -8,6 +8,7 @@ pub const formatJSONStringUTF8 = @import("bun_core/fmt.zig").formatJSONStringUTF
 pub const fmtSlice = @import("bun_core/fmt.zig").fmtSlice;
 pub const integrity = @import("bun_core/fmt.zig").integrity;
 pub const TableSymbols = @import("bun_core/fmt.zig").TableSymbols;
+pub const Table = @import("bun_core/fmt.zig").Table;
 
 const strings = @import("strings.zig");
 const bun = @import("home");
