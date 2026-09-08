@@ -48,7 +48,9 @@ if [[ ! -f "$PLUGIN_SOURCE/package.json" ]]; then
     exit 1
 fi
 
-before="$(git -C "$ROOT" status --porcelain -- packages/runtime/test/bun.lock packages/runtime/test/test/bun.lock)"
+# Compare bytes, not git status: an already-dirty lock can change again without
+# changing its porcelain status. The installer must preserve both inputs.
+before="$(shasum -a 256 "$TEST_ROOT/bun.lock" "$CORPUS/bun.lock")"
 
 "$INSTALL_EXECUTABLE" install --cwd "$TEST_ROOT" --frozen-lockfile
 
@@ -58,7 +60,7 @@ cp -R "$PLUGIN_SOURCE" "$PLUGIN_TARGET"
 
 "$INSTALL_EXECUTABLE" install --cwd "$CORPUS" --frozen-lockfile
 
-after="$(git -C "$ROOT" status --porcelain -- packages/runtime/test/bun.lock packages/runtime/test/test/bun.lock)"
+after="$(shasum -a 256 "$TEST_ROOT/bun.lock" "$CORPUS/bun.lock")"
 
 if [[ "$before" != "$after" ]]; then
     echo "provision-corpus-deps: a pinned bun.lock changed during provisioning" >&2
