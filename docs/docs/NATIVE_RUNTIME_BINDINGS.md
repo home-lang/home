@@ -1429,3 +1429,39 @@ this is a scanner negative control, not Home corpus coverage. Shell syntax and
 whitespace checks pass. Resource-bound confirmations, discovery completeness,
 mode/context reconciliation and full result preservation remain part of #703;
 the triage scanner is not the final acceptance gate.
+
+Final optimized verification of the integrated runtime tree at `e1a5d0e20`
+passes **46/46 build steps** and **23/23 focused harness steps / 3/3 tests**.
+Independent binary metadata confirms the original-file matrix, the
+substitute-removal/workload checks and the registration guard. Ordinary HTML
+directory execution reports **145 passes / one upstream skip / zero failures /
+zero unsupported cases**. A separate single-native-VM HTML directory run also
+passes **145 tests / one upstream skip / zero failures / 530 assertions**,
+matching the fresh pinned-Bun directory control. This is an HTML aggregate,
+not a full-corpus aggregate.
+
+The real Home file-error child reports **100 iterations / 1.78 MB growth**, and
+the pinned-Bun child reports **1.75 MB**; both satisfy the original 10 MB limit.
+An initial control invocation used incorrect startup variable names and could
+not load `bun:internal-for-testing`; that setup failure is retained separately.
+The corrected control uses the same internal-binding and GC startup variables
+as Home's native corpus launcher. No original assertions or deadlines changed.
+
+Adjacent ordinary routes pass: Blob **65/65**, body/stream **9,467 passes / four
+upstream skips**, Headers/Response **170/170**, Request **24/24**, bootstrap
+FormData **5/5** and microtasks **2/2**. The earlier Request deadline failure in
+[#701](https://github.com/home-lang/home/issues/701) remains unexplained; this
+passing run does not close it. The Chrome deadline investigation remains open
+in [#694](https://github.com/home-lang/home/issues/694).
+
+The final pinned-object audit verifies **12,990 identical regular files, five
+identical raw symlinks, zero missing paths and zero executable-mode differences**;
+only the historical expectations metadata differs. Zig formatting, scoped
+Pickier and whitespace checks pass. Durable verification logs are under
+`zig-out/bun-port-702/`. This completes #702's HTML activation and removal of its
+two FormData substitutes. The remaining adapter paths, faithful full-suite
+execution, platform verification and native build ownership remain incomplete
+under #66, #202 and #703.
+
+Verified optimized Home executable SHA-256:
+`4a937ded48d609b76e336fdc192dd96439653a228073a234aaafcba176a5e783`.
