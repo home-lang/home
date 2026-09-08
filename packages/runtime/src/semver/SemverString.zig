@@ -148,7 +148,9 @@ pub const String = extern struct {
     }
 
     pub inline fn stringHash(buf: string) u64 {
-        return std.hash.Wyhash.hash(0, buf);
+        // Parsed external tags and cloned lockfile strings must use the same
+        // upstream hash. Current Zig Wyhash differs from Bun's Wyhash11.
+        return Builder.stringHash(buf);
     }
 
     pub const ArrayHashContext = struct {

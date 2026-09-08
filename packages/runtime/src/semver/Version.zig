@@ -1033,3 +1033,25 @@ test "semver pinned-version fast path classifies common package ranges" {
     try std.testing.expectEqual(Version.PinnedVersion.major, Version.whichVersionIsPinned("^1.2.3"));
     try std.testing.expectEqual(Version.PinnedVersion.major, Version.whichVersionIsPinned(">=1.2.3"));
 }
+
+test "semver prerelease equality survives lockfile cloning" {
+    const input = "1.2.4-canary.20250226T140704+build.20250226T140704";
+    const parsed = Version.parseUTF8(input);
+    try std.testing.expect(parsed.valid);
+    const original = parsed.version.min();
+    var builder = String.Builder{
+        .string_pool = String.Builder.StringPool.init(std.testing.allocator),
+    };
+    defer builder.string_pool.deinit();
+    original.count(input, *String.Builder, &builder);
+    try builder.allocate(std.testing.allocator);
+    defer std.testing.allocator.free(builder.allocatedSlice());
+    const cloned = original.append(input, *String.Builder, &builder);
+    try std.testing.expect(original.eql(cloned));
+    try std.testing.expectEqual(original.tag.pre.hash, cloned.tag.pre.hash);
+    try std.testing.expectEqual(original.tag.build.hash, cloned.tag.build.hash);
+    try std.testing.expectEqualStrings(original.tag.pre.slice(input), cloned.tag.pre.slice(builder.allocatedSlice()));
+    try std.testing.expectEqualStrings(original.tag.build.slice(input), cloned.tag.build.slice(builder.allocatedSlice()));
+    const different = Version.parseUTF8("1.2.4-canary.20250227T140704").version.min();
+    try std.testing.expect(!different.eql(cloned));
+}
