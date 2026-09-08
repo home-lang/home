@@ -6,7 +6,8 @@ pub const UnlinkCommand = struct {
 
 fn unlink(ctx: Command.Context) !void {
     const cli = try PackageManager.CommandLineArguments.parse(ctx.allocator, .unlink);
-    var manager, const original_cwd = PackageManager.init(ctx, cli, .unlink) catch |err| brk: {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const manager, const original_cwd = PackageManager.init(ctx, cli, .unlink) catch |err| brk: {
         if (err == error.MissingPackageJSON) {
             try attemptToCreatePackageJSON();
             break :brk try PackageManager.init(ctx, cli, .unlink);
@@ -69,7 +70,7 @@ fn unlink(ctx: Command.Context) !void {
         }
 
         // Step 2. Setup the global directory
-        var node_modules: std.fs.Dir = brk: {
+        const node_modules: std.Io.Dir = brk: {
             Bin.Linker.ensureUmask();
             var explicit_global_dir: string = "";
             if (ctx.install) |install_| {
@@ -79,7 +80,7 @@ fn unlink(ctx: Command.Context) !void {
 
             try manager.setupGlobalDir(ctx);
 
-            break :brk manager.global_dir.?.makeOpenPath("node_modules", .{}) catch |err| {
+            break :brk bun.MakePath.makeOpenPath(manager.global_dir.?, "node_modules", .{}) catch |err| {
                 if (manager.options.log_level != .silent)
                     Output.prettyErrorln("<r><red>error:<r> failed to create node_modules in global dir due to error {s}", .{@errorName(err)});
                 Global.crash();
@@ -118,7 +119,7 @@ fn unlink(ctx: Command.Context) !void {
         }
 
         // delete it if it exists
-        node_modules.deleteTree(name) catch |err| {
+        node_modules.deleteTree(io, name) catch |err| {
             if (manager.options.log_level != .silent)
                 Output.prettyErrorln("<r><red>error:<r> failed to unlink package in global dir due to error {s}", .{@errorName(err)});
             Global.crash();

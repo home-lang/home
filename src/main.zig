@@ -2751,6 +2751,14 @@ fn tryNativeDependencyCommand(args: []const [:0]const u8) !bool {
             const ctx = try nativePackageCommandContext(args, .OutdatedCommand);
             try home_rt.cli.OutdatedCommand.exec(ctx);
         },
+        .LinkCommand => {
+            const ctx = try nativePackageCommandContext(args, .LinkCommand);
+            try home_rt.cli.LinkCommand.exec(ctx);
+        },
+        .UnlinkCommand => {
+            const ctx = try nativePackageCommandContext(args, .UnlinkCommand);
+            try home_rt.cli.UnlinkCommand.exec(ctx);
+        },
         else => return false,
     }
     home_rt.Output.flush();

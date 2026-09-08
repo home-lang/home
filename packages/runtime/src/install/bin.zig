@@ -1190,12 +1190,12 @@ pub const Bin = extern struct {
                         this.err = err;
                         return;
                     };
-                    defer target_dir.close();
+                    defer target_dir.close(std.Io.Threaded.global_single_threaded.io());
 
                     const abs_dest_dir_end = abs_dest_buf_remain;
 
                     var iter = target_dir.iterate();
-                    while (iter.next() catch null) |entry| {
+                    while (iter.next(std.Io.Threaded.global_single_threaded.io()) catch null) |entry| {
                         switch (entry.kind) {
                             .sym_link, .file => {
                                 abs_dest_buf_remain = abs_dest_dir_end;

@@ -6,7 +6,8 @@ pub const LinkCommand = struct {
 
 fn link(ctx: Command.Context) !void {
     const cli = try CommandLineArguments.parse(ctx.allocator, .link);
-    var manager, const original_cwd = PackageManager.init(ctx, cli, .link) catch |err| brk: {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const manager, const original_cwd = PackageManager.init(ctx, cli, .link) catch |err| brk: {
         if (err == error.MissingPackageJSON) {
             try attemptToCreatePackageJSON();
             break :brk try PackageManager.init(ctx, cli, .link);
@@ -56,7 +57,7 @@ fn link(ctx: Command.Context) !void {
         }
 
         // Step 2. Setup the global directory
-        var node_modules: std.fs.Dir = brk: {
+        const node_modules: std.Io.Dir = brk: {
             Bin.Linker.ensureUmask();
             var explicit_global_dir: string = "";
             if (ctx.install) |install_| {
@@ -66,7 +67,7 @@ fn link(ctx: Command.Context) !void {
 
             try manager.setupGlobalDir(ctx);
 
-            break :brk manager.global_dir.?.makeOpenPath("node_modules", .{}) catch |err| {
+            break :brk bun.MakePath.makeOpenPath(manager.global_dir.?, "node_modules", .{}) catch |err| {
                 if (manager.options.log_level != .silent)
                     Output.prettyErrorln("<r><red>error:<r> failed to create node_modules in global dir due to error {s}", .{@errorName(err)});
                 Global.crash();
@@ -76,12 +77,12 @@ fn link(ctx: Command.Context) !void {
         // Step 3a. symlink to the node_modules folder
         {
             // delete it if it exists
-            node_modules.deleteTree(name) catch {};
+            node_modules.deleteTree(io, name) catch {};
 
             // create scope if specified
             if (name[0] == '@') {
                 if (strings.indexOfChar(name, '/')) |i| {
-                    node_modules.makeDir(name[0..i]) catch |err| brk: {
+                    node_modules.createDir(io, name[0..i], .default_dir) catch |err| brk: {
                         if (err == error.PathAlreadyExists) break :brk;
                         if (manager.options.log_level != .silent)
                             Output.prettyErrorln("<r><red>error:<r> failed to create scope in global dir due to error {s}", .{@errorName(err)});
@@ -115,7 +116,7 @@ fn link(ctx: Command.Context) !void {
                 }
             } else {
                 // create the symlink
-                node_modules.symLink(Fs.FileSystem.instance.topLevelDirWithoutTrailingSlash(), name, .{ .is_directory = true }) catch |err| {
+                node_modules.symLink(io, Fs.FileSystem.instance.topLevelDirWithoutTrailingSlash(), name, .{ .is_directory = true }) catch |err| {
                     if (manager.options.log_level != .silent)
                         Output.prettyErrorln("<r><red>error:<r> failed to create symlink to node_modules in global dir due to error {s}", .{@errorName(err)});
                     Global.crash();
