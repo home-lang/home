@@ -145,14 +145,16 @@ $lock->flush if $lock->can('flush');
 {
     my ($level, $pressure) = host_state();
     my @refuse;
-    push @refuse, "kernel pressure level $pressure (want 1=normal)"
-        if defined $pressure && $pressure >= 2;
-    push @refuse, "only ${level}% of RAM is neither wired nor compressed (want >= ${min_level}%)"
+    # Only CRITICAL (4) blocks, never WARN (2). macOS sits at warn routinely
+    # with a browser open; refusing there refused every run on a machine with
+    # 48% of RAM free, which is a guard that has stopped being a guard.
+    push @refuse, "kernel memory pressure is CRITICAL"
+        if defined $pressure && $pressure >= 4;
+    push @refuse, "only ${level}% of RAM is neither wired nor compressed (want >= ${min_level}%; raise HOME_RUN_MIN_LEVEL to override)"
         if defined $level && $level < $min_level;
-    # Deliberately NO swap term: see note 5 above.
+    # Deliberately NO swap term: see note 6 above.
     if (@refuse) {
         print STDERR "run-bounded: refusing to start -- " . join('; ', @refuse) . "\n";
-        print STDERR "run-bounded: free memory on the host first, or raise HOME_RUN_MIN_LEVEL deliberately.\n";
         exit 122;
     }
 }

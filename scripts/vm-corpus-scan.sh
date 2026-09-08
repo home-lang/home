@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Scan the Bun corpus through the native full-VM path, categorizing each file as
-# pass / fail / slow / crash / hang / deps / oom. Writes a TSV to the given out-file.
+# pass / fail / slow / crash / hang / deps / oom / defer. Writes a TSV to the
+# given out-file. `defer` means the supervisor never started the file (machine
+# lock unavailable, or the host had no room) -- a fact about the host, never a
+# verdict on the file.
 #
 # Every run is bounded in BOTH time and memory (see scripts/home-bin.sh):
 # macOS honours no `ulimit` memory cap, so without the resident-set watchdog a
@@ -74,6 +77,12 @@ run_one() {
     # Killed at the resident-set ceiling rather than finishing. Reported on its
     # own so a memory blow-up is never silently filed as a crash.
     status=oom
+  elif [[ $code -eq 121 || $code -eq 122 ]]; then
+    # The supervisor never started the file: the machine lock was unavailable,
+    # or the host had no room. That is a fact about the HOST, not about the
+    # file, and filing it as a crash invents a defect -- exactly the mistake
+    # this scanner keeps having to unlearn.
+    status=defer
   elif [[ $code -ge 128 ]]; then
     status=crash
   elif grep -qE '^\(fail\)' "$RUNLOG"; then
@@ -108,7 +117,7 @@ timeouts_are_the_only_failures() {
   [[ $failures -gt 0 && $failures -eq $timeouts ]]
 }
 
-pass=0 fail=0 crash=0 hang=0 deps=0 oom=0 slow=0
+pass=0 fail=0 crash=0 hang=0 deps=0 oom=0 slow=0 defer=0
 while IFS= read -r f; do
   rel="${f#"$ROOT"/}"
   run_one "$rel" "$TO" "$TRIAGE_RSS"
@@ -130,9 +139,10 @@ while IFS= read -r f; do
     deps) deps=$((deps+1)) ;;
     oom) oom=$((oom+1)) ;;
     slow) slow=$((slow+1)) ;;
+    defer) defer=$((defer+1)) ;;
   esac
 # `*.test.*` also matches sidecars that are not runnable files — `__snapshots__`
 # holds `<name>.test.ts.snap`, which the runner reports as a crash. Select the
 # executable extensions instead.
 done < <(find "$CORPUS/$SUB" \( -name "*.test.js" -o -name "*.test.jsx" -o -name "*.test.mjs" -o -name "*.test.cjs" -o -name "*.test.ts" -o -name "*.test.tsx" -o -name "*.test.mts" -o -name "*.test.cts" \) | sort)
-echo "SUB=$SUB pass=$pass fail=$fail slow=$slow crash=$crash hang=$hang deps=$deps oom=$oom total=$((pass+fail+slow+crash+hang+deps+oom))"
+echo "SUB=$SUB pass=$pass fail=$fail slow=$slow crash=$crash hang=$hang deps=$deps oom=$oom defer=$defer total=$((pass+fail+slow+crash+hang+deps+oom+defer))"
