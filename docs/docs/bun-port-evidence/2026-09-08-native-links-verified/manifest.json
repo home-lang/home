@@ -1,0 +1,155 @@
+{
+  "status": "Native-mode supported link/unlink lifecycle verified; full Bun port remains incomplete.",
+  "source_commit": "e56d48e8d32618a24083349b22d7e76fd65ee1e8",
+  "home_sha256": "56ea320b3204e0ab5535991c6088c6e2043fa84f26b54fcaacf6d68484fc6296",
+  "bun_sha256": "47a87c1dea30da59c2733cce80118ea59bd338c616c6378f1c7f55e5f2b92c87",
+  "build_log_sha256": "e2064ebc12eae7fc2af749e3077ad5275151c5bc3110db342b7d1f8e83013c9f",
+  "build_steps_passed": 46,
+  "registered_original_cases_per_runtime": {
+    "link": 4,
+    "native_binlink": 7,
+    "total": 11,
+    "failed": 0
+  },
+  "private_regressions_passed": [
+    "native-link-lifecycle",
+    "native-local-dependency-identity",
+    "native-update-outdated",
+    "native-frozen-prerelease"
+  ],
+  "global_fixture_cleanup": "All eight original/private-run global prefixes archived then removed. The private lifecycle also cleans its own internal temp prefix.",
+  "limitations": [
+    "Validated on macOS arm64; platform-wide proof remains open.",
+    "Native VM mode remains required for this dispatcher. Default fallback removal and full corpus/CI-profile/build-ownership work remain open.",
+    "Upstream unlink with a package-name argument is unsupported; this milestone covers registration and argument-free unregister, plus consumer removal using remove.",
+    "Original native-binlink cases have their own upstream per-test deadline. No test source, snapshot, or deadline was rewritten."
+  ],
+  "files": [
+    {
+      "source": "native-link-file-flags/native-link-lifecycle.global-fixture.tar.gz",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-links-verified/native-link-lifecycle.global-fixture.tar.gz",
+      "sha256": "c86a73c87e7bd22e6b63554fcb865bb283c8d777993ae9313d79e27a110fd357",
+      "uncompressed_bytes": 10240
+    },
+    {
+      "source": "native-link-file-flags/native-local-dependency-identity.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-links-verified/native-local-dependency-identity.log.gz",
+      "sha256": "0c0fe9b0bf0f53d0000f188f49821dbdd614b4c732797b14a532ba4984ba6ff6",
+      "uncompressed_bytes": 138
+    },
+    {
+      "source": "native-link-file-flags/link-home.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-links-verified/link-home.log.gz",
+      "sha256": "701533b85ad4b4fe06d4e4c1ff44eafad8fe7a50ec5ab879f0dafd57950de9c3",
+      "uncompressed_bytes": 946
+    },
+    {
+      "source": "native-link-file-flags/native-binlink-home.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-links-verified/native-binlink-home.log.gz",
+      "sha256": "9cda1ff3ec72acfb55aaf7a31b360f9bea86cb365140a4e88bb3beb599849168",
+      "uncompressed_bytes": 3105
+    },
+    {
+      "source": "native-link-file-flags/link-bun.global-fixture.tar.gz",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-links-verified/link-bun.global-fixture.tar.gz",
+      "sha256": "52675991d487ff11deeab8c13bb1a931352684c0c1806d5bd8ddd9ef99007912",
+      "uncompressed_bytes": 10240
+    },
+    {
+      "source": "native-link-file-flags/native-binlink-bun.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-links-verified/native-binlink-bun.log.gz",
+      "sha256": "94a656a0b25ed8dd41c3aabec5e07205f9c894ef50c308f9f093559ed65bb62e",
+      "uncompressed_bytes": 2585
+    },
+    {
+      "source": "native-link-file-flags/native-update-outdated.global-fixture.tar.gz",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-links-verified/native-update-outdated.global-fixture.tar.gz",
+      "sha256": "a66dfa3cce6b7cbbfc9d9418f76cf9b3fc3d06d71244ae10ce22a992bc481f13",
+      "uncompressed_bytes": 10240
+    },
+    {
+      "source": "native-link-file-flags/native-local-dependency-identity.global-fixture.tar.gz",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-links-verified/native-local-dependency-identity.global-fixture.tar.gz",
+      "sha256": "e20d95b564c6d79a2c85a73deca84712e539d4f99a03b39a698ff18a8d974ab6",
+      "uncompressed_bytes": 10240
+    },
+    {
+      "source": "native-link-file-flags/native-link-lifecycle.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-links-verified/native-link-lifecycle.log.gz",
+      "sha256": "1dbfae87b9b3bc87336c740cd037ecadc14652d26255950050f096890e954239",
+      "uncompressed_bytes": 137
+    },
+    {
+      "source": "native-link-file-flags/manifest.json",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-links-verified/manifest.json.gz",
+      "sha256": "2aa94f11fa47c01c74501ab425f9b59481b1a65aaaccafbc08b04c2d14493479",
+      "uncompressed_bytes": 13722
+    },
+    {
+      "source": "native-link-file-flags/native-frozen-prerelease.global-fixture.tar.gz",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-links-verified/native-frozen-prerelease.global-fixture.tar.gz",
+      "sha256": "a8768ce46a79ea99c898d3b85a7b071c70e714537e2cfe17930278bdb4e44e18",
+      "uncompressed_bytes": 10240
+    },
+    {
+      "source": "native-link-file-flags/native-update-outdated.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-links-verified/native-update-outdated.log.gz",
+      "sha256": "3879de2013e756f44f60321c201fee98974ab3e01f647a60a3df0aded7c18180",
+      "uncompressed_bytes": 46
+    },
+    {
+      "source": "native-link-file-flags/native-frozen-prerelease.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-links-verified/native-frozen-prerelease.log.gz",
+      "sha256": "9e618c8c700df5feb8f5d0c794dca2c11356055cc7751687758d550bde2da49d",
+      "uncompressed_bytes": 44
+    },
+    {
+      "source": "native-link-file-flags/native-binlink-home.global-fixture.tar.gz",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-links-verified/native-binlink-home.global-fixture.tar.gz",
+      "sha256": "ab389caf36d27542d176b690fb1026d0a7dfc3fcb5e81995eb9f451d58325346",
+      "uncompressed_bytes": 10240
+    },
+    {
+      "source": "native-link-file-flags/link-bun.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-links-verified/link-bun.log.gz",
+      "sha256": "381e256ff3c28b6eb6e8a4ffd2b777e47331f967ef94d5f661d0081a6782eceb",
+      "uncompressed_bytes": 343
+    },
+    {
+      "source": "native-link-file-flags/link-home.global-fixture.tar.gz",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-links-verified/link-home.global-fixture.tar.gz",
+      "sha256": "90a53da74fbfd82557a541a716194d080bef2493b73f2c817c93ad2f021dc79b",
+      "uncompressed_bytes": 10240
+    },
+    {
+      "source": "native-link-file-flags/native-binlink-bun.global-fixture.tar.gz",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-links-verified/native-binlink-bun.global-fixture.tar.gz",
+      "sha256": "7fb767ab3776819ca69fd06a86fe481d49a8143853d0b4b005324e32c2730a1c",
+      "uncompressed_bytes": 10240
+    },
+    {
+      "source": "build-native-link-file-flags.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-links-verified/build-native-link-file-flags.log.gz",
+      "sha256": "e2064ebc12eae7fc2af749e3077ad5275151c5bc3110db342b7d1f8e83013c9f",
+      "uncompressed_bytes": 3335
+    },
+    {
+      "source": "tests/runtime/native-link-lifecycle.test.mjs",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-links-verified/native-link-lifecycle.test.mjs.gz",
+      "sha256": "f6b3bdb4cda482d80303ffe31a0302ecabcadf3e3cbada2b1388502afcdec496",
+      "uncompressed_bytes": 6779
+    },
+    {
+      "source": "verify-native-links.py",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-links-verified/verify-native-links.py.gz",
+      "sha256": "01b21108115608fb8dcc836c40ee00f0718096ef1ebba4c8be399c8f8e9e17c5",
+      "uncompressed_bytes": 4234
+    },
+    {
+      "source": "packages/runtime/test/test/cli/install/registry/packages/.verdaccio-db.json",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-links-verified/generated-verdaccio-db.json.gz",
+      "sha256": "8ed58b812d6a7da6e3b30f9e6d55ae26f47093f1173de984de985c52ff4da3f8",
+      "uncompressed_bytes": 55
+    }
+  ]
+}

@@ -1,7 +1,7 @@
 {
   "issue": "https://github.com/home-lang/home/issues/717",
   "parent": "https://github.com/home-lang/home/issues/66",
-  "status": "Native link/unlink activation and current IO port pushed; production build pending. First command and build failures retained.",
+  "status": "Native-mode supported link/unlink lifecycle verified; full Bun port remains incomplete.",
   "source_commits": [
     "f3a1e348a",
     "b6bea0d7c",
@@ -22,8 +22,24 @@
   ],
   "evidence_manifest": "docs/docs/bun-port-evidence/2026-09-08-native-links/manifest.json",
   "limitations": [
-    "Native VM gate still required; default CLI fallback removal and full parity remain incomplete.",
-    "No success is claimed for the pending native command batch or the full platform matrix.",
-    "Upstream unlink with a package-name argument is itself unsupported; concrete supported unregister is argument-free unlink from its package."
-  ]
+    "Validated on macOS arm64; platform-wide proof remains open.",
+    "Native VM mode remains required for this dispatcher. Default fallback removal and full corpus/CI-profile/build-ownership work remain open.",
+    "Upstream unlink with a package-name argument is unsupported; this milestone covers registration and argument-free unregister, plus consumer removal using remove.",
+    "Original native-binlink cases have their own upstream per-test deadline. No test source, snapshot, or deadline was rewritten."
+  ],
+  "verified_runtime_source": "e56d48e8d32618a24083349b22d7e76fd65ee1e8",
+  "home_sha256": "56ea320b3204e0ab5535991c6088c6e2043fa84f26b54fcaacf6d68484fc6296",
+  "registered_original_cases_per_runtime": {
+    "link": 4,
+    "native_binlink": 7,
+    "total": 11,
+    "failed": 0
+  },
+  "private_regressions_passed": [
+    "native-link-lifecycle",
+    "native-local-dependency-identity",
+    "native-update-outdated",
+    "native-frozen-prerelease"
+  ],
+  "verified_evidence_manifest": "docs/docs/bun-port-evidence/2026-09-08-native-links-verified/manifest.json"
 }
