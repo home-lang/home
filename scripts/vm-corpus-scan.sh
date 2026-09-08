@@ -1,25 +1,15 @@
 #!/usr/bin/env bash
-# Scan the Bun corpus through the native full-VM path, categorizing each file as
-# pass / fail / crash / hang / deps / oom / defer. Writes a TSV to the
-# given out-file. `defer` means the supervisor never started the file (machine
-# lock unavailable, or the host had no room) -- a fact about the host, never a
-# verdict on the file.
+# Scan strict-name Bun test files through the native full-VM path.
+# Preserve exactly one attempt and its complete log per file. Supervisor bounds
+# produce incomplete observations (time_bound / memory_bound / defer), never
+# compatibility verdicts. The caller can choose a suitable bound before a run;
+# the scanner never retries, escalates it or changes original test deadlines.
 #
-# Every run is bounded in BOTH time and memory (see scripts/home-bin.sh):
-# macOS honours no `ulimit` memory cap, so without the resident-set watchdog a
-# single runaway file can exhaust the machine.
-#
-# A file that hits either bound is re-run ONCE at a much higher bound before it
-# is recorded. A low bound is what makes a broad scan affordable, but it also
-# manufactures failures: `http-backpressure-max` needs ~46s and ~4.8 GB, and
-# `worker_heap_snapshot_gc` needs ~42s, so both were filed as hangs purely
-# because the first bound was 25s. Escalating only the files that hit a bound
-# keeps the scan fast and stops the bound from being mistaken for a defect.
-#
-# Per-test deadlines remain exactly as specified by the original tests and
-# runner. A timeout failure remains a failure, including on a Debug build;
-# changing the deadline cannot establish compatibility with the original test.
-# This is still a triage scan, not a faithful complete upstream discovery gate.
+# TSV columns are status, path, signature, log path, and exit code.
+# Output includes an adjacent .logs directory. Existing output is never
+# overwritten. Nonzero exit means at least one file failed or was incomplete.
+# This remains a triage tool: strict-name discovery is not full pinned CI
+# discovery, and an exit-zero script does not establish assertion coverage.
 #
 # Usage: vm-corpus-scan.sh <subdir-under-corpus> <out.tsv> [timeout-secs]
 set -uo pipefail
@@ -31,23 +21,18 @@ CORPUS="$ROOT/packages/runtime/test/test"
 SUB="${1:-js/node/path}"
 OUT="${2:-/tmp/vm-scan.tsv}"
 TO="${3:-15}"
-TRIAGE_RSS="${HOME_TEST_MAX_RSS_MB:-4096}"
-# Bounds for the confirmation re-run. A corpus file sets its own timeouts (the
-# heap-snapshot test allows itself 120s), so the escalated wall clock has to
-# clear those rather than the scan's triage budget.
-ESC_TO="${VM_SCAN_ESCALATE_SECS:-180}"
-ESC_RSS="${VM_SCAN_ESCALATE_RSS_MB:-6144}"
-
 cd "$ROOT"
-: > "$OUT"
-RUNLOG="$(mktemp -t home-vm-scan.XXXXXX)"
-trap 'rm -f "$RUNLOG"' EXIT
+if [[ -e "$OUT" || -e "$OUT.logs" ]]; then
+  echo "vm-corpus-scan: refusing to overwrite $OUT or $OUT.logs" >&2
+  exit 1
+fi
+mkdir "$OUT.logs" || exit 1
+(set -o noclobber; : > "$OUT") || exit 1
+RUNLOG=""
 
 # Run one corpus file under the given bounds; sets `status` and `sig`.
 run_one() {
-  local rel="$1" secs="$2" rss="$3" code
-  local -a extra=()
-  [[ $# -gt 3 ]] && extra=("${@:4}")
+  local rel="$1" secs="$2" code
   # Write to a file rather than capturing through a pipe. A test that leaves a
   # server or installer running keeps the pipe's write end open, so command
   # substitution blocks for that grandchild even after the bound has killed the
@@ -58,15 +43,16 @@ run_one() {
   # executable. Setting it only from preload.ts is too late for env-omitted
   # child processes: both Home and the pinned Bun control inherit their
   # original process env.
-  BUN_DEBUG_QUIET_LOGS=1 HOME_NATIVE_VM=1 HOME_CORPUS_FULL_VM=1 HOME_TEST_MAX_RSS_MB="$rss" \
-    run_bounded "$secs" "$HOME_BIN" test "$rel" ${extra+"${extra[@]}"} >"$RUNLOG" 2>&1 </dev/null
+  BUN_DEBUG_QUIET_LOGS=1 HOME_NATIVE_VM=1 HOME_CORPUS_FULL_VM=1 \
+    run_bounded "$secs" "$HOME_BIN" test "$rel" >"$RUNLOG" 2>&1 </dev/null
   code=$?
+  run_exit_code=$code
   if [[ $code -eq 124 ]]; then
-    status=hang
+    status=time_bound
   elif [[ $code -eq 125 ]]; then
-    # Killed at the resident-set ceiling rather than finishing. Reported on its
-    # own so a memory blow-up is never silently filed as a crash.
-    status=oom
+    # The supervisor ended the run at its resource bound. This is incomplete
+    # execution, not proof of a runtime out-of-memory defect.
+    status=memory_bound
   elif [[ $code -eq 121 || $code -eq 122 ]]; then
     # The supervisor never started the file: the machine lock was unavailable,
     # or the host had no room. That is a fact about the HOST, not about the
@@ -85,8 +71,8 @@ run_one() {
   elif [[ $code -eq 0 ]]; then
     status=pass
   else
-    # nonzero exit, no parsed (fail) line — abort/crash before tests ran
-    status=crash
+    # A nonzero exit alone proves failure, not a crash.
+    status=fail
   fi
   # capture a one-line signature. For panics/segfaults, prefer the first
   # in-tree (home) stack frame — far more actionable than "Segmentation".
@@ -98,28 +84,27 @@ run_one() {
   fi
 }
 
-pass=0 fail=0 crash=0 hang=0 deps=0 oom=0 defer=0
+pass=0 fail=0 crash=0 time_bound=0 deps=0 memory_bound=0 defer=0 index=0
 while IFS= read -r f; do
   rel="${f#"$ROOT"/}"
-  run_one "$rel" "$TO" "$TRIAGE_RSS"
-  # Only a bound-hit is re-run, and only once: every other status is already a
-  # real observation, and re-running the whole corpus at the high bound would
-  # cost hours.
-  if [[ "$status" == hang || "$status" == oom ]]; then
-    run_one "$rel" "$ESC_TO" "$ESC_RSS"
-  fi
-  printf '%s\t%s\t%s\n' "$status" "$rel" "$sig" >> "$OUT"
+  printf -v RUNLOG '%s.logs/%06d.log' "$OUT" "$index"
+  index=$((index+1))
+  run_one "$rel" "$TO"
+  printf '%s\t%s\t%s\t%s\t%d\n' "$status" "$rel" "$sig" "$RUNLOG" "$run_exit_code" >> "$OUT"
   case "$status" in
     pass) pass=$((pass+1)) ;;
     fail) fail=$((fail+1)) ;;
     crash) crash=$((crash+1)) ;;
-    hang) hang=$((hang+1)) ;;
+    time_bound) time_bound=$((time_bound+1)) ;;
     deps) deps=$((deps+1)) ;;
-    oom) oom=$((oom+1)) ;;
+    memory_bound) memory_bound=$((memory_bound+1)) ;;
     defer) defer=$((defer+1)) ;;
   esac
 # `*.test.*` also matches sidecars that are not runnable files — `__snapshots__`
 # holds `<name>.test.ts.snap`, which the runner reports as a crash. Select the
 # executable extensions instead.
 done < <(find "$CORPUS/$SUB" \( -name "*.test.js" -o -name "*.test.jsx" -o -name "*.test.mjs" -o -name "*.test.cjs" -o -name "*.test.ts" -o -name "*.test.tsx" -o -name "*.test.mts" -o -name "*.test.cts" \) | sort)
-echo "SUB=$SUB pass=$pass fail=$fail crash=$crash hang=$hang deps=$deps oom=$oom defer=$defer total=$((pass+fail+crash+hang+deps+oom+defer))"
+echo "SUB=$SUB pass=$pass fail=$fail crash=$crash time_bound=$time_bound deps=$deps memory_bound=$memory_bound defer=$defer total=$index"
+if [[ "$index" -eq 0 || "$((fail+crash+time_bound+deps+memory_bound+defer))" -ne 0 ]]; then
+  exit 1
+fi

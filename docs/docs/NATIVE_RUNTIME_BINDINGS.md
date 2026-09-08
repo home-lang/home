@@ -1529,3 +1529,16 @@ The discovery audit accepts `--include-entries` to emit each original path and
 its native/upstream mode for reproducible execution plans. The next preserved
 comparison batch covers the 78 formerly omitted entries. Docker-guarded files
 cannot earn Docker feature coverage on this host without an available daemon.
+
+The separate `vm-corpus-scan.sh` triage tool now preserves one attempt per file
+in permanent individual logs and a TSV containing status, source path,
+signature, log path and process exit code. Automatic outer-budget retries and
+log replacement are removed. Supervisor time/memory bounds are incomplete
+observations, and any failure, incomplete run or empty selection makes the
+scanner exit nonzero. Existing output is refused rather than overwritten.
+Pinned Bun controls verified one original-deadline failure, one outer-bound
+interruption and one passing test, each executed once; an overwrite attempt
+was rejected with unchanged logs. This verifies scanner behavior, not Home
+feature coverage. A first one-second control budget expired during startup;
+that incomplete observation is retained separately from the valid controls.
+The scanner's strict-name selection still is not full pinned CI discovery.
