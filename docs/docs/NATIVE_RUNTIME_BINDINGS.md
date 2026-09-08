@@ -1575,3 +1575,14 @@ and the discovery audit also exercises the CLI's actual target classification.
 Its build and native regression verification are pending. Complete gate outcome
 retention, the CI launch profile, native create, fixture maintenance, wider
 runtime failures and platform/build ownership remain open under #703/#66.
+
+Verification after the accounting candidate was interrupted by a host restart;
+those empty build logs are not successful builds. Two subsequent supervised
+attempts stopped at tree-memory limits. A direct two-process `footprint` probe
+identified a supervisor parser bug: it added each process header and then the
+aggregate `Summary Footprint`, approximately doubling the measured tree.
+The parser now accepts only PID-bearing headers. A regression using the actual
+report format verifies totals and units; live positive and deliberately bounded
+negative controls return 0 and 125 respectively. The default memory limit and
+host-pressure checks are retained. Production and harness builds are now run
+sequentially under that corrected supervisor; no original test deadline changed.

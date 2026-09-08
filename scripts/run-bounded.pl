@@ -39,15 +39,11 @@
 #    machine-wide lock makes the second run WAIT instead of stack.
 #
 # 5. THE HOST'S OWN VIEW IS THE AUTHORITY; THE PER-RUN CEILING IS A BACKSTOP.
-#    Summing per-process phys_footprint over a tree DOUBLE-COUNTS pages shared
-#    between siblings. Measured: `zig build debug -j4` sums to 12.3 GB across
-#    its compile jobs while the kernel reports the machine never fell below 52%
-#    free-and-uncompressed at normal pressure — the sum overstated by roughly
-#    a factor of two and killed a healthy build three times running. So the
-#    kill decision is made on `kern.memorystatus_level` and the kernel pressure
-#    level, which are shared-page-correct by construction, and the tree sum is
-#    kept only as a runaway detector with a deliberately loose ceiling. Both
-#    numbers are printed when a run is killed so the reason is legible.
+#    Per-process phys_footprint can count pages shared between siblings more
+#    than once. The kernel pressure check is authoritative; the tree sum is a
+#    conservative runaway detector. Also, footprint prints a "Summary Footprint"
+#    line for multiple processes: adding that to the individual headers counts
+#    the whole tree twice. Only PID-bearing process headers enter the sum.
 #
 # 6. IT DOES NOT GATE ON SWAP.
 #    macOS grows and shrinks the swapfile on demand, so `vm.swapusage` free
@@ -199,6 +195,15 @@ sub tree_pids {
     return @out;
 }
 
+# Parse only a process header, never the aggregate or auxiliary totals.
+sub process_footprint_mb {
+    my ($line) = @_;
+    return undef unless $line =~ /^\s*.+\[\d+\]:[^\n]*\bFootprint:\s+([\d.]+)\s*([KMGT]?B)/;
+    my ($n, $unit) = ($1, $2);
+    my %mult = ('B' => 1/1048576, 'KB' => 1/1024, 'MB' => 1, 'GB' => 1024, 'TB' => 1048576);
+    return $n * $mult{$unit};
+}
+
 # Sum phys_footprint over the tree. Returns undef when it could not measure,
 # which the caller treats as a failure to be counted -- never as zero.
 sub tree_footprint_mb {
@@ -220,11 +225,9 @@ sub tree_footprint_mb {
     my $total = 0;
     my $found = 0;
     while (<$fp>) {
-        # "name [pid]: 64-bit    Footprint: 1760 KB (16384 bytes per page)"
-        next unless /Footprint:\s+([\d.]+)\s*([KMGT]?B)/;
-        my ($n, $unit) = ($1, $2);
-        my %mult = ('B' => 1/1048576, 'KB' => 1/1024, 'MB' => 1, 'GB' => 1024, 'TB' => 1048576);
-        $total += $n * ($mult{$unit} || 0);
+        my $mb = process_footprint_mb($_);
+        next unless defined $mb;
+        $total += $mb;
         $found++;
     }
     close($fp);
