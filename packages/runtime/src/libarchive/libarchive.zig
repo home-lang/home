@@ -55,7 +55,7 @@ pub const BufferReadStream = struct {
 
         const rc = this.archive.readOpenMemory(this.buf);
 
-        this.reading = @intFromEnum(rc) > -1;
+        this.reading = @backingInt(rc) > -1;
 
         // _ = lib.archive_read_support_compression_all(this.archive);
 
@@ -119,7 +119,7 @@ pub const BufferReadStream = struct {
         const buflen = @as(isize, @intCast(this.buf.len));
         const pos = @as(isize, @intCast(this.pos));
 
-        switch (@as(Seek, @enumFromInt(whence))) {
+        switch (@as(Seek, @fromBackingInt(@intCast(whence)))) {
             Seek.current => {
                 const new_pos = @max(@min(pos + offset, buflen - 1), 0);
                 this.pos = @as(usize, @intCast(new_pos));
@@ -301,16 +301,18 @@ pub const Archiver = struct {
         defer stream.deinit();
         _ = stream.openRead();
         const archive = stream.archive;
-        const dir: std.fs.Dir = brk: {
-            const cwd = std.fs.cwd();
+        const io = std.Io.Threaded.global_single_threaded.io();
+        const dir: std.Io.Dir = brk: {
+            const cwd = std.Io.Dir.cwd();
 
             // if the destination doesn't exist, we skip the whole thing since nothing can overwrite it.
             if (std.fs.path.isAbsolute(root)) {
-                break :brk std.fs.openDirAbsolute(root, .{}) catch return;
+                break :brk std.Io.Dir.openDirAbsolute(io, root, .{}) catch return;
             } else {
-                break :brk cwd.openDir(root, .{}) catch return;
+                break :brk cwd.openDir(io, root, .{}) catch return;
             }
         };
+        defer dir.close(io);
 
         loop: while (true) {
             const r = archive.readNextHeader(&entry);
@@ -336,9 +338,9 @@ pub const Archiver = struct {
 
                     const size: usize = @intCast(@max(entry.size(), 0));
                     if (size > 0) {
-                        var opened = dir.openFileZ(pathname, .{ .mode = .write_only }) catch continue :loop;
-                        defer opened.close();
-                        const stat_size = try opened.getEndPos();
+                        const opened = dir.openFile(io, pathname, .{ .mode = .write_only }) catch continue :loop;
+                        defer opened.close(io);
+                        const stat_size = (try opened.stat(io)).size;
 
                         if (stat_size > 0) {
                             const is_already_top_level = dirname.len == 0;
@@ -582,8 +584,8 @@ pub const Archiver = struct {
                                 switch (bun.sys.openatWindows(.fromNative(dir_fd), path, flags, 0)) {
                                     .result => |fd| fd,
                                     .err => |e| switch (e.errno) {
-                                        @intFromEnum(bun.sys.E.PERM),
-                                        @intFromEnum(bun.sys.E.NOENT),
+                                        @backingInt(bun.sys.E.PERM),
+                                        @backingInt(bun.sys.E.NOENT),
                                         => brk: {
                                             bun.MakePath.makePath(u16, dir, bun.Dirname.dirname(u16, path_slice) orelse return bun.errnoToZigErr(e.errno)) catch {};
                                             break :brk try bun.sys.openatWindows(.fromNative(dir_fd), path, flags, 0).unwrap();

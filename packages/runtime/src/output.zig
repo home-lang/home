@@ -17,6 +17,7 @@ pub const synchronized_start = core_output.synchronized_start;
 pub const synchronized_end = core_output.synchronized_end;
 pub const disableScopedDebugWriter = core_output.disableScopedDebugWriter;
 pub const enableScopedDebugWriter = core_output.enableScopedDebugWriter;
+pub const commandOut = core_output.commandOut;
 
 pub var enable_ansi_colors_stderr = false;
 pub var enable_ansi_colors_stdout = false;

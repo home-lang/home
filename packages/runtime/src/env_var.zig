@@ -141,11 +141,7 @@ pub const USER = struct {
     }
 };
 
-pub const HOME = struct {
-    pub fn get() ?[]const u8 {
-        return rawGet("HOME");
-    }
-};
+pub const HOME = @import("bun_core/env_var.zig").HOME;
 
 pub const XDG_CACHE_HOME = struct {
     pub fn get() ?[]const u8 {

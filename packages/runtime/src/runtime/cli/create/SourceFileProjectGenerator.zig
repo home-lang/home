@@ -86,8 +86,10 @@ pub fn generate(_: Command.Context, _: Example.Tag, entry_point: string, result:
 
 // Create a file with given contents, returns if file was newly created
 fn createFile(filename: []const u8, contents: []const u8) bun.sys.Maybe(bool) {
+    const filename_z = bun.handleOom(bun.dupeZ(default_allocator, u8, filename));
+    defer default_allocator.free(filename_z);
     // Check if file exists and has same contents
-    if (bun.sys.File.readFrom(bun.FD.cwd(), filename, default_allocator).asValue()) |source_contents| {
+    if (bun.sys.File.readFrom(bun.FD.cwd(), filename_z, default_allocator).asValue()) |source_contents| {
         defer default_allocator.free(source_contents);
         if (strings.eqlLong(source_contents, contents, true)) {
             return .{ .result = false };
@@ -240,7 +242,7 @@ pub fn generateFiles(allocator: std.mem.Allocator, entry_point: string, dependen
 
             var max_filename_len: usize = 0;
             var filenames: [files.len]string = undefined;
-            var created_files: [files.len]bool = .{false} * *files.len;
+            var created_files: [files.len]bool = @splat(false);
 
             // Create all template files
             inline for (0..files.len) |index| {
