@@ -963,8 +963,82 @@
     "fix": "String.stringHash now uses the same upstream Wyhash11 helper as the builder.",
     "focused_clone_test": "Passed, including preserved prerelease/build hashes and strings, and a different-prerelease rejection.",
     "broad_standalone_semver_test": "Could not compile formatting tests without bun module; not a pass.",
-    "native_build_and_batch": "Pending. Do not count full frozen provisioning or AWS extraction as repaired yet.",
+    "native_build_and_batch": {
+      "source_commit": "6053c6c711004aebfcb5dc6bafac9c59ec2037c2",
+      "home_sha256": "fbc3cfe5af5e1c020e4aad2e6d4bae74584afbd87de970b1134e3ac653da9e15",
+      "build_log_sha256": "0ff426e3f4fce170888212c192bc53edbcd8d024434536448b481126085df12d",
+      "results": [
+        {
+          "label": "native-frozen-prerelease",
+          "exit_code": 0,
+          "seconds": 0.8994327500000001,
+          "log": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/semver-hash-fixed/native-frozen-prerelease.log",
+          "log_sha256": "9e618c8c700df5feb8f5d0c794dca2c11356055cc7751687758d550bde2da49d",
+          "pass_reports": [],
+          "fail_reports": []
+        },
+        {
+          "label": "native-create-entrypoints",
+          "exit_code": 0,
+          "seconds": 0.13586495799999998,
+          "log": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/semver-hash-fixed/native-create-entrypoints.log",
+          "log_sha256": "0581649e4950297eb0a8b53593f20d29bdde82155d641b713c661eac2747dd92",
+          "pass_reports": [],
+          "fail_reports": []
+        },
+        {
+          "label": "original-semver",
+          "exit_code": 0,
+          "seconds": 0.2646710000000001,
+          "log": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/semver-hash-fixed/original-semver.log",
+          "log_sha256": "7720111f27d0d969c54caa741c0cdeef6a7753112041c703d6d5774cd10d0f99",
+          "pass_reports": [
+            "25",
+            "25"
+          ],
+          "fail_reports": [
+            "0",
+            "0"
+          ]
+        },
+        {
+          "label": "native-frozen-corpus-provision",
+          "exit_code": 0,
+          "seconds": 6.2735907079999995,
+          "log": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/semver-hash-fixed/native-frozen-corpus-provision.log",
+          "log_sha256": "0a0868c4616c3fd7a459f7238d2de0a700baf4cda3d3e789fea5f8b9be8cea2b",
+          "pass_reports": [],
+          "fail_reports": []
+        }
+      ],
+      "pinned_lockfiles_unchanged": true,
+      "aws_cdk_archive_content": {
+        "files_checked": 5945,
+        "missing": [],
+        "different": [],
+        "ok": true
+      }
+    },
     "provisioning_lock_integrity": "9fbd92718 compares actual input bytes; regression failed before fix and passes afterward.",
-    "evidence_manifest": "docs/docs/bun-port-evidence/2026-09-08-native-semver/manifest.json"
+    "evidence_manifest": "docs/docs/bun-port-evidence/2026-09-08-native-semver/manifest.json",
+    "native_build_steps": "46/46",
+    "original_semver_registered_passes": 25,
+    "original_semver_registered_failures": 0,
+    "post_provision_source_audit": {
+      "pin": "4982b91e3702094330f3be3883354c52b8c01323",
+      "tracked": 12996,
+      "identical_files": 12990,
+      "identical_symlinks": 5,
+      "different": [
+        "expectations.txt"
+      ],
+      "missing": [],
+      "mode_differences": []
+    },
+    "limitations": [
+      "This native install completed the existing partially populated dependency tree; it is not a cold-install benchmark.",
+      "The first pinned-Bun AWS extraction failure remains in the historical evidence; successful Home installation does not replace that result.",
+      "Full source inventory execution, upstream CI profile/platform matrix, JSX failures (#438), local dependency duplicates (#713), and independent native build ownership remain open."
+    ]
   }
 }

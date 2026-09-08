@@ -1,5 +1,5 @@
 {
-  "status": "Before-fix production outcomes and focused after-fix unit check; native build/batch for 6053c6c71 remains pending.",
+  "status": "First before-fix failures retained; 6053c6c71 production build, native regressions, original semver tests and native frozen provisioning all pass. All 5945 AWS CDK archive files match. This does not establish full Bun parity.",
   "files": [
     {
       "source": "build-lockfile-diagnostics.log",
@@ -90,6 +90,54 @@
       "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-semver/prerelease-frozen-before/external-bun/install.log.gz",
       "sha256": "9c8d43770914b35adeb8ccad481516ced13653be5ba0760993846d9174e770cf",
       "uncompressed_bytes": 277
+    },
+    {
+      "source": "build-semver-hash-fixed.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-semver/build-semver-hash-fixed.log.gz",
+      "sha256": "0ff426e3f4fce170888212c192bc53edbcd8d024434536448b481126085df12d",
+      "uncompressed_bytes": 3335
+    },
+    {
+      "source": "semver-hash-fixed-batch.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-semver/semver-hash-fixed-batch.log.gz",
+      "sha256": "9ac87de66f30a66060887061b1a0ac4d4fb15fb024d9fecf05ac4a90948b553a",
+      "uncompressed_bytes": 1727
+    },
+    {
+      "source": "pinned-object-audit-after-native-provision.json",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-semver/pinned-object-audit-after-native-provision.json.gz",
+      "sha256": "0d83dcc45072c016e4bc5992b14061423f81d7ac5883c2c4267e70745d537c54",
+      "uncompressed_bytes": 219
+    },
+    {
+      "source": "semver-hash-fixed/native-frozen-corpus-provision.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-semver/semver-hash-fixed/native-frozen-corpus-provision.log.gz",
+      "sha256": "0a0868c4616c3fd7a459f7238d2de0a700baf4cda3d3e789fea5f8b9be8cea2b",
+      "uncompressed_bytes": 245
+    },
+    {
+      "source": "semver-hash-fixed/native-create-entrypoints.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-semver/semver-hash-fixed/native-create-entrypoints.log.gz",
+      "sha256": "0581649e4950297eb0a8b53593f20d29bdde82155d641b713c661eac2747dd92",
+      "uncompressed_bytes": 44
+    },
+    {
+      "source": "semver-hash-fixed/manifest.json",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-semver/semver-hash-fixed/manifest.json.gz",
+      "sha256": "165e0a0de06898bb288e1f41d56d99ae2571d547198cac7947edd5212ea215fb",
+      "uncompressed_bytes": 2023
+    },
+    {
+      "source": "semver-hash-fixed/original-semver.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-semver/semver-hash-fixed/original-semver.log.gz",
+      "sha256": "7720111f27d0d969c54caa741c0cdeef6a7753112041c703d6d5774cd10d0f99",
+      "uncompressed_bytes": 2340
+    },
+    {
+      "source": "semver-hash-fixed/native-frozen-prerelease.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-semver/semver-hash-fixed/native-frozen-prerelease.log.gz",
+      "sha256": "9e618c8c700df5feb8f5d0c794dca2c11356055cc7751687758d550bde2da49d",
+      "uncompressed_bytes": 44
     }
   ]
 }
