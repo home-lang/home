@@ -1,24 +1,11 @@
-// Copied from bun/src/jsc/SystemError.zig at upstream
-// SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
-//
-// `bun.String` is not yet ported. The C++ side passes/returns a
-// `BunString` tagged union by-value with layout `{tag: u8, _pad: 7 bytes,
-// impl: *anyopaque}`. We mirror that layout as an extern struct with the
-// methods (`empty`, `deref`, `ref`, `isEmpty`) the rest of this file uses,
-// so the SystemError C ABI stays exactly correct.
-//
-// `bun.sys.E`, `JSGlobalObject`, `JSValue`, `JSPromise`, and the
-// `toErrorInstance` / `format` paths are stubbed locally (they all need the
-// JSC bridge or the sys layer to be live). The real bridge re-attaches in
-// Phase 12.2.
-//
-// `format` is omitted entirely — upstream calls `bun.Output.prettyFmt`, which
-// requires the colored-output ANSI machinery that isn't part of the
-// `home_rt` allow-list yet. Re-add when `home_rt.Output.prettyFmt` lands.
+// Copied from Bun's SystemError; MIT — see ../cli/LICENSE.bun.md.
+// Native C ABI and error conversion use Home's live JSC bridge. Diagnostic
+// formatting mirrors the pinned runtime and shares Home's output color policy.
 
 const std = @import("std");
+const bun = @import("home");
 
-// JSC bridge stubs — re-attach in Phase 12.2.
+// Native JSC bridge types.
 const JSGlobalObject = @import("./JSGlobalObject.zig").JSGlobalObject;
 const JSValue = @import("home").jsc.JSValue;
 const JSPromise = @import("./JSPromise.zig").JSPromise;
@@ -57,7 +44,7 @@ pub const SystemError = extern struct {
 
     pub fn getErrno(this: *const SystemError) SysE {
         // The inverse in bun.sys.Error.toSystemError()
-        return @enumFromInt(this.errno * -1);
+        return @fromBackingInt(@intCast(this.errno * -1));
     }
 
     pub fn deref(this: *const SystemError) void {
@@ -119,9 +106,39 @@ pub const SystemError = extern struct {
         return SystemError__toErrorInstanceWithInfoObject(this, global);
     }
 
-    // `format` upstream uses `bun.Output.prettyFmt`. Until colored-output
-    // pretty-fmt lands in `home_rt.Output`, the formatter is omitted; the
-    // struct still serializes via the C++ side via `toErrorInstance`.
+    pub fn format(self: SystemError, writer: *std.Io.Writer) !void {
+        if (!self.path.isEmpty()) {
+            // TODO: remove this hardcoding
+            switch (bun.Output.enable_ansi_colors_stderr) {
+                inline else => |enable_colors| try writer.print(
+                    comptime bun.Output.prettyFmt(
+                        "<r><red>{f}<r><d>:<r> <b>{f}<r>: {f} <d>({f}())<r>",
+                        enable_colors,
+                    ),
+                    .{
+                        self.code,
+                        self.path,
+                        self.message,
+                        self.syscall,
+                    },
+                ),
+            }
+        } else
+        // TODO: remove this hardcoding
+        switch (bun.Output.enable_ansi_colors_stderr) {
+            inline else => |enable_colors| try writer.print(
+                comptime bun.Output.prettyFmt(
+                    "<r><red>{f}<r><d>:<r> {f} <d>({f}())<r>",
+                    enable_colors,
+                ),
+                .{
+                    self.code,
+                    self.message,
+                    self.syscall,
+                },
+            ),
+        }
+    }
 };
 
 test "SystemError carries the expected fields in order" {
@@ -155,5 +172,5 @@ test "SystemError.Maybe(T) is a tagged union with err/result arms" {
 
 test "SystemError.getErrno inverts the sign of errno" {
     const err: SystemError = .{ .message = .empty, .errno = -5 };
-    try std.testing.expectEqual(@as(i32, 5), @intFromEnum(err.getErrno()));
+    try std.testing.expectEqual(@as(i32, 5), @backingInt(err.getErrno()));
 }

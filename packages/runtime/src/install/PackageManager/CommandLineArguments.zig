@@ -273,7 +273,7 @@ pub const AuditLevel = enum {
 
     pub fn shouldIncludeSeverity(self: AuditLevel, severity: []const u8) bool {
         const severity_level = AuditLevel.fromString(severity) orelse .moderate;
-        return @intFromEnum(severity_level) >= @intFromEnum(self);
+        return @backingInt(severity_level) >= @backingInt(self);
     }
 };
 
@@ -1081,12 +1081,18 @@ pub fn parse(allocator: std.mem.Allocator, comptime subcommand: Subcommand) !Com
     }
 
     if (subcommand == .patch and cli.positionals.len < 2) {
-        Output.errGeneric("Missing pkg to patch\n", .{});
+        if (cli.patch == .commit) {
+            Output.errGeneric("Missing path to the package directory containing your changes.\n  <d>Usage:<r> bun patch --commit <cyan>node_modules/\\<package\\><r>", .{});
+        } else {
+            Output.errGeneric("Missing package name to patch.\n  <d>Usage:<r> bun patch <cyan>\\<package\\><r><d>[@\\<version\\>]<r>", .{});
+        }
+        Output.note("Run 'bun patch --help' for more information", .{});
         Global.crash();
     }
 
     if (subcommand == .@"patch-commit" and cli.positionals.len < 2) {
-        Output.errGeneric("Missing pkg folder to patch\n", .{});
+        Output.errGeneric("Missing path to the package directory containing your changes.\n  <d>Usage:<r> bun patch-commit <cyan>node_modules/\\<package\\><r>", .{});
+        Output.note("Run 'bun patch-commit --help' for more information", .{});
         Global.crash();
     }
 
