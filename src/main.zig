@@ -4820,11 +4820,7 @@ fn bunCorpusTestArgument(allocator: std.mem.Allocator, target: BunCorpusTarget) 
 }
 
 fn isJsLikeCorpusFile(path: []const u8) bool {
-    const exts = [_][]const u8{ ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs" };
-    for (exts) |ext| {
-        if (std.mem.endsWith(u8, path, ext)) return true;
-    }
-    return false;
+    return home_test.corpus.isJavaScriptFile(path);
 }
 
 fn bunCorpusFileRequiresFullVm(relative_path: []const u8) bool {
@@ -5054,6 +5050,17 @@ test "bun corpus target parser resolves roots, directories, and descendant files
     try std.testing.expect(argTargetsBunCorpus(&non_corpus) == null);
 }
 
+test "bun corpus CLI accepts every upstream JavaScript extension" {
+    inline for (.{ ".js", ".jsx", ".ts", ".tsx", ".mjs", ".mjsx", ".mts", ".mtsx", ".cjs", ".cjsx", ".cts", ".ctsx" }) |ext| {
+        const path = "packages/runtime/test/test/extension.test" ++ ext;
+        switch (resolveBunCorpusTarget(path).?) {
+            .file => |file| try std.testing.expectEqualStrings("extension.test" ++ ext, file.relative_path),
+            else => return error.ExpectedBunCorpusFile,
+        }
+    }
+    try std.testing.expect(!isJsLikeCorpusFile("snapshot.test.ts.snap"));
+}
+
 test "bun corpus VM arguments preserve explicit path semantics" {
     const allocator = std.testing.allocator;
 
@@ -5114,6 +5121,13 @@ test "bun corpus subset parser accepts bundler transpiler bootstrap" {
     }
 }
 
+fn printCorpusProcessCounts(passed: usize, failed: usize, skipped: usize, empty: usize) void {
+    std.debug.print("process checks passed (no registered tests): {d}\n", .{passed});
+    std.debug.print("file processes failed: {d}\n", .{failed});
+    std.debug.print("files skipped by upstream: {d}\n", .{skipped});
+    std.debug.print("comment-only files: {d}\n", .{empty});
+}
+
 fn runBunCorpusNativeSubset(allocator: std.mem.Allocator, corpus_path: []const u8, subset: home_test.corpus_runner.Subset) !void {
     var summary = try home_test.corpus_runner.runSubset(g_io, allocator, corpus_path, subset);
 
@@ -5131,8 +5145,8 @@ fn runBunCorpusNativeSubset(allocator: std.mem.Allocator, corpus_path: []const u
     }
 
     const tests_observed = summary.passed + summary.failed + summary.unsupported + summary.todo;
-    const no_tests = tests_observed == 0 and summary.allowed_empty_files == 0;
-    const failed = summary.failed != 0 or summary.unsupported != 0 or summary.files == 0 or no_tests;
+    const no_tests = tests_observed == 0 and summary.allowed_empty_files == 0 and summary.process_checks_passed == 0 and summary.skipped_files == 0;
+    const failed = summary.failed != 0 or summary.failed_files != 0 or summary.unsupported != 0 or summary.files == 0 or no_tests;
     std.debug.print("\n{s}Bun Corpus Native Subset: {s}{s}\n", .{
         if (!failed) Color.Green.code() else Color.Red.code(),
         if (!failed) "PASS" else "FAIL",
@@ -5142,6 +5156,7 @@ fn runBunCorpusNativeSubset(allocator: std.mem.Allocator, corpus_path: []const u
     std.debug.print("path: {s}\n", .{corpus_path});
     std.debug.print("subset: {s}\n", .{subset.label()});
     std.debug.print("files executed: {d}\n", .{summary.files});
+    printCorpusProcessCounts(summary.process_checks_passed, summary.failed_files, summary.skipped_files, summary.allowed_empty_files);
     std.debug.print("tests passed: {d}\n", .{summary.passed});
     std.debug.print("tests failed: {d}\n", .{summary.failed});
     std.debug.print("tests todo: {d}\n\n", .{summary.todo});
@@ -5188,8 +5203,8 @@ fn runBunCorpusNativeGate(allocator: std.mem.Allocator, corpus_path: []const u8)
     }
 
     const tests_observed = summary.passed + summary.failed + summary.unsupported + summary.todo;
-    const no_tests = tests_observed == 0 and summary.allowed_empty_files == 0;
-    const failed = summary.failed != 0 or summary.unsupported != 0 or summary.files == 0 or no_tests;
+    const no_tests = tests_observed == 0 and summary.allowed_empty_files == 0 and summary.process_checks_passed == 0 and summary.skipped_files == 0;
+    const failed = summary.failed != 0 or summary.failed_files != 0 or summary.unsupported != 0 or summary.files == 0 or no_tests;
     std.debug.print("\n{s}Bun Corpus Native Gate: {s}{s}\n", .{
         if (!failed) Color.Green.code() else Color.Red.code(),
         if (!failed) "PASS" else "FAIL",
@@ -5202,6 +5217,7 @@ fn runBunCorpusNativeGate(allocator: std.mem.Allocator, corpus_path: []const u8)
     std.debug.print("test files discovered: {d}\n", .{counts.tests});
     std.debug.print("runner package: packages/home_test\n", .{});
     std.debug.print("files executed: {d}\n", .{summary.files});
+    printCorpusProcessCounts(summary.process_checks_passed, summary.failed_files, summary.skipped_files, summary.allowed_empty_files);
     std.debug.print("tests passed: {d}\n", .{summary.passed});
     std.debug.print("tests failed: {d}\n", .{summary.failed});
     std.debug.print("tests unsupported: {d}\n", .{summary.unsupported});
@@ -5239,8 +5255,8 @@ fn runBunCorpusNativeFile(allocator: std.mem.Allocator, corpus_path: []const u8,
     }
 
     const tests_observed = summary.passed + summary.failed + summary.unsupported + summary.todo;
-    const no_tests = tests_observed == 0 and summary.allowed_empty_files == 0;
-    const failed = summary.failed != 0 or summary.unsupported != 0 or summary.files == 0 or no_tests;
+    const no_tests = tests_observed == 0 and summary.allowed_empty_files == 0 and summary.process_checks_passed == 0 and summary.skipped_files == 0;
+    const failed = summary.failed != 0 or summary.failed_files != 0 or summary.unsupported != 0 or summary.files == 0 or no_tests;
     std.debug.print("\n{s}Bun Corpus Native File: {s}{s}\n", .{
         if (!failed) Color.Green.code() else Color.Red.code(),
         if (!failed) "PASS" else "FAIL",
@@ -5251,6 +5267,7 @@ fn runBunCorpusNativeFile(allocator: std.mem.Allocator, corpus_path: []const u8,
     std.debug.print("file: {s}\n", .{relative_path});
     std.debug.print("runner package: packages/home_test\n", .{});
     std.debug.print("files executed: {d}\n", .{summary.files});
+    printCorpusProcessCounts(summary.process_checks_passed, summary.failed_files, summary.skipped_files, summary.allowed_empty_files);
     std.debug.print("tests passed: {d}\n", .{summary.passed});
     std.debug.print("tests failed: {d}\n", .{summary.failed});
     std.debug.print("tests unsupported: {d}\n", .{summary.unsupported});
@@ -5277,6 +5294,9 @@ fn runBunCorpusNativeFiles(allocator: std.mem.Allocator, args: []const [:0]const
     var unsupported: usize = 0;
     var todo: usize = 0;
     var allowed_empty: usize = 0;
+    var process_checks_passed: usize = 0;
+    var failed_files: usize = 0;
+    var skipped_files: usize = 0;
     var blocked = false;
     var first_failure_file: ?[]u8 = null;
     defer if (first_failure_file) |value| allocator.free(value);
@@ -5303,6 +5323,9 @@ fn runBunCorpusNativeFiles(allocator: std.mem.Allocator, args: []const [:0]const
         unsupported += summary.unsupported;
         todo += summary.todo;
         allowed_empty += summary.allowed_empty_files;
+        process_checks_passed += summary.process_checks_passed;
+        failed_files += summary.failed_files;
+        skipped_files += summary.skipped_files;
         blocked = blocked or summary.blocked;
         if (first_failure_file == null and (summary.blocked or summary.first_failure_file.len != 0)) {
             first_failure_file = try allocator.dupe(u8, if (summary.first_failure_file.len != 0) summary.first_failure_file else file.relative_path);
@@ -5311,8 +5334,8 @@ fn runBunCorpusNativeFiles(allocator: std.mem.Allocator, args: []const [:0]const
     }
 
     const tests_observed = passed + failed_tests + unsupported + todo;
-    const no_tests = tests_observed == 0 and allowed_empty == 0;
-    const failed = blocked or failed_tests != 0 or unsupported != 0 or files == 0 or no_tests;
+    const no_tests = tests_observed == 0 and allowed_empty == 0 and process_checks_passed == 0 and skipped_files == 0;
+    const failed = blocked or failed_tests != 0 or failed_files != 0 or unsupported != 0 or files == 0 or no_tests;
     std.debug.print("\n{s}Bun Corpus Native Files: {s}{s}\n", .{
         if (!failed) Color.Green.code() else Color.Red.code(),
         if (!failed) "PASS" else "FAIL",
@@ -5321,6 +5344,7 @@ fn runBunCorpusNativeFiles(allocator: std.mem.Allocator, args: []const [:0]const
     std.debug.print("{s}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{s}\n\n", .{ Color.Cyan.code(), Color.Reset.code() });
     std.debug.print("runner package: packages/home_test\n", .{});
     std.debug.print("files executed: {d}\n", .{files});
+    printCorpusProcessCounts(process_checks_passed, failed_files, skipped_files, allowed_empty);
     std.debug.print("tests passed: {d}\n", .{passed});
     std.debug.print("tests failed: {d}\n", .{failed_tests});
     std.debug.print("tests unsupported: {d}\n", .{unsupported});
@@ -5361,8 +5385,8 @@ fn runBunCorpusNativeDirectory(allocator: std.mem.Allocator, corpus_path: []cons
     }
 
     const tests_observed = summary.passed + summary.failed + summary.unsupported + summary.todo;
-    const no_tests = tests_observed == 0 and summary.allowed_empty_files == 0;
-    const failed = summary.failed != 0 or summary.unsupported != 0 or summary.files == 0 or no_tests;
+    const no_tests = tests_observed == 0 and summary.allowed_empty_files == 0 and summary.process_checks_passed == 0 and summary.skipped_files == 0;
+    const failed = summary.failed != 0 or summary.failed_files != 0 or summary.unsupported != 0 or summary.files == 0 or no_tests;
     std.debug.print("\n{s}Bun Corpus Native Directory: {s}{s}\n", .{
         if (!failed) Color.Green.code() else Color.Red.code(),
         if (!failed) "PASS" else "FAIL",
@@ -5374,6 +5398,7 @@ fn runBunCorpusNativeDirectory(allocator: std.mem.Allocator, corpus_path: []cons
     std.debug.print("test files discovered: {d}\n", .{counts.tests});
     std.debug.print("runner package: packages/home_test\n", .{});
     std.debug.print("files executed: {d}\n", .{summary.files});
+    printCorpusProcessCounts(summary.process_checks_passed, summary.failed_files, summary.skipped_files, summary.allowed_empty_files);
     std.debug.print("tests passed: {d}\n", .{summary.passed});
     std.debug.print("tests failed: {d}\n", .{summary.failed});
     std.debug.print("tests unsupported: {d}\n", .{summary.unsupported});

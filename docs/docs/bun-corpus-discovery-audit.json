@@ -1,8 +1,9 @@
 {
   "status": "Discovery and routing only; no test execution or implemented-feature claim.",
   "bun_pin": "4982b91e3702094330f3be3883354c52b8c01323",
-  "home_git_head": "1d62a395b3cb1f467e84c3d2b295d33b5f92f417",
-  "home_corpus_runner_sha256": "91d9a6d3f4014185902e792ef02ba2d5cf4adc87f375a3327e86571ffb1b4e41",
+  "home_git_head": "7fa9fc32d408df87e4d5610b6cf1a797e629c19c",
+  "home_corpus_runner_sha256": "b6ba36ed9aea4a6a4770753e18d1fd15031a6fa9f399ef0c0f7d97ff766fe423",
+  "home_cli_source_sha256": "1778ac728d61431de4a3259b762c2887d9370145a78eaeb63c17a979f9971e6e",
   "tracked_manifest_sha256": "fe65c831c9d320262264078a85809b9daf2d6f62b55b406dd696d188c72b2fe4",
   "upstream_ci_runner_sha256": "0bfffef4b8127a263fffcf009dd36c62f9ea02664ca2f26605f72e7d98cebbac",
   "context": {
@@ -18,6 +19,7 @@
   "comparison": {
     "upstream_tracked_discovered": 4754,
     "home_classified": 4754,
+    "home_cli_non_file_targets": [],
     "home_only": [],
     "upstream_only": [],
     "native_mode_differences": [],

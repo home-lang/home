@@ -32,6 +32,11 @@ pub const Summary = struct {
     failed: usize = 0,
     todo: usize = 0,
     unsupported: usize = 0,
+    // Process outcomes are separate from registered test-case counts. A script
+    // can succeed without registering tests; that never invents passing cases.
+    process_checks_passed: usize = 0,
+    failed_files: usize = 0,
+    skipped_files: usize = 0,
     // Files that legitimately register zero tests (e.g. Bun's empty-file.test.ts
     // regression fixture, which is only a comment). These must not be treated as a
     // `no-tests-observed` failure even though they contribute no passed/failed/todo.
@@ -315,10 +320,6 @@ fn isNativeExpectedFailureCorpusFile(relative: []const u8) bool {
     return std.mem.eql(u8, relative, "js/bun/test/test-fixture-diff-indexed-properties.js");
 }
 
-fn isNativePlatformAuditCorpusFile(relative: []const u8) bool {
-    return std.mem.eql(u8, relative, "js/bun/symbols.test.ts");
-}
-
 fn nativeCorpusMode(relative: []const u8) NativeCorpusMode {
     if (isNativeExpectedFailureCorpusFile(relative)) return .test_runner;
     return if (corpus.isNodeTestFile(relative) or !corpus.isTestStrictFile(relative)) .script else .test_runner;
@@ -375,10 +376,6 @@ fn hasActiveScriptSource(source: []const u8) bool {
 
 fn nativeCorpusProcessSucceeded(term: std.process.Child.Term, timed_out: bool) bool {
     return !timed_out and term.success();
-}
-
-fn nativeCorpusAllowsNoTests(relative: []const u8) bool {
-    return isNativePlatformAuditCorpusFile(relative) and builtin.os.tag != .linux and builtin.os.tag != .windows;
 }
 
 fn nativeExpectedFailureCorpusPassed(
@@ -554,11 +551,12 @@ fn runRelativeFile(
         defer native_run.deinit(allocator);
         try appendSummaryStdout(allocator, summary, native_run.stdout);
 
+        const counts = nativeCorpusTestCounts(native_run.stdout, native_run.stderr);
         if (isNativeExpectedFailureCorpusFile(relative)) {
             if (nativeExpectedFailureCorpusPassed(relative, native_run.term, native_run.timed_out, native_run.stdout, native_run.stderr)) {
-                file_result.passed = 1;
+                summary.process_checks_passed += 1;
             } else {
-                file_result.failed = 1;
+                summary.failed_files += 1;
                 const diagnostic = try std.fmt.allocPrint(
                     allocator,
                     "native Home expected-failure fixture did not emit exactly one indexed-property diff without undefined values\nstderr:\n{s}\nstdout:\n{s}",
@@ -567,61 +565,35 @@ fn runRelativeFile(
                 defer allocator.free(diagnostic);
                 try recordFailure(allocator, summary, relative, diagnostic);
             }
-        } else if (nativeCorpusProcessSucceeded(native_run.term, native_run.timed_out)) {
-            if (!hasActiveScriptSource(source)) {
-                // Upstream comment-only files execute no feature assertions.
-                summary.allowed_empty_files += 1;
-            } else if (nativeCorpusSkipReason(native_run.stdout, native_run.stderr)) |reason| {
-                file_result.unsupported = 1;
-                const diagnostic = try std.fmt.allocPrint(allocator, "native Home corpus fixture skipped: {s}", .{reason});
+        } else {
+            if (counts.observed) {
+                file_result.passed = counts.passed;
+                file_result.failed = counts.failed;
+                file_result.todo = counts.todo + counts.skipped;
+            }
+            if (!nativeCorpusProcessSucceeded(native_run.term, native_run.timed_out) or counts.failed != 0) {
+                summary.failed_files += 1;
+                const diagnostic = try nativeCorpusFailureDiagnostic(
+                    allocator,
+                    native_run.term,
+                    native_run.timed_out,
+                    native_run.stdout,
+                    native_run.stderr,
+                );
                 defer allocator.free(diagnostic);
                 try recordFailure(allocator, summary, relative, diagnostic);
-            } else if (mode == .test_runner) {
-                const counts = nativeCorpusTestCounts(native_run.stdout, native_run.stderr);
-                if (!counts.observed) {
-                    file_result.unsupported = 1;
-                    try recordFailure(allocator, summary, relative, "native Home test runner did not report any executed tests");
-                } else if (counts.passed + counts.failed + counts.skipped + counts.todo == 0) {
-                    if (corpus.isNodeTestFile(relative)) {
-                        // The upstream Node launcher judges these files by
-                        // process exit even when its textual node:test match
-                        // selects the test runner for top-level assertions.
-                        // Comment-only bodies are excluded above. This is one
-                        // script-file check, as in native script mode below.
-                        file_result.passed = 1;
-                    } else if (nativeCorpusAllowsNoTests(relative)) {
-                        summary.allowed_empty_files += 1;
-                    } else {
-                        file_result.unsupported = 1;
-                        try recordFailure(allocator, summary, relative, "native Home test runner did not report any executed tests");
-                    }
-                } else {
-                    file_result.passed = counts.passed;
-                    file_result.failed = counts.failed;
-                    // The reduced corpus runner represents both upstream
-                    // `test.skip` and `test.todo` registrations in the TODO
-                    // counter. Preserve that accounting when a production-VM
-                    // file is executed in a child instead of treating an
-                    // upstream platform/debug skip as missing Home support.
-                    file_result.todo = counts.todo + counts.skipped;
-                    if (counts.failed > 0) {
-                        try recordFailure(allocator, summary, relative, "native Home test runner reported failed tests");
-                    }
-                }
-            } else {
-                file_result.passed = 1;
+            } else if (!hasActiveScriptSource(source)) {
+                summary.allowed_empty_files += 1;
+            } else if (nativeCorpusSkipReason(native_run.stdout, native_run.stderr) != null) {
+                // Original Node TAP skips describe platform applicability, not
+                // missing Home behavior or passing feature assertions.
+                summary.skipped_files += 1;
+            } else if (counts.passed + counts.failed + counts.skipped + counts.todo == 0) {
+                // Pinned CI judges original script bodies by process exit,
+                // including strict-name files with their own assertion loops.
+                // Keep this observation separate from registered test cases.
+                summary.process_checks_passed += 1;
             }
-        } else {
-            file_result.failed = 1;
-            const diagnostic = try nativeCorpusFailureDiagnostic(
-                allocator,
-                native_run.term,
-                native_run.timed_out,
-                native_run.stdout,
-                native_run.stderr,
-            );
-            defer allocator.free(diagnostic);
-            try recordFailure(allocator, summary, relative, diagnostic);
         }
         summary.addFileResult(file_result);
         return;
@@ -742,7 +714,7 @@ test "native Bun test fixtures and interop consumers execute unchanged through t
             case.path,
         );
         defer summary.deinit(std.testing.allocator);
-        if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != case.todo) {
+        if (summary.failed != 0 or summary.failed_files != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != case.todo) {
             std.debug.print(
                 "native Bun test fixture mismatch for {s}: passed={} todo={} failed={} unsupported={} message={s}\n",
                 .{ case.path, summary.passed, summary.todo, summary.failed, summary.unsupported, summary.first_failure_message },
@@ -751,7 +723,7 @@ test "native Bun test fixtures and interop consumers execute unchanged through t
         try std.testing.expectEqual(@as(usize, 1), summary.files);
         try std.testing.expectEqual(case.passed, summary.passed);
         try std.testing.expectEqual(case.todo, summary.todo);
-        try std.testing.expectEqual(@as(usize, 0), summary.failed);
+        try std.testing.expectEqual(@as(usize, 0), summary.failed + summary.failed_files);
         try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
         try std.testing.expectEqual(case.allowed_empty, summary.allowed_empty_files);
     }
@@ -774,13 +746,13 @@ test "native HTML web corpus executes all five original files and real children"
         try std.testing.expectEqual(NativeCorpusMode.test_runner, nativeCorpusMode(case.path));
         var summary = try runFile(threaded.io(), allocator, "packages/runtime/test/test", case.path);
         defer summary.deinit(allocator);
-        if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != case.todo) {
+        if (summary.failed != 0 or summary.failed_files != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != case.todo) {
             std.debug.print("native HTML web corpus mismatch for {s}: passed={} failed={} todo={} unsupported={} message={s}\n", .{ case.path, summary.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message });
         }
         try std.testing.expectEqual(@as(usize, 1), summary.files);
         try std.testing.expectEqual(case.passed, summary.passed);
         try std.testing.expectEqual(case.todo, summary.todo);
-        try std.testing.expectEqual(@as(usize, 0), summary.failed + summary.unsupported + summary.allowed_empty_files);
+        try std.testing.expectEqual(@as(usize, 0), summary.failed + summary.failed_files + summary.unsupported + summary.allowed_empty_files);
     }
 }
 
@@ -803,13 +775,13 @@ test "native body corpus executes the full seven-file matrix with upstream skips
         try std.testing.expectEqual(NativeCorpusMode.test_runner, nativeCorpusMode(case.path));
         var summary = try runFile(threaded.io(), allocator, "packages/runtime/test/test", case.path);
         defer summary.deinit(allocator);
-        if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != case.todo) {
+        if (summary.failed != 0 or summary.failed_files != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != case.todo) {
             std.debug.print("native body corpus mismatch for {s}: passed={} failed={} todo={} unsupported={} message={s}\n", .{ case.path, summary.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message });
         }
         try std.testing.expectEqual(@as(usize, 1), summary.files);
         try std.testing.expectEqual(case.passed, summary.passed);
         try std.testing.expectEqual(case.todo, summary.todo);
-        try std.testing.expectEqual(@as(usize, 0), summary.failed + summary.unsupported + summary.allowed_empty_files);
+        try std.testing.expectEqual(@as(usize, 0), summary.failed + summary.failed_files + summary.unsupported + summary.allowed_empty_files);
     }
 }
 
@@ -847,12 +819,12 @@ test "native Blob corpus executes all six original files with allocation and sna
         try std.testing.expectEqual(NativeCorpusMode.test_runner, nativeCorpusMode(case.path));
         var summary = try runFile(threaded.io(), allocator, "packages/runtime/test/test", case.path);
         defer summary.deinit(allocator);
-        if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != 0) {
+        if (summary.failed != 0 or summary.failed_files != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != 0) {
             std.debug.print("native Blob corpus mismatch for {s}: passed={} failed={} todo={} unsupported={} message={s}\n", .{ case.path, summary.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message });
         }
         try std.testing.expectEqual(@as(usize, 1), summary.files);
         try std.testing.expectEqual(case.passed, summary.passed);
-        try std.testing.expectEqual(@as(usize, 0), summary.failed + summary.todo + summary.unsupported + summary.allowed_empty_files);
+        try std.testing.expectEqual(@as(usize, 0), summary.failed + summary.failed_files + summary.todo + summary.unsupported + summary.allowed_empty_files);
     }
 }
 
@@ -873,12 +845,12 @@ test "native Headers/Response original six-file matrix retains snapshots and col
         try std.testing.expectEqual(NativeCorpusMode.test_runner, nativeCorpusMode(case.path));
         var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/test", case.path);
         defer summary.deinit(std.testing.allocator);
-        if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != 0) {
+        if (summary.failed != 0 or summary.failed_files != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != 0) {
             std.debug.print("native Headers/Response mismatch for {s}: passed={} failed={} todo={} unsupported={} message={s}\n", .{ case.path, summary.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message });
         }
         try std.testing.expectEqual(@as(usize, 1), summary.files);
         try std.testing.expectEqual(case.passed, summary.passed);
-        try std.testing.expectEqual(@as(usize, 0), summary.failed + summary.todo + summary.unsupported + summary.allowed_empty_files);
+        try std.testing.expectEqual(@as(usize, 0), summary.failed + summary.failed_files + summary.todo + summary.unsupported + summary.allowed_empty_files);
     }
 }
 
@@ -923,12 +895,12 @@ test "native Request matrices preserve unchanged workloads and subclass dispatch
 
         var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/test", case.path);
         defer summary.deinit(std.testing.allocator);
-        if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != 0) {
+        if (summary.failed != 0 or summary.failed_files != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != 0) {
             std.debug.print("native Request mismatch for {s}: passed={} failed={} todo={} unsupported={} message={s}\n", .{ case.path, summary.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message });
         }
         try std.testing.expectEqual(@as(usize, 1), summary.files);
         try std.testing.expectEqual(case.passed, summary.passed);
-        try std.testing.expectEqual(@as(usize, 0), summary.failed);
+        try std.testing.expectEqual(@as(usize, 0), summary.failed + summary.failed_files);
         try std.testing.expectEqual(@as(usize, 0), summary.todo);
         try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
         try std.testing.expectEqual(@as(usize, 0), summary.allowed_empty_files);
@@ -946,7 +918,7 @@ test "native corpus execution covers previously split Request and microtask path
         var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/test", case.path);
         defer summary.deinit(std.testing.allocator);
         try std.testing.expectEqual(@as(usize, case.passed), summary.passed);
-        try std.testing.expectEqual(@as(usize, 0), summary.failed + summary.todo + summary.unsupported);
+        try std.testing.expectEqual(@as(usize, 0), summary.failed + summary.failed_files + summary.todo + summary.unsupported);
     }
 }
 
@@ -1066,6 +1038,8 @@ test "native corpus execution propagates real child and Node assertion failures"
         \\  console.log("real-child-exit=" + child.exitCode);
         \\  expect(child.exitCode).toBe(0);
         \\});
+        \\test("successful registered case", () => expect(1).toBe(1));
+        \\test("second registered failure", () => expect(1).toBe(2));
     });
     try tmp.dir.writeFile(io, .{ .sub_path = "test/js/node/test/parallel/test-node-assertion.js", .data =
         \\const assert = require("node:assert");
@@ -1076,23 +1050,54 @@ test "native corpus execution propagates real child and Node assertion failures"
         \\assert(require("node:module").isBuiltin("node:test"));
     });
     try tmp.dir.writeFile(io, .{ .sub_path = "test/js/node/test/parallel/test-commented.js", .data = "// upstream intentionally disabled\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "test/manual.test.js", .data =
+        \\const assert = require("node:assert");
+        \\for (let i = 0; i < 3; i++) assert.strictEqual(i + 1, 1 + i);
+        \\console.log("manual assertions executed");
+    });
+    try tmp.dir.writeFile(io, .{ .sub_path = "test/manual-failure.test.js", .data =
+        \\require("node:assert").strictEqual(1, 2, "manual assertion fails");
+    });
+    try tmp.dir.writeFile(io, .{ .sub_path = "test/guarded.test.js", .data = "if (false) throw new Error('inactive');\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "test/js/node/test/parallel/test-skipped.js", .data = "console.log('1..0 # Skipped: original platform requirement');\n" });
     const root = try tmp.dir.realPathFileAlloc(io, "test", allocator);
     defer allocator.free(root);
     var failed_child = try runFile(io, allocator, root, "child-failure.test.js");
     defer failed_child.deinit(allocator);
-    try std.testing.expectEqual(@as(usize, 1), failed_child.failed);
-    try std.testing.expectEqual(@as(usize, 0), failed_child.passed);
+    try std.testing.expectEqual(@as(usize, 2), failed_child.failed);
+    try std.testing.expectEqual(@as(usize, 1), failed_child.failed_files);
+    try std.testing.expectEqual(@as(usize, 1), failed_child.passed);
     try std.testing.expect(std.mem.indexOf(u8, failed_child.stdout, "real-child-exit=23") != null);
     var failed_node = try runFile(io, allocator, root, "js/node/test/parallel/test-node-assertion.js");
     defer failed_node.deinit(allocator);
-    try std.testing.expectEqual(@as(usize, 1), failed_node.failed);
+    try std.testing.expectEqual(@as(usize, 1), failed_node.failed_files);
+    try std.testing.expectEqual(@as(usize, 0), failed_node.passed + failed_node.failed + failed_node.process_checks_passed);
     try std.testing.expect(std.mem.indexOf(u8, failed_node.first_failure_message, "real-node-assertion") != null);
     var top_level = try runFile(io, allocator, root, "js/node/test/parallel/test-top-level.js");
     defer top_level.deinit(allocator);
-    try std.testing.expectEqual(@as(usize, 1), top_level.passed);
+    try std.testing.expectEqual(@as(usize, 1), top_level.process_checks_passed);
+    try std.testing.expectEqual(@as(usize, 0), top_level.passed + top_level.failed_files);
     try std.testing.expectEqual(@as(usize, 0), top_level.failed + top_level.unsupported + top_level.allowed_empty_files);
+    var manual = try runFile(io, allocator, root, "manual.test.js");
+    defer manual.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), manual.process_checks_passed);
+    try std.testing.expectEqual(@as(usize, 0), manual.passed + manual.failed + manual.failed_files + manual.unsupported);
+    try std.testing.expect(std.mem.indexOf(u8, manual.stdout, "manual assertions executed") != null);
+    var manual_failure = try runFile(io, allocator, root, "manual-failure.test.js");
+    defer manual_failure.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), manual_failure.failed_files);
+    try std.testing.expectEqual(@as(usize, 0), manual_failure.passed + manual_failure.process_checks_passed);
+    try std.testing.expect(std.mem.indexOf(u8, manual_failure.first_failure_message, "manual assertion fails") != null);
+    var guarded = try runFile(io, allocator, root, "guarded.test.js");
+    defer guarded.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), guarded.process_checks_passed);
+    try std.testing.expectEqual(@as(usize, 0), guarded.passed + guarded.failed + guarded.failed_files);
+    var skipped = try runFile(io, allocator, root, "js/node/test/parallel/test-skipped.js");
+    defer skipped.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), skipped.skipped_files);
+    try std.testing.expectEqual(@as(usize, 0), skipped.passed + skipped.process_checks_passed + skipped.failed_files + skipped.unsupported);
     var commented = try runFile(io, allocator, root, "js/node/test/parallel/test-commented.js");
     defer commented.deinit(allocator);
-    try std.testing.expectEqual(@as(usize, 0), commented.passed + commented.failed + commented.unsupported);
+    try std.testing.expectEqual(@as(usize, 0), commented.passed + commented.failed + commented.unsupported + commented.process_checks_passed + commented.failed_files);
     try std.testing.expectEqual(@as(usize, 1), commented.allowed_empty_files);
 }

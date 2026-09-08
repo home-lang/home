@@ -39,12 +39,19 @@ def audit(zig, node, bun_source, include_entries=False):
     runner_bytes = (ROOT / "packages/home_test/src/corpus_runner.zig").read_bytes()
     runner = runner_bytes.decode()
     corpus = (ROOT / "packages/home_test/src/corpus.zig").read_text()
+    main_bytes = (ROOT / "src/main.zig").read_bytes()
+    main = main_bytes.decode()
     mirror = ROOT / "packages/runtime/test/test"
     manifest = (mirror / "BUN_TRACKED_FILES.txt").read_bytes()
     upstream = run(["git", "-C", str(bun_source), "show", f"{PIN}:scripts/runner.node.mjs"]).stdout
     zig_source = '\n'.join([
         'const std = @import("std");',
         'const corpus = @This();',
+        'const ProductionCorpus = @This();',
+        'const home_test = struct { pub const corpus = ProductionCorpus; };',
+        section(main, 'const bun_corpus_marker =', 'fn bunCorpusTestArgument'),
+        section(main, 'fn isJsLikeCorpusFile', '\n}') + '\n}',
+        section(main, 'fn resolveBunCorpusTarget', '\n}') + '\n}',
         section(corpus, 'pub const default_root', '\n'),
         section(corpus, 'pub fn isTestFile', 'pub fn countPath'),
         section(runner, 'const NativeCorpusMode', 'fn buildNativeCorpusArgs'),
@@ -58,6 +65,8 @@ test "audit exact production corpus routing" {
         const native = isNativeHomeCorpusFile(path);
         const source_path = try std.fs.path.join(std.testing.allocator, &.{ default_root, path });
         defer std.testing.allocator.free(source_path);
+        const cli_target = resolveBunCorpusTarget(source_path);
+        std.debug.print("CLI_ROUTE\t{s}\t{s}\n", .{ path, if (cli_target) |target| @tagName(target) else "unresolved" });
         const source = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, source_path, std.testing.allocator, .limited(64 * 1024 * 1024));
         defer std.testing.allocator.free(source);
         std.debug.print("ROUTE\t{s}\t{s}\t{s}\t{s}\n", .{
@@ -100,11 +109,16 @@ console.log(JSON.stringify({context: {isCI, isMacOS, isX64}, rows,
         (work / 'audit.mjs').write_text(node_source)
         result = run([zig, 'test', str(work / 'audit.zig'), '-O', 'ReleaseFast'])
         rows = []
+        cli_rows = []
         for line in (result.stdout + result.stderr).splitlines():
-            if 'ROUTE\t' in line:
+            if 'CLI_ROUTE\t' in line:
+                cli_rows.append(line.split('CLI_ROUTE\t', 1)[1].split('\t'))
+            elif 'ROUTE\t' in line:
                 rows.append(line.split('ROUTE\t', 1)[1].split('\t'))
         if not rows or any(len(row) != 4 for row in rows):
             raise RuntimeError('Missing or malformed routing audit output')
+        if len(cli_rows) != len(rows) or any(len(row) != 2 for row in cli_rows):
+            raise RuntimeError('Missing or malformed CLI routing audit output')
         native = {row[0]: row[1:] for row in rows}
         if len(native) != len(rows):
             raise RuntimeError('Duplicate Home discovery paths')
@@ -117,6 +131,7 @@ console.log(JSON.stringify({context: {isCI, isMacOS, isX64}, rows,
         'bun_pin': PIN,
         'home_git_head': run(['git', 'rev-parse', 'HEAD']).stdout.strip(),
         'home_corpus_runner_sha256': sha256(runner_bytes),
+        'home_cli_source_sha256': sha256(main_bytes),
         'tracked_manifest_sha256': sha256(manifest),
         'upstream_ci_runner_sha256': sha256(upstream.encode()),
         'context': discovered['context'],
@@ -125,6 +140,7 @@ console.log(JSON.stringify({context: {isCI, isMacOS, isX64}, rows,
         'comparison': {
             'upstream_tracked_discovered': len(upstream_modes),
             'home_classified': len(native),
+            'home_cli_non_file_targets': [dict(zip(('path', 'target'), row)) for row in cli_rows if row[1] != 'file'],
             'home_only': sorted(native.keys() - upstream_modes.keys()),
             'upstream_only': sorted(upstream_modes.keys() - native.keys()),
             'native_mode_differences': [

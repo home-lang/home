@@ -1542,3 +1542,36 @@ was rejected with unchanged logs. This verifies scanner behavior, not Home
 feature coverage. A first one-second control budget expired during startup;
 that incomplete observation is retained separately from the valid controls.
 The scanner's strict-name selection still is not full pinned CI discovery.
+
+### Expanded native baseline and outcome accounting
+
+The attached-config correction at `82156e60d` passes the optimized build
+**46/46** and focused harness **23/23 steps / 6/6 tests**, independently verified
+by registration metadata. Its native executable SHA256 is
+`c5141c873e3e0124da9c3f7e11a22a3f771e6303247ad88099ea3e36bd2c00f5`.
+The complete first-attempt comparison of all 78 formerly omitted files retained
+**156 logs**: 69 files exit zero in both runtimes, four Docker guards are inactive,
+four files fail only in Home, and one fails in both. No attempts were retried.
+The [per-file baseline](./bun-native-newly-discovered-baseline.json) records
+outcomes and log hashes; these are file observations, not 78 passing tests.
+
+The Home-only differences are the custom 40-check HTTP script being rejected
+for zero registered Bun tests, two `.mts` files classified as directories by the
+CLI, and the rsbuild integration's `home create` delegation gap (issue #709).
+The shared failure is a custom-CA fixture whose server certificate expired on
+2026-08-25 (issue #710); TLS validation and the pinned bytes remain unchanged.
+Source integrity after the whole batch still matches all 12,990 regular files
+and five symlinks, with only the known expectations metadata differing.
+
+The next candidate separates registered test cases from successful unregistered
+process checks, failed file processes, original TAP file skips and comment-only
+files. It preserves actual registered pass/fail counts even when the process
+fails. A clean manual-assertion script can satisfy the original process-exit
+contract without inventing passing test cases; inactive guards receive zero
+registered-test credit. Native failure controls cover mixed registered outcomes,
+manual assertions and their failures, guards, original skips and comment-only
+sources. The CLI now shares the exact corpus JavaScript-extension predicate,
+and the discovery audit also exercises the CLI's actual target classification.
+Its build and native regression verification are pending. Complete gate outcome
+retention, the CI launch profile, native create, fixture maintenance, wider
+runtime failures and platform/build ownership remain open under #703/#66.
