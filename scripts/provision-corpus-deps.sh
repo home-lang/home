@@ -12,6 +12,9 @@
 # rewrite it.
 #
 # Usage:   scripts/provision-corpus-deps.sh
+# Select a particular installer with HOME_CORPUS_INSTALL_EXECUTABLE. To exercise
+# Home's native package manager, set it to the built Home executable and export
+# HOME_NATIVE_VM=1. Both installers must honor the same frozen manifests.
 # Exit 0:  the corpus tree matches its lockfile.
 #
 # Two `file:` dependencies resolve against Bun's repository layout rather than
@@ -30,6 +33,7 @@ TEST_ROOT="$ROOT/packages/runtime/test"
 CORPUS="$TEST_ROOT/test"
 PLUGIN_SOURCE="$ROOT/packages/runtime/upstream/packages/bun-plugin-svelte"
 PLUGIN_TARGET="$TEST_ROOT/packages/bun-plugin-svelte"
+INSTALL_EXECUTABLE="${HOME_CORPUS_INSTALL_EXECUTABLE:-bun}"
 
 if [[ ! -f "$CORPUS/bun.lock" ]]; then
     echo "provision-corpus-deps: no bun.lock at $CORPUS" >&2
@@ -46,13 +50,13 @@ fi
 
 before="$(git -C "$ROOT" status --porcelain -- packages/runtime/test/bun.lock packages/runtime/test/test/bun.lock)"
 
-bun install --cwd "$TEST_ROOT" --frozen-lockfile
+"$INSTALL_EXECUTABLE" install --cwd "$TEST_ROOT" --frozen-lockfile
 
 mkdir -p "$TEST_ROOT/packages"
 rm -rf "$PLUGIN_TARGET"
 cp -R "$PLUGIN_SOURCE" "$PLUGIN_TARGET"
 
-bun install --cwd "$CORPUS" --frozen-lockfile
+"$INSTALL_EXECUTABLE" install --cwd "$CORPUS" --frozen-lockfile
 
 after="$(git -C "$ROOT" status --porcelain -- packages/runtime/test/bun.lock packages/runtime/test/test/bun.lock)"
 
