@@ -62,6 +62,9 @@ try {
   run(project, ['add', 'file:../dependency-two'])
   check(project, 'dependencies', 'file:../dependency-two', '2.0.0')
   run(project, ['install', '--frozen-lockfile', '--ignore-scripts'])
+  run(project, ['add', 'file:../dependency-one', 'file:../dependency-two'])
+  check(project, 'dependencies', 'file:../dependency-one', '1.0.0')
+  run(project, ['install', '--frozen-lockfile', '--ignore-scripts'])
 
   run(project, ['add', 'explicit-alias@file:../dependency-one'])
   run(project, ['--only-missing', 'add', 'explicit-alias@file:../dependency-two'])

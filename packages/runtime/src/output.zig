@@ -15,6 +15,30 @@ pub const Scoped = core_output.Scoped;
 pub const scoped = core_output.scoped;
 pub const synchronized_start = core_output.synchronized_start;
 pub const synchronized_end = core_output.synchronized_end;
+// Keep frame delimiters and render contents on Home's same buffered writer.
+pub fn synchronized() Synchronized {
+    return Synchronized.begin();
+}
+
+pub const Synchronized = struct {
+    pub fn begin() Synchronized {
+        if (@import("bun_core/env.zig").isPosix) print(synchronized_start, .{});
+        return .{};
+    }
+
+    pub fn end(_: Synchronized) void {
+        if (@import("bun_core/env.zig").isPosix) print(synchronized_end, .{});
+    }
+};
+
+pub fn up(lines: usize) void {
+    print("\x1b[{d}A", .{lines});
+}
+
+pub fn clearToEnd() void {
+    print("\x1b[0J", .{});
+}
+
 pub const disableScopedDebugWriter = core_output.disableScopedDebugWriter;
 pub const enableScopedDebugWriter = core_output.enableScopedDebugWriter;
 pub const commandOut = core_output.commandOut;

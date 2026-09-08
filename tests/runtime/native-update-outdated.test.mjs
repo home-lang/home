@@ -71,7 +71,10 @@ try {
   assert.match(outdated, /1\.0\.0/)
   assert.match(outdated, /1\.1\.0/)
   assert.ok(requests.slice(before).includes(`/${name}`), 'outdated must consult the registry')
-  await run(['update', '--interactive'], 'n\n')
+  const declined = await run(['update', '--interactive'], 'n\n')
+  if (process.platform !== 'win32') {
+    assert.match(declined, /\x1b\[\?2026h[\s\S]*native-update-fixture[\s\S]*\x1b\[\?2026l/)
+  }
   assert.equal(installed(), '1.0.0')
   assert.equal(requestedVersion(), '^1.0.0')
   await run(['update'])

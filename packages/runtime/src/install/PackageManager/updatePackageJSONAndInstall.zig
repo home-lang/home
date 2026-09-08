@@ -65,7 +65,19 @@ fn updatePackageJSONAndInstallWithManagerWithUpdates(
 ) !void {
     const log_level = manager.options.log_level;
     if (subcommand == .add or subcommand == .link or subcommand == .update) {
-        for (updates.*) |*request| try request.resolveLocalName(manager);
+        var unique: usize = 0;
+        requests: for (updates.*) |request| {
+            var resolved = request;
+            try resolved.resolveLocalName(manager);
+            // Match argument parsing's first-request precedence after local
+            // folder identities become known. Two paths may name one package.
+            for (updates.*[0..unique]) |*previous| {
+                if (strings.eqlLong(previous.getName(), resolved.getName(), true)) continue :requests;
+            }
+            updates.*[unique] = resolved;
+            unique += 1;
+        }
+        updates.* = updates.*[0..unique];
     }
     if (manager.log.errors > 0) {
         if (log_level != .silent) {
