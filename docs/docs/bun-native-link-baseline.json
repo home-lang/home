@@ -1,0 +1,29 @@
+{
+  "issue": "https://github.com/home-lang/home/issues/717",
+  "parent": "https://github.com/home-lang/home/issues/66",
+  "status": "Native link/unlink activation and current IO port pushed; production build pending. First command and build failures retained.",
+  "source_commits": [
+    "f3a1e348a",
+    "b6bea0d7c",
+    "3d97be64a",
+    "e56d48e8d"
+  ],
+  "before_failure": "Native home link treats link as a missing script.",
+  "ports": [
+    "Native command dispatch and exports for LinkCommand/UnlinkCommand.",
+    "Global directory creation, scoped package symlinks, and unregister deletion via current Zig IO.",
+    "All-bin unregister iteration via current Zig IO.",
+    "Path.initFdPath via current descriptor realPath API; free the pooled buffer on lookup failure."
+  ],
+  "verification_planned": [
+    "Isolated plain/scoped/workspace registration, consumption, --save, actual links/bin targets, live source changes, frozen install, remove and unregister.",
+    "All supported bin declaration forms and preservation of provider sources/physical unlinked installs.",
+    "Unchanged original bun-link and native-binlink files plus prior native package regressions; pinned Bun control."
+  ],
+  "evidence_manifest": "docs/docs/bun-port-evidence/2026-09-08-native-links/manifest.json",
+  "limitations": [
+    "Native VM gate still required; default CLI fallback removal and full parity remain incomplete.",
+    "No success is claimed for the pending native command batch or the full platform matrix.",
+    "Upstream unlink with a package-name argument is itself unsupported; concrete supported unregister is argument-free unlink from its package."
+  ]
+}

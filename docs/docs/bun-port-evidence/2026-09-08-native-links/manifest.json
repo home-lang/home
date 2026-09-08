@@ -1,0 +1,55 @@
+{
+  "status": "Native link/unlink activation and current IO port pushed; production build pending. First command and build failures retained.",
+  "before_runtime_source": "831196dbd919492a334e550a5a9223643a696898",
+  "before_home_sha256": "ccbce30778cbaedec1446fbf13c5040363919f5ec1bb19149693518268956ce4",
+  "files": [
+    {
+      "source": "native-link-before.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-links/native-link-before.log.gz",
+      "sha256": "48396ab1c396a66b976c9d78a38ffbe19e78c9b8bf813052397cf28dba802160",
+      "uncompressed_bytes": 669
+    },
+    {
+      "source": "native-link-lifecycle.before.test.mjs",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-links/native-link-lifecycle.before.test.mjs.gz",
+      "sha256": "46e4a28597fb47c9d967d01a932c3c88097b5f254ab2fd5e297083f05dcc0ba7",
+      "uncompressed_bytes": 5184
+    },
+    {
+      "source": "native-link-lifecycle-lint.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-links/native-link-lifecycle-lint.log.gz",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "uncompressed_bytes": 0
+    },
+    {
+      "source": "native-link-bins-lint.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-links/native-link-bins-lint.log.gz",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "uncompressed_bytes": 0
+    },
+    {
+      "source": "build-native-link-unlink.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-links/build-native-link-unlink.log.gz",
+      "sha256": "98cb3411c8ca21dae04fc69027f39ef12ae41b7cb779d3efd413e6f0e94fedcb",
+      "uncompressed_bytes": 4176
+    },
+    {
+      "source": "build-native-link-descriptors.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-links/build-native-link-descriptors.log.gz",
+      "sha256": "c13f01da911b11a2363fdc4bd5f1279fd317dbd78f240f5402e7757230f976fd",
+      "uncompressed_bytes": 4355
+    },
+    {
+      "source": "build-native-link-realpath.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-links/build-native-link-realpath.log.gz",
+      "sha256": "de19bd4db6716ea87aec39cb58fe045a9e2173217210b93d4eac1a5c39bfc6d2",
+      "uncompressed_bytes": 4332
+    },
+    {
+      "source": "verify-native-links.py",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-links/verify-native-links.py.gz",
+      "sha256": "01b21108115608fb8dcc836c40ee00f0718096ef1ebba4c8be399c8f8e9e17c5",
+      "uncompressed_bytes": 4234
+    }
+  ]
+}
