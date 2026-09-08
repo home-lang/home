@@ -44,21 +44,26 @@ def audit(zig, node, bun_source):
     upstream = run(["git", "-C", str(bun_source), "show", f"{PIN}:scripts/runner.node.mjs"]).stdout
     zig_source = '\n'.join([
         'const std = @import("std");',
-        section(runner, 'const stream_iter_corpus_prefix', '\n'),
+        'const corpus = @This();',
+        section(corpus, 'pub const default_root', '\n'),
         section(corpus, 'pub fn isTestFile', 'pub fn countPath'),
-        section(runner, 'fn isNativeStreamIteratorCorpusFile', 'fn parseNativeCorpusFlags'),
         section(runner, 'const NativeCorpusMode', 'fn buildNativeCorpusArgs'),
+        section(runner, 'fn hasActiveScriptSource', 'fn nativeCorpusProcessSucceeded'),
         r'''
 test "audit exact production corpus routing" {
     var lines = std.mem.splitScalar(u8, @embedFile("manifest.txt"), '\n');
     while (lines.next()) |raw| {
         const path = std.mem.trimEnd(u8, raw, "\r");
-        if (path.len == 0 or !isTestFile(std.fs.path.basename(path))) continue;
+        if (path.len == 0 or !isTestFile(path)) continue;
         const native = isNativeHomeCorpusFile(path);
+        const source_path = try std.fs.path.join(std.testing.allocator, &.{ default_root, path });
+        defer std.testing.allocator.free(source_path);
+        const source = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, source_path, std.testing.allocator, .limited(64 * 1024 * 1024));
+        defer std.testing.allocator.free(source);
         std.debug.print("ROUTE\t{s}\t{s}\t{s}\t{s}\n", .{
             path, if (native) "native" else "bootstrap",
-            if (native) @tagName(nativeCorpusMode(path)) else "adapter",
-            nativeCorpusDisabledReason(path) orelse "",
+            if (native) @tagName(nativeCorpusModeForSource(path, source)) else "adapter",
+            if (hasActiveScriptSource(source)) "" else "source contains no active code",
         });
     }
 }
@@ -76,7 +81,7 @@ const isCI = false, isMacOS = process.platform === "darwin", isX64 = process.arc
 const tracked = new Set(readFileSync(join(root, "BUN_TRACKED_FILES.txt"), "utf8").trim().split(/\r?\n/));
 const discovered = getTests(root);
 const rows = discovered.filter(path => tracked.has(path.replaceAll(sep, "/"))).map(testPath => {
-    let mode = "test";
+    let mode = isTestStrict(testPath) ? "test" : "run";
     if (isNodeTest(testPath)) {
         const title = "test/" + testPath.replaceAll(sep, "/");
         const testContent = readFileSync(join(root, testPath), "utf8");

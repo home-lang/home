@@ -2410,22 +2410,29 @@ fn runTestsViaVM(allocator_unused: std.mem.Allocator, args: []const [:0]const u8
         defer allocator.free(corpus_root);
 
         const mirror_root = std.fs.path.dirname(corpus_root) orelse return error.InvalidCorpusRoot;
-        const config_path = try home_rt.dupeZ(allocator, u8, "./bunfig.toml");
-        try rewritten_values.append(allocator, config_path);
-
-        const normalized = try allocator.alloc([:0]const u8, args.len + 2);
+        var has_explicit_config = false;
+        for (args) |arg| {
+            if (std.mem.eql(u8, arg, "--config") or std.mem.startsWith(u8, arg, "--config=") or
+                std.mem.eql(u8, arg, "-c") or std.mem.startsWith(u8, arg, "-c=")) has_explicit_config = true;
+        }
+        const config_arg_count: usize = if (has_explicit_config) 0 else 2;
+        const normalized = try allocator.alloc([:0]const u8, args.len + config_arg_count);
         rewritten_args = normalized;
-        normalized[0] = "--config";
-        normalized[1] = config_path;
+        if (!has_explicit_config) {
+            const config_path = try home_rt.dupeZ(allocator, u8, "./bunfig.toml");
+            try rewritten_values.append(allocator, config_path);
+            normalized[0] = "--config";
+            normalized[1] = config_path;
+        }
         for (args, 0..) |arg, index| {
             const rewritten = if (resolveBunCorpusTarget(arg)) |arg_target|
                 try bunCorpusTestArgument(allocator, arg_target)
             else {
-                normalized[index + 2] = arg;
+                normalized[index + config_arg_count] = arg;
                 continue;
             };
             try rewritten_values.append(allocator, rewritten);
-            normalized[index + 2] = rewritten;
+            normalized[index + config_arg_count] = rewritten;
         }
         effective_args = normalized;
         if (std.c.getenv("PWD")) |raw| {

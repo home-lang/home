@@ -173,5 +173,5 @@ test "home_test jsc bootstrap adapter is linked" {
 }
 
 test "home_test native ESM smoke adapter is linked" {
-    try std.testing.expectEqualStrings("native-esm-loader-missing", adapters.jsc_esm_smoke.blocked_reason);
+    try std.testing.expect(std.mem.indexOf(u8, adapters.jsc_esm_smoke.native_bun_test_import_source, "bun:test") != null);
 }

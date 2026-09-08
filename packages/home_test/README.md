@@ -39,23 +39,28 @@ APIs, `expect.extend`, asymmetric matchers like
 
 ## Status
 
-**Partially activated.** The package is now imported by the `home`
-executable for Bun-corpus discovery, so `home test
-packages/runtime/test/test/` counts the corpus through
-`packages/home_test/src/corpus.zig` before failing the native gate.
-That keeps the parity check inside Home-owned Zig code instead of
-delegating to system Bun.
+Bun-corpus execution is native-only. `home test packages/runtime/test/test/`
+discovers the pinned upstream CI inventory and executes original files and
+children in Home's production runtime under `packages/runtime/src`. The
+synthetic corpus prelude and source-rewrite engine have been removed.
 
-The actual vendored runner sources under `src/bun/` still import
-Bun's stdlib aggregator (`@import("bun")`) and so do not compile
-against Home's stdlib today. The file-by-file porting plan, top
-external dependency list, and tier-ordered build plan live in
-[`src/PORTING_STATUS.md`](./src/PORTING_STATUS.md).
+The pre-exclusion inventory contains 4,754 files: 1,863 test-runner entries and
+2,891 script entries. This is discovery and routing evidence, not a claim that
+all tests pass. Original skips, comment-only files, failures, missing runtime
+features and external-service requirements must remain visible. Track complete
+logical parity, platform execution and independent native build ownership in
+[#66](https://github.com/home-lang/home/issues/66) and the broad migration in
+[#703](https://github.com/home-lang/home/issues/703).
 
-The same `compat/` shim work the bundler port also needs
-(see `packages/bundler/src/bun/PORTING_STATUS.md`) will unblock
-Tier 0/1 of this package — at that point we can wire `src/bun/` into
-the package's test step incrementally.
+Reproduce the discovery comparison without executing tests:
+
+```sh
+python3 scripts/audit-bun-corpus-discovery.py --zig /path/to/zig --output audit.json
+```
+
+The older `src/bun/` import-tier notes in
+[`src/PORTING_STATUS.md`](./src/PORTING_STATUS.md) describe that vendored package's
+migration history; they do not describe the active native corpus execution path.
 
 ## Layout
 

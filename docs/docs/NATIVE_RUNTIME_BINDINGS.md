@@ -1405,7 +1405,7 @@ vendor selection. Home omits **78** of those paths and includes **32** others,
 including helper and negative fixtures. Four native mode differences and a
 missing upstream Node test config also require reconciliation. The full path
 sets, source hashes, context and limits are retained in
-[the discovery audit](./bun-corpus-discovery-audit.json).
+[the initial discovery audit](./bun-corpus-discovery-audit-before-native.json).
 Reproduce it with `python3 scripts/audit-bun-corpus-discovery.py --zig /path/to/zig
 --output audit.json`; the script reads the corpus pin and extracts the actual
 Home and upstream predicates without importing the upstream CI runner module.
@@ -1465,3 +1465,46 @@ under #66, #202 and #703.
 
 Verified optimized Home executable SHA-256:
 `4a937ded48d609b76e336fdc192dd96439653a228073a234aaafcba176a5e783`.
+
+
+## Native-only corpus discovery and execution (#703)
+
+The corpus runner now executes every discovered original file in Home's native
+runtime. Its synthetic JavaScript prelude, source rewrites, fixture-specific
+outputs and adapter-only tests have been removed. The original pinned Bun test
+files remain intact; existing native execution matrices and workload/accounting
+checks are retained. The old N-API concurrency override is also removed.
+
+Discovery now matches the pinned CI runner's full relative paths, extensions,
+Node/cluster families and hidden/dependency exclusions. It includes all 78
+previously omitted entries and excludes the 32 helpers previously treated as
+independent tests. The reproduced pre-exclusion inventory has **4,754 entries**,
+all native: **1,863 test-runner entries and 2,891 script entries**, with zero
+missing/extra paths or runner-mode differences. These are route counts, not
+passing-test counts. The audit separately identifies 23 comment-only sources
+that cannot establish implemented-feature coverage.
+
+The exact upstream Node project configuration is restored outside the pinned
+test tree. Native launches pass its original preloads and disabled-auto-install
+policy, and the CLI preserves an explicit config instead of injecting a second
+default. Top-level Node assertions still use the upstream process-exit contract;
+failed assertions or real failed children must remain failures. Comment-only
+files contribute no passing checks. Native ESM smoke coverage now executes the
+original static import instead of testing a bootstrap import rewrite.
+
+The standalone discovery tests pass **11/11**. Native build, failure controls,
+retained native matrices and broader runtime execution are still pending for
+this change. Full-suite feature parity, service/vendor setup, complete outcome
+retention and platform/build ownership remain unfinished under #66/#202/#703.
+The [current discovery audit](./bun-corpus-discovery-audit.json) and its command
+retain source hashes and the comparison context; the earlier audit remains
+archived separately.
+
+
+The full upstream CI launch profile still needs separate implementation: its
+non-Node launcher configures per-test and file deadlines and reporting flags,
+while ordinary Home test execution retains the default test deadlines. Native
+capture currently has its existing 120-second outer file bound. These differences
+remain explicit acceptance work in #703; the route audit proves discovery and
+mode selection, not equivalence of every CI launch option. The two cluster
+entries use script mode, following the final `spawnBunTest` strict-name check.
