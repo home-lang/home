@@ -25,17 +25,7 @@ pub const Environment = struct {
     pub const allow_assert = isDebug;
 };
 
-pub const Output = struct {
-    pub const enable_ansi_colors_stdout = false;
-
-    pub inline fn prettyFmt(comptime fmt_: []const u8, comptime _: bool) []const u8 {
-        return fmt_;
-    }
-
-    pub fn prettyErrorln(comptime fmt_: []const u8, args: anytype) void {
-        std.debug.print(fmt_ ++ "\n", args);
-    }
-};
+pub const Output = @import("../output.zig");
 
 pub const OOM = std.mem.Allocator.Error;
 pub const default_allocator = std.heap.smp_allocator;
