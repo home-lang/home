@@ -1,0 +1,87 @@
+{
+  "issue": 720,
+  "parent": 66,
+  "before_runtime": "a4b73596f5ac51e1a59e330caa5a431becfa04bc",
+  "status": "Complete original audit: Home Pantry route 4 pass/12 fail, pinned Bun 16/16. Reported Pantry-route passes are not native audit credit. Separate pinned Bun installed-graph control fails exact production-version request assertion.",
+  "pinned_bun_sha256": "47a87c1dea30da59c2733cce80118ea59bd338c616c6378f1c7f55e5f2b92c87",
+  "files": [
+    {
+      "source": "verify-native-audit-before.py",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-audit-before/verify-native-audit-before.py.gz",
+      "sha256": "15ee2a6220ed26f99a7e242c78e1a8374f9d34ccf7f20b33bcc3a78b71b1b640",
+      "uncompressed_bytes": 4672
+    },
+    {
+      "source": "verify-native-audit-before.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-audit-before/verify-native-audit-before.log.gz",
+      "sha256": "174802a947b850de2a17ac0cd4d661a0e4af53c0d8c91e4dba15636e3233ed18",
+      "uncompressed_bytes": 2524
+    },
+    {
+      "source": "audit-protocol-pinned-control.mjs",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-audit-before/audit-protocol-pinned-control.mjs.gz",
+      "sha256": "d81abd725af6ce8011dbcda5537c745d455912539ea6517689e38c36a316937f",
+      "uncompressed_bytes": 6079
+    },
+    {
+      "source": "audit-production-before.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-audit-before/audit-production-before.log.gz",
+      "sha256": "9bc1a1453aed04512437216f8e544372c80b4e510592d23e503a789069e21146",
+      "uncompressed_bytes": 1570
+    },
+    {
+      "source": "native-audit-lint.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-audit-before/native-audit-lint.log.gz",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "uncompressed_bytes": 0
+    },
+    {
+      "source": "native-audit-graph-lint.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-audit-before/native-audit-graph-lint.log.gz",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "uncompressed_bytes": 0
+    },
+    {
+      "source": "native-audit-before/bun-audit.test.ts-bun.fixture-inventory.json.gz",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-audit-before/native-audit-before/bun-audit.test.ts-bun.fixture-inventory.json.gz",
+      "sha256": "98762042f46e67fc3af08a034bc37e895719640defffd14965f8669241a563c9",
+      "uncompressed_bytes": 8362
+    },
+    {
+      "source": "native-audit-before/bun-audit.test.ts-bun.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-audit-before/native-audit-before/bun-audit.test.ts-bun.log.gz",
+      "sha256": "827ac286d22c52ee47341feb964426a29e1b341bdfe7be45b835fa77a8032a22",
+      "uncompressed_bytes": 2701
+    },
+    {
+      "source": "native-audit-before/bun-audit.test.ts-bun.xml",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-audit-before/native-audit-before/bun-audit.test.ts-bun.xml.gz",
+      "sha256": "26cb61e879a6dd27a3985ebe8ea9511915a021373128a3dbf463d7ae55e51b74",
+      "uncompressed_bytes": 3833
+    },
+    {
+      "source": "native-audit-before/bun-audit.test.ts-home.fixture-inventory.json.gz",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-audit-before/native-audit-before/bun-audit.test.ts-home.fixture-inventory.json.gz",
+      "sha256": "868cd402bab34ea9757caf1e78f1da2495f8a6e3ba8232dfa830fd7a0e8a2523",
+      "uncompressed_bytes": 8362
+    },
+    {
+      "source": "native-audit-before/bun-audit.test.ts-home.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-audit-before/native-audit-before/bun-audit.test.ts-home.log.gz",
+      "sha256": "257c77a60fbe61c28a2f9fa5c45978570d7b22e3ad758e02cabf23eef831d971",
+      "uncompressed_bytes": 28608
+    },
+    {
+      "source": "native-audit-before/bun-audit.test.ts-home.xml",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-audit-before/native-audit-before/bun-audit.test.ts-home.xml.gz",
+      "sha256": "8c9ed720ed6a7a64b6744f96eb0f899f76fd0ed754aa67493ce34998f230851b",
+      "uncompressed_bytes": 4529
+    },
+    {
+      "source": "native-audit-before/manifest.json",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-audit-before/native-audit-before/manifest.json.gz",
+      "sha256": "6faac7f8f8d1ef9c571f528507a8d66e1b6e05fc823762b20e277f4e0322ba81",
+      "uncompressed_bytes": 3372
+    }
+  ]
+}
