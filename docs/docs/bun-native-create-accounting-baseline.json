@@ -238,5 +238,479 @@
       "log": "zig-out/bun-port-709/retained-native-regressions/html-native-aggregate.log",
       "log_sha256": "be38608b0be7ffb3a36d2c2aef1384d3f634313bc62bac516147618bda5ab03f"
     }
-  }
+  },
+  "verification_checkpoints": [
+    {
+      "source_commit": "9e1656f7c3cd4b76200819e88a630f09b028e5c7",
+      "home_sha256": "5e7a26d1b366fad80626c7ff19052d119cb19235b84f15a8f85378e49bb4f3ed",
+      "status": "Complete selected verification; JSX and duplicate local-dependency metadata still fail.",
+      "build": {
+        "steps_succeeded": 23,
+        "steps_total": 23,
+        "focused_tests_passed": 6,
+        "focused_tests_total": 6,
+        "peak_tree_footprint_mb": 13319,
+        "host_memory_low_water_percent": 30,
+        "log": "zig-out/bun-port-709/build-focused-after-cleanup.log",
+        "log_sha256": "ecc05c7973c3f09416c238bfa213d1d0eefdbd0b2e372787f71c216aa4bd5789"
+      },
+      "results": [
+        {
+          "label": "accounting-original-http-and-mts",
+          "exit_code": 0,
+          "duration": 1.4352378845214844,
+          "actual": {
+            "tests passed": 29,
+            "process checks passed (no registered tests)": 1,
+            "file processes failed": 0,
+            "comment-only files": 0
+          },
+          "expected": [
+            0,
+            {
+              "tests passed": 29,
+              "process checks passed (no registered tests)": 1,
+              "file processes failed": 0,
+              "comment-only files": 0
+            }
+          ],
+          "ok": true,
+          "log": "zig-out/bun-port-709/runtime-verification-after-cleanup/accounting-original-http-and-mts.log",
+          "log_sha256": "5174a6036e1817c1836dfd725e38d17975109eee7b712a8f8bf645aa47292cb0",
+          "completed_file_records": [
+            "[home-bun-corpus] js/bun/http/http-spec.ts: mode=test_runner, status=.{ .exited = 0 }, timed_out=false",
+            "[home-bun-corpus] js/node/http/node-http-agent-tls-options.test.mts: mode=test_runner, status=.{ .exited = 0 }, timed_out=false",
+            "[home-bun-corpus] js/node/http2/node-http2-upgrade.test.mts: mode=test_runner, status=.{ .exited = 0 }, timed_out=false"
+          ]
+        },
+        {
+          "label": "accounting-node-failure-directory",
+          "exit_code": 1,
+          "duration": 0.2755162715911865,
+          "actual": {
+            "tests passed": 0,
+            "process checks passed (no registered tests)": 1,
+            "file processes failed": 1,
+            "comment-only files": 1
+          },
+          "expected": [
+            1,
+            {
+              "tests passed": 0,
+              "process checks passed (no registered tests)": 1,
+              "file processes failed": 1,
+              "comment-only files": 1
+            }
+          ],
+          "ok": true,
+          "log": "zig-out/bun-port-709/runtime-verification-after-cleanup/accounting-node-failure-directory.log",
+          "log_sha256": "750d4eb5641a5cdc2cf6c7ccdda009e1daeba9856055d3fffc762b9975aca829",
+          "completed_file_records": [
+            "[home-bun-corpus] js/node/test/parallel/test-commented.js: mode=script, status=.{ .exited = 0 }, timed_out=false",
+            "[home-bun-corpus] js/node/test/parallel/test-node-assertion.js: mode=script, status=.{ .exited = 1 }, timed_out=false",
+            "[home-bun-corpus] js/node/test/parallel/test-top-level.js: mode=test_runner, status=.{ .exited = 0 }, timed_out=false"
+          ]
+        },
+        {
+          "label": "create-templates-home",
+          "exit_code": 0,
+          "duration": 2.8332080841064453,
+          "actual": {},
+          "expected": null,
+          "ok": true,
+          "log": "zig-out/bun-port-709/runtime-verification-after-cleanup/create-templates-home.log",
+          "log_sha256": "af21146144fdc39993e43877ca329b624a6501bbbdce334f161f0a216969deee",
+          "completed_file_records": [
+            "[home-bun-corpus] cli/install/bun-create.test.ts: mode=test_runner, status=.{ .exited = 0 }, timed_out=false"
+          ],
+          "interpretation": "13 registered passes, 25 expects; complete stdout/stderr retained, no upstream GitHub 403 early-return diagnostic."
+        },
+        {
+          "label": "create-templates-bun",
+          "exit_code": 0,
+          "duration": 2.32427978515625,
+          "actual": {},
+          "expected": null,
+          "ok": true,
+          "log": "zig-out/bun-port-709/runtime-verification-after-cleanup/create-templates-bun.log",
+          "log_sha256": "191074d29fce6ab8ec13fd72d7ab643ef891d885dc2877536ba7e1639594ed8e",
+          "completed_file_records": []
+        },
+        {
+          "label": "create-rsbuild-home",
+          "exit_code": 0,
+          "duration": 19.654785633087158,
+          "actual": {},
+          "expected": null,
+          "ok": true,
+          "log": "zig-out/bun-port-709/runtime-verification-after-cleanup/create-rsbuild-home.log",
+          "log_sha256": "603155971b94775fb54bd4a578568ce091dea8eeb9f47490e3bb867548831175",
+          "completed_file_records": [
+            "[home-bun-corpus] js/bun/test/parallel/test-integration-rspack.ts: mode=script, status=.{ .exited = 0 }, timed_out=false"
+          ],
+          "interpretation": "One successful original process check covering create/install/build; zero registered test passes."
+        },
+        {
+          "label": "create-rsbuild-bun",
+          "exit_code": 0,
+          "duration": 1.179826259613037,
+          "actual": {},
+          "expected": null,
+          "ok": true,
+          "log": "zig-out/bun-port-709/runtime-verification-after-cleanup/create-rsbuild-bun.log",
+          "log_sha256": "a7339c99117899a2066400c915a66690f547afccf40516351faa8dbcb09d3153",
+          "completed_file_records": []
+        },
+        {
+          "label": "create-jsx-home",
+          "exit_code": 1,
+          "duration": 43.24112796783447,
+          "actual": {},
+          "expected": null,
+          "ok": false,
+          "log": "zig-out/bun-port-709/runtime-verification-after-cleanup/create-jsx-home.log",
+          "log_sha256": "f276db4c1701ef44aeb979d877323934a358b7b67405c31e65b72cfce7ebb011",
+          "completed_file_records": [
+            "[home-bun-corpus] cli/create/create-jsx.test.ts: mode=test_runner, status=.{ .exited = 1 }, timed_out=false"
+          ],
+          "interpretation": "1 registered pass, 12 failures, 8 errors. Native dependency commands execute; dev child hits Home language watcher. Original 5-second deadlines unchanged."
+        },
+        {
+          "label": "create-jsx-bun",
+          "exit_code": 1,
+          "duration": 42.4920928478241,
+          "actual": {},
+          "expected": null,
+          "ok": false,
+          "log": "zig-out/bun-port-709/runtime-verification-after-cleanup/create-jsx-bun.log",
+          "log_sha256": "751f465acf210addb97a6fd45378b8ea29571c83f4469c0c49b054a3c1383259",
+          "completed_file_records": [],
+          "interpretation": "3 registered passes, 10 failures, 8 errors and 2 snapshot failures under the same original deadlines. Shared failure is not success."
+        }
+      ],
+      "regression_groups": [
+        {
+          "group": "blob-combined",
+          "tests_passed": 65,
+          "tests_failed": 0,
+          "failed_files": 0,
+          "original_skip_or_todo": 0,
+          "log": "zig-out/bun-port-709/retained-native-regressions-after-cleanup/blob-combined.log",
+          "log_sha256": "3c988102cb380796fea2cc665580713dd532c4fd24eb1cb13b7920086d716e4b"
+        },
+        {
+          "group": "body-combined",
+          "tests_passed": 9467,
+          "tests_failed": 0,
+          "failed_files": 0,
+          "original_skip_or_todo": 4,
+          "log": "zig-out/bun-port-709/retained-native-regressions-after-cleanup/body-combined.log",
+          "log_sha256": "0b80de631b9611f7a556dfd71e65aa2ee5c15f55b6d2151549ce1d3170f93121"
+        },
+        {
+          "group": "headers-response-combined",
+          "tests_passed": 170,
+          "tests_failed": 0,
+          "failed_files": 0,
+          "original_skip_or_todo": 0,
+          "log": "zig-out/bun-port-709/retained-native-regressions-after-cleanup/headers-response-combined.log",
+          "log_sha256": "8db7b62d3add7f552facd0cd9d7c4d11137bc2bf8bcafe08bca7964e3ba4a7f7"
+        },
+        {
+          "group": "html-directory",
+          "tests_passed": 145,
+          "tests_failed": 0,
+          "failed_files": 0,
+          "original_skip_or_todo": 1,
+          "log": "zig-out/bun-port-709/retained-native-regressions-after-cleanup/html-directory.log",
+          "log_sha256": "83646fded2174a5b51902c56c6faab797af50c2b0e28e20432a992387cfb0f99"
+        },
+        {
+          "group": "http-routes",
+          "tests_passed": 41,
+          "tests_failed": 0,
+          "failed_files": 0,
+          "original_skip_or_todo": 0,
+          "log": "zig-out/bun-port-709/retained-native-regressions-after-cleanup/http-routes.log",
+          "log_sha256": "fe37bb1472f5a407c293d7e226fec4b0e014ec2b1b9d36441d9258ce3dd8d241"
+        },
+        {
+          "group": "js-web-fetch-form-data-boundary-crash.test.ts",
+          "tests_passed": 5,
+          "tests_failed": 0,
+          "failed_files": 0,
+          "original_skip_or_todo": 0,
+          "log": "zig-out/bun-port-709/retained-native-regressions-after-cleanup/js-web-fetch-form-data-boundary-crash.test.ts.log",
+          "log_sha256": "bf3303767d9ce667eb4dd0185d266b69d87c5cb9b867ada2ecdd5f5aa4c6f28f"
+        },
+        {
+          "group": "js-web-request",
+          "tests_passed": 24,
+          "tests_failed": 0,
+          "failed_files": 0,
+          "original_skip_or_todo": 0,
+          "log": "zig-out/bun-port-709/retained-native-regressions-after-cleanup/js-web-request.log",
+          "log_sha256": "a59283c0ea47e3b90b910247c81a79ff9a9ce5d29d0ca27da072887977ca9edf"
+        },
+        {
+          "group": "js-web-timers-microtask.test.js",
+          "tests_passed": 2,
+          "tests_failed": 0,
+          "failed_files": 0,
+          "original_skip_or_todo": 0,
+          "log": "zig-out/bun-port-709/retained-native-regressions-after-cleanup/js-web-timers-microtask.test.js.log",
+          "log_sha256": "6444917c7342b00b85b0bb4a21673fcb32a64e0c1e9323806cc0ed821cbc3068"
+        }
+      ],
+      "primary_registered_regression_passes": 9919,
+      "alternate_html_route": {
+        "tests_passed": 145,
+        "skips": 1,
+        "tests_failed": 0,
+        "note": "Same HTML cases; not additional distinct coverage.",
+        "log": "zig-out/bun-port-709/retained-native-regressions-after-cleanup/html-native-aggregate.log",
+        "log_sha256": "e5c9ad6ae5471b75e2d24df1cdfcfe73fd50409465a7dabd41647955d85565f9"
+      },
+      "leading_flag_controls": {
+        "result": "Install/add execute natively, but the replacement sequence corrupts package metadata in both Home and Bun; not a clean pass. Parsed JSON checks missed duplicate keys.",
+        "commands": [
+          {
+            "runtime": "home",
+            "runtime_sha256": "5e7a26d1b366fad80626c7ff19052d119cb19235b84f15a8f85378e49bb4f3ed",
+            "label": "install",
+            "args": [
+              "--only-missing",
+              "install",
+              "--ignore-scripts",
+              "--no-progress"
+            ],
+            "exit_code": 0,
+            "package_json": {
+              "name": "leading-flag-project",
+              "version": "1.0.0",
+              "dependencies": {
+                "leading-flag-dependency": "file:../dependency-one"
+              }
+            },
+            "installed": {
+              "leading-flag-dependency": "1.0.0",
+              "leading-flag-dev-dependency": null
+            },
+            "ok": true,
+            "log": "home-install.log",
+            "log_sha256": "760cb7a8ddfdcbc07b7c3897316ff80c3b823ff443c41cf3ee938f51e546ac4d"
+          },
+          {
+            "runtime": "home",
+            "runtime_sha256": "5e7a26d1b366fad80626c7ff19052d119cb19235b84f15a8f85378e49bb4f3ed",
+            "label": "preserve-existing",
+            "args": [
+              "--only-missing",
+              "install",
+              "--",
+              "file:../dependency-two"
+            ],
+            "exit_code": 0,
+            "package_json": {
+              "name": "leading-flag-project",
+              "version": "1.0.0",
+              "dependencies": {
+                "leading-flag-dependency": "file:../dependency-one"
+              }
+            },
+            "installed": {
+              "leading-flag-dependency": "1.0.0",
+              "leading-flag-dev-dependency": null
+            },
+            "ok": true,
+            "log": "home-preserve-existing.log",
+            "log_sha256": "23865698d2ee3dcadf2d1bec77fd6e608fc7b854f515a7c6a26dce5e829c540b"
+          },
+          {
+            "runtime": "home",
+            "runtime_sha256": "5e7a26d1b366fad80626c7ff19052d119cb19235b84f15a8f85378e49bb4f3ed",
+            "label": "add-dev",
+            "args": [
+              "--only-missing",
+              "add",
+              "-d",
+              "file:../dev-dependency"
+            ],
+            "exit_code": 0,
+            "package_json": {
+              "name": "leading-flag-project",
+              "version": "1.0.0",
+              "dependencies": {
+                "leading-flag-dependency": "file:../dependency-one"
+              },
+              "devDependencies": {
+                "leading-flag-dev-dependency": "file:../dev-dependency"
+              }
+            },
+            "installed": {
+              "leading-flag-dependency": "1.0.0",
+              "leading-flag-dev-dependency": "1.0.0"
+            },
+            "ok": true,
+            "log": "home-add-dev.log",
+            "log_sha256": "f3eb97be6f2f9f85171769495699600eacd36e93c1d9498e770aa428a236705a"
+          },
+          {
+            "runtime": "home",
+            "runtime_sha256": "5e7a26d1b366fad80626c7ff19052d119cb19235b84f15a8f85378e49bb4f3ed",
+            "label": "remove",
+            "args": [
+              "--silent",
+              "remove",
+              "leading-flag-dependency"
+            ],
+            "exit_code": 1,
+            "package_json": {
+              "name": "leading-flag-project",
+              "version": "1.0.0",
+              "dependencies": {
+                "leading-flag-dependency": "file:../dependency-one"
+              },
+              "devDependencies": {
+                "leading-flag-dev-dependency": "file:../dev-dependency"
+              }
+            },
+            "installed": {
+              "leading-flag-dependency": "1.0.0",
+              "leading-flag-dev-dependency": "1.0.0"
+            },
+            "ok": false,
+            "log": "home-remove.log",
+            "log_sha256": "e1ab233e241c2ea9802b388c0d5d8a635ac40bbf9ddd5e3d038b479c31313644"
+          },
+          {
+            "runtime": "bun",
+            "runtime_sha256": "47a87c1dea30da59c2733cce80118ea59bd338c616c6378f1c7f55e5f2b92c87",
+            "label": "install",
+            "args": [
+              "--only-missing",
+              "install",
+              "--ignore-scripts",
+              "--no-progress"
+            ],
+            "exit_code": 0,
+            "package_json": {
+              "name": "leading-flag-project",
+              "version": "1.0.0",
+              "dependencies": {
+                "leading-flag-dependency": "file:../dependency-one"
+              }
+            },
+            "installed": {
+              "leading-flag-dependency": "1.0.0",
+              "leading-flag-dev-dependency": null
+            },
+            "ok": true,
+            "log": "bun-install.log",
+            "log_sha256": "f71b9ba04ba5b88498dc96528442394b362b62ce8e7ac18829dd2d81c8b386dd"
+          },
+          {
+            "runtime": "bun",
+            "runtime_sha256": "47a87c1dea30da59c2733cce80118ea59bd338c616c6378f1c7f55e5f2b92c87",
+            "label": "preserve-existing",
+            "args": [
+              "--only-missing",
+              "install",
+              "--",
+              "file:../dependency-two"
+            ],
+            "exit_code": 0,
+            "package_json": {
+              "name": "leading-flag-project",
+              "version": "1.0.0",
+              "dependencies": {
+                "leading-flag-dependency": "file:../dependency-one"
+              }
+            },
+            "installed": {
+              "leading-flag-dependency": "1.0.0",
+              "leading-flag-dev-dependency": null
+            },
+            "ok": true,
+            "log": "bun-preserve-existing.log",
+            "log_sha256": "67c3993b6f349c79a4fac094a4b8683e917979ad930984f9855834f1c627bbad"
+          },
+          {
+            "runtime": "bun",
+            "runtime_sha256": "47a87c1dea30da59c2733cce80118ea59bd338c616c6378f1c7f55e5f2b92c87",
+            "label": "add-dev",
+            "args": [
+              "--only-missing",
+              "add",
+              "-d",
+              "file:../dev-dependency"
+            ],
+            "exit_code": 0,
+            "package_json": {
+              "name": "leading-flag-project",
+              "version": "1.0.0",
+              "dependencies": {
+                "leading-flag-dependency": "file:../dependency-one"
+              },
+              "devDependencies": {
+                "leading-flag-dev-dependency": "file:../dev-dependency"
+              }
+            },
+            "installed": {
+              "leading-flag-dependency": "1.0.0",
+              "leading-flag-dev-dependency": "1.0.0"
+            },
+            "ok": true,
+            "log": "bun-add-dev.log",
+            "log_sha256": "9fceabcbbd5d330fba3e2714ffb791121a1180e77c65af1a1e2903156adc6138"
+          },
+          {
+            "runtime": "bun",
+            "runtime_sha256": "47a87c1dea30da59c2733cce80118ea59bd338c616c6378f1c7f55e5f2b92c87",
+            "label": "remove",
+            "args": [
+              "--silent",
+              "remove",
+              "leading-flag-dependency"
+            ],
+            "exit_code": 1,
+            "package_json": {
+              "name": "leading-flag-project",
+              "version": "1.0.0",
+              "dependencies": {
+                "leading-flag-dependency": "file:../dependency-one"
+              },
+              "devDependencies": {
+                "leading-flag-dev-dependency": "file:../dev-dependency"
+              }
+            },
+            "installed": {
+              "leading-flag-dependency": "1.0.0",
+              "leading-flag-dev-dependency": "1.0.0"
+            },
+            "ok": false,
+            "log": "bun-remove.log",
+            "log_sha256": "21974b73f9cb80955f08219d348718479d76ca2234d525492b9fa6790fac36b3"
+          }
+        ]
+      },
+      "corpus_integrity": {
+        "pin": "4982b91e3702094330f3be3883354c52b8c01323",
+        "tracked": 12996,
+        "identical_files": 12990,
+        "identical_symlinks": 5,
+        "different": [
+          "expectations.txt"
+        ],
+        "missing": [],
+        "mode_differences": []
+      },
+      "remaining": [
+        "Generated dev dispatch and create elapsed-time fixes are in 32a172e61; new build/runtime verification pending.",
+        "Duplicate local-dependency package identity needs a real install fix.",
+        "Explicit API docs target remains unverified.",
+        "Full CI launch profile, full inventory execution, platform/service coverage, and independent build ownership remain unfinished."
+      ]
+    }
+  ]
 }
