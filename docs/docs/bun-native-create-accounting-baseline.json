@@ -158,7 +158,9 @@
     66,
     703,
     709,
-    438
+    438,
+    713,
+    714
   ],
   "retained_native_regressions": {
     "source_commit": "66a6d6e444ed9c6be2817f1b2901b67aacb06f4b",
@@ -498,7 +500,8 @@
             },
             "ok": true,
             "log": "home-install.log",
-            "log_sha256": "760cb7a8ddfdcbc07b7c3897316ff80c3b823ff443c41cf3ee938f51e546ac4d"
+            "log_sha256": "760cb7a8ddfdcbc07b7c3897316ff80c3b823ff443c41cf3ee938f51e546ac4d",
+            "accepted_as_logical_pass": true
           },
           {
             "runtime": "home",
@@ -524,7 +527,9 @@
             },
             "ok": true,
             "log": "home-preserve-existing.log",
-            "log_sha256": "23865698d2ee3dcadf2d1bec77fd6e608fc7b854f515a7c6a26dce5e829c540b"
+            "log_sha256": "23865698d2ee3dcadf2d1bec77fd6e608fc7b854f515a7c6a26dce5e829c540b",
+            "accepted_as_logical_pass": false,
+            "validation_limitation": "The sequence produced duplicate keys that ordinary JSON parsing collapses; initial ok is not accepted as a logical integrity pass. See issue #713."
           },
           {
             "runtime": "home",
@@ -553,7 +558,9 @@
             },
             "ok": true,
             "log": "home-add-dev.log",
-            "log_sha256": "f3eb97be6f2f9f85171769495699600eacd36e93c1d9498e770aa428a236705a"
+            "log_sha256": "f3eb97be6f2f9f85171769495699600eacd36e93c1d9498e770aa428a236705a",
+            "accepted_as_logical_pass": false,
+            "validation_limitation": "The sequence produced duplicate keys that ordinary JSON parsing collapses; initial ok is not accepted as a logical integrity pass. See issue #713."
           },
           {
             "runtime": "home",
@@ -581,7 +588,9 @@
             },
             "ok": false,
             "log": "home-remove.log",
-            "log_sha256": "e1ab233e241c2ea9802b388c0d5d8a635ac40bbf9ddd5e3d038b479c31313644"
+            "log_sha256": "e1ab233e241c2ea9802b388c0d5d8a635ac40bbf9ddd5e3d038b479c31313644",
+            "accepted_as_logical_pass": false,
+            "validation_limitation": "The sequence produced duplicate keys that ordinary JSON parsing collapses; initial ok is not accepted as a logical integrity pass. See issue #713."
           },
           {
             "runtime": "bun",
@@ -607,7 +616,8 @@
             },
             "ok": true,
             "log": "bun-install.log",
-            "log_sha256": "f71b9ba04ba5b88498dc96528442394b362b62ce8e7ac18829dd2d81c8b386dd"
+            "log_sha256": "f71b9ba04ba5b88498dc96528442394b362b62ce8e7ac18829dd2d81c8b386dd",
+            "accepted_as_logical_pass": true
           },
           {
             "runtime": "bun",
@@ -633,7 +643,9 @@
             },
             "ok": true,
             "log": "bun-preserve-existing.log",
-            "log_sha256": "67c3993b6f349c79a4fac094a4b8683e917979ad930984f9855834f1c627bbad"
+            "log_sha256": "67c3993b6f349c79a4fac094a4b8683e917979ad930984f9855834f1c627bbad",
+            "accepted_as_logical_pass": false,
+            "validation_limitation": "The sequence produced duplicate keys that ordinary JSON parsing collapses; initial ok is not accepted as a logical integrity pass. See issue #713."
           },
           {
             "runtime": "bun",
@@ -662,7 +674,9 @@
             },
             "ok": true,
             "log": "bun-add-dev.log",
-            "log_sha256": "9fceabcbbd5d330fba3e2714ffb791121a1180e77c65af1a1e2903156adc6138"
+            "log_sha256": "9fceabcbbd5d330fba3e2714ffb791121a1180e77c65af1a1e2903156adc6138",
+            "accepted_as_logical_pass": false,
+            "validation_limitation": "The sequence produced duplicate keys that ordinary JSON parsing collapses; initial ok is not accepted as a logical integrity pass. See issue #713."
           },
           {
             "runtime": "bun",
@@ -690,7 +704,9 @@
             },
             "ok": false,
             "log": "bun-remove.log",
-            "log_sha256": "21974b73f9cb80955f08219d348718479d76ca2234d525492b9fa6790fac36b3"
+            "log_sha256": "21974b73f9cb80955f08219d348718479d76ca2234d525492b9fa6790fac36b3",
+            "accepted_as_logical_pass": false,
+            "validation_limitation": "The sequence produced duplicate keys that ordinary JSON parsing collapses; initial ok is not accepted as a logical integrity pass. See issue #713."
           }
         ]
       },
@@ -717,5 +733,61 @@
     "status": "Raw logs and fixtures under zig-out/bun-port-703 and zig-out/bun-port-709 were lost when the worktree directory disappeared on 2026-09-08. Committed counts and hashes preserve the recorded observations, but those paths are no longer independently inspectable.",
     "recovery_commit": "cb7d597e5f002ca32ec1342fa75370a1198943a9",
     "latest_build_status": "The cb7d597e5 native lookup build was interrupted by directory removal; no completed verification result."
+  },
+  "recovered_native_checkpoint": {
+    "source_commit": "cb7d597e5f002ca32ec1342fa75370a1198943a9",
+    "build": {
+      "steps_succeeded": 46,
+      "steps_total": 46,
+      "log": "build-native-package-recovered.log",
+      "log_sha256": "aae79614b290c4a38abbe06f647c89694af1bf32676eb1d7f71ecf7898e4f9e1",
+      "peak_tree_footprint_mb": 14559,
+      "host_memory_low_water_percent": 31
+    },
+    "runtime_checks": {
+      "source_commit": "cb7d597e5f002ca32ec1342fa75370a1198943a9",
+      "home_sha256": "6be4ff89d352c2a7c3a0b13c33fe1550e451dad32c3e77fbc732128ca35d4b0f",
+      "results": [
+        {
+          "file": "native-create-entrypoints",
+          "exit_code": 1,
+          "duration_seconds": 1.71043475,
+          "log": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/native-package-entrypoints/native-create-entrypoints.log",
+          "log_sha256": "b63ce1381c0d743cf83f0592b048f578a5c27904fe00618c34a043b195d54e6a"
+        },
+        {
+          "file": "native-package-run",
+          "exit_code": 0,
+          "duration_seconds": 3.999972625,
+          "log": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/native-package-entrypoints/native-package-run.log",
+          "log_sha256": "6609e0894b194a416f63c9fbc7fc859bada32debbc49ca783a2b02574cd4cac1"
+        },
+        {
+          "file": "native-bunx",
+          "exit_code": 0,
+          "duration_seconds": 1.9352309170000002,
+          "log": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/native-package-entrypoints/native-bunx.log",
+          "log_sha256": "531f419d751690b0adb954366c379e3256e898e6060c0ffe72093582109d7c02"
+        }
+      ]
+    },
+    "corpus_integrity": {
+      "pin": "4982b91e3702094330f3be3883354c52b8c01323",
+      "tracked": 12996,
+      "identical_files": 12990,
+      "identical_symlinks": 5,
+      "different": [
+        "expectations.txt"
+      ],
+      "missing": [],
+      "mode_differences": []
+    },
+    "provisioning": {
+      "exit_code": 1,
+      "packages_installed": 2898,
+      "failed_package": "aws-cdk-lib@2.148.0",
+      "issue": 714
+    },
+    "pending_fix": "ab611fa6f: absolute local template dispatch"
   }
 }
