@@ -2730,6 +2730,24 @@ fn runNativeInstallCommand(args: []const [:0]const u8, force_add: bool) !void {
     }
 }
 
+fn tryNativeDependencyCommand(args: []const [:0]const u8) !bool {
+    if (comptime !build_options.enable_jsc) return false;
+    if (!envFlagSet("HOME_NATIVE_VM")) return false;
+
+    // Use the runtime's command classifier so package-manager flags may
+    // precede the command. Preserve argv for the command's own flag parser.
+    switch (home_rt.cli.Command.which()) {
+        .InstallCommand => try runNativeInstallCommand(args, false),
+        .AddCommand => try runNativeInstallCommand(args, true),
+        .RemoveCommand => {
+            const ctx = try nativePackageCommandContext(args, .RemoveCommand);
+            try home_rt.cli.RemoveCommand.exec(ctx);
+        },
+        else => return false,
+    }
+    return true;
+}
+
 fn tryNativePackageRun(args: []const [:0]const u8, target: []const u8, comptime tag: NativeCommandTag) !bool {
     if (comptime !build_options.enable_jsc) return false;
     if (!envFlagSet("HOME_NATIVE_VM")) return false;
@@ -5229,7 +5247,7 @@ fn runBunCorpusNativeGate(allocator: std.mem.Allocator, corpus_path: []const u8)
     if (no_tests) {
         std.debug.print("reason: no-tests-observed\n\n", .{});
     }
-    std.debug.print("A delegated `bun test` result is not accepted as Home runtime parity.\n\n", .{});
+    std.debug.print("Native Home corpus execution failed.\n\n", .{});
 
     if (failed) std.process.exit(1);
 }
@@ -5410,7 +5428,7 @@ fn runBunCorpusNativeDirectory(allocator: std.mem.Allocator, corpus_path: []cons
     if (no_tests) {
         std.debug.print("reason: no-tests-observed\n\n", .{});
     }
-    std.debug.print("A delegated `bun test` result is not accepted as Home runtime parity.\n\n", .{});
+    std.debug.print("Native Home corpus execution failed.\n\n", .{});
 
     if (failed) std.process.exit(1);
 }
@@ -6088,28 +6106,16 @@ pub fn main(init: std.process.Init) !void {
     // ---- Bun-compatible CLI surface (Phase 12 in progress) ----
     // Strict native add/install use the owned package manager. The pragmatic
     // command surface still routes to Pantry (Home's package manager).
+    if (try tryNativeDependencyCommand(args)) return;
     if (std.mem.eql(u8, command, "add") or std.mem.eql(u8, command, "i")) {
-        if (build_options.enable_jsc and envFlagSet("HOME_NATIVE_VM")) {
-            try runNativeInstallCommand(args, std.mem.eql(u8, command, "add"));
-            return;
-        }
         try execPantryCommand(allocator, "add", args[2..]);
         return;
     }
     if (std.mem.eql(u8, command, "install")) {
-        if (build_options.enable_jsc and envFlagSet("HOME_NATIVE_VM")) {
-            try runNativeInstallCommand(args, false);
-            return;
-        }
         try execPantryCommand(allocator, "install", args[2..]);
         return;
     }
     if (std.mem.eql(u8, command, "remove") or std.mem.eql(u8, command, "rm") or std.mem.eql(u8, command, "uninstall")) {
-        if (build_options.enable_jsc and envFlagSet("HOME_NATIVE_VM")) {
-            const ctx = try nativePackageCommandContext(args, .RemoveCommand);
-            try home_rt.cli.RemoveCommand.exec(ctx);
-            return;
-        }
         try execPantryCommand(allocator, "remove", args[2..]);
         return;
     }
