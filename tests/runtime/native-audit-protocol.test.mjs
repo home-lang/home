@@ -14,6 +14,8 @@ const definitions = [
   ['production-leaf', '1.0.0', {}],
   ['development-leaf', '1.0.0', {}],
   ['workspace-dev-only', '1.0.0', {}],
+  ['cycle-first', '1.0.0', { 'cycle-second': '1.0.0' }],
+  ['cycle-second', '1.0.0', { 'cycle-first': '1.0.0', bridge: '1.0.0' }],
 ]
 const packages = new Map()
 for (const [name, version, dependencies] of definitions) {
@@ -104,9 +106,19 @@ try {
   assert.deepEqual(audits.at(-1).body['workspace-dev-only'], ['1.0.0'])
   await run(['audit', '--prod'])
   assert.deepEqual(normalize(audits.at(-1).body), allProduction, 'exclude workspace dev-only edges')
+  // A real installed dependency cycle must terminate in both reachability
+  // and path reconstruction, retaining a valid path through the cycle.
+  manifest.dependencies['cycle-first'] = '1.0.0'
+  writeFileSync(join(directory, 'package.json'), JSON.stringify(manifest))
+  await run(['install'])
+  lock = readFileSync(join(directory, 'bun.lock'))
+  await run(['audit', '--prod'])
+  assert.deepEqual(audits.at(-1).body['cycle-first'], ['1.0.0'])
+  assert.deepEqual(audits.at(-1).body['cycle-second'], ['1.0.0'])
   response = { bridge: [advisory] }
   const report = (await run(['audit'], 1)).stdout
   assert.match(report, /Fixture advisory/)
+  assert.match(report, /cycle-first › cycle-second › bridge/, 'retain a valid path through cyclic dependencies')
   assert.doesNotMatch(report, /development-parent/, 'unaffected installed versions must not contribute advisory paths')
   assert.match(report, /workspace:audit-workspace › production-parent › bridge/, 'preserve each transitive workspace path component')
   response = { bridge: [advisory, { ...advisory, id: 700002, title: 'Second version advisory', vulnerable_versions: '>=2.0.0' }] }
