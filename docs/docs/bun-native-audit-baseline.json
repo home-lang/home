@@ -1,0 +1,43 @@
+{
+  "issue": "https://github.com/home-lang/home/issues/720",
+  "snapshot_issue": "https://github.com/home-lang/home/issues/721",
+  "parent": "https://github.com/home-lang/home/issues/66",
+  "status": "Build 46/46. Seven native private regressions pass, including an installed dependency cycle. Original link/binlink 11/11 per runtime. Original audit Home 15/16, pinned Bun 16/16; exactly one snapshot line differs, because its expected dependency edge does not exist in the pinned fixture (#721). All other representative paths now match. No original source or snapshot changed.",
+  "runtime_source": "9527449325f2d061fc79d49f17cec2047a6a5c81",
+  "private_test_source": "8c8c5774036656dcbb0dd1a965fa1bb86a1f8acf",
+  "home_sha256": "0046dc55ffe9ee96f1d67f2f909aa703ffd7d4b2aa2e77c34d836ae82cb805bb",
+  "bun_pin": "4982b91e3702094330f3be3883354c52b8c01323",
+  "ports": [
+    "Native audit command activation and leading flags.",
+    "Real gzip bulk POST, Bearer and Basic registry authentication, JSON/text reports, severity/ID filters and error statuses.",
+    "Production reachability keyed by resolved package IDs, including both production versions, workspace filtering and cycles.",
+    "Affected semver-aware report paths using actual dependency edges; ordered reports, representative traversal and complete workspace paths."
+  ],
+  "verification": {
+    "build_steps": 46,
+    "private_files_passed": 7,
+    "original_audit_home": {
+      "passed": 15,
+      "failed": 1,
+      "junit_cases": 16
+    },
+    "original_audit_bun": {
+      "passed": 16,
+      "failed": 0,
+      "junit_cases": 16
+    },
+    "original_link_cases_per_runtime": 11,
+    "original_sources_and_snapshots_unchanged": true,
+    "audit_does_not_mutate_lockfile": true
+  },
+  "remaining": [
+    "Pinned audit snapshot expects csrf/uid-safe@2.1.4 -> base64-url, but that package only depends on random-bytes. Home emits the actual express-session -> uid-safe@2.0.0 -> base64-url@1.2.1 path. This remains an original test failure; no snapshot replacement or false-edge workaround.",
+    "Native Windows execution, default CLI fallback removal, full corpus execution and independent build ownership remain incomplete."
+  ],
+  "evidence": [
+    "docs/docs/bun-port-evidence/2026-09-08-native-audit-before/manifest.json",
+    "docs/docs/bun-port-evidence/2026-09-08-native-audit-activation/manifest.json",
+    "docs/docs/bun-port-evidence/2026-09-08-native-audit-paths/manifest.json",
+    "docs/docs/bun-port-evidence/2026-09-08-native-audit-order/manifest.json"
+  ]
+}
