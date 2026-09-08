@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Scan the Bun corpus through the native full-VM path, categorizing each file as
-# pass / fail / slow / crash / hang / deps / oom / defer. Writes a TSV to the
+# pass / fail / crash / hang / deps / oom / defer. Writes a TSV to the
 # given out-file. `defer` means the supervisor never started the file (machine
 # lock unavailable, or the host had no room) -- a fact about the host, never a
 # verdict on the file.
@@ -16,17 +16,10 @@
 # because the first bound was 25s. Escalating only the files that hit a bound
 # keeps the scan fast and stops the bound from being mistaken for a defect.
 #
-# The same correction applies one level down, to the timeouts the corpus sets on
-# ITSELF. Those are calibrated for a release build, and a debug Home is several
-# times slower on compute-bound fixtures — the pathToFileURL leak fixture runs
-# its 256k-iteration loop in 6.0s against a 5s per-test default, so the file
-# reports a failure while the property under test (RSS 144 MB against a 250 MB
-# limit) is comfortably satisfied. A file whose ONLY failures are per-test
-# timeouts is therefore re-run once with a scaled `--timeout` and recorded as
-# `slow` if it then passes: still visibly not-a-pass, but not a parity gap
-# either. `cp.test.ts`, `abort-signal-leak-read-write-file.test.ts` and
-# `pathToFileURL.test.ts` were all this, and all three match pinned Bun exactly
-# once the debug build is given time proportional to its slowness.
+# Per-test deadlines remain exactly as specified by the original tests and
+# runner. A timeout failure remains a failure, including on a Debug build;
+# changing the deadline cannot establish compatibility with the original test.
+# This is still a triage scan, not a faithful complete upstream discovery gate.
 #
 # Usage: vm-corpus-scan.sh <subdir-under-corpus> <out.tsv> [timeout-secs]
 set -uo pipefail
@@ -44,9 +37,6 @@ TRIAGE_RSS="${HOME_TEST_MAX_RSS_MB:-4096}"
 # clear those rather than the scan's triage budget.
 ESC_TO="${VM_SCAN_ESCALATE_SECS:-180}"
 ESC_RSS="${VM_SCAN_ESCALATE_RSS_MB:-6144}"
-# Per-test timeout for the timeout-only re-run. Generous on purpose: the point
-# is to separate "too slow for a debug build" from "does not pass".
-ESC_TEST_TIMEOUT_MS="${VM_SCAN_ESCALATE_TEST_TIMEOUT_MS:-60000}"
 
 cd "$ROOT"
 : > "$OUT"
@@ -108,16 +98,7 @@ run_one() {
   fi
 }
 
-# True when every reported failure in the last run was a per-test timeout, so
-# the re-run is testing the clock and not papering over a real failure.
-timeouts_are_the_only_failures() {
-  local failures timeouts
-  failures=$(grep -cE '^\(fail\)' "$RUNLOG")
-  timeouts=$(grep -cE 'this test timed out after' "$RUNLOG")
-  [[ $failures -gt 0 && $failures -eq $timeouts ]]
-}
-
-pass=0 fail=0 crash=0 hang=0 deps=0 oom=0 slow=0 defer=0
+pass=0 fail=0 crash=0 hang=0 deps=0 oom=0 defer=0
 while IFS= read -r f; do
   rel="${f#"$ROOT"/}"
   run_one "$rel" "$TO" "$TRIAGE_RSS"
@@ -126,9 +107,6 @@ while IFS= read -r f; do
   # cost hours.
   if [[ "$status" == hang || "$status" == oom ]]; then
     run_one "$rel" "$ESC_TO" "$ESC_RSS"
-  elif [[ "$status" == fail ]] && timeouts_are_the_only_failures; then
-    run_one "$rel" "$ESC_TO" "$ESC_RSS" --timeout "$ESC_TEST_TIMEOUT_MS"
-    [[ "$status" == pass ]] && status=slow
   fi
   printf '%s\t%s\t%s\n' "$status" "$rel" "$sig" >> "$OUT"
   case "$status" in
@@ -138,11 +116,10 @@ while IFS= read -r f; do
     hang) hang=$((hang+1)) ;;
     deps) deps=$((deps+1)) ;;
     oom) oom=$((oom+1)) ;;
-    slow) slow=$((slow+1)) ;;
     defer) defer=$((defer+1)) ;;
   esac
 # `*.test.*` also matches sidecars that are not runnable files — `__snapshots__`
 # holds `<name>.test.ts.snap`, which the runner reports as a crash. Select the
 # executable extensions instead.
 done < <(find "$CORPUS/$SUB" \( -name "*.test.js" -o -name "*.test.jsx" -o -name "*.test.mjs" -o -name "*.test.cjs" -o -name "*.test.ts" -o -name "*.test.tsx" -o -name "*.test.mts" -o -name "*.test.cts" \) | sort)
-echo "SUB=$SUB pass=$pass fail=$fail slow=$slow crash=$crash hang=$hang deps=$deps oom=$oom defer=$defer total=$((pass+fail+slow+crash+hang+deps+oom+defer))"
+echo "SUB=$SUB pass=$pass fail=$fail crash=$crash hang=$hang deps=$deps oom=$oom defer=$defer total=$((pass+fail+crash+hang+deps+oom+defer))"

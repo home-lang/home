@@ -1420,3 +1420,12 @@ remaining adapter fallback. The historical adapter-based green result remains
 insufficient evidence of logical parity under
 [#66](https://github.com/home-lang/home/issues/66) and
 [#202](https://github.com/home-lang/home/issues/202).
+
+The native triage scanner no longer retries per-test timeout failures with
+`--timeout 60000` or reclassifies them as `slow`. Original deadlines remain part
+of acceptance, including for debug builds. A deliberately failing deadline
+fixture executed once under pinned Bun and remained classified as failed;
+this is a scanner negative control, not Home corpus coverage. Shell syntax and
+whitespace checks pass. Resource-bound confirmations, discovery completeness,
+mode/context reconciliation and full result preservation remain part of #703;
+the triage scanner is not the final acceptance gate.
