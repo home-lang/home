@@ -26,6 +26,22 @@ pub const Subset = enum {
     }
 };
 
+pub const FileExecution = struct {
+    relative_path: []const u8,
+    mode: NativeCorpusMode,
+    term: std.process.Child.Term,
+    timed_out: bool,
+    stdout: []const u8,
+    stderr: []const u8,
+};
+
+pub const RunOptions = struct {
+    /// Called after each child completes, before its capture is released.
+    /// Slices are borrowed for the duration of the call. Without a callback,
+    /// the summary owns each file's capture until Summary.deinit is called.
+    on_file: ?*const fn (FileExecution) anyerror!void = null,
+};
+
 pub const Summary = struct {
     files: usize = 0,
     passed: usize = 0,
@@ -47,8 +63,8 @@ pub const Summary = struct {
     first_failure_file_owned: bool = false,
     first_failure_message: []const u8 = "",
     first_failure_message_owned: bool = false,
-    stdout: []const u8 = "",
-    stdout_owned: bool = false,
+    executions: std.ArrayList(FileExecution) = .empty,
+    on_file: ?*const fn (FileExecution) anyerror!void = null,
 
     pub fn deinit(self: *Summary, allocator: std.mem.Allocator) void {
         if (self.first_failure_file_owned) {
@@ -57,15 +73,17 @@ pub const Summary = struct {
         if (self.first_failure_message_owned) {
             allocator.free(self.first_failure_message);
         }
-        if (self.stdout_owned) {
-            allocator.free(self.stdout);
+        for (self.executions.items) |execution| {
+            allocator.free(execution.relative_path);
+            allocator.free(execution.stdout);
+            allocator.free(execution.stderr);
         }
+        self.executions.deinit(allocator);
+        self.executions = .empty;
         self.first_failure_file = "";
         self.first_failure_file_owned = false;
         self.first_failure_message = "";
         self.first_failure_message_owned = false;
-        self.stdout = "";
-        self.stdout_owned = false;
     }
 
     pub fn addFileResult(self: *Summary, file: test_result.FileResult) void {
@@ -132,6 +150,10 @@ pub fn filesForSubset(subset: Subset) []const []const u8 {
 }
 
 pub fn runSubset(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8, subset: Subset) !Summary {
+    return runSubsetWithOptions(io, allocator, corpus_path, subset, .{});
+}
+
+pub fn runSubsetWithOptions(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8, subset: Subset, options: RunOptions) !Summary {
     if (!build_options.enable_jsc) {
         return .{
             .files = filesForSubset(subset).len,
@@ -140,7 +162,8 @@ pub fn runSubset(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8, 
         };
     }
 
-    var summary = Summary{};
+    var summary = Summary{ .on_file = options.on_file };
+    errdefer summary.deinit(allocator);
     for (filesForSubset(subset)) |relative| {
         try runIsolatedRelativeFile(io, allocator, corpus_path, relative, &summary);
     }
@@ -149,6 +172,10 @@ pub fn runSubset(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8, 
 }
 
 pub fn runGate(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8) !Summary {
+    return runGateWithOptions(io, allocator, corpus_path, .{});
+}
+
+pub fn runGateWithOptions(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8, options: RunOptions) !Summary {
     const test_files = corpus.collectTrackedTestFiles(io, allocator, corpus_path) catch |err| switch (err) {
         error.FileNotFound => return .{ .blocked = true, .reason = "corpus-not-found" },
         else => return err,
@@ -163,7 +190,8 @@ pub fn runGate(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8) !S
         };
     }
 
-    var summary = Summary{};
+    var summary = Summary{ .on_file = options.on_file };
+    errdefer summary.deinit(allocator);
     const show_progress = bunCorpusProgressEnabled();
     const range = bunCorpusRange(test_files.len);
     for (test_files[range.start..range.end], range.start..) |relative, index| {
@@ -182,6 +210,16 @@ pub fn runDirectory(
     corpus_path: []const u8,
     relative_directory: []const u8,
 ) !Summary {
+    return runDirectoryWithOptions(io, allocator, corpus_path, relative_directory, .{});
+}
+
+pub fn runDirectoryWithOptions(
+    io: Io,
+    allocator: std.mem.Allocator,
+    corpus_path: []const u8,
+    relative_directory: []const u8,
+    options: RunOptions,
+) !Summary {
     const test_files = corpus.collectTrackedDirectoryTestFiles(io, allocator, corpus_path, relative_directory) catch |err| switch (err) {
         error.FileNotFound => return .{ .blocked = true, .reason = "corpus-directory-not-found" },
         else => return err,
@@ -196,7 +234,8 @@ pub fn runDirectory(
         };
     }
 
-    var summary = Summary{};
+    var summary = Summary{ .on_file = options.on_file };
+    errdefer summary.deinit(allocator);
     const show_progress = bunCorpusProgressEnabled();
     for (test_files, 0..) |directory_relative, index| {
         const corpus_relative = try std.fs.path.join(allocator, &.{ relative_directory, directory_relative });
@@ -266,6 +305,10 @@ fn bunCorpusEnvUsize(name: [:0]const u8) ?usize {
 }
 
 pub fn runFile(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8, relative: []const u8) !Summary {
+    return runFileWithOptions(io, allocator, corpus_path, relative, .{});
+}
+
+pub fn runFileWithOptions(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8, relative: []const u8, options: RunOptions) !Summary {
     if (!build_options.enable_jsc) {
         return .{
             .files = 1,
@@ -274,7 +317,8 @@ pub fn runFile(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8, re
         };
     }
 
-    var summary = Summary{};
+    var summary = Summary{ .on_file = options.on_file };
+    errdefer summary.deinit(allocator);
     try runIsolatedRelativeFile(io, allocator, corpus_path, relative, &summary);
     return summary;
 }
@@ -310,7 +354,7 @@ fn parseNativeCorpusFlags(allocator: std.mem.Allocator, source: []const u8) !Own
     return result;
 }
 
-const NativeCorpusMode = enum { script, test_runner };
+pub const NativeCorpusMode = enum { script, test_runner };
 
 fn isNativeHomeCorpusFile(relative: []const u8) bool {
     return corpus.isJavaScriptFile(relative);
@@ -493,14 +537,6 @@ fn nativeCorpusFailureDiagnostic(
     );
 }
 
-fn appendSummaryStdout(allocator: std.mem.Allocator, summary: *Summary, stdout: []const u8) !void {
-    if (stdout.len == 0) return;
-    const combined = try std.mem.concat(allocator, u8, &.{ summary.stdout, stdout });
-    if (summary.stdout_owned) allocator.free(summary.stdout);
-    summary.stdout = combined;
-    summary.stdout_owned = true;
-}
-
 fn runIsolatedRelativeFile(
     io: Io,
     allocator: std.mem.Allocator,
@@ -549,7 +585,15 @@ fn runRelativeFile(
             .corpus_project_root = corpus_project_root,
         });
         defer native_run.deinit(allocator);
-        try appendSummaryStdout(allocator, summary, native_run.stdout);
+        const execution = FileExecution{
+            .relative_path = relative,
+            .mode = mode,
+            .term = native_run.term,
+            .timed_out = native_run.timed_out,
+            .stdout = native_run.stdout,
+            .stderr = native_run.stderr,
+        };
+        if (summary.on_file) |on_file| try on_file(execution);
 
         const counts = nativeCorpusTestCounts(native_run.stdout, native_run.stderr);
         if (isNativeExpectedFailureCorpusFile(relative)) {
@@ -596,6 +640,16 @@ fn runRelativeFile(
             }
         }
         summary.addFileResult(file_result);
+        if (summary.on_file == null) {
+            var owned = execution;
+            owned.relative_path = try allocator.dupe(u8, relative);
+            errdefer allocator.free(owned.relative_path);
+            try summary.executions.append(allocator, owned);
+            // Transfer the complete capture without copying growing aggregate
+            // buffers or dropping stderr from successful files.
+            native_run.stdout = &.{};
+            native_run.stderr = &.{};
+        }
         return;
     }
 
@@ -1054,6 +1108,7 @@ test "native corpus execution propagates real child and Node assertion failures"
         \\const assert = require("node:assert");
         \\for (let i = 0; i < 3; i++) assert.strictEqual(i + 1, 1 + i);
         \\console.log("manual assertions executed");
+        \\console.error("manual diagnostic retained");
     });
     try tmp.dir.writeFile(io, .{ .sub_path = "test/manual-failure.test.js", .data =
         \\require("node:assert").strictEqual(1, 2, "manual assertion fails");
@@ -1067,7 +1122,9 @@ test "native corpus execution propagates real child and Node assertion failures"
     try std.testing.expectEqual(@as(usize, 2), failed_child.failed);
     try std.testing.expectEqual(@as(usize, 1), failed_child.failed_files);
     try std.testing.expectEqual(@as(usize, 1), failed_child.passed);
-    try std.testing.expect(std.mem.indexOf(u8, failed_child.stdout, "real-child-exit=23") != null);
+    try std.testing.expectEqual(@as(usize, 1), failed_child.executions.items.len);
+    try std.testing.expect(std.mem.indexOf(u8, failed_child.executions.items[0].stdout, "real-child-exit=23") != null);
+    try std.testing.expect(std.mem.indexOf(u8, failed_child.executions.items[0].stderr, "second registered failure") != null);
     var failed_node = try runFile(io, allocator, root, "js/node/test/parallel/test-node-assertion.js");
     defer failed_node.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 1), failed_node.failed_files);
@@ -1082,7 +1139,8 @@ test "native corpus execution propagates real child and Node assertion failures"
     defer manual.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 1), manual.process_checks_passed);
     try std.testing.expectEqual(@as(usize, 0), manual.passed + manual.failed + manual.failed_files + manual.unsupported);
-    try std.testing.expect(std.mem.indexOf(u8, manual.stdout, "manual assertions executed") != null);
+    try std.testing.expect(std.mem.indexOf(u8, manual.executions.items[0].stdout, "manual assertions executed") != null);
+    try std.testing.expect(std.mem.indexOf(u8, manual.executions.items[0].stderr, "manual diagnostic retained") != null);
     var manual_failure = try runFile(io, allocator, root, "manual-failure.test.js");
     defer manual_failure.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 1), manual_failure.failed_files);
@@ -1100,4 +1158,43 @@ test "native corpus execution propagates real child and Node assertion failures"
     defer commented.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 0), commented.passed + commented.failed + commented.unsupported + commented.process_checks_passed + commented.failed_files);
     try std.testing.expectEqual(@as(usize, 1), commented.allowed_empty_files);
+
+    // A failing first file must not hide subsequent successful diagnostics.
+    // Streaming callers receive complete captures without accumulating them.
+    try tmp.dir.writeFile(io, .{
+        .sub_path = "test/BUN_TRACKED_FILES.txt",
+        .data = "child-failure.test.js\nmanual.test.js\n",
+    });
+    const Observer = struct {
+        var calls: usize = 0;
+
+        fn onFile(execution: FileExecution) !void {
+            try std.testing.expect(!execution.timed_out);
+            if (calls == 0) {
+                try std.testing.expectEqualStrings("child-failure.test.js", execution.relative_path);
+                try std.testing.expect(!nativeCorpusProcessSucceeded(execution.term, false));
+                try std.testing.expect(std.mem.indexOf(u8, execution.stderr, "second registered failure") != null);
+            } else {
+                try std.testing.expectEqualStrings("manual.test.js", execution.relative_path);
+                try std.testing.expect(nativeCorpusProcessSucceeded(execution.term, false));
+                try std.testing.expect(std.mem.indexOf(u8, execution.stdout, "manual assertions executed") != null);
+                try std.testing.expect(std.mem.indexOf(u8, execution.stderr, "manual diagnostic retained") != null);
+            }
+            calls += 1;
+        }
+
+        fn rejectOutput(_: FileExecution) !void {
+            return error.CaptureSinkFailed;
+        }
+    };
+    Observer.calls = 0;
+    var streamed = try runGateWithOptions(io, allocator, root, .{ .on_file = Observer.onFile });
+    defer streamed.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 2), Observer.calls);
+    try std.testing.expectEqual(@as(usize, 0), streamed.executions.items.len);
+    try std.testing.expectEqual(@as(usize, 1), streamed.passed);
+    try std.testing.expectEqual(@as(usize, 2), streamed.failed);
+    try std.testing.expectEqual(@as(usize, 1), streamed.failed_files);
+    try std.testing.expectEqual(@as(usize, 1), streamed.process_checks_passed);
+    try std.testing.expectError(error.CaptureSinkFailed, runFileWithOptions(io, allocator, root, "manual.test.js", .{ .on_file = Observer.rejectOutput }));
 }

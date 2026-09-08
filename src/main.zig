@@ -5139,6 +5139,17 @@ test "bun corpus subset parser accepts bundler transpiler bootstrap" {
     }
 }
 
+fn emitNativeCorpusExecution(execution: home_test.corpus_runner.FileExecution) !void {
+    std.debug.print("\n[home-bun-corpus] {s}: mode={s}, status={any}, timed_out={}\n", .{
+        execution.relative_path,
+        @tagName(execution.mode),
+        execution.term,
+        execution.timed_out,
+    });
+    try std.Io.File.stdout().writeStreamingAll(g_io, execution.stdout);
+    try std.Io.File.stderr().writeStreamingAll(g_io, execution.stderr);
+}
+
 fn printCorpusProcessCounts(passed: usize, failed: usize, skipped: usize, empty: usize) void {
     std.debug.print("process checks passed (no registered tests): {d}\n", .{passed});
     std.debug.print("file processes failed: {d}\n", .{failed});
@@ -5147,7 +5158,7 @@ fn printCorpusProcessCounts(passed: usize, failed: usize, skipped: usize, empty:
 }
 
 fn runBunCorpusNativeSubset(allocator: std.mem.Allocator, corpus_path: []const u8, subset: home_test.corpus_runner.Subset) !void {
-    var summary = try home_test.corpus_runner.runSubset(g_io, allocator, corpus_path, subset);
+    var summary = try home_test.corpus_runner.runSubsetWithOptions(g_io, allocator, corpus_path, subset, .{ .on_file = emitNativeCorpusExecution });
 
     if (summary.blocked) {
         std.debug.print("\n{s}Bun Corpus Native Subset: BLOCKED{s}\n", .{ Color.Yellow.code(), Color.Reset.code() });
@@ -5204,7 +5215,7 @@ fn runBunCorpusNativeGate(allocator: std.mem.Allocator, corpus_path: []const u8)
     const sha = Io.Dir.cwd().readFileAlloc(g_io, sha_path, allocator, std.Io.Limit.limited(256)) catch "unknown";
     defer if (!std.mem.eql(u8, sha, "unknown")) allocator.free(sha);
 
-    var summary = try home_test.corpus_runner.runGate(g_io, allocator, corpus_path);
+    var summary = try home_test.corpus_runner.runGateWithOptions(g_io, allocator, corpus_path, .{ .on_file = emitNativeCorpusExecution });
     defer summary.deinit(allocator);
 
     if (summary.blocked) {
@@ -5247,19 +5258,13 @@ fn runBunCorpusNativeGate(allocator: std.mem.Allocator, corpus_path: []const u8)
     if (no_tests) {
         std.debug.print("reason: no-tests-observed\n\n", .{});
     }
-    std.debug.print("Native Home corpus execution failed.\n\n", .{});
 
     if (failed) std.process.exit(1);
 }
 
 fn runBunCorpusNativeFile(allocator: std.mem.Allocator, corpus_path: []const u8, relative_path: []const u8) !void {
-    var summary = try home_test.corpus_runner.runFile(g_io, allocator, corpus_path, relative_path);
+    var summary = try home_test.corpus_runner.runFileWithOptions(g_io, allocator, corpus_path, relative_path, .{ .on_file = emitNativeCorpusExecution });
     defer summary.deinit(allocator);
-
-    if (summary.stdout.len != 0) {
-        const stdout_file = std.Io.File.stdout();
-        try stdout_file.writeStreamingAll(g_io, summary.stdout);
-    }
 
     if (summary.blocked) {
         std.debug.print("\n{s}Bun Corpus Native File: BLOCKED{s}\n", .{ Color.Yellow.code(), Color.Reset.code() });
@@ -5328,13 +5333,9 @@ fn runBunCorpusNativeFiles(allocator: std.mem.Allocator, args: []const [:0]const
             .file => |value| value,
             else => continue,
         };
-        var summary = try home_test.corpus_runner.runFile(g_io, allocator, file.corpus_path, file.relative_path);
+        var summary = try home_test.corpus_runner.runFileWithOptions(g_io, allocator, file.corpus_path, file.relative_path, .{ .on_file = emitNativeCorpusExecution });
         defer summary.deinit(allocator);
 
-        if (summary.stdout.len != 0) {
-            const stdout_file = std.Io.File.stdout();
-            try stdout_file.writeStreamingAll(g_io, summary.stdout);
-        }
         files += summary.files;
         passed += summary.passed;
         failed_tests += summary.failed;
@@ -5387,7 +5388,7 @@ fn runBunCorpusNativeDirectory(allocator: std.mem.Allocator, corpus_path: []cons
         else => return err,
     };
 
-    var summary = try home_test.corpus_runner.runDirectory(g_io, allocator, corpus_path, relative_path);
+    var summary = try home_test.corpus_runner.runDirectoryWithOptions(g_io, allocator, corpus_path, relative_path, .{ .on_file = emitNativeCorpusExecution });
     defer summary.deinit(allocator);
 
     if (summary.blocked) {
@@ -5428,7 +5429,6 @@ fn runBunCorpusNativeDirectory(allocator: std.mem.Allocator, corpus_path: []cons
     if (no_tests) {
         std.debug.print("reason: no-tests-observed\n\n", .{});
     }
-    std.debug.print("Native Home corpus execution failed.\n\n", .{});
 
     if (failed) std.process.exit(1);
 }
