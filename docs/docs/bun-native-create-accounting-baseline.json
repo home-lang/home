@@ -712,5 +712,10 @@
         "Full CI launch profile, full inventory execution, platform/service coverage, and independent build ownership remain unfinished."
       ]
     }
-  ]
+  ],
+  "local_artifact_availability": {
+    "status": "Raw logs and fixtures under zig-out/bun-port-703 and zig-out/bun-port-709 were lost when the worktree directory disappeared on 2026-09-08. Committed counts and hashes preserve the recorded observations, but those paths are no longer independently inspectable.",
+    "recovery_commit": "cb7d597e5f002ca32ec1342fa75370a1198943a9",
+    "latest_build_status": "The cb7d597e5 native lookup build was interrupted by directory removal; no completed verification result."
+  }
 }
