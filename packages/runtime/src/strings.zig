@@ -159,6 +159,7 @@ pub const elementLengthLatin1IntoUTF8 = @import("string/immutable.zig").elementL
 pub const encodeBytesToHex = @import("string/immutable.zig").encodeBytesToHex;
 pub const escapeHTMLForUTF16Input = @import("string/immutable.zig").escapeHTMLForUTF16Input;
 pub const indexOfCharPos = @import("string/immutable.zig").indexOfCharPos;
+pub const hasPrefixCaseInsensitive = @import("string/immutable.zig").hasPrefixCaseInsensitive;
 pub const indexOfAnyPosComptime = @import("string/immutable.zig").indexOfAnyPosComptime;
 pub const OptionalUsize = @import("string/immutable.zig").OptionalUsize;
 pub const codepointSize = @import("string/immutable.zig").codepointSize;

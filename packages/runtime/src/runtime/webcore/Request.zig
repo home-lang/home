@@ -446,22 +446,66 @@ pub fn getUrl(this: *Request, globalObject: *jsc.JSGlobalObject) bun.JSError!jsc
     return this.url.toJS(globalObject);
 }
 
+/// The path portion of an HTTP request-target.
+///
+/// RFC 9112 3.2.2 allows absolute-form (`GET https://host/path HTTP/1.1`).
+/// The authority in that request line is supplied by the client, so it must
+/// never reach `request.url` — the URL is built from the Host header instead.
+/// Without this, `GET https://spoofed.example/admin HTTP/1.1` with a genuine
+/// Host header produced `request.url == "https://spoofed.example/admin"`,
+/// which application code uses for origin checks and redirects.
+///
+/// Returned in two pieces so the rare "query but no path" form
+/// (`http://host?q=1` -> `/?q=1`) needs no allocation.
+/// Mirrors Bun's `Request::request_target_path` (webcore/Request.rs:875).
+const TargetPath = struct {
+    prefix: []const u8 = "",
+    rest: []const u8,
+
+    fn len(self: TargetPath) usize {
+        return self.prefix.len + self.rest.len;
+    }
+
+    fn startsWithSlash(self: TargetPath) bool {
+        if (self.prefix.len > 0) return self.prefix[0] == '/';
+        return self.rest.len > 0 and self.rest[0] == '/';
+    }
+};
+
+fn requestTargetPath(target: []const u8) TargetPath {
+    const scheme_len: usize = if (strings.hasPrefixCaseInsensitive(target, "https://"))
+        "https://".len
+    else if (strings.hasPrefixCaseInsensitive(target, "http://"))
+        "http://".len
+    else
+        return .{ .rest = target };
+
+    const path_start = strings.indexOfCharPos(target, '/', scheme_len);
+    const query_start = strings.indexOfCharPos(target, '?', scheme_len);
+
+    if (path_start) |ps| {
+        if (query_start == null or ps < query_start.?) return .{ .rest = target[ps..] };
+    }
+    if (query_start) |qs| return .{ .prefix = "/", .rest = target[qs..] };
+    return .{ .rest = "/" };
+}
+
 pub fn sizeOfURL(this: *const Request) usize {
     if (this.url.length() > 0)
         return this.url.byteSlice().len;
 
     if (this.request_context.getRequest()) |req| {
-        const req_url = req.url();
-        if (req_url.len > 0 and req_url[0] == '/') {
+        const req_url = requestTargetPath(req.url());
+        if (req_url.startsWithSlash()) {
             if (req.header("host")) |host| {
                 const fmt = bun.fmt.HostFormatter{
                     .is_https = this.flags.https,
                     .host = host,
                 };
-                return this.getProtocol().len + req_url.len + std.fmt.count("{f}", .{fmt});
+                return this.getProtocol().len + req_url.len() + std.fmt.count("{f}", .{fmt});
             }
         }
-        return req_url.len;
+        return req_url.len();
     }
 
     return 0;
@@ -478,17 +522,18 @@ pub fn ensureURL(this: *Request) bun.OOM!void {
     if (!this.url.isEmpty()) return;
 
     if (this.request_context.getRequest()) |req| {
-        const req_url = req.url();
-        if (req_url.len > 0 and req_url[0] == '/') {
+        const req_url = requestTargetPath(req.url());
+        if (req_url.startsWithSlash()) {
             if (req.header("host")) |host| {
                 const fmt = bun.fmt.HostFormatter{
                     .is_https = this.flags.https,
                     .host = host,
                 };
-                const url_bytelength = std.fmt.count("{s}{f}{s}", .{
+                const url_bytelength = std.fmt.count("{s}{f}{s}{s}", .{
                     this.getProtocol(),
                     fmt,
-                    req_url,
+                    req_url.prefix,
+                    req_url.rest,
                 });
 
                 if (comptime Environment.allow_assert) {
@@ -497,10 +542,11 @@ pub fn ensureURL(this: *Request) bun.OOM!void {
 
                 if (url_bytelength < 128) {
                     var buffer: [128]u8 = undefined;
-                    const url = std.fmt.bufPrint(&buffer, "{s}{f}{s}", .{
+                    const url = std.fmt.bufPrint(&buffer, "{s}{f}{s}{s}", .{
                         this.getProtocol(),
                         fmt,
-                        req_url,
+                        req_url.prefix,
+                        req_url.rest,
                     }) catch @panic("Unexpected error while printing URL");
 
                     if (comptime Environment.allow_assert) {
@@ -523,21 +569,23 @@ pub fn ensureURL(this: *Request) bun.OOM!void {
                     return;
                 }
 
-                if (strings.isAllASCII(host) and strings.isAllASCII(req_url)) {
+                if (strings.isAllASCII(host) and strings.isAllASCII(req_url.rest)) {
                     this.url, const bytes = bun.String.createUninitialized(.latin1, url_bytelength);
-                    _ = std.fmt.bufPrint(bytes, "{s}{f}{s}", .{
+                    _ = std.fmt.bufPrint(bytes, "{s}{f}{s}{s}", .{
                         this.getProtocol(),
                         fmt,
-                        req_url,
+                        req_url.prefix,
+                        req_url.rest,
                     }) catch |err| switch (err) {
                         error.NoSpaceLeft => unreachable, // exact space should have been counted
                     };
                 } else {
                     // slow path
-                    const temp_url = try std.fmt.allocPrint(bun.default_allocator, "{s}{f}{s}", .{
+                    const temp_url = try std.fmt.allocPrint(bun.default_allocator, "{s}{f}{s}{s}", .{
                         this.getProtocol(),
                         fmt,
-                        req_url,
+                        req_url.prefix,
+                        req_url.rest,
                     });
                     defer bun.default_allocator.free(temp_url);
                     this.url = bun.String.cloneUTF8(temp_url);
@@ -555,9 +603,15 @@ pub fn ensureURL(this: *Request) bun.OOM!void {
         }
 
         if (comptime Environment.allow_assert) {
-            bun.assert(this.sizeOfURL() == req_url.len);
+            bun.assert(this.sizeOfURL() == req_url.len());
         }
-        this.url = bun.String.cloneUTF8(req_url);
+        if (req_url.prefix.len == 0) {
+            this.url = bun.String.cloneUTF8(req_url.rest);
+        } else {
+            const joined = try std.fmt.allocPrint(bun.default_allocator, "{s}{s}", .{ req_url.prefix, req_url.rest });
+            defer bun.default_allocator.free(joined);
+            this.url = bun.String.cloneUTF8(joined);
+        }
     }
 }
 
