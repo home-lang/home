@@ -2753,6 +2753,7 @@ fn tryNativeDependencyCommand(args: []const [:0]const u8) !bool {
         },
         else => return false,
     }
+    home_rt.Output.flush();
     return true;
 }
 

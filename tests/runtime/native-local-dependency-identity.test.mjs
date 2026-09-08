@@ -82,7 +82,7 @@ try {
   writeFileSync(join(workspace, 'package.json'), JSON.stringify({ name: 'workspace-app', devDependencies: { [name]: workspaceOriginal } }))
   run(workspace, ['install', '--ignore-scripts'])
   run(workspace, ['--only-missing', 'add', workspaceTarget])
-  check(workspace, 'devDependencies', workspaceOriginal, '1.0.0', workspaceRoot)
+  check(workspace, 'devDependencies', workspaceOriginal, '1.0.0')
   run(workspace, ['install', '--frozen-lockfile', '--ignore-scripts'])
 } finally {
   rmSync(directory, { recursive: true, force: true })

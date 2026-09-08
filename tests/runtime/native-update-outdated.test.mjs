@@ -66,11 +66,19 @@ try {
   assert.equal(installed(), '1.0.0')
   published = 2
   const before = requests.length
-  const outdated = await run(['outdated'])
+  // Ordinary outdated honors Bun's five-minute manifest cache. Force is the
+  // public command option for discovering newly published versions immediately.
+  const cached = await run(['outdated'])
+  assert.doesNotMatch(cached, /native-update-fixture/)
+  assert.equal(requests.length, before)
+  const outdated = await run(['outdated', '--force'])
   assert.match(outdated, /native-update-fixture/)
   assert.match(outdated, /1\.0\.0/)
   assert.match(outdated, /1\.1\.0/)
   assert.ok(requests.slice(before).includes(`/${name}`), 'outdated must consult the registry')
+  const refreshed = requests.length
+  assert.match(await run(['outdated']), /native-update-fixture/)
+  assert.equal(requests.length, refreshed, 'ordinary outdated should reuse the refreshed manifest')
   const declined = await run(['update', '--interactive'], 'n\n')
   if (process.platform !== 'win32') {
     assert.match(declined, /\x1b\[\?2026h[\s\S]*native-update-fixture[\s\S]*\x1b\[\?2026l/)
