@@ -395,15 +395,22 @@ pub const FileSystemRouter = struct {
     pub fn finalize(
         this: *FileSystemRouter,
     ) callconv(.c) void {
+        // Clear before dropping each reference, mirroring the `.take()` in
+        // Bun's `FileSystemRouter::finalize`. Deref-without-clear lets a second
+        // finalize drop a reference this object no longer owns, which trips the
+        // refcount assert in `String.deref` (`hasAtLeastOneRef`).
         if (this.asset_prefix) |prefix| {
+            this.asset_prefix = null;
             prefix.deref();
         }
 
         if (this.origin) |prefix| {
+            this.origin = null;
             prefix.deref();
         }
 
         if (this.base_dir) |dir| {
+            this.base_dir = null;
             dir.deref();
         }
 
@@ -481,16 +488,26 @@ pub const MatchedRoute = struct {
             this.params_list_holder = .{};
         }
 
+        // Clear each field BEFORE dropping its reference, mirroring the
+        // `.take()` in Bun's `MatchedRoute` deinit. Without it a second deinit
+        // — this runs from the GC finalizer — derefs a reference this object no
+        // longer owns and trips the refcount assert in `String.deref`:
+        //     panic: reached unreachable code
+        //       wtf.zig:92 deref  <- filesystem_router.zig:485 deinit <- finalize
         if (this.origin) |o| {
+            this.origin = null;
             o.deref();
         }
 
         if (this.asset_prefix) |prefix| {
+            this.asset_prefix = null;
             prefix.deref();
         }
 
-        if (this.base_dir) |base|
+        if (this.base_dir) |base| {
+            this.base_dir = null;
             base.deref();
+        }
 
         bun.default_allocator.destroy(this);
     }
