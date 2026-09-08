@@ -12833,15 +12833,6 @@ const harness_prelude =
     \\  if (!source.includes("makeInput(depth)") || !source.includes("Bun.JSON5.parse") || !source.includes("Bun.JSONC.parse") || !source.includes("probe(parse, 64)")) return null;
     \\  return __home_spawn_completed("JSON5 probed\nJSONC probed\ndone\n", "", 0);
     \\}
-    \\function __home_spawn_fetch_body_clone_fixture(options) {
-    \\  if (!String(globalThis.__home_current_filename || "").includes("js/web/fetch/body-clone.test.ts")) return null;
-    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
-    \\  const evalIndex = cmd.indexOf("-e");
-    \\  if (evalIndex < 0) return null;
-    \\  const source = String(cmd[evalIndex + 1] || "");
-    \\  if (!source.includes("application/x-original-type-0000000000000001") || !source.includes("application/x-replaced-type-0000000000000002") || !source.includes("application/x-scribble-type-0000000000000003")) return null;
-    \\  return __home_spawn_completed("application/x-original-type-0000000000000001\nclone-ok\nchurn-ok\n", "", 0);
-    \\}
     \\function __home_spawn_formdata_tojson_fixture(options) {
     \\  if (!String(globalThis.__home_current_filename || "").includes("js/web/html/FormData.test.ts")) return null;
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -19286,8 +19277,6 @@ const harness_prelude =
     \\  if (transpilerInferConstraintFixture) return transpilerInferConstraintFixture;
     \\  const json5DepthProbeFixture = __home_spawn_json5_depth_probe_fixture(options);
     \\  if (json5DepthProbeFixture) return json5DepthProbeFixture;
-    \\  const fetchBodyCloneFixture = __home_spawn_fetch_body_clone_fixture(options);
-    \\  if (fetchBodyCloneFixture) return fetchBodyCloneFixture;
     \\  const formdataToJsonFixture = __home_spawn_formdata_tojson_fixture(options);
     \\  if (formdataToJsonFixture) return formdataToJsonFixture;
     \\  const issueQueueFixture = __home_spawn_issue_queue_fixture(options);
@@ -79454,14 +79443,6 @@ const harness_prelude =
     \\    },
     \\  };
     \\}
-    \\function __home_body_normalized_reader_chunks(chunks) {
-    \\  if (!String(globalThis.__home_current_filename || "").includes("js/web/fetch/body-clone.test.ts")) return chunks;
-    \\  const out = [];
-    \\  for (const chunk of chunks) {
-    \\    if (out.length === 0 || out[out.length - 1] !== chunk) out.push(chunk);
-    \\  }
-    \\  return out;
-    \\}
     \\function __home_chunks_to_text(chunks) {
     \\  let text = "";
     \\  for (const chunk of chunks || []) {
@@ -79483,14 +79464,14 @@ const harness_prelude =
     \\    const chunks = [];
     \\    function pump() {
     \\      return __home_then(reader.read(), result => {
-    \\        if (result.done) return __home_body_normalized_reader_chunks(chunks);
+    \\        if (result.done) return chunks;
     \\        chunks.push(result.value);
     \\        return pump();
     \\      });
     \\    }
     \\    return pump();
     \\  }
-    \\  if (body && Array.isArray(body.__home_chunks)) return Promise.resolve(__home_body_normalized_reader_chunks(body.__home_chunks.slice()));
+    \\  if (body && Array.isArray(body.__home_chunks)) return Promise.resolve(body.__home_chunks.slice());
     \\  return Promise.resolve([body]);
     \\}
     \\function __home_body_bytes_via_reader(body) {
@@ -79504,7 +79485,7 @@ const harness_prelude =
     \\      return __home_then(reader.read(), result => {
     \\        if (result.done) {
     \\          const bytes = [];
-    \\          for (const chunk of __home_body_normalized_reader_chunks(chunks)) {
+    \\          for (const chunk of chunks) {
     \\            const chunkBytes = __home_body_bytes_sync(chunk);
     \\            for (let i = 0; i < chunkBytes.length; i++) __home_array_append(bytes, chunkBytes[i]);
     \\          }
@@ -79526,7 +79507,7 @@ const harness_prelude =
     \\      return {
     \\        read() {
     \\          return __home_then(chunksPromise, value => {
-    \\            chunks = chunks || __home_body_normalized_reader_chunks(value || []);
+    \\            chunks = chunks || (value || []);
     \\            return index < chunks.length ? { done: false, value: chunks[index++] } : { done: true, value: undefined };
     \\          });
     \\        },
@@ -88349,9 +88330,6 @@ const harness_prelude =
     \\      return __home_make_spawn_stdin_pull_stream(underlyingSource);
     \\    }
     \\    if (String(globalThis.__home_current_filename || "").includes("js/web/fetch/fetch.stream.test.ts") && underlyingSource && underlyingSource.type !== "direct" && typeof underlyingSource.pull === "function") {
-    \\      return __home_make_spawn_stdin_pull_stream(underlyingSource);
-    \\    }
-    \\    if (String(globalThis.__home_current_filename || "").includes("js/web/fetch/body-clone.test.ts") && underlyingSource && typeof underlyingSource.pull === "function") {
     \\      return __home_make_spawn_stdin_pull_stream(underlyingSource);
     \\    }
     \\    if (String(globalThis.__home_current_filename || "").includes("js/node/async_hooks/AsyncLocalStorage.test.ts") && String(globalThis.__home_current_snapshot_name || "").includes("readable stream ") && typeof globalThis.__home_async_context_readable_stream === "function") {
@@ -100712,6 +100690,16 @@ fn isNativeHeadersResponseCorpusFile(relative: []const u8) bool {
         std.mem.eql(u8, relative, "js/web/fetch/response-cyclic-reference.test.ts");
 }
 
+fn isNativeBodyCorpusFile(relative: []const u8) bool {
+    return std.mem.eql(u8, relative, "js/web/fetch/body-async-iterator.test.ts") or
+        std.mem.eql(u8, relative, "js/web/fetch/body-clone.test.ts") or
+        std.mem.eql(u8, relative, "js/web/fetch/body-mixin-errors.test.ts") or
+        std.mem.eql(u8, relative, "js/web/fetch/body-stream-excess.test.ts") or
+        std.mem.eql(u8, relative, "js/web/fetch/body-stream.test.ts") or
+        std.mem.eql(u8, relative, "js/web/fetch/body.test.ts") or
+        std.mem.eql(u8, relative, "js/web/fetch/request-cyclic-reference.test.ts");
+}
+
 fn isNativeWebViewCorpusFile(relative: []const u8) bool {
     return std.mem.eql(u8, relative, "js/bun/webview/webview.test.ts") or
         std.mem.eql(u8, relative, "js/bun/webview/webview-chrome.test.ts") or
@@ -100904,6 +100892,7 @@ fn isNativeHomeCorpusFile(relative: []const u8) bool {
         isNativeWebViewCorpusFile(relative) or
         isNativeRequestCorpusFile(relative) or
         isNativeHeadersResponseCorpusFile(relative) or
+        isNativeBodyCorpusFile(relative) or
         isNativeHttpProxyCorpusFile(relative) or
         isNativeBunTestCorpusFile(relative) or
         isNativeBunTestHelperCorpusFile(relative) or
@@ -100955,6 +100944,7 @@ fn nativeCorpusMode(relative: []const u8) NativeCorpusMode {
         isNativeWebViewCorpusFile(relative) or
         isNativeRequestCorpusFile(relative) or
         isNativeHeadersResponseCorpusFile(relative) or
+        isNativeBodyCorpusFile(relative) or
         isNativeHttpProxyCorpusFile(relative) or
         isNativeBunTestCorpusFile(relative) or
         isNativePlatformAuditCorpusFile(relative) or
@@ -116449,29 +116439,56 @@ test "bootstrap runner mirrors Node HTTP early hints CRLF corpus" {
     try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
 }
 
-test "bootstrap runner mirrors fetch body clone corpus" {
+test "native body corpus executes the full seven-file matrix with upstream skips" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
-
-    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    const allocator = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(allocator, .{});
     defer threaded.deinit();
-    const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/web/fetch/body-clone.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
-    defer std.testing.allocator.free(source);
-    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/web/fetch/body-clone.test.ts");
-    defer prepared.deinit(std.testing.allocator);
-    try std.testing.expect(prepared.unsupported_reason == null);
-
-    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
-    defer runtime.deinit();
-    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
-    defer file_run.deinit(std.testing.allocator);
-
-    if (file_run.result.status() != .passed) {
-        std.debug.print("fetch body clone corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    const cases = [_]struct { path: []const u8, passed: usize, todo: usize = 0 }{
+        .{ .path = "js/web/fetch/body-async-iterator.test.ts", .passed = 2 },
+        .{ .path = "js/web/fetch/body-clone.test.ts", .passed = 25 },
+        .{ .path = "js/web/fetch/body-mixin-errors.test.ts", .passed = 2 },
+        .{ .path = "js/web/fetch/body-stream-excess.test.ts", .passed = 4 },
+        .{ .path = "js/web/fetch/body-stream.test.ts", .passed = 9086 },
+        .{ .path = "js/web/fetch/body.test.ts", .passed = 346, .todo = 4 },
+        .{ .path = "js/web/fetch/request-cyclic-reference.test.ts", .passed = 2 },
+    };
+    for (cases) |case| {
+        try std.testing.expect(isNativeBodyCorpusFile(case.path));
+        try std.testing.expect(isNativeHomeCorpusFile(case.path));
+        try std.testing.expectEqual(NativeCorpusMode.test_runner, nativeCorpusMode(case.path));
+        var summary = try runFile(threaded.io(), allocator, "packages/runtime/test/test", case.path);
+        defer summary.deinit(allocator);
+        if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != case.todo) {
+            std.debug.print("native body corpus mismatch for {s}: passed={} failed={} todo={} unsupported={} message={s}\n", .{ case.path, summary.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message });
+        }
+        try std.testing.expectEqual(@as(usize, 1), summary.files);
+        try std.testing.expectEqual(case.passed, summary.passed);
+        try std.testing.expectEqual(case.todo, summary.todo);
+        try std.testing.expectEqual(@as(usize, 0), summary.failed + summary.unsupported + summary.allowed_empty_files);
     }
-    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 25), file_run.result.passed);
-    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+    for ([_][]const u8{ "js/web/fetch/body-clone.fixture.ts", "js/web/fetch/body.test.js", "js/deno/fetch/body.test.ts" }) |path| {
+        try std.testing.expect(!isNativeBodyCorpusFile(path));
+    }
+}
+
+test "native body corpus removes clone substitutes and retains ownership workloads" {
+    const allocator = std.testing.allocator;
+    for ([_][]const u8{ "__home_spawn_fetch_body_clone_fixture", "__home_body_normalized_reader_chunks", "js/web/fetch/body-clone.test.ts" }) |needle| {
+        try std.testing.expect(std.mem.indexOf(u8, harness_prelude, needle) == null);
+    }
+    const cases = [_]struct { path: []const u8, retained: []const []const u8 }{
+        .{ .path = "body-clone.test.ts", .retained = &.{ "await using proc = Bun.spawn", "i < 8", "i < 64", "clone.headers.set", "application/x-original-type-0000000000000001", "expect(exitCode).toBe(0)" } },
+        .{ .path = "body.test.ts", .retained = &.{ "SZ = 2_000_000, WARM = 50, BLOCK = 40", "await using proc = Bun.spawn", "await run(BLOCK); Bun.gc(true)", "expect(block2).toBeLessThan(50)", "const it = skip ? test.skip : test" } },
+        .{ .path = "request-cyclic-reference.test.ts", .retained = &.{ "i < 10000", "Bun.gc(true)", "toBeLessThanOrEqual(100)", "body: req1.body", "controller.stream2 = req2" } },
+    };
+    for (cases) |case| {
+        const path = try std.fs.path.join(allocator, &.{ "packages/runtime/test/test/js/web/fetch", case.path });
+        defer allocator.free(path);
+        const source = try Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(1024 * 1024));
+        defer allocator.free(source);
+        for (case.retained) |needle| try std.testing.expect(std.mem.indexOf(u8, source, needle) != null);
+    }
 }
 
 test "bootstrap runner mirrors fetch blob write corpus" {
@@ -160678,7 +160695,7 @@ test "bootstrap TypeScript return stripping preserves ternary call false branche
     try std.testing.expect(std.mem.indexOf(u8, rewritten, "const cmd = [exe];") != null);
 }
 
-test "bootstrap runner preserves the full body stream matrix" {
+test "native body corpus preserves every upstream stream transport and conversion dimension" {
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
@@ -160687,19 +160704,15 @@ test "bootstrap runner preserves the full body stream matrix" {
     defer std.testing.allocator.free(source_path);
     const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
     defer std.testing.allocator.free(source);
-    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
-    defer prepared.deinit(std.testing.allocator);
-
-    try std.testing.expect(prepared.unsupported_reason == null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "{ name: \"http/3\", http3: true }") != null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Request.prototype.arrayBuffer") != null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Request.prototype.json") != null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "const useRequestObjectValues = [true, false]") != null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "for (let forceReadableStreamConversionFastPath of [true, false])") != null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "for (let withDelay of [false, true])") != null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "1024 * 1024 * 2") != null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "new DataView(bytes.buffer)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "for (let isDirectStream of [true, false])") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "{ name: \"http/3\", http3: true }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "Request.prototype.arrayBuffer") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "Request.prototype.json") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "const useRequestObjectValues = [true, false]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "for (let forceReadableStreamConversionFastPath of [true, false])") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "for (let withDelay of [false, true])") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "1024 * 1024 * 2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "new DataView(bytes.buffer)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "for (let isDirectStream of [true, false])") != null);
 }
 
 test "bootstrap runner preserves the WebCrypto generateKey vectors" {

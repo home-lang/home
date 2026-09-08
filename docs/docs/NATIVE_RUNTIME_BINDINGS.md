@@ -1240,3 +1240,74 @@ Chrome startup failure remains in [#694](https://github.com/home-lang/home/issue
 
 Verified optimized Home executable SHA-256:
 `f7e0abf6e3e75795c70f48221810814e986bcfa52c80cda7a6f614d82a29257f`.
+
+## Native body/stream corpus and clone substitute removal (#699)
+
+Seven original files in `js/web/fetch` now use Home's native test runner:
+`body-async-iterator`, `body-clone`, `body-mixin-errors`, `body-stream-excess`,
+`body-stream`, `body`, and `request-cyclic-reference`. The complete matrix
+includes all HTTP/3 transport cases, Request/Response conversion paths, direct
+and default streams, delayed and immediate consumers, child-process ownership
+checks and cyclic stream collection.
+
+The obsolete bootstrap clone path no longer fabricates subprocess output,
+deduplicates chunks based on the fixture filename, or selects special pull-stream
+handling for that filename. Both removed helper definitions and all call sites
+are gone. General chunk readers now retain their input chunks without the
+fixture-specific deduplication. The former bootstrap clone test executes all
+seven original files through the public native route; additional regressions
+retain every stream matrix dimension and check that the substitutes stay absent.
+
+Original workloads remain intact: eight sibling clones and 64 allocation-churn
+bodies in the ownership child; two-million-character body strings with the
+original 50-iteration initial phase, two 40-iteration measurement blocks and
+50 MB limit; and both 10,000-iteration Request cyclic-reference loops with their
+100-stream heap limit. All child code, GC calls, assertions and upstream skips
+are unchanged. No extra warm-up, retry, timeout increase or workload reduction
+is introduced.
+
+The next Blob activation/removal batch is
+[#700](https://github.com/home-lang/home/issues/700). Its six original files have
+separate strict-native Home and pinned Bun baselines of **65 passes / zero
+failures, skips or TODOs / 215 assertions / four snapshots per runtime**. These
+baselines used the previously published `649c3c48f` Home binary. Native ordinary
+routing and removal of the Blob UTF-16 child interception and simulated
+array-prototype descriptor remain pending there.
+
+Final optimized verification passes **46/46 build steps** and **23/23 focused
+harness steps / 4/4 tests**. Independent test metadata identifies the three named
+full-matrix, ownership/removal and stream-dimension regressions plus their
+registration guard. The ordinary grouped Home command executes all seven files
+and reports **9,467 passes / four upstream skips / zero failures / zero
+unsupported cases**. The existing summary records those four skips in its TODO
+counter. Files execute in isolated native child processes; this is not a
+single-VM full-suite aggregate.
+
+Adjacent grouped Headers/Response remains **170/170**. Bootstrap FormData
+boundary/crash coverage passes **5/5**, and microtasks pass **2/2**. The adjacent
+Request directory exposed an original deadline failure: its last clone-stress
+case took **5,899.42 ms** against the unchanged **5,000 ms** limit. That file
+reported **11 passes / one failure / 12 assertions**, with RSS deltas of 0–9 MB.
+The directory summary reports one failed file and 12 passes from the other
+three files.
+
+One subsequent diagnostic comparison per runtime passes the unchanged clone
+file in pinned Bun, previous Home and current Home. Their final clone cases take
+**1,406.89 ms**, **1,492.39 ms** and **889.05 ms**, respectively. These variable
+measurements do not erase the failed ordinary run or establish its cause. The
+original deadline failure remains open in
+[#701](https://github.com/home-lang/home/issues/701); no retry policy, extra
+warm-up, timeout change or reduced workload was introduced.
+
+The final corpus audit retains 12,990 identical regular files, five identical
+symlinks, one historical expectations-file difference and zero missing paths.
+Zig formatting, documentation Pickier and whitespace checks pass. This completes
+[#699](https://github.com/home-lang/home/issues/699)'s native body activation and
+clone-substitute removal. Remaining adapters, native build ownership, full
+aggregate/parity and the observed Request/Chrome deadline failures remain under
+[#66](https://github.com/home-lang/home/issues/66),
+[#202](https://github.com/home-lang/home/issues/202), #701 and
+[#694](https://github.com/home-lang/home/issues/694).
+
+Verified optimized Home executable SHA-256:
+`68fcba6aed61397b1fe94fe1c2e4291644e68324c6ee4097f2a9f5adfabc181f`.
