@@ -345,6 +345,7 @@ pub fn Path(comptime opts: Options) type {
             }
 
             var this = init();
+            errdefer this.deinit();
             switch (comptime opts.buf_type) {
                 .pool => {
                     const raw = try getFdPath(fd, this._buf.pooled);
@@ -1002,11 +1003,19 @@ fn PathBufferUnit(comptime Buffer: type) type {
 fn getFdPath(fd: anytype, buf: anytype) ![]const PathBufferUnit(@TypeOf(buf)) {
     const Child = PathBufferUnit(@TypeOf(buf));
     if (Child == u8) {
-        if (@TypeOf(fd) == std.posix.fd_t) return std.os.getFdPath(fd, buf);
-        if (@hasDecl(@TypeOf(fd), "native")) return std.os.getFdPath(fd.native(), buf);
-        if (@hasField(@TypeOf(fd), "fd")) return std.os.getFdPath(fd.fd, buf);
-        if (@hasField(@TypeOf(fd), "handle")) return std.os.getFdPath(fd.handle, buf);
-        return std.os.getFdPath(fd, buf);
+        const native_fd = if (@TypeOf(fd) == std.posix.fd_t)
+            fd
+        else if (@hasDecl(@TypeOf(fd), "native"))
+            fd.native()
+        else if (@hasField(@TypeOf(fd), "fd"))
+            fd.fd
+        else if (@hasField(@TypeOf(fd), "handle"))
+            fd.handle
+        else
+            @compileError("unsupported file descriptor type");
+        const file: std.Io.File = .{ .handle = native_fd, .flags = .{} };
+        const len = try file.realPath(std.Io.Threaded.global_single_threaded.io(), buf);
+        return buf[0..len];
     }
 
     if (comptime Environment.isWindows and Child == u16) {
