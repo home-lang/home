@@ -595,7 +595,19 @@ pub const Bin = extern struct {
                 const len = std.Io.Dir.cwd().readLink(io, abs_dest, &link_buf) catch return;
                 var resolved_buf: bun.PathBuffer = undefined;
                 const actual = path.joinAbsStringBufZ(path.dirname(abs_dest, .auto), &resolved_buf, &.{link_buf[0..len]}, .auto);
-                if (strings.eql(actual, abs_target)) _ = bun.sys.unlink(abs_dest);
+                if (strings.eql(actual, abs_target)) {
+                    _ = bun.sys.unlink(abs_dest);
+                    return;
+                }
+                // Directory aliases (for example /var -> /private/var) and
+                // the registered package link may spell the same target
+                // differently. Resolve only parents: the bin may be missing.
+                if (!strings.eql(std.fs.path.basename(actual), std.fs.path.basename(abs_target))) return;
+                var actual_parent_buf: bun.PathBuffer = undefined;
+                var expected_parent_buf: bun.PathBuffer = undefined;
+                const actual_parent_len = std.Io.Dir.cwd().realPathFile(io, path.dirname(actual, .auto), &actual_parent_buf) catch return;
+                const expected_parent_len = std.Io.Dir.cwd().realPathFile(io, path.dirname(abs_target, .auto), &expected_parent_buf) catch return;
+                if (strings.eql(actual_parent_buf[0..actual_parent_len], expected_parent_buf[0..expected_parent_len])) _ = bun.sys.unlink(abs_dest);
                 return;
             }
 
