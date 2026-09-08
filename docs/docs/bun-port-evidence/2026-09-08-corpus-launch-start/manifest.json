@@ -1,0 +1,59 @@
+{
+  "runtime_source": "fcd8ccb97",
+  "rule_audit_script_source": "b2a06493e",
+  "status": "Four focused launch tests pass. First unit compilation failure retained. Full native/harness build is pending; no production launch pass claimed. Generated fixture/cache cleanup inventories retained.",
+  "issues": [
+    66,
+    703
+  ],
+  "files": [
+    {
+      "source": "corpus-launch-unit-first.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-corpus-launch-start/corpus-launch-unit-first.log.gz",
+      "sha256": "c13cb26514b4ec0c79971154f7860dc18b6b7d59d89ba6175a06b67a91e0c481",
+      "uncompressed_bytes": 384
+    },
+    {
+      "source": "corpus-launch-unit-second.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-corpus-launch-start/corpus-launch-unit-second.log.gz",
+      "sha256": "12fe5a4f0a34e1fcdd3e12b934dc18b03ffd3deb1573d4842d69ebfbff2b3c0d",
+      "uncompressed_bytes": 489
+    },
+    {
+      "source": "corpus-launch-unit-final.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-corpus-launch-start/corpus-launch-unit-final.log.gz",
+      "sha256": "7ffb93572f3ac6f8d416643f33698921efab4b09872983449c82b512ac6d90ec",
+      "uncompressed_bytes": 489
+    },
+    {
+      "source": "corpus-launch-unit-formatted.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-corpus-launch-start/corpus-launch-unit-formatted.log.gz",
+      "sha256": "b82158b921bf8631fab0039cd8dc770c6b085c12fad14a002fae515ef2d79d38",
+      "uncompressed_bytes": 402
+    },
+    {
+      "source": "corpus-launch-cleanup.json.gz",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-corpus-launch-start/corpus-launch-cleanup.json.gz.gz",
+      "sha256": "e20598a874767f63d1f9cf86734b2d3f8e63ba98a110026b18b82b0f4e508585",
+      "uncompressed_bytes": 788784
+    },
+    {
+      "source": "corpus-launch-stale-create-fixtures.tar.gz",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-corpus-launch-start/corpus-launch-stale-create-fixtures.tar.gz.gz",
+      "sha256": "f72c721a85ae2bcf9d8bccf680aad3181c2aa3694286ab2187179835c5b8821e",
+      "uncompressed_bytes": 132663
+    },
+    {
+      "source": "corpus-launch-aged-cache-cleanup.json.gz",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-corpus-launch-start/corpus-launch-aged-cache-cleanup.json.gz.gz",
+      "sha256": "494a4156eaa3a0c2fd2643605ef71725fa7dc74eff679ad3b89bacf4121d33e1",
+      "uncompressed_bytes": 6556
+    },
+    {
+      "source": "corpus-launch-implementation-comment.md",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-corpus-launch-start/corpus-launch-implementation-comment.md.gz",
+      "sha256": "1ab5a303edf2c81dd9b71d095720f925ca737d597bbfbac6afb3321b7df07b5e",
+      "uncompressed_bytes": 1398
+    }
+  ]
+}
