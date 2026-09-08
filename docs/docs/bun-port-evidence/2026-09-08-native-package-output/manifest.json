@@ -1,0 +1,85 @@
+{
+  "status": "Three native runtime regressions pass. Original update 6/6 and interactive 31/31 pass in both runtimes. Original outdated Home 8 pass/8 missing-color failures; Bun 16 pass. Semver output stub replacement rebuild pending.",
+  "source_commit": "a6d65e2f4f4ebb58cc7237559bc4b1c21ddac72c",
+  "home_sha256": "a075ffc9fc860fe50d7d49a9efa5acb146b00da93e7f0c71daa41df9bb5cbea2",
+  "files": [
+    {
+      "source": "update-home.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-output/update-home.log.gz",
+      "sha256": "afb8ae1fd6c06362cbe5a069372ccb8d6012fa6ceaa98c6e4ed36356c0d941e4",
+      "uncompressed_bytes": 1170
+    },
+    {
+      "source": "native-local-dependency-identity.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-output/native-local-dependency-identity.log.gz",
+      "sha256": "eac5e67129c185a4c5e514362f587de9fa952d52db74c0355903307f7df277e5",
+      "uncompressed_bytes": 138
+    },
+    {
+      "source": "outdated-home.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-output/outdated-home.log.gz",
+      "sha256": "880c808e1be6d36d8058396c290725a75b5d57da66420bbee20df3453102bff4",
+      "uncompressed_bytes": 13095
+    },
+    {
+      "source": "update-bun.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-output/update-bun.log.gz",
+      "sha256": "1d71e60c5cb4455da9ee1e8f49336e5277a8ea996769858e68989c2e3278bbe2",
+      "uncompressed_bytes": 562
+    },
+    {
+      "source": "interactive-bun.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-output/interactive-bun.log.gz",
+      "sha256": "a95326eaae3d9df626a3276f49f8149b3a11f24ba1b4ee6b964af6bd9e5e29dc",
+      "uncompressed_bytes": 3330
+    },
+    {
+      "source": "outdated-bun.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-output/outdated-bun.log.gz",
+      "sha256": "f6b5cb2b730f8e53ae7f9f40a04d6df9aa81904cc51f9219343122891af84a16",
+      "uncompressed_bytes": 1284
+    },
+    {
+      "source": "manifest.json",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-output/manifest.json.gz",
+      "sha256": "de36674439eebdd86a206c9c0e3f8e1824ec20990e0a4b3fc54032de0ccd0931",
+      "uncompressed_bytes": 9112
+    },
+    {
+      "source": "native-update-outdated.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-output/native-update-outdated.log.gz",
+      "sha256": "3879de2013e756f44f60321c201fee98974ab3e01f647a60a3df0aded7c18180",
+      "uncompressed_bytes": 46
+    },
+    {
+      "source": "native-frozen-prerelease.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-output/native-frozen-prerelease.log.gz",
+      "sha256": "9e618c8c700df5feb8f5d0c794dca2c11356055cc7751687758d550bde2da49d",
+      "uncompressed_bytes": 44
+    },
+    {
+      "source": "interactive-home.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-output/interactive-home.log.gz",
+      "sha256": "f534aba589d225dc71a474e32be317171ed3cb349109512b8c6423250a4a4744",
+      "uncompressed_bytes": 3912
+    },
+    {
+      "source": "build-native-package-output.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-output/build-native-package-output.log.gz",
+      "sha256": "07310a4d2437b85713225d32d50675b95362ca79a175cbb109b6b95c4ddc5ba6",
+      "uncompressed_bytes": 3335
+    },
+    {
+      "source": "verify-native-package-output-fixed.py",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-output/verify-native-package-output-fixed.py.gz",
+      "sha256": "c35758d3e1262a45efd73326625823c1abf7a0a6f56e977be32abb5f2da2346d",
+      "uncompressed_bytes": 3954
+    },
+    {
+      "source": "generated-verdaccio-db.json",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-output/generated-verdaccio-db.json.gz",
+      "sha256": "a9fbc218cc7b1dd357482bb51ca0a63c3b107076e5179f53a099f3ca895bb4fa",
+      "uncompressed_bytes": 55
+    }
+  ]
+}

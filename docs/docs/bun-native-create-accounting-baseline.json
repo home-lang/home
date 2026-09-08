@@ -1047,7 +1047,7 @@
       "https://github.com/home-lang/home/issues/713",
       "https://github.com/home-lang/home/issues/716"
     ],
-    "status": "First full build passed. Original update: Home 6 passes/Bun 6. Original outdated: Home 16 failures/Bun 16 passes. Corrected local workspace fixture passes on the same native executable. Outdated output flush fix rebuild pending.",
+    "status": "Three native runtime regressions pass. Original update 6/6 and interactive 31/31 pass in both runtimes. Original outdated Home 8 pass/8 missing-color failures; Bun 16 pass. Semver output stub replacement rebuild pending.",
     "source_commits": [
       "8edab4469",
       "261764c6a",
@@ -1055,7 +1055,8 @@
       "24bdc3ea3",
       "2c83f9952",
       "6a183ad72",
-      "a6d65e2f4"
+      "a6d65e2f4",
+      "831196dbd"
     ],
     "before_failures": [
       "Local --only-missing install writes two identical package keys with different folder paths.",
@@ -1080,6 +1081,8 @@
       "The local workspace fixture initially assumed root hoisting; both executables actually install this folder inside workspace node_modules. Corrected local regression now passes all scenarios.",
       "Bun manifest cache uses five-minute freshness. The private dynamic registry regression now checks a cache hit, public --force refresh, and subsequent cached reporting, instead of incorrectly expecting immediate ordinary revalidation.",
       "The remaining-interactive diagnostic bypassed only the already retained failing outdated assertions for diagnosis; it is not a full regression pass."
-    ]
+    ],
+    "output_verification_manifest": "docs/docs/bun-port-evidence/2026-09-08-native-package-output/manifest.json",
+    "local_identity_issue_status": "Closed #713 after complete raw-key/installed-content/frozen-lock regression passed, including the corrected workspace fixture."
   }
 }
