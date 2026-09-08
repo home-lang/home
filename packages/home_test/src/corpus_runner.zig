@@ -31,6 +31,7 @@ pub const FileExecution = struct {
     mode: NativeCorpusMode,
     term: std.process.Child.Term,
     timed_out: bool,
+    timeout_ms: i64,
     stdout: []const u8,
     stderr: []const u8,
 };
@@ -515,13 +516,14 @@ fn stripAnsi(input: []const u8, buffer: []u8) []const u8 {
 
 fn nativeCorpusFailureDiagnostic(
     allocator: std.mem.Allocator,
+    timeout_ms: i64,
     term: std.process.Child.Term,
     timed_out: bool,
     stdout: []const u8,
     stderr: []const u8,
 ) ![]u8 {
     const outcome = if (timed_out)
-        try allocator.dupe(u8, "timed out after 120 seconds")
+        try std.fmt.allocPrint(allocator, "timed out after {d} milliseconds", .{timeout_ms})
     else switch (term) {
         .exited => |code| try std.fmt.allocPrint(allocator, "exited with code {d}", .{code}),
         .signal => |signal| try std.fmt.allocPrint(allocator, "terminated by SIG{s}", .{@tagName(signal)}),
@@ -583,6 +585,7 @@ fn runRelativeFile(
 
         var native_run = try jsc_bootstrap.runHomeCapturedWithOptions(allocator, test_thread_id, args_tail, .{
             .corpus_project_root = corpus_project_root,
+            .corpus_file = .{ .relative_path = relative, .node_test = corpus.isNodeTestFile(relative), .test_runner = mode == .test_runner },
         });
         defer native_run.deinit(allocator);
         const execution = FileExecution{
@@ -590,6 +593,7 @@ fn runRelativeFile(
             .mode = mode,
             .term = native_run.term,
             .timed_out = native_run.timed_out,
+            .timeout_ms = native_run.timeout_ms,
             .stdout = native_run.stdout,
             .stderr = native_run.stderr,
         };
@@ -619,6 +623,7 @@ fn runRelativeFile(
                 summary.failed_files += 1;
                 const diagnostic = try nativeCorpusFailureDiagnostic(
                     allocator,
+                    native_run.timeout_ms,
                     native_run.term,
                     native_run.timed_out,
                     native_run.stdout,
@@ -1072,6 +1077,53 @@ test "native corpus execution preserves flags and explicit project configuration
     try std.testing.expectEqualStrings("--experimental-stream-iter", args[2]);
     try std.testing.expectEqualStrings("--no-warnings", args[3]);
     try std.testing.expectEqualStrings("/corpus/test/node.js", args[4]);
+}
+
+test "native corpus launch applies CI environment and removes per-file storage" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "test");
+    try tmp.dir.writeFile(io, .{ .sub_path = "bunfig.toml", .data = "[test]\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "test/launch.test.js", .data =
+        \\import { test, expect } from "bun:test";
+        \\import { realpathSync } from "node:fs";
+        \\console.log("launch-temp=" + process.env.TEST_TMPDIR);
+        \\test("CI startup and real command aliases", () => {
+        \\  for (const key of ["BUN_GARBAGE_COLLECTOR_LEVEL", "BUN_FEATURE_FLAG_INTERNAL_FOR_TESTING"]) expect(process.env[key]).toBe("1");
+        \\  expect(process.env.BUN_JSC_randomIntegrityAuditRate).toBe("1.0");
+        \\  expect(process.env.BUN_RUNTIME_TRANSPILER_CACHE_PATH).toBe("0");
+        \\  expect(process.env.BUN_INSTALL_CACHE_DIR).toBe(process.env.TEST_TMPDIR);
+        \\  expect(process.env.BUN_TMPDIR).toBe(process.env.TEST_TMPDIR);
+        \\  expect(process.env.GITHUB_ACTIONS).toBe("true");
+        \\  for (const command of ["bun", "home"]) {
+        \\    const child = Bun.spawnSync([command, "-e", "console.log(require('node:fs').realpathSync(process.execPath)); process.exit(17)"]);
+        \\    expect(child.exitCode).toBe(17);
+        \\    expect(child.stdout.toString().trim()).toBe(realpathSync(process.execPath));
+        \\  }
+        \\});
+    });
+    const root = try tmp.dir.realPathFileAlloc(io, "test", allocator);
+    defer allocator.free(root);
+    var previous: ?[]u8 = null;
+    defer if (previous) |path| allocator.free(path);
+    for (0..2) |_| {
+        var summary = try runFile(io, allocator, root, "launch.test.js");
+        defer summary.deinit(allocator);
+        if (summary.failed_files != 0) std.debug.print("{s}\n", .{summary.first_failure_message});
+        try std.testing.expectEqual(@as(usize, 0), summary.failed_files);
+        try std.testing.expectEqual(@as(usize, 1), summary.passed);
+        const execution = summary.executions.items[0];
+        try std.testing.expectEqual(@as(i64, 180_000), execution.timeout_ms);
+        const start = (std.mem.indexOf(u8, execution.stdout, "launch-temp=") orelse return error.MissingLaunchDiagnostic) + "launch-temp=".len;
+        const end = std.mem.indexOfScalarPos(u8, execution.stdout, start, '\n') orelse execution.stdout.len;
+        const path = std.mem.trim(u8, execution.stdout[start..end], "\r");
+        try std.testing.expectError(error.FileNotFound, Io.Dir.cwd().access(io, path, .{}));
+        if (previous) |old| try std.testing.expect(!std.mem.eql(u8, old, path)) else previous = try allocator.dupe(u8, path);
+    }
+    try Io.Dir.cwd().access(io, root, .{});
 }
 
 test "native corpus execution propagates real child and Node assertion failures" {

@@ -1,6 +1,7 @@
 const std = @import("std");
 const home_rt = @import("home_rt");
 const runner = @import("../runner.zig");
+const corpus_launch = @import("../corpus_launch.zig");
 
 const Io = std.Io;
 extern fn mi_stats_get_json(size: usize, buffer: ?[*:0]u8) ?[*:0]u8;
@@ -5835,6 +5836,7 @@ const SpawnSyncCapturedResult = struct {
 };
 
 pub const HomeCapturedResult = struct {
+    timeout_ms: i64 = home_corpus_child_timeout_ms,
     term: std.process.Child.Term,
     stdout: []u8,
     stderr: []u8,
@@ -5854,9 +5856,12 @@ const HomeCapturedInvocation = struct {
     executable: []u8,
     argv: [][]const u8,
     environ_map: std.process.Environ.Map,
+    profile: ?corpus_launch.Profile = null,
+    timeout_arg: ?[]u8 = null,
 
     fn deinit(self: *HomeCapturedInvocation, allocator: std.mem.Allocator) void {
         self.environ_map.deinit();
+        if (self.timeout_arg) |arg| allocator.free(arg);
         allocator.free(self.argv);
         allocator.free(self.executable);
         self.* = undefined;
@@ -5867,12 +5872,15 @@ pub const HomeCapturedOptions = struct {
     // The mirrored Bun project directory, whose test/ child is the corpus.
     // Ordinary captured invocations retain their inherited launch context.
     corpus_project_root: ?[]const u8 = null,
+    corpus_file: ?corpus_launch.File = null,
+    // Owned by runHomeCapturedWithOptions for one invocation.
+    storage: ?corpus_launch.Storage = null,
 };
 
 /// Run one prepared corpus fixture through the native Home executable.
 ///
-/// `args_tail` is appended verbatim after the executable and must already be
-/// ordered as `run` or `test`, flags..., absolute fixture path. The returned output is
+/// `args_tail` must be ordered as `run` or `test`, flags..., absolute fixture
+/// path. Corpus files also receive the upstream per-test default and reporter. The returned output is
 /// owned by `allocator` and must be released with `HomeCapturedResult.deinit`.
 pub fn runHomeCaptured(
     allocator: std.mem.Allocator,
@@ -5891,29 +5899,51 @@ pub fn runHomeCapturedWithOptions(
     var inherited_env = try inheritedEnvironmentMap(allocator);
     defer inherited_env.deinit();
 
+    var threaded = std.Io.Threaded.init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var launch_options = options;
+    var storage = if (options.corpus_file != null) try corpus_launch.Storage.create(allocator, io, &inherited_env) else null;
+    defer if (storage) |*owned| owned.deinit(allocator);
+    errdefer if (storage) |owned| owned.cleanup(io) catch |err| {
+        std.log.err("corpus temporary cleanup failed for {s}: {s}", .{ owned.path, @errorName(err) });
+    };
+    launch_options.storage = storage;
     var invocation = try prepareHomeCapturedInvocation(
         allocator,
         &inherited_env,
         test_thread_id,
         args_tail,
-        options,
+        launch_options,
     );
     defer invocation.deinit(allocator);
-
-    var threaded = std.Io.Threaded.init(allocator, .{});
-    defer threaded.deinit();
-    const captured = try runSpawnSyncCaptured(allocator, threaded.io(), .{
+    if (storage) |owned| {
+        const resolved = try corpus_launch.resolveExecutable(allocator, io, &inherited_env, invocation.executable);
+        allocator.free(invocation.executable);
+        invocation.executable = resolved;
+        invocation.argv[0] = resolved;
+        try owned.linkExecutable(allocator, io, resolved);
+    }
+    if (invocation.profile) |selected| {
+        try corpus_launch.applyValidation(allocator, io, &invocation.environ_map, selected, options.corpus_file.?, options.corpus_project_root orelse return error.MissingCorpusProject);
+    }
+    const timeout_ms = if (invocation.profile) |selected| selected.file_timeout_ms else home_corpus_child_timeout_ms;
+    const captured = try runSpawnSyncCaptured(allocator, io, .{
         .argv = invocation.argv,
         .cwd = if (options.corpus_project_root) |path| .{ .path = path } else .inherit,
         .environ_map = &invocation.environ_map,
-        .timeout_ms = home_corpus_child_timeout_ms,
+        .timeout_ms = timeout_ms,
         .kill_process_group = true,
     });
+    errdefer allocator.free(captured.stdout);
+    errdefer allocator.free(captured.stderr);
+    if (storage) |owned| try owned.cleanup(io);
     return .{
         .term = captured.term,
         .stdout = captured.stdout,
         .stderr = captured.stderr,
         .timed_out = captured.timed_out,
+        .timeout_ms = timeout_ms,
     };
 }
 
@@ -5949,7 +5979,7 @@ fn prepareHomeCapturedInvocation(
         // through the corpus adapter that launched this child.
         try environ_map.put("HOME_CORPUS_FULL_VM", "1");
     }
-    try environ_map.put("NO_COLOR", "1");
+    if (options.corpus_file == null) try environ_map.put("NO_COLOR", "1");
     try environ_map.put("TEST_THREAD_ID", test_thread_id);
     if (options.corpus_project_root != null) {
         // Match test/harness.ts startup prerequisites before the VM initializes.
@@ -5970,15 +6000,33 @@ fn prepareHomeCapturedInvocation(
         try preferredHomeExecutablePathAlloc(allocator);
     errdefer allocator.free(executable);
 
-    const argv = try allocator.alloc([]const u8, args_tail.len + 1);
+    const selected = if (options.corpus_file) |file| corpus_launch.profile(file, executable) else null;
+    if (selected) |value| {
+        const storage = options.storage orelse return error.MissingCorpusStorage;
+        const runtime_path = try std.fmt.allocPrint(allocator, "{s}{c}{s}", .{ storage.bin_path, std.fs.path.delimiter, std.fs.path.dirname(executable) orelse "." });
+        defer allocator.free(runtime_path);
+        try corpus_launch.applyEnvironment(allocator, &environ_map, value, storage.path, runtime_path);
+    }
+    const timeout_arg = if (selected) |value| (if (value.test_timeout_ms) |ms| try std.fmt.allocPrint(allocator, "--timeout={d}", .{ms}) else null) else null;
+    errdefer if (timeout_arg) |arg| allocator.free(arg);
+    const extra: usize = if (timeout_arg != null) 2 else 0;
+    const argv = try allocator.alloc([]const u8, args_tail.len + 1 + extra);
     errdefer allocator.free(argv);
     argv[0] = executable;
-    @memcpy(argv[1..], args_tail);
+    if (timeout_arg) |arg| {
+        if (args_tail.len < 2) return error.MissingCorpusFileArgument;
+        @memcpy(argv[1..args_tail.len], args_tail[0 .. args_tail.len - 1]);
+        argv[args_tail.len] = arg;
+        argv[args_tail.len + 1] = "--reporter=dots";
+        argv[args_tail.len + 2] = args_tail[args_tail.len - 1];
+    } else @memcpy(argv[1..], args_tail);
 
     return .{
         .executable = executable,
         .argv = argv,
         .environ_map = environ_map,
+        .profile = selected,
+        .timeout_arg = timeout_arg,
     };
 }
 
