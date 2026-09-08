@@ -530,7 +530,7 @@ pub const UpdateInteractiveCommand = struct {
 
                 // Reset the timer to show actual install time instead of total command time
                 var install_ctx = ctx;
-                install_ctx.start_time = std.time.nanoTimestamp();
+                install_ctx.start_time = bun.nanoTimestamp();
 
                 try PackageManager.installWithManager(manager, install_ctx, PackageManager.root_package_json_path, manager.root_dir.dir);
             }
