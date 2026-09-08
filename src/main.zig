@@ -5567,6 +5567,22 @@ fn testCommand(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
 /// Test options struct
 pub fn main(init: std.process.Init) !void {
     g_io = init.io;
+    // WebKit must run on process thread 0 with a CoreFoundation-owned event
+    // loop. The parent therefore launches this same executable with the IPC fd
+    // in the environment. Honor that private entry before output, allocators,
+    // standalone payload detection, or any JSC runtime initialization.
+    if (comptime build_options.enable_jsc and native_os == .macos) {
+        if (home_rt.env_var.BUN_INTERNAL_WEBVIEW_HOST.get()) |fd_str| {
+            const fd = std.fmt.parseInt(u31, fd_str, 10) catch {
+                std.debug.panic("Invalid BUN_INTERNAL_WEBVIEW_HOST fd: {s}", .{fd_str});
+            };
+            const host_main = @extern(
+                *const fn (i32) callconv(.c) noreturn,
+                .{ .name = "Bun__WebView__hostMain" },
+            );
+            host_main(fd);
+        }
+    }
     if (comptime build_options.enable_jsc) {
         // The Home CLI does not enter through bun.js.Run, whose shutdown path
         // normally retains the public N-API/libuv/V8 symbols for dlopen().

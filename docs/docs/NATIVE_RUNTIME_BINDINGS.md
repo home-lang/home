@@ -976,3 +976,82 @@ passes **69/69** in Debug and ReleaseFast; native `home_rt` passes **1,827 / 19
 skipped / 0 failed**. No assertion, workload, deadline, or skip was weakened.
 This closes [#676](https://github.com/home-lang/home/issues/676); full suite
 parity remains open under [#66](https://github.com/home-lang/home/issues/66).
+
+## WebView host startup and native corpus restoration (#693)
+
+Home now handles `BUN_INTERNAL_WEBVIEW_HOST` before normal CLI dispatch,
+standalone payload detection, or JavaScriptCore initialization. On macOS the
+private child entry validates the inherited descriptor as a nonnegative `u31`
+and enters `Bun__WebView__hostMain`, letting WebKit own the process main thread
+and CoreFoundation event loop. The parent continues to launch Home's own
+executable and communicate over its native socket pair.
+
+The shell integration matrix and both complete WebView matrices now route to
+the native test runner. Their whole-file `test.todo` replacements and the
+`rewriteNativeTodoCorpus` helper are removed. Chrome WebSocket transport keeps
+its existing native route. The original source files, assertions, workloads,
+and deadlines are preserved; upstream TODOs remain visible and do not count
+as implemented behavior.
+
+This is startup and corpus-routing integration. WebView's C++ backend is still
+linked from the configured external Bun artifacts described above. Its source
+mirror does not establish independent Home build ownership or cross-platform
+verification. Other corpus adapters, upstream TODOs/skips, and the full suite
+remain under [#202](https://github.com/home-lang/home/issues/202) and
+[#66](https://github.com/home-lang/home/issues/66).
+
+A tracked-path audit against Bun `4982b91e3702094330f3be3883354c52b8c01323`
+finds all **12,996 paths present**: 12,990 byte-identical regular files, five
+identical symlinks (including one intentionally dangling fixture symlink), and
+one different `expectations.txt`.
+The expectation difference removes four upstream FAIL entries (bunx and three
+HTTP/2 files); executable test sources are unchanged. This is a source-integrity
+audit, not a passing-suite claim.
+
+Both optimized native builds pass **46/46 steps**. With the final binary,
+the complete unchanged WebKit file passes **57 / 1 upstream TODO / 0 failures /
+141 assertions**, and shell passes **378 / 83 upstream TODOs / 0 failures /
+1,035 assertions**. The first strict Chrome run reports **51 pass / 1 failure /
+117 assertions**: its first navigation exceeds the original five-second
+deadline. Pinned Bun passes **52/52 / 117 assertions**. Five alternating
+fresh-process two-test startup probes pass in both binaries; a later full
+ordinary Home corpus route passes **52/52**. These passing probes and the later
+run do not erase the initial failure, now tracked in
+[#694](https://github.com/home-lang/home/issues/694).
+
+The four ordinary corpus routes execute **487 passes / 89 upstream TODOs /
+0 failures / 0 unsupported registrations**. The Chrome WebSocket file supplies
+**zero passes and five TODOs**; it contributes no implemented behavior. No
+production retry, warm-up, sleep, deadline extension, or assertion rewrite was
+added. Whole-suite parity and Chrome startup reliability remain incomplete.
+
+Zig formatting, documentation Pickier, and whitespace checks pass. Full
+repository Pickier reports the previously recorded **59,302 findings (31,238
+errors and 28,064 warnings)**; no passing repository-wide lint claim is made.
+The README's `~/Code/Apps/settlers-iii` checkout is absent on this host, so its
+integration gate is unavailable.
+
+The optimized aggregate (`zig build test --summary all -j2
+-Doptimize=ReleaseFast`) does **not** pass. Its completed native runtime unit
+artifact reports **1,826 passes / 19 skips / 0 failures**. TypeScript
+conformance reports **1,418 passes / 1 failure** in `objectRestAssignment`
+([#695](https://github.com/home-lang/home/issues/695)). Both Bake integration
+scripts fail with ReleaseFast shared runtime modules; the scripts assume
+experimental Bake is enabled, and a separate explicit opt-in reproduction
+confirms Home's shared feature flags still ignore that switch
+([#696](https://github.com/home-lang/home/issues/696)). This is not a claim about
+the default Debug aggregate's Bake result.
+
+The corpus unit artifact reaches **13.7 GB sampled footprint / 14.4 GB peak**
+in its existing bootstrap Request-allocation stress test. That process was
+terminated, and the aggregate was stopped when its runner launched another
+corpus process. The aggregate exits 143 and remains incomplete; original
+workloads and thresholds are unchanged
+([#697](https://github.com/home-lang/home/issues/697)). The new shell/WebView
+source-restoration regression was then executed alone through the compiled
+artifact's standard Zig test-server protocol: **1 pass, zero logged errors,
+zero leaks**. The artifact contains 1,465 tests; no pass credit is assigned to
+unrequested tests.
+
+Verified optimized Home executable SHA-256:
+`33e631b52e174a4afe87b306d387ee1669c4930e94eb533a9b5862cc2305feba`.

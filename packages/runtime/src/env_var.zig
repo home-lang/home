@@ -16,6 +16,7 @@ pub const AGENT = @import("bun_core/env_var.zig").AGENT;
 pub const BUN_DEBUG = @import("bun_core/env_var.zig").BUN_DEBUG;
 pub const BUN_DEBUG_ALL = @import("bun_core/env_var.zig").BUN_DEBUG_ALL;
 pub const BUN_DEBUG_QUIET_LOGS = @import("bun_core/env_var.zig").BUN_DEBUG_QUIET_LOGS;
+pub const BUN_INTERNAL_WEBVIEW_HOST = @import("bun_core/env_var.zig").BUN_INTERNAL_WEBVIEW_HOST;
 pub const CLAUDECODE = @import("bun_core/env_var.zig").CLAUDECODE;
 pub const COLORTERM = @import("bun_core/env_var.zig").COLORTERM;
 pub const GITHUB_ACTIONS = @import("bun_core/env_var.zig").GITHUB_ACTIONS;

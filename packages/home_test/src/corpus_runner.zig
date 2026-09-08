@@ -95627,16 +95627,6 @@ fn rewriteVmSourceUrlCorpus(allocator: std.mem.Allocator, source: []const u8) ![
     );
 }
 
-fn rewriteNativeTodoCorpus(allocator: std.mem.Allocator, label: []const u8) ![]u8 {
-    var out = std.ArrayList(u8).empty;
-    defer out.deinit(allocator);
-    try out.appendSlice(allocator, "import { test } from \"bun:test\";\n");
-    try out.appendSlice(allocator, "test.todo(");
-    try appendJsStringLiteral(&out, allocator, label);
-    try out.appendSlice(allocator, ");\n");
-    return out.toOwnedSlice(allocator);
-}
-
 fn rewriteBunServeStaticCorpus(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     const with_logical_batch = try std.mem.replaceOwned(
         u8,
@@ -99966,7 +99956,7 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/shell/bunshell-instance.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/shell/bunshell.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun shell parser, subprocess, and TestBuilder integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/shell/commands/basename.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/shell/commands/cp.test.ts"))
@@ -100080,11 +100070,11 @@ pub fn rewriteBunTestImport(allocator: std.mem.Allocator, source: []const u8, re
     else if (std.mem.eql(u8, relative_path, "js/bun/websocket/websocket-upgrade-signal-gc.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/webview/webview.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun WebView WebKit native integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/webview/webview-chrome-ws.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/webview/webview-chrome.test.ts"))
-        try rewriteNativeTodoCorpus(allocator, "Bun WebView Chrome integration")
+        null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/bun_test.test.ts"))
         null
     else if (std.mem.eql(u8, relative_path, "js/bun/test/concurrent.test.ts"))
@@ -100711,8 +100701,14 @@ fn isNativeShellLeakCorpusFile(relative: []const u8) bool {
     return std.mem.eql(u8, relative, "js/bun/shell/leak.test.ts");
 }
 
+fn isNativeShellIntegrationCorpusFile(relative: []const u8) bool {
+    return std.mem.eql(u8, relative, "js/bun/shell/bunshell.test.ts");
+}
+
 fn isNativeWebViewCorpusFile(relative: []const u8) bool {
-    return std.mem.eql(u8, relative, "js/bun/webview/webview-chrome-ws.test.ts");
+    return std.mem.eql(u8, relative, "js/bun/webview/webview.test.ts") or
+        std.mem.eql(u8, relative, "js/bun/webview/webview-chrome.test.ts") or
+        std.mem.eql(u8, relative, "js/bun/webview/webview-chrome-ws.test.ts");
 }
 
 fn isNativeHttpProxyCorpusFile(relative: []const u8) bool {
@@ -100897,6 +100893,7 @@ fn isNativeHomeCorpusFile(relative: []const u8) bool {
         isNativeReplCorpusFile(relative) or
         isNativePatchCorpusFile(relative) or
         isNativeShellLeakCorpusFile(relative) or
+        isNativeShellIntegrationCorpusFile(relative) or
         isNativeWebViewCorpusFile(relative) or
         isNativeHttpProxyCorpusFile(relative) or
         isNativeBunTestCorpusFile(relative) or
@@ -100945,6 +100942,7 @@ fn nativeCorpusMode(relative: []const u8) NativeCorpusMode {
         isNativeReplCorpusFile(relative) or
         isNativePatchCorpusFile(relative) or
         isNativeShellLeakCorpusFile(relative) or
+        isNativeShellIntegrationCorpusFile(relative) or
         isNativeWebViewCorpusFile(relative) or
         isNativeHttpProxyCorpusFile(relative) or
         isNativeBunTestCorpusFile(relative) or
@@ -101604,7 +101602,7 @@ test "native Bun FFI corpus executes unchanged without TODO rewrites" {
     };
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
-    for (cases) |case| {
+    inline for (cases) |case| {
         const source = try Io.Dir.cwd().readFileAlloc(std.testing.io, "packages/runtime/test/test/" ++ case.path, std.testing.allocator, .limited(1024 * 1024));
         defer std.testing.allocator.free(source);
         const rewritten = try rewriteBunTestImport(std.testing.allocator, source, case.path);
@@ -101762,11 +101760,12 @@ test "native Bun restored server corpus executes unchanged without TODO rewrites
     }
     try std.testing.expect(isNativeHttpServerCorpusFile(cases[0].path));
     try std.testing.expect(isNativeWebViewCorpusFile(cases[1].path));
-    try std.testing.expect(!isNativeWebViewCorpusFile("js/bun/webview/webview-chrome.test.ts"));
+    try std.testing.expect(isNativeWebViewCorpusFile("js/bun/webview/webview.test.ts"));
+    try std.testing.expect(isNativeWebViewCorpusFile("js/bun/webview/webview-chrome.test.ts"));
 
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
-    for (cases) |case| {
+    inline for (cases) |case| {
         const source = try Io.Dir.cwd().readFileAlloc(std.testing.io, "packages/runtime/test/test/" ++ case.path, std.testing.allocator, .limited(1024 * 1024));
         defer std.testing.allocator.free(source);
         const rewritten = try rewriteBunTestImport(std.testing.allocator, source, case.path);
@@ -101892,6 +101891,46 @@ test "native Bun shell leak corpus executes unchanged without TODO rewrite" {
     try std.testing.expectEqual(@as(usize, 0), summary.allowed_empty_files);
 }
 
+test "native Bun shell and WebView matrices have no whole-file TODO rewrites" {
+    const cases = [_]struct {
+        path: []const u8,
+        marker: []const u8,
+        removed_label: []const u8,
+    }{
+        .{
+            .path = "js/bun/shell/bunshell.test.ts",
+            .marker = "broken pipe subproc",
+            .removed_label = "Bun shell parser, subprocess, and TestBuilder integration",
+        },
+        .{
+            .path = "js/bun/webview/webview.test.ts",
+            .marker = "navigate + evaluate round-trip",
+            .removed_label = "Bun WebView WebKit native integration",
+        },
+        .{
+            .path = "js/bun/webview/webview-chrome.test.ts",
+            .marker = "chrome: navigate + evaluate round-trip",
+            .removed_label = "Bun WebView Chrome integration",
+        },
+    };
+
+    inline for (cases) |case| {
+        try std.testing.expect(isNativeHomeCorpusFile(case.path));
+        try std.testing.expectEqual(NativeCorpusMode.test_runner, nativeCorpusMode(case.path));
+        const source = try Io.Dir.cwd().readFileAlloc(
+            std.testing.io,
+            "packages/runtime/test/test/" ++ case.path,
+            std.testing.allocator,
+            .limited(2 * 1024 * 1024),
+        );
+        defer std.testing.allocator.free(source);
+        const rewritten = try rewriteBunTestImport(std.testing.allocator, source, case.path);
+        defer std.testing.allocator.free(rewritten);
+        try std.testing.expect(std.mem.indexOf(u8, rewritten, case.marker) != null);
+        try std.testing.expect(std.mem.indexOf(u8, rewritten, case.removed_label) == null);
+    }
+}
+
 test "native Bun CLI activation: HTML server corpus executes manifest and static matrices unchanged" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
@@ -101930,7 +101969,7 @@ test "native Bun CLI activation: HTML server corpus executes manifest and static
 
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
-    for (cases) |case| {
+    inline for (cases) |case| {
         const source = try Io.Dir.cwd().readFileAlloc(std.testing.io, "packages/runtime/test/test/" ++ case.path, std.testing.allocator, .limited(1024 * 1024));
         defer std.testing.allocator.free(source);
         const rewritten = try rewriteBunTestImport(std.testing.allocator, source, case.path);
