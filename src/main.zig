@@ -2368,12 +2368,10 @@ fn runTestsViaVM(allocator_unused: std.mem.Allocator, args: []const [:0]const u8
         }
     };
 
-    // The Bun repository mirror lives at packages/runtime/test while Home's
-    // ported native source lives at packages/runtime/src. Run corpus tests from
-    // packages/runtime so unchanged commands which reference Bun's src/ tree
-    // exercise Home's corresponding source tree. Load the mirrored Bun root
-    // config explicitly so its test root, preload, and package resolution keep
-    // the same relationship they have in Bun's repository.
+    // Preserve Bun's project layout: the mirrored root contains bunfig.toml,
+    // test/, and a source link to Home's actual runtime implementation. Moving
+    // up to packages/runtime changes process.cwd() and breaks unchanged
+    // snapshots and repository-relative fixture paths.
     var effective_args: []const [:0]const u8 = args;
     var rewritten_args: ?[][:0]const u8 = null;
     var rewritten_values: std.ArrayListUnmanaged([:0]u8) = .empty;
@@ -2412,8 +2410,7 @@ fn runTestsViaVM(allocator_unused: std.mem.Allocator, args: []const [:0]const u8
         defer allocator.free(corpus_root);
 
         const mirror_root = std.fs.path.dirname(corpus_root) orelse return error.InvalidCorpusRoot;
-        const runtime_root = std.fs.path.dirname(mirror_root) orelse return error.InvalidCorpusRoot;
-        const config_path = try std.fmt.allocPrintSentinel(allocator, "./{s}/bunfig.toml", .{std.fs.path.basename(mirror_root)}, 0);
+        const config_path = try home_rt.dupeZ(allocator, u8, "./bunfig.toml");
         try rewritten_values.append(allocator, config_path);
 
         const normalized = try allocator.alloc([:0]const u8, args.len + 2);
@@ -2435,10 +2432,10 @@ fn runTestsViaVM(allocator_unused: std.mem.Allocator, args: []const [:0]const u8
             previous_pwd = try home_rt.dupeZ(allocator, u8, std.mem.span(raw));
         }
         configured_pwd = true;
-        try std.Io.Threaded.chdir(runtime_root);
-        const runtime_root_z = try home_rt.dupeZ(allocator, u8, runtime_root);
-        defer allocator.free(runtime_root_z);
-        if (setenv("PWD", runtime_root_z.ptr, 1) != 0) return error.SetEnvironmentFailed;
+        try std.Io.Threaded.chdir(mirror_root);
+        const mirror_root_z = try home_rt.dupeZ(allocator, u8, mirror_root);
+        defer allocator.free(mirror_root_z);
+        if (setenv("PWD", mirror_root_z.ptr, 1) != 0) return error.SetEnvironmentFailed;
     }
 
     const log = try allocator.create(home_rt.logger.Log);
@@ -4808,13 +4805,11 @@ fn bunCorpusTestArgument(allocator: std.mem.Allocator, target: BunCorpusTarget) 
         .directory => |directory| .{ directory.corpus_path, directory.relative_path },
         .file => |file| .{ file.corpus_path, file.relative_path },
     };
-    const mirror_root = std.fs.path.dirname(corpus_path) orelse return error.InvalidCorpusRoot;
-    const mirror_name = std.fs.path.basename(mirror_root);
     const test_root = std.fs.path.basename(corpus_path);
     return if (relative_path) |relative|
-        std.fmt.allocPrintSentinel(allocator, "./{s}/{s}/{s}", .{ mirror_name, test_root, relative }, 0)
+        std.fmt.allocPrintSentinel(allocator, "./{s}/{s}", .{ test_root, relative }, 0)
     else
-        std.fmt.allocPrintSentinel(allocator, "./{s}/{s}", .{ mirror_name, test_root }, 0);
+        std.fmt.allocPrintSentinel(allocator, "./{s}", .{test_root}, 0);
 }
 
 fn isJsLikeCorpusFile(path: []const u8) bool {
@@ -5057,21 +5052,21 @@ test "bun corpus VM arguments preserve explicit path semantics" {
 
     const root = try bunCorpusTestArgument(allocator, .{ .root = "packages/runtime/test/test" });
     defer allocator.free(root);
-    try std.testing.expectEqualStrings("./test/test", root);
+    try std.testing.expectEqualStrings("./test", root);
 
     const directory = try bunCorpusTestArgument(allocator, .{ .directory = .{
         .corpus_path = "packages/runtime/test/test",
         .relative_path = "js/node/http",
     } });
     defer allocator.free(directory);
-    try std.testing.expectEqualStrings("./test/test/js/node/http", directory);
+    try std.testing.expectEqualStrings("./test/js/node/http", directory);
 
     const file = try bunCorpusTestArgument(allocator, .{ .file = .{
         .corpus_path = "packages/runtime/test/test",
         .relative_path = "js/node/http/node-http-connect.node.mts",
     } });
     defer allocator.free(file);
-    try std.testing.expectEqualStrings("./test/test/js/node/http/node-http-connect.node.mts", file);
+    try std.testing.expectEqualStrings("./test/js/node/http/node-http-connect.node.mts", file);
 }
 
 test "bun corpus subset parser reports missing and unknown values" {

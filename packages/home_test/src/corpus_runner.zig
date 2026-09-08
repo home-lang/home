@@ -100703,6 +100703,15 @@ fn isNativeRequestCorpusFile(relative: []const u8) bool {
         std.mem.eql(u8, relative, "js/web/request/request-subclass.test.ts");
 }
 
+fn isNativeHeadersResponseCorpusFile(relative: []const u8) bool {
+    return std.mem.eql(u8, relative, "js/web/fetch/headers.test.ts") or
+        std.mem.eql(u8, relative, "js/web/fetch/headers-case.test.ts") or
+        std.mem.eql(u8, relative, "js/web/fetch/headers.undici.test.ts") or
+        std.mem.eql(u8, relative, "js/web/fetch/fetch_headers.test.js") or
+        std.mem.eql(u8, relative, "js/web/fetch/response.test.ts") or
+        std.mem.eql(u8, relative, "js/web/fetch/response-cyclic-reference.test.ts");
+}
+
 fn isNativeWebViewCorpusFile(relative: []const u8) bool {
     return std.mem.eql(u8, relative, "js/bun/webview/webview.test.ts") or
         std.mem.eql(u8, relative, "js/bun/webview/webview-chrome.test.ts") or
@@ -100894,6 +100903,7 @@ fn isNativeHomeCorpusFile(relative: []const u8) bool {
         isNativeShellIntegrationCorpusFile(relative) or
         isNativeWebViewCorpusFile(relative) or
         isNativeRequestCorpusFile(relative) or
+        isNativeHeadersResponseCorpusFile(relative) or
         isNativeHttpProxyCorpusFile(relative) or
         isNativeBunTestCorpusFile(relative) or
         isNativeBunTestHelperCorpusFile(relative) or
@@ -100944,6 +100954,7 @@ fn nativeCorpusMode(relative: []const u8) NativeCorpusMode {
         isNativeShellIntegrationCorpusFile(relative) or
         isNativeWebViewCorpusFile(relative) or
         isNativeRequestCorpusFile(relative) or
+        isNativeHeadersResponseCorpusFile(relative) or
         isNativeHttpProxyCorpusFile(relative) or
         isNativeBunTestCorpusFile(relative) or
         isNativePlatformAuditCorpusFile(relative) or
@@ -101178,7 +101189,12 @@ fn runRelativeFile(
         const test_thread_id = try std.fmt.allocPrint(allocator, "home-corpus-{s}", .{std.fs.path.basename(relative)});
         defer allocator.free(test_thread_id);
 
-        var native_run = try jsc_bootstrap.runHomeCaptured(allocator, test_thread_id, args_tail);
+        const absolute_corpus_path = try Io.Dir.cwd().realPathFileAlloc(io, corpus_path, allocator);
+        defer allocator.free(absolute_corpus_path);
+        const corpus_project_root = std.fs.path.dirname(absolute_corpus_path) orelse return error.InvalidCorpusRoot;
+        var native_run = try jsc_bootstrap.runHomeCapturedWithOptions(allocator, test_thread_id, args_tail, .{
+            .corpus_project_root = corpus_project_root,
+        });
         defer native_run.deinit(allocator);
         try appendSummaryStdout(allocator, summary, native_run.stdout);
 
@@ -116774,26 +116790,34 @@ test "bootstrap runner mirrors form-data boundary crash corpus" {
     try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
 }
 
-test "bootstrap runner mirrors fetch response corpus" {
+test "native Headers/Response original six-file matrix retains snapshots and collection workloads" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
-
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
-    const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/web/fetch/response.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
-    defer std.testing.allocator.free(source);
-    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/web/fetch/response.test.ts");
-    defer prepared.deinit(std.testing.allocator);
-    try std.testing.expect(prepared.unsupported_reason == null);
-
-    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
-    defer runtime.deinit();
-    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
-    defer file_run.deinit(std.testing.allocator);
-
-    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 14), file_run.result.passed);
-    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+    const cases = [_]struct { path: []const u8, passed: usize }{
+        .{ .path = "js/web/fetch/headers.test.ts", .passed = 94 },
+        .{ .path = "js/web/fetch/headers-case.test.ts", .passed = 3 },
+        .{ .path = "js/web/fetch/headers.undici.test.ts", .passed = 51 },
+        .{ .path = "js/web/fetch/fetch_headers.test.js", .passed = 6 },
+        .{ .path = "js/web/fetch/response.test.ts", .passed = 14 },
+        .{ .path = "js/web/fetch/response-cyclic-reference.test.ts", .passed = 2 },
+    };
+    for (cases) |case| {
+        try std.testing.expect(isNativeHeadersResponseCorpusFile(case.path));
+        try std.testing.expect(isNativeHomeCorpusFile(case.path));
+        try std.testing.expectEqual(NativeCorpusMode.test_runner, nativeCorpusMode(case.path));
+        var summary = try runFile(threaded.io(), std.testing.allocator, "packages/runtime/test/test", case.path);
+        defer summary.deinit(std.testing.allocator);
+        if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != 0) {
+            std.debug.print("native Headers/Response mismatch for {s}: passed={} failed={} todo={} unsupported={} message={s}\n", .{ case.path, summary.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message });
+        }
+        try std.testing.expectEqual(@as(usize, 1), summary.files);
+        try std.testing.expectEqual(case.passed, summary.passed);
+        try std.testing.expectEqual(@as(usize, 0), summary.failed + summary.todo + summary.unsupported + summary.allowed_empty_files);
+    }
+    for ([_][]const u8{ "js/web/fetch/response.fixture.ts", "js/web/fetch/headers.test.js", "js/web/fetch/nested/response.test.ts" }) |path| {
+        try std.testing.expect(!isNativeHeadersResponseCorpusFile(path));
+    }
 }
 
 test "bootstrap runner mirrors Bun.serve fetch invalid args corpus" {
@@ -132051,39 +132075,19 @@ test "bootstrap runner mirrors HTTP request smuggling hardening matrix" {
     try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
 }
 
-test "bootstrap runner mirrors Undici Headers WebIDL matrix" {
-    if (!build_options.enable_jsc) return error.SkipZigTest;
-
-    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
-    const path = "js/web/fetch/headers.undici.test.ts";
-    const source_path = try std.fs.path.join(std.testing.allocator, &.{ "packages/runtime/test/test", path });
-    defer std.testing.allocator.free(source_path);
-    const source = try Io.Dir.cwd().readFileAlloc(io, source_path, std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
-    defer std.testing.allocator.free(source);
-    var prepared = try prepareCorpusModule(std.testing.allocator, source, path);
-    defer prepared.deinit(std.testing.allocator);
-
-    try std.testing.expect(prepared.unsupported_reason == null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "fails if primitive is passed") != null);
-    try std.testing.expect(std.mem.indexOf(u8, prepared.source, "Symbol.iterator is only accessed once") != null);
-    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_headers_assert_instance") != null);
-    try std.testing.expect(std.mem.indexOf(u8, harness_prelude, "function __home_http_response_headers") != null);
-
-    var summary = try runFile(io, std.testing.allocator, "packages/runtime/test/test", path);
-    defer summary.deinit(std.testing.allocator);
-    if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != 51 or summary.todo != 0) {
-        std.debug.print(
-            "Undici Headers mismatch: passed={} expected={} failed={} todo={} unsupported={} message={s}\n",
-            .{ summary.passed, @as(usize, 51), summary.failed, summary.todo, summary.unsupported, summary.first_failure_message },
-        );
+test "native Headers/Response sources retain WebIDL and cyclic stream assertions" {
+    const allocator = std.testing.allocator;
+    const headers = try Io.Dir.cwd().readFileAlloc(std.testing.io, "packages/runtime/test/test/js/web/fetch/headers.undici.test.ts", allocator, .limited(1024 * 1024));
+    defer allocator.free(headers);
+    try std.testing.expect(std.mem.indexOf(u8, headers, "fails if primitive is passed") != null);
+    try std.testing.expect(std.mem.indexOf(u8, headers, "Symbol.iterator is only accessed once") != null);
+    const cyclic = try Io.Dir.cwd().readFileAlloc(std.testing.io, "packages/runtime/test/test/js/web/fetch/response-cyclic-reference.test.ts", allocator, .limited(1024 * 1024));
+    defer allocator.free(cyclic);
+    for ([_][]const u8{ "i < 10000", "Bun.gc(true)", "toBeLessThanOrEqual(100)" }) |needle| {
+        try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, cyclic, needle));
     }
-    try std.testing.expectEqual(@as(usize, 1), summary.files);
-    try std.testing.expectEqual(@as(usize, 51), summary.passed);
-    try std.testing.expectEqual(@as(usize, 0), summary.failed);
-    try std.testing.expectEqual(@as(usize, 0), summary.todo);
-    try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
+    try std.testing.expect(std.mem.indexOf(u8, cyclic, "new Response(response.body)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, cyclic, "stream.response2 = response2") != null);
 }
 
 test "bootstrap runner mirrors async iterable Response streaming matrix" {

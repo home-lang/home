@@ -5863,6 +5863,12 @@ const HomeCapturedInvocation = struct {
     }
 };
 
+pub const HomeCapturedOptions = struct {
+    // The mirrored Bun project directory, whose test/ child is the corpus.
+    // Ordinary captured invocations retain their inherited launch context.
+    corpus_project_root: ?[]const u8 = null,
+};
+
 /// Run one prepared corpus fixture through the native Home executable.
 ///
 /// `args_tail` is appended verbatim after the executable and must already be
@@ -5873,6 +5879,15 @@ pub fn runHomeCaptured(
     test_thread_id: []const u8,
     args_tail: []const []const u8,
 ) !HomeCapturedResult {
+    return runHomeCapturedWithOptions(allocator, test_thread_id, args_tail, .{});
+}
+
+pub fn runHomeCapturedWithOptions(
+    allocator: std.mem.Allocator,
+    test_thread_id: []const u8,
+    args_tail: []const []const u8,
+    options: HomeCapturedOptions,
+) !HomeCapturedResult {
     var inherited_env = try inheritedEnvironmentMap(allocator);
     defer inherited_env.deinit();
 
@@ -5881,6 +5896,7 @@ pub fn runHomeCaptured(
         &inherited_env,
         test_thread_id,
         args_tail,
+        options,
     );
     defer invocation.deinit(allocator);
 
@@ -5888,7 +5904,7 @@ pub fn runHomeCaptured(
     defer threaded.deinit();
     const captured = try runSpawnSyncCaptured(allocator, threaded.io(), .{
         .argv = invocation.argv,
-        .cwd = .inherit,
+        .cwd = if (options.corpus_project_root) |path| .{ .path = path } else .inherit,
         .environ_map = &invocation.environ_map,
         .timeout_ms = home_corpus_child_timeout_ms,
         .kill_process_group = true,
@@ -5923,6 +5939,7 @@ fn prepareHomeCapturedInvocation(
     inherited_env: *const std.process.Environ.Map,
     test_thread_id: []const u8,
     args_tail: []const []const u8,
+    options: HomeCapturedOptions,
 ) !HomeCapturedInvocation {
     var environ_map = try inherited_env.clone(allocator);
     errdefer environ_map.deinit();
@@ -5934,10 +5951,19 @@ fn prepareHomeCapturedInvocation(
     }
     try environ_map.put("NO_COLOR", "1");
     try environ_map.put("TEST_THREAD_ID", test_thread_id);
+    if (options.corpus_project_root != null) {
+        // Match test/harness.ts startup prerequisites before the VM initializes.
+        // A preload cannot enable internal bindings after module-loader setup.
+        try environ_map.put("BUN_FEATURE_FLAG_INTERNAL_FOR_TESTING", "1");
+        const gc_level = environ_map.get("BUN_GARBAGE_COLLECTOR_LEVEL");
+        if (gc_level == null or gc_level.?.len == 0) {
+            try environ_map.put("BUN_GARBAGE_COLLECTOR_LEVEL", "0");
+        }
+    }
 
     const executable = if (inherited_env.get("HOME_BUN_TEST_EXECUTABLE")) |override|
         if (override.len > 0)
-            try allocator.dupe(u8, override)
+            try capturedExecutableOverrideAlloc(allocator, override, options)
         else
             try preferredHomeExecutablePathAlloc(allocator)
     else
@@ -5954,6 +5980,14 @@ fn prepareHomeCapturedInvocation(
         .argv = argv,
         .environ_map = environ_map,
     };
+}
+
+fn capturedExecutableOverrideAlloc(allocator: std.mem.Allocator, override: []const u8, options: HomeCapturedOptions) ![]u8 {
+    if (options.corpus_project_root == null or std.fs.path.isAbsolute(override) or
+        std.mem.indexOfAny(u8, override, "/\\") == null) return allocator.dupe(u8, override);
+    const cwd = try currentWorkingDirectoryAlloc(allocator);
+    defer allocator.free(cwd);
+    return std.fs.path.resolve(allocator, &.{ cwd, override });
 }
 
 fn runSpawnSyncCaptured(
@@ -6786,6 +6820,7 @@ test "native Home corpus invocation preserves argv and inherits required environ
         &inherited_env,
         "worker-7",
         &args_tail,
+        .{},
     );
     defer invocation.deinit(allocator);
 
@@ -6812,7 +6847,7 @@ test "native Home node:test invocation selects the full VM runner" {
     defer inherited_env.deinit();
     try inherited_env.put("HOME_BUN_TEST_EXECUTABLE", "/opt/home-test/bin/home");
     try inherited_env.put("HOME_CORPUS_FULL_VM", "0");
-    var invocation = try prepareHomeCapturedInvocation(allocator, &inherited_env, "node-test", &.{ "test", "/absolute/test-assert.js" });
+    var invocation = try prepareHomeCapturedInvocation(allocator, &inherited_env, "node-test", &.{ "test", "/absolute/test-assert.js" }, .{});
     defer invocation.deinit(allocator);
     try std.testing.expectEqualStrings("test", invocation.argv[1]);
     try std.testing.expectEqualStrings("1", invocation.environ_map.get("HOME_CORPUS_FULL_VM").?);
@@ -8123,4 +8158,60 @@ test "adapter eliminates configured dead exports and their default imports" {
     try std.testing.expect(std.mem.indexOf(u8, output, "deadFS") == null);
     try std.testing.expect(std.mem.indexOf(u8, output, "action") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "liveFS") != null);
+}
+
+test "native Headers/Response launch context preserves explicit GC settings and generic callers" {
+    const allocator = std.testing.allocator;
+    var inherited_env = std.process.Environ.Map.init(allocator);
+    defer inherited_env.deinit();
+    try inherited_env.put("HOME_BUN_TEST_EXECUTABLE", "/opt/home-test/bin/home");
+    try inherited_env.put("BUN_FEATURE_FLAG_INTERNAL_FOR_TESTING", "0");
+    var generic = try prepareHomeCapturedInvocation(allocator, &inherited_env, "generic", &.{"test"}, .{});
+    defer generic.deinit(allocator);
+    try std.testing.expect(generic.environ_map.get("BUN_GARBAGE_COLLECTOR_LEVEL") == null);
+    try std.testing.expectEqualStrings("0", generic.environ_map.get("BUN_FEATURE_FLAG_INTERNAL_FOR_TESTING").?);
+    for ([_]?[]const u8{ null, "", "0", "1", "2" }) |gc_level| {
+        if (gc_level) |value| try inherited_env.put("BUN_GARBAGE_COLLECTOR_LEVEL", value);
+        var invocation = try prepareHomeCapturedInvocation(allocator, &inherited_env, "corpus", &.{"test"}, .{ .corpus_project_root = "/mirror" });
+        defer invocation.deinit(allocator);
+        const expected = if (gc_level) |value| (if (value.len > 0) value else "0") else "0";
+        try std.testing.expectEqualStrings(expected, invocation.environ_map.get("BUN_GARBAGE_COLLECTOR_LEVEL").?);
+        try std.testing.expectEqualStrings("1", invocation.environ_map.get("BUN_FEATURE_FLAG_INTERNAL_FOR_TESTING").?);
+        try std.testing.expectEqualStrings("0", inherited_env.get("BUN_FEATURE_FLAG_INTERNAL_FOR_TESTING").?);
+        if (gc_level) |value| {
+            try std.testing.expectEqualStrings(value, inherited_env.get("BUN_GARBAGE_COLLECTOR_LEVEL").?);
+        } else try std.testing.expect(inherited_env.get("BUN_GARBAGE_COLLECTOR_LEVEL") == null);
+    }
+}
+
+test "native Headers/Response child starts at the mirror root with internal bindings enabled" {
+    if (!@import("build_options").enable_jsc) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const root = try Io.Dir.cwd().realPathFileAlloc(std.testing.io, "packages/runtime/test", allocator);
+    defer allocator.free(root);
+    var captured = try runHomeCapturedWithOptions(allocator, "launch-context", &.{
+        "-e",
+        "if (process.env.BUN_FEATURE_FLAG_INTERNAL_FOR_TESTING !== '1' || !process.env.BUN_GARBAGE_COLLECTOR_LEVEL) throw new Error('missing startup environment'); if (typeof require('bun:internal-for-testing').isASANEnabled !== 'function') throw new Error('missing native internal binding'); console.log(process.cwd());",
+    }, .{ .corpus_project_root = root });
+    defer captured.deinit(allocator);
+    try std.testing.expect(!captured.timed_out);
+    try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, captured.term);
+    try std.testing.expectEqualStrings(root, std.mem.trim(u8, captured.stdout, "\r\n"));
+}
+
+test "native Headers/Response launch resolves relative executable overrides before changing directory" {
+    const allocator = std.testing.allocator;
+    const cwd = try currentWorkingDirectoryAlloc(allocator);
+    defer allocator.free(cwd);
+    const expected = try std.fs.path.join(allocator, &.{ cwd, "zig-out/bin/home" });
+    defer allocator.free(expected);
+    const resolved = try capturedExecutableOverrideAlloc(allocator, "./zig-out/bin/home", .{ .corpus_project_root = "/mirror" });
+    defer allocator.free(resolved);
+    try std.testing.expectEqualStrings(expected, resolved);
+    const generic = try capturedExecutableOverrideAlloc(allocator, "./zig-out/bin/home", .{});
+    defer allocator.free(generic);
+    try std.testing.expectEqualStrings("./zig-out/bin/home", generic);
+    const command = try capturedExecutableOverrideAlloc(allocator, "home", .{ .corpus_project_root = "/mirror" });
+    defer allocator.free(command);
+    try std.testing.expectEqualStrings("home", command);
 }

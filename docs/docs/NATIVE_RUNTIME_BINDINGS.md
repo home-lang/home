@@ -1171,3 +1171,72 @@ remain unverified; other adapters, native dependency/build ownership and
 
 Verified optimized Home executable SHA-256:
 `acc4837aed857184e7b3d1107e48126c1c0d819e8ae85ff2a61ddb6215ea567f`.
+
+## Native Headers/Response corpus and fixture launch context (#698)
+
+All six original Headers/Response files in `js/web/fetch` now execute through
+Home's native test runner. Their ordinary corpus routes cover Headers
+construction, case retention, WebIDL validation, serialization, Response
+construction/cloning and cyclic stream collection. The original Response inline
+snapshot and both 10,000-iteration cyclic workloads, including the 100-stream
+heap limit, remain unchanged.
+
+Native corpus children now start from the mirrored Bun project directory (the
+parent of the corpus's `test` directory). This gives fixture-relative paths and
+`process.cwd()` the same relationship as upstream. The original Response
+snapshot previously failed in both runtimes when launched from Home's outer
+repository directory; the correct project cwd fixes that mismatch without
+rewriting the snapshot or its output. Home's VM launcher also preserves that
+root when it recognizes absolute corpus paths; its earlier rewrite moved one
+directory too high. The tracked relative `packages/runtime/test/src -> ../src`
+link exposes Home's actual runtime source at the expected project-relative
+location, so source-reading shell fixtures retain their real inputs.
+
+An explicit capture option supplies this corpus context. Before the child VM
+starts, it enables `BUN_FEATURE_FLAG_INTERNAL_FOR_TESTING` and supplies
+`BUN_GARBAGE_COLLECTOR_LEVEL=0` only when that variable is absent or empty,
+matching the original harness's startup prerequisites. Nonempty GC overrides
+are retained. A preload runs too late to enable the release VM's internal
+module-loader gate. Generic captured invocations retain their inherited context;
+relative executable overrides are resolved against the caller's cwd before the
+corpus child changes directories.
+
+The next body/stream activation is tracked in
+[#699](https://github.com/home-lang/home/issues/699). Its seven original files
+have separate strict-native Home/Bun baselines of **9,467 passes / four upstream
+skips / zero failures per runtime**, including all 9,086 body-stream cases and
+the HTTP/3 matrix. Ordinary native activation and removal of body-clone-specific
+bootstrap substitutes remain pending there. These baselines used the previously
+published `5e45c58a3` Home binary; upstream skips receive no implementation credit.
+
+Final optimized verification: **46/46 build steps** and **23/23 focused harness
+steps / 6/6 tests**. Independent test metadata identifies the registration guard
+and all five named matrix, source-preservation, environment, child-launch and
+relative-executable regressions. The existing CLI argument helper test also
+passes in isolation for root, directory and file arguments. The first focused
+run's **4/5 result** exposed the additional absolute-path CLI cwd defect and is
+not counted as passing evidence.
+
+Ordinary individual routes and the combined six-file Home command both report
+**170 passes / zero failures / zero TODOs / zero unsupported cases**. Pinned Bun
+controls execute the same six files with **170 passes / 750 assertions / one
+original inline snapshot**. The final Home absolute-path/preload Response
+reproduction passes **14/14 / 41 assertions / one snapshot**. Relative executable
+overrides are exercised by the ordinary route checks.
+
+Adjacent ordinary routes pass: Request **24/24**, shell **378 passes / 83 upstream
+TODOs**, WebKit **57 passes / one upstream TODO**, bootstrap microtasks **2/2**,
+and the Node readable script. The intentional indexed-property failure fixture
+is correctly recognized as an expected failure. All these routes report zero
+unexpected failures and zero unsupported cases. Corpus source bytes remain
+identical to the pin except for the existing expectations-file difference;
+formatting, documentation Pickier and whitespace checks pass.
+
+This completes [#698](https://github.com/home-lang/home/issues/698). Full
+aggregate execution, the remaining adapters and independent native build
+ownership are still incomplete under [#66](https://github.com/home-lang/home/issues/66)
+and [#202](https://github.com/home-lang/home/issues/202); the previously observed
+Chrome startup failure remains in [#694](https://github.com/home-lang/home/issues/694).
+
+Verified optimized Home executable SHA-256:
+`f7e0abf6e3e75795c70f48221810814e986bcfa52c80cda7a6f614d82a29257f`.
