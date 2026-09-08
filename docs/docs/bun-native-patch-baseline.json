@@ -1,0 +1,51 @@
+{
+  "issue": "https://github.com/home-lang/home/issues/719",
+  "parent": "https://github.com/home-lang/home/issues/66",
+  "status": "Native patch activation and tested lifecycles verified on macOS arm64. Full Bun and platform-wide parity remain incomplete.",
+  "source_commits": [
+    "b61c84476",
+    "d5f33a3f4",
+    "a4b73596f"
+  ],
+  "runtime_source": "a4b73596f5ac51e1a59e330caa5a431becfa04bc",
+  "home_sha256": "f6e39e7f52e551a2ec0e3e9e4e990d06e2c4e14a4d696701fc77554f5536e526",
+  "ports": [
+    "Owned native patch and patch-commit dispatch, preserving leading flags and command argv.",
+    "Patch preparation, both commit spellings, actual patch application and frozen reapplication exercised through the owned package manager.",
+    "Pinned runtime command-specific missing-argument usage/help diagnostics.",
+    "Shared native SystemError formatting restored using real error code/description/path/syscall and Home output color policy."
+  ],
+  "private_matrix": {
+    "variants": 8,
+    "dimensions": [
+      "plain/scoped package",
+      "hoisted/isolated linker",
+      "patch --commit/patch-commit"
+    ],
+    "assertions": [
+      "real tarball downloads",
+      "changed, added and removed files",
+      "custom patches directory and manifest mapping",
+      "frozen reinstall applies patch without changing lock bytes",
+      "separate install and cached original remain unpatched"
+    ]
+  },
+  "original_cases_per_runtime": {
+    "bun_patch": 29,
+    "bun_install_patch": 18,
+    "total": 47,
+    "failed": 0
+  },
+  "adjacent_original_cases_per_runtime": 11,
+  "adjacent_and_patch_private_regression_files": 6,
+  "evidence_manifest": "docs/docs/bun-port-evidence/2026-09-08-patch-complete/manifest.json",
+  "previous_attempts": [
+    "docs/docs/bun-port-evidence/2026-09-08-bin-ownership-initial/manifest.json",
+    "docs/docs/bun-port-evidence/2026-09-08-bin-alias-patch/manifest.json"
+  ],
+  "limitations": [
+    "macOS arm64 execution; other platforms remain unverified.",
+    "These two complete original patch files and six private regressions are scoped verification, not the full Bun corpus.",
+    "Native dispatcher still requires HOME_NATIVE_VM; default fallback removal, independent build ownership and full CI/accounting work remain open."
+  ]
+}

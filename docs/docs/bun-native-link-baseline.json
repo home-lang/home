@@ -1,12 +1,14 @@
 {
   "issue": "https://github.com/home-lang/home/issues/717",
   "parent": "https://github.com/home-lang/home/issues/66",
-  "status": "Native activation and tested link/unlink lifecycles verified; shared executable ownership bug remains open in #718.",
+  "status": "Native link activation and macOS ownership/lifecycle regressions verified; Windows filesystem validation remains open in #718.",
   "source_commits": [
     "f3a1e348a",
     "b6bea0d7c",
     "3d97be64a",
-    "e56d48e8d"
+    "e56d48e8d",
+    "747a7ef75",
+    "b3e4101b2"
   ],
   "before_failure": "Native home link treats link as a missing script.",
   "ports": [
@@ -27,8 +29,8 @@
     "Upstream unlink with a package-name argument is unsupported; this milestone covers registration and argument-free unregister, plus consumer removal using remove.",
     "Original native-binlink cases have their own upstream per-test deadline. No test source, snapshot, or deadline was rewritten."
   ],
-  "verified_runtime_source": "e56d48e8d32618a24083349b22d7e76fd65ee1e8",
-  "home_sha256": "56ea320b3204e0ab5535991c6088c6e2043fa84f26b54fcaacf6d68484fc6296",
+  "verified_runtime_source": "a4b73596f5ac51e1a59e330caa5a431becfa04bc",
+  "home_sha256": "f6e39e7f52e551a2ec0e3e9e4e990d06e2c4e14a4d696701fc77554f5536e526",
   "registered_original_cases_per_runtime": {
     "link": 4,
     "native_binlink": 7,
@@ -39,12 +41,15 @@
     "native-link-lifecycle",
     "native-local-dependency-identity",
     "native-update-outdated",
-    "native-frozen-prerelease"
+    "native-frozen-prerelease",
+    "native-link-bin-ownership",
+    "native-patch-lifecycle"
   ],
-  "verified_evidence_manifest": "docs/docs/bun-port-evidence/2026-09-08-native-links-verified/manifest.json",
+  "verified_evidence_manifest": "docs/docs/bun-port-evidence/2026-09-08-patch-complete/manifest.json",
   "logical_followup": {
     "issue": "https://github.com/home-lang/home/issues/718",
-    "status": "Confirmed logical failure in Home and pinned Bun; not fixed. Unlinking an older provider removes the current provider bin.",
-    "evidence_manifest": "docs/docs/bun-port-evidence/2026-09-08-link-bin-ownership/manifest.json"
+    "status": "Fixed and verified on macOS for all bin declaration forms, replacement ownership, physical file preservation, and dangling targets through parent aliases. Windows metadata parser tested; native Windows filesystem execution still unverified.",
+    "evidence_manifest": "docs/docs/bun-port-evidence/2026-09-08-link-bin-ownership/manifest.json",
+    "verified_evidence_manifest": "docs/docs/bun-port-evidence/2026-09-08-patch-complete/manifest.json"
   }
 }
