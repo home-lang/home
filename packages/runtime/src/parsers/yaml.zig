@@ -2706,7 +2706,7 @@ pub fn Parser(comptime enc: Encoding) type {
             InvalidIndentation,
         };
 
-        fn scanAutoIndentedLiteralScalar(self: *@This(), chomp: Chomp, folded: bool, start: Pos, line: Line) ScanLiteralScalarError!Token(enc) {
+        fn scanAutoIndentedLiteralScalar(self: *@This(), indent_indicator: Indent.Indicator, chomp: Chomp, folded: bool, start: Pos, line: Line) ScanLiteralScalarError!Token(enc) {
             const LiteralScalarCtx = struct {
                 chomp: Chomp,
                 leading_newlines: usize,
@@ -2715,6 +2715,10 @@ pub fn Parser(comptime enc: Encoding) type {
                 content_indent: Indent,
                 previous_indent: Indent,
                 max_leading_indent: Indent,
+                /// True when a block header carried an explicit indentation
+                /// indicator (`|2`, `>3-`). The indent is then given, not
+                /// detected, and leading spaces beyond it are content.
+                explicit_indent: bool,
                 line: Line,
                 folded: bool,
 
@@ -2761,7 +2765,9 @@ pub fn Parser(comptime enc: Encoding) type {
 
                 pub fn append(ctx: *@This(), c: enc.unit()) AppendError!void {
                     if (ctx.text.items.len == 0) {
-                        if (ctx.content_indent.isLessThan(ctx.max_leading_indent)) {
+                        if (!ctx.explicit_indent and
+                            ctx.content_indent.isLessThan(ctx.max_leading_indent))
+                        {
                             return error.UnexpectedCharacter;
                         }
                     }
@@ -2798,6 +2804,17 @@ pub fn Parser(comptime enc: Encoding) type {
                 }
             };
 
+            // An explicit indicator is relative to the enclosing block, so the
+            // content indent is `parent + n` — not the auto-detected indent of
+            // the first content line. Mirrors Bun yaml.rs:4987-4993.
+            const explicit_indent: ?Indent = switch (indent_indicator) {
+                .auto => null,
+                else => |n| brk: {
+                    const parent: usize = if (self.block_indents.get()) |i| i.cast() else 0;
+                    break :brk Indent.from(parent + n.get());
+                },
+            };
+
             var ctx: LiteralScalarCtx = .{
                 .chomp = chomp,
                 .text = .init(self.allocator),
@@ -2806,9 +2823,10 @@ pub fn Parser(comptime enc: Encoding) type {
                 .line = line,
 
                 .leading_newlines = 0,
-                .content_indent = .none,
+                .content_indent = explicit_indent orelse .none,
                 .previous_indent = .none,
                 .max_leading_indent = .none,
+                .explicit_indent = explicit_indent != null,
             };
 
             ctx.content_indent, const first = next: switch (self.next()) {
@@ -2844,6 +2862,24 @@ pub fn Parser(comptime enc: Encoding) type {
                 ' ' => {
                     var indent: Indent = .from(1);
                     self.inc(1);
+
+                    // With an explicit indicator, stop at exactly that column:
+                    // any further spaces belong to the content. Auto-detection
+                    // instead swallows the whole run, which is what stripped
+                    // leading spaces from `|2`-style scalars.
+                    if (explicit_indent) |ci| {
+                        while (indent.isLessThan(ci) and self.next() == ' ') {
+                            indent.inc(1);
+                            self.inc(1);
+                        }
+                        self.line_indent = indent;
+                        switch (self.next()) {
+                            0, '\n', '\r' => continue :next self.next(),
+                            else => {},
+                        }
+                        break :next .{ ci, self.next() };
+                    }
+
                     while (self.next() == ' ') {
                         indent.inc(1);
                         self.inc(1);
@@ -2859,6 +2895,9 @@ pub fn Parser(comptime enc: Encoding) type {
                 },
 
                 else => |c| {
+                    if (explicit_indent) |ci| {
+                        break :next .{ ci, c };
+                    }
                     break :next .{ self.line_indent, c };
                 },
             };
@@ -3000,9 +3039,8 @@ pub fn Parser(comptime enc: Encoding) type {
             const line = self.line;
 
             const indent_indicator, const chomp = try self.scanBlockHeader();
-            _ = indent_indicator;
 
-            return self.scanAutoIndentedLiteralScalar(chomp, false, start, line);
+            return self.scanAutoIndentedLiteralScalar(indent_indicator, chomp, false, start, line);
         }
 
         fn scanFoldedScalar(self: *@This()) ScanLiteralScalarError!Token(enc) {
@@ -3010,9 +3048,8 @@ pub fn Parser(comptime enc: Encoding) type {
             const line = self.line;
 
             const indent_indicator, const chomp = try self.scanBlockHeader();
-            _ = indent_indicator;
 
-            return self.scanAutoIndentedLiteralScalar(chomp, true, start, line);
+            return self.scanAutoIndentedLiteralScalar(indent_indicator, chomp, true, start, line);
         }
 
         const ScanSingleQuotedScalarError = OOM || error{
