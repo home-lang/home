@@ -18,7 +18,7 @@ pub inline fn matches(this: PackageManager.UpdateRequest, dependency: Dependency
 }
 
 pub fn getName(this: *const UpdateRequest) string {
-    return if (this.is_aliased)
+    return if (this.name.len > 0)
         this.name
     else
         this.version.literal.slice(this.version_buf);
@@ -38,12 +38,42 @@ pub fn getNameInLockfile(this: *const UpdateRequest, lockfile: *const Lockfile) 
 /// `this` needs to be a pointer! If `this` is a copy and the name returned from
 /// resolved_name is inlined, you will return a pointer to stack memory.
 pub fn getResolvedName(this: *const UpdateRequest, lockfile: *const Lockfile) string {
-    return if (this.is_aliased)
+    return if (this.name.len > 0)
         this.name
     else if (this.getNameInLockfile(lockfile)) |name|
         name
     else
         this.version.literal.slice(this.version_buf);
+}
+
+/// A local folder's install name is available before editing package.json.
+/// Resolve it now so unnamed paths cannot introduce a second dependency with
+/// the same name, and --only-missing can preserve the existing graph.
+pub fn resolveLocalName(this: *UpdateRequest, manager: *PackageManager) !void {
+    if (this.name.len > 0 or this.version.tag != .folder) return;
+
+    var path_buf: bun.PathBuffer = undefined;
+    const manifest_path = bun.path.joinAbsStringBuf(
+        bun.fs.FileSystem.instance.top_level_dir,
+        &path_buf,
+        &.{
+            std.fs.path.dirname(manager.original_package_json_path) orelse bun.fs.FileSystem.instance.top_level_dir,
+            this.version.value.folder.slice(this.version_buf),
+            "package.json",
+        },
+        .auto,
+    );
+    const entry = switch (manager.workspace_package_json_cache.getWithPath(manager.allocator, manager.log, manifest_path, .{})) {
+        .entry => |entry| entry,
+        // Preserve the folder resolver's existing diagnostics for unreadable
+        // or invalid manifests. No name can be inferred from those inputs.
+        .read_err, .parse_err => return,
+    };
+    const property = entry.root.asProperty("name") orelse return;
+    const name = try property.expr.asStringCloned(manager.allocator) orelse return;
+    if (name.len == 0) return;
+    this.name = name;
+    this.name_hash = String.Builder.stringHash(name);
 }
 
 pub const fromJS = @import("../../install_jsc/update_request_jsc.zig").fromJS;

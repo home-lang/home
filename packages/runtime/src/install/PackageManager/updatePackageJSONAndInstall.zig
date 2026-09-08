@@ -64,6 +64,9 @@ fn updatePackageJSONAndInstallWithManagerWithUpdates(
     original_cwd: string,
 ) !void {
     const log_level = manager.options.log_level;
+    if (subcommand == .add or subcommand == .link or subcommand == .update) {
+        for (updates.*) |*request| try request.resolveLocalName(manager);
+    }
     if (manager.log.errors > 0) {
         if (log_level != .silent) {
             manager.log.print(Output.errorWriter()) catch {};

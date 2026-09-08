@@ -2743,6 +2743,14 @@ fn tryNativeDependencyCommand(args: []const [:0]const u8) !bool {
             const ctx = try nativePackageCommandContext(args, .RemoveCommand);
             try home_rt.cli.RemoveCommand.exec(ctx);
         },
+        .UpdateCommand => {
+            const ctx = try nativePackageCommandContext(args, .UpdateCommand);
+            try home_rt.cli.UpdateCommand.exec(ctx);
+        },
+        .OutdatedCommand => {
+            const ctx = try nativePackageCommandContext(args, .OutdatedCommand);
+            try home_rt.cli.OutdatedCommand.exec(ctx);
+        },
         else => return false,
     }
     return true;
