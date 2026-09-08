@@ -1,0 +1,145 @@
+{
+  "status": "First full build passed. Original update: Home 6 passes/Bun 6. Original outdated: Home 16 failures/Bun 16 passes. Corrected local workspace fixture passes on the same native executable. Outdated output flush fix rebuild pending.",
+  "native_build_source": "6a183ad721865c6df5a329f197566e762d8d7f3b",
+  "home_sha256": "4401f12d1335d21039cd2a796a1a86b12331c9ddd0c64f4eaaea57957a5713d6",
+  "files": [
+    {
+      "source": "build-native-update-table.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-verification/build-native-update-table.log.gz",
+      "sha256": "cdbdfbc91e100e2072e8d04a0035f47bb5621c3c7deecbeec62293fc2cb325e3",
+      "uncompressed_bytes": 3334
+    },
+    {
+      "source": "verify-native-package-batch.py",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-verification/verify-native-package-batch.py.gz",
+      "sha256": "42c37660f0d30c68281205bf8f6df6b3a0753aa68c3f8ae36e52ba2e8b250ac6",
+      "uncompressed_bytes": 3890
+    },
+    {
+      "source": "diagnose-local-workspace.py",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-verification/diagnose-local-workspace.py.gz",
+      "sha256": "b6dab26716447f5a5a12b7cc0676897448d6d7747646c6cf23988c21908ec74a",
+      "uncompressed_bytes": 1714
+    },
+    {
+      "source": "workspace-layout-diagnosis.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-verification/workspace-layout-diagnosis.log.gz",
+      "sha256": "dd312fc45bd1b92c64406474ced1c2e4b94f54cf4836336c586730600377e8b7",
+      "uncompressed_bytes": 9254
+    },
+    {
+      "source": "workspace-layout-diagnosis/results.json",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-verification/workspace-layout-diagnosis-results.json.gz",
+      "sha256": "65c18c0916bb40cc86f0726609dc7aaf91204b240bccceff811daba3ef8aff86",
+      "uncompressed_bytes": 14375
+    },
+    {
+      "source": "local-identity-workspace-corrected.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-verification/local-identity-workspace-corrected.log.gz",
+      "sha256": "eac5e67129c185a4c5e514362f587de9fa952d52db74c0355903307f7df277e5",
+      "uncompressed_bytes": 138
+    },
+    {
+      "source": "diagnose-native-interactive-after-outdated.mjs",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-verification/diagnose-native-interactive-after-outdated.mjs.gz",
+      "sha256": "50e6135eee8c8c2247f6e278fdf1cf0f1522bc8e109608534ac2f6b3b3cfac0f",
+      "uncompressed_bytes": 4346
+    },
+    {
+      "source": "interactive-after-outdated-diagnosis.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-verification/interactive-after-outdated-diagnosis.log.gz",
+      "sha256": "d4970ecb7f0dfeae30d68a1b28f96af53d17cdf5dd1bc5bba68c7487a2682c46",
+      "uncompressed_bytes": 240
+    },
+    {
+      "source": "native-package-cache-correction-lint.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-verification/native-package-cache-correction-lint.log.gz",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "uncompressed_bytes": 0
+    },
+    {
+      "source": "native-package-identity-update/update-home.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-verification/first-batch-update-home.log.gz",
+      "sha256": "8ed00ea4b83df51993a08fa0ec8d7f72277c2be0fa43486837975065a38a8b80",
+      "uncompressed_bytes": 1170
+    },
+    {
+      "source": "native-package-identity-update/native-local-dependency-identity.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-verification/first-batch-native-local-dependency-identity.log.gz",
+      "sha256": "405397a1ba3b705ff4a7ca8c2a74da07400153feab31bc9414cbde25fd772686",
+      "uncompressed_bytes": 1285
+    },
+    {
+      "source": "native-package-identity-update/outdated-home.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-verification/first-batch-outdated-home.log.gz",
+      "sha256": "0a981e9f1b8505c5511f4759cc1469899a21b557bc27b98590bc494b907da2b4",
+      "uncompressed_bytes": 16760
+    },
+    {
+      "source": "native-package-identity-update/generated-verdaccio-db.json.gz",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-verification/first-batch-generated-verdaccio-db.json.gz.gz",
+      "sha256": "f683851428b870a5bde3f922136b09ac75b113cee8c92dcd9c1f1acddb5f851b",
+      "uncompressed_bytes": 73
+    },
+    {
+      "source": "native-package-identity-update/update-bun.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-verification/first-batch-update-bun.log.gz",
+      "sha256": "67ef405e147656ae5825c8860d9347707569b9d6fabf261ab0ac44365fde83f0",
+      "uncompressed_bytes": 562
+    },
+    {
+      "source": "native-package-identity-update/outdated-bun.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-verification/first-batch-outdated-bun.log.gz",
+      "sha256": "c0edde5d4a950adff0ef9edb108cf1c66763109ac69dd9fc64d10258146daca9",
+      "uncompressed_bytes": 1284
+    },
+    {
+      "source": "native-package-identity-update/manifest.json",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-verification/first-batch-manifest.json.gz",
+      "sha256": "26bb6412715acd36cb0868f4e5cfd36ab602c9fbee6ab9fb452b85073290d217",
+      "uncompressed_bytes": 7195
+    },
+    {
+      "source": "native-package-identity-update/native-update-outdated.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-verification/first-batch-native-update-outdated.log.gz",
+      "sha256": "dfa455c09bac5452385eaa13d9764b03c4544828a6bde7300970d2f598679f64",
+      "uncompressed_bytes": 670
+    },
+    {
+      "source": "native-package-identity-update/native-frozen-prerelease.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-verification/first-batch-native-frozen-prerelease.log.gz",
+      "sha256": "9e618c8c700df5feb8f5d0c794dca2c11356055cc7751687758d550bde2da49d",
+      "uncompressed_bytes": 44
+    },
+    {
+      "source": "6a183ad72:tests/runtime/native-local-dependency-identity.test.mjs",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-verification/6a183ad72-native-local-dependency-identity.test.mjs.gz",
+      "sha256": "b49f93e47297ebdfa0d91bc830600d695fa36bdb327749850b95a69333d89d64",
+      "uncompressed_bytes": 5690
+    },
+    {
+      "source": "6a183ad72:tests/runtime/native-update-outdated.test.mjs",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-verification/6a183ad72-native-update-outdated.test.mjs.gz",
+      "sha256": "91d1be79ef4a012c083570aeb343158ff7a4623854e75a31485f56fe00aca8fe",
+      "uncompressed_bytes": 4319
+    },
+    {
+      "source": "a6d65e2f4:tests/runtime/native-local-dependency-identity.test.mjs",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-verification/a6d65e2f4-native-local-dependency-identity.test.mjs.gz",
+      "sha256": "e18f50d56b66fd3c84717de0d6fa59b6eb31fb3c9b0a733c6e3a699cd1e23191",
+      "uncompressed_bytes": 5675
+    },
+    {
+      "source": "a6d65e2f4:tests/runtime/native-update-outdated.test.mjs",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-verification/a6d65e2f4-native-update-outdated.test.mjs.gz",
+      "sha256": "478517f584358c9d809738409b070c1fe952b1981badb0678f65971ea0f78e77",
+      "uncompressed_bytes": 4825
+    },
+    {
+      "source": "workspace-layout-fixtures.tar.gz",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-package-verification/workspace-layout-fixtures.tar.gz",
+      "sha256": "77240ab9742d23f87835570b6e7b21b00c5afe4fe36df3842def54d9b67836d9",
+      "uncompressed_bytes": 61440
+    }
+  ]
+}

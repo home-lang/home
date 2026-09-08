@@ -1047,13 +1047,15 @@
       "https://github.com/home-lang/home/issues/713",
       "https://github.com/home-lang/home/issues/716"
     ],
-    "status": "Pending production verification. First failures are retained; no parity completion claim.",
+    "status": "First full build passed. Original update: Home 6 passes/Bun 6. Original outdated: Home 16 failures/Bun 16 passes. Corrected local workspace fixture passes on the same native executable. Outdated output flush fix rebuild pending.",
     "source_commits": [
       "8edab4469",
       "261764c6a",
       "052783238",
       "24bdc3ea3",
-      "2c83f9952"
+      "2c83f9952",
+      "6a183ad72",
+      "a6d65e2f4"
     ],
     "before_failures": [
       "Local --only-missing install writes two identical package keys with different folder paths.",
@@ -1063,7 +1065,8 @@
       "Missing Home CLI command exports.",
       "Legacy array-list version writer.",
       "Missing synchronized render scope.",
-      "Legacy timestamp function after interactive selection."
+      "Legacy timestamp function after interactive selection.",
+      "Missing outdated table formatter export."
     ],
     "coverage_planned": [
       "All four dependency groups and file/relative/absolute folder arguments.",
@@ -1071,6 +1074,12 @@
       "Real native update/outdated registry requests and integrity-checked gzip archives.",
       "Interactive decline/accept, synchronized output ordering, --latest selection, frozen install, and original tests."
     ],
-    "evidence_manifest": "docs/docs/bun-port-evidence/2026-09-08-native-packages/manifest.json"
+    "evidence_manifest": "docs/docs/bun-port-evidence/2026-09-08-native-packages/manifest.json",
+    "verification_manifest": "docs/docs/bun-port-evidence/2026-09-08-native-package-verification/manifest.json",
+    "corrections": [
+      "The local workspace fixture initially assumed root hoisting; both executables actually install this folder inside workspace node_modules. Corrected local regression now passes all scenarios.",
+      "Bun manifest cache uses five-minute freshness. The private dynamic registry regression now checks a cache hit, public --force refresh, and subsequent cached reporting, instead of incorrectly expecting immediate ordinary revalidation.",
+      "The remaining-interactive diagnostic bypassed only the already retained failing outdated assertions for diagnosis; it is not a full regression pass."
+    ]
   }
 }
