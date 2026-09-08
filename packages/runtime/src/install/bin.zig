@@ -585,6 +585,43 @@ pub const Bin = extern struct {
             _ = bun.sys.unlinkW(abs_exe_file);
         }
 
+        /// Remove only the entry that still points to this package's bin. Read
+        /// the link itself so missing targets can be cleaned up, and unrelated
+        /// regular files or links installed by another provider are preserved.
+        fn unlinkOwnedBinOrShim(this: *Linker, abs_target: [:0]const u8, abs_dest: [:0]const u8) void {
+            const io = std.Io.Threaded.global_single_threaded.io();
+            if (comptime !Environment.isWindows) {
+                var link_buf: bun.PathBuffer = undefined;
+                const len = std.Io.Dir.cwd().readLink(io, abs_dest, &link_buf) catch return;
+                var resolved_buf: bun.PathBuffer = undefined;
+                const actual = path.joinAbsStringBufZ(path.dirname(abs_dest, .auto), &resolved_buf, &.{link_buf[0..len]}, .auto);
+                if (strings.eql(actual, abs_target)) _ = bun.sys.unlink(abs_dest);
+                return;
+            }
+
+            const Shim = @import("./windows-shim/BinLinkingShim.zig");
+            const shim_target = @import("./windows-shim/shim_target.zig");
+            var dest_buf: bun.PathBuffer = undefined;
+            const metadata_path = std.fmt.bufPrintZ(&dest_buf, "{s}.bunx", .{abs_dest}) catch return;
+            const metadata = std.Io.Dir.cwd().readFileAlloc(io, metadata_path, bun.default_allocator, .limited(65536)) catch return;
+            defer bun.default_allocator.free(metadata);
+            const relative = path.relativeBufZ(this.rel_buf, path.dirname(abs_dest, .auto), abs_target);
+            if (!strings.hasPrefixComptime(relative, "..\\")) return;
+            var target_buf: bun.WPathBuffer = undefined;
+            const expected = strings.toWPathNormalized(&target_buf, relative[3..]);
+            if (!shim_target.matches(metadata, expected, @backingInt(Shim.VersionFlag.current))) return;
+
+            // A user may replace the executable while leaving our metadata.
+            // Delete an exe only if it is still the embedded launcher we wrote.
+            var exe_buf: bun.PathBuffer = undefined;
+            const exe_path = std.fmt.bufPrintZ(&exe_buf, "{s}.exe", .{abs_dest}) catch return;
+            if (std.Io.Dir.cwd().readFileAlloc(io, exe_path, bun.default_allocator, .limited(Shim.embedded_executable_data.len))) |executable| {
+                defer bun.default_allocator.free(executable);
+                if (strings.eql(executable, Shim.embedded_executable_data)) _ = bun.sys.unlink(exe_path);
+            } else |_| {}
+            _ = bun.sys.unlink(metadata_path);
+        }
+
         fn linkBinOrCreateShim(this: *Linker, abs_target: [:0]const u8, abs_dest: [:0]const u8, global: bool, target_has_dot_components: bool) void {
             bun.assertWithLocation(std.fs.path.isAbsolute(abs_target), @src());
             bun.assertWithLocation(std.fs.path.isAbsolute(abs_dest), @src());
@@ -1144,7 +1181,7 @@ pub const Bin = extern struct {
                     const abs_dest_len = @intFromPtr(abs_dest_buf_remain.ptr) - @intFromPtr(this.abs_dest_buf.ptr);
                     const abs_dest: [:0]const u8 = this.abs_dest_buf[0..abs_dest_len :0];
 
-                    unlinkBinOrShim(abs_dest);
+                    this.unlinkOwnedBinOrShim(this.resolveBinTarget(package_dir, this.bin.value.file.slice(this.string_buf), unscoped_package_name), abs_dest);
                 },
                 .named_file => {
                     const name = this.bin.value.named_file[0].slice(this.string_buf);
@@ -1157,7 +1194,7 @@ pub const Bin = extern struct {
                     const abs_dest_len = @intFromPtr(abs_dest_buf_remain.ptr) - @intFromPtr(this.abs_dest_buf.ptr);
                     const abs_dest: [:0]const u8 = this.abs_dest_buf[0..abs_dest_len :0];
 
-                    unlinkBinOrShim(abs_dest);
+                    this.unlinkOwnedBinOrShim(this.resolveBinTarget(package_dir, this.bin.value.named_file[1].slice(this.string_buf), normalized_name), abs_dest);
                 },
                 .map => {
                     var i = this.bin.value.map.begin();
@@ -1177,7 +1214,7 @@ pub const Bin = extern struct {
                         const abs_dest_len = @intFromPtr(abs_dest_buf_remain.ptr) - @intFromPtr(this.abs_dest_buf.ptr);
                         const abs_dest: [:0]const u8 = this.abs_dest_buf[0..abs_dest_len :0];
 
-                        unlinkBinOrShim(abs_dest);
+                        this.unlinkOwnedBinOrShim(this.resolveBinTarget(package_dir, this.extern_string_buf[i + 1].slice(this.string_buf), normalized_bin_dest), abs_dest);
                     }
                 },
                 .dir => {
@@ -1205,7 +1242,9 @@ pub const Bin = extern struct {
                                 const abs_dest_len = @intFromPtr(abs_dest_buf_remain.ptr) - @intFromPtr(this.abs_dest_buf.ptr);
                                 const abs_dest: [:0]const u8 = this.abs_dest_buf[0..abs_dest_len :0];
 
-                                unlinkBinOrShim(abs_dest);
+                                var target_buf: bun.PathBuffer = undefined;
+                                const abs_target = path.joinAbsStringBufZ(package_dir, &target_buf, &.{ target, entry.name }, .auto);
+                                this.unlinkOwnedBinOrShim(abs_target, abs_dest);
                             },
                             else => {},
                         }
