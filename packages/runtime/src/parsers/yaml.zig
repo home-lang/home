@@ -2719,16 +2719,25 @@ pub fn Parser(comptime enc: Encoding) type {
                 folded: bool,
 
                 pub fn done(ctx: *@This(), was_eof: bool) OOM!Token(enc) {
+                    // Bun's live implementation ignores EOF here entirely: it
+                    // normalizes `leading_newlines` once and then applies
+                    // chomping uniformly, matching the reference parsers it
+                    // cites (eemeli/yaml and js-yaml). Home carried an older
+                    // shape that special-cased EOF and, for `keep`, emitted
+                    // `leading_newlines + 1` — one trailing newline too many,
+                    // so `|+` yielded "x\n\n" where YAML says "x\n".
+                    _ = was_eof;
+
+                    if (ctx.text.items.len != 0 and ctx.leading_newlines == 0) {
+                        ctx.leading_newlines = 1;
+                    }
+
                     switch (ctx.chomp) {
                         .keep => {
-                            if (was_eof) {
-                                try ctx.text.appendNTimes('\n', ctx.leading_newlines + 1);
-                            } else if (ctx.text.items.len != 0) {
-                                try ctx.text.appendNTimes('\n', ctx.leading_newlines);
-                            }
+                            try ctx.text.appendNTimes('\n', ctx.leading_newlines);
                         },
                         .clip => {
-                            if (was_eof or ctx.text.items.len != 0) {
+                            if (ctx.text.items.len != 0) {
                                 try ctx.text.append('\n');
                             }
                         },
