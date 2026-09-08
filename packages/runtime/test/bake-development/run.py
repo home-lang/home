@@ -190,7 +190,7 @@ def main() -> None:
             process = subprocess.Popen(
                 [str(home_exe), './server.ts'],
                 cwd=temp_root,
-                env={**os.environ, 'NO_COLOR': '1'},
+                env={**os.environ, 'NO_COLOR': '1', 'BUN_FEATURE_FLAG_EXPERIMENTAL_BAKE': '1'},
                 stdout=server_log,
                 stderr=subprocess.STDOUT,
             )
@@ -341,7 +341,7 @@ def main() -> None:
             process = subprocess.Popen(
                 [str(home_exe), './server.ts'],
                 cwd=framework_root,
-                env={**os.environ, 'NO_COLOR': '1'},
+                env={**os.environ, 'NO_COLOR': '1', 'BUN_FEATURE_FLAG_EXPERIMENTAL_BAKE': '1'},
                 stdout=framework_log,
                 stderr=subprocess.STDOUT,
             )

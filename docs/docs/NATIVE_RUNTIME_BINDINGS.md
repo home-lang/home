@@ -1055,3 +1055,56 @@ unrequested tests.
 
 Verified optimized Home executable SHA-256:
 `33e631b52e174a4afe87b306d387ee1669c4930e94eb533a9b5862cc2305feba`.
+
+## Shared feature switches and array-rest flow types (#695, #696)
+
+The shared runtime now reads `BUN_FEATURE_FLAG_EXPERIMENTAL_BAKE` and
+`BUN_FEATURE_FLAG_NO_LIBDEFLATE` through the existing typed environment-variable
+API. Bake follows the native canary/debug/explicit-opt-in predicate, while its
+debugging features remain tied to canary/debug builds. Supported targets use
+libdeflate unless the opt-out is enabled. This removes the old static fallbacks
+that were left behind after the environment API was ported.
+
+The Home Bake integration scripts now explicitly opt into the experimental
+feature, matching the upstream corpus harness. Production output, missing-config
+failure, development serving, HMR recovery, browser-input validation and framework
+routing assertions are unchanged. Both complete integration scripts pass against
+the optimized native executable. The previous executable still fails the
+production script with explicit opt-in; setting the flag alone does not satisfy
+the regression. The final executable rejects `build --app` with the flag absent,
+`0`, or `false`, creates no output, and succeeds with the explicit opt-in.
+
+The complete unchanged pinned `js/web/fetch/fetch-gzip.test.ts` passes
+**24/24 / 43 assertions** in a fresh strict-native process with
+`BUN_FEATURE_FLAG_NO_LIBDEFLATE=0`, and **24/24 / 43 assertions** with the flag
+set to `1`. The original gzip, redirect, chunking, coding and empty-body
+assertions and deadlines are preserved.
+
+Array binding flow tracking now uses the existing rest-source type calculation
+before recursively recording a rest target. A rest binding retains the remaining
+array or tuple slice instead of being overwritten with the type of one element.
+The existing nested object/array-rest regression now requires zero diagnostics,
+so a different error code cannot conceal the failure. New negative cases reject
+incorrect array element types and reversed tuple tails. The focused checker
+artifact passes **4/4**; the complete TypeScript conformance artifact passes
+**1,419/1,419**, including the original `objectRestAssignment` fixture. The
+standalone `home-tsc --noEmit --target es2015` reproduction also exits zero
+without diagnostics.
+
+The focused native feature-flag unit artifact passes **6/6** with defaults,
+and **6/6** in each fresh process with both switches explicitly set to `0`
+and to `1`. Its build passes **23/23 steps**. Zig formatting, script syntax,
+documentation Pickier and whitespace checks pass.
+
+The optimized native build passes **46/46 steps**. This closes the diagnosed
+feature-switch and nested-rest failures in
+[#696](https://github.com/home-lang/home/issues/696) and
+[#695](https://github.com/home-lang/home/issues/695), respectively. It does not
+establish a completed full aggregate: the interrupted Request stress case
+[#697](https://github.com/home-lang/home/issues/697), intermittent Chrome startup
+[#694](https://github.com/home-lang/home/issues/694), other corpus adapters and
+external native build ownership remain under
+[#66](https://github.com/home-lang/home/issues/66).
+
+Verified optimized Home executable SHA-256:
+`65a1dadf074f6d9a4fa613b6795f7bbd44c8254d328d4960bc38909e7f7c87d7`.

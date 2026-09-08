@@ -5,11 +5,7 @@
 // `./env.zig` references replaced by `home_rt.Environment`.
 //
 // Deviations from upstream:
-//   * `isLibdeflateEnabled()` and `bake()` upstream consult
-//     `bun.feature_flag.BUN_FEATURE_FLAG_*.get()` — the typed env-var
-//     surface is not yet ported here. Until env_var.zig is brought across
-//     in full, these fns return their static fallback (no env-var probe).
-//   * Removed `env.is_canary` / `env.enable_asan` / `env.isBrowser` /
+//   * Adapted `env.enable_asan` / `env.isBrowser` /
 //     `env.isWasi` / `env.isWasm` references (those constants live in
 //     bun's `env.zig` which we have not duplicated wholesale). Adapted
 //     using `home_rt.Environment` instead.
@@ -150,22 +146,19 @@ pub const libdeflate_supported = !env.isWasi;
 
 // Mostly exists as a way to turn it off later, if necessary.
 pub fn isLibdeflateEnabled() bool {
-    // Upstream additionally checks the BUN_FEATURE_FLAG_NO_LIBDEFLATE env
-    // var. Until env_var.zig lands, we honour just the compile-time flag.
-    return libdeflate_supported;
+    if (!libdeflate_supported) return false;
+    return !home_rt.feature_flag.BUN_FEATURE_FLAG_NO_LIBDEFLATE.get();
 }
 
 /// Enable the "app" option in Bun.serve. This option will likely be removed
 /// in favor of HTML loaders and configuring framework options in bunfig.toml
 pub fn bake() bool {
-    // Upstream additionally consults `env.is_canary` and
-    // `BUN_FEATURE_FLAG_EXPERIMENTAL_BAKE`. For now: debug builds only.
-    return env.isDebug;
+    return env.is_canary or env.isDebug or home_rt.feature_flag.BUN_FEATURE_FLAG_EXPERIMENTAL_BAKE.get();
 }
 
 /// Additional debugging features for bake.DevServer, such as the incremental visualizer.
 /// To use them, extra flags are passed in addition to this one.
-pub const bake_debugging_features = env.isDebug;
+pub const bake_debugging_features = env.is_canary or env.isDebug;
 
 test "feature_flags: compile-time invariants" {
     try std.testing.expect(!breaking_changes_1_4);
@@ -175,11 +168,13 @@ test "feature_flags: compile-time invariants" {
     try std.testing.expect(is_fetch_preconnect_supported == env.isPosix);
 }
 
-test "feature_flags: isLibdeflateEnabled mirrors libdeflate_supported" {
-    try std.testing.expectEqual(libdeflate_supported, isLibdeflateEnabled());
+test "feature_flags: libdeflate respects the typed environment switch" {
+    const disabled = home_rt.feature_flag.BUN_FEATURE_FLAG_NO_LIBDEFLATE.get();
+    try std.testing.expectEqual(libdeflate_supported and !disabled, isLibdeflateEnabled());
 }
 
-test "feature_flags: bake follows debug mode" {
-    try std.testing.expectEqual(env.isDebug, bake());
-    try std.testing.expectEqual(env.isDebug, bake_debugging_features);
+test "feature_flags: Bake opt-in does not enable debugging features" {
+    const opted_in = home_rt.feature_flag.BUN_FEATURE_FLAG_EXPERIMENTAL_BAKE.get();
+    try std.testing.expectEqual(env.is_canary or env.isDebug or opted_in, bake());
+    try std.testing.expectEqual(env.is_canary or env.isDebug, bake_debugging_features);
 }

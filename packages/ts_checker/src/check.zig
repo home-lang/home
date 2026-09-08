@@ -28514,6 +28514,14 @@ pub const Checker = struct {
                     if (self.hir.kindOf(elem) != .parameter) continue;
                     const p = hir_mod.parameterOf(self.hir, elem);
                     if (p.name == hir_mod.none_node_id) continue;
+                    if (p.flags.is_rest) {
+                        // Rest captures the remaining array or tuple slice, not
+                        // the element at this position. Preserve that shape in
+                        // flow types, including recursively nested patterns.
+                        const rest_t = try self.arrayRestSourceType(source_node, i, fallback_elem_t, effective_source_t);
+                        try self.recordBindingTargetFlow(p.name, hir_mod.none_node_id, rest_t);
+                        continue;
+                    }
                     var pre_default_key_name: ?hir_mod.StringId = null;
                     var pre_default_key_t: TypeId = types.Primitive.none;
                     if (p.default_value != hir_mod.none_node_id and self.hir.kindOf(p.name) == .object_pattern) {
@@ -250230,9 +250238,34 @@ test "checker: array rest binding from object rest keeps array target type" {
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .strict_null_checks = false });
     try s.checker.checkSourceFile(s.root);
-    for (s.checker.diagnostics.items) |d| {
-        try T.expect(d.code != TsCodes.type_not_assignable);
-    }
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+}
+
+test "checker: array rest binding retains element types after nested flow recording" {
+    const s = try newSetup(
+        \\declare const source: { items: { value: string }[] };
+        \\const { items: [first, ...rest] } = source;
+        \\const values: { value: string }[] = rest;
+        \\const value: string = rest[0].value;
+        \\const invalid: number[] = rest;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), s.checker.diagnostics.items.len);
+    try T.expectEqual(TsCodes.type_not_assignable, s.checker.diagnostics.items[0].code);
+}
+
+test "checker: array rest binding preserves nested tuple tail order" {
+    const s = try newSetup(
+        \\declare const source: { items: [number, string, boolean] };
+        \\const { items: [, ...rest] } = source;
+        \\const pair: [string, boolean] = rest;
+        \\const invalid: [boolean, string] = rest;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), s.checker.diagnostics.items.len);
+    try T.expectEqual(TsCodes.type_not_assignable, s.checker.diagnostics.items[0].code);
 }
 
 test "checker: nullish member access on `T | null` reports TS18047 with name" {
