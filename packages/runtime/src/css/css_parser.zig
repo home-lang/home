@@ -4151,6 +4151,24 @@ pub const Parser = struct {
         return parse_nested_block(this, T, closure, parsefn);
     }
 
+    /// See `ParserInput.math_fn_parse_failures`.
+    pub inline fn mathFnParseFailures(this: *const Parser) u64 {
+        return this.input.math_fn_parse_failures;
+    }
+
+    pub inline fn noteMathFnParseFailure(this: *Parser) void {
+        this.input.math_fn_parse_failures += 1;
+    }
+
+    /// See `ParserInput.token_list_parse_failures`.
+    pub inline fn tokenListParseFailures(this: *const Parser) u64 {
+        return this.input.token_list_parse_failures;
+    }
+
+    pub inline fn noteTokenListParseFailure(this: *Parser) void {
+        this.input.token_list_parse_failures += 1;
+    }
+
     pub fn isExhausted(this: *Parser) bool {
         return this.expectExhausted().isOk();
     }
@@ -4668,6 +4686,24 @@ pub const ParserInput = struct {
     /// instead of re-scanning (and re-recursing through) the truncated
     /// suffix once per backtracking alternative per nesting level.
     unclosed_block_at_eof: ?UnclosedBlockAtEof = null,
+    /// Monotonic count of failed math-function parses whose arguments are
+    /// type-independent (`sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`,
+    /// `pow`, `log`, `sqrt`, `exp`). Those arguments parse the same way no
+    /// matter which value type the caller wants back, so once such a function
+    /// has failed over a range, re-entering that same range through another
+    /// type's alternative is guaranteed to fail again. Backtracking callers
+    /// sample this before an alternative; if it grew they propagate the error
+    /// instead of retrying (which is exponential in the nesting depth).
+    math_fn_parse_failures: u64 = 0,
+    /// Monotonic count of raw token-list parse failures
+    /// (`TokenList.parseInto`). A token-list parse is context-free: it fails
+    /// or succeeds the same way every time it runs over the same tokens at the
+    /// same block-nesting depth. Backtracking callers sample this before an
+    /// alternative that buffers token lists internally; if it grew, re-parsing
+    /// the same range through another token-list-based alternative is
+    /// guaranteed to fail again, so they propagate the error instead of
+    /// retrying (which is exponential in the nesting depth).
+    token_list_parse_failures: u64 = 0,
 
     pub fn new(allocator: Allocator, code: []const u8) ParserInput {
         return ParserInput{

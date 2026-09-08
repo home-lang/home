@@ -330,6 +330,20 @@ pub const TokenList = struct {
         options: *const css.ParserOptions,
         depth: usize,
     ) Result(void) {
+        const result = TokenListFns.parseIntoImpl(input, tokens, options, depth);
+        if (result.isErr()) {
+            // See `ParserInput.token_list_parse_failures`.
+            input.noteTokenListParseFailure();
+        }
+        return result;
+    }
+
+    fn parseIntoImpl(
+        input: *css.Parser,
+        tokens: *ArrayList(TokenOrValue),
+        options: *const css.ParserOptions,
+        depth: usize,
+    ) Result(void) {
         if (depth > 500) {
             return .{ .err = input.newCustomError(css.ParserError.maximum_nesting_depth) };
         }
@@ -365,7 +379,24 @@ pub const TokenList = struct {
                         ) catch unreachable;
                         last_is_delim = false;
                         last_is_whitespace = false;
-                    } else if (input.tryParse(UnresolvedColor.parse, .{ f, options }).asValue()) |color| {
+                        continue;
+                    }
+
+                    // See `ParserInput.token_list_parse_failures`.
+                    const failures_before = input.tokenListParseFailures();
+                    const unresolved_color_result = input.tryParse(UnresolvedColor.parse, .{ f, options });
+                    if (unresolved_color_result.asErr()) |e| {
+                        // The attempt failed inside one of its token-list
+                        // arguments (an rgb()/hsl() alpha or a light-dark()
+                        // half). Those tokens fail the same way under every
+                        // alternative below, so propagate instead of falling
+                        // through: re-parsing the arguments once per
+                        // alternative is exponential in the nesting depth when
+                        // such functions are nested.
+                        if (input.tokenListParseFailures() != failures_before) return .{ .err = e };
+                    }
+
+                    if (unresolved_color_result.asValue()) |color| {
                         tokens.append(
                             input.allocator(),
                             .{ .unresolved_color = color },
