@@ -629,7 +629,10 @@ pub const RunCommand = struct {
         const node_dir = try std.fmt.allocPrintSentinel(allocator, "{s}/node", .{dir}, 0);
         defer allocator.free(node_dir);
         try ensurePrivateNodeDirectory(node_dir);
-        inline for (.{ "node/node", "node/bun" }) |name| {
+        // The outer directory supplies only this runtime's `bun` command.
+        // The nested directory also supplies `node` when --bun selects it.
+        // Both PATH branches must resolve nested bun scripts to this binary.
+        inline for (.{ "bun", "node/node", "node/bun" }) |name| {
             const path = try std.fmt.allocPrintSentinel(allocator, "{s}/{s}", .{ dir, name }, 0);
             defer allocator.free(path);
             std.Io.Dir.cwd().symLink(std.Io.Threaded.global_single_threaded.io(), self, path, .{}) catch |err| {
