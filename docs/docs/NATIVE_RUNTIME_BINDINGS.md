@@ -1375,3 +1375,48 @@ deadline investigations in #701 and [#694](https://github.com/home-lang/home/iss
 
 Verified optimized Home executable SHA-256:
 `e444d3378dc349b89bf786228995209ae9f6e88d40ceb8ce80d34c12d7c90c65`.
+
+## Native HTML web corpus and faithful discovery audit (#702, #703)
+
+All five original files in `js/web/html` now route through Home's native test
+runner: FormData file-read failure ownership, multipart serialization, FormData,
+URLSearchParams and HTMLRewriter doctype removal. The bootstrap adapter no longer
+fabricates the FormData-to-JSON child's output or returns invented RSS values
+for the file-read failure child. Both dispatch paths and the JSON substitute
+helper are removed.
+
+The native matrix executes the original files with their real children and
+assertions. The file-read failure case retains its 256 KiB input, ten warm-up
+iterations, 100 measured iterations, two real RSS measurements and original
+10 MB non-ASAN growth limit. FormData retains its 100,000-iteration workload and
+numeric-key JSON child. The Linux-only multipart memory case retains its
+upstream platform guard; a macOS skip receives no implementation credit.
+
+The broader audit in [#703](https://github.com/home-lang/home/issues/703) confirms
+that the current 4,708-file classifier is not a faithful complete upstream test
+inventory. Exact production Home predicates report **175 native test-runner
+routes, 266 native script routes and 4,267 bootstrap routes**, including this
+HTML activation. These are routing counts, not passing-test counts.
+
+Exact discovery functions from the pinned Bun CI runner find **4,754 tracked
+paths and zero untracked paths** in the mirror under local Darwin arm64 context,
+before expectations, include/exclude filters, sharding, integration setup and
+vendor selection. Home omits **78** of those paths and includes **32** others,
+including helper and negative fixtures. Four native mode differences and a
+missing upstream Node test config also require reconciliation. The full path
+sets, source hashes, context and limits are retained in
+[the discovery audit](./bun-corpus-discovery-audit.json).
+Reproduce it with `python3 scripts/audit-bun-corpus-discovery.py --zig /path/to/zig
+--output audit.json`; the script reads the corpus pin and extracts the actual
+Home and upstream predicates without importing the upstream CI runner module.
+
+Mode differences need semantic review: upstream's textual `node:test` check can
+match a builtin-name assertion or a commented-out test. Neither zero-body
+fixtures nor upstream skips establish implemented coverage. A single native
+recursive test command also uses different discovery rules from the CI runner.
+The next migration must cover the intended inventory, original runner modes and
+startup context, real child execution and truthful failures while removing the
+remaining adapter fallback. The historical adapter-based green result remains
+insufficient evidence of logical parity under
+[#66](https://github.com/home-lang/home/issues/66) and
+[#202](https://github.com/home-lang/home/issues/202).

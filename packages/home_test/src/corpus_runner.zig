@@ -12814,15 +12814,6 @@ const harness_prelude =
     \\  if (!source.includes("makeInput(depth)") || !source.includes("Bun.JSON5.parse") || !source.includes("Bun.JSONC.parse") || !source.includes("probe(parse, 64)")) return null;
     \\  return __home_spawn_completed("JSON5 probed\nJSONC probed\ndone\n", "", 0);
     \\}
-    \\function __home_spawn_formdata_tojson_fixture(options) {
-    \\  if (!String(globalThis.__home_current_filename || "").includes("js/web/html/FormData.test.ts")) return null;
-    \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
-    \\  const evalIndex = cmd.indexOf("-e");
-    \\  if (evalIndex < 0) return null;
-    \\  const source = String(cmd[evalIndex + 1] || "");
-    \\  if (!source.includes('fd.append("0", "a")') || !source.includes("JSON.stringify(fd.toJSON())") || !source.includes("Content-Disposition: form-data; name=\"0\"")) return null;
-    \\  return __home_spawn_completed('{"0":["a","b","c"],"tag":["x","y"]}\n{"0":["first","second"]}\n', "", 0);
-    \\}
     \\function __home_spawn_issue_queue_fixture(options) {
     \\  const file = String(globalThis.__home_current_filename || "");
     \\  const cmd = Array.isArray(options && options.cmd) ? options.cmd.map(String) : [];
@@ -19258,8 +19249,6 @@ const harness_prelude =
     \\  if (transpilerInferConstraintFixture) return transpilerInferConstraintFixture;
     \\  const json5DepthProbeFixture = __home_spawn_json5_depth_probe_fixture(options);
     \\  if (json5DepthProbeFixture) return json5DepthProbeFixture;
-    \\  const formdataToJsonFixture = __home_spawn_formdata_tojson_fixture(options);
-    \\  if (formdataToJsonFixture) return formdataToJsonFixture;
     \\  const issueQueueFixture = __home_spawn_issue_queue_fixture(options);
     \\  if (issueQueueFixture) return issueQueueFixture;
     \\  const markdownEdgeEvalFixture = __home_spawn_markdown_edge_eval_fixture(options || {}, cmd);
@@ -22409,7 +22398,6 @@ const harness_prelude =
     \\  }
     \\  if (joined.includes("bundler-reloader-script.ts")) return __home_spawn_completed("", "", 0);
     \\  if (joined.includes("node-path-build") && joined.includes("build.js")) return __home_spawn_completed("MyClass\n", "", 0);
-    \\  if (joined.includes("--smol") && joined.includes("FormData-file-error-leak-fixture.ts")) return __home_spawn_completed(JSON.stringify({ baselineRss: 1024, finalRss: 2048, growthMB: 0, iterations: Number(options && options.env && options.env.ITERATIONS || 100) }) + "\n", "", 0);
     \\  if (joined.includes("--smol") && joined.includes("run.ts")) return __home_spawn_completed(JSON.stringify({ before: 0, after: 0, growth: 0 }) + "\n", "", 0);
     \\  if (String(globalThis.__home_current_filename || "").includes("bundler/bun-build-api.test.ts") && joined.includes("bun-build-filename-store-overflow") && joined.includes("run.ts")) return __home_spawn_completed("OK 400\n", "", 0);
     \\  if (cmd.includes("--install=force") && cmd.includes("index.js") && String(options && options.cwd || "").includes("mock-module-no-callback-no-resolve")) {
@@ -100675,6 +100663,14 @@ fn isNativeBlobCorpusFile(relative: []const u8) bool {
         std.mem.eql(u8, relative, "js/web/fetch/blob.test.ts");
 }
 
+fn isNativeHtmlWebCorpusFile(relative: []const u8) bool {
+    return std.mem.eql(u8, relative, "js/web/html/FormData-file-error-leak.test.ts") or
+        std.mem.eql(u8, relative, "js/web/html/FormData-multipart-serialization.test.ts") or
+        std.mem.eql(u8, relative, "js/web/html/FormData.test.ts") or
+        std.mem.eql(u8, relative, "js/web/html/URLSearchParams.test.ts") or
+        std.mem.eql(u8, relative, "js/web/html/html-rewriter-doctype.test.ts");
+}
+
 fn isNativeWebViewCorpusFile(relative: []const u8) bool {
     return std.mem.eql(u8, relative, "js/bun/webview/webview.test.ts") or
         std.mem.eql(u8, relative, "js/bun/webview/webview-chrome.test.ts") or
@@ -100869,6 +100865,7 @@ fn isNativeHomeCorpusFile(relative: []const u8) bool {
         isNativeHeadersResponseCorpusFile(relative) or
         isNativeBodyCorpusFile(relative) or
         isNativeBlobCorpusFile(relative) or
+        isNativeHtmlWebCorpusFile(relative) or
         isNativeHttpProxyCorpusFile(relative) or
         isNativeBunTestCorpusFile(relative) or
         isNativeBunTestHelperCorpusFile(relative) or
@@ -100922,6 +100919,7 @@ fn nativeCorpusMode(relative: []const u8) NativeCorpusMode {
         isNativeHeadersResponseCorpusFile(relative) or
         isNativeBodyCorpusFile(relative) or
         isNativeBlobCorpusFile(relative) or
+        isNativeHtmlWebCorpusFile(relative) or
         isNativeHttpProxyCorpusFile(relative) or
         isNativeBunTestCorpusFile(relative) or
         isNativePlatformAuditCorpusFile(relative) or
@@ -116136,29 +116134,33 @@ test "bootstrap runner mirrors bun-types issue 5396 fixture" {
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
-test "bootstrap runner mirrors FormData web corpus" {
+test "native HTML web corpus executes all five original files and real children" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
-
-    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    const allocator = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(allocator, .{});
     defer threaded.deinit();
-    const io = threaded.io();
-    const source = try Io.Dir.cwd().readFileAlloc(io, "packages/runtime/test/test/js/web/html/FormData.test.ts", std.testing.allocator, std.Io.Limit.limited(1024 * 1024));
-    defer std.testing.allocator.free(source);
-    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/web/html/FormData.test.ts");
-    defer prepared.deinit(std.testing.allocator);
-    try std.testing.expect(prepared.unsupported_reason == null);
-
-    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
-    defer runtime.deinit();
-    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
-    defer file_run.deinit(std.testing.allocator);
-
-    if (file_run.result.status() != .passed) {
-        std.debug.print("FormData web corpus failure: {s}\n", .{file_run.result.first_failure_message});
+    const cases = [_]struct { path: []const u8, passed: usize, todo: usize = 0 }{
+        .{ .path = "js/web/html/FormData-file-error-leak.test.ts", .passed = 1 },
+        .{ .path = "js/web/html/FormData-multipart-serialization.test.ts", .passed = if (builtin.os.tag == .linux) 4 else 3, .todo = if (builtin.os.tag == .linux) 0 else 1 },
+        .{ .path = "js/web/html/FormData.test.ts", .passed = 129 },
+        .{ .path = "js/web/html/URLSearchParams.test.ts", .passed = 11 },
+        .{ .path = "js/web/html/html-rewriter-doctype.test.ts", .passed = 1 },
+    };
+    for (cases) |case| {
+        try std.testing.expect(isNativeHtmlWebCorpusFile(case.path));
+        try std.testing.expect(isNativeHomeCorpusFile(case.path));
+        try std.testing.expectEqual(NativeCorpusMode.test_runner, nativeCorpusMode(case.path));
+        var summary = try runFile(threaded.io(), allocator, "packages/runtime/test/test", case.path);
+        defer summary.deinit(allocator);
+        if (summary.failed != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != case.todo) {
+            std.debug.print("native HTML web corpus mismatch for {s}: passed={} failed={} todo={} unsupported={} message={s}\n", .{ case.path, summary.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message });
+        }
+        try std.testing.expectEqual(@as(usize, 1), summary.files);
+        try std.testing.expectEqual(case.passed, summary.passed);
+        try std.testing.expectEqual(case.todo, summary.todo);
+        try std.testing.expectEqual(@as(usize, 0), summary.failed + summary.unsupported + summary.allowed_empty_files);
     }
-    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 129), file_run.result.passed);
-    try std.testing.expectEqual(@as(usize, 0), file_run.result.todo);
+    try std.testing.expect(!isNativeHtmlWebCorpusFile("js/web/html/FormData-file-error-leak-fixture.ts"));
 }
 
 test "bootstrap runner mirrors FormData set append corpus" {
@@ -128149,44 +128151,25 @@ test "bootstrap runner covers HTMLRewriter element callback smoke" {
     try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
 }
 
-test "bootstrap runner covers HTMLRewriter doctype removal smoke" {
-    if (!build_options.enable_jsc) return error.SkipZigTest;
-
-    const source =
-        \\import { expect, test } from "bun:test";
-        \\
-        \\test("remove and removed property work on DOCTYPE", () => {
-        \\  const html = "<!DOCTYPE html><html><head></head><body>Hello</body></html>";
-        \\  let sawDoctype = false;
-        \\  let wasRemoved = false;
-        \\
-        \\  const rewriter = new HTMLRewriter().onDocument({
-        \\    doctype(doctype) {
-        \\      sawDoctype = true;
-        \\      doctype.remove();
-        \\      wasRemoved = doctype.removed;
-        \\    },
-        \\  });
-        \\
-        \\  const result = rewriter.transform(html);
-        \\
-        \\  expect(sawDoctype).toBe(true);
-        \\  expect(wasRemoved).toBe(true);
-        \\  expect(result).not.toContain("<!DOCTYPE");
-        \\  expect(result).toContain("<html>");
-        \\});
-    ;
-    var prepared = try prepareCorpusModule(std.testing.allocator, source, "js/web/html/html-rewriter-doctype.test.ts");
-    defer prepared.deinit(std.testing.allocator);
-
-    var runtime = try jsc_bootstrap.Runtime.init(std.testing.allocator, harness_prelude);
-    defer runtime.deinit();
-
-    var file_run = try runtime.runFile(std.testing.allocator, prepared.fileSpec());
-    defer file_run.deinit(std.testing.allocator);
-
-    try std.testing.expectEqual(test_result.TestStatus.passed, file_run.result.status());
-    try std.testing.expectEqual(@as(usize, 1), file_run.result.passed);
+test "native HTML web corpus removes fabricated child output and memory measurements" {
+    for ([_][]const u8{ "__home_spawn_formdata_tojson_fixture", "formdataToJsonFixture", "FormData-file-error-leak-fixture.ts" }) |needle| {
+        try std.testing.expect(std.mem.indexOf(u8, harness_prelude, needle) == null);
+    }
+    const allocator = std.testing.allocator;
+    const cases = [_]struct { path: []const u8, retained: []const []const u8 }{
+        .{ .path = "FormData-file-error-leak.test.ts", .retained = &.{ "256 * 1024", "const iterations = 100", "WARMUP: \"10\"", "Bun.spawn", "toBeLessThan(isASAN ? 400 : 10)", "expect(exitCode).toBe(0)" } },
+        .{ .path = "FormData-file-error-leak-fixture.ts", .retained = &.{ "process.memoryUsage.rss()", "i < iterations", "i < warmup", "Bun.gc(true)", "ENOENT" } },
+        .{ .path = "FormData-multipart-serialization.test.ts", .retained = &.{ "test.skipIf(!isLinux)", "Bun.spawn" } },
+        .{ .path = "FormData.test.ts", .retained = &.{ "i < 100000", "JSON.stringify(fd.toJSON())", "JSON.stringify(parsed.toJSON())", "Bun.spawn" } },
+        .{ .path = "html-rewriter-doctype.test.ts", .retained = &.{ "doctype.remove()", "doctype.removed", "rewriter.transform(html)" } },
+    };
+    for (cases) |case| {
+        const path = try std.fs.path.join(allocator, &.{ "packages/runtime/test/test/js/web/html", case.path });
+        defer allocator.free(path);
+        const source = try Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(1024 * 1024));
+        defer allocator.free(source);
+        for (case.retained) |needle| try std.testing.expect(std.mem.indexOf(u8, source, needle) != null);
+    }
 }
 
 test "bootstrap runner propagates HTMLRewriter async handler errors" {
