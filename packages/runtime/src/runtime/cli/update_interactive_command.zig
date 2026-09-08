@@ -1644,7 +1644,7 @@ pub const UpdateInteractiveCommand = struct {
 
             // Read input
             var reader_buffer: [1]u8 = undefined;
-            var reader_file = std.fs.File.stdin().readerStreaming(&reader_buffer);
+            var reader_file = std.Io.File.stdin().readerStreaming(std.Io.Threaded.global_single_threaded.io(), &reader_buffer);
             const reader = &reader_file.interface;
             const byte = reader.takeByte() catch return state.selected;
 
