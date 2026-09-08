@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Scan strict-name Bun test files through the native full-VM path.
 # Preserve exactly one attempt and its complete log per file. Supervisor bounds
-# produce incomplete observations (time_bound / memory_bound / defer), never
+# produce incomplete observations (time_bound / memory_bound / disk_bound / defer), never
 # compatibility verdicts. The caller can choose a suitable bound before a run;
 # the scanner never retries, escalates it or changes original test deadlines.
 #
@@ -53,6 +53,9 @@ run_one() {
     # The supervisor ended the run at its resource bound. This is incomplete
     # execution, not proof of a runtime out-of-memory defect.
     status=memory_bound
+  elif [[ $code -eq 123 ]] && grep -qE '^run-bounded: (refusing to start -- (only .* MB disk free|cannot measure available disk space)|only .* MB disk free|could not measure disk space)' "$RUNLOG"; then
+    # A child may itself return 123; require the supervisor's disk diagnostic.
+    status=disk_bound
   elif [[ $code -eq 121 || $code -eq 122 ]]; then
     # The supervisor never started the file: the machine lock was unavailable,
     # or the host had no room. That is a fact about the HOST, not about the
@@ -84,7 +87,7 @@ run_one() {
   fi
 }
 
-pass=0 fail=0 crash=0 time_bound=0 deps=0 memory_bound=0 defer=0 index=0
+pass=0 fail=0 crash=0 time_bound=0 deps=0 memory_bound=0 disk_bound=0 defer=0 index=0
 while IFS= read -r f; do
   rel="${f#"$ROOT"/}"
   printf -v RUNLOG '%s.logs/%06d.log' "$OUT" "$index"
@@ -98,13 +101,14 @@ while IFS= read -r f; do
     time_bound) time_bound=$((time_bound+1)) ;;
     deps) deps=$((deps+1)) ;;
     memory_bound) memory_bound=$((memory_bound+1)) ;;
+    disk_bound) disk_bound=$((disk_bound+1)) ;;
     defer) defer=$((defer+1)) ;;
   esac
 # `*.test.*` also matches sidecars that are not runnable files — `__snapshots__`
 # holds `<name>.test.ts.snap`, which the runner reports as a crash. Select the
 # executable extensions instead.
 done < <(find "$CORPUS/$SUB" \( -name "*.test.js" -o -name "*.test.jsx" -o -name "*.test.mjs" -o -name "*.test.cjs" -o -name "*.test.ts" -o -name "*.test.tsx" -o -name "*.test.mts" -o -name "*.test.cts" \) | sort)
-echo "SUB=$SUB pass=$pass fail=$fail crash=$crash time_bound=$time_bound deps=$deps memory_bound=$memory_bound defer=$defer total=$index"
-if [[ "$index" -eq 0 || "$((fail+crash+time_bound+deps+memory_bound+defer))" -ne 0 ]]; then
+echo "SUB=$SUB pass=$pass fail=$fail crash=$crash time_bound=$time_bound deps=$deps memory_bound=$memory_bound disk_bound=$disk_bound defer=$defer total=$index"
+if [[ "$index" -eq 0 || "$((fail+crash+time_bound+deps+memory_bound+disk_bound+defer))" -ne 0 ]]; then
   exit 1
 fi

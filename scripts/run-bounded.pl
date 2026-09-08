@@ -1,12 +1,12 @@
 #!/usr/bin/env perl
 # Supervise one Home/Bun run: hold the machine lock, refuse to start when the
-# host has no room, bound the run in wall clock and memory, and leave nothing
+# host has no room, bound the run in wall clock, memory and disk, and leave nothing
 # behind.
 #
 # Usage: run-bounded.pl <seconds> <command> [args...]
 # Exits: the child's own code; 128+N if it died on signal N; 124 wall-clock
 #        bound; 125 memory bound; 121 could not get the machine lock;
-#        122 refused admission; 120 usage error.
+#        122 refused memory admission; 123 disk bound; 120 usage error.
 #
 # WHY THIS EXISTS, and why each piece is the shape it is — this guard replaced
 # one that failed twice and took the host down with it.
@@ -49,6 +49,8 @@
 #    macOS grows and shrinks the swapfile on demand, so `vm.swapusage` free
 #    space is not headroom -- it is just how much of the current file is unused.
 #    Gating on it refuses all work on a perfectly healthy machine.
+#    Actual filesystem free space is different: compiler outputs and swap growth
+#    can fill the volume even while the kernel reports available memory.
 
 use strict;
 use warnings;
@@ -75,10 +77,12 @@ my $max_mb     = defined $ENV{HOME_RUN_MAX_MB}      ? $ENV{HOME_RUN_MAX_MB}
 my $crit_level = defined $ENV{HOME_RUN_CRIT_LEVEL} ? $ENV{HOME_RUN_CRIT_LEVEL} : 12;
 my $lock_wait  = defined $ENV{HOME_RUN_LOCK_WAIT}  ? $ENV{HOME_RUN_LOCK_WAIT}  : 900;
 my $min_level  = defined $ENV{HOME_RUN_MIN_LEVEL}  ? $ENV{HOME_RUN_MIN_LEVEL}  : 20;
+my $min_free_mb = defined $ENV{HOME_RUN_MIN_FREE_MB} ? $ENV{HOME_RUN_MIN_FREE_MB} : 1024;
+my $crit_free_mb = defined $ENV{HOME_RUN_CRIT_FREE_MB} ? $ENV{HOME_RUN_CRIT_FREE_MB} : 512;
 my $lock_path  = $ENV{HOME_RUN_LOCK} || "$ENV{HOME}/.cache/home-run.lock";
 my $label      = $ENV{HOME_RUN_LABEL} || '';
 
-for my $v ([qw(HOME_RUN_MAX_MB)], [qw(HOME_TEST_MAX_RSS_MB)], [qw(HOME_RUN_LOCK_WAIT)], [qw(HOME_RUN_MIN_LEVEL)], [qw(HOME_RUN_CRIT_LEVEL)]) {
+for my $v ([qw(HOME_RUN_MAX_MB)], [qw(HOME_TEST_MAX_RSS_MB)], [qw(HOME_RUN_LOCK_WAIT)], [qw(HOME_RUN_MIN_LEVEL)], [qw(HOME_RUN_CRIT_LEVEL)], [qw(HOME_RUN_MIN_FREE_MB)], [qw(HOME_RUN_CRIT_FREE_MB)]) {
     my $name = $v->[0];
     next unless defined $ENV{$name};
     # A malformed value is an error, never a silent fallback to "unbounded":
@@ -92,6 +96,21 @@ die "usage: run-bounded.pl <seconds> <command> [args...]\n"
     unless defined $secs && $secs =~ /^\d+$/ && @ARGV;
 
 # ---------------------------------------------------------------- host state
+
+sub disk_free_mb {
+    # Check both output and temporary-file volumes. argv is passed directly to
+    # df, so paths from the environment are never interpreted by a shell.
+    local $ENV{LC_ALL} = 'C';
+    open(my $df, '-|', '/bin/df', '-Pk', '.', $ENV{TMPDIR} || '/tmp') or return undef;
+    my $lowest;
+    while (<$df>) {
+        next unless /^.+?\s+\d+\s+\d+\s+(-?\d+)\s+\d+%/;
+        my $mb = $1 / 1024;
+        $lowest = $mb if !defined $lowest || $mb < $lowest;
+    }
+    return undef unless close($df);
+    return $lowest;
+}
 
 sub sysctl_num {
     my ($name) = @_;
@@ -137,6 +156,18 @@ print $lock "pid=$$ label=$label cmd=@ARGV\n";
 $lock->flush if $lock->can('flush');
 
 # ------------------------------------------------------------- admission
+
+if ($min_free_mb > 0 || $crit_free_mb > 0) {
+    my $free = disk_free_mb();
+    if (!defined $free) {
+        print STDERR "run-bounded: refusing to start -- cannot measure available disk space\n";
+        exit 123;
+    }
+    if ($free < $min_free_mb) {
+        printf STDERR "run-bounded: refusing to start -- only %d MB disk free (want >= %d MB)\n", $free, $min_free_mb;
+        exit 123;
+    }
+}
 
 {
     my ($level, $pressure) = host_state();
@@ -304,6 +335,7 @@ sub reap_tree {
 my $deadline = time + $secs;
 my $tick       = 0;
 my $mem_fail   = 0;
+my $disk_fail  = 0;
 my $peak_mb    = 0;
 my $host_bad   = 0;
 my $worst_lvl  = 100;
@@ -332,7 +364,25 @@ while (1) {
         exit 124;
     }
 
-    if ($max_mb > 0 && ++$tick % $MEM_EVERY == 0) {
+    if (++$tick % $MEM_EVERY == 0 && $crit_free_mb > 0) {
+        my $free = disk_free_mb();
+        if (!defined $free) {
+            if (++$disk_fail >= $MEM_FAIL_MAX) {
+                print STDERR "run-bounded: could not measure disk space $disk_fail times running; killing\n";
+                reap_tree($pid);
+                exit 123;
+            }
+        } else {
+            $disk_fail = 0;
+            if ($free < $crit_free_mb) {
+                printf STDERR "run-bounded: only %d MB disk free (critical floor %d MB); killing this run\n", $free, $crit_free_mb;
+                reap_tree($pid);
+                exit 123;
+            }
+        }
+    }
+
+    if ($max_mb > 0 && $tick % $MEM_EVERY == 0) {
         note_tree($pid);
         my $mb = tree_footprint_mb(tree_pids($pid));
         if (!defined $mb) {

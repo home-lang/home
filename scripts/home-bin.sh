@@ -32,15 +32,18 @@ resolve_home_bin() {
 # for why RSS is the wrong quantity on macOS and how it took the host down
 # twice. HOME_TEST_MAX_RSS_MB is still honoured as the old spelling.
 # Deliberately NOT defaulted or exported here. The supervisor owns the default,
-# so a caller that sets the ceiling per-run (the corpus scanner's escalated
-# re-run, say) is not shadowed by a value this file exported at source time --
+# so a caller that sets a build-specific ceiling is not shadowed by a value
+# this file exported at source time --
 # which would have silently discarded every per-run ceiling.
 
 # Run a command under the machine lock with a wall-clock and a memory bound,
 # using timeout's exit conventions: 124 on the time bound, 128+signal when it
-# dies on one, else its own code. Additionally 125 for the memory bound, 121
-# when the machine lock could not be taken, and 122 when the host had no room
-# to start.
+# dies on one, else its own code. Additionally 125 for the memory bound, 123
+# for disk admission or exhaustion, 121 when the machine lock could not be
+# taken, and 122 when the host had no memory room to start. The supervisor
+# checks free space on the working and temporary volumes: 1024 MB to start,
+# 512 MB to continue, configurable through HOME_RUN_MIN_FREE_MB and
+# HOME_RUN_CRIT_FREE_MB. Full compiler builds can request larger floors.
 #
 # There is deliberately no unguarded branch. The previous version fell back to
 # coreutils `timeout` whenever the memory cap was zero, which meant the one
