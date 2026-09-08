@@ -1013,7 +1013,7 @@ fn getFdPath(fd: anytype, buf: anytype) ![]const PathBufferUnit(@TypeOf(buf)) {
             fd.handle
         else
             @compileError("unsupported file descriptor type");
-        const file: std.Io.File = .{ .handle = native_fd, .flags = .{} };
+        const file: std.Io.File = .{ .handle = native_fd, .flags = .{ .nonblocking = false } };
         const len = try file.realPath(std.Io.Threaded.global_single_threaded.io(), buf);
         return buf[0..len];
     }
