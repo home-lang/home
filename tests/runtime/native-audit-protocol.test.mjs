@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 
@@ -13,6 +13,7 @@ const definitions = [
   ['bridge', '2.0.0', { 'development-leaf': '1.0.0' }],
   ['production-leaf', '1.0.0', {}],
   ['development-leaf', '1.0.0', {}],
+  ['workspace-dev-only', '1.0.0', {}],
 ]
 const packages = new Map()
 for (const [name, version, dependencies] of definitions) {
@@ -68,12 +69,35 @@ try {
   const authority = server.url.host
   writeFileSync(join(directory, '.npmrc'), `//${authority}/:_authToken=fixture-audit-token\n`)
   await run(['install'])
-  const lock = readFileSync(join(directory, 'bun.lock'))
+  let lock = readFileSync(join(directory, 'bun.lock'))
   assert.match((await run(['audit'])).stdout, /No vulnerabilities found/)
   assert.deepEqual(normalize(audits.at(-1).body), normalize({ 'production-parent': ['1.0.0'], 'development-parent': ['1.0.0'], bridge: ['1.0.0', '2.0.0'], 'production-leaf': ['1.0.0'], 'development-leaf': ['1.0.0'] }))
   await run(['--prod', 'audit'])
   console.log('production audit request', JSON.stringify(audits.at(-1).body))
   assert.deepEqual(normalize(audits.at(-1).body), normalize({ 'production-parent': ['1.0.0'], bridge: ['1.0.0'], 'production-leaf': ['1.0.0'] }), 'production traversal must identify resolved versions, not package names')
+  // Both versions can also be production dependencies. Traversal must
+  // visit each version's distinct children rather than suppressing one.
+  const manifest = JSON.parse(readFileSync(join(directory, 'package.json'), 'utf8'))
+  manifest.dependencies['development-parent'] = '1.0.0'
+  delete manifest.devDependencies
+  writeFileSync(join(directory, 'package.json'), JSON.stringify(manifest))
+  await run(['install'])
+  lock = readFileSync(join(directory, 'bun.lock'))
+  await run(['audit', '--prod'])
+  const allProduction = normalize({ 'production-parent': ['1.0.0'], 'development-parent': ['1.0.0'], bridge: ['1.0.0', '2.0.0'], 'production-leaf': ['1.0.0'], 'development-leaf': ['1.0.0'] })
+  assert.deepEqual(normalize(audits.at(-1).body), allProduction, 'visit both production versions and their children')
+
+  // Workspace edges require the same dev filtering as the root package.
+  manifest.workspaces = ['workspace']
+  mkdirSync(join(directory, 'workspace'))
+  writeFileSync(join(directory, 'workspace', 'package.json'), JSON.stringify({ name: 'audit-workspace', dependencies: { 'production-leaf': '1.0.0' }, devDependencies: { 'workspace-dev-only': '1.0.0' } }))
+  writeFileSync(join(directory, 'package.json'), JSON.stringify(manifest))
+  await run(['install'])
+  lock = readFileSync(join(directory, 'bun.lock'))
+  await run(['audit'])
+  assert.deepEqual(audits.at(-1).body['workspace-dev-only'], ['1.0.0'])
+  await run(['audit', '--prod'])
+  assert.deepEqual(normalize(audits.at(-1).body), allProduction, 'exclude workspace dev-only edges')
   const advisory = { id: 700001, severity: 'high', title: 'Fixture advisory', url: 'https://example.invalid/GHSA-home-fixture', vulnerable_versions: '<2.0.0' }
   response = { bridge: [advisory] }
   assert.match((await run(['audit'], 1)).stdout, /Fixture advisory/)
