@@ -160,7 +160,8 @@
     709,
     438,
     713,
-    714
+    714,
+    "https://github.com/home-lang/home/issues/715"
   ],
   "retained_native_regressions": {
     "source_commit": "66a6d6e444ed9c6be2817f1b2901b67aacb06f4b",
@@ -726,6 +727,124 @@
         "Duplicate local-dependency package identity needs a real install fix.",
         "Explicit API docs target remains unverified.",
         "Full CI launch profile, full inventory execution, platform/service coverage, and independent build ownership remain unfinished."
+      ]
+    },
+    {
+      "source_commit": "fcb346159d87e5cd083e81e8c69d10e347d728bc",
+      "home_sha256": "3b9412bb55f7c2750c15d6abf1761910924e32e8ebc09683583e5e4eb3838cfd",
+      "build_log_sha256": "ad3c48a3996a2a1fe0e4291a468f001ad611ba5cba5a2954409af283c01c0451",
+      "html_archive_sha256": "ab5b97ecad7fe4527a870cb42d7aea5ec0ce05fd2a8a02acd9a6b67cc4fe0648",
+      "build_exit_code": 0,
+      "status": "Selected native parser/create verification passed; original JSX, native frozen provisioning and full parity remain incomplete.",
+      "build_steps_passed": 49,
+      "build_steps_total": 49,
+      "native_create_regression_exit_code": 0,
+      "html_original": {
+        "exit_code": 0,
+        "registered_passes": 145,
+        "upstream_skip_or_todo": 1
+      },
+      "original_create": {
+        "source_commit": "fcb346159",
+        "executables": {
+          "/Users/chris/Code/Home/lang-bun-port/zig-out/bin/home": "3b9412bb55f7c2750c15d6abf1761910924e32e8ebc09683583e5e4eb3838cfd",
+          "/Users/chris/Code/bun/build/release/bun": "47a87c1dea30da59c2733cce80118ea59bd338c616c6378f1c7f55e5f2b92c87"
+        },
+        "profile": "Original ordinary test deadlines, no retries, Home then Bun control, shared caches.",
+        "results": [
+          {
+            "label": "templates-home",
+            "exit_code": 0,
+            "duration_seconds": 1.687366667,
+            "log": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/create-originals-with-native-html/templates-home.log",
+            "log_sha256": "bb219308f79a9be677d244a22c65078c3a0e7ca400feec7bf2f4d1991ba65dbe",
+            "pass_reports": [
+              "13",
+              "13"
+            ],
+            "fail_reports": [
+              "0",
+              "0"
+            ]
+          },
+          {
+            "label": "templates-bun",
+            "exit_code": 0,
+            "duration_seconds": 1.66443475,
+            "log": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/create-originals-with-native-html/templates-bun.log",
+            "log_sha256": "03f50bf5f8e97df52dca44c6c63f1f81ff766859113a81310a7877f2a65f372d",
+            "pass_reports": [
+              "13"
+            ],
+            "fail_reports": [
+              "0"
+            ]
+          },
+          {
+            "label": "rsbuild-home",
+            "exit_code": 0,
+            "duration_seconds": 2.337432416,
+            "log": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/create-originals-with-native-html/rsbuild-home.log",
+            "log_sha256": "c8f704413a45cb05e8d1ec6e736869dff0bce6cfa71fd386d2c6458a1cecf8a8",
+            "pass_reports": [
+              "0"
+            ],
+            "fail_reports": [
+              "0"
+            ]
+          },
+          {
+            "label": "rsbuild-bun",
+            "exit_code": 0,
+            "duration_seconds": 1.1706307919999999,
+            "log": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/create-originals-with-native-html/rsbuild-bun.log",
+            "log_sha256": "b6b90bda474d565cec9853a499f2441d6fe8c36357359520f189984078105765",
+            "pass_reports": [],
+            "fail_reports": []
+          },
+          {
+            "label": "jsx-home",
+            "exit_code": 1,
+            "duration_seconds": 26.021064208000002,
+            "log": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/create-originals-with-native-html/jsx-home.log",
+            "log_sha256": "4f1412df3ebeb3c7a38d383b8ac51c9b8b66e10fa5720ebe3cfc87e562bcabf4",
+            "pass_reports": [
+              "5",
+              "5",
+              "5"
+            ],
+            "fail_reports": [
+              "8",
+              "8",
+              "8"
+            ]
+          },
+          {
+            "label": "jsx-bun",
+            "exit_code": 1,
+            "duration_seconds": 25.213482542,
+            "log": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/create-originals-with-native-html/jsx-bun.log",
+            "log_sha256": "3c454757ff3b1aaf51872d61ee3f342be464935681a46c220de2392173a841c7",
+            "pass_reports": [
+              "5"
+            ],
+            "fail_reports": [
+              "8"
+            ]
+          }
+        ]
+      },
+      "native_frozen_provisioning": {
+        "exit_code": 1,
+        "reason": "Native frozen lockfile comparison rejected identical serialization before extraction.",
+        "issue": "https://github.com/home-lang/home/issues/715"
+      },
+      "evidence_manifest": "docs/docs/bun-port-evidence/2026-09-08-native-create/manifest.json",
+      "limitations": [
+        "Original JSX Home and Bun each reported 5 pass/8 fail, with 4 development-server snapshot failures and 4 shadcn deadline failures. These remain failures.",
+        "Ordinary snapshot creation appended entries during the JSX batch. The generated diff was retained and the original snapshot restored. The sequential Bun control inherited possible snapshot additions from Home; neither aggregate is accepted as immutable snapshot verification.",
+        "No raw pre-recovery artifacts were reconstructed. The committed archive contains only surviving fresh evidence.",
+        "Full corpus inventory, upstream CI profile, platform matrices and independent native build ownership remain outstanding."
       ]
     }
   ],

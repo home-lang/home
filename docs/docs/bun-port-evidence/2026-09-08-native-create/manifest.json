@@ -1,0 +1,191 @@
+{
+  "purpose": "Retained first outcomes, including failures and snapshot additions. Not a full parity claim. gzip streams preserve original bytes; source paths inside historical logs are provenance, not portable paths.",
+  "files": [
+    {
+      "source": "build-with-native-html.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-create/build-with-native-html.log.gz",
+      "uncompressed_bytes": 4692,
+      "sha256": "ad3c48a3996a2a1fe0e4291a468f001ad611ba5cba5a2954409af283c01c0451"
+    },
+    {
+      "source": "native-html-build-checkpoint.json",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-create/native-html-build-checkpoint.json.gz",
+      "uncompressed_bytes": 358,
+      "sha256": "fd3fd3f5ba534237443fc776d657c47ea70924e37c7edbd570b15b01a8d8eab2"
+    },
+    {
+      "source": "native-create-entrypoints-with-html.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-create/native-create-entrypoints-with-html.log.gz",
+      "uncompressed_bytes": 44,
+      "sha256": "0581649e4950297eb0a8b53593f20d29bdde82155d641b713c661eac2747dd92"
+    },
+    {
+      "source": "html-original-with-native-parser.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-create/html-original-with-native-parser.log.gz",
+      "uncompressed_bytes": 16516,
+      "sha256": "7e555f5b13d27556855037a29cae8d6f2580d25f57fb62bf6d9518de0a538bfc"
+    },
+    {
+      "source": "provision-corpus-deps.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-create/provision-corpus-deps.log.gz",
+      "uncompressed_bytes": 2753,
+      "sha256": "f4fe77bf20be30089b22e64a9540729abf23bc833a981ccf6793810e9d0e249d"
+    },
+    {
+      "source": "provision-corpus-deps-native-home.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-create/provision-corpus-deps-native-home.log.gz",
+      "uncompressed_bytes": 324,
+      "sha256": "75dfb50323a87981a7edc974738dccfc54231464a75558d0125b49efe4ee7586"
+    },
+    {
+      "source": "aws-cdk-archive-audit.json",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-create/aws-cdk-archive-audit.json.gz",
+      "uncompressed_bytes": 469,
+      "sha256": "45be831ae746ad712378c6e11a405672fb66bffafbe01924021047ea784f8b28"
+    },
+    {
+      "source": "create-with-native-html-generated-snapshot.diff",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-create/create-with-native-html-generated-snapshot.diff.gz",
+      "uncompressed_bytes": 8073,
+      "sha256": "57d171cab4692e5dc9c4d3f857fa99ee2fe43432bb33a8408eb79891def08d9c"
+    },
+    {
+      "source": "docs-artifact-verification.json",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-create/docs-artifact-verification.json.gz",
+      "uncompressed_bytes": 254,
+      "sha256": "85a020ad202936d110c1bf648a4740d1d4a7100f5022b17cca9f610788b7bd68"
+    },
+    {
+      "source": "absolute-create-checkpoint.json",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-create/absolute-create-checkpoint.json.gz",
+      "uncompressed_bytes": 3967,
+      "sha256": "eed44ff854bc9848460b9ee8e09b2a727dd0bd95b597c280a6580ad79c7249f5"
+    },
+    {
+      "source": "native-html-library.json",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-create/native-html-library.json.gz",
+      "uncompressed_bytes": 179,
+      "sha256": "0a361841d2c4e719b238001e1ec71a622be6575a1a33220b0b0f37074b59f34a"
+    },
+    {
+      "source": "html-build-requirement-controls.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-create/html-build-requirement-controls.log.gz",
+      "uncompressed_bytes": 50,
+      "sha256": "05566a762817f59c00b2c185584da4ac4f65738a7d0c846973f5a6cc0bfbc96a"
+    },
+    {
+      "source": "create-originals-with-native-html/jsx-bun.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-create/create-originals-with-native-html/jsx-bun.log.gz",
+      "uncompressed_bytes": 35251,
+      "sha256": "3c454757ff3b1aaf51872d61ee3f342be464935681a46c220de2392173a841c7"
+    },
+    {
+      "source": "create-originals-with-native-html/templates-bun.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-create/create-originals-with-native-html/templates-bun.log.gz",
+      "uncompressed_bytes": 1580,
+      "sha256": "03f50bf5f8e97df52dca44c6c63f1f81ff766859113a81310a7877f2a65f372d"
+    },
+    {
+      "source": "create-originals-with-native-html/templates-home.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-create/create-originals-with-native-html/templates-home.log.gz",
+      "uncompressed_bytes": 2132,
+      "sha256": "bb219308f79a9be677d244a22c65078c3a0e7ca400feec7bf2f4d1991ba65dbe"
+    },
+    {
+      "source": "create-originals-with-native-html/rsbuild-bun.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-create/create-originals-with-native-html/rsbuild-bun.log.gz",
+      "uncompressed_bytes": 1440,
+      "sha256": "b6b90bda474d565cec9853a499f2441d6fe8c36357359520f189984078105765"
+    },
+    {
+      "source": "create-originals-with-native-html/manifest.json",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-create/create-originals-with-native-html/manifest.json.gz",
+      "uncompressed_bytes": 2972,
+      "sha256": "b92391ca3431c0807a77f9d1413d4c703fbbb5fdd2cb60abd791a715dadb210e"
+    },
+    {
+      "source": "create-originals-with-native-html/jsx-home.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-create/create-originals-with-native-html/jsx-home.log.gz",
+      "uncompressed_bytes": 77030,
+      "sha256": "4f1412df3ebeb3c7a38d383b8ac51c9b8b66e10fa5720ebe3cfc87e562bcabf4"
+    },
+    {
+      "source": "create-originals-with-native-html/rsbuild-home.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-create/create-originals-with-native-html/rsbuild-home.log.gz",
+      "uncompressed_bytes": 2077,
+      "sha256": "c8f704413a45cb05e8d1ec6e736869dff0bce6cfa71fd386d2c6458a1cecf8a8"
+    },
+    {
+      "source": "html-build-requirement-controls/restored-runtime-parser.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-create/html-build-requirement-controls/restored-runtime-parser.log.gz",
+      "uncompressed_bytes": 12225,
+      "sha256": "025a4288314de94fad0ff03857cde6f90fa3328e2f8b3f3c6ba4eb2d35bb545c"
+    },
+    {
+      "source": "html-build-requirement-controls/non-javascript-build.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-create/html-build-requirement-controls/non-javascript-build.log.gz",
+      "uncompressed_bytes": 12059,
+      "sha256": "769da6bdddbb98abc6ce99ca00d0b9ba6df01ab31550c45164597a115b7d225f"
+    },
+    {
+      "source": "html-build-requirement-controls/results.json",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-create/html-build-requirement-controls/results.json.gz",
+      "uncompressed_bytes": 973,
+      "sha256": "a7b42739387ca7564f823d4995233c7493ed6d8d23604f429a252765adda6aec"
+    },
+    {
+      "source": "html-build-requirement-controls/missing-runtime-parser.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-create/html-build-requirement-controls/missing-runtime-parser.log.gz",
+      "uncompressed_bytes": 466,
+      "sha256": "080dd1bf61e589968c7c42a611517d3b305b289fd37382d8f6a0f146ade3c88c"
+    },
+    {
+      "source": "lockfile-clean-controls/manifest.json",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-create/lockfile-clean-controls/manifest.json.gz",
+      "uncompressed_bytes": 1209,
+      "sha256": "aba894dcffdeebb694a37547d8e2c155cc4930cf5e5efb6e03b5bbcc5353cf80"
+    },
+    {
+      "source": "lockfile-clean-controls/frozen-controls.json",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-create/lockfile-clean-controls/frozen-controls.json.gz",
+      "uncompressed_bytes": 276,
+      "sha256": "ef79fdc1087984c70102c692f2d8b9e9b76b2fab65fe6c7e5f4a6482bcd01b49"
+    },
+    {
+      "source": "lockfile-clean-controls/home/install.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-create/lockfile-clean-controls/home/install.log.gz",
+      "uncompressed_bytes": 35464,
+      "sha256": "1e5422c289a5fb3a999fd056cd6fe3d17f87366009bbff6bdb15e7e6c41b9b1f"
+    },
+    {
+      "source": "lockfile-clean-controls/home/lockfile.diff",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-create/lockfile-clean-controls/home/lockfile.diff.gz",
+      "uncompressed_bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "source": "lockfile-clean-controls/home/frozen-lockfile-only.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-create/lockfile-clean-controls/home/frozen-lockfile-only.log.gz",
+      "uncompressed_bytes": 216,
+      "sha256": "3681e95ba4e157aaf41d870876fd3fa23349700916b8ce1a06cd457e9e0c5265"
+    },
+    {
+      "source": "lockfile-clean-controls/bun/install.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-create/lockfile-clean-controls/bun/install.log.gz",
+      "uncompressed_bytes": 35171,
+      "sha256": "21d2e244f407995723eb1c2191975b152c8b55850be109d80edc058b2f5eed6b"
+    },
+    {
+      "source": "lockfile-clean-controls/bun/lockfile.diff",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-create/lockfile-clean-controls/bun/lockfile.diff.gz",
+      "uncompressed_bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "source": "lockfile-clean-controls/bun/frozen-lockfile-only.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-create/lockfile-clean-controls/bun/frozen-lockfile-only.log.gz",
+      "uncompressed_bytes": 35171,
+      "sha256": "bc3244a4c4a4928eb47e520089ee5dcfaac34fac7727bef1a794874f14e50985"
+    }
+  ]
+}
