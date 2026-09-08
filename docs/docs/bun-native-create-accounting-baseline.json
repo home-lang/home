@@ -1,0 +1,163 @@
+{
+  "status": "Verified native create activation and accounting baseline; JSX and complete parity remain unfinished. Prior failed outcomes are retained.",
+  "source_commit": "66a6d6e444ed9c6be2817f1b2901b67aacb06f4b",
+  "upstream_pin": "4982b91e3702094330f3be3883354c52b8c01323",
+  "executables": {
+    "/Users/chris/Code/Home/lang-bun-port/zig-out/bin/home": "435b57f0b492e01ef40deb0254fdf79b0ea6409b45eeb7ff077714189933d743",
+    "/Users/chris/Code/bun/build/release/bun": "47a87c1dea30da59c2733cce80118ea59bd338c616c6378f1c7f55e5f2b92c87"
+  },
+  "profile": "Ordinary original deadlines; one Home attempt then one Bun control, shared caches. Not full CI coverage.",
+  "build": {
+    "steps_succeeded": 46,
+    "steps_total": 46,
+    "log": "zig-out/bun-port-709/build-seventh.log",
+    "log_sha256": "19a140ef96d56adf314c7fc78149823300af63e8f18c38c56f9ee8309533325a",
+    "peak_tree_footprint_mb": 13319
+  },
+  "results": [
+    {
+      "label": "accounting-original-http-and-mts",
+      "exit_code": 0,
+      "log": "zig-out/bun-port-709/runtime-verification/accounting-original-http-and-mts.log",
+      "log_sha256": "797524ef525f3815e78f69e260815a658408674809486ea0a8fce04f4c6e1ffa",
+      "actual": {
+        "tests passed": 29,
+        "process checks passed (no registered tests)": 1,
+        "file processes failed": 0,
+        "comment-only files": 0
+      },
+      "expected": [
+        0,
+        {
+          "tests passed": 29,
+          "process checks passed (no registered tests)": 1,
+          "file processes failed": 0,
+          "comment-only files": 0
+        }
+      ],
+      "ok": true
+    },
+    {
+      "label": "accounting-node-failure-directory",
+      "exit_code": 1,
+      "log": "zig-out/bun-port-709/runtime-verification/accounting-node-failure-directory.log",
+      "log_sha256": "c159f39ee6528dd216530dcb4ac40dcd171aefe96b398718e8753b8c43db7043",
+      "actual": {
+        "tests passed": null,
+        "process checks passed (no registered tests)": null,
+        "file processes failed": null,
+        "comment-only files": null
+      },
+      "expected": [
+        1,
+        {
+          "tests passed": 0,
+          "process checks passed (no registered tests)": 1,
+          "file processes failed": 1,
+          "comment-only files": 1
+        }
+      ],
+      "ok": false,
+      "interpretation": "Invalid control setup: inventory manifest missing. Product failure behavior was not reached; outcome retained."
+    },
+    {
+      "label": "create-templates-home",
+      "exit_code": 0,
+      "log": "zig-out/bun-port-709/runtime-verification/create-templates-home.log",
+      "log_sha256": "34c4d43d95f370932ea3a5c1cc74aeab11a9f30eec1e1364147aa4fbbe666dd6",
+      "actual": {},
+      "expected": null,
+      "ok": true,
+      "registered_tests": {
+        "passed": 13,
+        "failed": 0
+      },
+      "interpretation": "Original registered template tests passed. Successful child stderr is not retained by this gate, so the existing upstream GitHub rate-limit return cannot be independently excluded from the Home log."
+    },
+    {
+      "label": "create-templates-bun",
+      "exit_code": 0,
+      "log": "zig-out/bun-port-709/runtime-verification/create-templates-bun.log",
+      "log_sha256": "ecce14a3bb112a69b97d9de25b7811a680d7d9a507ce6a1f5253eb015ffc99a8",
+      "actual": {},
+      "expected": null,
+      "ok": true
+    },
+    {
+      "label": "create-rsbuild-home",
+      "exit_code": 0,
+      "log": "zig-out/bun-port-709/runtime-verification/create-rsbuild-home.log",
+      "log_sha256": "fb7c47477ec2f03aed9c7fd3c3fa9408255c895b14148e1a16106a489f9f9943",
+      "actual": {},
+      "expected": null,
+      "ok": true,
+      "registered_tests": {
+        "passed": 0,
+        "failed": 0
+      },
+      "process_checks_passed": 1,
+      "interpretation": "Original script completed all three real create/install/build stages and assertions."
+    },
+    {
+      "label": "create-rsbuild-bun",
+      "exit_code": 0,
+      "log": "zig-out/bun-port-709/runtime-verification/create-rsbuild-bun.log",
+      "log_sha256": "d123a69f6d8ef036cba1d6132fac72fd0f04be5d8f548c8ad758cfc6bc089464",
+      "actual": {},
+      "expected": null,
+      "ok": true
+    },
+    {
+      "label": "create-jsx-home",
+      "exit_code": 1,
+      "log": "zig-out/bun-port-709/runtime-verification/create-jsx-home.log",
+      "log_sha256": "5e592921aa0f90ae71b16524c8978ed53cd428b057177fd031a475b8e7d89172",
+      "actual": {},
+      "expected": null,
+      "ok": false,
+      "registered_tests": {
+        "passed": 1,
+        "failed": 12
+      },
+      "interpretation": "Leading --only-missing before install routed to script execution; native dependency dispatcher repair pending verification."
+    },
+    {
+      "label": "create-jsx-bun",
+      "exit_code": 1,
+      "log": "zig-out/bun-port-709/runtime-verification/create-jsx-bun.log",
+      "log_sha256": "8e71797e172453556e15ece28f1789094ac290d88b15cfeb23a4b8c60c4c1e70",
+      "actual": {},
+      "expected": null,
+      "ok": false,
+      "registered_tests": {
+        "passed": 3,
+        "failed": 10
+      },
+      "interpretation": "Two snapshot differences and original 5-second deadline failures; not a clean reference result."
+    }
+  ],
+  "corrected_control": {
+    "setup_change": "Added the missing BUN_TRACKED_FILES.txt to the private control mirror. No pinned source changed.",
+    "exit_code": 1,
+    "tests_passed": 0,
+    "process_checks_passed": 1,
+    "failed_files": 1,
+    "comment_only_files": 1,
+    "diagnostic": "AssertionError: real-node-assertion",
+    "log": "zig-out/bun-port-709/accounting-corrected-inventory.log",
+    "log_sha256": "7790150ffbdb76938bf3bd04ebe30c59b17606fa8ea051c8e4c8245c2768974f"
+  },
+  "limitations": [
+    "Focused six-test harness and explicit API-doc target not yet verified at this checkpoint.",
+    "These selected results do not establish all 4754 discovered files passing.",
+    "Ordinary original deadlines are preserved; full upstream CI launch profile remains separate unfinished work.",
+    "Reference JSX failures do not make the Home-only dispatch failures acceptable.",
+    "Successful native child stderr retention remains incomplete."
+  ],
+  "related_issues": [
+    66,
+    703,
+    709,
+    438
+  ]
+}
