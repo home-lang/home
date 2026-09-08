@@ -73,7 +73,7 @@ pub const AuditCommand = struct {
     /// The exception is when you pass --json, it will simply return 0 as that was considered a successful "request
     /// for the audit information"
     pub fn audit(ctx: Command.Context, pm: *PackageManager, json_output: bool, audit_level: ?AuditLevel, audit_prod_only: bool, ignore_list: []const []const u8) bun.OOM!u32 {
-        Output.prettyError(comptime Output.prettyFmt("<r><b>bun audit <r><d>v" ++ Global.package_json_version_with_sha ++ "<r>\n", true), .{});
+        Output.prettyError("<r><b>bun audit <r><d>v" ++ Global.package_json_version_with_sha ++ "<r>\n", .{});
         Output.flush();
 
         const load_lockfile = pm.lockfile.loadFromCwd(pm, ctx.allocator, ctx.log, true);
@@ -188,44 +188,32 @@ fn buildDependencyTree(allocator: std.mem.Allocator, pm: *PackageManager) bun.OO
     return dependency_tree;
 }
 
-fn buildProductionPackageSet(allocator: std.mem.Allocator, pm: *PackageManager, prod_set: *bun.StringHashMap(void)) bun.OOM!void {
+fn buildProductionPackageSet(allocator: std.mem.Allocator, pm: *PackageManager, prod_set: *std.AutoHashMap(u32, void)) bun.OOM!void {
     const packages = pm.lockfile.packages.slice();
-    const pkg_names = packages.items(.name);
     const pkg_dependencies = packages.items(.dependencies);
     const pkg_resolutions = packages.items(.resolutions);
-    const buf = pm.lockfile.buffers.string_bytes.items;
     const dependencies = pm.lockfile.buffers.dependencies.items;
     const resolutions = pm.lockfile.buffers.resolutions.items;
     const root_id = pm.root_package_id.get(pm.lockfile, pm.workspace_name_hash);
 
     var queue = bun.LinearFifo(u32, .Dynamic).init(allocator);
     defer queue.deinit();
+    try prod_set.put(root_id, {});
+    try queue.writeItem(root_id);
 
-    const root_deps = pkg_dependencies[root_id];
-    const root_resolutions = pkg_resolutions[root_id];
-    const dep_slice = root_deps.get(dependencies);
-    const res_slice = root_resolutions.get(resolutions);
-
-    for (dep_slice, res_slice) |dep, resolved_pkg_id| {
-        if (!dep.behavior.isDev() and resolved_pkg_id < packages.len) {
-            const pkg_name = pkg_names[resolved_pkg_id].slice(buf);
-            try prod_set.put(pkg_name, {});
-            try queue.writeItem(resolved_pkg_id);
-        }
-    }
-
+    // A package name may resolve to several versions with different children.
+    // Follow actual package IDs and exclude dev-only edges at every level,
+    // including workspace packages. A name-based visited set both includes
+    // unrelated dev versions and can miss a production version's children.
     while (queue.readItem()) |current_pkg_id| {
-        const current_deps = pkg_dependencies[current_pkg_id];
-        const current_resolutions = pkg_resolutions[current_pkg_id];
-        const current_dep_slice = current_deps.get(dependencies);
-        const current_res_slice = current_resolutions.get(resolutions);
-
-        for (current_dep_slice, current_res_slice) |_, resolved_pkg_id| {
-            if (resolved_pkg_id >= pkg_names.len) continue;
-
-            const pkg_name = pkg_names[resolved_pkg_id].slice(buf);
-            if (!prod_set.contains(pkg_name)) {
-                try prod_set.put(pkg_name, {});
+        const dep_slice = pkg_dependencies[current_pkg_id].get(dependencies);
+        const res_slice = pkg_resolutions[current_pkg_id].get(resolutions);
+        for (dep_slice, res_slice) |dep, resolved_pkg_id| {
+            if (resolved_pkg_id >= packages.len) continue;
+            if (dep.behavior.isDev() and !dep.behavior.isProd() and !dep.behavior.isOptional() and !dep.behavior.isPeer()) continue;
+            const entry = try prod_set.getOrPut(resolved_pkg_id);
+            if (!entry.found_existing) {
+                entry.value_ptr.* = {};
                 try queue.writeItem(resolved_pkg_id);
             }
         }
@@ -256,11 +244,11 @@ fn collectPackagesForAudit(allocator: std.mem.Allocator, pm: *PackageManager, pr
 
     var skipped_packages = std.array_list.Managed([]const u8).init(allocator);
 
-    var prod_packages: ?bun.StringHashMap(void) = null;
+    var prod_packages: ?std.AutoHashMap(u32, void) = null;
     defer if (prod_packages) |*map| map.deinit();
 
     if (prod_only) {
-        prod_packages = bun.StringHashMap(void).init(allocator);
+        prod_packages = std.AutoHashMap(u32, void).init(allocator);
         try buildProductionPackageSet(allocator, pm, &prod_packages.?);
     }
 
@@ -271,7 +259,7 @@ fn collectPackagesForAudit(allocator: std.mem.Allocator, pm: *PackageManager, pr
         const name_slice = name.slice(buf);
 
         if (prod_only and prod_packages != null) {
-            if (!prod_packages.?.contains(name_slice)) {
+            if (!prod_packages.?.contains(@intCast(idx))) {
                 continue;
             }
         }

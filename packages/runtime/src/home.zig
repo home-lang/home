@@ -2587,6 +2587,7 @@ pub const cli = struct {
     pub const RemoveCommand = @import("runtime/cli/remove_command.zig").RemoveCommand;
     pub const UpdateCommand = @import("runtime/cli/update_command.zig").UpdateCommand;
     pub const OutdatedCommand = @import("runtime/cli/outdated_command.zig").OutdatedCommand;
+    pub const AuditCommand = @import("runtime/cli/audit_command.zig").AuditCommand;
     pub const LinkCommand = @import("runtime/cli/link_command.zig").LinkCommand;
     pub const UnlinkCommand = @import("runtime/cli/unlink_command.zig").UnlinkCommand;
     pub const PatchCommand = @import("runtime/cli/patch_command.zig").PatchCommand;

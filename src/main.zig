@@ -2767,6 +2767,10 @@ fn tryNativeDependencyCommand(args: []const [:0]const u8) !bool {
             const ctx = try nativePackageCommandContext(args, .PatchCommitCommand);
             try home_rt.cli.PatchCommitCommand.exec(ctx);
         },
+        .AuditCommand => {
+            const ctx = try nativePackageCommandContext(args, .AuditCommand);
+            try home_rt.cli.AuditCommand.exec(ctx);
+        },
         else => return false,
     }
     home_rt.Output.flush();
