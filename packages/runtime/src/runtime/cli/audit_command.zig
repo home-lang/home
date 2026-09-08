@@ -21,13 +21,13 @@ const PackageInfo = struct {
 };
 
 const AuditResult = struct {
-    vulnerable_packages: bun.StringHashMap(PackageInfo),
+    vulnerable_packages: bun.StringArrayHashMap(PackageInfo),
     all_vulnerabilities: std.array_list.Managed(VulnerabilityInfo),
     allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator) AuditResult {
         return AuditResult{
-            .vulnerable_packages = bun.StringHashMap(PackageInfo).init(allocator),
+            .vulnerable_packages = bun.StringArrayHashMap(PackageInfo).init(allocator),
             .all_vulnerabilities = std.array_list.Managed(VulnerabilityInfo).init(allocator),
             .allocator = allocator,
         };
@@ -38,6 +38,7 @@ const AuditResult = struct {
         while (iter.next()) |entry| {
             entry.value_ptr.vulnerabilities.deinit();
             for (entry.value_ptr.dependents.items) |*dependent| {
+                for (dependent.path.items) |part| self.allocator.free(part);
                 dependent.path.deinit();
             }
             entry.value_ptr.dependents.deinit();
@@ -78,7 +79,7 @@ pub const AuditCommand = struct {
         const load_lockfile = pm.lockfile.loadFromCwd(pm, ctx.allocator, ctx.log, true);
         @import("./package_manager_command.zig").PackageManagerCommand.handleLoadLockfileErrors(load_lockfile, pm);
 
-        var dependency_tree = try buildDependencyTree(ctx.allocator, pm);
+        var dependency_tree = try buildDependencyTree(ctx.allocator, pm, audit_prod_only);
         defer dependency_tree.deinit();
 
         const packages_result = try collectPackagesForAudit(ctx.allocator, pm, audit_prod_only);
@@ -151,40 +152,50 @@ fn printSkippedPackages(skipped_packages: std.array_list.Managed([]const u8)) vo
     }
 }
 
-fn buildDependencyTree(allocator: std.mem.Allocator, pm: *PackageManager) bun.OOM!bun.StringHashMap(std.array_list.Managed([]const u8)) {
-    var dependency_tree = bun.StringHashMap(std.array_list.Managed([]const u8)).init(allocator);
+const DependencyTree = struct {
+    parents: std.AutoHashMap(u32, std.array_list.Managed(u32)),
+    production_packages: ?std.AutoHashMap(u32, void) = null,
 
-    const packages = pm.lockfile.packages.slice();
-    const pkg_names = packages.items(.name);
-    const pkg_dependencies = packages.items(.dependencies);
-    const pkg_resolutions = packages.items(.resolutions);
-    const buf = pm.lockfile.buffers.string_bytes.items;
-    const dependencies = pm.lockfile.buffers.dependencies.items;
-    const resolutions = pm.lockfile.buffers.resolutions.items;
-
-    for (pkg_names, pkg_dependencies, pkg_resolutions, 0..) |pkg_name, deps, res_list, pkg_idx| {
-        const package_name = pkg_name.slice(buf);
-
-        if (packages.items(.resolution)[pkg_idx].tag != .npm) continue;
-
-        const dep_slice = deps.get(dependencies);
-        const res_slice = res_list.get(resolutions);
-
-        for (dep_slice, res_slice) |_, resolved_pkg_id| {
-            if (resolved_pkg_id >= pkg_names.len) continue;
-
-            const resolved_name = pkg_names[resolved_pkg_id].slice(buf);
-
-            const result = try dependency_tree.getOrPut(resolved_name);
-            if (!result.found_existing) {
-                result.key_ptr.* = try allocator.dupe(u8, resolved_name);
-                result.value_ptr.* = std.array_list.Managed([]const u8).init(allocator);
-            }
-            try result.value_ptr.append(try allocator.dupe(u8, package_name));
-        }
+    fn deinit(this: *DependencyTree) void {
+        var iter = this.parents.valueIterator();
+        while (iter.next()) |parents| parents.deinit();
+        this.parents.deinit();
+        if (this.production_packages) |*packages| packages.deinit();
     }
 
-    return dependency_tree;
+    fn includes(this: *const DependencyTree, id: u32) bool {
+        return if (this.production_packages) |packages| packages.contains(id) else true;
+    }
+};
+
+fn isDevOnly(dep: bun.install.Dependency) bool {
+    return dep.behavior.isDev() and !dep.behavior.isProd() and !dep.behavior.isOptional() and !dep.behavior.isPeer();
+}
+
+fn buildDependencyTree(allocator: std.mem.Allocator, pm: *PackageManager, prod_only: bool) bun.OOM!DependencyTree {
+    var tree = DependencyTree{ .parents = std.AutoHashMap(u32, std.array_list.Managed(u32)).init(allocator) };
+    errdefer tree.deinit();
+    if (prod_only) {
+        tree.production_packages = std.AutoHashMap(u32, void).init(allocator);
+        try buildProductionPackageSet(allocator, pm, &tree.production_packages.?);
+    }
+    const packages = pm.lockfile.packages.slice();
+    const dependencies = pm.lockfile.buffers.dependencies.items;
+    const resolutions = pm.lockfile.buffers.resolutions.items;
+    const root_id = pm.root_package_id.get(pm.lockfile, pm.workspace_name_hash);
+    for (packages.items(.dependencies), packages.items(.resolutions), packages.items(.resolution), 0..) |deps, resolved, resolution, index| {
+        const parent_id: u32 = @intCast(index);
+        // Root/workspace edges are report boundaries, handled by the path
+        // finder. Other local packages can still lead to audited npm children.
+        if (parent_id == root_id or resolution.tag == .workspace or !tree.includes(parent_id)) continue;
+        for (deps.get(dependencies), resolved.get(resolutions)) |dep, child_id| {
+            if (child_id >= packages.len or !tree.includes(child_id) or (prod_only and isDevOnly(dep))) continue;
+            const entry = try tree.parents.getOrPut(child_id);
+            if (!entry.found_existing) entry.value_ptr.* = std.array_list.Managed(u32).init(allocator);
+            try entry.value_ptr.append(parent_id);
+        }
+    }
+    return tree;
 }
 
 fn buildProductionPackageSet(allocator: std.mem.Allocator, pm: *PackageManager, prod_set: *std.AutoHashMap(u32, void)) bun.OOM!void {
@@ -209,7 +220,7 @@ fn buildProductionPackageSet(allocator: std.mem.Allocator, pm: *PackageManager, 
         const res_slice = pkg_resolutions[current_pkg_id].get(resolutions);
         for (dep_slice, res_slice) |dep, resolved_pkg_id| {
             if (resolved_pkg_id >= packages.len) continue;
-            if (dep.behavior.isDev() and !dep.behavior.isProd() and !dep.behavior.isOptional() and !dep.behavior.isPeer()) continue;
+            if (isDevOnly(dep)) continue;
             const entry = try prod_set.getOrPut(resolved_pkg_id);
             if (!entry.found_existing) {
                 entry.value_ptr.* = {};
@@ -440,146 +451,79 @@ fn parseVulnerability(allocator: std.mem.Allocator, package_name: []const u8, vu
 fn findDependencyPaths(
     allocator: std.mem.Allocator,
     target_package: []const u8,
-    dependency_tree: *const bun.StringHashMap(std.array_list.Managed([]const u8)),
+    vulnerable_versions: []const u8,
+    dependency_tree: *const DependencyTree,
     pm: *PackageManager,
 ) bun.OOM!std.array_list.Managed(PackageInfo.DependencyPath) {
     var paths = std.array_list.Managed(PackageInfo.DependencyPath).init(allocator);
-
     const packages = pm.lockfile.packages.slice();
     const root_id = pm.root_package_id.get(pm.lockfile, pm.workspace_name_hash);
-    const root_deps = packages.items(.dependencies)[root_id];
     const dependencies = pm.lockfile.buffers.dependencies.items;
+    const resolutions = pm.lockfile.buffers.resolutions.items;
     const buf = pm.lockfile.buffers.string_bytes.items;
-    const pkg_names = packages.items(.name);
-    const pkg_resolutions = packages.items(.resolution);
-    const pkg_deps = packages.items(.dependencies);
-
-    const dep_slice = root_deps.get(dependencies);
-    for (dep_slice) |dependency| {
-        const dep_name = dependency.name.slice(buf);
-        if (std.mem.eql(u8, dep_name, target_package)) {
-            var direct_path = PackageInfo.DependencyPath{
-                .path = std.array_list.Managed([]const u8).init(allocator),
-                .is_direct = true,
-            };
-            try direct_path.path.append(try allocator.dupe(u8, target_package));
-            try paths.append(direct_path);
-            break;
-        }
-    }
-
-    for (pkg_resolutions, pkg_deps, pkg_names) |resolution, workspace_deps, pkg_name| {
-        if (resolution.tag != .workspace) continue;
-
-        const workspace_name = pkg_name.slice(buf);
-        const workspace_dep_slice = workspace_deps.get(dependencies);
-
-        for (workspace_dep_slice) |dependency| {
-            const dep_name = dependency.name.slice(buf);
-            if (std.mem.eql(u8, dep_name, target_package)) {
-                var workspace_path = PackageInfo.DependencyPath{
-                    .path = std.array_list.Managed([]const u8).init(allocator),
-                    .is_direct = false,
-                };
-
-                const workspace_prefix = try std.fmt.allocPrint(allocator, "workspace:{s}", .{workspace_name});
-                try workspace_path.path.append(workspace_prefix);
-                try workspace_path.path.append(try allocator.dupe(u8, target_package));
-                try paths.append(workspace_path);
-                break;
-            }
-        }
-    }
-
-    var queue: bun.LinearFifo([]const u8, .Dynamic) = bun.LinearFifo([]const u8, .Dynamic).init(allocator);
+    const names = packages.items(.name);
+    const package_resolutions = packages.items(.resolution);
+    const deps = packages.items(.dependencies);
+    const resolved = packages.items(.resolutions);
+    const prod_only = dependency_tree.production_packages != null;
+    const query = try bun.Semver.Query.parse(allocator, vulnerable_versions, bun.Semver.SlicedString.init(vulnerable_versions, vulnerable_versions));
+    defer query.deinit();
+    var queue = bun.LinearFifo(u32, .Dynamic).init(allocator);
     defer queue.deinit();
-    var visited = bun.StringHashMap(void).init(allocator);
-    defer visited.deinit();
-    var parent_map = bun.StringHashMap([]const u8).init(allocator);
-    defer parent_map.deinit();
-
-    if (dependency_tree.get(target_package)) |dependents| {
-        for (dependents.items) |dependent| {
-            try queue.writeItem(dependent);
-            try parent_map.put(dependent, target_package);
-        }
+    // Each node records its next descendant on a shortest path to an
+    // affected installed version. IDs keep distinct versions/cycles separate.
+    var next = std.AutoHashMap(u32, u32).init(allocator);
+    defer next.deinit();
+    for (names, package_resolutions, 0..) |name, resolution, index| {
+        const id: u32 = @intCast(index);
+        if (resolution.tag != .npm or !strings.eql(name.slice(buf), target_package) or !dependency_tree.includes(id)) continue;
+        if (vulnerable_versions.len > 0 and !query.satisfies(resolution.value.npm.version, vulnerable_versions, buf)) continue;
+        try next.put(id, id);
+        try queue.writeItem(id);
     }
 
-    while (queue.readItem()) |*current| {
-        if (visited.contains(current.*)) continue;
-        try visited.put(current.*, {});
-
-        var is_root_dep = false;
-        for (dep_slice) |*dependency| {
-            const dep_name = dependency.name.slice(buf);
-            if (bun.strings.eql(dep_name, current.*)) {
-                is_root_dep = true;
+    while (queue.readItem()) |current| {
+        var boundary_found = false;
+        for (deps, resolved, package_resolutions, names, 0..) |boundary_deps, boundary_resolved, resolution, name, boundary_index| {
+            const boundary: u32 = @intCast(boundary_index);
+            if (boundary != root_id and resolution.tag != .workspace) continue;
+            if (!dependency_tree.includes(boundary)) continue;
+            for (boundary_deps.get(dependencies), boundary_resolved.get(resolutions)) |dep, id| {
+                if (id != current or (prod_only and isDevOnly(dep))) continue;
+                var dependency_path = PackageInfo.DependencyPath{
+                    .path = std.array_list.Managed([]const u8).init(allocator),
+                    .is_direct = boundary == root_id and next.get(current).? == current,
+                };
+                var trace = current;
+                while (true) {
+                    try dependency_path.path.insert(0, try allocator.dupe(u8, names[trace].slice(buf)));
+                    const descendant = next.get(trace).?;
+                    if (descendant == trace) break;
+                    trace = descendant;
+                }
+                if (boundary != root_id) {
+                    const prefix = try std.fmt.allocPrint(allocator, "workspace:{s}", .{name.slice(buf)});
+                    try dependency_path.path.insert(0, prefix);
+                }
+                try paths.append(dependency_path);
+                boundary_found = true;
                 break;
             }
         }
-
-        var workspace_name_for_dep: ?[]const u8 = null;
-        for (pkg_resolutions, pkg_deps, pkg_names) |resolution, workspace_deps, pkg_name| {
-            if (resolution.tag != .workspace) continue;
-
-            const workspace_dep_slice = workspace_deps.get(dependencies);
-            for (workspace_dep_slice) |*dependency| {
-                const dep_name = dependency.name.slice(buf);
-                if (bun.strings.eql(dep_name, current.*)) {
-                    workspace_name_for_dep = pkg_name.slice(buf);
-                    break;
-                }
-            }
-            if (workspace_name_for_dep != null) break;
-        }
-
-        if (is_root_dep or workspace_name_for_dep != null) {
-            var path = PackageInfo.DependencyPath{
-                .path = std.array_list.Managed([]const u8).init(allocator),
-                .is_direct = false,
-            };
-
-            var trace = current.*;
-            var seen_in_trace = bun.StringHashMap(void).init(allocator);
-            defer seen_in_trace.deinit();
-
-            while (true) {
-                // Check for cycle before processing
-                if (seen_in_trace.contains(trace)) {
-                    // Cycle detected, stop tracing
-                    break;
-                }
-
-                // Add to path and mark as seen
-                try path.path.insert(0, try allocator.dupe(u8, trace));
-                try seen_in_trace.put(trace, {});
-
-                // Get parent for next iteration
-                if (parent_map.get(trace)) |parent| {
-                    trace = parent;
-                } else {
-                    break;
-                }
-            }
-
-            if (workspace_name_for_dep) |workspace_name| {
-                const workspace_prefix = try std.fmt.allocPrint(allocator, "workspace:{s}", .{workspace_name});
-                try path.path.insert(0, workspace_prefix);
-            }
-
-            try paths.append(path);
-        } else {
-            if (dependency_tree.get(current.*)) |dependents| {
-                for (dependents.items) |dependent| {
-                    if (!visited.contains(dependent)) {
-                        try queue.writeItem(dependent);
-                        try parent_map.put(dependent, current.*);
+        // Keep the upstream shortest representative path per boundary while
+        // ensuring every edge resolves to the affected installed version.
+        if (!boundary_found or next.get(current).? == current) {
+            if (dependency_tree.parents.get(current)) |parents| {
+                for (parents.items) |parent| {
+                    const entry = try next.getOrPut(parent);
+                    if (!entry.found_existing) {
+                        entry.value_ptr.* = current;
+                        try queue.writeItem(parent);
                     }
                 }
             }
         }
     }
-
     return paths;
 }
 
@@ -587,7 +531,7 @@ fn printEnhancedAuditReport(
     allocator: std.mem.Allocator,
     response_text: []const u8,
     pm: *PackageManager,
-    dependency_tree: *const bun.StringHashMap(std.array_list.Managed([]const u8)),
+    dependency_tree: *const DependencyTree,
     audit_level: ?AuditLevel,
     ignore_list: []const []const u8,
 ) bun.OOM!u32 {
@@ -674,7 +618,7 @@ fn printEnhancedAuditReport(
         }
 
         for (audit_result.all_vulnerabilities.items) |vulnerability| {
-            const paths = try findDependencyPaths(allocator, vulnerability.package_name, dependency_tree, pm);
+            const paths = try findDependencyPaths(allocator, vulnerability.package_name, vulnerability.vulnerable_versions, dependency_tree, pm);
 
             const result = try audit_result.vulnerable_packages.getOrPut(vulnerability.package_name);
             if (!result.found_existing) {
@@ -685,6 +629,29 @@ fn printEnhancedAuditReport(
                     .vulnerabilities = std.array_list.Managed(VulnerabilityInfo).init(allocator),
                     .dependents = paths,
                 };
+            } else {
+                for (paths.items) |candidate| {
+                    var duplicate = false;
+                    for (result.value_ptr.dependents.items) |existing| {
+                        if (existing.path.items.len != candidate.path.items.len) continue;
+                        var same = true;
+                        for (existing.path.items, candidate.path.items) |a, b| {
+                            if (!strings.eql(a, b)) {
+                                same = false;
+                                break;
+                            }
+                        }
+                        if (same) {
+                            duplicate = true;
+                            break;
+                        }
+                    }
+                    if (duplicate) {
+                        for (candidate.path.items) |part| allocator.free(part);
+                        candidate.path.deinit();
+                    } else try result.value_ptr.dependents.append(candidate);
+                }
+                paths.deinit();
             }
             try result.value_ptr.vulnerabilities.append(vulnerability);
         }
@@ -715,10 +682,14 @@ fn printEnhancedAuditReport(
                 for (package_info.dependents.items) |path| {
                     if (path.path.items.len > 1) {
                         if (std.mem.startsWith(u8, path.path.items[0], "workspace:")) {
-                            const vulnerable_pkg = path.path.items[path.path.items.len - 1];
-                            const workspace_part = path.path.items[0];
-
-                            Output.prettyln("  <d>{s} › <red>{s}<r>", .{ workspace_part, vulnerable_pkg });
+                            const vulnerable_pkg = path.path.items[1];
+                            Output.pretty("  <d>{s}", .{path.path.items[0]});
+                            var i = path.path.items.len;
+                            while (i > 2) {
+                                i -= 1;
+                                Output.pretty(" › {s}", .{path.path.items[i]});
+                            }
+                            Output.prettyln(" › <red>{s}<r>", .{vulnerable_pkg});
                         } else {
                             const vulnerable_pkg = path.path.items[0];
 

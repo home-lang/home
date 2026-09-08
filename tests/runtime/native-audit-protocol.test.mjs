@@ -75,6 +75,12 @@ try {
   await run(['--prod', 'audit'])
   console.log('production audit request', JSON.stringify(audits.at(-1).body))
   assert.deepEqual(normalize(audits.at(-1).body), normalize({ 'production-parent': ['1.0.0'], bridge: ['1.0.0'], 'production-leaf': ['1.0.0'] }), 'production traversal must identify resolved versions, not package names')
+  const advisory = { id: 700001, severity: 'high', title: 'Fixture advisory', url: 'https://example.invalid/GHSA-home-fixture', vulnerable_versions: '<2.0.0' }
+  response = { bridge: [advisory] }
+  const productionReport = (await run(['audit', '--prod'], 1)).stdout
+  assert.match(productionReport, /production-parent › bridge/)
+  assert.doesNotMatch(productionReport, /development-parent/, 'production report must not name a development-only path')
+  response = {}
   // Both versions can also be production dependencies. Traversal must
   // visit each version's distinct children rather than suppressing one.
   const manifest = JSON.parse(readFileSync(join(directory, 'package.json'), 'utf8'))
@@ -90,7 +96,7 @@ try {
   // Workspace edges require the same dev filtering as the root package.
   manifest.workspaces = ['workspace']
   mkdirSync(join(directory, 'workspace'))
-  writeFileSync(join(directory, 'workspace', 'package.json'), JSON.stringify({ name: 'audit-workspace', dependencies: { 'production-leaf': '1.0.0' }, devDependencies: { 'workspace-dev-only': '1.0.0' } }))
+  writeFileSync(join(directory, 'workspace', 'package.json'), JSON.stringify({ name: 'audit-workspace', dependencies: { 'production-parent': '1.0.0' }, devDependencies: { 'workspace-dev-only': '1.0.0' } }))
   writeFileSync(join(directory, 'package.json'), JSON.stringify(manifest))
   await run(['install'])
   lock = readFileSync(join(directory, 'bun.lock'))
@@ -98,9 +104,16 @@ try {
   assert.deepEqual(audits.at(-1).body['workspace-dev-only'], ['1.0.0'])
   await run(['audit', '--prod'])
   assert.deepEqual(normalize(audits.at(-1).body), allProduction, 'exclude workspace dev-only edges')
-  const advisory = { id: 700001, severity: 'high', title: 'Fixture advisory', url: 'https://example.invalid/GHSA-home-fixture', vulnerable_versions: '<2.0.0' }
   response = { bridge: [advisory] }
-  assert.match((await run(['audit'], 1)).stdout, /Fixture advisory/)
+  const report = (await run(['audit'], 1)).stdout
+  assert.match(report, /Fixture advisory/)
+  assert.doesNotMatch(report, /development-parent/, 'unaffected installed versions must not contribute advisory paths')
+  assert.match(report, /workspace:audit-workspace › production-parent › bridge/, 'preserve each transitive workspace path component')
+  response = { bridge: [advisory, { ...advisory, id: 700002, title: 'Second version advisory', vulnerable_versions: '>=2.0.0' }] }
+  const bothVersions = (await run(['audit'], 1)).stdout
+  assert.match(bothVersions, /production-parent › bridge/)
+  assert.match(bothVersions, /development-parent › bridge/)
+  response = { bridge: [advisory] }
   assert.deepEqual(JSON.parse((await run(['audit', '--json'], 1)).stdout), response)
   assert.doesNotMatch((await run(['audit', '--audit-level', 'critical'])).stdout, /Fixture advisory/)
   assert.doesNotMatch((await run(['audit', '--ignore', 'GHSA-home-fixture'])).stdout, /Fixture advisory/)
