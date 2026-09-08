@@ -74,6 +74,13 @@
       "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-packages/native-update-outdated.test.mjs.before.gz",
       "sha256": "3da1979cd2889ccc66d96f37f1d79de6c24ae66837d2f3c62cb4e0767a493641",
       "uncompressed_bytes": 3765
+    },
+    {
+      "source": "build-native-update-clock.log",
+      "source_commit": "2c83f9952",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-packages/build-native-update-clock.log.gz",
+      "sha256": "3c03c0746325f03f2adf3cd54ea099bc79caff7d443160102179d40d23911736",
+      "uncompressed_bytes": 4236
     }
   ]
 }
