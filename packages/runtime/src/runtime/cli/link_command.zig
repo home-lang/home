@@ -130,7 +130,7 @@ fn link(ctx: Command.Context) !void {
             var link_dest_buf: bun.PathBuffer = undefined;
             var link_rel_buf: bun.PathBuffer = undefined;
 
-            var node_modules_path = bun.AbsPath(.{}).initFdPath(.fromStdDir(node_modules)) catch |err| {
+            var node_modules_path = bun.AbsPath(.{}).initFdPath(bun.FD.fromStdDir(node_modules)) catch |err| {
                 if (manager.options.log_level != .silent) {
                     Output.err(err, "failed to link binary", .{});
                 }
