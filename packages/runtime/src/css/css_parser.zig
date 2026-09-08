@@ -991,7 +991,11 @@ pub fn DeriveValueType(comptime T: type, comptime ValueTypeMap: anytype) type {
     };
 }
 
-fn consume_until_end_of_block(block_type: BlockType, tokenizer: *Tokenizer) void {
+/// Returns true if the block's closing token was found, false if the end of
+/// input was reached first — i.e. the block is unclosed and everything from
+/// here to EOF lies inside it. Callers use that to memoize the truncated
+/// suffix; see `record_unclosed_block_at_eof`.
+fn consume_until_end_of_block(block_type: BlockType, tokenizer: *Tokenizer) bool {
     @branchHint(.cold);
     var stack = SmallList(BlockType, 16){};
     stack.appendAssumeCapacity(block_type);
@@ -1003,11 +1007,38 @@ fn consume_until_end_of_block(block_type: BlockType, tokenizer: *Tokenizer) void
         if (BlockType.closing(&tok)) |b| {
             if (stack.getLastUnchecked() == b) {
                 _ = stack.pop();
-                if (stack.len() == 0) return;
+                if (stack.len() == 0) return true;
             }
         }
 
         if (BlockType.opening(&tok)) |bt| stack.append(tokenizer.allocator, bt);
+    }
+    return false;
+}
+
+/// See `ParserInput.unclosed_block_at_eof`.
+const UnclosedBlockAtEof = struct {
+    /// Position of the first token inside the earliest known unclosed block.
+    start_position: usize,
+    /// Tokenizer state at the end of input, captured when the unclosed block
+    /// was discovered.
+    eof_state: ParserState,
+};
+
+/// Records that the block whose content starts at `start_position` failed to
+/// parse and turned out to be unclosed: the end of input was reached without
+/// ever finding its closing token. See `ParserInput.unclosed_block_at_eof`.
+fn record_unclosed_block_at_eof(parser: *Parser, start_position: usize) void {
+    @branchHint(.cold);
+    bun.debugAssert(parser.input.tokenizer.isEof());
+    const eof_state = parser.input.tokenizer.state();
+    if (parser.input.unclosed_block_at_eof) |*entry| {
+        if (start_position < entry.start_position) entry.start_position = start_position;
+    } else {
+        parser.input.unclosed_block_at_eof = .{
+            .start_position = start_position,
+            .eof_state = eof_state,
+        };
     }
 }
 
@@ -1222,7 +1253,7 @@ fn parse_until_before(
             return result;
         }
         if (delimited_parser.at_start_of) |block_type| {
-            consume_until_end_of_block(block_type, &delimited_parser.input.tokenizer);
+            _ = consume_until_end_of_block(block_type, &delimited_parser.input.tokenizer);
         }
         break :result result;
     };
@@ -1234,7 +1265,7 @@ fn parse_until_before(
         switch (parser.input.tokenizer.next()) {
             .result => |token| {
                 if (BlockType.opening(&token)) |block_type| {
-                    consume_until_end_of_block(block_type, &parser.input.tokenizer);
+                    _ = consume_until_end_of_block(block_type, &parser.input.tokenizer);
                 }
             },
             else => break,
@@ -1266,7 +1297,7 @@ pub fn parse_until_after(
         // We know this byte is ASCII.
         parser.input.tokenizer.advance(1);
         if (next_byte == '{') {
-            consume_until_end_of_block(BlockType.curly_bracket, &parser.input.tokenizer);
+            _ = consume_until_end_of_block(BlockType.curly_bracket, &parser.input.tokenizer);
         }
     }
     return result;
@@ -1291,13 +1322,29 @@ fn parse_nested_block(parser: *Parser, comptime T: type, closure: anytype, compt
         .parenthesis => Delimiters{ .close_parenthesis = true },
     };
 
+    const start_position = parser.input.tokenizer.getPosition();
+    // If a block at or before this position already failed to parse and was
+    // found to be unclosed at the end of input, this block lies inside that
+    // truncated suffix and extends to the end of input as well. Re-parsing it
+    // can only fail again, so skip straight to the end of input. Without this,
+    // backtracking callers (e.g. `Calc.parse` followed by `V.parse`, or the
+    // token-list color fallbacks) re-parse the unclosed suffix once per
+    // alternative per nesting level, which is exponential in the nesting depth.
+    if (parser.input.unclosed_block_at_eof) |unclosed| {
+        if (start_position >= unclosed.start_position) {
+            parser.input.tokenizer.reset(&unclosed.eof_state);
+            return .{ .err = parser.newError(BasicParseErrorKind.end_of_input) };
+        }
+    }
+
     // Bound recursion: deeply nested blocks (e.g. `((((…))))` or nested
     // `@media`) would otherwise overflow the native stack.
     parser.input.nesting_depth += 1;
     if (parser.input.nesting_depth > MAX_NESTING_DEPTH) {
         parser.input.nesting_depth -= 1;
         const err = parser.newCustomError(ParserError{ .maximum_nesting_depth = {} });
-        consume_until_end_of_block(block_type, &parser.input.tokenizer);
+        const found_close = consume_until_end_of_block(block_type, &parser.input.tokenizer);
+        if (!found_close) record_unclosed_block_at_eof(parser, start_position);
         return .{ .err = err };
     }
     defer parser.input.nesting_depth -= 1;
@@ -1311,9 +1358,14 @@ fn parse_nested_block(parser: *Parser, comptime T: type, closure: anytype, compt
     };
     const result = nested_parser.parseEntirely(T, closure, parsefn);
     if (nested_parser.at_start_of) |block_type2| {
-        consume_until_end_of_block(block_type2, &nested_parser.input.tokenizer);
+        _ = consume_until_end_of_block(block_type2, &nested_parser.input.tokenizer);
     }
-    consume_until_end_of_block(block_type, &parser.input.tokenizer);
+    const found_close = consume_until_end_of_block(block_type, &parser.input.tokenizer);
+    const failed = switch (result) {
+        .err => true,
+        .result => false,
+    };
+    if (failed and !found_close) record_unclosed_block_at_eof(parser, start_position);
     return result;
 }
 
@@ -4433,7 +4485,7 @@ pub const Parser = struct {
     pub fn @"skip cdc and cdo"(this: *@This()) void {
         if (this.at_start_of) |block_type| {
             this.at_start_of = null;
-            consume_until_end_of_block(block_type, &this.input.tokenizer);
+            _ = consume_until_end_of_block(block_type, &this.input.tokenizer);
         }
 
         this.input.tokenizer.@"skip cdc and cdo"();
@@ -4442,7 +4494,7 @@ pub const Parser = struct {
     pub fn skipWhitespace(this: *@This()) void {
         if (this.at_start_of) |block_type| {
             this.at_start_of = null;
-            consume_until_end_of_block(block_type, &this.input.tokenizer);
+            _ = consume_until_end_of_block(block_type, &this.input.tokenizer);
         }
 
         this.input.tokenizer.skipWhitespace();
@@ -4497,7 +4549,7 @@ pub const Parser = struct {
     pub fn nextIncludingWhitespaceAndComments(this: *Parser) Result(*Token) {
         if (this.at_start_of) |block_type| {
             this.at_start_of = null;
-            consume_until_end_of_block(block_type, &this.input.tokenizer);
+            _ = consume_until_end_of_block(block_type, &this.input.tokenizer);
         }
 
         const byte = this.input.tokenizer.nextByte();
@@ -4607,6 +4659,15 @@ pub const ParserInput = struct {
     /// Shared across every nested `Parser` (they all hold this same pointer), so
     /// it bounds total block-nesting depth and can't be reset by re-entry.
     nesting_depth: u32 = 0,
+    /// Set once a nested block fails to parse and the end of input is reached
+    /// without ever finding its closing token, i.e. the stylesheet is
+    /// truncated somewhere inside that block. Everything from
+    /// `start_position` to the end of input is inside the unclosed block, so
+    /// re-parsing any block in that range can only fail the same way again.
+    /// `parse_nested_block` uses this to fail such attempts immediately
+    /// instead of re-scanning (and re-recursing through) the truncated
+    /// suffix once per backtracking alternative per nesting level.
+    unclosed_block_at_eof: ?UnclosedBlockAtEof = null,
 
     pub fn new(allocator: Allocator, code: []const u8) ParserInput {
         return ParserInput{
