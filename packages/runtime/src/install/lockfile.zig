@@ -1832,7 +1832,10 @@ pub fn eql(l: *const Lockfile, r: *const Lockfile, cut_off_pkg_id: usize, alloca
     const l_len = l_hoisted_deps.len;
     const r_len = r_hoisted_deps.len;
 
-    if (l_len != r_len) return false;
+    if (l_len != r_len) {
+        if (PackageManager.verbose_install) Output.prettyErrorln("Lockfile comparison: hoisted dependency counts differ ({d} != {d})", .{ l_len, r_len });
+        return false;
+    }
 
     const sort_buf = try allocator.alloc(EqlSorter.PathToId, l_len + r_len);
     defer l.allocator.free(sort_buf);
@@ -1876,7 +1879,10 @@ pub fn eql(l: *const Lockfile, r: *const Lockfile, cut_off_pkg_id: usize, alloca
     }
     r_buf = r_buf[0..i];
 
-    if (l_buf.len != r_buf.len) return false;
+    if (l_buf.len != r_buf.len) {
+        if (PackageManager.verbose_install) Output.prettyErrorln("Lockfile comparison: resolved dependency counts differ ({d} != {d})", .{ l_buf.len, r_buf.len });
+        return false;
+    }
 
     const l_pkgs = l.packages.slice();
     const r_pkgs = r.packages.slice();
@@ -1919,6 +1925,7 @@ pub fn eql(l: *const Lockfile, r: *const Lockfile, cut_off_pkg_id: usize, alloca
         const l_pkg_id = l_ids.pkg_id;
         const r_pkg_id = r_ids.pkg_id;
         if (l_pkg_name_hashes[l_pkg_id] != r_pkg_name_hashes[r_pkg_id]) {
+            if (PackageManager.verbose_install) Output.prettyErrorln("Lockfile comparison: package names differ ({s}/{s} != {s}/{s})", .{ l_ids.tree_path, l_pkg_names[l_pkg_id].slice(l_string_buf), r_ids.tree_path, r_pkg_names[r_pkg_id].slice(r_string_buf) });
             return false;
         }
         const l_res = l_pkg_resolutions[l_pkg_id];
@@ -1926,9 +1933,11 @@ pub fn eql(l: *const Lockfile, r: *const Lockfile, cut_off_pkg_id: usize, alloca
 
         if (l_res.tag == .uninitialized or r_res.tag == .uninitialized) {
             if (l_res.tag != r_res.tag) {
+                if (PackageManager.verbose_install) Output.prettyErrorln("Lockfile comparison: resolution tags differ for {s}", .{l_pkg_names[l_pkg_id].slice(l_string_buf)});
                 return false;
             }
         } else if (!l_res.eql(&r_res, l_string_buf, r_string_buf)) {
+            if (PackageManager.verbose_install) Output.prettyErrorln("Lockfile comparison: resolutions differ for {s} ({f} != {f})", .{ l_pkg_names[l_pkg_id].slice(l_string_buf), l_res.fmt(l_string_buf, .posix), r_res.fmt(r_string_buf, .posix) });
             return false;
         }
 
@@ -1939,10 +1948,12 @@ pub fn eql(l: *const Lockfile, r: *const Lockfile, cut_off_pkg_id: usize, alloca
             r_string_buf,
             r_extern_strings,
         )) {
+            if (PackageManager.verbose_install) Output.prettyErrorln("Lockfile comparison: binary entries differ for {s}", .{l_pkg_names[l_pkg_id].slice(l_string_buf)});
             return false;
         }
 
         if (!l_pkg_scripts[l_pkg_id].eql(&r_pkg_scripts[r_pkg_id], l_string_buf, r_string_buf)) {
+            if (PackageManager.verbose_install) Output.prettyErrorln("Lockfile comparison: lifecycle scripts differ for {s}", .{l_pkg_names[l_pkg_id].slice(l_string_buf)});
             return false;
         }
     }
