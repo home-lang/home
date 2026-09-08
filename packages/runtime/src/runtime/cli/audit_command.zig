@@ -470,8 +470,9 @@ fn findDependencyPaths(
     defer query.deinit();
     var queue = bun.LinearFifo(u32, .Dynamic).init(allocator);
     defer queue.deinit();
-    // Each node records its next descendant on a shortest path to an
-    // affected installed version. IDs keep distinct versions/cycles separate.
+    // Each node records a descendant on a path to an affected installed
+    // version. IDs keep distinct versions separate; finalized nodes keep
+    // the descendant chain acyclic.
     var next = std.AutoHashMap(u32, u32).init(allocator);
     defer next.deinit();
     for (names, package_resolutions, 0..) |name, resolution, index| {
@@ -482,7 +483,12 @@ fn findDependencyPaths(
         try queue.writeItem(id);
     }
 
+    var visited = std.AutoHashMap(u32, void).init(allocator);
+    defer visited.deinit();
     while (queue.readItem()) |current| {
+        const visit = try visited.getOrPut(current);
+        if (visit.found_existing) continue;
+        visit.value_ptr.* = {};
         var boundary_found = false;
         for (deps, resolved, package_resolutions, names, 0..) |boundary_deps, boundary_resolved, resolution, name, boundary_index| {
             const boundary: u32 = @intCast(boundary_index);
@@ -510,16 +516,19 @@ fn findDependencyPaths(
                 break;
             }
         }
-        // Keep the upstream shortest representative path per boundary while
-        // ensuring every edge resolves to the affected installed version.
+        // Upstream replaces a pending node's representative path when it
+        // encounters another parent edge before dequeuing that node. Preserve
+        // this deterministic selection order, but never rewrite finalized
+        // nodes or affected-version terminals into a cycle.
         if (!boundary_found or next.get(current).? == current) {
             if (dependency_tree.parents.get(current)) |parents| {
                 for (parents.items) |parent| {
-                    const entry = try next.getOrPut(parent);
-                    if (!entry.found_existing) {
-                        entry.value_ptr.* = current;
-                        try queue.writeItem(parent);
+                    if (visited.contains(parent)) continue;
+                    if (next.get(parent)) |descendant| {
+                        if (descendant == parent) continue;
                     }
+                    try next.put(parent, current);
+                    try queue.writeItem(parent);
                 }
             }
         }
