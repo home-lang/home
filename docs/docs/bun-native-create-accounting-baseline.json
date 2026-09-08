@@ -1108,6 +1108,6 @@
       "The first six original interactive formatting cases assert absence of selected crash diagnostics; their passing does not establish installation behavior.",
       "Native VM mode is still an architectural gate; default CLI fallback removal, full inventory/platform/CI-profile execution, and independent build ownership remain open."
     ],
-    "update_outdated_issue_status": "Verified native commands, including 31 original interactive cases and 16 original outdated cases; issue #716 ready to close."
+    "update_outdated_issue_status": "Closed #716 after verified native commands, including all 31 original interactive cases and all 16 original outdated cases."
   }
 }
