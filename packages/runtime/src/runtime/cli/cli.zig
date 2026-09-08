@@ -1451,6 +1451,10 @@ pub const Command = struct {
     }
 
     pub fn execCreate(allocator: std.mem.Allocator, log: *logger.Log) !void {
+        // Standalone command entry bypasses Cli.start, which normally stamps
+        // the wall-clock origin consumed by CreateCommand.printStartEnd.
+        start_time = bun.nanoTimestamp();
+        bun.start_time = start_time;
         try @"bun create"(allocator, log);
     }
 

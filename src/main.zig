@@ -5925,6 +5925,7 @@ pub fn main(init: std.process.Init) !void {
     }
 
     if (std.mem.eql(u8, command, "dev")) {
+        if (try tryNativePackageRun(args, command, .AutoCommand)) return;
         const target = if (args.len >= 3) args[2] else null;
         try devCommand(allocator, target);
         return;
