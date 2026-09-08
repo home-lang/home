@@ -1,0 +1,270 @@
+{
+  "issues": [
+    718,
+    719,
+    66
+  ],
+  "runtime_source": "b61c84476",
+  "home_sha256": "74a9255f91b025686c7146a2bc7dc5c2ec69afe2e71a48a5458a11acdff8d7f6",
+  "status": "Build 46/46. All six private native regressions pass. Original link cases 11/11 per runtime; original patch cases Home 43/47, Bun 47/47. Four Home diagnostic failures remain. Original sources and inline snapshots unchanged.",
+  "files": [
+    {
+      "source": "build-native-bin-alias-patch.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-bin-alias-patch/build-native-bin-alias-patch.log.gz",
+      "sha256": "42637aaaf60e5b61863739ee5f6d968ecfa777c6bf0a043dd06f7b1af30eee70",
+      "uncompressed_bytes": 3334
+    },
+    {
+      "source": "verify-native-bin-alias-patch.py",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-bin-alias-patch/verify-native-bin-alias-patch.py.gz",
+      "sha256": "7149cc6985c0f88f8ba0c265e1a430b465c4a4ac3732844ba4fc0520ef9a2691",
+      "uncompressed_bytes": 4287
+    },
+    {
+      "source": "verify-native-bin-alias-patch.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-bin-alias-patch/verify-native-bin-alias-patch.log.gz",
+      "sha256": "7e0ec3ca636faac89e5be57b9bee77910887ae8e31fe2eb89bc0a84d10c8d813",
+      "uncompressed_bytes": 14576
+    },
+    {
+      "source": "verify-original-patches.py",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-bin-alias-patch/verify-original-patches.py.gz",
+      "sha256": "dd1c7ed3a22b27bf842cacc968609ad0935d74f98733a7ebe98b0645b1bc0df7",
+      "uncompressed_bytes": 4065
+    },
+    {
+      "source": "verify-original-patches.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-bin-alias-patch/verify-original-patches.log.gz",
+      "sha256": "05cf36b52abc0ac2a7aa468e2dca3524875f5a4e7562d6eef716bbcb684ed356",
+      "uncompressed_bytes": 4957
+    },
+    {
+      "source": "native-patch-lint.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-bin-alias-patch/native-patch-lint.log.gz",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "uncompressed_bytes": 0
+    },
+    {
+      "source": "bin-ownership-generated-verdaccio-db.json.gz",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-bin-alias-patch/bin-ownership-generated-verdaccio-db.json.gz",
+      "sha256": "511896ccfe4af0cc9061733ad09291bc3f8af568496aefd4430982d1d9ba474d",
+      "uncompressed_bytes": 55
+    },
+    {
+      "source": "native-bin-alias-patch/link-bun.global-fixture.tar.gz",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-bin-alias-patch/native-bin-alias-patch/link-bun.global-fixture.tar.gz",
+      "sha256": "6fa9934a87d75e0fd31021875af6f39728068066c26c3f3c1e0058be380ccf78",
+      "uncompressed_bytes": 10240
+    },
+    {
+      "source": "native-bin-alias-patch/link-bun.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-bin-alias-patch/native-bin-alias-patch/link-bun.log.gz",
+      "sha256": "35a60ace17052392cb22340fdcece60c059ecab3594f5cdee767352964706859",
+      "uncompressed_bytes": 343
+    },
+    {
+      "source": "native-bin-alias-patch/link-home.global-fixture.tar.gz",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-bin-alias-patch/native-bin-alias-patch/link-home.global-fixture.tar.gz",
+      "sha256": "c78c42501328301b28f68437a81f2a690bed4062a4d631f367e49bed8f7b541a",
+      "uncompressed_bytes": 10240
+    },
+    {
+      "source": "native-bin-alias-patch/link-home.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-bin-alias-patch/native-bin-alias-patch/link-home.log.gz",
+      "sha256": "9f58acffe79955e4604cb0cc9aafce03a62004d32cc3ca778e682df97dc10599",
+      "uncompressed_bytes": 945
+    },
+    {
+      "source": "native-bin-alias-patch/manifest.json",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-bin-alias-patch/native-bin-alias-patch/manifest.json.gz",
+      "sha256": "146614b498bbf973fb95f4b5956af89b83697704f66966e1d97a1c50f5edbcc8",
+      "uncompressed_bytes": 17042
+    },
+    {
+      "source": "native-bin-alias-patch/native-binlink-bun.global-fixture.tar.gz",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-bin-alias-patch/native-bin-alias-patch/native-binlink-bun.global-fixture.tar.gz",
+      "sha256": "b6d7f7305e2bc89a91e953a6d4725f5e42bce250f1ad02f2b648c78502419a32",
+      "uncompressed_bytes": 10240
+    },
+    {
+      "source": "native-bin-alias-patch/native-binlink-bun.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-bin-alias-patch/native-bin-alias-patch/native-binlink-bun.log.gz",
+      "sha256": "f38cfef248a960b9d3a68881698f2ba11904cb4f51e5bccbe145cd9a63ee8051",
+      "uncompressed_bytes": 2444
+    },
+    {
+      "source": "native-bin-alias-patch/native-binlink-home.global-fixture.tar.gz",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-bin-alias-patch/native-bin-alias-patch/native-binlink-home.global-fixture.tar.gz",
+      "sha256": "64f4667c6bcac9f5dc49e5dd8f7afa44868448e946f635e1ffe259967b064150",
+      "uncompressed_bytes": 10240
+    },
+    {
+      "source": "native-bin-alias-patch/native-binlink-home.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-bin-alias-patch/native-bin-alias-patch/native-binlink-home.log.gz",
+      "sha256": "5a79d4854d785f99297fcbc858b56e8561acbd70c2fa53b42bfe3c29783af5cc",
+      "uncompressed_bytes": 3105
+    },
+    {
+      "source": "native-bin-alias-patch/native-frozen-prerelease.global-fixture.tar.gz",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-bin-alias-patch/native-bin-alias-patch/native-frozen-prerelease.global-fixture.tar.gz",
+      "sha256": "369ab31ede8eba66674b855619cf3b188fa295f42d05ff85b5108c76891d24d5",
+      "uncompressed_bytes": 10240
+    },
+    {
+      "source": "native-bin-alias-patch/native-frozen-prerelease.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-bin-alias-patch/native-bin-alias-patch/native-frozen-prerelease.log.gz",
+      "sha256": "9e618c8c700df5feb8f5d0c794dca2c11356055cc7751687758d550bde2da49d",
+      "uncompressed_bytes": 44
+    },
+    {
+      "source": "native-bin-alias-patch/native-link-bin-ownership.global-fixture.tar.gz",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-bin-alias-patch/native-bin-alias-patch/native-link-bin-ownership.global-fixture.tar.gz",
+      "sha256": "4b12c8dbdb6e023aca884f831bc4da1acbee27b244cd4a39881b32f075f9107b",
+      "uncompressed_bytes": 10240
+    },
+    {
+      "source": "native-bin-alias-patch/native-link-bin-ownership.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-bin-alias-patch/native-bin-alias-patch/native-link-bin-ownership.log.gz",
+      "sha256": "5c94c468366a91c0782f8517a0eb446ed52398dbad7619c6b83466ff4be0f205",
+      "uncompressed_bytes": 40
+    },
+    {
+      "source": "native-bin-alias-patch/native-link-lifecycle.global-fixture.tar.gz",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-bin-alias-patch/native-bin-alias-patch/native-link-lifecycle.global-fixture.tar.gz",
+      "sha256": "3a7980c640e0bb25a8033d21a80ae7751c6d290b71d9c84c708aab872e6220e1",
+      "uncompressed_bytes": 10240
+    },
+    {
+      "source": "native-bin-alias-patch/native-link-lifecycle.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-bin-alias-patch/native-bin-alias-patch/native-link-lifecycle.log.gz",
+      "sha256": "6bbc18a212234c3a4bde53c15ebbd32648380a8d1acb372957891fbd1b0004ad",
+      "uncompressed_bytes": 52
+    },
+    {
+      "source": "native-bin-alias-patch/native-local-dependency-identity.global-fixture.tar.gz",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-bin-alias-patch/native-bin-alias-patch/native-local-dependency-identity.global-fixture.tar.gz",
+      "sha256": "a07b870637247b7b9376774f388a7a29dcf3688c5165ec32baaf6d763dc36b38",
+      "uncompressed_bytes": 10240
+    },
+    {
+      "source": "native-bin-alias-patch/native-local-dependency-identity.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-bin-alias-patch/native-bin-alias-patch/native-local-dependency-identity.log.gz",
+      "sha256": "eac5e67129c185a4c5e514362f587de9fa952d52db74c0355903307f7df277e5",
+      "uncompressed_bytes": 138
+    },
+    {
+      "source": "native-bin-alias-patch/native-patch-lifecycle.global-fixture.tar.gz",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-bin-alias-patch/native-bin-alias-patch/native-patch-lifecycle.global-fixture.tar.gz",
+      "sha256": "82997d0b9b94011ea5ae757efea5f3270497b8dbffcc6ddffd5e825eac281692",
+      "uncompressed_bytes": 10240
+    },
+    {
+      "source": "native-bin-alias-patch/native-patch-lifecycle.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-bin-alias-patch/native-bin-alias-patch/native-patch-lifecycle.log.gz",
+      "sha256": "278eeaf04e88a208267f293f5dd88e4f7d58769807a7f0d0aae75caf443aa712",
+      "uncompressed_bytes": 127
+    },
+    {
+      "source": "native-bin-alias-patch/native-update-outdated.global-fixture.tar.gz",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-bin-alias-patch/native-bin-alias-patch/native-update-outdated.global-fixture.tar.gz",
+      "sha256": "d1ce3d36e2ce61a75e2d75e19a4ac6c566cf57c8e6fbd8b44464fa8a1bc17b9c",
+      "uncompressed_bytes": 10240
+    },
+    {
+      "source": "native-bin-alias-patch/native-update-outdated.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-bin-alias-patch/native-bin-alias-patch/native-update-outdated.log.gz",
+      "sha256": "3879de2013e756f44f60321c201fee98974ab3e01f647a60a3df0aded7c18180",
+      "uncompressed_bytes": 46
+    },
+    {
+      "source": "original-patches/bun-install-patch.test.ts-bun.fixture-inventory.json.gz",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-bin-alias-patch/original-patches/bun-install-patch.test.ts-bun.fixture-inventory.json.gz",
+      "sha256": "f7ddcc52e15e8f360b65914e9f01ab3ab4542f780e3f3644d5b39afcafdb73fe",
+      "uncompressed_bytes": 1084022
+    },
+    {
+      "source": "original-patches/bun-install-patch.test.ts-bun.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-bin-alias-patch/original-patches/bun-install-patch.test.ts-bun.log.gz",
+      "sha256": "d9167c18ff649187362a9cdc638d06729dc6400ab00cf49c51dad9dbacd655d3",
+      "uncompressed_bytes": 10573
+    },
+    {
+      "source": "original-patches/bun-install-patch.test.ts-bun.xml",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-bin-alias-patch/original-patches/bun-install-patch.test.ts-bun.xml.gz",
+      "sha256": "65d67c41d7a6ad046a448a018f29d4920242a30a2b47c0b40f64fb0ba7154226",
+      "uncompressed_bytes": 5930
+    },
+    {
+      "source": "original-patches/bun-install-patch.test.ts-home.fixture-inventory.json.gz",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-bin-alias-patch/original-patches/bun-install-patch.test.ts-home.fixture-inventory.json.gz",
+      "sha256": "708d30eb236ab13914e6d9545fe72f2ff536e4fa687f8b672db889db64970a1f",
+      "uncompressed_bytes": 1084246
+    },
+    {
+      "source": "original-patches/bun-install-patch.test.ts-home.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-bin-alias-patch/original-patches/bun-install-patch.test.ts-home.log.gz",
+      "sha256": "60633630bc921fd6b4ca01a59d3d86e23d7f3c705f52441706ecda974868fe84",
+      "uncompressed_bytes": 12097
+    },
+    {
+      "source": "original-patches/bun-install-patch.test.ts-home.xml",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-bin-alias-patch/original-patches/bun-install-patch.test.ts-home.xml.gz",
+      "sha256": "bcbea80eceda2f598f56016041b6019b5ebf7a214eafda09fb42b3b539220776",
+      "uncompressed_bytes": 5992
+    },
+    {
+      "source": "original-patches/bun-patch.test.ts-bun.fixture-inventory.json.gz",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-bin-alias-patch/original-patches/bun-patch.test.ts-bun.fixture-inventory.json.gz",
+      "sha256": "aa00b58c7e6437722a786ba3bec3040c28c9255294505ceee889b28d4061e86f",
+      "uncompressed_bytes": 1083959
+    },
+    {
+      "source": "original-patches/bun-patch.test.ts-bun.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-bin-alias-patch/original-patches/bun-patch.test.ts-bun.log.gz",
+      "sha256": "71b8d5689ae2dcc0f0dbb0bb5c414a06b512034a48e2b5d6622d29cc239fb028",
+      "uncompressed_bytes": 24857
+    },
+    {
+      "source": "original-patches/bun-patch.test.ts-bun.xml",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-bin-alias-patch/original-patches/bun-patch.test.ts-bun.xml.gz",
+      "sha256": "bde702bf55b7ad2805be9a7ce0cb011427d399d7d861ae485e5480a22106bdfe",
+      "uncompressed_bytes": 8305
+    },
+    {
+      "source": "original-patches/bun-patch.test.ts-home.fixture-inventory.json.gz",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-bin-alias-patch/original-patches/bun-patch.test.ts-home.fixture-inventory.json.gz",
+      "sha256": "a420364674156f681048d5f48955183c49cdcaedf91605e6173b1aa6f54e7c42",
+      "uncompressed_bytes": 1084465
+    },
+    {
+      "source": "original-patches/bun-patch.test.ts-home.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-bin-alias-patch/original-patches/bun-patch.test.ts-home.log.gz",
+      "sha256": "443372a5bd705d4030e83f627d485d436bcdb532dd657c36e7b96f26d60113e9",
+      "uncompressed_bytes": 28222
+    },
+    {
+      "source": "original-patches/bun-patch.test.ts-home.xml",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-bin-alias-patch/original-patches/bun-patch.test.ts-home.xml.gz",
+      "sha256": "50c88a888d7df8409fe899a98474dd0656fba7cc301f2ab49f18898ef9edacf3",
+      "uncompressed_bytes": 8481
+    },
+    {
+      "source": "original-patches/manifest.json",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-bin-alias-patch/original-patches/manifest.json.gz",
+      "sha256": "bc089fe2ce0a118922cf287551a36cd05c245fae4a1eeab7fa7939fd1c191b18",
+      "uncompressed_bytes": 6215
+    },
+    {
+      "source": "tests/runtime/native-link-bin-ownership.test.mjs",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-bin-alias-patch/native-link-bin-ownership.test.mjs.gz",
+      "sha256": "79155ed6c00d51fd005a7fc68de3530302181fcdc90ad3580b2c277a55d8b9be",
+      "uncompressed_bytes": 4206
+    },
+    {
+      "source": "tests/runtime/native-patch-lifecycle.test.mjs",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-bin-alias-patch/native-patch-lifecycle.test.mjs.gz",
+      "sha256": "f91de8a2ee915412e231a2542f151c0e8727815ed50cd06cdd420cb36b66133e",
+      "uncompressed_bytes": 5577
+    }
+  ]
+}
