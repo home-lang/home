@@ -66,12 +66,11 @@ pub const AuditCommand = struct {
         };
 
         const code = try audit(ctx, manager, manager.options.json_output, cli.audit_level, cli.production, cli.audit_ignore_list);
-        Global.exit(code);
+        Global.exit(@intCast(code));
     }
 
-    /// Returns the exit code of the command. 0 if no vulnerabilities were found, 1 if vulnerabilities were found.
-    /// The exception is when you pass --json, it will simply return 0 as that was considered a successful "request
-    /// for the audit information"
+    /// Returns 0 when no vulnerabilities are reported and 1 when there are
+    /// vulnerabilities or the response cannot be parsed, including JSON mode.
     pub fn audit(ctx: Command.Context, pm: *PackageManager, json_output: bool, audit_level: ?AuditLevel, audit_prod_only: bool, ignore_list: []const []const u8) bun.OOM!u32 {
         Output.prettyError("<r><b>bun audit <r><d>v" ++ Global.package_json_version_with_sha ++ "<r>\n", .{});
         Output.flush();
