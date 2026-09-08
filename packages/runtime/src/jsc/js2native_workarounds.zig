@@ -121,14 +121,32 @@ fn bindgen_NodeModuleModule_dispatch_stat1_impl(
     return true;
 }
 
-// The bindgen `Formatter` string-enum ("highlight-javascript",
-// "escape-powershell"). VALUES must match the pin's generated
-// GeneratedBindings.zig `Formatter` (escape_powershell=0, highlight_javascript=1),
-// because the linked pin C++ (`bindgen_Fmt_jsc_jsFmtString`) marshals the JS
-// string arg to those numeric values before calling the dispatch below. (Home's
-// jsc/fmt_jsc.zig declares its own Formatter in the opposite order for its
-// name-locking tests — do NOT reuse it here; only the C-ABI value matters.)
-const FmtFormatter = enum(u8) { escape_powershell = 0, highlight_javascript = 1 };
+// The bindgen `Formatter` string-enum. VALUES must match the pin's generated
+// GeneratedBindings.zig `Formatter` exactly, because the linked pin C++
+// (`bindgen_Fmt_jsc_jsFmtString`) marshals the JS string arg to those numeric
+// values before calling the dispatch below:
+//
+//     pub const Formatter = enum(u8) {
+//         escape_powershell,             // 0
+//         highlight_javascript,          // 1
+//         highlight_javascript_redacted, // 2
+//     };
+//
+// confirmed against both ~/Code/bun/src/jsc/bindings/GeneratedBindings.zig and
+// the Rust mirror in src/jsc/fmt_jsc.rs. Note the declaration order in
+// src/jsc/fmt_jsc.bind.ts differs from the generated order — the generated one
+// is what the ABI uses.
+//
+// `highlight_javascript_redacted` was missing here, so `escapePowershell`
+// (which marshals to 2) switched on a value outside the enum and killed the
+// process with "panic: switch on corrupt value". (Home's jsc/fmt_jsc.zig
+// declares its own Formatter for name-locking tests — do NOT reuse it here;
+// only the C-ABI value matters.)
+const FmtFormatter = enum(u8) {
+    escape_powershell = 0,
+    highlight_javascript = 1,
+    highlight_javascript_redacted = 2,
+};
 
 fn fmtStringImpl(global: *JSGlobalObject, code: []const u8, formatter: FmtFormatter) bun.JSError!bun.String {
     var buffer = bun.MutableString.initEmpty(bun.default_allocator);
@@ -139,6 +157,17 @@ fn fmtStringImpl(global: *JSGlobalObject, code: []const u8, formatter: FmtFormat
         // `bun_core/fmt.zig` one needs unported `strings.startsWith{Secret,UUID}`).
         .highlight_javascript => {
             const f = bun.fmt.fmtJavaScript(code, .{ .enable_colors = true });
+            w.writer().print("{f}", .{f}) catch |err| return global.throwError(err, "while formatting");
+        },
+        // Same highlighter with redaction requested, mirroring the pin's
+        // `Formatter::HighlightJavascriptRedacted` arm. NOTE: `bun.fmt` is
+        // Home's stub highlighter, whose `format` ignores every option and
+        // echoes the text, so neither highlighting nor redaction happens yet —
+        // the real one is `bun_core/fmt.zig`. That is a separate gap; what
+        // matters here is that this arm exists at all, because its absence
+        // aborted the process.
+        .highlight_javascript_redacted => {
+            const f = bun.fmt.fmtJavaScript(code, .{ .enable_colors = true, .redact_sensitive_information = true });
             w.writer().print("{f}", .{f}) catch |err| return global.throwError(err, "while formatting");
         },
         // Inlined `bun_core/fmt.zig`'s escapePowershellImpl (prefix `"` and `` ` ``
