@@ -1713,7 +1713,10 @@ pub const CreateCommand = struct {
                 }
             }
 
-            if (!std.fs.path.isAbsolute(positional)) {
+            if (std.fs.path.isAbsolute(positional)) {
+                example_tag = Example.Tag.local_folder;
+                break :brk positional;
+            } else {
                 outer: {
                     if (env_loader.map.get("BUN_CREATE_DIR")) |home_dir| {
                         var parts = [_]string{ home_dir, positional };
@@ -1752,11 +1755,6 @@ pub const CreateCommand = struct {
                             break :brk outdir_path;
                         }
                     }
-                }
-
-                if (std.fs.path.isAbsolute(positional)) {
-                    example_tag = Example.Tag.local_folder;
-                    break :brk positional;
                 }
 
                 var repo_begin: usize = std.math.maxInt(usize);
