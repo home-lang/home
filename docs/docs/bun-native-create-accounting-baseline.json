@@ -159,5 +159,84 @@
     703,
     709,
     438
-  ]
+  ],
+  "retained_native_regressions": {
+    "source_commit": "66a6d6e444ed9c6be2817f1b2901b67aacb06f4b",
+    "primary_registered_passes": 9878,
+    "original_skip_or_todo": 5,
+    "groups": [
+      {
+        "group": "html-directory",
+        "tests_passed": 145,
+        "tests_failed": 0,
+        "failed_files": 0,
+        "original_skip_or_todo": 1,
+        "log": "zig-out/bun-port-709/retained-native-regressions/html-directory.log",
+        "log_sha256": "26118bc6da66263445e07219da03e7b4658953b335f28a64683a06d10291ea7d"
+      },
+      {
+        "group": "blob-combined",
+        "tests_passed": 65,
+        "tests_failed": 0,
+        "failed_files": 0,
+        "original_skip_or_todo": 0,
+        "log": "zig-out/bun-port-709/retained-native-regressions/blob-combined.log",
+        "log_sha256": "4e60877767740475065689e705e616835409d1fcf1895d3c59748e2dd36df9a9"
+      },
+      {
+        "group": "body-combined",
+        "tests_passed": 9467,
+        "tests_failed": 0,
+        "failed_files": 0,
+        "original_skip_or_todo": 4,
+        "log": "zig-out/bun-port-709/retained-native-regressions/body-combined.log",
+        "log_sha256": "791add7254a75743bea6ce26834785d0e61820a027d624c96c7a8fbdbe348e6c"
+      },
+      {
+        "group": "headers-response-combined",
+        "tests_passed": 170,
+        "tests_failed": 0,
+        "failed_files": 0,
+        "original_skip_or_todo": 0,
+        "log": "zig-out/bun-port-709/retained-native-regressions/headers-response-combined.log",
+        "log_sha256": "27b250547c44018b11fea4efee09cbc30fd99b0f9d8c0dd9752db6f76f1558fa"
+      },
+      {
+        "group": "js-web-request",
+        "tests_passed": 24,
+        "tests_failed": 0,
+        "failed_files": 0,
+        "original_skip_or_todo": 0,
+        "log": "zig-out/bun-port-709/retained-native-regressions/js-web-request.log",
+        "log_sha256": "22c81533c6871c1dd1fb72f4254cf59a8110a4c9b30bf5a869758c44c2419a7c"
+      },
+      {
+        "group": "js-web-fetch-form-data-boundary-crash.test.ts",
+        "tests_passed": 5,
+        "tests_failed": 0,
+        "failed_files": 0,
+        "original_skip_or_todo": 0,
+        "log": "zig-out/bun-port-709/retained-native-regressions/js-web-fetch-form-data-boundary-crash.test.ts.log",
+        "log_sha256": "7576e06c6ac53bbc581d9422672d1b2c4b92f44f83210c71daba010c86f48058"
+      },
+      {
+        "group": "js-web-timers-microtask.test.js",
+        "tests_passed": 2,
+        "tests_failed": 0,
+        "failed_files": 0,
+        "original_skip_or_todo": 0,
+        "log": "zig-out/bun-port-709/retained-native-regressions/js-web-timers-microtask.test.js.log",
+        "log_sha256": "b25bd111a6093e14016bfaf424f8266661b8584121350a815fdcae5a05bc8a61"
+      }
+    ],
+    "alternate_route": {
+      "group": "html-native-aggregate",
+      "tests_passed": 145,
+      "skipped": 1,
+      "tests_failed": 0,
+      "note": "Alternate whole-VM route for the same HTML cases; not additional distinct coverage.",
+      "log": "zig-out/bun-port-709/retained-native-regressions/html-native-aggregate.log",
+      "log_sha256": "be38608b0be7ffb3a36d2c2aef1384d3f634313bc62bac516147618bda5ab03f"
+    }
+  }
 }
