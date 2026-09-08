@@ -38,7 +38,18 @@
 #    legally inside a 4 GB bound is 16 GB on a 16 GB machine. An exclusive
 #    machine-wide lock makes the second run WAIT instead of stack.
 #
-# 5. IT DOES NOT GATE ON SWAP.
+# 5. THE HOST'S OWN VIEW IS THE AUTHORITY; THE PER-RUN CEILING IS A BACKSTOP.
+#    Summing per-process phys_footprint over a tree DOUBLE-COUNTS pages shared
+#    between siblings. Measured: `zig build debug -j4` sums to 12.3 GB across
+#    its compile jobs while the kernel reports the machine never fell below 52%
+#    free-and-uncompressed at normal pressure — the sum overstated by roughly
+#    a factor of two and killed a healthy build three times running. So the
+#    kill decision is made on `kern.memorystatus_level` and the kernel pressure
+#    level, which are shared-page-correct by construction, and the tree sum is
+#    kept only as a runaway detector with a deliberately loose ceiling. Both
+#    numbers are printed when a run is killed so the reason is legible.
+#
+# 6. IT DOES NOT GATE ON SWAP.
 #    macOS grows and shrinks the swapfile on demand, so `vm.swapusage` free
 #    space is not headroom -- it is just how much of the current file is unused.
 #    Gating on it refuses all work on a perfectly healthy machine.
@@ -47,6 +58,7 @@ use strict;
 use warnings;
 use Fcntl qw(:flock O_RDWR O_CREAT);
 
+my $HOST_STREAK   = 3;      # consecutive bad host samples before killing
 my $POLL          = 0.25;   # seconds between liveness/deadline checks
 my $MEM_EVERY     = 4;      # measure memory every Nth poll (=> ~1 Hz)
 my $MEM_FAIL_MAX  = 8;      # consecutive failed measurements tolerated (~8 s)
@@ -55,15 +67,22 @@ my $KILL_GRACE    = 3;      # seconds between TERM and KILL
 # HOME_TEST_MAX_RSS_MB is the previous spelling; honoured so a caller that
 # still sets it per-run is bounded rather than silently falling back to the
 # default. The default lives here, not in the shell, so there is exactly one.
+# Loose on purpose: this is a runaway detector, not a budget. It over-counts
+# shared pages (note 5), so a value near a real workload's true peak produces
+# false kills. The host check below is what actually protects the machine.
 my $max_mb     = defined $ENV{HOME_RUN_MAX_MB}      ? $ENV{HOME_RUN_MAX_MB}
                : defined $ENV{HOME_TEST_MAX_RSS_MB} ? $ENV{HOME_TEST_MAX_RSS_MB}
-               : 4096;
+               : 12288;
+# Kill when the kernel says this fraction of RAM is neither wired nor held by
+# the compressor, sustained across HOST_STREAK samples. Streak, not a single
+# reading, so a transient dip from another process cannot kill this run.
+my $crit_level = defined $ENV{HOME_RUN_CRIT_LEVEL} ? $ENV{HOME_RUN_CRIT_LEVEL} : 12;
 my $lock_wait  = defined $ENV{HOME_RUN_LOCK_WAIT}  ? $ENV{HOME_RUN_LOCK_WAIT}  : 900;
 my $min_level  = defined $ENV{HOME_RUN_MIN_LEVEL}  ? $ENV{HOME_RUN_MIN_LEVEL}  : 20;
 my $lock_path  = $ENV{HOME_RUN_LOCK} || "$ENV{HOME}/.cache/home-run.lock";
 my $label      = $ENV{HOME_RUN_LABEL} || '';
 
-for my $v ([qw(HOME_RUN_MAX_MB)], [qw(HOME_TEST_MAX_RSS_MB)], [qw(HOME_RUN_LOCK_WAIT)], [qw(HOME_RUN_MIN_LEVEL)]) {
+for my $v ([qw(HOME_RUN_MAX_MB)], [qw(HOME_TEST_MAX_RSS_MB)], [qw(HOME_RUN_LOCK_WAIT)], [qw(HOME_RUN_MIN_LEVEL)], [qw(HOME_RUN_CRIT_LEVEL)]) {
     my $name = $v->[0];
     next unless defined $ENV{$name};
     # A malformed value is an error, never a silent fallback to "unbounded":
@@ -184,7 +203,18 @@ sub tree_footprint_mb {
     my (@pids) = @_;
     return undef unless @pids;
     my @args = map { ('-p', $_) } @pids;
-    open(my $fp, '-|', '/usr/bin/footprint', @args) or return undef;
+    # A pid that exits between the ps snapshot and this call makes footprint
+    # print to stderr; that is expected churn in a live tree, not a problem, so
+    # keep it off the caller's stream. It still contributes nothing to the sum,
+    # and a sample where NOTHING could be read returns undef and is counted as a
+    # measurement failure by the caller.
+    my $pid_fp = open(my $fp, '-|');
+    return undef unless defined $pid_fp;
+    if ($pid_fp == 0) {
+        open(STDERR, '>', '/dev/null');
+        exec('/usr/bin/footprint', @args);
+        exit 127;
+    }
     my $total = 0;
     my $found = 0;
     while (<$fp>) {
@@ -218,16 +248,19 @@ sub reap_tree {
 # ----------------------------------------------------------------- the loop
 
 my $deadline = time + $secs;
-my $tick     = 0;
-my $mem_fail = 0;
-my $peak_mb  = 0;
+my $tick       = 0;
+my $mem_fail   = 0;
+my $peak_mb    = 0;
+my $host_bad   = 0;
+my $worst_lvl  = 100;
 
 $SIG{INT} = $SIG{TERM} = sub { reap_tree($pid); exit 130 };
 
 while (1) {
     if (waitpid($pid, 1) == $pid) {
         my $status = $?;
-        printf STDERR "run-bounded: peak footprint %d MB\n", $peak_mb if $peak_mb > 0;
+        printf STDERR "run-bounded: peak tree footprint %d MB (over-counts shared pages); host low-water %d%%\n",
+            $peak_mb, $worst_lvl if $peak_mb > 0;
         exit(($status & 127) ? 128 + ($status & 127) : ($status >> 8));
     }
 
@@ -250,16 +283,29 @@ while (1) {
         } else {
             $mem_fail = 0;
             $peak_mb = $mb if $mb > $peak_mb;
-            if ($mb > $max_mb) {
-                printf STDERR "run-bounded: footprint %d MB exceeded the %d MB ceiling\n", $mb, $max_mb;
-                reap_tree($pid);
-                exit 125;
+
+            # PRIMARY: the kernel's own view. Shared-page-correct, and it sees
+            # the other sessions on this machine, which a per-run sum cannot.
+            my ($level, $pressure) = host_state();
+            $worst_lvl = $level if defined $level && $level < $worst_lvl;
+            my $bad = (defined $level    && $level    < $crit_level)
+                   || (defined $pressure && $pressure >= 4);
+            if ($bad) {
+                $host_bad++;
+                if ($host_bad >= $HOST_STREAK) {
+                    printf STDERR "run-bounded: host out of memory (%d%% free-and-uncompressed, pressure %d) across %d samples; killing this run (tree %d MB)\n",
+                        (defined $level ? $level : -1), (defined $pressure ? $pressure : -1), $host_bad, $mb;
+                    reap_tree($pid);
+                    exit 125;
+                }
+            } else {
+                $host_bad = 0;
             }
-            # Back off when the HOST is in trouble even if this run is within
-            # its own budget -- the machine is shared with other sessions.
-            my (undef, $pressure) = host_state();
-            if (defined $pressure && $pressure >= 4) {
-                printf STDERR "run-bounded: host at critical memory pressure; killing this run (footprint %d MB)\n", $mb;
+
+            # SECONDARY: runaway detector only. Loose ceiling; see note 5.
+            if ($mb > $max_mb) {
+                printf STDERR "run-bounded: tree footprint %d MB exceeded the %d MB runaway ceiling (host was at %d%%)\n",
+                    $mb, $max_mb, (defined $level ? $level : -1);
                 reap_tree($pid);
                 exit 125;
             }
