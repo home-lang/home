@@ -231,20 +231,69 @@ sub tree_footprint_mb {
     return $found ? $total : undef;
 }
 
+# Every pid ever seen in the tree, mapped to the command line it had when
+# first seen. Membership must be remembered, not recomputed at kill time: a
+# grandchild whose parent exits is reparented to launchd (ppid 1) and keeps its
+# own process group, so by the time the kill runs it is a descendant of nothing
+# and matches no group. Three such processes survived a run and sat holding
+# 1.2 GB between them. The recorded command line is the identity check that
+# makes killing a remembered pid safe against pid reuse.
+my %seen_cmd;
+
+sub note_tree {
+    my ($root) = @_;
+    my %live = map { $_ => 1 } tree_pids($root);
+    return unless %live;
+    open(my $ps, '-|', 'ps', '-axo', 'pid=,args=') or return;
+    while (<$ps>) {
+        chomp;
+        next unless /^\s*(\d+)\s+(.*)$/;
+        my ($p, $args) = ($1, $2);
+        $seen_cmd{$p} = $args if $live{$p} && !exists $seen_cmd{$p};
+    }
+    close($ps);
+}
+
+# Remembered pids that are still alive AND still running the same command.
+sub remembered_survivors {
+    my @out;
+    return @out unless %seen_cmd;
+    open(my $ps, '-|', 'ps', '-axo', 'pid=,args=') or return @out;
+    while (<$ps>) {
+        chomp;
+        next unless /^\s*(\d+)\s+(.*)$/;
+        my ($p, $args) = ($1, $2);
+        next unless exists $seen_cmd{$p};
+        # Same pid AND same command line: not a recycled pid.
+        push @out, $p if $seen_cmd{$p} eq $args;
+    }
+    close($ps);
+    return @out;
+}
+
 sub reap_tree {
     my ($root) = @_;
+    note_tree($root);
     my @pids = tree_pids($root);
     kill('TERM', -$root);
     kill('TERM', $_) for @pids;
     my $deadline = time + $KILL_GRACE;
     while (time < $deadline) {
-        return if waitpid($root, 1) == $root;
+        if (waitpid($root, 1) == $root) { last }
         select(undef, undef, undef, 0.1);
     }
     @pids = tree_pids($root);
     kill('KILL', -$root);
     kill('KILL', $_) for @pids;
     waitpid($root, 0);
+
+    # Anything that escaped the tree by being reparented before the kill.
+    my @escaped = remembered_survivors();
+    if (@escaped) {
+        printf STDERR "run-bounded: killing %d escaped process(es): %s\n",
+            scalar(@escaped), join(',', @escaped);
+        kill('KILL', $_) for @escaped;
+    }
 }
 
 # ----------------------------------------------------------------- the loop
@@ -261,6 +310,14 @@ $SIG{INT} = $SIG{TERM} = sub { reap_tree($pid); exit 130 };
 while (1) {
     if (waitpid($pid, 1) == $pid) {
         my $status = $?;
+        # A clean exit is not proof the tree is empty: the child can leave
+        # reparented grandchildren behind.
+        my @escaped = remembered_survivors();
+        if (@escaped) {
+            printf STDERR "run-bounded: killing %d process(es) left behind: %s\n",
+                scalar(@escaped), join(',', @escaped);
+            kill('KILL', $_) for @escaped;
+        }
         printf STDERR "run-bounded: peak tree footprint %d MB (over-counts shared pages); host low-water %d%%\n",
             $peak_mb, $worst_lvl if $peak_mb > 0;
         exit(($status & 127) ? 128 + ($status & 127) : ($status >> 8));
@@ -273,6 +330,7 @@ while (1) {
     }
 
     if ($max_mb > 0 && ++$tick % $MEM_EVERY == 0) {
+        note_tree($pid);
         my $mb = tree_footprint_mb(tree_pids($pid));
         if (!defined $mb) {
             # Fail closed. Being unable to measure under load is itself the
