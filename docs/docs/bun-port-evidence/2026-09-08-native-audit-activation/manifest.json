@@ -1,0 +1,272 @@
+{
+  "issue": 720,
+  "runtime_source": "f2bbead95714ded5e423ce81b190e1f065785107",
+  "home_sha256": "1bc7b238520d498baee344c02fd475419f38e23c66eb8d2440a33b5a42dde8f5",
+  "status": "Native build 46/46; all seven private regression files pass and original link cases 11/11 per runtime. Original audit Home 15/16, Bun 16/16: report insertion order remains unported. Separate Home/Bun controls prove incorrect development-only advisory path; repairs pending verification.",
+  "files": [
+    {
+      "source": "build-native-audit.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-audit-activation/build-native-audit.log.gz",
+      "sha256": "28e3985d010895398f1dbbfd78bd65d0d576128da104bcdb1ad763963dd7b031",
+      "uncompressed_bytes": 4257
+    },
+    {
+      "source": "build-native-audit-exit.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-audit-activation/build-native-audit-exit.log.gz",
+      "sha256": "8177c79c47ce466438961d76584a2c2a94469b5264e9d7e47d886f37ac418d5c",
+      "uncompressed_bytes": 3337
+    },
+    {
+      "source": "build-native-audit-paths.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-audit-activation/build-native-audit-paths.log.gz",
+      "sha256": "2077b6e233d67db65c3f9faf225829746539c6605793c1b0bb48091558409c5b",
+      "uncompressed_bytes": 75
+    },
+    {
+      "source": "audit-build-cache-cleanup.json",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-audit-activation/audit-build-cache-cleanup.json.gz",
+      "sha256": "bb5f1b88ba4afc4d8197fa159a2e21beb539c9c1f03aed6b07e9e4f47e41e2f6",
+      "uncompressed_bytes": 6995
+    },
+    {
+      "source": "verify-native-audit-exit-regressions.py",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-audit-activation/verify-native-audit-exit-regressions.py.gz",
+      "sha256": "083e48deff50e1e416dc8c54c71690b007891c1062261ee7dcc356b65f77f355",
+      "uncompressed_bytes": 4313
+    },
+    {
+      "source": "verify-native-audit-exit-regressions.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-audit-activation/verify-native-audit-exit-regressions.log.gz",
+      "sha256": "9a5736298d33a65671845d8d6e5a2b1409fd700539a1dd3ff2db65ddb562ea71",
+      "uncompressed_bytes": 16101
+    },
+    {
+      "source": "verify-native-audit-exit.py",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-audit-activation/verify-native-audit-exit.py.gz",
+      "sha256": "d646e335f3184eb4dd7a65e6e518561335db8167235815294c22ee24b8b66da4",
+      "uncompressed_bytes": 4670
+    },
+    {
+      "source": "verify-native-audit-exit.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-audit-activation/verify-native-audit-exit.log.gz",
+      "sha256": "d72c7248b18856bf4621f92d77eaa387f1b1f75b0d792d5c24d6e3af275db2d0",
+      "uncompressed_bytes": 2501
+    },
+    {
+      "source": "diagnose-audit-production-paths.mjs",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-audit-activation/diagnose-audit-production-paths.mjs.gz",
+      "sha256": "4fd2731af511b05eeb52245e0656cf3820e8b6e379ee1eca3443d7bfd2859e02",
+      "uncompressed_bytes": 4272
+    },
+    {
+      "source": "diagnose-audit-production-paths-bun.mjs",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-audit-activation/diagnose-audit-production-paths-bun.mjs.gz",
+      "sha256": "512991d924b9bd3900d2faf2806e92e8fcad5c934e278d5b91ad2532026004e4",
+      "uncompressed_bytes": 4260
+    },
+    {
+      "source": "audit-production-paths-home.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-audit-activation/audit-production-paths-home.log.gz",
+      "sha256": "92e418d2758721892b6e455f1bdf20fab711822a0a9fc9f165ab0252e0de8dbd",
+      "uncompressed_bytes": 1924
+    },
+    {
+      "source": "audit-production-paths-bun.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-audit-activation/audit-production-paths-bun.log.gz",
+      "sha256": "e51453599066a3846b0356469ce3b8b14bfb2872e5c86d8920be3f60bfdf0c3e",
+      "uncompressed_bytes": 1965
+    },
+    {
+      "source": "native-audit-report-lint.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-audit-activation/native-audit-report-lint.log.gz",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "uncompressed_bytes": 0
+    },
+    {
+      "source": "native-audit-exit/bun-audit.test.ts-bun.fixture-inventory.json.gz",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-audit-activation/native-audit-exit/bun-audit.test.ts-bun.fixture-inventory.json.gz",
+      "sha256": "33c51e629b5cfcb62be3c92aa28a2139dac75f65ad500352bda1b7eb7de23d29",
+      "uncompressed_bytes": 8362
+    },
+    {
+      "source": "native-audit-exit/bun-audit.test.ts-bun.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-audit-activation/native-audit-exit/bun-audit.test.ts-bun.log.gz",
+      "sha256": "fa43afcaf090cc5cd60bd70e29e262f1c476e4d04d4264c276a0a7eb50be1ebf",
+      "uncompressed_bytes": 2701
+    },
+    {
+      "source": "native-audit-exit/bun-audit.test.ts-bun.xml",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-audit-activation/native-audit-exit/bun-audit.test.ts-bun.xml.gz",
+      "sha256": "c2461953208d2b047357cd84aaa3aec75d4937ca756f2ccad24c630ecd9ed84d",
+      "uncompressed_bytes": 3833
+    },
+    {
+      "source": "native-audit-exit/bun-audit.test.ts-home.fixture-inventory.json.gz",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-audit-activation/native-audit-exit/bun-audit.test.ts-home.fixture-inventory.json.gz",
+      "sha256": "38c66b4a62a2521c2089bf381b5b2386e12353f047afe5fd7d150c084ee927cd",
+      "uncompressed_bytes": 8362
+    },
+    {
+      "source": "native-audit-exit/bun-audit.test.ts-home.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-audit-activation/native-audit-exit/bun-audit.test.ts-home.log.gz",
+      "sha256": "6295e27b41fd2a5a518bfc7b0c9ec50c5fa33420f9171c92f8ab3b9a6e904d10",
+      "uncompressed_bytes": 23668
+    },
+    {
+      "source": "native-audit-exit/bun-audit.test.ts-home.xml",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-audit-activation/native-audit-exit/bun-audit.test.ts-home.xml.gz",
+      "sha256": "19627828eb0b25ef83bc8b8ab1a39de26d4f0e30b2f32af233544cc3a6473fbe",
+      "uncompressed_bytes": 3891
+    },
+    {
+      "source": "native-audit-exit/manifest.json",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-audit-activation/native-audit-exit/manifest.json.gz",
+      "sha256": "56562c0786615d1e9bf62cbdc0b74b8c140375f77cc290563ebe3a733e822735",
+      "uncompressed_bytes": 3349
+    },
+    {
+      "source": "native-audit-exit-regressions/link-bun.global-fixture.tar.gz",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-audit-activation/native-audit-exit-regressions/link-bun.global-fixture.tar.gz",
+      "sha256": "05fe81e784cde4acae4497809dbfeb54b1c81fd0c199adc12f9f8490b39b964f",
+      "uncompressed_bytes": 10240
+    },
+    {
+      "source": "native-audit-exit-regressions/link-bun.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-audit-activation/native-audit-exit-regressions/link-bun.log.gz",
+      "sha256": "476af4c5e16148c6f1bce70761cea2da3e02cf7a7ef31ee93694910ab55f57cb",
+      "uncompressed_bytes": 343
+    },
+    {
+      "source": "native-audit-exit-regressions/link-home.global-fixture.tar.gz",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-audit-activation/native-audit-exit-regressions/link-home.global-fixture.tar.gz",
+      "sha256": "0d2f84580c79217e32d7be1b32761167df1429ffe862c766b64e5d6cb94ba38c",
+      "uncompressed_bytes": 10240
+    },
+    {
+      "source": "native-audit-exit-regressions/link-home.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-audit-activation/native-audit-exit-regressions/link-home.log.gz",
+      "sha256": "7f7fda55943b89903179f264665eca8e3d368b2f378463e77acb196e6dbcbf0e",
+      "uncompressed_bytes": 946
+    },
+    {
+      "source": "native-audit-exit-regressions/manifest.json",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-audit-activation/native-audit-exit-regressions/manifest.json.gz",
+      "sha256": "f5d9f07f765eaf0e9eba2f8dd28d519271fb54a49dcba695b969d687bbefe4be",
+      "uncompressed_bytes": 18768
+    },
+    {
+      "source": "native-audit-exit-regressions/native-audit-protocol.global-fixture.tar.gz",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-audit-activation/native-audit-exit-regressions/native-audit-protocol.global-fixture.tar.gz",
+      "sha256": "fcef14656853b98a6613fc7e6a853d025a4a44b098450e0f588cec5d96f298e7",
+      "uncompressed_bytes": 10240
+    },
+    {
+      "source": "native-audit-exit-regressions/native-audit-protocol.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-audit-activation/native-audit-exit-regressions/native-audit-protocol.log.gz",
+      "sha256": "2f44442d2a95265d6d10b4905200fb5449d2cc86b7dbc06ee8120af56be3527f",
+      "uncompressed_bytes": 251
+    },
+    {
+      "source": "native-audit-exit-regressions/native-binlink-bun.global-fixture.tar.gz",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-audit-activation/native-audit-exit-regressions/native-binlink-bun.global-fixture.tar.gz",
+      "sha256": "799d5a1b45c7fc02d79bceab91f6483cd253b50b25bad870f25b49a2e2358c2f",
+      "uncompressed_bytes": 10240
+    },
+    {
+      "source": "native-audit-exit-regressions/native-binlink-bun.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-audit-activation/native-audit-exit-regressions/native-binlink-bun.log.gz",
+      "sha256": "36ac52faf22c6483da3f228e58d30e7235526077927e73f1f61f04ef223e6289",
+      "uncompressed_bytes": 2444
+    },
+    {
+      "source": "native-audit-exit-regressions/native-binlink-home.global-fixture.tar.gz",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-audit-activation/native-audit-exit-regressions/native-binlink-home.global-fixture.tar.gz",
+      "sha256": "0999e122bb0f6caf5defbd7348a955139c8aa64af8e19fc6ae4ab89690688a3d",
+      "uncompressed_bytes": 10240
+    },
+    {
+      "source": "native-audit-exit-regressions/native-binlink-home.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-audit-activation/native-audit-exit-regressions/native-binlink-home.log.gz",
+      "sha256": "5484ece9a9c583d87e6f3a901e0d26622e4e7b97adf8e9e80ef03d227206b2ea",
+      "uncompressed_bytes": 3105
+    },
+    {
+      "source": "native-audit-exit-regressions/native-frozen-prerelease.global-fixture.tar.gz",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-audit-activation/native-audit-exit-regressions/native-frozen-prerelease.global-fixture.tar.gz",
+      "sha256": "9dd91e6673ce3f1506d55fe13bada8dba29fd7662b1d49a100e0c8c131b3d4b9",
+      "uncompressed_bytes": 10240
+    },
+    {
+      "source": "native-audit-exit-regressions/native-frozen-prerelease.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-audit-activation/native-audit-exit-regressions/native-frozen-prerelease.log.gz",
+      "sha256": "9e618c8c700df5feb8f5d0c794dca2c11356055cc7751687758d550bde2da49d",
+      "uncompressed_bytes": 44
+    },
+    {
+      "source": "native-audit-exit-regressions/native-link-bin-ownership.global-fixture.tar.gz",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-audit-activation/native-audit-exit-regressions/native-link-bin-ownership.global-fixture.tar.gz",
+      "sha256": "57491bc0466774b80e82c0d953fff1136af01d4f767f94490b505c8439beeb86",
+      "uncompressed_bytes": 10240
+    },
+    {
+      "source": "native-audit-exit-regressions/native-link-bin-ownership.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-audit-activation/native-audit-exit-regressions/native-link-bin-ownership.log.gz",
+      "sha256": "5c94c468366a91c0782f8517a0eb446ed52398dbad7619c6b83466ff4be0f205",
+      "uncompressed_bytes": 40
+    },
+    {
+      "source": "native-audit-exit-regressions/native-link-lifecycle.global-fixture.tar.gz",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-audit-activation/native-audit-exit-regressions/native-link-lifecycle.global-fixture.tar.gz",
+      "sha256": "c080fc7b5d2a39f0f89519b3e19bf9e0e55c687c807270e0ddf5a396834762b8",
+      "uncompressed_bytes": 10240
+    },
+    {
+      "source": "native-audit-exit-regressions/native-link-lifecycle.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-audit-activation/native-audit-exit-regressions/native-link-lifecycle.log.gz",
+      "sha256": "6bbc18a212234c3a4bde53c15ebbd32648380a8d1acb372957891fbd1b0004ad",
+      "uncompressed_bytes": 52
+    },
+    {
+      "source": "native-audit-exit-regressions/native-local-dependency-identity.global-fixture.tar.gz",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-audit-activation/native-audit-exit-regressions/native-local-dependency-identity.global-fixture.tar.gz",
+      "sha256": "a05152cd3f35723b197bcb44896b2cacba8d3a567aab78ea56b9dd4c4cc983a9",
+      "uncompressed_bytes": 10240
+    },
+    {
+      "source": "native-audit-exit-regressions/native-local-dependency-identity.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-audit-activation/native-audit-exit-regressions/native-local-dependency-identity.log.gz",
+      "sha256": "cf60b7c72d2c4268f8a07f7018e32e31731f35272b3cac3372a495eb5d119f32",
+      "uncompressed_bytes": 138
+    },
+    {
+      "source": "native-audit-exit-regressions/native-patch-lifecycle.global-fixture.tar.gz",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-audit-activation/native-audit-exit-regressions/native-patch-lifecycle.global-fixture.tar.gz",
+      "sha256": "7bcb908330a0c75ceedfee1451c99ae2ea58bb490a7c52e223a61b8966700bb3",
+      "uncompressed_bytes": 10240
+    },
+    {
+      "source": "native-audit-exit-regressions/native-patch-lifecycle.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-audit-activation/native-audit-exit-regressions/native-patch-lifecycle.log.gz",
+      "sha256": "33b4c4d70c30f1b326cb9c22a4e419acbf1abd272009a2ea3560db71debd77f4",
+      "uncompressed_bytes": 128
+    },
+    {
+      "source": "native-audit-exit-regressions/native-update-outdated.global-fixture.tar.gz",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-audit-activation/native-audit-exit-regressions/native-update-outdated.global-fixture.tar.gz",
+      "sha256": "28815d5bfa44e19fddf77872c196f0b97ade2b34642e98cb411ccfa84a1b5cd8",
+      "uncompressed_bytes": 10240
+    },
+    {
+      "source": "native-audit-exit-regressions/native-update-outdated.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-audit-activation/native-audit-exit-regressions/native-update-outdated.log.gz",
+      "sha256": "3879de2013e756f44f60321c201fee98974ab3e01f647a60a3df0aded7c18180",
+      "uncompressed_bytes": 46
+    },
+    {
+      "source": "tests/runtime/native-audit-protocol.test.mjs at f2bbead95",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-native-audit-activation/native-audit-protocol.test.mjs.gz",
+      "sha256": "50b48d907898842138ab9ef79a495cc3ad839f5fdbefb4bdf3771dcf85180660",
+      "uncompressed_bytes": 7691
+    }
+  ]
+}
