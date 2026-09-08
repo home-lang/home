@@ -35,7 +35,7 @@ def sha256(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def audit(zig, node, bun_source):
+def audit(zig, node, bun_source, include_entries=False):
     runner_bytes = (ROOT / "packages/home_test/src/corpus_runner.zig").read_bytes()
     runner = runner_bytes.decode()
     corpus = (ROOT / "packages/home_test/src/corpus.zig").read_text()
@@ -88,7 +88,7 @@ const rows = discovered.filter(path => tracked.has(path.replaceAll(sep, "/"))).m
 ''' + modes + '''
         mode = subcommand;
     }
-    return {path: testPath.replaceAll(sep, "/"), mode};
+    return {path: testPath.replaceAll(sep, "/"), mode, node_test: isNodeTest(testPath)};
 });
 console.log(JSON.stringify({context: {isCI, isMacOS, isX64}, rows,
     untracked: discovered.filter(path => !tracked.has(path.replaceAll(sep, "/")))}));
@@ -112,7 +112,7 @@ console.log(JSON.stringify({context: {isCI, isMacOS, isX64}, rows,
     upstream_modes = {row['path']: row['mode'] for row in discovered['rows']}
     counts = Counter(f'{row[1]}/{row[2]}' for row in rows)
     mode_names = {'script': 'run', 'test_runner': 'test'}
-    return {
+    report = {
         'status': 'Discovery and routing only; no test execution or implemented-feature claim.',
         'bun_pin': PIN,
         'home_git_head': run(['git', 'rev-parse', 'HEAD']).stdout.strip(),
@@ -138,6 +138,11 @@ console.log(JSON.stringify({context: {isCI, isMacOS, isX64}, rows,
         'disabled_native_files': [row for row in rows if row[1] == 'native' and row[3]],
     }
 
+    if include_entries:
+        report['upstream_entries'] = discovered['rows']
+        report['home_entries'] = [dict(zip(('path', 'engine', 'mode', 'inactive_source'), row)) for row in rows]
+    return report
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -145,8 +150,9 @@ def main():
     parser.add_argument('--node', default='node')
     parser.add_argument('--bun-source', type=Path, default=Path.home() / 'Code/bun')
     parser.add_argument('--output', type=Path)
+    parser.add_argument('--include-entries', action='store_true', help='Include every selected path and its execution mode')
     args = parser.parse_args()
-    report = json.dumps(audit(args.zig, args.node, args.bun_source), indent=2) + '\n'
+    report = json.dumps(audit(args.zig, args.node, args.bun_source, args.include_entries), indent=2) + '\n'
     if args.output:
         args.output.write_text(report)
     else:

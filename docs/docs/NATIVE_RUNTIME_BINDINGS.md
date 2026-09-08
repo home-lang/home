@@ -1466,7 +1466,6 @@ under #66, #202 and #703.
 Verified optimized Home executable SHA-256:
 `4a937ded48d609b76e336fdc192dd96439653a228073a234aaafcba176a5e783`.
 
-
 ## Native-only corpus discovery and execution (#703)
 
 The corpus runner now executes every discovered original file in Home's native
@@ -1500,7 +1499,6 @@ The [current discovery audit](./bun-corpus-discovery-audit.json) and its command
 retain source hashes and the comparison context; the earlier audit remains
 archived separately.
 
-
 The full upstream CI launch profile still needs separate implementation: its
 non-Node launcher configures per-test and file deadlines and reporting flags,
 while ordinary Home test execution retains the default test deadlines. Native
@@ -1508,3 +1506,26 @@ capture currently has its existing 120-second outer file bound. These difference
 remain explicit acceptance work in #703; the route audit proves discovery and
 mode selection, not equivalence of every CI launch option. The two cluster
 entries use script mode, following the final `spawnBunTest` strict-name check.
+
+### Native-only verification and config correction
+
+The first optimized build at `1d62a395b` passed **46/46 steps**. Its six
+registered focused harness checks passed **5/6**: the real Node assertion control
+exposed a launch error. Splitting `--config` and its path made script dispatch
+select the TOML file. The launcher now uses the exact pinned CI spelling,
+`--config=path`. Direct Home and pinned Bun controls both reach and fail the
+intended Node assertion with that spelling. The corrected build and focused
+harness verification are pending; the initial failure remains recorded.
+
+The first native-only binary independently passed the retained ordinary routes:
+HTML **145 passes / one original skip**, Blob **65**, body/stream **9,467 / four
+original skips**, Headers/Response **170**, Request **24**, FormData boundary
+**5**, and microtasks **2**. A separate native HTML aggregate matched **530
+assertions / 145 passes / one skip**. These results cover those matrices only; issues #701 and #694 remain unresolved. Raw source integrity is unchanged: **12,990
+regular files and five symlinks** match pinned Git objects and modes, with only
+the previously documented expectations metadata differing.
+
+The discovery audit accepts `--include-entries` to emit each original path and
+its native/upstream mode for reproducible execution plans. The next preserved
+comparison batch covers the 78 formerly omitted entries. Docker-guarded files
+cannot earn Docker feature coverage on this host without an available daemon.

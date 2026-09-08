@@ -341,11 +341,13 @@ fn buildNativeCorpusArgs(
     absolute_fixture_path: []const u8,
     mode: NativeCorpusMode,
 ) ![][]const u8 {
-    const args = try allocator.alloc([]const u8, flags.len + 4);
+    const args = try allocator.alloc([]const u8, flags.len + 3);
+    errdefer allocator.free(args);
     args[0] = if (mode == .test_runner) "test" else "run";
-    args[1] = "--config";
-    args[2] = config_path;
-    @memcpy(args[3 .. 3 + flags.len], flags);
+    // Bun declares config as an optional-value flag. Like pinned CI, attach
+    // its value so script dispatch cannot mistake the TOML for the entrypoint.
+    args[1] = try std.fmt.allocPrint(allocator, "--config={s}", .{config_path});
+    @memcpy(args[2 .. 2 + flags.len], flags);
     args[args.len - 1] = absolute_fixture_path;
     return args;
 }
@@ -541,6 +543,7 @@ fn runRelativeFile(
         defer allocator.free(config_path);
         const args_tail = try buildNativeCorpusArgs(allocator, flags.values.items, config_path, absolute_fixture_path, mode);
         defer allocator.free(args_tail);
+        defer allocator.free(args_tail[1]);
 
         const test_thread_id = try std.fmt.allocPrint(allocator, "home-corpus-{s}", .{std.fs.path.basename(relative)});
         defer allocator.free(test_thread_id);
@@ -1036,13 +1039,13 @@ test "native corpus execution preserves flags and explicit project configuration
     defer flags.deinit(allocator);
     const args = try buildNativeCorpusArgs(allocator, flags.values.items, "/corpus/bunfig.node-test.toml", "/corpus/test/node.js", .script);
     defer allocator.free(args);
-    try std.testing.expectEqual(@as(usize, 6), args.len);
+    defer allocator.free(args[1]);
+    try std.testing.expectEqual(@as(usize, 5), args.len);
     try std.testing.expectEqualStrings("run", args[0]);
-    try std.testing.expectEqualStrings("--config", args[1]);
-    try std.testing.expectEqualStrings("/corpus/bunfig.node-test.toml", args[2]);
-    try std.testing.expectEqualStrings("--experimental-stream-iter", args[3]);
-    try std.testing.expectEqualStrings("--no-warnings", args[4]);
-    try std.testing.expectEqualStrings("/corpus/test/node.js", args[5]);
+    try std.testing.expectEqualStrings("--config=/corpus/bunfig.node-test.toml", args[1]);
+    try std.testing.expectEqualStrings("--experimental-stream-iter", args[2]);
+    try std.testing.expectEqualStrings("--no-warnings", args[3]);
+    try std.testing.expectEqualStrings("/corpus/test/node.js", args[4]);
 }
 
 test "native corpus execution propagates real child and Node assertion failures" {

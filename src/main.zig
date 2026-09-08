@@ -3978,11 +3978,11 @@ fn printTestUsage() void {
         \\  *.test.hm                       Home test files (short ext)
         \\  *_test.zig                      Zig unit test files
         \\
-        \\{s}Bun Corpus Bootstrap:{s}
+        \\{s}Bun Corpus Native Execution:{s}
         \\  home test packages/runtime/test/test
         \\                                  Run the full native corpus gate; fails until 100% native parity
         \\  home test packages/runtime/test/test --bun-corpus-native-subset=minimal-js
-        \\                                  Run the current allowlisted native JSC smoke subset
+        \\                                  Run a small native smoke subset of original tests
         \\
     , .{
         Color.Blue.code(),
