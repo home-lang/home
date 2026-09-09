@@ -68,6 +68,19 @@ def summarize(directory):
                 vendor_policy = row.get('contract') == 'bun-4982b91e-vendor'
                 if vendor_policy:
                     check(row.get('execution') == 'prepared-vendor' and row.get('setup_performed') is False, 'invalid prepared vendor scope')
+                if not vendor_policy and row.get('native_platform_detected') is True:
+                    context, expected = row['context'], row['expected_platform']
+                    valid = isinstance(context, dict) and isinstance(expected, dict)
+                    check(valid, 'invalid native platform record')
+                    if valid:
+                        check(type(context.get('is_ci')) is bool and type(row.get('asan_step')) is bool, 'invalid native launch context')
+                        if expected.get('os'):
+                            for field in ('os', 'arch', 'abi', 'distro', 'release'):
+                                wanted = expected.get(field)
+                                if wanted:
+                                    actual = context.get('distro_version' if field == 'release' else field)
+                                    matches = isinstance(actual, str) and isinstance(wanted, str) and (actual == wanted or (field == 'release' and actual.startswith(wanted + '.')))
+                                    check(matches, 'native platform expectation mismatch: ' + field)
                 inventory, indices, excluded = row['inventory'], row['selected_indices'], row['excluded']
                 check(isinstance(inventory, list) and all(isinstance(path, str) for path in inventory), 'invalid policy inventory')
                 check(len(set(inventory)) == len(inventory), 'duplicate policy inventory paths')

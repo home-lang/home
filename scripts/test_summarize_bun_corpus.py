@@ -125,6 +125,24 @@ class JournalValidation(unittest.TestCase):
         policy['excluded'][0]['rule'] = 99
         self.assertFalse(self.result()['successful'])
 
+    def test_native_platform_records_reject_mismatches_and_unknown_values(self):
+        policy = dict(event='selection', contract='bun-4982b91e-primary',
+                      native_platform_detected=True, asan_step=False,
+                      context=dict(os='darwin', arch='aarch64', distro_version='27.0', abi=None, is_ci=False),
+                      expected_platform=dict(os='darwin', release='27'),
+                      inventory=['control.test.js'], selected_indices=[0], excluded=[],
+                      additional_home_coverage=[], range_start=0, range_end=1)
+        self.rows.insert(1, policy)
+        self.assertTrue(self.result()['successful'])
+        policy['expected_platform']['release'] = '270'
+        self.assertFalse(self.result()['successful'])
+        policy['expected_platform'] = dict(os='darwin', abi='gnu')
+        self.assertFalse(self.result()['successful'])
+        policy['expected_platform'] = dict(arch='wrong-but-no-os-declared')
+        self.assertTrue(self.result()['successful'])
+        policy['context']['is_ci'] = 'false'
+        self.assertFalse(self.result()['successful'])
+
     def test_prepared_vendor_scope_and_original_skip_remain_visible(self):
         policy = dict(event='selection', contract='bun-4982b91e-vendor',
                       execution='prepared-vendor', setup_performed=False,

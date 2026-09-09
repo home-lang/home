@@ -13,6 +13,7 @@ const test_result = @import("result.zig");
 const corpus_journal = @import("corpus_journal.zig");
 const corpus_selection = @import("corpus_selection.zig");
 const corpus_vendor = @import("corpus_vendor.zig");
+const corpus_platform = @import("corpus_platform.zig");
 const Io = std.Io;
 
 pub const Subset = enum {
@@ -58,6 +59,10 @@ pub const SelectionPolicy = struct {
     upstream_expectations: []const u8,
     home_expectations: ?[]const u8 = null,
     options: corpus_selection.Options = .{},
+    /// Replace platform fields with native probes before selecting or launching.
+    detect_platform: bool = false,
+    expected_platform: corpus_platform.Expected = .{},
+    asan_step: bool = false,
 };
 
 test "native corpus selection records exclusions and rejects Home-only skips" {
@@ -123,6 +128,8 @@ pub const Summary = struct {
     executions: std.ArrayList(FileExecution) = .empty,
     on_file: ?*const fn (FileExecution) anyerror!void = null,
     vendor_context: ?VendorExecutionContext = null,
+    launch_is_ci: bool = true,
+    launch_asan_step: bool = false,
 
     pub fn deinit(self: *Summary, allocator: std.mem.Allocator) void {
         if (self.journal) |*journal| journal.deinit();
@@ -156,7 +163,7 @@ pub const Summary = struct {
 };
 
 fn beginSummary(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8, options: RunOptions) !Summary {
-    var summary = Summary{ .on_file = options.on_file };
+    var summary = Summary{ .on_file = options.on_file, .launch_is_ci = if (options.selection) |policy| policy.context.is_ci else true, .launch_asan_step = if (options.selection) |policy| policy.asan_step else false };
     if (options.persist_results or options.report_directory != null) {
         const env_path = try envVariableAlloc(allocator, "HOME_BUN_CORPUS_REPORT_DIR");
         defer if (env_path) |value| allocator.free(value);
@@ -266,7 +273,19 @@ pub fn runGate(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8) !S
     return runGateWithOptions(io, allocator, corpus_path, .{});
 }
 
-pub fn runGateWithOptions(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8, options: RunOptions) !Summary {
+pub fn runGateWithOptions(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8, requested: RunOptions) !Summary {
+    var options = requested;
+    var detected: ?corpus_platform.Detected = null;
+    defer if (detected) |*owned| owned.deinit();
+    if (options.selection) |*policy| {
+        if (policy.detect_platform) {
+            detected = try corpus_platform.detect(allocator, io);
+            const host = detected.?.host;
+            const checked = corpus_platform.check(host, policy.expected_platform);
+            if (checked.len != 0) return error.CorpusPlatformMismatch;
+            inline for (.{ "os", "arch", "distro", "distro_version", "abi", "abi_version" }) |field| @field(policy.context, field) = @field(host, field);
+        }
+    }
     const test_files = corpus.collectTrackedTestFiles(io, allocator, corpus_path) catch |err| switch (err) {
         error.FileNotFound => return .{ .blocked = true, .reason = "corpus-not-found" },
         else => return err,
@@ -309,6 +328,9 @@ pub fn runGateWithOptions(io: Io, allocator: std.mem.Allocator, corpus_path: []c
                 .contract = "bun-4982b91e-primary",
                 .inventory = test_files,
                 .context = policy.context,
+                .native_platform_detected = policy.detect_platform,
+                .expected_platform = policy.expected_platform,
+                .asan_step = policy.asan_step,
                 .modifiers = modifiers,
                 .options = policy.options,
                 .upstream_expectations = upstream,
@@ -955,7 +977,7 @@ fn runRelativeFile(
             .corpus_project_root = corpus_project_root,
             .junit_path = junit_path,
             .record = if (summary.journal) |*journal| .{ .journal = journal, .id = id, .mode = @tagName(mode), .source_sha256 = source_hash } else null,
-            .corpus_file = .{ .relative_path = relative, .node_test = node_test, .test_runner = mode == .test_runner },
+            .corpus_file = .{ .relative_path = relative, .node_test = node_test, .test_runner = mode == .test_runner, .is_ci = summary.launch_is_ci, .asan_step = summary.launch_asan_step },
             .corpus_validation_root = if (summary.vendor_context) |vendor| vendor.corpus_project_root else null,
             .corpus_validation_relative_path = validation_relative,
             .vendor_test = summary.vendor_context != null,
@@ -1705,4 +1727,52 @@ test "native corpus journal retains mixed outcomes and the entire selection" {
     const after = try tmp.dir.readFileAlloc(io, "test/mixed.test.js", allocator, .limited(65536));
     defer allocator.free(after);
     try std.testing.expectEqualStrings(mixed_source, after);
+}
+
+test "native corpus host checks precede discovery and local context reaches children" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    try std.testing.expectError(error.CorpusPlatformMismatch, runGateWithOptions(io, allocator, "/nonexistent-platform-control", .{
+        .selection = .{ .context = .{ .executable = "home", .os = "unused", .arch = "unused" }, .upstream_expectations = "", .detect_platform = true, .expected_platform = .{ .os = "impossible-platform" } },
+    }));
+    var detected = try corpus_platform.detect(allocator, io);
+    defer detected.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "test/js/node/test/parallel");
+    try tmp.dir.writeFile(io, .{ .sub_path = "bunfig.toml", .data = "[test]\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "bunfig.node-test.toml", .data = "[test]\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "test/BUN_TRACKED_FILES.txt", .data = "a.test.js\njs/node/test/parallel/test-platform-launch.js\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "test/a.test.js", .data = "import {test,expect} from 'bun:test'; test('local validation enabled',()=>expect(process.env.BUN_JSC_validateExceptionChecks).toBe('1'));" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "test/js/node/test/parallel/test-platform-launch.js", .data = "require('node:assert').strictEqual(process.env.BUN_JSC_validateExceptionChecks,'1');" });
+    const root = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(root);
+    const tests = try std.fs.path.join(allocator, &.{ root, "test" });
+    defer allocator.free(tests);
+    const reports = try std.fs.path.join(allocator, &.{ root, "reports" });
+    defer allocator.free(reports);
+    var summary = try runGateWithOptions(io, allocator, tests, .{ .report_directory = reports, .selection = .{
+        .context = .{ .executable = "home", .os = "placeholder", .arch = "placeholder", .is_ci = false },
+        .upstream_expectations = "",
+        .detect_platform = true,
+        .expected_platform = .{ .os = detected.host.os, .arch = detected.host.arch },
+    } });
+    defer summary.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 2), summary.files);
+    try std.testing.expectEqual(@as(usize, 1), summary.passed);
+    try std.testing.expectEqual(@as(usize, 1), summary.process_checks_passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed_files + summary.failed + summary.unsupported);
+    var saw_node = false;
+    for (summary.executions.items) |execution| if (std.mem.indexOf(u8, execution.relative_path, "test-platform-launch") != null) {
+        saw_node = true;
+        try std.testing.expectEqual(@as(i64, 60_000), execution.timeout_ms);
+    };
+    try std.testing.expect(saw_node);
+    const events_path = try std.fs.path.join(allocator, &.{ reports, "events.jsonl" });
+    defer allocator.free(events_path);
+    const events = try Io.Dir.cwd().readFileAlloc(io, events_path, allocator, .limited(1024 * 1024));
+    defer allocator.free(events);
+    try std.testing.expect(std.mem.indexOf(u8, events, "\"native_platform_detected\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, events, "placeholder") == null);
 }

@@ -16,6 +16,7 @@ test {
     _ = home_test;
     _ = home_test.corpus;
     _ = home_test.corpus_selection;
+    _ = home_test.corpus_platform;
     _ = home_test.corpus_vendor;
     _ = home_test.corpus_runner;
     _ = home_test.result;

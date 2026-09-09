@@ -4003,6 +4003,7 @@ fn printTestUsage() void {
         \\  --home                  Run only Home integration tests
         \\  --bun-corpus-native-subset <name>
         \\                          Run an explicit native Bun-corpus bootstrap subset
+        \\  --bun-corpus-platform    Detect the native host and check expected CI platform
         \\  --bun-corpus-prepared-vendor <name> [path filters...]
         \\                          Execute a pinned vendor after its install/build setup
         \\  -h, --help              Show this help message
@@ -5458,6 +5459,23 @@ fn runBunCorpusNativeDirectory(allocator: std.mem.Allocator, corpus_path: []cons
     if (failed) std.process.exit(1);
 }
 
+fn printBunCorpusPlatform(allocator: std.mem.Allocator) !void {
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    inline for (.{ "EXPECTED_PLATFORM_OS", "EXPECTED_PLATFORM_ARCH", "EXPECTED_PLATFORM_ABI", "EXPECTED_PLATFORM_DISTRO", "EXPECTED_PLATFORM_RELEASE", "CI", "BUILDKITE", "GITHUB_ACTIONS" }) |key| {
+        if (std.c.getenv(key)) |value| try env.put(key, std.mem.span(value));
+    }
+    var detected = try home_test.corpus_platform.detect(allocator, g_io);
+    defer detected.deinit();
+    const expected = home_test.corpus_platform.Expected.fromEnvironment(&env);
+    const checked = home_test.corpus_platform.check(detected.host, expected);
+    const output = try std.json.Stringify.valueAlloc(allocator, .{ .kind = "native-platform-check", .host = detected.host, .is_ci = home_test.corpus_platform.isCI(&env), .expected = expected, .mismatches = checked.items(), .successful = checked.len == 0 }, .{});
+    defer allocator.free(output);
+    try Io.File.stdout().writeStreamingAll(g_io, output);
+    try Io.File.stdout().writeStreamingAll(g_io, "\n");
+    if (checked.len != 0) return error.CorpusPlatformMismatch;
+}
+
 fn runPreparedBunVendor(allocator: std.mem.Allocator, name: []const u8, filters: []const [:0]const u8) !void {
     if (!build_options.enable_jsc) return error.NativeRuntimeRequired;
     const project_root = std.fs.path.dirname(home_test.corpus.default_root).?;
@@ -5494,6 +5512,10 @@ fn runPreparedBunVendor(allocator: std.mem.Allocator, name: []const u8, filters:
 }
 
 fn testCommand(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
+    for (args) |arg| if (std.mem.eql(u8, arg, "--bun-corpus-platform")) {
+        if (args.len != 1) return error.UnexpectedPlatformCheckArguments;
+        return printBunCorpusPlatform(allocator);
+    };
     for (args, 0..) |arg, index| {
         if (!std.mem.eql(u8, arg, "--bun-corpus-prepared-vendor")) continue;
         if (index != 0 or args.len < 2) return error.ExpectedPreparedVendorName;
