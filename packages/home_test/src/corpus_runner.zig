@@ -1157,8 +1157,13 @@ test "native corpus expected failure accepts only the indexed-property diff cont
 test "native Bun test fixtures and interop consumers execute unchanged through the corpus gate" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
-    const cases = [_]struct { path: []const u8, passed: usize, todo: usize = 0, skipped: usize = 0, allowed_empty: usize = 0 }{
-        .{ .path = "js/bun/test/test-interop.js", .passed = 1 },
+    const cases = [_]struct { path: []const u8, passed: usize, todo: usize = 0, skipped: usize = 0, allowed_empty: usize = 0, process_checks: usize = 0 }{
+        // An interop shim, not a test file: it exports the bun:test surface for
+        // other suites and registers no cases of its own. A file with a live
+        // body and no registered tests is counted as a process check, never as
+        // a pass, so `.passed = 1` was unreachable. Assert the process check so
+        // the file is still verified to execute cleanly.
+        .{ .path = "js/bun/test/test-interop.js", .passed = 0, .process_checks = 1 },
         .{ .path = "js/bun/test/test-fixture-diff-indexed-properties.js", .passed = 1 },
         .{ .path = "js/bun/test/expect-extend.test.js", .passed = 28 },
         .{ .path = "js/bun/test/mock-fn.test.js", .passed = 72 },
@@ -1196,6 +1201,9 @@ test "native Bun test fixtures and interop consumers execute unchanged through t
         try std.testing.expectEqual(@as(usize, 0), summary.failed + summary.failed_files);
         try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
         try std.testing.expectEqual(case.allowed_empty, summary.allowed_empty_files);
+        if (case.process_checks != 0) {
+            try std.testing.expectEqual(case.process_checks, summary.process_checks_passed);
+        }
     }
 }
 
