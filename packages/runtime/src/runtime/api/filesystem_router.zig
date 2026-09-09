@@ -172,7 +172,20 @@ pub const FileSystemRouter = struct {
         };
 
         router.config.dir = fs_router.base_dir.?.slice();
+
+        // `refCountedString` returns a BORROWED pointer: on a cache hit it
+        // hands back the VM's interned `*RefString` without bumping anything,
+        // so a holder that intends to `deref()` later must take its own
+        // reference first. Bun does this for all three through its `claim`
+        // helper (filesystem_router.rs:325-345, "VM intern cache + our +1").
+        // `base_dir` already did; `origin` and `asset_prefix` did not, yet
+        // `finalize` derefs all three — so those two dropped references this
+        // object never held, and the count reached zero while a live
+        // MatchedRoute still owned one. Its `deinit` then tripped
+        // `bun.assert(self.hasAtLeastOneRef())` and aborted the process.
         fs_router.base_dir.?.ref();
+        if (fs_router.origin) |origin| origin.ref();
+        if (fs_router.asset_prefix) |asset_prefix| asset_prefix.ref();
 
         // TODO: Memory leak? We haven't freed `asset_prefix_slice`, but we can't do so because the
         // underlying string is borrowed in `fs_router.router.config.asset_prefix_path`.
