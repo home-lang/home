@@ -16,6 +16,8 @@ The validator emits JSON containing individual JUnit cases, separate outcome cou
 
 The selected absolute process deadline continues after both output pipes reach EOF; closing output does not grant a still-running child an unlimited lifetime. Exit observation keeps the child unreaped until the owning capture performs final cleanup.
 
+An explicit CI selection policy adds a `selection` event before file selection. It retains the complete primary inventory, excluded files and expectation metadata, additional Home coverage, and any partial execution range. The validator checks the inventory partition and exact selected execution paths. Exclusions remain separate from registered skipped or passing cases. See [native selection and vendor setup](./bun-corpus-selection.md) for the API and its remaining orchestration work.
+
 The journal preserves captures after a child terminates. A runner killed during a child execution has a durable selection and launch attempt, but no claimed completed capture. Keep these directories with the associated source revision and build evidence when comparing corpus runs. The launch environment record includes only explicit runtime and CI settings, not arbitrary inherited credentials.
 
 This mechanism is execution evidence, not a full Bun parity claim. Track the complete port in [#66](https://github.com/home-lang/home/issues/66) and the reporting contract in [#722](https://github.com/home-lang/home/issues/722).

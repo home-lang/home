@@ -11,6 +11,7 @@ const corpus = @import("corpus.zig");
 const jsc_bootstrap = @import("adapters/jsc_bootstrap.zig");
 const test_result = @import("result.zig");
 const corpus_journal = @import("corpus_journal.zig");
+const corpus_selection = @import("corpus_selection.zig");
 const Io = std.Io;
 
 pub const Subset = enum {
@@ -45,7 +46,55 @@ pub const RunOptions = struct {
     on_file: ?*const fn (FileExecution) anyerror!void = null,
     persist_results: bool = false,
     report_directory: ?[]const u8 = null,
+    /// Explicit CI selection. Diagnostic file/subset/directory routes retain
+    /// their explicitly requested files. The caller supplies pinned source
+    /// bytes, and may only remove exclusions in its Home expectation source.
+    selection: ?SelectionPolicy = null,
 };
+
+pub const SelectionPolicy = struct {
+    context: corpus_selection.Context,
+    upstream_expectations: []const u8,
+    home_expectations: ?[]const u8 = null,
+    options: corpus_selection.Options = .{},
+};
+
+test "native corpus selection records exclusions and rejects Home-only skips" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var threaded = Io.Threaded.init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "test");
+    try tmp.dir.writeFile(io, .{ .sub_path = "test/BUN_TRACKED_FILES.txt", .data = "excluded.test.js\npass.test.js\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "bunfig.toml", .data = "[test]\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "test/pass.test.js", .data = "import {test,expect} from 'bun:test'; test('registered',()=>expect(42).toBe(42));" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "test/excluded.test.js", .data = "throw new Error('excluded fixture must not execute');" });
+    const root = try tmp.dir.realPathFileAlloc(io, "test", allocator);
+    defer allocator.free(root);
+    var summary = try runGateWithOptions(io, allocator, root, .{
+        .persist_results = true,
+        .selection = .{ .context = .{ .executable = "home", .os = "darwin", .arch = "aarch64" }, .upstream_expectations = "test/excluded.test.js [ FAIL ] # upstream fixture rule" },
+    });
+    defer summary.deinit(allocator);
+    try std.testing.expect(!summary.blocked);
+    defer Io.Dir.cwd().deleteTree(io, summary.journal.?.directory) catch {};
+    try std.testing.expectEqual(@as(usize, 1), summary.files);
+    try std.testing.expectEqual(@as(usize, 1), summary.passed);
+    try std.testing.expectEqual(@as(usize, 0), summary.skipped);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed);
+    const events_path = try std.fs.path.join(allocator, &.{ summary.journal.?.directory, "events.jsonl" });
+    defer allocator.free(events_path);
+    const events = try Io.Dir.cwd().readFileAlloc(io, events_path, allocator, .limited(1024 * 1024));
+    defer allocator.free(events);
+    try std.testing.expect(std.mem.indexOf(u8, events, "\"event\":\"selection\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, events, "upstream fixture rule") != null);
+    try std.testing.expectError(error.HomeOnlyCorpusExclusion, runGateWithOptions(io, allocator, root, .{
+        .selection = .{ .context = .{ .executable = "home", .os = "darwin", .arch = "aarch64" }, .upstream_expectations = "", .home_expectations = "test/pass.test.js [ SKIP ]" },
+    }));
+}
 
 pub const Summary = struct {
     files: usize = 0,
@@ -233,13 +282,52 @@ pub fn runGateWithOptions(io: Io, allocator: std.mem.Allocator, corpus_path: []c
     var summary = try beginSummary(io, allocator, corpus_path, options);
     errdefer summary.deinit(allocator);
     const show_progress = bunCorpusProgressEnabled();
-    const range = bunCorpusRange(test_files.len);
-    if (summary.journal) |*journal| for (test_files[range.start..range.end]) |relative| {
+    var planned: std.ArrayList([]const u8) = .empty;
+    defer planned.deinit(allocator);
+    if (options.selection) |policy| {
+        const upstream = try corpus_selection.parseExpectations(allocator, policy.upstream_expectations);
+        defer allocator.free(upstream);
+        const home = try corpus_selection.parseExpectations(allocator, policy.home_expectations orelse policy.upstream_expectations);
+        defer allocator.free(home);
+        const modifiers = try policy.context.modifiers(allocator);
+        defer corpus_selection.freeModifiers(allocator, modifiers);
+        try corpus_selection.validateHomeExpectations(test_files, upstream, home, modifiers);
+        const selection = try corpus_selection.select(allocator, test_files, policy.context, home, policy.options);
+        defer selection.deinit(allocator);
+        for (selection.selected) |index| try planned.append(allocator, test_files[index]);
+        const range = bunCorpusRange(planned.items.len);
+        if (summary.journal) |*journal| {
+            var extra: std.ArrayList(usize) = .empty;
+            defer extra.deinit(allocator);
+            for (selection.selected) |index| {
+                if (corpus_selection.matchingRule(test_files[index], upstream, modifiers) != null) try extra.append(allocator, index);
+            }
+            try journal.append(.{
+                .event = "selection",
+                .contract = "bun-4982b91e-primary",
+                .inventory = test_files,
+                .context = policy.context,
+                .modifiers = modifiers,
+                .options = policy.options,
+                .upstream_expectations = upstream,
+                .upstream_expectations_sha256 = @as([]const u8, &corpus_journal.hashBytes(policy.upstream_expectations)),
+                .home_expectations = home,
+                .home_expectations_sha256 = @as([]const u8, &corpus_journal.hashBytes(policy.home_expectations orelse policy.upstream_expectations)),
+                .selected_indices = selection.selected,
+                .excluded = selection.excluded,
+                .additional_home_coverage = extra.items,
+                .range_start = range.start,
+                .range_end = range.end,
+            });
+        }
+    } else try planned.appendSlice(allocator, test_files);
+    const range = bunCorpusRange(planned.items.len);
+    if (summary.journal) |*journal| for (planned.items[range.start..range.end]) |relative| {
         try journal.select(relative);
     };
-    for (test_files[range.start..range.end], range.start..) |relative, index| {
+    for (planned.items[range.start..range.end], range.start..) |relative, index| {
         if (show_progress) {
-            std.debug.print("[home-bun-corpus] {d}/{d} {s}\n", .{ index + 1, test_files.len, relative });
+            std.debug.print("[home-bun-corpus] {d}/{d} {s}\n", .{ index + 1, planned.items.len, relative });
         }
         try runIsolatedRelativeFile(io, allocator, corpus_path, relative, &summary);
     }
@@ -336,7 +424,7 @@ fn bunCorpusRange(total: usize) struct { start: usize, end: usize } {
     const start = bunCorpusEnvUsize("HOME_BUN_CORPUS_START") orelse 1;
     const limit = bunCorpusEnvUsize("HOME_BUN_CORPUS_LIMIT");
     const zero_start = if (start == 0) 0 else @min(start - 1, total);
-    const end = if (limit) |count| @min(total, zero_start + count) else total;
+    const end = if (limit) |count| zero_start + @min(total - zero_start, count) else total;
     return .{ .start = zero_start, .end = end };
 }
 

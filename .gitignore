@@ -112,3 +112,6 @@ app-with-resources
 /file:
 /.codex-cache-final
 /codex-git-shadow.git
+
+# Pinned external corpus suites, prepared and verified by the native CI driver
+/packages/runtime/test/vendor/

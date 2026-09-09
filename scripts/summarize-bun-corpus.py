@@ -29,6 +29,7 @@ def summarize(directory):
     finished = None
     totals = dict.fromkeys(COUNTS, 0)
     run = None
+    selection = None
 
     def check(condition, message):
         if not condition:
@@ -60,6 +61,27 @@ def summarize(directory):
             if event == 'run':
                 check(number == 1 and run is None and row.get('schema') in (1, 2), 'invalid run header')
                 run = row
+            elif event == 'selection':
+                check(run is not None and not selected and not started and selection is None, f'line {number}: invalid policy order')
+                selection = row
+                check(row.get('contract') == 'bun-4982b91e-primary', 'unknown selection contract')
+                inventory, indices, excluded = row['inventory'], row['selected_indices'], row['excluded']
+                check(isinstance(inventory, list) and all(isinstance(path, str) for path in inventory), 'invalid policy inventory')
+                check(len(set(inventory)) == len(inventory), 'duplicate policy inventory paths')
+                omitted = [entry['index'] for entry in excluded]
+                all_indices = indices + omitted
+                valid_indices = all(type(index) is int and 0 <= index < len(inventory) for index in all_indices)
+                check(valid_indices and sorted(all_indices) == list(range(len(inventory))), 'selection does not partition the inventory')
+                reasons = ('node_platform', 'node_only', 'include_filter', 'exclude_filter', 'expectation', 'positional_filter', 'shard')
+                for entry in excluded:
+                    check(entry.get('reason') in reasons, 'unknown exclusion reason')
+                    if entry.get('reason') == 'expectation':
+                        rule = entry.get('rule')
+                        check(type(rule) is int and 0 <= rule < len(row['home_expectations']), 'missing exclusion rule')
+                start, end = row['range_start'], row['range_end']
+                check(type(start) is int and type(end) is int and 0 <= start <= end <= len(indices), 'invalid execution range')
+                extra = row['additional_home_coverage']
+                check(len(set(extra)) == len(extra) and all(index in indices for index in extra), 'invalid additional Home coverage')
             elif event == 'selected':
                 identity = row['id']
                 check(not started and identity == len(selected) and identity not in selected, f'line {number}: invalid selection order')
@@ -132,6 +154,13 @@ def summarize(directory):
     check(run is not None, 'missing run header')
     check(finished is not None, 'run did not finish')
     check(bool(selected), 'no files selected')
+    if selection:
+        try:
+            indices = selection['selected_indices'][selection['range_start']:selection['range_end']]
+            expected_paths = [selection['inventory'][index] for index in indices]
+            check([row['path'] for row in selected.values()] == expected_paths, 'executed selection does not match recorded policy and range')
+        except (KeyError, TypeError, IndexError) as error:
+            errors.append(f'invalid execution selection: {error}')
     failures = []
     for identity, row in completed.items():
         term = row.get('term', {})
@@ -146,7 +175,7 @@ def summarize(directory):
     return {'directory': str(directory), 'successful': successful, 'selected': len(selected), 'started': len(started), 'completed': len(completed),
             'unstarted': [row for identity, row in selected.items() if identity not in started],
             'incomplete': [selected[identity] for identity in started if identity in selected and identity not in completed],
-            'counts': totals, 'capture_completeness': {state: sum(row.get('output_complete') is value for row in completed.values()) for state, value in [('complete', True), ('incomplete', False), ('unknown', None)]}, 'summary': summary, 'failed_file_ids': failures, 'cases': cases, 'errors': errors}
+            'selection_policy': selection, 'counts': totals, 'capture_completeness': {state: sum(row.get('output_complete') is value for row in completed.values()) for state, value in [('complete', True), ('incomplete', False), ('unknown', None)]}, 'summary': summary, 'failed_file_ids': failures, 'cases': cases, 'errors': errors}
 
 
 def main():

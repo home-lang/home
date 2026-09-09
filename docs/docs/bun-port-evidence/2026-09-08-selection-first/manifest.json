@@ -1,0 +1,125 @@
+{
+  "kind": "first selection failures; no full corpus pass claim",
+  "files": [
+    {
+      "artifact": "000-build-corpus-selection-vendor-first.log.gz",
+      "source": "zig-out/bun-port-recovery/build-corpus-selection-vendor-first.log",
+      "bytes": 3801,
+      "sha256": "2090946601ba018bef5d6dde557bb6f7142a1b9dda42115dd322b522086f2275"
+    },
+    {
+      "artifact": "001-corpus-selection-unit-first.log.gz",
+      "source": "zig-out/bun-port-recovery/corpus-selection-unit-first.log",
+      "bytes": 1368,
+      "sha256": "f1027fc19e89d075c3f27f9ae220fb93bd3715e20a85826f53029d062966cb50"
+    },
+    {
+      "artifact": "002-corpus-selection-probe-build-first.log.gz",
+      "source": "zig-out/bun-port-recovery/corpus-selection-probe-build-first.log",
+      "bytes": 87,
+      "sha256": "d15681f4e364927ad2c831c2364a43a6f73018ec23909567d629b71dbf0e0a23"
+    },
+    {
+      "artifact": "003-corpus-selection-validator-first.log.gz",
+      "source": "zig-out/bun-port-recovery/corpus-selection-validator-first.log",
+      "bytes": 109,
+      "sha256": "811eabda5dc298da232b3c7953fbe433089645edff6f53063d91016c4136c0a2"
+    },
+    {
+      "artifact": "004-corpus-selection-parity-first.log.gz",
+      "source": "zig-out/bun-port-recovery/corpus-selection-parity-first.log",
+      "bytes": 646,
+      "sha256": "cc2b6e5e614592b8bad621ae0a3604a815dca8aacb012e1215793f9b8e993080"
+    },
+    {
+      "artifact": "005-vendor-regex-trap-first.log.gz",
+      "source": "zig-out/bun-port-recovery/vendor-regex-trap-first.log",
+      "bytes": 74,
+      "sha256": "79e64c46230725feb07d812cf6b9c7f54cb787cd61f6d78a7c958ad3a342e6bb"
+    },
+    {
+      "artifact": "006-test-2026-09-08-191834.ips.frames.json.gz",
+      "source": "zig-out/bun-port-recovery/test-2026-09-08-191834.ips.frames.json",
+      "bytes": 2600,
+      "sha256": "3cfe3a3641f2a443ba3a1b677959ec57cb7b4a40fecbfae8d4cd517891195c05"
+    },
+    {
+      "artifact": "007-test-2026-09-08-191834.000.ips.frames.json.gz",
+      "source": "zig-out/bun-port-recovery/test-2026-09-08-191834.000.ips.frames.json",
+      "bytes": 2608,
+      "sha256": "419fefd37d92207c2a39c792b3ee531a25ae21a2151c97642080091731b972ea"
+    },
+    {
+      "artifact": "008-verify-selection-parity.py.gz",
+      "source": "zig-out/bun-port-recovery/verify-selection-parity.py",
+      "bytes": 8543,
+      "sha256": "a97ff2b0d881cda0a0df5cfdd115a78f7788a0632b7d593103698a3dd1f78c50"
+    },
+    {
+      "artifact": "009-vendor-reference.json.gz",
+      "source": "zig-out/bun-port-recovery/selection-parity-first/vendor-reference.json",
+      "bytes": 10142,
+      "sha256": "5e466603307c0afb458a7c078802e89bd5a0a75848f63beba783ab4036f2461a"
+    },
+    {
+      "artifact": "010-input.json.gz",
+      "source": "zig-out/bun-port-recovery/selection-parity-first/input.json",
+      "bytes": 306026,
+      "sha256": "ce10dbcbb234ea15ce7dfcec8ed3ba3fbe18788653cd54a27ffbc0826c1fede9"
+    },
+    {
+      "artifact": "011-native.json.gz",
+      "source": "zig-out/bun-port-recovery/selection-parity-first/native.json",
+      "bytes": 8453635,
+      "sha256": "3f70b0f5c64f45d777608c046ee9dd7b96c221a8aa7a0dfcdfd75df26ae1f319"
+    },
+    {
+      "artifact": "012-reference.json.gz",
+      "source": "zig-out/bun-port-recovery/selection-parity-first/reference.json",
+      "bytes": 877284,
+      "sha256": "af24c1a8d8ba2df64dfe20dc8e1e132e454bfba1c4af7e33a57c7d3637d84caa"
+    },
+    {
+      "artifact": "013-native.log.gz",
+      "source": "zig-out/bun-port-recovery/selection-parity-first/native.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "artifact": "014-reference.log.gz",
+      "source": "zig-out/bun-port-recovery/selection-parity-first/reference.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "artifact": "015-reference.mjs.gz",
+      "source": "zig-out/bun-port-recovery/selection-parity-first/reference.mjs",
+      "bytes": 4839,
+      "sha256": "06b9ab31145ab06b17115c5c88285464a500e44b1046482f3c93652eb384e572"
+    },
+    {
+      "artifact": "016-corpus_selection.zig.gz",
+      "source": "packages/home_test/src/corpus_selection.zig",
+      "bytes": 15669,
+      "sha256": "00bc27a87e4836fe1c76f9214d7cc0779c5291be53f6fd4d4bfcb8f58de01b08"
+    },
+    {
+      "artifact": "017-corpus_vendor.zig.gz",
+      "source": "packages/home_test/src/corpus_vendor.zig",
+      "bytes": 11031,
+      "sha256": "83aea9c917bbb7fb897bdd3bccfb3390fb44b5eb32a08cf2d0b0958e60fb9570"
+    },
+    {
+      "artifact": "018-corpus_runner.zig.gz",
+      "source": "packages/home_test/src/corpus_runner.zig",
+      "bytes": 81920,
+      "sha256": "aec21c21af56406da8f4e81880fb384cab2a88bc23d91ac2ab7aed0d872a4ea2"
+    },
+    {
+      "artifact": "019-corpus_selection_probe.zig.gz",
+      "source": "packages/home_test/src/corpus_selection_probe.zig",
+      "bytes": 2367,
+      "sha256": "bda7cd6fdc57d116a45710540831a50964a9a644313e11d3855f4dc2bb99ee3f"
+    }
+  ]
+}

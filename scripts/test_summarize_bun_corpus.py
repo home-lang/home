@@ -105,6 +105,26 @@ class JournalValidation(unittest.TestCase):
         self.assertTrue(result['successful'], result)
         self.assertEqual(result['capture_completeness']['complete'], 1)
 
+    def test_selection_exclusions_are_separate_and_inventory_cannot_disappear(self):
+        policy = dict(event='selection', contract='bun-4982b91e-primary',
+                      inventory=['control.test.js', 'excluded.test.js', 'outside-range.test.js'],
+                      selected_indices=[0, 2], excluded=[dict(index=1, reason='expectation', rule=0)],
+                      home_expectations=[dict(filename='test/excluded.test.js', line=1)],
+                      additional_home_coverage=[0], range_start=0, range_end=1)
+        self.rows.insert(1, policy)
+        result = self.result()
+        self.assertTrue(result['successful'], result)
+        self.assertEqual(result['selected'], 1)
+        self.assertEqual(result['counts'], self.counts)
+        self.assertEqual(len(result['selection_policy']['excluded']), 1)
+        policy['selected_indices'] = [0]
+        self.assertFalse(self.result()['successful'])
+        policy['selected_indices'] = [2, 0]
+        self.assertFalse(self.result()['successful'])
+        policy['selected_indices'] = [0, 2]
+        policy['excluded'][0]['rule'] = 99
+        self.assertFalse(self.result()['successful'])
+
     def test_script_success_has_no_registered_case_credit(self):
         self.rows[3].update(counts=dict.fromkeys(self.counts, 0), junit='not_requested', junit_file=None, junit_sha256=None)
         self.rows[4]['summary'].update(dict.fromkeys(self.counts, 0), process_checks_passed=1)
