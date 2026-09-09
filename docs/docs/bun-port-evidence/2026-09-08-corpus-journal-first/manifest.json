@@ -1,0 +1,385 @@
+{
+  "parent": "https://github.com/home-lang/home/issues/66",
+  "issue": "https://github.com/home-lang/home/issues/722",
+  "status": "First execution: controls pass; original matrix expected-failure diagnostic rejected ANSI styling. Full raw evidence retained. Correction verification pending.",
+  "files": [
+    {
+      "file": "build-corpus-journal-first-admitted.log.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/build-corpus-journal-first-admitted.log",
+      "bytes": 75,
+      "sha256": "5c29df26bb092fa61f6e9fc17f57e365874ded7358d16b3aa8016a169c7ba6f3"
+    },
+    {
+      "file": "build-corpus-journal-first-started.log.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/build-corpus-journal-first-started.log",
+      "bytes": 3324,
+      "sha256": "ac36720cf1f86203f7bef0415d1e0b013a8db74831e2c74d423655b92010f276"
+    },
+    {
+      "file": "build-corpus-journal-first.log.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/build-corpus-journal-first.log",
+      "bytes": 75,
+      "sha256": "eecc15e4cf9f02a4e5a3c9f7b3ba3abe9d41f71ebfd2dcc791a45fdcdbca3882"
+    },
+    {
+      "file": "corpus-journal-first-execution.md.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-journal-first-execution.md",
+      "bytes": 1633,
+      "sha256": "a9b84cdf53a5df176fc80720099a2f1ebdac5d83bb6d04a6d1783fc39b3bf44c"
+    },
+    {
+      "file": "corpus-journal-native/manifest.json.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-journal-native/manifest.json",
+      "bytes": 8590,
+      "sha256": "e2f5935385c68a5b62ca61a8d40816fc9e50f0105f096e95675a30a3f633a1c9"
+    },
+    {
+      "file": "corpus-journal-native/original-matrix.log.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-journal-native/original-matrix.log",
+      "bytes": 63608,
+      "sha256": "2223d997704fafb83fcd9f69785598f4cb4acc766e19ef99f6f9254b561f77a9"
+    },
+    {
+      "file": "corpus-journal-native/original-reports/000000.junit.xml.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-journal-native/original-reports/000000.junit.xml",
+      "bytes": 77422,
+      "sha256": "c46b90b90453d4a42fc0deb439aaacb3b456ca71fc1bdda8bdaf1b21feb3b481"
+    },
+    {
+      "file": "corpus-journal-native/original-reports/000000.stderr.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-journal-native/original-reports/000000.stderr",
+      "bytes": 51102,
+      "sha256": "fa1fa8247dffb551ce60e6b30d4eaaf658d7e194d4f53f42edde5b088a9c124f"
+    },
+    {
+      "file": "corpus-journal-native/original-reports/000000.stdout.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-journal-native/original-reports/000000.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "file": "corpus-journal-native/original-reports/000001.junit.xml.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-journal-native/original-reports/000001.junit.xml",
+      "bytes": 1671,
+      "sha256": "21e25ccbd35bbe8d612d926a12acb367a553512ad17ccb31ea6941cce3d5359c"
+    },
+    {
+      "file": "corpus-journal-native/original-reports/000001.stderr.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-journal-native/original-reports/000001.stderr",
+      "bytes": 879,
+      "sha256": "8dd2c0d2fafbb7ca241d443988d5dccc991c1eb024e19142519f98f02f987d2b"
+    },
+    {
+      "file": "corpus-journal-native/original-reports/000001.stdout.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-journal-native/original-reports/000001.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "file": "corpus-journal-native/original-reports/000002.junit.xml.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-journal-native/original-reports/000002.junit.xml",
+      "bytes": 790,
+      "sha256": "55f523631d2c45ebb0178684da87476232420685e187b811da90461f09663bd3"
+    },
+    {
+      "file": "corpus-journal-native/original-reports/000002.stderr.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-journal-native/original-reports/000002.stderr",
+      "bytes": 317,
+      "sha256": "1b7271a5db70e8f25cefb0c5c006866aebb601198577bcf25a2119f00c09f75a"
+    },
+    {
+      "file": "corpus-journal-native/original-reports/000002.stdout.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-journal-native/original-reports/000002.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "file": "corpus-journal-native/original-reports/000003.stderr.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-journal-native/original-reports/000003.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "corpus-journal-native/original-reports/000003.stdout.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-journal-native/original-reports/000003.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "corpus-journal-native/original-reports/000004.stderr.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-journal-native/original-reports/000004.stderr",
+      "bytes": 134,
+      "sha256": "b2219800ae437c3c34439aed22d725e54cfadc3009dc051dcc0ecff6f02962a9"
+    },
+    {
+      "file": "corpus-journal-native/original-reports/000004.stdout.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-journal-native/original-reports/000004.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "file": "corpus-journal-native/original-reports/000005.junit.xml.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-journal-native/original-reports/000005.junit.xml",
+      "bytes": 606,
+      "sha256": "58f979458310af1f7f01e101cfa8108868d7bb678aeb909506fc58ad236fd4a2"
+    },
+    {
+      "file": "corpus-journal-native/original-reports/000005.stderr.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-journal-native/original-reports/000005.stderr",
+      "bytes": 4601,
+      "sha256": "bb7e677710d0ce8413faedb00c85ae931fd0f13c5c01afeae693025942da455f"
+    },
+    {
+      "file": "corpus-journal-native/original-reports/000005.stdout.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-journal-native/original-reports/000005.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "file": "corpus-journal-native/original-reports/events.jsonl.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-journal-native/original-reports/events.jsonl",
+      "bytes": 20695,
+      "sha256": "535aaba91088c666adbc592a75da430a32dd757e9ed8172756886df3224d274c"
+    },
+    {
+      "file": "corpus-journal-native/private-controls.log.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-journal-native/private-controls.log",
+      "bytes": 501,
+      "sha256": "08800e4153d19799770e2bdf0462cab7978bb67b4a188df5ac0da18c7f23beb2"
+    },
+    {
+      "file": "corpus-journal-native/private-reports/report-interruption/events.jsonl.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-journal-native/private-reports/report-interruption/events.jsonl",
+      "bytes": 3307,
+      "sha256": "18883888bb9fd0f3e77bcb7e3038a78a41111075c66a6d5f6b12e2538841e24e"
+    },
+    {
+      "file": "corpus-journal-native/private-reports/report-mixed/000000.junit.xml.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-journal-native/private-reports/report-mixed/000000.junit.xml",
+      "bytes": 893,
+      "sha256": "55b19c8d93677485f6f46c1d56aa8c1a8968de0f47b0104595b8596947a8ea07"
+    },
+    {
+      "file": "corpus-journal-native/private-reports/report-mixed/000000.stderr.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-journal-native/private-reports/report-mixed/000000.stderr",
+      "bytes": 731,
+      "sha256": "38fabb3b07425c074df7e882db38909417c96e347afaa1f3f92a0a5577469634"
+    },
+    {
+      "file": "corpus-journal-native/private-reports/report-mixed/000000.stdout.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-journal-native/private-reports/report-mixed/000000.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "file": "corpus-journal-native/private-reports/report-mixed/000001.stderr.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-journal-native/private-reports/report-mixed/000001.stderr",
+      "bytes": 1227,
+      "sha256": "a0b2c3459812694ff9a847da10c49c1f65348a50f360c654d3a906d5d008660e"
+    },
+    {
+      "file": "corpus-journal-native/private-reports/report-mixed/000001.stdout.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-journal-native/private-reports/report-mixed/000001.stdout",
+      "bytes": 68,
+      "sha256": "700ce61388558191f8b7d987288af8433b7a3e20120e9f8d8fb8b011b407f1de"
+    },
+    {
+      "file": "corpus-journal-native/private-reports/report-mixed/000002.stderr.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-journal-native/private-reports/report-mixed/000002.stderr",
+      "bytes": 121,
+      "sha256": "e7c7a8c9b4cdf545d7e26dbe74ad806e9d985e47db67cf278d1a8bc30f5d3bd8"
+    },
+    {
+      "file": "corpus-journal-native/private-reports/report-mixed/000002.stdout.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-journal-native/private-reports/report-mixed/000002.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "file": "corpus-journal-native/private-reports/report-mixed/events.jsonl.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-journal-native/private-reports/report-mixed/events.jsonl",
+      "bytes": 11500,
+      "sha256": "77b64a16e0a4ab332e929373dc1bc474b8e58fcd3e19afc62a530cb8bef4f0d3"
+    },
+    {
+      "file": "corpus-journal-native/private-reports/report-script-failure/000000.stderr.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-journal-native/private-reports/report-script-failure/000000.stderr",
+      "bytes": 464,
+      "sha256": "66e4cb9474441476c8dbb0c1378daeff3fa66543436ba9eb1bbad53ad19a5781"
+    },
+    {
+      "file": "corpus-journal-native/private-reports/report-script-failure/000000.stdout.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-journal-native/private-reports/report-script-failure/000000.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "corpus-journal-native/private-reports/report-script-failure/events.jsonl.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-journal-native/private-reports/report-script-failure/events.jsonl",
+      "bytes": 3879,
+      "sha256": "7fe991bbe36c615816c59cf31d25bc8c4170cec5fd2f5fe4b55cb83532a18c55"
+    },
+    {
+      "file": "corpus-journal-native/private-reports/report-signal/000000.stderr.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-journal-native/private-reports/report-signal/000000.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "corpus-journal-native/private-reports/report-signal/000000.stdout.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-journal-native/private-reports/report-signal/000000.stdout",
+      "bytes": 20,
+      "sha256": "621883d464b4f25c9052535d6335e3732d7f75d8da6451ab004fa36ebabf62f0"
+    },
+    {
+      "file": "corpus-journal-native/private-reports/report-signal/events.jsonl.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-journal-native/private-reports/report-signal/events.jsonl",
+      "bytes": 3882,
+      "sha256": "14c093e2b578e7f37e34de2822767cdd093147d95a7ccf8a7f3691a0949c74ef"
+    },
+    {
+      "file": "corpus-journal-native/private-reports/report-timeout/000000.stderr.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-journal-native/private-reports/report-timeout/000000.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "corpus-journal-native/private-reports/report-timeout/000000.stdout.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-journal-native/private-reports/report-timeout/000000.stdout",
+      "bytes": 21,
+      "sha256": "40927f3ce0f70e088f6ad740c9cc48776ca0938f2c1d5f5eb9d23f38a36b6ee7"
+    },
+    {
+      "file": "corpus-journal-native/private-reports/report-timeout/events.jsonl.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-journal-native/private-reports/report-timeout/events.jsonl",
+      "bytes": 3883,
+      "sha256": "9b1e769b38de2bb57902ddefdc11e088c99ba0af7bcba3d39c93ed42ddd7b54c"
+    },
+    {
+      "file": "corpus-journal-native/private-reports/report-write-failure/events.jsonl.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-journal-native/private-reports/report-write-failure/events.jsonl",
+      "bytes": 3152,
+      "sha256": "1572e79d3ab20d0a5339c63bd2933fe230b6a8f040a38e589257597961665c29"
+    },
+    {
+      "file": "corpus-journal-native/validated-original-reports.log.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-journal-native/validated-original-reports.log",
+      "bytes": 64050,
+      "sha256": "f33aefb07b2e15d20e532922342db4568f7499832737dafc5848d378e7d3c800"
+    },
+    {
+      "file": "corpus-journal-native/validated-report-interruption.log.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-journal-native/validated-report-interruption.log",
+      "bytes": 877,
+      "sha256": "729832c740bc818ed5ab624617af3a48374f95969a0aef49385225f434bc5699"
+    },
+    {
+      "file": "corpus-journal-native/validated-report-mixed.log.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-journal-native/validated-report-mixed.log",
+      "bytes": 1078,
+      "sha256": "1b286fa86e763fa3a8364ec8ad98ae6f098dd3f79197d41d4848afd79e2a0f7d"
+    },
+    {
+      "file": "corpus-journal-native/validated-report-script-failure.log.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-journal-native/validated-report-script-failure.log",
+      "bytes": 645,
+      "sha256": "8b5563d87e5efe84a61107ac6aa55c449e781ff8df1bb9f85fa5c2e9ba16b5c6"
+    },
+    {
+      "file": "corpus-journal-native/validated-report-signal.log.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-journal-native/validated-report-signal.log",
+      "bytes": 637,
+      "sha256": "d7a1faaa5a88a42b724baa8b80e5e753bb69a3e47a48808e727fdbc3e3711734"
+    },
+    {
+      "file": "corpus-journal-native/validated-report-timeout.log.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-journal-native/validated-report-timeout.log",
+      "bytes": 638,
+      "sha256": "ba9e1f8fb4a26761f059d07e21f3149ab3031a00b1c304c8f54c497bef51e56a"
+    },
+    {
+      "file": "corpus-journal-native/validated-report-write-failure.log.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-journal-native/validated-report-write-failure.log",
+      "bytes": 573,
+      "sha256": "134ee7a30bce731f600a14169c469089215f0ca4ea0dd8a4cbcc0c73d4676030"
+    },
+    {
+      "file": "corpus-journal-obsolete-cache-cleanup.json.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-journal-obsolete-cache-cleanup.json",
+      "bytes": 1204,
+      "sha256": "278842f1e427170d729cc36fb7cb1b48d643ddfa98b4ad87ca2a07dd98d5abe3"
+    },
+    {
+      "file": "corpus-journal-obsolete-objects-cleanup.json.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-journal-obsolete-objects-cleanup.json",
+      "bytes": 374,
+      "sha256": "33128e87cdb06aba07696216f4eb20ef65a72f4f948a434d0b31d347dfd98d5b"
+    },
+    {
+      "file": "corpus-journal-unit-context-fixed.log.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-journal-unit-context-fixed.log",
+      "bytes": 520,
+      "sha256": "0b760f247d74cdd7e10809fcf6e98b30944ba121bb422d7822934663e1af08a5"
+    },
+    {
+      "file": "corpus-journal-unit-context-fixed2.log.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-journal-unit-context-fixed2.log",
+      "bytes": 389,
+      "sha256": "579b8531bdeeb4d890d91cc3f927d64218dcb5a6cf1d1810160e7c567ef33e0a"
+    },
+    {
+      "file": "corpus-journal-unit-context.log.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-journal-unit-context.log",
+      "bytes": 542,
+      "sha256": "eb7a77339b5fb090317c1c41088d263cc9dc1570eb10b6cac84571fc976cda71"
+    },
+    {
+      "file": "corpus-journal-unit-expanded.log.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-journal-unit-expanded.log",
+      "bytes": 389,
+      "sha256": "9e298fa30b658143af34007f38127c5a5e24f5dab55423159af94a3a89688a20"
+    },
+    {
+      "file": "corpus-journal-unit-first.log.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-journal-unit-first.log",
+      "bytes": 208,
+      "sha256": "eeae5b792ef845266ab859131f5accbde979cfd407f7981115cb6f77a4efa46c"
+    },
+    {
+      "file": "corpus-outcome-issue.md.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-outcome-issue.md",
+      "bytes": 2478,
+      "sha256": "85cbfce950c5624c31043c50e5965247124d1e33ecc2f6d4c7526f1669bb6018"
+    },
+    {
+      "file": "corpus-outcome-pickier-first.log.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-outcome-pickier-first.log",
+      "bytes": 270,
+      "sha256": "5d6b0b084c5373ceef7ee7e27322e446381b9055c20b3a27f76b22f0c3fb2603"
+    },
+    {
+      "file": "corpus-outcome-ready-comment.md.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-outcome-ready-comment.md",
+      "bytes": 748,
+      "sha256": "f5c384f9d6ae6a656bb6376632c2bec95e3ae7cdab8841f2147e3c4adb0e2feb"
+    },
+    {
+      "file": "corpus-outcome-validator-unit-first.log.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/corpus-outcome-validator-unit-first.log",
+      "bytes": 375,
+      "sha256": "5f71d3b91b3a327a7f4fd0d941f472cc03d4816c4aa446c37c4612afe0561310"
+    },
+    {
+      "file": "verify-corpus-journal-native-first.log.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/verify-corpus-journal-native-first.log",
+      "bytes": 4118,
+      "sha256": "95b2106c588896fb19f412a977dec60a6f9aacc1336c02b644d9ac91600890b2"
+    },
+    {
+      "file": "verify-corpus-journal-native.py.gz",
+      "source": "/Users/chris/Code/Home/lang/.git/bun-port-evidence/recovery-20260908/verify-corpus-journal-native.py",
+      "bytes": 3691,
+      "sha256": "560f4afbf153c8affb47fda62803757dd090f830abea540b9021fea8ced139b4"
+    }
+  ]
+}
