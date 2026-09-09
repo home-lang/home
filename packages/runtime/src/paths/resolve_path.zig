@@ -367,6 +367,36 @@ pub const Platform = enum {
         };
     }
 
+    /// Index of the leading separator, mirroring Bun's
+    /// `Platform::leading_separator_index` (paths/resolve_path.rs:1278).
+    ///
+    /// Deliberately STRICTER than `isAbsolute`: the drive-letter form here
+    /// requires an A-Z letter, while `isAbsoluteWindows` accepts any byte
+    /// before the colon (Bun says so explicitly at paths/lib.rs:83 — "`X` is
+    /// NOT required to be alphabetic"). That asymmetry is what lets a target
+    /// like `::/x` count as absolute yet have no recognised root, which
+    /// `joinAbsStringBuf` then repairs by writing a POSIX root.
+    pub fn leadingSeparatorIndex(comptime platform: Platform, path: []const u8) ?usize {
+        return switch (platform) {
+            .auto => Platform.current.leadingSeparatorIndex(path),
+            .posix => if (path.len > 0 and path[0] == '/') 0 else null,
+            .windows, .nt => windowsLeadingSeparatorIndex(path),
+            .loose => windowsLeadingSeparatorIndex(path) orelse
+                (if (path.len > 0 and path[0] == '/') @as(?usize, 0) else null),
+        };
+    }
+
+    fn windowsLeadingSeparatorIndex(path: []const u8) ?usize {
+        if (path.len < 1) return null;
+        if (path[0] == '/' or path[0] == '\\') return 0;
+        if (path.len < 3) return null;
+        if (path[0] >= 'A' and path[0] <= 'Z' and path[1] == ':') {
+            if (path[2] == '/' or path[2] == '\\') return 2;
+            return 1;
+        }
+        return null;
+    }
+
     pub fn isAbsoluteT(comptime platform: Platform, comptime T: type, path: []const T) bool {
         if (T == u8) return platform.isAbsolute(path);
         return switch (platform) {
@@ -654,7 +684,7 @@ pub fn joinAbsStringBuf(cwd: []const u8, buf: []u8, _parts: anytype, comptime pl
             temp_abs_parts_buf[count] = partAt(_parts, part_index);
             count += 1;
         }
-        return joinStringBuf(buf, temp_abs_parts_buf[0..count], platform);
+        return rootedJoin(buf, temp_abs_parts_buf[0..count], platform);
     }
 
     var temp_parts_buf: [64][]const u8 = undefined;
@@ -666,7 +696,33 @@ pub fn joinAbsStringBuf(cwd: []const u8, buf: []u8, _parts: anytype, comptime pl
         temp_parts_buf[count] = partAt(_parts, index);
         count += 1;
     }
-    return joinStringBuf(buf, temp_parts_buf[0..count], platform);
+    return rootedJoin(buf, temp_parts_buf[0..count], platform);
+}
+
+/// `joinStringBuf`, guaranteeing the result carries a leading separator.
+///
+/// `Platform.isAbsolute` accepts `X:/…` for ANY byte `X`, but only an A-Z
+/// drive letter is a recognised root (see `leadingSeparatorIndex`). A target
+/// like `:://filesystem` therefore satisfies `isAbsolute`, wins the
+/// absolute-part scan above, and normalizes to `::/filesystem` — which is not
+/// POSIX-absolute, so `Resolver.assertValidCacheKey` and `dirInfoCached`'s
+/// is-absolute assertion both reject it and the process aborts.
+///
+/// Bun repairs exactly this case in `_join_abs_string_buf`
+/// (paths/resolve_path.rs:1820-1832): when `leading_separator_index` returns
+/// None it writes a `/` root and normalizes the remainder after it, so the
+/// same input yields `/:/filesystem`. Mirror that.
+fn rootedJoin(buf: []u8, parts: []const []const u8, comptime platform: Platform) []const u8 {
+    const joined = joinStringBuf(buf, parts, platform);
+    if (platform.leadingSeparatorIndex(joined) != null) return joined;
+    if (joined.len + 1 > buf.len) return joined;
+
+    // `joined` aliases `buf`, so the shift overlaps: use @memmove, not a
+    // copy. (`std.mem.copyBackwards` lowers to @memcpy here and trips
+    // "@memcpy arguments alias" the moment this branch is reached.)
+    @memmove(buf[1 .. joined.len + 1], joined);
+    buf[0] = '/';
+    return buf[0 .. joined.len + 1];
 }
 
 fn partsLen(parts: anytype) usize {
