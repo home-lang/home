@@ -40,7 +40,7 @@
     "native_linux_windows_execution_verified": false
   },
   "remaining": [
-    "Port and verify pinned CI modifier/expectation selection, real root/test setup and the additional Elysia 1.4.28 vendor suite (#724).",
+    "Selection API and pinned Elysia discovery/setup are verified; native host detection, original root/test setup, services, full vendor execution and unified CI orchestration remain open (#724).",
     "Execute the entire applicable primary and vendor suite, retaining original sources/snapshots and all failures for feature porting.",
     "Native Linux/Windows child-lifetime execution and ASAN verification remain unclaimed (#723).",
     "Full runtime feature porting, default CLI fallback removal and independent native build ownership."
@@ -50,5 +50,39 @@
     "docs/docs/bun-port-evidence/2026-09-08-corpus-journal-verified/manifest.json",
     "docs/docs/bun-port-evidence/2026-09-08-child-lifetime-first/manifest.json",
     "docs/docs/bun-port-evidence/2026-09-08-child-lifetime-verified/manifest.json"
-  ]
+  ],
+  "selection_checkpoint": {
+    "source": "4af7114c92331dc978312c3dfa46609ac0637894",
+    "issue": "https://github.com/home-lang/home/issues/724",
+    "home_sha256": "716f39bd45568c3cab84f080aafc32d9ec553452ba5d5945ec348e289e40bbc2",
+    "build_steps_passed": 23,
+    "native_harness_passed": 15,
+    "selection_discovery_units_passed": 14,
+    "validator_units_passed": 10,
+    "distinct_platform_build_contexts": 8,
+    "configurations_per_context": 8,
+    "primary_selection_decisions_compared": 304256,
+    "primary_pre_exclusion_inventory": 4754,
+    "vendor_revision": "56310be9617b826f862c985eae95ae823d95f097",
+    "vendor_entries_compared": 208,
+    "vendor_selected_files": 129,
+    "vendor_excluded_files": [
+      "ws/connection.test.ts"
+    ],
+    "vendor_native_install_succeeded": true,
+    "vendor_native_build_succeeded": true,
+    "vendor_test_files_executed": 0,
+    "vendor_packages_installed": 218,
+    "vendor_source_files_unchanged_except_lock": 282,
+    "vendor_lock_update_matches_pinned_bun": true,
+    "new_corpus_case_pass_credit": 0,
+    "obsolete_generated_bytes_removed": 2159035152,
+    "evidence": "docs/docs/bun-port-evidence/2026-09-08-selection-verified/manifest.json",
+    "first_evidence": "docs/docs/bun-port-evidence/2026-09-08-selection-first/manifest.json",
+    "remaining": [
+      "Connect native platform discovery and expected-agent checks to the production CI driver.",
+      "Port original root/test setup, services and complete vendor preparation/execution with a unified journal.",
+      "Execute all applicable primary and vendor files, retaining exclusions and every failure separately."
+    ]
+  }
 }
