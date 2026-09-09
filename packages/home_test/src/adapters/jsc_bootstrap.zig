@@ -6020,6 +6020,12 @@ fn prepareHomeCapturedInvocation(
         // Match test/harness.ts startup prerequisites before the VM initializes.
         // A preload cannot enable internal bindings after module-loader setup.
         try environ_map.put("BUN_FEATURE_FLAG_INTERNAL_FOR_TESTING", "1");
+        // A debug build's scoped loggers (`[sys]`, `[fs]`, `[loop]`) are on by
+        // default and write to stdout, not stderr, so they land in the middle
+        // of whatever the child prints. Every captured run compares stdout
+        // exactly, so quiet them the way corpus_launch.applyEnvironment does
+        // for the launches it owns.
+        try environ_map.put("BUN_DEBUG_QUIET_LOGS", "1");
         const gc_level = environ_map.get("BUN_GARBAGE_COLLECTOR_LEVEL");
         if (gc_level == null or gc_level.?.len == 0) {
             try environ_map.put("BUN_GARBAGE_COLLECTOR_LEVEL", "0");
