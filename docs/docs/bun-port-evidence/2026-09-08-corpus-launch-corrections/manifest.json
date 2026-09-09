@@ -1,0 +1,132 @@
+{
+  "issues": [
+    66,
+    703
+  ],
+  "initial_runtime_source": "fcd8ccb97",
+  "initial_home_sha256": "0909fe2ed15effca4940fb7c32ab618149381b87fa5530ddbd2b3638e9aa61bc",
+  "corrected_source": "0785d795a",
+  "status": "Initial native executable compiled; harness 6/9 with three allocator crashes (21/23 build steps). Actual generated cache control Home fails/Bun passes. Both causes corrected in 0785d795a; five focused units pass and all 19016 pinned launch-rule selections match over 4754 discovered files/four contexts. Corrected native/harness build is pending. No full corpus or corrected production pass claimed.",
+  "files": [
+    {
+      "source": "build-corpus-launch-first.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-corpus-launch-corrections/build-corpus-launch-first.log.gz",
+      "sha256": "d05c1901437811db3877cd6d17ed0da65beb579cf544a74d0762ba19b33c51d6",
+      "uncompressed_bytes": 10124
+    },
+    {
+      "source": "verify-corpus-empty-cache.py",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-corpus-launch-corrections/verify-corpus-empty-cache.py.gz",
+      "sha256": "e9f1b646be31895d2d7b6b383ec96c56b59e9b7ca9556b83f25c51445c2dc800",
+      "uncompressed_bytes": 2374
+    },
+    {
+      "source": "verify-corpus-empty-cache-before.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-corpus-launch-corrections/verify-corpus-empty-cache-before.log.gz",
+      "sha256": "1a081b82985da7282f4045b306011126f5811eca7ce86a26f454701ca2480921",
+      "uncompressed_bytes": 1038
+    },
+    {
+      "source": "corpus-launch-unit-ownership.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-corpus-launch-corrections/corpus-launch-unit-ownership.log.gz",
+      "sha256": "1b389d47f472b14faedf9a651e0e6fcb19c43570357cb2cd8c80355ed1fd732e",
+      "uncompressed_bytes": 582
+    },
+    {
+      "source": "audit-corpus-launch-rules-first.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-corpus-launch-corrections/audit-corpus-launch-rules-first.log.gz",
+      "sha256": "3ec8e4bffc6129bbee0bb502ea45ff6e25053a0f9a1659595ef05ed3c390c27b",
+      "uncompressed_bytes": 1599
+    },
+    {
+      "source": "corpus-empty-cache-before/bun.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-corpus-launch-corrections/corpus-empty-cache-before/bun.log.gz",
+      "sha256": "a223fe311ef2a7035dc131f30f52173a7fecee2069d3ed0f6db496302d86ba9a",
+      "uncompressed_bytes": 244
+    },
+    {
+      "source": "corpus-empty-cache-before/cache-isolation.test.js",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-corpus-launch-corrections/corpus-empty-cache-before/cache-isolation.test.js.gz",
+      "sha256": "0f280b9738aff4a8656838eafdb8928aecc432a9707d4e2a1f7bcbf77d1c0410",
+      "uncompressed_bytes": 316
+    },
+    {
+      "source": "corpus-empty-cache-before/home.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-corpus-launch-corrections/corpus-empty-cache-before/home.log.gz",
+      "sha256": "9c08d83e24f6b9b3094c637f5b6f82aff0589aa935dde3f586f82b5089422105",
+      "uncompressed_bytes": 4520
+    },
+    {
+      "source": "corpus-empty-cache-before/manifest.json",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-corpus-launch-corrections/corpus-empty-cache-before/manifest.json.gz",
+      "sha256": "463c8d991b52a78d848ff297f844f693bc2be5c3b66083c6b0c44d33a2490ea5",
+      "uncompressed_bytes": 1412
+    },
+    {
+      "source": "corpus-launch-rules-first/audit.stderr.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-corpus-launch-corrections/corpus-launch-rules-first/audit.stderr.log.gz",
+      "sha256": "8fe7747f4aa14bc54521398879e1f42feb6b8483d17de09cc9335c175d41ba88",
+      "uncompressed_bytes": 628
+    },
+    {
+      "source": "corpus-launch-rules-first/audit.stdout.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-corpus-launch-corrections/corpus-launch-rules-first/audit.stdout.log.gz",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "uncompressed_bytes": 0
+    },
+    {
+      "source": "corpus-launch-rules-first/audit.zig",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-corpus-launch-corrections/corpus-launch-rules-first/audit.zig.gz",
+      "sha256": "4d4242a8a8dfd73f5dc7968646ae510a30542e3ad03ab227cebe497d3c126ed7",
+      "uncompressed_bytes": 877
+    },
+    {
+      "source": "corpus-launch-rules-first/control.mjs",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-corpus-launch-corrections/corpus-launch-rules-first/control.mjs.gz",
+      "sha256": "14165fb15f8183cfe4b2591775dcd0cb964a4dead6c7864ebe2c5c4bcc676b94",
+      "uncompressed_bytes": 2155
+    },
+    {
+      "source": "corpus-launch-rules-first/control.stderr.log",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-corpus-launch-corrections/corpus-launch-rules-first/control.stderr.log.gz",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "uncompressed_bytes": 0
+    },
+    {
+      "source": "corpus-launch-rules-first/corpus_launch.zig",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-corpus-launch-corrections/corpus-launch-rules-first/corpus_launch.zig.gz",
+      "sha256": "790c2b6b3fb85fa4d0f1d0825a38cab72e1534d68d101a1b3a20299e92f18915",
+      "uncompressed_bytes": 16073
+    },
+    {
+      "source": "corpus-launch-rules-first/discovery.json",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-corpus-launch-corrections/corpus-launch-rules-first/discovery.json.gz",
+      "sha256": "745bc0ed95fb7005a473db7111e3dd529d74e02a18e5618812ffe66215e336c9",
+      "uncompressed_bytes": 1359878
+    },
+    {
+      "source": "corpus-launch-rules-first/entries.json",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-corpus-launch-corrections/corpus-launch-rules-first/entries.json.gz",
+      "sha256": "6a2d9f5fd40dfaeea15dc9388d06bca358e3cc29c86635d0741ac410d82e7c5b",
+      "uncompressed_bytes": 462970
+    },
+    {
+      "source": "corpus-launch-rules-first/expected.json",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-corpus-launch-corrections/corpus-launch-rules-first/expected.json.gz",
+      "sha256": "82dcd97fd233726e58899124ff079910adbf8a4bee285e1411080f2064f9365c",
+      "uncompressed_bytes": 5619314
+    },
+    {
+      "source": "corpus-launch-rules-first/manifest.json",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-corpus-launch-corrections/corpus-launch-rules-first/manifest.json.gz",
+      "sha256": "63e78dffce266d838cd7d295f67a0f66f4d20f843eafea05501b8d6a307d7634",
+      "uncompressed_bytes": 1512
+    },
+    {
+      "source": "corpus-launch-rules-first/runner.node.mjs",
+      "artifact": "docs/docs/bun-port-evidence/2026-09-08-corpus-launch-corrections/corpus-launch-rules-first/runner.node.mjs.gz",
+      "sha256": "0bfffef4b8127a263fffcf009dd36c62f9ea02664ca2f26605f72e7d98cebbac",
+      "uncompressed_bytes": 90238
+    }
+  ]
+}
