@@ -3262,11 +3262,25 @@ pub const TypeChecker = struct {
         // Pointers support index access (many-item pointer `[*]T` and
         // raw pointer `*T`). Kernel code uses `name[i]` where name is
         // `[*]u8` for string-like buffers.
+        //
+        // A pointer to an *array* indexes through to the element, not to the
+        // array: `w[i]` where w is `*[u32; 16]` is the u32. Returning the
+        // pointee unconditionally gave it the array type, and every use of
+        // that value then failed as a non-integer — `add32(w[a], w[b])` was an
+        // argument mismatch and `w[d] ^ w[a]` was a bitwise op on a non-integer.
+        // `*[T; N]` is how kernel code passes a fixed buffer by reference, so
+        // this made chacha20, blake2s and curve25519 unable to typecheck while
+        // the backend lowered them correctly and their RFC known-answer tests
+        // passed at boot.
         if (array_type == .Reference) {
-            return array_type.Reference.*;
+            const pointee = array_type.Reference.*;
+            if (pointee == .Array) return pointee.Array.element_type.*;
+            return pointee;
         }
         if (array_type == .MutableReference) {
-            return array_type.MutableReference.*;
+            const pointee = array_type.MutableReference.*;
+            if (pointee == .Array) return pointee.Array.element_type.*;
+            return pointee;
         }
 
         // String indexing returns u8.
