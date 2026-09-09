@@ -1,0 +1,54 @@
+{
+  "parent": "https://github.com/home-lang/home/issues/66",
+  "launch_issue": "https://github.com/home-lang/home/issues/703",
+  "outcome_issue": "https://github.com/home-lang/home/issues/722",
+  "runtime_source": "0785d795a3567784d5c68f6937f5facb0ae2c543",
+  "home_sha256": "451817fb0dd432018f54cd5710432453a21401c5a8484d8005ab6f0ec99c05fc",
+  "bun_pin": "4982b91e3702094330f3be3883354c52b8c01323",
+  "status": "Corrected build 23/23 and native harness 9/9. Fresh-cache control passes in Home and pinned Bun. Seven private native regressions pass. Unique selected original cases Home 71 pass/1 fail versus Bun 72 pass, plus two successful Node process checks and one original comment-only file. The only original failure remains audit snapshot #721. All selected original sources/snapshots unchanged. This is selected launch verification, not a completed full suite.",
+  "ports": [
+    "Original CI ordinary/integration test deadlines and per-test defaults, separate Node deadlines, script bounds and ASAN/local rule variants.",
+    "Native CI GC level 1, integrity audit 1.0, disabled transpiler cache, original validation list semantics, Node/ordinary color settings.",
+    "Fresh per-file temp/cache with command aliases in adjacent owned storage, real Home child execution and cleanup.",
+    "Resolved executable allocation ownership preserves the complete allocation extent; selected timeout retained in capture diagnostics."
+  ],
+  "verification": {
+    "build_steps": 23,
+    "harness_tests_passed": 9,
+    "focused_launch_units_passed": 5,
+    "rule_comparison": {
+      "discovered_files": 4754,
+      "contexts": 4,
+      "matched_selections": 19016,
+      "corpus_pass_claim": false
+    },
+    "private_regression_files_passed": 7,
+    "generated_cache_control": {
+      "home_passed": 1,
+      "bun_passed": 1,
+      "original_test": false
+    },
+    "selected_original_cases_unique": {
+      "home_passed": 71,
+      "home_failed": 1,
+      "bun_passed": 72,
+      "html_cases": 45,
+      "link_and_binlink_cases": 11,
+      "audit_cases": 16
+    },
+    "additional_original_process_checks_per_runtime": 2,
+    "comment_only_files": 1,
+    "original_sources_and_snapshots_unchanged": true
+  },
+  "remaining": [
+    "Audit snapshot #721 expects a nonexistent dependency edge; original assertion remains failed.",
+    "Full-inventory execution and durable selected/started/completed and JUnit accounting (#722).",
+    "Outer skipped/TODO separation; service/vendor setup; native ASAN and non-macOS execution.",
+    "Default CLI fallback removal and independent native build ownership."
+  ],
+  "evidence": [
+    "docs/docs/bun-port-evidence/2026-09-08-corpus-launch-start/manifest.json",
+    "docs/docs/bun-port-evidence/2026-09-08-corpus-launch-corrections/manifest.json",
+    "docs/docs/bun-port-evidence/2026-09-08-corpus-launch-verified/manifest.json"
+  ]
+}
