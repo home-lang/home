@@ -76,3 +76,6 @@ FILTERED_FILE="${DEST}/FILTERED_FILES.txt"
 COUNT="$(wc -l < "${TRACKED_FILE}" | tr -d ' ')"
 SIZE="$(du -sh "${DEST}" | awk '{print $1}')"
 echo "synced ${COUNT} Git-tracked upstream corpus entries (${SIZE}) into ${DEST}"
+
+# Preserve the original CI root graph and complete declared workspaces too.
+python3 "${REPO_ROOT}/scripts/sync-bun-test-setup.py" --bun-repo "${BUN_REPO}"
