@@ -4,6 +4,7 @@ pub const TestStatus = enum {
     passed,
     failed,
     todo,
+    skipped,
     unsupported,
 };
 
@@ -12,6 +13,7 @@ pub const FileResult = struct {
     passed: usize = 0,
     failed: usize = 0,
     todo: usize = 0,
+    skipped: usize = 0,
     unsupported: usize = 0,
     first_failure_message: []const u8 = "",
 
@@ -19,6 +21,7 @@ pub const FileResult = struct {
         if (self.unsupported != 0) return .unsupported;
         if (self.failed != 0) return .failed;
         if (self.todo != 0 and self.passed == 0) return .todo;
+        if (self.skipped != 0 and self.passed == 0) return .skipped;
         return .passed;
     }
 };
@@ -28,6 +31,7 @@ pub const RunSummary = struct {
     passed: usize = 0,
     failed: usize = 0,
     todo: usize = 0,
+    skipped: usize = 0,
     unsupported: usize = 0,
 
     pub fn addFile(self: *RunSummary, file: FileResult) void {
@@ -35,6 +39,7 @@ pub const RunSummary = struct {
         self.passed += file.passed;
         self.failed += file.failed;
         self.todo += file.todo;
+        self.skipped += file.skipped;
         self.unsupported += file.unsupported;
     }
 };

@@ -2,6 +2,7 @@ const std = @import("std");
 const home_rt = @import("home_rt");
 const runner = @import("../runner.zig");
 const corpus_launch = @import("../corpus_launch.zig");
+const corpus_journal = @import("../corpus_journal.zig");
 
 const Io = std.Io;
 extern fn mi_stats_get_json(size: usize, buffer: ?[*:0]u8) ?[*:0]u8;
@@ -5858,10 +5859,12 @@ const HomeCapturedInvocation = struct {
     environ_map: std.process.Environ.Map,
     profile: ?corpus_launch.Profile = null,
     timeout_arg: ?[]u8 = null,
+    reporter_arg: ?[]u8 = null,
 
     fn deinit(self: *HomeCapturedInvocation, allocator: std.mem.Allocator) void {
         self.environ_map.deinit();
         if (self.timeout_arg) |arg| allocator.free(arg);
+        if (self.reporter_arg) |arg| allocator.free(arg);
         allocator.free(self.argv);
         allocator.free(self.executable);
         self.* = undefined;
@@ -5873,6 +5876,8 @@ pub const HomeCapturedOptions = struct {
     // Ordinary captured invocations retain their inherited launch context.
     corpus_project_root: ?[]const u8 = null,
     corpus_file: ?corpus_launch.File = null,
+    junit_path: ?[]const u8 = null,
+    record: ?corpus_journal.Invocation = null,
     // Owned by runHomeCapturedWithOptions for one invocation.
     storage: ?corpus_launch.Storage = null,
 };
@@ -5928,6 +5933,7 @@ pub fn runHomeCapturedWithOptions(
         try corpus_launch.applyValidation(allocator, io, &invocation.environ_map, selected, options.corpus_file.?, options.corpus_project_root orelse return error.MissingCorpusProject);
     }
     const timeout_ms = if (invocation.profile) |selected| selected.file_timeout_ms else home_corpus_child_timeout_ms;
+    if (options.record) |record| try record.journal.start(record, invocation.argv, timeout_ms, options.corpus_project_root, &invocation.environ_map);
     const captured = try runSpawnSyncCaptured(allocator, io, .{
         .argv = invocation.argv,
         .cwd = if (options.corpus_project_root) |path| .{ .path = path } else .inherit,
@@ -6009,16 +6015,27 @@ fn prepareHomeCapturedInvocation(
     }
     const timeout_arg = if (selected) |value| (if (value.test_timeout_ms) |ms| try std.fmt.allocPrint(allocator, "--timeout={d}", .{ms}) else null) else null;
     errdefer if (timeout_arg) |arg| allocator.free(arg);
-    const extra: usize = if (timeout_arg != null) 2 else 0;
+    const reporter_arg = if (options.junit_path) |path| try std.fmt.allocPrint(allocator, "--reporter-outfile={s}", .{path}) else null;
+    errdefer if (reporter_arg) |arg| allocator.free(arg);
+    const extra: usize = @as(usize, if (timeout_arg != null) 2 else 0) + @as(usize, if (reporter_arg != null) 2 else 0);
     const argv = try allocator.alloc([]const u8, args_tail.len + 1 + extra);
     errdefer allocator.free(argv);
     argv[0] = executable;
-    if (timeout_arg) |arg| {
-        if (args_tail.len < 2) return error.MissingCorpusFileArgument;
+    if (extra != 0) {
+        if (args_tail.len < 2 or !std.mem.eql(u8, args_tail[0], "test")) return error.MissingCorpusFileArgument;
         @memcpy(argv[1..args_tail.len], args_tail[0 .. args_tail.len - 1]);
-        argv[args_tail.len] = arg;
-        argv[args_tail.len + 1] = "--reporter=dots";
-        argv[args_tail.len + 2] = args_tail[args_tail.len - 1];
+        var index = args_tail.len;
+        if (timeout_arg) |arg| {
+            argv[index] = arg;
+            argv[index + 1] = "--reporter=dots";
+            index += 2;
+        }
+        if (reporter_arg) |arg| {
+            argv[index] = "--reporter=junit";
+            argv[index + 1] = arg;
+            index += 2;
+        }
+        argv[index] = args_tail[args_tail.len - 1];
     } else @memcpy(argv[1..], args_tail);
 
     return .{
@@ -6027,6 +6044,7 @@ fn prepareHomeCapturedInvocation(
         .environ_map = environ_map,
         .profile = selected,
         .timeout_arg = timeout_arg,
+        .reporter_arg = reporter_arg,
     };
 }
 

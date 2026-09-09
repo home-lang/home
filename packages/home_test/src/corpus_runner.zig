@@ -10,6 +10,7 @@ const build_options = @import("build_options");
 const corpus = @import("corpus.zig");
 const jsc_bootstrap = @import("adapters/jsc_bootstrap.zig");
 const test_result = @import("result.zig");
+const corpus_journal = @import("corpus_journal.zig");
 const Io = std.Io;
 
 pub const Subset = enum {
@@ -41,6 +42,8 @@ pub const RunOptions = struct {
     /// Slices are borrowed for the duration of the call. Without a callback,
     /// the summary owns each file's capture until Summary.deinit is called.
     on_file: ?*const fn (FileExecution) anyerror!void = null,
+    persist_results: bool = false,
+    report_directory: ?[]const u8 = null,
 };
 
 pub const Summary = struct {
@@ -48,6 +51,7 @@ pub const Summary = struct {
     passed: usize = 0,
     failed: usize = 0,
     todo: usize = 0,
+    skipped: usize = 0,
     unsupported: usize = 0,
     // Process outcomes are separate from registered test-case counts. A script
     // can succeed without registering tests; that never invents passing cases.
@@ -64,10 +68,12 @@ pub const Summary = struct {
     first_failure_file_owned: bool = false,
     first_failure_message: []const u8 = "",
     first_failure_message_owned: bool = false,
+    journal: ?corpus_journal.Journal = null,
     executions: std.ArrayList(FileExecution) = .empty,
     on_file: ?*const fn (FileExecution) anyerror!void = null,
 
     pub fn deinit(self: *Summary, allocator: std.mem.Allocator) void {
+        if (self.journal) |*journal| journal.deinit();
         if (self.first_failure_file_owned) {
             allocator.free(self.first_failure_file);
         }
@@ -92,9 +98,37 @@ pub const Summary = struct {
         self.passed += file.passed;
         self.failed += file.failed;
         self.todo += file.todo;
+        self.skipped += file.skipped;
         self.unsupported += file.unsupported;
     }
 };
+
+fn beginSummary(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8, options: RunOptions) !Summary {
+    var summary = Summary{ .on_file = options.on_file };
+    if (options.persist_results or options.report_directory != null) {
+        const env_path = try envVariableAlloc(allocator, "HOME_BUN_CORPUS_REPORT_DIR");
+        defer if (env_path) |value| allocator.free(value);
+        const requested = options.report_directory orelse if (env_path) |value| (if (value.len == 0) null else value) else null;
+        summary.journal = try corpus_journal.Journal.create(allocator, io, requested, corpus_path);
+        std.debug.print("[home-bun-corpus] results: {s}\n", .{summary.journal.?.directory});
+    }
+    return summary;
+}
+
+fn finishSummary(summary: *Summary) !void {
+    if (summary.journal) |*journal| try journal.finish(.{
+        .files = summary.files,
+        .passed = summary.passed,
+        .failed = summary.failed,
+        .skipped = summary.skipped,
+        .todo = summary.todo,
+        .unsupported = summary.unsupported,
+        .failed_files = summary.failed_files,
+        .process_checks_passed = summary.process_checks_passed,
+        .skipped_files = summary.skipped_files,
+        .comment_only_files = summary.allowed_empty_files,
+    });
+}
 
 pub const minimal_js_files = [_][]const u8{
     "js/web/timers/microtask.test.js",
@@ -163,12 +197,16 @@ pub fn runSubsetWithOptions(io: Io, allocator: std.mem.Allocator, corpus_path: [
         };
     }
 
-    var summary = Summary{ .on_file = options.on_file };
+    var summary = try beginSummary(io, allocator, corpus_path, options);
     errdefer summary.deinit(allocator);
+    if (summary.journal) |*journal| for (filesForSubset(subset)) |relative| {
+        try journal.select(relative);
+    };
     for (filesForSubset(subset)) |relative| {
         try runIsolatedRelativeFile(io, allocator, corpus_path, relative, &summary);
     }
 
+    try finishSummary(&summary);
     return summary;
 }
 
@@ -191,10 +229,13 @@ pub fn runGateWithOptions(io: Io, allocator: std.mem.Allocator, corpus_path: []c
         };
     }
 
-    var summary = Summary{ .on_file = options.on_file };
+    var summary = try beginSummary(io, allocator, corpus_path, options);
     errdefer summary.deinit(allocator);
     const show_progress = bunCorpusProgressEnabled();
     const range = bunCorpusRange(test_files.len);
+    if (summary.journal) |*journal| for (test_files[range.start..range.end]) |relative| {
+        try journal.select(relative);
+    };
     for (test_files[range.start..range.end], range.start..) |relative, index| {
         if (show_progress) {
             std.debug.print("[home-bun-corpus] {d}/{d} {s}\n", .{ index + 1, test_files.len, relative });
@@ -202,6 +243,7 @@ pub fn runGateWithOptions(io: Io, allocator: std.mem.Allocator, corpus_path: []c
         try runIsolatedRelativeFile(io, allocator, corpus_path, relative, &summary);
     }
 
+    try finishSummary(&summary);
     return summary;
 }
 
@@ -235,9 +277,14 @@ pub fn runDirectoryWithOptions(
         };
     }
 
-    var summary = Summary{ .on_file = options.on_file };
+    var summary = try beginSummary(io, allocator, corpus_path, options);
     errdefer summary.deinit(allocator);
     const show_progress = bunCorpusProgressEnabled();
+    if (summary.journal) |*journal| for (test_files) |directory_relative| {
+        const relative = try std.fs.path.join(allocator, &.{ relative_directory, directory_relative });
+        defer allocator.free(relative);
+        try journal.select(relative);
+    };
     for (test_files, 0..) |directory_relative, index| {
         const corpus_relative = try std.fs.path.join(allocator, &.{ relative_directory, directory_relative });
         defer allocator.free(corpus_relative);
@@ -247,6 +294,7 @@ pub fn runDirectoryWithOptions(
         try runIsolatedRelativeFile(io, allocator, corpus_path, corpus_relative, &summary);
     }
 
+    try finishSummary(&summary);
     return summary;
 }
 
@@ -318,9 +366,31 @@ pub fn runFileWithOptions(io: Io, allocator: std.mem.Allocator, corpus_path: []c
         };
     }
 
-    var summary = Summary{ .on_file = options.on_file };
+    var summary = try beginSummary(io, allocator, corpus_path, options);
     errdefer summary.deinit(allocator);
+    if (summary.journal) |*journal| try journal.select(relative);
     try runIsolatedRelativeFile(io, allocator, corpus_path, relative, &summary);
+    try finishSummary(&summary);
+    return summary;
+}
+
+pub const FileTarget = struct { corpus_path: []const u8, relative_path: []const u8 };
+
+pub fn runFilesWithOptions(io: Io, allocator: std.mem.Allocator, files: []const FileTarget, options: RunOptions) !Summary {
+    if (!build_options.enable_jsc) return .{ .files = files.len, .blocked = true, .reason = "jsc-disabled" };
+    var summary = try beginSummary(io, allocator, "", options);
+    errdefer summary.deinit(allocator);
+    if (summary.journal) |*journal| {
+        const cwd = try Io.Dir.cwd().realPathFileAlloc(io, ".", allocator);
+        defer allocator.free(cwd);
+        for (files) |file| {
+            const path = try std.fs.path.resolve(allocator, &.{ cwd, file.corpus_path, file.relative_path });
+            defer allocator.free(path);
+            try journal.select(path);
+        }
+    }
+    for (files) |file| try runIsolatedRelativeFile(io, allocator, file.corpus_path, file.relative_path, &summary);
+    try finishSummary(&summary);
     return summary;
 }
 
@@ -439,10 +509,49 @@ fn nativeExpectedFailureCorpusPassed(
     const counts = nativeCorpusTestCounts(stdout, stderr);
     if (!counts.observed or counts.passed != 0 or counts.failed != 1 or counts.skipped != 0 or counts.todo != 0) return false;
     for ([_][]const u8{ stdout, stderr }) |output| {
-        if (std.mem.indexOf(u8, output, "undefined") != null) return false;
+        if (nativeDiagnosticContains(output, "undefined")) return false;
     }
-    return std.mem.indexOf(u8, stdout, "expect(received).toEqual(expected)") != null or
-        std.mem.indexOf(u8, stderr, "expect(received).toEqual(expected)") != null;
+    return nativeDiagnosticContains(stdout, "expect(received).toEqual(expected)") or
+        nativeDiagnosticContains(stderr, "expect(received).toEqual(expected)");
+}
+
+// ANSI styling is presentation; evaluate the complete diagnostic text without
+// changing the original CI color settings or truncating retained output.
+fn nativeDiagnosticContains(output: []const u8, needle: []const u8) bool {
+    const Characters = struct {
+        bytes: []const u8,
+        index: usize = 0,
+
+        fn next(self: *@This()) ?u8 {
+            while (self.index < self.bytes.len) {
+                if (self.bytes[self.index] == 0x1b and self.index + 1 < self.bytes.len and self.bytes[self.index + 1] == '[') {
+                    self.index += 2;
+                    while (self.index < self.bytes.len and !(self.bytes[self.index] >= 0x40 and self.bytes[self.index] <= 0x7e)) self.index += 1;
+                    if (self.index < self.bytes.len) self.index += 1;
+                    continue;
+                }
+                const char = self.bytes[self.index];
+                self.index += 1;
+                return char;
+            }
+            return null;
+        }
+    };
+    if (needle.len == 0) return true;
+    var cursor = Characters{ .bytes = output };
+    while (cursor.next()) |char| {
+        if (char != needle[0]) continue;
+        var candidate = cursor;
+        var matches = true;
+        for (needle[1..]) |expected| {
+            if (candidate.next() != expected) {
+                matches = false;
+                break;
+            }
+        }
+        if (matches) return true;
+    }
+    return false;
 }
 
 fn nativeCorpusSkipReason(stdout: []const u8, stderr: []const u8) ?[]const u8 {
@@ -560,7 +669,10 @@ fn runRelativeFile(
     const file_path = try std.fs.path.join(allocator, &.{ corpus_path, relative });
     defer allocator.free(file_path);
 
-    const source = try Io.Dir.cwd().readFileAlloc(io, file_path, allocator, std.Io.Limit.limited(1024 * 1024));
+    const source = Io.Dir.cwd().readFileAlloc(io, file_path, allocator, std.Io.Limit.limited(1024 * 1024)) catch |err| {
+        if (summary.journal) |*journal| try journal.append(.{ .event = "preparation_failed", .id = summary.files, .path = file_path, .error_name = @errorName(err) });
+        return err;
+    };
     defer allocator.free(source);
 
     if (isNativeHomeCorpusFile(relative)) {
@@ -583,8 +695,14 @@ fn runRelativeFile(
         const test_thread_id = try std.fmt.allocPrint(allocator, "home-corpus-{s}", .{std.fs.path.basename(relative)});
         defer allocator.free(test_thread_id);
 
+        const source_hash = corpus_journal.hashBytes(source);
+        const id = summary.files;
+        const junit_path = if (summary.journal) |*journal| (if (mode == .test_runner and !corpus.isNodeTestFile(relative)) try journal.artifactPath(id, "junit.xml") else null) else null;
+        defer if (junit_path) |path| allocator.free(path);
         var native_run = try jsc_bootstrap.runHomeCapturedWithOptions(allocator, test_thread_id, args_tail, .{
             .corpus_project_root = corpus_project_root,
+            .junit_path = junit_path,
+            .record = if (summary.journal) |*journal| .{ .journal = journal, .id = id, .mode = @tagName(mode), .source_sha256 = source_hash } else null,
             .corpus_file = .{ .relative_path = relative, .node_test = corpus.isNodeTestFile(relative), .test_runner = mode == .test_runner },
         });
         defer native_run.deinit(allocator);
@@ -597,13 +715,23 @@ fn runRelativeFile(
             .stdout = native_run.stdout,
             .stderr = native_run.stderr,
         };
+        const counts = nativeCorpusTestCounts(native_run.stdout, native_run.stderr);
+        const after_source = Io.Dir.cwd().readFileAlloc(io, file_path, allocator, .limited(1024 * 1024)) catch null;
+        defer if (after_source) |bytes| allocator.free(bytes);
+        const source_unchanged = if (after_source) |bytes| std.mem.eql(u8, source, bytes) else false;
+        const expected_failure_verified = nativeExpectedFailureCorpusPassed(relative, native_run.term, native_run.timed_out, native_run.stdout, native_run.stderr);
+        const report_retained = if (summary.journal) |*journal| try journal.complete(id, native_run.term, native_run.timed_out, native_run.stdout, native_run.stderr, counts, source_unchanged, junit_path, expected_failure_verified) else true;
+        const missing_case_report = !report_retained and counts.passed + counts.failed + counts.skipped + counts.todo != 0;
         if (summary.on_file) |on_file| try on_file(execution);
 
-        const counts = nativeCorpusTestCounts(native_run.stdout, native_run.stderr);
         if (isNativeExpectedFailureCorpusFile(relative)) {
-            if (nativeExpectedFailureCorpusPassed(relative, native_run.term, native_run.timed_out, native_run.stdout, native_run.stderr)) {
+            if (expected_failure_verified and source_unchanged and !missing_case_report) {
                 summary.process_checks_passed += 1;
             } else {
+                file_result.passed = counts.passed;
+                file_result.failed = counts.failed;
+                file_result.skipped = counts.skipped;
+                file_result.todo = counts.todo;
                 summary.failed_files += 1;
                 const diagnostic = try std.fmt.allocPrint(
                     allocator,
@@ -617,11 +745,12 @@ fn runRelativeFile(
             if (counts.observed) {
                 file_result.passed = counts.passed;
                 file_result.failed = counts.failed;
-                file_result.todo = counts.todo + counts.skipped;
+                file_result.todo = counts.todo;
+                file_result.skipped = counts.skipped;
             }
-            if (!nativeCorpusProcessSucceeded(native_run.term, native_run.timed_out) or counts.failed != 0) {
+            if (!nativeCorpusProcessSucceeded(native_run.term, native_run.timed_out) or counts.failed != 0 or !source_unchanged or missing_case_report) {
                 summary.failed_files += 1;
-                const diagnostic = try nativeCorpusFailureDiagnostic(
+                const diagnostic = if (!source_unchanged) try allocator.dupe(u8, "original corpus source changed during execution") else if (missing_case_report) try allocator.dupe(u8, "native JUnit report missing for registered test cases") else try nativeCorpusFailureDiagnostic(
                     allocator,
                     native_run.timeout_ms,
                     native_run.term,
@@ -731,12 +860,15 @@ test "native stream iterator process classification requires a clean exit" {
     try std.testing.expect(!nativeCorpusProcessSucceeded(.{ .exited = 0 }, true));
 }
 
-test "native Bun test fixture expected failure accepts only the indexed-property diff contract" {
+test "native corpus expected failure accepts only the indexed-property diff contract" {
     const relative = "js/bun/test/test-fixture-diff-indexed-properties.js";
     const output =
         "error: expect(received).toEqual(expected)\n" ++
         " 0 pass\n 1 fail\nRan 1 test across 1 file. [1ms]\n";
     try std.testing.expect(nativeExpectedFailureCorpusPassed(relative, .{ .exited = 1 }, false, "", output));
+    const colored = "error: \x1b[2mexpect(\x1b[0m\x1b[31mreceived\x1b[0m).toEqual(\x1b[32mexpected\x1b[0m)\n 0 pass\n 1 fail\nRan 1 test across 1 file. [1ms]\n";
+    try std.testing.expect(nativeExpectedFailureCorpusPassed(relative, .{ .exited = 1 }, false, "", colored));
+    try std.testing.expect(!nativeExpectedFailureCorpusPassed(relative, .{ .exited = 1 }, false, "", colored ++ "un\x1b[31mdefined\x1b[0m"));
     try std.testing.expect(!nativeExpectedFailureCorpusPassed(relative, .{ .exited = 0 }, false, "", output));
     try std.testing.expect(!nativeExpectedFailureCorpusPassed(relative, .{ .exited = 1 }, true, "", output));
     try std.testing.expect(!nativeExpectedFailureCorpusPassed(relative, .{ .exited = 1 }, false, "", output ++ "undefined\n"));
@@ -747,14 +879,14 @@ test "native Bun test fixture expected failure accepts only the indexed-property
 test "native Bun test fixtures and interop consumers execute unchanged through the corpus gate" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
 
-    const cases = [_]struct { path: []const u8, passed: usize, todo: usize = 0, allowed_empty: usize = 0 }{
+    const cases = [_]struct { path: []const u8, passed: usize, todo: usize = 0, skipped: usize = 0, allowed_empty: usize = 0 }{
         .{ .path = "js/bun/test/test-interop.js", .passed = 1 },
         .{ .path = "js/bun/test/test-fixture-diff-indexed-properties.js", .passed = 1 },
         .{ .path = "js/bun/test/expect-extend.test.js", .passed = 28 },
         .{ .path = "js/bun/test/mock-fn.test.js", .passed = 72 },
         .{ .path = "js/bun/test/expect.test.js", .passed = 398, .todo = 10 },
         .{ .path = "js/bun/test/fake-timers/sinonjs/fake-timers.test.ts", .passed = 0, .todo = 438 },
-        .{ .path = "js/bun/test/test-test.test.ts", .passed = 24, .todo = 16 },
+        .{ .path = "js/bun/test/test-test.test.ts", .passed = 24, .skipped = 16 },
         .{ .path = "js/bun/test/printing/diffexample.test.ts", .passed = 2 },
         .{ .path = "js/bun/plugin/plugins.test.ts", .passed = 31, .todo = 1 },
         .{
@@ -773,7 +905,7 @@ test "native Bun test fixtures and interop consumers execute unchanged through t
             case.path,
         );
         defer summary.deinit(std.testing.allocator);
-        if (summary.failed != 0 or summary.failed_files != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != case.todo) {
+        if (summary.failed != 0 or summary.failed_files != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != case.todo or summary.skipped != case.skipped) {
             std.debug.print(
                 "native Bun test fixture mismatch for {s}: passed={} todo={} failed={} unsupported={} message={s}\n",
                 .{ case.path, summary.passed, summary.todo, summary.failed, summary.unsupported, summary.first_failure_message },
@@ -782,6 +914,7 @@ test "native Bun test fixtures and interop consumers execute unchanged through t
         try std.testing.expectEqual(@as(usize, 1), summary.files);
         try std.testing.expectEqual(case.passed, summary.passed);
         try std.testing.expectEqual(case.todo, summary.todo);
+        try std.testing.expectEqual(case.skipped, summary.skipped);
         try std.testing.expectEqual(@as(usize, 0), summary.failed + summary.failed_files);
         try std.testing.expectEqual(@as(usize, 0), summary.unsupported);
         try std.testing.expectEqual(case.allowed_empty, summary.allowed_empty_files);
@@ -793,9 +926,9 @@ test "native HTML web corpus executes all five original files and real children"
     const allocator = std.testing.allocator;
     var threaded = std.Io.Threaded.init(allocator, .{});
     defer threaded.deinit();
-    const cases = [_]struct { path: []const u8, passed: usize, todo: usize = 0 }{
+    const cases = [_]struct { path: []const u8, passed: usize, skipped: usize = 0 }{
         .{ .path = "js/web/html/FormData-file-error-leak.test.ts", .passed = 1 },
-        .{ .path = "js/web/html/FormData-multipart-serialization.test.ts", .passed = if (builtin.os.tag == .linux) 4 else 3, .todo = if (builtin.os.tag == .linux) 0 else 1 },
+        .{ .path = "js/web/html/FormData-multipart-serialization.test.ts", .passed = if (builtin.os.tag == .linux) 4 else 3, .skipped = if (builtin.os.tag == .linux) 0 else 1 },
         .{ .path = "js/web/html/FormData.test.ts", .passed = 129 },
         .{ .path = "js/web/html/URLSearchParams.test.ts", .passed = 11 },
         .{ .path = "js/web/html/html-rewriter-doctype.test.ts", .passed = 1 },
@@ -805,12 +938,12 @@ test "native HTML web corpus executes all five original files and real children"
         try std.testing.expectEqual(NativeCorpusMode.test_runner, nativeCorpusMode(case.path));
         var summary = try runFile(threaded.io(), allocator, "packages/runtime/test/test", case.path);
         defer summary.deinit(allocator);
-        if (summary.failed != 0 or summary.failed_files != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != case.todo) {
+        if (summary.failed != 0 or summary.failed_files != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.skipped != case.skipped or summary.todo != 0) {
             std.debug.print("native HTML web corpus mismatch for {s}: passed={} failed={} todo={} unsupported={} message={s}\n", .{ case.path, summary.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message });
         }
         try std.testing.expectEqual(@as(usize, 1), summary.files);
         try std.testing.expectEqual(case.passed, summary.passed);
-        try std.testing.expectEqual(case.todo, summary.todo);
+        try std.testing.expectEqual(case.skipped, summary.skipped);
         try std.testing.expectEqual(@as(usize, 0), summary.failed + summary.failed_files + summary.unsupported + summary.allowed_empty_files);
     }
 }
@@ -820,13 +953,13 @@ test "native body corpus executes the full seven-file matrix with upstream skips
     const allocator = std.testing.allocator;
     var threaded = std.Io.Threaded.init(allocator, .{});
     defer threaded.deinit();
-    const cases = [_]struct { path: []const u8, passed: usize, todo: usize = 0 }{
+    const cases = [_]struct { path: []const u8, passed: usize, skipped: usize = 0 }{
         .{ .path = "js/web/fetch/body-async-iterator.test.ts", .passed = 2 },
         .{ .path = "js/web/fetch/body-clone.test.ts", .passed = 25 },
         .{ .path = "js/web/fetch/body-mixin-errors.test.ts", .passed = 2 },
         .{ .path = "js/web/fetch/body-stream-excess.test.ts", .passed = 4 },
         .{ .path = "js/web/fetch/body-stream.test.ts", .passed = 9086 },
-        .{ .path = "js/web/fetch/body.test.ts", .passed = 346, .todo = 4 },
+        .{ .path = "js/web/fetch/body.test.ts", .passed = 346, .skipped = 4 },
         .{ .path = "js/web/fetch/request-cyclic-reference.test.ts", .passed = 2 },
     };
     for (cases) |case| {
@@ -834,12 +967,12 @@ test "native body corpus executes the full seven-file matrix with upstream skips
         try std.testing.expectEqual(NativeCorpusMode.test_runner, nativeCorpusMode(case.path));
         var summary = try runFile(threaded.io(), allocator, "packages/runtime/test/test", case.path);
         defer summary.deinit(allocator);
-        if (summary.failed != 0 or summary.failed_files != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.todo != case.todo) {
+        if (summary.failed != 0 or summary.failed_files != 0 or summary.unsupported != 0 or summary.passed != case.passed or summary.skipped != case.skipped or summary.todo != 0) {
             std.debug.print("native body corpus mismatch for {s}: passed={} failed={} todo={} unsupported={} message={s}\n", .{ case.path, summary.passed, summary.failed, summary.todo, summary.unsupported, summary.first_failure_message });
         }
         try std.testing.expectEqual(@as(usize, 1), summary.files);
         try std.testing.expectEqual(case.passed, summary.passed);
-        try std.testing.expectEqual(case.todo, summary.todo);
+        try std.testing.expectEqual(case.skipped, summary.skipped);
         try std.testing.expectEqual(@as(usize, 0), summary.failed + summary.failed_files + summary.unsupported + summary.allowed_empty_files);
     }
 }
@@ -1250,4 +1383,70 @@ test "native corpus execution propagates real child and Node assertion failures"
     try std.testing.expectEqual(@as(usize, 1), streamed.failed_files);
     try std.testing.expectEqual(@as(usize, 1), streamed.process_checks_passed);
     try std.testing.expectError(error.CaptureSinkFailed, runFileWithOptions(io, allocator, root, "manual.test.js", .{ .on_file = Observer.rejectOutput }));
+}
+
+test "native corpus journal retains mixed outcomes and the entire selection" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "test");
+    try tmp.dir.writeFile(io, .{ .sub_path = "bunfig.toml", .data = "[test]\n" });
+    const mixed_source =
+        \\import { test, expect } from "bun:test";
+        \\test("passing case", () => expect(1).toBe(1));
+        \\test("failing case", () => expect(1).toBe(2));
+        \\test.skip("skipped case", () => { throw new Error("must not execute"); });
+        \\test.todo("todo case");
+    ;
+    try tmp.dir.writeFile(io, .{ .sub_path = "test/mixed.test.js", .data = mixed_source });
+    try tmp.dir.writeFile(io, .{ .sub_path = "test/manual.test.js", .data = "require('node:assert').strictEqual(4, 2 + 2); console.log('manual body executed');" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "test/empty.test.js", .data = "// intentionally empty fixture\n" });
+    const root = try tmp.dir.realPathFileAlloc(io, "test", allocator);
+    defer allocator.free(root);
+    const reports = try std.fs.path.join(allocator, &.{ root, "results" });
+    defer allocator.free(reports);
+    const files = [_]FileTarget{
+        .{ .corpus_path = root, .relative_path = "mixed.test.js" },
+        .{ .corpus_path = root, .relative_path = "manual.test.js" },
+        .{ .corpus_path = root, .relative_path = "empty.test.js" },
+    };
+    var summary = try runFilesWithOptions(io, allocator, &files, .{ .report_directory = reports });
+    defer summary.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 3), summary.files);
+    try std.testing.expectEqual(@as(usize, 1), summary.passed);
+    try std.testing.expectEqual(@as(usize, 1), summary.failed);
+    try std.testing.expectEqual(@as(usize, 1), summary.skipped);
+    try std.testing.expectEqual(@as(usize, 1), summary.todo);
+    try std.testing.expectEqual(@as(usize, 1), summary.failed_files);
+    try std.testing.expectEqual(@as(usize, 1), summary.process_checks_passed);
+    try std.testing.expectEqual(@as(usize, 1), summary.allowed_empty_files);
+    const events_path = try std.fs.path.join(allocator, &.{ reports, "events.jsonl" });
+    defer allocator.free(events_path);
+    const events = try Io.Dir.cwd().readFileAlloc(io, events_path, allocator, .limited(65536));
+    defer allocator.free(events);
+    var lines = std.mem.tokenizeScalar(u8, events, '\n');
+    var selected: usize = 0;
+    var completed: usize = 0;
+    var finished = false;
+    while (lines.next()) |line| {
+        const value = try std.json.parseFromSlice(std.json.Value, allocator, line, .{});
+        defer value.deinit();
+        const event = value.value.object.get("event").?.string;
+        if (std.mem.eql(u8, event, "selected")) selected += 1;
+        if (std.mem.eql(u8, event, "started")) try std.testing.expectEqual(@as(usize, 3), selected);
+        if (std.mem.eql(u8, event, "completed")) completed += 1;
+        if (std.mem.eql(u8, event, "finished")) finished = value.value.object.get("all_selected_completed").?.bool;
+    }
+    try std.testing.expectEqual(@as(usize, 3), completed);
+    try std.testing.expect(finished);
+    const junit_path = try summary.journal.?.artifactPath(0, "junit.xml");
+    defer allocator.free(junit_path);
+    const junit = try Io.Dir.cwd().readFileAlloc(io, junit_path, allocator, .limited(65536));
+    defer allocator.free(junit);
+    for ([_][]const u8{ "passing case", "failing case", "skipped case", "todo case", "<failure", "<skipped", "TODO" }) |expected| try std.testing.expect(std.mem.indexOf(u8, junit, expected) != null);
+    const after = try tmp.dir.readFileAlloc(io, "test/mixed.test.js", allocator, .limited(65536));
+    defer allocator.free(after);
+    try std.testing.expectEqualStrings(mixed_source, after);
 }
