@@ -1,0 +1,62 @@
+{
+  "parent": "https://github.com/home-lang/home/issues/66",
+  "issue": "https://github.com/home-lang/home/issues/723",
+  "status": "Confirmed pre-fix deadline failure through actual libc close; correction is not yet verified.",
+  "files": [
+    {
+      "file": "corpus-child-lifetime-confirmed.md.gz",
+      "bytes": 1801,
+      "sha256": "66d8a51b75ef7b740790732e70f4977088e929c83b3892f5ad5a4019235aa0c6"
+    },
+    {
+      "file": "corpus-child-wait-unit-abi.log.gz",
+      "bytes": 323,
+      "sha256": "16820a9d1d8940429a4ece3f06662d5ee1353c5da1af2a65ec7a0ac14b2e2c00"
+    },
+    {
+      "file": "corpus-child-wait-unit-first.log.gz",
+      "bytes": 229,
+      "sha256": "f66c26d935cd801b6cfb8cd31cb5e5124884de59d2b0f5ef71be81f959c88247"
+    },
+    {
+      "file": "corpus-closed-pipe-ffi-first/child-ready.gz",
+      "bytes": 29,
+      "sha256": "3aef338fbc985afdf947e9bea0a5ddc11c04be3410674f30dfbf2b97348622b4"
+    },
+    {
+      "file": "corpus-closed-pipe-ffi-first/execution.log.gz",
+      "bytes": 179,
+      "sha256": "b12116fb9b891b2946cf07f2859c627220f1a699b64634b1a594e9a54902940d"
+    },
+    {
+      "file": "corpus-closed-pipe-ffi-first/manifest.json.gz",
+      "bytes": 4689,
+      "sha256": "c60d3d35aa27bb6e6be55c81a15700d39896794024058fd2f3e1fc4756753dc4"
+    },
+    {
+      "file": "corpus-closed-pipe-ffi-first/reports/events.jsonl.gz",
+      "bytes": 3304,
+      "sha256": "26f39f96fa596cea8505bcea6cf968f29bc98cbef0f9fc293edac8edb633427e"
+    },
+    {
+      "file": "corpus-closed-pipe-ffi-first/source.js.gz",
+      "bytes": 430,
+      "sha256": "6afc8d00d0677b7c0eb5ebdc997b1e30cdcc1c8348dce0b74ed8e29c07e813f8"
+    },
+    {
+      "file": "corpus-journal-drain-unit.log.gz",
+      "bytes": 389,
+      "sha256": "eb7698e88a8ce02f5061cb7194b32737e080fa3b53771502afd9fb7c88042944"
+    },
+    {
+      "file": "verify-corpus-closed-pipe-ffi-first.log.gz",
+      "bytes": 909,
+      "sha256": "74ae021a1a12a8bb84c6426c8ba0e53a1da860ab63bae5758ca7308f2a9c1c8f"
+    },
+    {
+      "file": "verify-corpus-closed-pipe-ffi.py.gz",
+      "bytes": 2870,
+      "sha256": "5e9748fef2952ae275def4be92b1195fa3dcc06b0260b3cdaaa55589b1ebee65"
+    }
+  ]
+}
