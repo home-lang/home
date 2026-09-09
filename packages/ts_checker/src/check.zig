@@ -151441,15 +151441,56 @@ pub const Checker = struct {
         try self.inferFromPair(inference_ret_t, expected_ret, &subs);
         if (subs.count() == 0) return;
 
-        const effective_sig = self.substituteType(sig, &subs) catch sig;
-        const params = self.interner.signatureParams(effective_sig);
+        // `subs` so far holds only what the call's return type pins down. A
+        // type parameter that appears solely in the parameter list -- the `B`
+        // of `compose<A, B, C>(f: (a: A) => B, g: (b: B) => C)` -- is still
+        // free here, so rechecking every argument against one up-front
+        // instantiation hands the later callback a raw `B`, and its body is
+        // checked against a type parameter instead of a type.
+        //
+        // TypeScript fixes type parameters as it goes: each argument is
+        // checked with the inferences the earlier arguments produced. Do the
+        // same. The recheck reports what it inferred through
+        // `inferred_signature_out` and does not write the result back to the
+        // argument node, so that out-parameter is the only view of what the
+        // callback actually resolved to.
+        var effective_sig = self.substituteType(sig, &subs) catch sig;
         const args = hir_mod.callArgs(self.hir, node);
-        const n = @min(args.len, params.len);
+        const n = @min(args.len, self.interner.signatureParams(effective_sig).len);
         for (0..n) |i| {
             const arg = args[i];
-            if (!self.isContextualFunctionExpressionLike(arg)) continue;
-            const param_sig = self.firstSignatureType(params[i]) orelse continue;
-            try self.checkFunctionWithContextualSignature(arg, param_sig);
+            // Rechecking an argument can intern new types and grow the shared
+            // parameter pool, so take this argument's target from a private
+            // copy rather than a live slice.
+            const cur_params = try self.gpa.dupe(TypeId, self.interner.signatureParams(effective_sig));
+            defer self.gpa.free(cur_params);
+            if (i >= cur_params.len) continue;
+            const param_sig = self.firstSignatureType(cur_params[i]) orelse continue;
+
+            // What this argument turned out to be, as evidence for the type
+            // parameters still free in the signature.
+            var evidence: TypeId = types.Primitive.none;
+            if (self.isContextualFunctionExpressionLike(arg)) {
+                // The recheck reports its result through
+                // `inferred_signature_out` and does not write it back to the
+                // argument node, so that out-parameter is the only view of
+                // what the callback resolved to.
+                try self.checkFunctionWithContextualSignatureMode(arg, param_sig, true, &evidence);
+            } else {
+                // A generic function passed by name (`compose(unbox, unlist)`)
+                // is not rechecked, but it is still evidence: instantiate it
+                // against this parameter the way the main inference pass does.
+                const cached_t = self.hir.typeOf(arg);
+                if (cached_t != types.Primitive.none and self.interner.isSignature(cached_t)) {
+                    evidence = try self.genericInferenceFunctionArgumentType(arg, cached_t, param_sig);
+                }
+            }
+            if (evidence == types.Primitive.none or !self.interner.isSignature(evidence)) continue;
+            const before = subs.count();
+            try self.inferFromPair(param_sig, evidence, &subs);
+            if (subs.count() != before) {
+                effective_sig = self.substituteType(sig, &subs) catch effective_sig;
+            }
         }
         self.dedupeExactDiagnostics();
     }
