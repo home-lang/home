@@ -2472,6 +2472,75 @@ pub const HomeKernelCodegen = struct {
 
     /// Label for a string literal's .rodata entry, reusing an existing one
     /// when the same text has already been emitted.
+    /// One element of a global array initializer, at the array's element
+    /// width. Recurses for a nested array so that a `[N][M]u8` — a font, a
+    /// lookup keyed by two indices — lays its rows out end to end, which is
+    /// what an indexed read of the flattened storage expects.
+    ///
+    /// Every element kind this cannot lower is reported. It used to emit a
+    /// zero and say nothing, and a zero the compiler did not understand reads
+    /// exactly like a zero the author wrote: the kernel's scancode table was
+    /// all zeros for its whole existence, so every key decoded to nothing,
+    /// and nothing failed to build.
+    fn emitArrayElement(self: *HomeKernelCodegen, elem_size: usize, e: *const ast.Expr) anyerror!void {
+        const directive = switch (elem_size) {
+            1 => ".byte",
+            2 => ".short",
+            4 => ".long",
+            else => ".quad",
+        };
+        switch (e.*) {
+            .StringLiteral => |lit| {
+                // A string element is a pointer, whatever the array's nominal
+                // element width.
+                const label = try self.internStringLiteral(lit.value);
+                try self.print("    .quad .L_str_{d}\n", .{label});
+            },
+            .IntegerLiteral => |lit| try self.print("    {s} {d}\n", .{ directive, lit.value }),
+            .BooleanLiteral => |lit| try self.print("    {s} {d}\n", .{ directive, @as(i64, if (lit.value) 1 else 0) }),
+            .CharLiteral => |lit| {
+                if (charLiteralValue(lit.value)) |v| {
+                    try self.print("    {s} {d}\n", .{ directive, v });
+                } else {
+                    try self.print("    # ERROR: unsupported character literal {s}\n", .{lit.value});
+                    try self.print("    {s} 0\n", .{directive});
+                }
+            },
+            .UnaryExpr => |un| {
+                if (un.op == .Neg and un.operand.* == .IntegerLiteral) {
+                    try self.print("    {s} -{d}\n", .{ directive, un.operand.*.IntegerLiteral.value });
+                    return;
+                }
+                try self.print("    # ERROR: unsupported array element (UnaryExpr)\n", .{});
+                try self.print("    {s} 0\n", .{directive});
+            },
+            .ArrayLiteral => |arr| {
+                // A row of a `[N][M]u8` is an [M]u8, so the *outer* element
+                // size is the whole row. Emitting each byte of it at that
+                // width laid the table out M times too wide and every indexed
+                // read but the first landed between entries — the same shape
+                // of bug the directive switch above was written to avoid, one
+                // level down. Narrow to the width of what is actually being
+                // written.
+                const inner_size = if (arr.elements.len > 0 and elem_size >= arr.elements.len)
+                    elem_size / arr.elements.len
+                else
+                    elem_size;
+                for (arr.elements) |inner| {
+                    try self.emitArrayElement(inner_size, inner);
+                }
+            },
+            .Identifier => |id| {
+                const v = self.globals.get(id.name) orelse 0;
+                try self.print("    {s} {d}\n", .{ directive, v });
+            },
+            else => {
+                try self.print("    # ERROR: unsupported array element ({s})\n", .{@tagName(e.*)});
+                try self.print("    {s} 0\n", .{directive});
+            },
+        }
+    }
+
     fn internStringLiteral(self: *HomeKernelCodegen, content: []const u8) !usize {
         for (self.string_literals.items) |existing| {
             if (std.mem.eql(u8, existing.content, content)) return existing.label;
@@ -2526,34 +2595,16 @@ pub const HomeKernelCodegen = struct {
             for (self.global_order.items) |name| {
                 const g = self.global_vars.get(name) orelse continue;
                 const elements = g.init_elements orelse continue;
-                // Each element is emitted at the array's element width. A
+                // Each element is emitted at the array's element width — a
                 // `.quad` per element of a [u32; N] would lay the table out at
                 // twice its stride, so every indexed read but the first landed
-                // between two entries.
-                const directive = switch (g.elem_size) {
-                    1 => ".byte",
-                    2 => ".short",
-                    4 => ".long",
-                    else => ".quad",
-                };
+                // between two entries. emitArrayElement picks the directive
+                // from that width, and narrows it for a nested array, whose
+                // outer "element" is a whole row.
                 try self.print(".align {d}\n", .{@min(g.elem_size, @as(usize, 8))});
                 try self.print("{s}:\n", .{g.symbol});
                 for (elements) |e| {
-                    switch (e.*) {
-                        .StringLiteral => |lit| {
-                            // A string element is a pointer, whatever the
-                            // array's nominal element width.
-                            const label = try self.internStringLiteral(lit.value);
-                            try self.print("    .quad .L_str_{d}\n", .{label});
-                        },
-                        .IntegerLiteral => |lit| try self.print("    {s} {d}\n", .{ directive, lit.value }),
-                        .BooleanLiteral => |lit| try self.print("    {s} {d}\n", .{ directive, @as(i64, if (lit.value) 1 else 0) }),
-                        .Identifier => |id| {
-                            const v = self.globals.get(id.name) orelse 0;
-                            try self.print("    {s} {d}\n", .{ directive, v });
-                        },
-                        else => try self.print("    {s} 0\n", .{directive}),
-                    }
+                    try self.emitArrayElement(g.elem_size, e);
                 }
                 // A declared array longer than its initializer keeps its full
                 // length, zero-filled, rather than running into whatever
