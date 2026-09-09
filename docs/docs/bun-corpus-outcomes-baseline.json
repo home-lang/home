@@ -40,7 +40,7 @@
     "native_linux_windows_execution_verified": false
   },
   "remaining": [
-    "Original root/workspace graph restored and root install succeeds; test install times out in DuckDB native compilation. Native host detection, services, full vendor preparation and unified CI orchestration remain open (#724).",
+    "Native host detection and expected-agent checks are implemented. The original test install still times out compiling DuckDB (#725); services, complete vendor preparation and unified CI orchestration remain open (#724).",
     "Execute the entire applicable primary and vendor suite, retaining original sources/snapshots and all failures for feature porting.",
     "Native Linux/Windows child-lifetime execution and ASAN verification remain unclaimed (#723).",
     "Full runtime feature porting, default CLI fallback removal and independent native build ownership."
@@ -137,5 +137,49 @@
     "issue": "https://github.com/home-lang/home/issues/725",
     "evidence": "docs/docs/bun-port-evidence/2026-09-08-primary-setup/manifest.json",
     "isolated_pinned_bun_reproduces_missing_prebuilt_and_timeout": true
+  },
+  "platform_checkpoint": {
+    "kind": "native platform and launch-context verification, with complete prepared Elysia regression",
+    "source": "1dabff08b2622ca8532f0bd7995a1dcd7a8e998c",
+    "home_sha256": "6dccf1997c82f6e73a3e06ca8f4357ac5b74b68bf917293373b370299318a5dd",
+    "bun_pin": "4982b91e3702094330f3be3883354c52b8c01323",
+    "build_steps_passed": 23,
+    "native_harness_passed": 18,
+    "platform_units_passed": 4,
+    "platform_reference_comparisons": 96,
+    "platform_command_controls_verified": 6,
+    "validator_controls_passed": 12,
+    "live_host": {
+      "os": "darwin",
+      "arch": "aarch64",
+      "distro": "macOS",
+      "distro_version": "27.0",
+      "abi": null,
+      "abi_version": null
+    },
+    "compile_only_targets": [
+      "x86_64-linux-musl",
+      "x86_64-windows-gnu"
+    ],
+    "native_linux_windows_execution_verified": false,
+    "vendor_completed_files": 129,
+    "vendor_registered_cases": {
+      "passed": 1516,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    "vendor_original_excluded_file": "test/ws/connection.test.ts",
+    "vendor_sources_unchanged": 283,
+    "vendor_attempts_this_build": 1,
+    "vendor_setup_reused_from": "../2026-09-08-selection-verified/manifest.json",
+    "primary_setup_still_failing": "https://github.com/home-lang/home/issues/725",
+    "obsolete_generated_bytes_removed": 710020272,
+    "first_failures": [
+      "Zig optional-slice inference required an explicit slice type in platform expectation checks.",
+      "Reference-driver Function construction did not preserve source escapes; corrected driver embeds the unchanged function source as a JSON string."
+    ],
+    "full_parity_complete": false,
+    "evidence": "docs/docs/bun-port-evidence/2026-09-08-native-platform/manifest.json"
   }
 }
