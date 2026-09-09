@@ -1,0 +1,409 @@
+{
+  "parent": "https://github.com/home-lang/home/issues/66",
+  "issue": "https://github.com/home-lang/home/issues/723",
+  "runtime_source": "61670c72bf8d1a95214009216b07aeae350193fa",
+  "home_sha256": "fd7c61bf96b18d6954687cd33eb95e429290007f5d199fb985d364e868eb98c4",
+  "status": "Native macOS wait-after-EOF and capture completeness verified. Linux/Windows helper cross-compiles, but native execution on those platforms remains unverified. Full applicable primary/vendor suite remains incomplete under #724.",
+  "files": [
+    {
+      "file": "build-corpus-child-lifetime.log.gz",
+      "bytes": 3325,
+      "sha256": "923cfbc1f9d24c7b947ac10bbb44b75900e4fb18d62b66c47ba6cc8a0861055c"
+    },
+    {
+      "file": "child-wait-cross-compile/manifest.json.gz",
+      "bytes": 1093,
+      "sha256": "256b3134bf61883e493c2788397863f90dcee14fa1caff7e19d6ec8ce4469d6a"
+    },
+    {
+      "file": "child-wait-cross-compile/probe.zig.gz",
+      "bytes": 258,
+      "sha256": "614f80b665997302b0eab6f7a5677e472644541ffe390f920843701307855750"
+    },
+    {
+      "file": "child-wait-cross-compile/x86_64-linux-musl.log.gz",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "child-wait-cross-compile/x86_64-windows-gnu.log.gz",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "child-wait-cross-compile.log.gz",
+      "bytes": 888,
+      "sha256": "0b31c8167a2e7bdd99b9e2d2efcc97950a0e137748047807bed821d32e67e105"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/manifest.json.gz",
+      "bytes": 10571,
+      "sha256": "be602c02094c34995ddd4c0c7ce3626667f12595b8fa6fa25f6836e9f01b5111"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/original-matrix.log.gz",
+      "bytes": 58897,
+      "sha256": "53f8d02b9376f4e94d876362ded529338a25cad68fb962849499b50b6b4d7145"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/original-reports/000000.junit.xml.gz",
+      "bytes": 77415,
+      "sha256": "1c7c72de9770738edf8cc75139147d6164766d3264f6e3a2004906ceb8e7836b"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/original-reports/000000.stderr.gz",
+      "bytes": 51102,
+      "sha256": "a68766064036a9edb9367ab67297693941092a5179f7cb3601a7113914bcdca8"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/original-reports/000000.stdout.gz",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/original-reports/000001.junit.xml.gz",
+      "bytes": 1669,
+      "sha256": "dcad4ec7e168d8acfce00f71885d159f9269a64c6ef994a4d56dd40fb251175a"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/original-reports/000001.stderr.gz",
+      "bytes": 879,
+      "sha256": "69d08108fcc936c985230b636bb55c518a814d814ebb62409c72f89f497b2cd2"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/original-reports/000001.stdout.gz",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/original-reports/000002.junit.xml.gz",
+      "bytes": 790,
+      "sha256": "2209c09580dd8c334334f181e131c066d1dd0cb075042dfe52412d39e18a01ce"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/original-reports/000002.stderr.gz",
+      "bytes": 317,
+      "sha256": "419e7e3ec2b86f05619986b0712370d9597e1ef601199184310df0a06a59f51d"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/original-reports/000002.stdout.gz",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/original-reports/000003.stderr.gz",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/original-reports/000003.stdout.gz",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/original-reports/000004.stderr.gz",
+      "bytes": 134,
+      "sha256": "2b1e1bf48bb02f94fad3b848a8f16c0fa957817f13562f7490ad19953344706b"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/original-reports/000004.stdout.gz",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/original-reports/000005.junit.xml.gz",
+      "bytes": 606,
+      "sha256": "616d72c4119d975d7bb267ce8a7682959c0f6e016eeeaad4116999003ffcd783"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/original-reports/000005.stderr.gz",
+      "bytes": 4601,
+      "sha256": "8b0dda30aee3c8c29f2c375b6d817030260da50da2c7ddc1733f7d4cd3ed694e"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/original-reports/000005.stdout.gz",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/original-reports/events.jsonl.gz",
+      "bytes": 20877,
+      "sha256": "4c0ede95589e31305c8e0e29bf6f1faa1096cf70cfc85ae8e974e91e109840ba"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/private-controls.log.gz",
+      "bytes": 808,
+      "sha256": "e9413c4c9a3aba49da046d317e4ecf22eee058b807ae01b3a47ec7fcbb0e9d54"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/private-reports/report-closed-success/000000.stderr.gz",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/private-reports/report-closed-success/000000.stdout.gz",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/private-reports/report-closed-success/events.jsonl.gz",
+      "bytes": 3916,
+      "sha256": "6edb186357c69fe3a88578391511b3a5ac01a53632e273b47ec2c9e840d22145"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/private-reports/report-closed-timeout/000000.stderr.gz",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/private-reports/report-closed-timeout/000000.stdout.gz",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/private-reports/report-closed-timeout/events.jsonl.gz",
+      "bytes": 3920,
+      "sha256": "8c86d0b16ec00354516b5c41e8dc7baeb1965b248adea483d291664d7b2bd1df"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/private-reports/report-interruption/events.jsonl.gz",
+      "bytes": 3307,
+      "sha256": "a2b470e0ab7c85ca7753dfb71dde92555629a4fb977256db9cc9ee6fca94babe"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/private-reports/report-invalid-negative/000000.junit.xml.gz",
+      "bytes": 610,
+      "sha256": "fb8a5b2546424fa6cb0d5da2ae56914c15101eaf530a7e8a559fcf12ae3e33ca"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/private-reports/report-invalid-negative/000000.stderr.gz",
+      "bytes": 579,
+      "sha256": "2107d36ec70c4263bd570e1f1930d5a7e0a9024f2251f3363a52a7e6d2a985a4"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/private-reports/report-invalid-negative/000000.stdout.gz",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/private-reports/report-invalid-negative/events.jsonl.gz",
+      "bytes": 4183,
+      "sha256": "75bdbf14bfbd194eefe16c4fd70f72d6596a84c123cd23346dbd29f6ee27964c"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/private-reports/report-mixed/000000.junit.xml.gz",
+      "bytes": 893,
+      "sha256": "5029725cbfd17624860c138b39cb6a34966ac911ab6a379e70b96c53062f0711"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/private-reports/report-mixed/000000.stderr.gz",
+      "bytes": 731,
+      "sha256": "3683fa04058872420636f05284d19d87cfcfba683ab5cda230473a3ff60f94a6"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/private-reports/report-mixed/000000.stdout.gz",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/private-reports/report-mixed/000001.stderr.gz",
+      "bytes": 1227,
+      "sha256": "22a4a7a9a468ffba5bb9f477f34ace763edc331739d68d7613fe408de1f26342"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/private-reports/report-mixed/000001.stdout.gz",
+      "bytes": 68,
+      "sha256": "700ce61388558191f8b7d987288af8433b7a3e20120e9f8d8fb8b011b407f1de"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/private-reports/report-mixed/000002.stderr.gz",
+      "bytes": 121,
+      "sha256": "d557965a8459f5dd7dcc2608e6305f42e6bd9395c3efe84eec85205dd29b6398"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/private-reports/report-mixed/000002.stdout.gz",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/private-reports/report-mixed/events.jsonl.gz",
+      "bytes": 11569,
+      "sha256": "5852987ef3b342ecb0b350c5a28ec5b7c484faf57417967b40078fe142496b33"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/private-reports/report-script-failure/000000.stderr.gz",
+      "bytes": 464,
+      "sha256": "f2769e4b14eb9265b1b5882477c90bfe9fb821cea94016fa2355b16e2fd6b06d"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/private-reports/report-script-failure/000000.stdout.gz",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/private-reports/report-script-failure/events.jsonl.gz",
+      "bytes": 3902,
+      "sha256": "ebddb84d67659f1b0eed57e2f4cd6c61c2688d43451fc3a8eb830be455bdfbe6"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/private-reports/report-signal/000000.stderr.gz",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/private-reports/report-signal/000000.stdout.gz",
+      "bytes": 20,
+      "sha256": "621883d464b4f25c9052535d6335e3732d7f75d8da6451ab004fa36ebabf62f0"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/private-reports/report-signal/events.jsonl.gz",
+      "bytes": 3905,
+      "sha256": "3cee0b3e16373a11dd175e36af71b21d056e4920bbbfd637ea18cf5fbc625b15"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/private-reports/report-timeout/000000.stderr.gz",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/private-reports/report-timeout/000000.stdout.gz",
+      "bytes": 21,
+      "sha256": "40927f3ce0f70e088f6ad740c9cc48776ca0938f2c1d5f5eb9d23f38a36b6ee7"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/private-reports/report-timeout/events.jsonl.gz",
+      "bytes": 3906,
+      "sha256": "f9068604867c7066de82fa93fca9f7e67ce2dd2b4b12addc176fa8944794a95a"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/private-reports/report-write-failure/events.jsonl.gz",
+      "bytes": 3152,
+      "sha256": "78bb529cd545e4c037a440bf341b9bcd12649cc60947e1a4bd22db71f91f8138"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/validated-original-reports.log.gz",
+      "bytes": 64080,
+      "sha256": "848f494b423edde6a6a4adff5c867418468f3e5105c41b1156f71bec807f104f"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/validated-report-closed-success.log.gz",
+      "bytes": 734,
+      "sha256": "d390249b545f5c64bf992d164d291db4bdf7a5187a0d5735333bd3ecf00b0bce"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/validated-report-closed-timeout.log.gz",
+      "bytes": 744,
+      "sha256": "988123e6fc49ba42c72f18c25aac52b05440c43088df52e8bc4593e38aaf74c4"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/validated-report-interruption.log.gz",
+      "bytes": 976,
+      "sha256": "808ca2ee8b2c14f01b149d4dd636341fdae67c981193d8991acf1f415bc947a4"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/validated-report-invalid-negative.log.gz",
+      "bytes": 872,
+      "sha256": "f3f05fcfa19e801e240f0e1311a039abd6371cd00ad808d3c88e9cf864a36684"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/validated-report-mixed.log.gz",
+      "bytes": 1177,
+      "sha256": "94714e0bd3b424e40650f77431744b949de3044e168053ba80260027f0594900"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/validated-report-script-failure.log.gz",
+      "bytes": 744,
+      "sha256": "ab5dedf48ed6afe6c4cbc98dcbc92377378961f3a0e5433a97a6cd6355810fe2"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/validated-report-signal.log.gz",
+      "bytes": 736,
+      "sha256": "8fb75cb01d4a8a9e86fab199a33eb673e08452d258f647f2bf1522e20d187265"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/validated-report-timeout.log.gz",
+      "bytes": 737,
+      "sha256": "984d66b432b51a973be02c8c3384b089525b65c6b4d6dc304120fbe2e0b2cb67"
+    },
+    {
+      "file": "corpus-child-lifetime-verified/validated-report-write-failure.log.gz",
+      "bytes": 672,
+      "sha256": "8737fe6bb52ed0c83b135a805aa919f7f8cfc8c84b667bba5e811de4e8c8bdb4"
+    },
+    {
+      "file": "corpus-closed-pipe-ffi-after/child-ready.gz",
+      "bytes": 29,
+      "sha256": "f26c88d0b62cd1ad1016a195818aff4b718b2f200995cca7c7c6a3f483a38d8c"
+    },
+    {
+      "file": "corpus-closed-pipe-ffi-after/execution.log.gz",
+      "bytes": 1182,
+      "sha256": "5b6e3b6020b960a440f0c055cc164d43fcc9b5a026755a4e7bba42627cb838a8"
+    },
+    {
+      "file": "corpus-closed-pipe-ffi-after/manifest.json.gz",
+      "bytes": 5827,
+      "sha256": "9785b175a3bcf8c8980a8c3a66b44a5804dc264b1945958da3af6d10f802ed47"
+    },
+    {
+      "file": "corpus-closed-pipe-ffi-after/reports/000000.stderr.gz",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "corpus-closed-pipe-ffi-after/reports/000000.stdout.gz",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "corpus-closed-pipe-ffi-after/reports/events.jsonl.gz",
+      "bytes": 4070,
+      "sha256": "1357389e0e2ac098951c75971e87a364a03d975181d8ef4bb31e2388de633595"
+    },
+    {
+      "file": "corpus-closed-pipe-ffi-after/source.js.gz",
+      "bytes": 430,
+      "sha256": "effd46a54bf60d4d0901713831e19460253820464adab211447fca9b5eca8b14"
+    },
+    {
+      "file": "corpus-output-complete-pickier.log.gz",
+      "bytes": 132,
+      "sha256": "fb0f95ef182d863303c8bfccc4d1860dae6cde81f6b32c3bb1541a3cac62a370"
+    },
+    {
+      "file": "corpus-output-complete-validator.log.gz",
+      "bytes": 377,
+      "sha256": "53cf90950aa52a51db9909e04cfac349ad3aaf2e86752bd94aaa83e9390bd91e"
+    },
+    {
+      "file": "corpus-suite-driver-issue.md.gz",
+      "bytes": 2997,
+      "sha256": "cbb4809a2467e1432bd4983b29d9186dda495b298aa2cd15ab3f1d46f0d8a4e2"
+    },
+    {
+      "file": "verify-child-wait-cross-compile.py.gz",
+      "bytes": 1124,
+      "sha256": "b72e1fd8e226053dab2d8ab43325b495a9e556599b7ce0a94025cf543ab1a3c4"
+    },
+    {
+      "file": "verify-corpus-child-lifetime.log.gz",
+      "bytes": 5478,
+      "sha256": "e5453eeb96e8c99abd678073546e07d2c6472ee1c29036c95fd8991029da2e5e"
+    },
+    {
+      "file": "verify-corpus-child-lifetime.py.gz",
+      "bytes": 3862,
+      "sha256": "cd01e1b70e07f8176652f3fa79061ff9f128c81d3463ac1f1d7bae3aea73b2c5"
+    },
+    {
+      "file": "verify-corpus-closed-pipe-ffi-after.log.gz",
+      "bytes": 912,
+      "sha256": "949d58caaea0d0b249c13d0d49d0e697f8fe07b0424c2284fcd630a38d0c4f83"
+    },
+    {
+      "file": "verify-corpus-closed-pipe-ffi-after.py.gz",
+      "bytes": 2865,
+      "sha256": "f1c3cb05a81793503a0f4683b5ed56259cb51739ff367f2152b7d812c6cde96b"
+    }
+  ]
+}

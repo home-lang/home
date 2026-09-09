@@ -1,16 +1,16 @@
 {
   "parent": "https://github.com/home-lang/home/issues/66",
   "outcome_issue": "https://github.com/home-lang/home/issues/722",
-  "runtime_source": "719d6369f8de5fec2956d85757da8ecc6ed98264",
-  "controls_source": "aa8b9a5362526acd05dbb424c0cbb5bd07fb2884",
-  "home_sha256": "d53d30234990213f93cc0460546cab369f97cf031be1dc9f036d4c21d39900d4",
+  "runtime_source": "61670c72bf8d1a95214009216b07aeae350193fa",
+  "controls_source": "61670c72bf8d1a95214009216b07aeae350193fa",
+  "home_sha256": "fd7c61bf96b18d6954687cd33eb95e429290007f5d199fb985d364e868eb98c4",
   "bun_pin": "4982b91e3702094330f3be3883354c52b8c01323",
   "full_parity_complete": false,
   "verification": {
     "build_steps_passed": 23,
-    "native_harness_passed": 11,
+    "native_harness_passed": 12,
     "journal_units_passed": 3,
-    "validator_units_passed": 8,
+    "validator_units_passed": 9,
     "targeted_pickier_passed": true,
     "private_real_process_controls_passed": true,
     "original_files": 6,
@@ -21,22 +21,34 @@
     "successful_node_script_checks": 1,
     "verified_negative_process_checks": 1,
     "comment_only_files": 1,
-    "source_snapshot_executable_integrity": true
+    "source_snapshot_executable_integrity": true,
+    "child_lifetime_units_passed": 2,
+    "original_complete_captures": 6,
+    "journal_schema": 2
   },
   "first_run_failure": "ANSI styling hid the strict indexed-property negative diagnostic. First-run failure preserved; complete unstyled matching and rejected-negative raw counts now verified.",
   "deadline_investigation": {
     "issue": "https://github.com/home-lang/home/issues/723",
-    "first_control": "Closing descriptors 1 and 2 while alive still reaches the correct native 20-second timeout. Actual parent-observed EOF is not established; suspected post-EOF gap not reproduced.",
-    "confirmed_failure": false
+    "initial_non_reproduction": "fs.closeSync intentionally leaves standard descriptors open, matching pinned Bun.",
+    "confirmed_failure": "Actual libc close through Home FFI succeeds for both descriptors; the pre-fix runner misses its 20-second deadline and is stopped by the 30-second supervisor.",
+    "macos_repaired": true,
+    "post_fix": "Actual closed-pipe child times out at the original 20 seconds, early exit succeeds, and final captures remain complete.",
+    "cross_compile_targets": [
+      "x86_64-linux-musl",
+      "x86_64-windows-gnu"
+    ],
+    "native_linux_windows_execution_verified": false
   },
   "remaining": [
-    "Execute and retain the entire required 4754-entry inventory with real service/vendor/platform prerequisites.",
-    "Resolve #723 by verifying actual pipe EOF and child-wait lifetime behavior.",
-    "Continue original source/snapshot integrity through full-suite setup; native Windows and ASAN verification.",
+    "Port and verify pinned CI modifier/expectation selection, real root/test setup and the additional Elysia 1.4.28 vendor suite (#724).",
+    "Execute the entire applicable primary and vendor suite, retaining original sources/snapshots and all failures for feature porting.",
+    "Native Linux/Windows child-lifetime execution and ASAN verification remain unclaimed (#723).",
     "Full runtime feature porting, default CLI fallback removal and independent native build ownership."
   ],
   "evidence": [
     "docs/docs/bun-port-evidence/2026-09-08-corpus-journal-first/manifest.json",
-    "docs/docs/bun-port-evidence/2026-09-08-corpus-journal-verified/manifest.json"
+    "docs/docs/bun-port-evidence/2026-09-08-corpus-journal-verified/manifest.json",
+    "docs/docs/bun-port-evidence/2026-09-08-child-lifetime-first/manifest.json",
+    "docs/docs/bun-port-evidence/2026-09-08-child-lifetime-verified/manifest.json"
   ]
 }
