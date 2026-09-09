@@ -6005,7 +6005,7 @@ fn prepareHomeCapturedInvocation(
         const storage = options.storage orelse return error.MissingCorpusStorage;
         const runtime_path = try std.fmt.allocPrint(allocator, "{s}{c}{s}", .{ storage.bin_path, std.fs.path.delimiter, std.fs.path.dirname(executable) orelse "." });
         defer allocator.free(runtime_path);
-        try corpus_launch.applyEnvironment(allocator, &environ_map, value, storage.path, runtime_path);
+        try corpus_launch.applyEnvironment(allocator, &environ_map, value, storage.temp_path, runtime_path);
     }
     const timeout_arg = if (selected) |value| (if (value.test_timeout_ms) |ms| try std.fmt.allocPrint(allocator, "--timeout={d}", .{ms}) else null) else null;
     errdefer if (timeout_arg) |arg| allocator.free(arg);

@@ -1089,12 +1089,13 @@ test "native corpus launch applies CI environment and removes per-file storage" 
     try tmp.dir.writeFile(io, .{ .sub_path = "bunfig.toml", .data = "[test]\n" });
     try tmp.dir.writeFile(io, .{ .sub_path = "test/launch.test.js", .data =
         \\import { test, expect } from "bun:test";
-        \\import { realpathSync } from "node:fs";
+        \\import { realpathSync, readdirSync } from "node:fs";
         \\console.log("launch-temp=" + process.env.TEST_TMPDIR);
         \\test("CI startup and real command aliases", () => {
         \\  for (const key of ["BUN_GARBAGE_COLLECTOR_LEVEL", "BUN_FEATURE_FLAG_INTERNAL_FOR_TESTING"]) expect(process.env[key]).toBe("1");
         \\  expect(process.env.BUN_JSC_randomIntegrityAuditRate).toBe("1.0");
         \\  expect(process.env.BUN_RUNTIME_TRANSPILER_CACHE_PATH).toBe("0");
+        \\  expect(readdirSync(process.env.BUN_INSTALL_CACHE_DIR)).toEqual([]);
         \\  expect(process.env.BUN_INSTALL_CACHE_DIR).toBe(process.env.TEST_TMPDIR);
         \\  expect(process.env.BUN_TMPDIR).toBe(process.env.TEST_TMPDIR);
         \\  expect(process.env.GITHUB_ACTIONS).toBe("true");

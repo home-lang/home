@@ -125,6 +125,7 @@ fn listed(allocator: std.mem.Allocator, io: Io, root: []const u8, filename: []co
 /// aliases here avoids altering a neighboring installed Bun executable.
 pub const Storage = struct {
     path: []u8,
+    temp_path: []u8,
     bin_path: []u8,
 
     pub fn create(allocator: std.mem.Allocator, io: Io, inherited: *const std.process.Environ.Map) !Storage {
@@ -139,10 +140,13 @@ pub const Storage = struct {
         errdefer allocator.free(path);
         try Io.Dir.cwd().createDir(io, path, if (builtin.os.tag == .windows) .default_dir else .fromMode(0o700));
         errdefer Io.Dir.cwd().deleteTree(io, path) catch {};
+        const temp_path = try std.fs.path.join(allocator, &.{ path, "tmp" });
+        errdefer allocator.free(temp_path);
+        try Io.Dir.cwd().createDir(io, temp_path, if (builtin.os.tag == .windows) .default_dir else .fromMode(0o700));
         const bin_path = try std.fs.path.join(allocator, &.{ path, "bin" });
         errdefer allocator.free(bin_path);
         try Io.Dir.cwd().createDir(io, bin_path, .default_dir);
-        return .{ .path = path, .bin_path = bin_path };
+        return .{ .path = path, .temp_path = temp_path, .bin_path = bin_path };
     }
 
     pub fn linkExecutable(self: Storage, allocator: std.mem.Allocator, io: Io, executable: []const u8) !void {
@@ -163,6 +167,7 @@ pub const Storage = struct {
 
     pub fn deinit(self: *Storage, allocator: std.mem.Allocator) void {
         allocator.free(self.bin_path);
+        allocator.free(self.temp_path);
         allocator.free(self.path);
         self.* = undefined;
     }
@@ -200,19 +205,33 @@ test "corpus launch storage is isolated and cleanup preserves its neighbors" {
     defer second.deinit(allocator);
     defer second.cleanup(std.testing.io) catch {};
     try std.testing.expect(!std.mem.eql(u8, first.path, second.path));
+    var empty_cache = try Io.Dir.cwd().openDir(std.testing.io, first.temp_path, .{ .iterate = true });
+    defer empty_cache.close(std.testing.io);
+    var entries = empty_cache.iterate();
+    try std.testing.expect(try entries.next(std.testing.io) == null);
     try first.cleanup(std.testing.io);
     try std.testing.expectError(error.FileNotFound, Io.Dir.cwd().access(std.testing.io, first.path, .{}));
     try Io.Dir.cwd().access(std.testing.io, second.path, .{});
 }
 
 pub fn resolveExecutable(allocator: std.mem.Allocator, io: Io, env: *const std.process.Environ.Map, executable: []const u8) ![]u8 {
-    if (std.mem.indexOfAny(u8, executable, "/\\") != null) return Io.Dir.cwd().realPathFileAlloc(io, executable, allocator);
+    if (std.mem.indexOfAny(u8, executable, "/\\") != null) {
+        const resolved = try Io.Dir.cwd().realPathFileAlloc(io, executable, allocator);
+        defer allocator.free(resolved);
+        // realPathFileAlloc owns a sentinel byte. Return the non-sentinel
+        // allocation promised by this API so callers can free its full extent.
+        return allocator.dupe(u8, resolved);
+    }
     var paths = std.mem.splitScalar(u8, env.get("PATH") orelse "", std.fs.path.delimiter);
     while (paths.next()) |directory| {
-        const candidate = try std.fs.path.join(allocator, &.{ directory, executable });
+        const name = if (builtin.os.tag == .windows and std.fs.path.extension(executable).len == 0) try std.fmt.allocPrint(allocator, "{s}.exe", .{executable}) else try allocator.dupe(u8, executable);
+        defer allocator.free(name);
+        const candidate = try std.fs.path.join(allocator, &.{ directory, name });
         defer allocator.free(candidate);
         Io.Dir.cwd().access(io, candidate, .{ .execute = true }) catch continue;
-        return Io.Dir.cwd().realPathFileAlloc(io, candidate, allocator);
+        const resolved = try Io.Dir.cwd().realPathFileAlloc(io, candidate, allocator);
+        defer allocator.free(resolved);
+        return allocator.dupe(u8, resolved);
     }
     return error.FileNotFound;
 }
@@ -259,4 +278,18 @@ test "corpus launch validation honors pinned list semantics" {
     try applyValidation(allocator, std.testing.io, &env, profile(included, "/bin/home-asan"), included, root);
     try std.testing.expectEqualStrings("1", env.get("BUN_JSC_validateExceptionChecks").?);
     try std.testing.expectEqualStrings("1", env.get("BUN_DESTRUCT_VM_ON_EXIT").?);
+}
+
+test "corpus launch resolved executable preserves allocation ownership" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "executable", .data = "fixture" });
+    const absolute = try tmp.dir.realPathFileAlloc(std.testing.io, "executable", allocator);
+    defer allocator.free(absolute);
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    const resolved = try resolveExecutable(allocator, std.testing.io, &env, absolute);
+    defer allocator.free(resolved);
+    try std.testing.expectEqualStrings(absolute, resolved);
 }
