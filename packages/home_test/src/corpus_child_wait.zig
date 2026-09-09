@@ -18,7 +18,7 @@ pub fn waitForExitBefore(io: Io, child: *const std.process.Child, deadline: Io.C
     }
 }
 
-fn hasExited(child: *const std.process.Child) !bool {
+pub fn hasExited(child: *const std.process.Child) !bool {
     const id = child.id orelse return error.ChildAlreadyReaped;
     if (comptime builtin.os.tag == .windows) {
         const windows = std.os.windows;
@@ -66,4 +66,33 @@ test "child deadline observes a live child without reaping or extending the dead
     try std.testing.expect(!try waitForExitBefore(io, &child, deadline));
     try std.testing.expect(child.id != null);
     try std.testing.expect(!try waitForExitBefore(io, &child, deadline));
+}
+
+pub fn terminate(child: *std.process.Child, process_group: bool) void {
+    if (comptime @import("builtin").os.tag == .windows) {
+        forceTerminate(child, process_group);
+        return;
+    }
+    const pid = child.id orelse return;
+    if (process_group) {
+        std.posix.kill(-pid, .TERM) catch std.posix.kill(pid, .TERM) catch {};
+    } else {
+        std.posix.kill(pid, .TERM) catch {};
+    }
+}
+
+pub fn forceTerminate(child: *std.process.Child, process_group: bool) void {
+    const id = child.id orelse return;
+    if (comptime @import("builtin").os.tag == .windows) {
+        _ = std.os.windows.ntdll.NtTerminateProcess(
+            id,
+            @fromBackingInt(@intCast(@as(u32, 1))),
+        );
+        return;
+    }
+    if (process_group) {
+        std.posix.kill(-id, .KILL) catch std.posix.kill(id, .KILL) catch {};
+    } else {
+        std.posix.kill(id, .KILL) catch {};
+    }
 }

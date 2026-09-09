@@ -18,6 +18,8 @@ test {
     _ = home_test.corpus_selection;
     _ = home_test.corpus_platform;
     _ = home_test.corpus_setup;
+    _ = home_test.corpus_remap;
+    _ = home_test.corpus_vendor_prepare;
     _ = home_test.corpus_vendor;
     _ = home_test.corpus_runner;
     _ = home_test.result;

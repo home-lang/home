@@ -4003,6 +4003,8 @@ fn printTestUsage() void {
         \\  --home                  Run only Home integration tests
         \\  --bun-corpus-native-subset <name>
         \\                          Run an explicit native Bun-corpus bootstrap subset
+        \\  --bun-corpus-remap       Hold the original crash-remap service until stdin EOF
+        \\  --bun-corpus-prepare-vendor <name>  Clone, install, and build a pinned vendor
         \\  --bun-corpus-setup       Run the original root/test installs with durable outcomes
         \\  --bun-corpus-platform    Detect the native host and check expected CI platform
         \\  --bun-corpus-prepared-vendor <name> [path filters...]
@@ -5460,6 +5462,54 @@ fn runBunCorpusNativeDirectory(allocator: std.mem.Allocator, corpus_path: []cons
     if (failed) std.process.exit(1);
 }
 
+fn runBunCorpusRemap(allocator: std.mem.Allocator) !void {
+    const pin_path = try std.fs.path.join(allocator, &.{ home_test.corpus.default_root, "UPSTREAM_SHA.txt" });
+    defer allocator.free(pin_path);
+    const pin = try Io.Dir.cwd().readFileAlloc(g_io, pin_path, allocator, .limited(128));
+    defer allocator.free(pin);
+    var remap = try home_test.corpus_remap.Remap.start(allocator, g_io, std.fs.path.dirname(home_test.corpus.default_root).?, std.mem.trim(u8, pin, " \t\r\n"), null);
+    defer remap.deinit();
+    if (remap.port()) |port| {
+        const line = try std.fmt.allocPrint(allocator, "{d}\n", .{port});
+        defer allocator.free(line);
+        try Io.File.stdout().writeStreamingAll(g_io, line);
+        // The parent owns this explicit service through stdin. Continue watching
+        // child completion so an unexpected service exit cannot hang the CLI.
+        var buffers: Io.File.MultiReader.Buffer(1) = undefined;
+        var reader: Io.File.MultiReader = undefined;
+        reader.init(allocator, g_io, buffers.toStreams(), &.{Io.File.stdin()});
+        defer reader.deinit();
+        defer reader.batch.cancel(g_io);
+        while (!remap.service.finished_event.isSet()) {
+            reader.fill(64, .{ .duration = .{ .raw = .fromMilliseconds(50), .clock = .awake } }) catch |err| switch (err) {
+                error.EndOfStream => break,
+                error.Timeout => continue,
+                else => return err,
+            };
+            reader.reader(0).tossBuffered();
+        }
+    }
+    if (!try remap.finish()) return error.CorpusRemapFailed;
+}
+
+fn prepareBunCorpusVendor(allocator: std.mem.Allocator, name: []const u8) !void {
+    const manifest_path = try std.fs.path.join(allocator, &.{ home_test.corpus.default_root, "vendor.json" });
+    defer allocator.free(manifest_path);
+    const source = try Io.Dir.cwd().readFileAlloc(g_io, manifest_path, allocator, .limited(1024 * 1024));
+    defer allocator.free(source);
+    const parsed = try std.json.parseFromSlice([]home_test.corpus_vendor.Vendor, allocator, source, .{});
+    defer parsed.deinit();
+    for (parsed.value) |vendor| {
+        if (!std.mem.eql(u8, vendor.package, name)) continue;
+        var summary = try home_test.corpus_vendor_prepare.prepare(allocator, g_io, std.fs.path.dirname(home_test.corpus.default_root).?, vendor, null);
+        defer summary.deinit();
+        std.debug.print("Vendor {s}: {d} preparation steps completed, {d} failed; zero corpus case credit\n", .{ name, summary.completed, summary.failed });
+        if (!summary.successful()) return error.CorpusVendorPreparationFailed;
+        return;
+    }
+    return error.UnknownCorpusVendor;
+}
+
 fn runBunCorpusSetup(allocator: std.mem.Allocator) !void {
     const project_root = std.fs.path.dirname(home_test.corpus.default_root).?;
     var summary = try home_test.corpus_setup.runRootInstalls(allocator, g_io, project_root, .{});
@@ -5521,6 +5571,15 @@ fn runPreparedBunVendor(allocator: std.mem.Allocator, name: []const u8, filters:
 }
 
 fn testCommand(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
+    for (args) |arg| if (std.mem.eql(u8, arg, "--bun-corpus-remap")) {
+        if (args.len != 1) return error.UnexpectedRemapArguments;
+        return runBunCorpusRemap(allocator);
+    };
+    for (args, 0..) |arg, index| {
+        if (!std.mem.eql(u8, arg, "--bun-corpus-prepare-vendor")) continue;
+        if (index != 0 or args.len != 2) return error.ExpectedVendorPreparationName;
+        return prepareBunCorpusVendor(allocator, args[1]);
+    }
     for (args) |arg| if (std.mem.eql(u8, arg, "--bun-corpus-setup")) {
         if (args.len != 1) return error.UnexpectedSetupArguments;
         return runBunCorpusSetup(allocator);

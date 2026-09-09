@@ -32,6 +32,10 @@ def summarize(directory):
     selection = None
     setup = None
     purpose = "corpus"
+    service = None
+    readiness = None
+    vendor_setup = None
+    checkout = None
 
     def check(condition, message):
         if not condition:
@@ -64,8 +68,47 @@ def summarize(directory):
                 check(number == 1 and run is None and row.get('schema') in (1, 2), 'invalid run header')
                 run = row
                 purpose = row.get('purpose', 'corpus')
-                check(purpose in ('corpus', 'setup'), 'unknown run purpose')
-                check(purpose != 'setup' or row.get('schema') == 2, 'setup requires complete-capture schema')
+                check(purpose in ('corpus', 'setup', 'service', 'vendor_setup'), 'unknown run purpose')
+                check(purpose == 'corpus' or row.get('schema') == 2, 'setup requires complete-capture schema')
+            elif event == 'service_plan':
+                check(purpose == 'service' and run is not None and service is None and not selected and not started, 'invalid service plan order')
+                service = row
+                check(row.get('contract') == 'bun-4982b91e-ci-remap' and row.get('service') == 'ci-remap-server' and row.get('setup_performed') is False, 'invalid service contract')
+                check(row.get('startup_timeout_ms') == 5000 and row.get('ready_protocol') == 'port_line', 'invalid service readiness contract')
+                for key, size in [('commit', 40), ('source_sha256', 64), ('package_sha256', 64)]:
+                    value = row.get(key)
+                    check(isinstance(value, str) and len(value) == size and all(c in '0123456789abcdef' for c in value), 'invalid service ' + key)
+            elif event == 'service_readiness':
+                check(purpose == 'service' and service is not None and readiness is None and row.get('id') == 0 and 0 in started and not completed, 'invalid service readiness order')
+                readiness = row
+                check(type(row.get('ready')) is bool, 'invalid service ready state')
+                check((type(row.get('port')) is int and 0 < row['port'] < 65536) if row.get('ready') else row.get('port') is None, 'invalid service port')
+            elif event == 'vendor_setup_plan':
+                check(purpose == 'vendor_setup' and run is not None and vendor_setup is None and not selected and not started, 'invalid vendor preparation plan order')
+                vendor_setup = row
+                check(row.get('contract') == 'bun-4982b91e-explicit-vendor-preparation' and row.get('case_credit') == 0, 'invalid vendor preparation contract')
+                check(type(row.get('clone_required')) is bool, 'invalid vendor clone state')
+                steps = (['clone'] if row.get('clone_required') else []) + ['fetch', 'checkout', 'head', 'tag', 'install', 'build']
+                check(row.get('steps') == [dict(path=path, timeout_ms=60000 if path == 'build' else 180000) for path in steps], 'invalid vendor preparation steps')
+                vendor = row['vendor']
+                check(all(isinstance(vendor.get(key), str) and vendor[key] for key in ('package', 'repository', 'tag')), 'invalid vendor specification')
+                check(row.get('vendor_cwd') == str(Path(run['corpus_root']) / 'vendor' / vendor['package']), 'invalid vendor working directory')
+                value = row.get('vendor_sha256')
+                check(isinstance(value, str) and len(value) == 64 and all(c in '0123456789abcdef' for c in value), 'invalid vendor specification hash')
+            elif event == 'vendor_checkout':
+                check(purpose == 'vendor_setup' and vendor_setup is not None and checkout is None, 'invalid vendor checkout record')
+                checkout = row
+                check(row.get('tag') == vendor_setup['vendor']['tag'], 'vendor checkout tag mismatch')
+                for key, size in [('revision', 40), ('package_sha256', 64)]:
+                    value = row.get(key)
+                    check(isinstance(value, str) and len(value) == size and all(c in '0123456789abcdef' for c in value), 'invalid vendor checkout ' + key)
+                for name in ('head', 'tag'):
+                    matches = [identity for identity, choice in selected.items() if choice.get('path') == name]
+                    check(len(matches) == 1 and matches[0] in completed, 'vendor checkout precedes revision verification')
+                    if len(matches) == 1 and matches[0] in completed:
+                        path = artifact(completed[matches[0]], 'stdout')
+                        if path:
+                            check(path.read_text().strip() == row.get('revision'), 'vendor Git revision output mismatch')
             elif event == 'setup_plan':
                 check(purpose == 'setup' and run is not None and setup is None and not selected and not started, 'invalid setup plan order')
                 setup = row
@@ -155,8 +198,35 @@ def summarize(directory):
                         check(row.get('cwd') == str(Path(run['corpus_root']) / Path(path).parent), 'invalid setup cwd')
                         hashes = {entry['path']: entry['sha256'] for entry in setup['inputs']}
                         check(row.get('source_sha256') == hashes.get(path), 'setup source hash disagrees with plan')
+                if purpose == 'service':
+                    check(service is not None, 'missing service plan before launch')
+                    check(row.get('mode') == 'ci_remap_server' and row.get('timeout_ms') == 5000, 'invalid service launch contract')
+                    if service and run:
+                        argv = row['argv']
+                        check(len(argv) == 7 and argv[1:4] == ['run', '--silent', 'ci-remap-server'] and argv[4:] == [argv[0], run['corpus_root'], service['commit']], 'invalid service argv')
+                        check(row.get('cwd') == run['corpus_root'] and row.get('source_sha256') == service['source_sha256'], 'invalid service launch source or cwd')
+                if purpose == 'vendor_setup':
+                    check(vendor_setup is not None, 'missing vendor preparation plan before launch')
+                    if vendor_setup and run and identity in selected:
+                        name, vendor, cwd = selected[identity]['path'], vendor_setup['vendor'], vendor_setup['vendor_cwd']
+                        check(row.get('timeout_ms') == (60000 if name == 'build' else 180000), 'invalid vendor preparation deadline')
+                        expected = {'clone': ['clone', '--depth', '1', '--single-branch', vendor['repository'], cwd],
+                                    'fetch': ['fetch', '--depth', '1', 'origin', 'tag', vendor['tag']],
+                                    'checkout': ['checkout', vendor['tag']],
+                                    'head': ['rev-parse', '--verify', '--end-of-options', 'HEAD'],
+                                    'tag': ['rev-parse', '--verify', '--end-of-options', vendor['tag'] + '^{commit}'],
+                                    'install': ['install'], 'build': ['run', 'build']}
+                        check(name in expected and row['argv'][1:] == expected.get(name), 'invalid vendor preparation argv')
+                        check(row.get('cwd') == (run['corpus_root'] if name == 'clone' else cwd), 'invalid vendor preparation cwd')
+                        native = name in ('install', 'build')
+                        check(row.get('mode') == ('vendor_' + name if native else name), 'invalid vendor preparation mode')
+                        if native:
+                            check(checkout is not None and row.get('source_sha256') == checkout.get('package_sha256'), 'native preparation before verified checkout')
+                        else:
+                            check(row.get('source_sha256') == vendor_setup.get('vendor_sha256'), 'vendor preparation source hash mismatch')
                 started[identity] = row
-            elif event == 'completed':
+            elif event in ('completed', 'service_completed'):
+                check((event == 'service_completed') == (purpose == 'service'), 'wrong completion event for run purpose')
                 identity = row['id']
                 check(identity in started and identity == len(completed) and len(started) == len(completed) + 1, f'line {number}: invalid completion order')
                 completed[identity] = row
@@ -172,9 +242,20 @@ def summarize(directory):
                     check(type(counts.get(key)) is int and counts[key] >= 0, f'{identity}: invalid {key} count')
                 if not all(type(counts.get(key)) is int for key in COUNTS):
                     continue
-                if purpose == 'setup':
-                    check(all(counts.get(key) == 0 for key in COUNTS) and counts.get('observed') is False, 'setup cannot claim test cases')
-                    check(row.get('junit') == 'not_requested' and row.get('junit_file') is None and row.get('junit_sha256') is None and row.get('expected_failure_verified') is False, 'invalid setup test reporting')
+                if purpose in ('setup', 'vendor_setup', 'service'):
+                    check(all(counts.get(key) == 0 for key in COUNTS) and counts.get('observed') is False, 'preparation or service cannot claim test cases')
+                    check(row.get('junit') == 'not_requested' and row.get('junit_file') is None and row.get('junit_sha256') is None and row.get('expected_failure_verified') is False, 'invalid preparation or service test reporting')
+                if purpose == 'service':
+                    check(readiness is not None and row.get('ready') == readiness.get('ready') and row.get('port') == readiness.get('port'), 'service completion disagrees with readiness')
+                    for key in ('ready', 'invalid_readiness', 'unexpected_exit', 'stopped_by_owner', 'service_successful'):
+                        check(type(row.get(key)) is bool, 'invalid service lifecycle flag: ' + key)
+                    success = row.get('ready') is True and row.get('stopped_by_owner') is True and row.get('invalid_readiness') is False and row.get('unexpected_exit') is False and row.get('timed_out') is False and row.get('output_complete') is True and row.get('source_unchanged') is True and row.get('error_name') is None and isinstance(row.get('term'), dict) and bool(row['term'])
+                    check(row.get('service_successful') is success, 'service lifecycle success mismatch')
+                    if row.get('ready'):
+                        path = artifact(row, 'stdout')
+                        if path:
+                            first = path.read_bytes().splitlines()[0].strip()
+                            check(int(first) == row.get('port'), 'service stdout port mismatch')
                 if row.get('junit') == 'retained':
                     path = artifact(row, 'junit')
                     if path:
@@ -212,7 +293,7 @@ def summarize(directory):
                 check(summary.get('files') == len(completed), 'finished file count mismatch')
             else:
                 errors.append(f'line {number}: unknown event {event}')
-        except (ValueError, KeyError, TypeError, AttributeError) as error:
+        except (ValueError, KeyError, TypeError, AttributeError, IndexError, OSError, UnicodeDecodeError) as error:
             errors.append(f'line {number}: malformed event: {error}')
     check(run is not None, 'missing run header')
     check(finished is not None, 'run did not finish')
@@ -228,6 +309,10 @@ def summarize(directory):
     for identity, row in completed.items():
         term = row.get('term', {})
         expected = row.get('expected_failure_verified') is True
+        if row.get('event') == 'service_completed':
+            if row.get('service_successful') is not True:
+                failures.append(identity)
+            continue
         if row.get('timed_out') or (term != {'exited': 0} and not expected) or (isinstance(row.get('counts'), dict) and row['counts'].get('failed', 0) and not expected):
             failures.append(identity)
     summary = finished.get('summary', {}) if finished else {}
@@ -240,11 +325,33 @@ def summarize(directory):
         check(summary.get('process_checks_passed') == 0, 'setup cannot claim passing process checks')
         check(summary.get('setup_steps_succeeded') == len(completed) - len(failures) and summary.get('setup_steps_failed') == len(failures) and summary.get('failed_files') == len(failures), 'setup outcome counters disagree')
         check(summary.get('inputs_unchanged') is True, 'setup inputs not verified unchanged')
+    if purpose in ('service', 'vendor_setup'):
+        check(summary.get('process_checks_passed') == 0, 'preparation or service cannot claim process checks')
+        if purpose == 'service':
+            check(service is not None and readiness is not None, 'missing service plan or readiness')
+            check([row.get('path') for row in selected.values()] == ['ci-remap-server'], 'invalid service selection')
+            check(summary.get('services_succeeded') == len(completed) - len(failures) and summary.get('services_failed') == len(failures), 'service outcome counters disagree')
+            check(summary.get('temporary_storage_removed') is True, 'service temporary cleanup incomplete')
+        else:
+            check(vendor_setup is not None, 'missing vendor preparation plan')
+            if vendor_setup:
+                steps = vendor_setup.get('steps')
+                valid_steps = isinstance(steps, list) and all(isinstance(row, dict) for row in steps)
+                check(valid_steps and [row.get('path') for row in selected.values()] == [row.get('path') for row in steps], 'vendor preparation selection mismatch')
+            check(summary.get('preparation_steps_succeeded') == len(completed) - len(failures) and summary.get('preparation_steps_failed') == len(failures), 'vendor preparation counters disagree')
+            check(isinstance(summary.get('vendor_prepared'), bool), 'missing vendor prepared outcome')
+            check(summary.get('vendor_prepared') == (checkout is not None and len(completed) == len(selected) and not failures), 'vendor prepared outcome disagrees with preparation')
+            if summary.get('vendor_prepared'):
+                check(checkout is not None and summary.get('vendor_revision') == checkout.get('revision') and len(completed) == len(selected) and not failures, 'vendor prepared without complete verified checkout/install/build')
+            for category in ('git', 'home'):
+                identities = {(row['argv'][0], row['executable_sha256']) for row in started.values() if isinstance(row.get('argv'), list) and row['argv'] and isinstance(row['argv'][0], str) and isinstance(row.get('executable_sha256'), str) and (row.get('mode') in ('vendor_install', 'vendor_build')) == (category == 'home')}
+                check(len(identities) <= 1, 'vendor preparation executable identity changed: ' + category)
+        check(summary.get('failed_files') == len(failures), 'preparation or service failed-file count mismatch')
     successful = not errors and not failures and summary.get('failed_files') == 0 and summary.get('unsupported') == 0
     return {'directory': str(directory), 'successful': successful, 'selected': len(selected), 'started': len(started), 'completed': len(completed),
             'unstarted': [row for identity, row in selected.items() if identity not in started],
             'incomplete': [selected[identity] for identity in started if identity in selected and identity not in completed],
-            'purpose': purpose, 'setup_plan': setup, 'selection_policy': selection, 'counts': totals, 'capture_completeness': {state: sum(row.get('output_complete') is value for row in completed.values()) for state, value in [('complete', True), ('incomplete', False), ('unknown', None)]}, 'summary': summary, 'failed_file_ids': failures, 'cases': cases, 'errors': errors}
+            'purpose': purpose, 'setup_plan': setup, 'service_plan': service, 'service_readiness': readiness, 'vendor_preparation_plan': vendor_setup, 'vendor_checkout': checkout, 'selection_policy': selection, 'counts': totals, 'capture_completeness': {state: sum(row.get('output_complete') is value for row in completed.values()) for state, value in [('complete', True), ('incomplete', False), ('unknown', None)]}, 'summary': summary, 'failed_file_ids': failures, 'cases': cases, 'errors': errors}
 
 
 def main():

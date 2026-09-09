@@ -212,5 +212,78 @@ class SetupValidation(unittest.TestCase):
     # This fixture uses setup events; inherited corpus fixtures run in their own class.
 
 
+class ServiceValidation(unittest.TestCase):
+    result = JournalValidation.result
+    artifact = JournalValidation.artifact
+    def setUp(self):
+        JournalValidation.setUp(self)
+        self.artifact('stdout', b'43100\nservice log')
+        completed = dict(self.rows[3], counts=dict(passed=0, failed=0, skipped=0, todo=0, observed=False),
+                         event='service_completed', term=dict(signal='TERM'), output_complete=True,
+                         junit='not_requested', junit_file=None, junit_sha256=None,
+                         ready=True, port=43100, invalid_readiness=False, unexpected_exit=False,
+                         stopped_by_owner=True, error_name=None, service_successful=True)
+        self.rows = [dict(event='run', schema=2, purpose='service', corpus_root='/control'),
+                     dict(event='service_plan', contract='bun-4982b91e-ci-remap', service='ci-remap-server', setup_performed=False, startup_timeout_ms=5000, ready_protocol='port_line', commit='c'*40, source_sha256='a'*64, package_sha256='b'*64),
+                     dict(event='selected', id=0, path='ci-remap-server'),
+                     dict(event='started', id=0, phase='launch_attempt', mode='ci_remap_server', timeout_ms=5000, cwd='/control', source_sha256='a'*64, executable_sha256='b'*64,
+                          argv=['/control/home','run','--silent','ci-remap-server','/control/home','/control','c'*40]),
+                     dict(event='service_readiness', id=0, ready=True, port=43100), completed,
+                     dict(event='finished', selected=1, started=1, completed=1, all_selected_completed=True,
+                          summary=dict(files=1, passed=0, failed=0, skipped=0, todo=0, unsupported=0, failed_files=0, process_checks_passed=0, services_succeeded=1, services_failed=0, temporary_storage_removed=True))]
+
+    def test_owned_service_shutdown_is_not_a_negative_test_case(self):
+        result = self.result()
+        self.assertTrue(result['successful'], result)
+        self.assertEqual(result['cases'], [])
+        for index, key, value in [(3,'timeout_ms',5001),(4,'port',43101),(5,'stopped_by_owner',False),(5,'expected_failure_verified',True)]:
+            old = self.rows[index][key];self.rows[index][key]=value
+            self.assertFalse(self.result()['successful'])
+            self.rows[index][key]=old
+
+    def test_unexpected_service_exit_retains_failure(self):
+        self.rows[5].update(term=dict(exited=7), unexpected_exit=True, stopped_by_owner=False, service_successful=False)
+        self.rows[-1]['summary'].update(failed_files=1, services_succeeded=0, services_failed=1)
+        result = self.result()
+        self.assertFalse(result['successful'])
+        self.assertEqual(result['errors'], [])
+        self.assertEqual(result['failed_file_ids'], [0])
+
+
+class VendorPreparationValidation(unittest.TestCase):
+    result = JournalValidation.result
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup);self.root=Path(self.temp.name)
+        names=['fetch','checkout','head','tag','install','build'];cwd='/control/vendor/fixture';revision='d'*40
+        self.rows=[dict(event='run', schema=2, purpose='vendor_setup', corpus_root='/control'),
+                   dict(event='vendor_setup_plan', contract='bun-4982b91e-explicit-vendor-preparation', vendor=dict(package='fixture',repository='https://example.invalid/vendor',tag='v1'), vendor_sha256='a'*64, clone_required=False, vendor_cwd=cwd, case_credit=0,
+                        steps=[dict(path=name,timeout_ms=60000 if name=='build' else 180000) for name in names])]
+        self.rows += [dict(event='selected',id=i,path=name) for i,name in enumerate(names)]
+        args=[['fetch','--depth','1','origin','tag','v1'],['checkout','v1'],['rev-parse','--verify','--end-of-options','HEAD'],['rev-parse','--verify','--end-of-options','v1^{commit}'],['install'],['run','build']]
+        for i,name in enumerate(names):
+            native=name in ('install','build')
+            self.rows.append(dict(event='started',id=i,phase='launch_attempt',mode='vendor_'+name if native else name,argv=['/control/home' if native else '/control/git',*args[i]],cwd=cwd,timeout_ms=60000 if name=='build' else 180000,source_sha256=('e' if native else 'a')*64,executable_sha256=('c' if native else 'b')*64))
+            done=dict(event='completed',id=i,term=dict(exited=0),timed_out=False,source_unchanged=True,output_complete=True,expected_failure_verified=False,counts=dict(passed=0,failed=0,skipped=0,todo=0,observed=False),junit='not_requested',junit_file=None,junit_sha256=None)
+            for kind,data in [('stdout',(revision+'\n').encode() if name in ('head','tag') else b'999 pass'),('stderr',b'')]:
+                file=f'{i:06d}.{kind}';(self.root/file).write_bytes(data);done[kind+'_file']=file;done[kind+'_sha256']=hashlib.sha256(data).hexdigest()
+            self.rows.append(done)
+            if name=='tag':self.rows.append(dict(event='vendor_checkout',revision=revision,tag='v1',package_sha256='e'*64))
+        self.rows.append(dict(event='finished',selected=6,started=6,completed=6,all_selected_completed=True,summary=dict(files=6,passed=0,failed=0,skipped=0,todo=0,unsupported=0,failed_files=0,process_checks_passed=0,preparation_steps_succeeded=6,preparation_steps_failed=0,vendor_revision=revision,vendor_prepared=True)))
+
+    def test_vendor_commands_deadlines_and_executable_identities(self):
+        result=self.result();self.assertTrue(result['successful'],result);self.assertEqual(result['cases'],[])
+        build=next(row for row in self.rows if row['event']=='started' and row['id']==5)
+        for key,value in [('argv',['/control/home','run','build','--skip-errors']),('timeout_ms',60001),('executable_sha256','f'*64)]:
+            old=build[key];build[key]=value;self.assertFalse(self.result()['successful']);build[key]=old
+        self.rows[-1]['summary']['vendor_prepared']=False;self.assertFalse(self.result()['successful'])
+        self.rows[-1]['summary']['vendor_prepared']=True
+        self.rows[1]['steps']='invalid';self.assertFalse(self.result()['successful'])
+
+    def test_vendor_build_failure_is_not_credited_as_tests(self):
+        build=next(row for row in self.rows if row['event']=='completed' and row['id']==5);build['term']=dict(exited=7)
+        self.rows[-1]['summary'].update(failed_files=1,preparation_steps_succeeded=5,preparation_steps_failed=1,vendor_prepared=False)
+        result=self.result();self.assertFalse(result['successful']);self.assertEqual(result['errors'],[]);self.assertEqual(result['failed_file_ids'],[5])
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -111,7 +111,7 @@ pub fn runRootInstalls(allocator: Allocator, io: Io, project_root: []const u8, o
         summary.steps += 1;
         if (result.term.success() and !result.timed_out and result.output_complete and unchanged) summary.succeeded += 1 else summary.failed += 1;
         // Pinned runTests attempts both root and test installs. A setup failure
-        // prevents the later corpus/service phases; it does not skip this loop.
+        // prevents the later primary/service phases; it does not skip this loop.
     }
     try summary.journal.finish(.{ .files = summary.steps, .passed = @as(usize, 0), .failed = @as(usize, 0), .skipped = @as(usize, 0), .todo = @as(usize, 0), .unsupported = @as(usize, 0), .failed_files = summary.failed, .process_checks_passed = @as(usize, 0), .setup_steps_succeeded = summary.succeeded, .setup_steps_failed = summary.failed, .inputs_unchanged = summary.inputs_unchanged });
     return summary;

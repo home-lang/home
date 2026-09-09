@@ -12,6 +12,7 @@ pub const Invocation = struct {
 };
 
 pub const Journal = struct {
+    const Executable = struct { path: []u8, stat: Io.File.Stat, sha256: [64]u8 };
     allocator: Allocator,
     io: Io,
     directory: []u8,
@@ -19,15 +20,15 @@ pub const Journal = struct {
     selected: usize = 0,
     started: usize = 0,
     completed: usize = 0,
-    executable: ?[]u8 = null,
-    executable_stat: ?Io.File.Stat = null,
-    executable_sha256: ?[64]u8 = null,
+    purpose: Purpose = .corpus,
+    executables: std.ArrayList(Executable) = .empty,
+    active_executable: ?usize = null,
 
     pub fn create(allocator: Allocator, io: Io, requested: ?[]const u8, corpus_root: []const u8) !Journal {
         return createForPurpose(allocator, io, requested, corpus_root, .corpus);
     }
 
-    pub const Purpose = enum { corpus, setup };
+    pub const Purpose = enum { corpus, setup, vendor_setup, service };
     pub fn createForPurpose(allocator: Allocator, io: Io, requested: ?[]const u8, corpus_root: []const u8, purpose: Purpose) !Journal {
         const relative = if (requested) |path| try allocator.dupe(u8, path) else blk: {
             try Io.Dir.cwd().createDirPath(io, "zig-out/bun-corpus-results");
@@ -46,14 +47,15 @@ pub const Journal = struct {
         defer allocator.free(path);
         const events = try Io.Dir.cwd().createFile(io, path, .{ .exclusive = true });
         errdefer events.close(io);
-        var journal = Journal{ .allocator = allocator, .io = io, .directory = directory, .events = events };
+        var journal = Journal{ .allocator = allocator, .io = io, .directory = directory, .events = events, .purpose = purpose };
         try journal.append(.{ .event = "run", .schema = 2, .purpose = @tagName(purpose), .corpus_root = corpus_root });
         return journal;
     }
 
     pub fn deinit(self: *Journal) void {
         self.events.close(self.io);
-        if (self.executable) |path| self.allocator.free(path);
+        for (self.executables.items) |executable| self.allocator.free(executable.path);
+        self.executables.deinit(self.allocator);
         self.allocator.free(self.directory);
         self.* = undefined;
     }
@@ -71,27 +73,38 @@ pub const Journal = struct {
         self.selected += 1;
     }
 
-    fn verifyExecutable(self: *Journal, path: []const u8) !void {
+    fn verifyExecutable(self: *Journal, path: []const u8) !usize {
         const file = try Io.Dir.cwd().openFile(self.io, path, .{});
         defer file.close(self.io);
         const stat = try file.stat(self.io);
-        if (self.executable_stat) |old| {
-            if (!std.mem.eql(u8, path, self.executable.?) or old.inode != stat.inode or old.size != stat.size or !std.meta.eql(old.mtime, stat.mtime)) return error.CorpusExecutableChanged;
-        } else {
-            self.executable = try self.allocator.dupe(u8, path);
-            self.executable_sha256 = try hashFile(self.io, file);
-            self.executable_stat = stat;
-            const after = try file.stat(self.io);
-            if (stat.size != after.size or !std.meta.eql(stat.mtime, after.mtime)) return error.CorpusExecutableChanged;
+        for (self.executables.items, 0..) |known, index| {
+            if (!std.mem.eql(u8, known.path, path)) continue;
+            const old = known.stat;
+            if (old.inode != stat.inode or old.size != stat.size or !std.meta.eql(old.mtime, stat.mtime)) return error.CorpusExecutableChanged;
+            return index;
         }
+        if (self.executables.items.len != 0 and self.purpose != .vendor_setup) return error.CorpusExecutableChanged;
+        const hash = try hashFile(self.io, file);
+        const after = try file.stat(self.io);
+        if (stat.inode != after.inode or stat.size != after.size or !std.meta.eql(stat.mtime, after.mtime)) return error.CorpusExecutableChanged;
+        const owned = try self.allocator.dupe(u8, path);
+        errdefer self.allocator.free(owned);
+        try self.executables.append(self.allocator, .{ .path = owned, .stat = stat, .sha256 = hash });
+        return self.executables.items.len - 1;
+    }
+
+    fn verifyActiveExecutable(self: *Journal) !void {
+        const index = self.active_executable orelse return error.InvalidCorpusEventOrder;
+        if (try self.verifyExecutable(self.executables.items[index].path) != index) return error.CorpusExecutableChanged;
     }
 
     pub fn start(self: *Journal, invocation: Invocation, argv: []const []const u8, timeout_ms: i64, cwd: ?[]const u8, env: ?*const std.process.Environ.Map) !void {
         if (invocation.id != self.started or self.started != self.completed or self.started >= self.selected) return error.InvalidCorpusEventOrder;
-        try self.verifyExecutable(argv[0]);
+        self.active_executable = try self.verifyExecutable(argv[0]);
         const Environment = struct {
             HOME_NATIVE_VM: ?[]const u8,
             HOME_CORPUS_FULL_VM: ?[]const u8,
+            BUN_DEBUG_QUIET_LOGS: ?[]const u8,
             BUN_FEATURE_FLAG_INTERNAL_FOR_TESTING: ?[]const u8,
             BUN_GARBAGE_COLLECTOR_LEVEL: ?[]const u8,
             BUN_JSC_randomIntegrityAuditRate: ?[]const u8,
@@ -116,7 +129,7 @@ pub const Journal = struct {
             .id = invocation.id,
             .mode = invocation.mode,
             .source_sha256 = @as([]const u8, &invocation.source_sha256),
-            .executable_sha256 = @as([]const u8, &self.executable_sha256.?),
+            .executable_sha256 = @as([]const u8, &self.executables.items[self.active_executable.?].sha256),
             .argv = argv,
             .cwd = cwd,
             .environment = environment,
@@ -142,7 +155,7 @@ pub const Journal = struct {
         if (id != self.completed or self.started != self.completed + 1) return error.InvalidCorpusEventOrder;
         try self.writeArtifact(id, "stdout", stdout);
         try self.writeArtifact(id, "stderr", stderr);
-        try self.verifyExecutable(self.executable.?);
+        try self.verifyActiveExecutable();
         var junit_sha256: ?[64]u8 = null;
         if (junit_path) |path| {
             const file = Io.Dir.cwd().openFile(self.io, path, .{ .mode = .read_write }) catch |err| switch (err) {
@@ -176,6 +189,40 @@ pub const Journal = struct {
         });
         self.completed += 1;
         return junit_path == null or junit_sha256 != null;
+    }
+
+    pub fn completeService(self: *Journal, id: usize, result: anytype, source_unchanged: bool) !void {
+        if (self.purpose != .service or id != self.completed or self.started != self.completed + 1) return error.InvalidCorpusEventOrder;
+        try self.writeArtifact(id, "stdout", result.stdout);
+        try self.writeArtifact(id, "stderr", result.stderr);
+        try self.verifyActiveExecutable();
+        var stdout_name: [40]u8 = undefined;
+        var stderr_name: [40]u8 = undefined;
+        try self.append(.{
+            .event = "service_completed",
+            .id = id,
+            .term = result.term,
+            .timed_out = result.startup_timed_out,
+            .source_unchanged = source_unchanged,
+            .output_complete = result.output_complete,
+            .expected_failure_verified = false,
+            .counts = .{ .passed = 0, .failed = 0, .skipped = 0, .todo = 0, .observed = false },
+            .stdout_file = try std.fmt.bufPrint(&stdout_name, "{d:0>6}.stdout", .{id}),
+            .stderr_file = try std.fmt.bufPrint(&stderr_name, "{d:0>6}.stderr", .{id}),
+            .stdout_sha256 = @as([]const u8, &hashBytes(result.stdout)),
+            .stderr_sha256 = @as([]const u8, &hashBytes(result.stderr)),
+            .junit = "not_requested",
+            .junit_file = @as(?[]const u8, null),
+            .junit_sha256 = @as(?[]const u8, null),
+            .ready = result.ready,
+            .port = result.port,
+            .invalid_readiness = result.invalid_readiness,
+            .unexpected_exit = result.unexpected_exit,
+            .stopped_by_owner = result.stopped_by_owner,
+            .error_name = if (result.failure) |err| @errorName(err) else @as(?[]const u8, null),
+            .service_successful = result.successful() and source_unchanged,
+        });
+        self.completed += 1;
     }
 
     pub fn finish(self: *Journal, summary: anytype) !void {
@@ -281,4 +328,37 @@ test "corpus journal exposes a missing requested JUnit report" {
     const junit = try journal.artifactPath(0, "junit.xml");
     defer allocator.free(junit);
     try std.testing.expect(!try journal.complete(0, .{ .exited = 0 }, false, "", "", .{ .passed = 1 }, true, true, junit, false));
+}
+
+test "corpus journal vendor preparation preserves each tool identity without relaxing corpus identity" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "git", .data = "first executable" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "home", .data = "second executable" });
+    const first = try tmp.dir.realPathFileAlloc(io, "git", allocator);
+    defer allocator.free(first);
+    const second = try tmp.dir.realPathFileAlloc(io, "home", allocator);
+    defer allocator.free(second);
+    const root = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(root);
+    inline for (.{ Journal.Purpose.corpus, Journal.Purpose.setup, Journal.Purpose.vendor_setup }) |purpose| {
+        const report = try std.fs.path.join(allocator, &.{ root, @tagName(purpose) });
+        defer allocator.free(report);
+        var journal = try Journal.createForPurpose(allocator, io, report, root, purpose);
+        defer journal.deinit();
+        try journal.select("first");
+        try journal.select("second");
+        try journal.select("third");
+        try journal.start(.{ .journal = &journal, .id = 0, .mode = "control", .source_sha256 = hashBytes("source") }, &.{first}, 180000, root, null);
+        _ = try journal.complete(0, .{ .exited = 0 }, false, "", "", .{ .passed = 0, .failed = 0, .skipped = 0, .todo = 0, .observed = false }, true, true, null, false);
+        const next = Invocation{ .journal = &journal, .id = 1, .mode = "control", .source_sha256 = hashBytes("source") };
+        if (purpose == .vendor_setup) {
+            try journal.start(next, &.{second}, 180000, root, null);
+            _ = try journal.complete(1, .{ .exited = 0 }, false, "", "", .{ .passed = 0, .failed = 0, .skipped = 0, .todo = 0, .observed = false }, true, true, null, false);
+            try tmp.dir.writeFile(io, .{ .sub_path = "git", .data = "replaced earlier executable" });
+            try std.testing.expectError(error.CorpusExecutableChanged, journal.start(.{ .journal = &journal, .id = 2, .mode = "control", .source_sha256 = hashBytes("source") }, &.{first}, 180000, root, null));
+        } else try std.testing.expectError(error.CorpusExecutableChanged, journal.start(next, &.{second}, 180000, root, null));
+    }
 }

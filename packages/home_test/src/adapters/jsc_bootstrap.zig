@@ -6201,34 +6201,8 @@ fn drainSpawnSyncPipesFor(multi_reader: *Io.File.MultiReader, io: Io, millisecon
     }
 }
 
-fn terminateSpawnSyncChild(child: *std.process.Child, process_group: bool) void {
-    if (comptime @import("builtin").os.tag == .windows) {
-        forceTerminateSpawnSyncChild(child, process_group);
-        return;
-    }
-    const pid = child.id orelse return;
-    if (process_group) {
-        std.posix.kill(-pid, .TERM) catch std.posix.kill(pid, .TERM) catch {};
-    } else {
-        std.posix.kill(pid, .TERM) catch {};
-    }
-}
-
-fn forceTerminateSpawnSyncChild(child: *std.process.Child, process_group: bool) void {
-    const id = child.id orelse return;
-    if (comptime @import("builtin").os.tag == .windows) {
-        _ = std.os.windows.ntdll.NtTerminateProcess(
-            id,
-            @fromBackingInt(@intCast(@as(u32, 1))),
-        );
-        return;
-    }
-    if (process_group) {
-        std.posix.kill(-id, .KILL) catch std.posix.kill(id, .KILL) catch {};
-    } else {
-        std.posix.kill(id, .KILL) catch {};
-    }
-}
+const terminateSpawnSyncChild = corpus_child_wait.terminate;
+const forceTerminateSpawnSyncChild = corpus_child_wait.forceTerminate;
 
 const StdioConfig = struct {
     stdin: std.process.SpawnOptions.StdIo = .inherit,
@@ -6825,7 +6799,7 @@ fn homeExecutableFromAncestorsAlloc(allocator: std.mem.Allocator, start: []const
     return null;
 }
 
-fn preferredHomeExecutablePathAlloc(allocator: std.mem.Allocator) ![]u8 {
+pub fn preferredHomeExecutablePathAlloc(allocator: std.mem.Allocator) ![]u8 {
     const self_exe = try selfExePathAlloc(allocator);
     defer allocator.free(self_exe);
     if (isHomeExecutableArg(self_exe)) return allocator.dupe(u8, self_exe);
