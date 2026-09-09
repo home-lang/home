@@ -40,7 +40,7 @@
     "native_linux_windows_execution_verified": false
   },
   "remaining": [
-    "Native host and root/test setup execution are implemented. Both install processes now pass their original deadlines, but optional legacy DuckDB remains absent (#725). Services, complete vendor preparation and unified CI orchestration remain open (#724).",
+    "Native host checks, root/test setup, explicit remap lifetime and explicit vendor preparation are implemented. Full original CI phase ordering, Docker coordination, service launch-context propagation and the default coordinator remain open (#724). The latest complete Elysia run retains one occupied-port failure reproduced by pinned Bun; optional legacy DuckDB remains absent (#725).",
     "Execute the entire applicable primary and vendor suite, retaining original sources/snapshots and all failures for feature porting.",
     "Native Linux/Windows child-lifetime execution and ASAN verification remain unclaimed (#723).",
     "Full runtime feature porting, default CLI fallback removal and independent native build ownership."
@@ -241,5 +241,49 @@
     "legacy_duckdb_early_exit_case_credit": 0,
     "legacy_duckdb_process_exit_is_not_implementation_credit": true,
     "evidence": "docs/docs/bun-port-evidence/2026-09-08-native-setup/manifest.json"
+  },
+  "native_service_preparation_checkpoint": {
+    "kind": "native remap service lifetime and explicit vendor preparation with durable outcomes",
+    "source": "a2e2863fc93d176beb1c58eb326eb83791343f9b",
+    "home_sha256": "91d6b1024f9d4c02c6b7f9089b476d8a0646294f4ed7392e5e3ce549e52db763",
+    "bun_pin": "4982b91e3702094330f3be3883354c52b8c01323",
+    "build_steps_passed": 23,
+    "native_harness_passed": 21,
+    "service_units_passed": 4,
+    "journal_units_passed": 4,
+    "validator_controls_passed": 18,
+    "private_remap_cli_controls": 3,
+    "private_vendor_cli_controls": 2,
+    "real_remap_http_checks": 5,
+    "remap_startup_deadline_ms": 5000,
+    "service_and_preparation_case_credit": 0,
+    "vendor_preparation_completed": 7,
+    "vendor_preparation_attempts": 1,
+    "vendor_revision": "56310be9617b826f862c985eae95ae823d95f097",
+    "vendor_completed_files": 129,
+    "vendor_registered_cases": {
+      "passed": 1515,
+      "failed": 1,
+      "skipped": 0,
+      "todo": 0
+    },
+    "vendor_attempts_this_build": 1,
+    "vendor_regression_successful": false,
+    "vendor_failure": "handle distinct union: original port 3000 occupied by unrelated PredictHQ development server PID 28404; pinned Bun fails the same original case",
+    "pinned_bun_control_counts": {
+      "passed": 27,
+      "failed": 1,
+      "skipped": 0,
+      "todo": 0
+    },
+    "vendor_sources_unchanged": 283,
+    "vendor_original_excluded_file": "test/ws/connection.test.ts",
+    "generated_bytes_removed": 6083408581,
+    "first_build_outcome": "disk guard terminated compilation below 1024 MB free; queued verification refused before starting; cleanup preflight then stopped on regular-file dSYM assumption, and second build admission was refused; corrected cleanup retained protected hashes and allowed full build with 5120 MB admission floor",
+    "full_ci_orchestration_complete": false,
+    "full_parity_complete": false,
+    "bind_error_follow_up": "https://github.com/home-lang/home/issues/726",
+    "publication_first_checks": "Global *.gz ignore initially left archives untracked; explicit staging fixed it. Pickier reported one extra documentation blank line; corrected without changing runtime evidence.",
+    "evidence": "docs/docs/bun-port-evidence/2026-09-08-native-services/manifest.json"
   }
 }
