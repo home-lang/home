@@ -104,14 +104,61 @@ pub const JSObject = opaque {
         return result;
     }
 
+    extern fn JSC__JSObject__create(
+        global: *home_rt.jsc.JSGlobalObject,
+        initial_capacity: usize,
+        ctx: ?*anyopaque,
+        call: *const fn (ctx: ?*anyopaque, obj: *JSObject, global: *home_rt.jsc.JSGlobalObject) callconv(.c) void,
+    ) home_rt.jsc.JSValue;
+
+    /// Wraps `Ctx.create` in the C-ABI callback `JSC__JSObject__create` invokes
+    /// while the object is being built. Mirrors Bun's `JSObject.Initializer`.
+    pub fn Initializer(
+        comptime Ctx: type,
+        comptime func: fn (*Ctx, obj: *JSObject, global: *home_rt.jsc.JSGlobalObject) home_rt.JSError!void,
+    ) type {
+        return struct {
+            pub fn call(this: ?*anyopaque, obj: *JSObject, global: *home_rt.jsc.JSGlobalObject) callconv(.c) void {
+                func(@ptrCast(@alignCast(this.?)), obj, global) catch |err|
+                    home_rt.jsc.host_fn.voidFromJSError(err, global);
+            }
+        };
+    }
+
+    /// Build an object by running `Ctx.create` against it before it is handed
+    /// back to JS.
+    ///
+    /// This used to discard `initializer` and return an empty object, so every
+    /// caller silently got `{}` — `Bun.FileSystemRouter`'s `.params` and
+    /// `.query` were always empty regardless of the route matched. The file
+    /// header deferred it "alongside JSValue / JSGlobalObject / host_fn.zig",
+    /// all of which are attached now, and `JSC__JSObject__create` is present in
+    /// the linked objects.
     pub fn createWithInitializer(
-        comptime Initializer: type,
-        initializer: *Initializer,
+        comptime Ctx: type,
+        creator: *Ctx,
         global: *home_rt.jsc.JSGlobalObject,
         count: usize,
     ) home_rt.jsc.JSValue {
-        _ = initializer;
-        return home_rt.jsc.JSValue.createEmptyObject(global, count);
+        const Wrapper = Initializer(Ctx, Ctx.create);
+        return JSC__JSObject__create(global, count, creator, &Wrapper.call);
+    }
+
+    extern fn JSC__JSObject__putRecord(
+        object: *JSObject,
+        global: *home_rt.jsc.JSGlobalObject,
+        key: *home_rt.jsc.ZigString,
+        values: [*]home_rt.jsc.ZigString,
+        values_len: usize,
+    ) void;
+
+    pub fn putRecord(
+        this: *JSObject,
+        global: *home_rt.jsc.JSGlobalObject,
+        key: *home_rt.jsc.ZigString,
+        values: []home_rt.jsc.ZigString,
+    ) home_rt.JSError!void {
+        JSC__JSObject__putRecord(this, global, key, values.ptr, values.len);
     }
 
     /// The discriminated `(tag, index|name)` payload SQL bindings pass into

@@ -1191,7 +1191,13 @@ const bun = struct {
     pub const OOM = error{OutOfMemory};
     pub const callmod_inline: std.builtin.CallModifier = if (builtin.mode == .Debug) .auto else .always_inline;
     pub const strings = StringFns;
-    pub const bit_set = std.bit_set;
+    // Home's own bit_set, not std's: `ArrayBitSet.initEmpty()` here takes no
+    // arguments, where std's Zig 0.17 equivalent requires an allocator and a
+    // runtime length. `QueryStringMap.Iterator` wants the static, stack-backed
+    // form. This went unnoticed because the only caller reached
+    // `JSObject.createWithInitializer`, which discarded its initializer, so
+    // `iter()` was never instantiated.
+    pub const bit_set = @import("../collections/bit_set.zig");
 
     pub const fmt = struct {
         pub const HostFormatter = struct {
