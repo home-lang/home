@@ -5879,6 +5879,7 @@ pub const HomeCapturedOptions = struct {
     // Ordinary captured invocations retain their inherited launch context.
     corpus_project_root: ?[]const u8 = null,
     corpus_file: ?corpus_launch.File = null,
+    setup_operation: ?corpus_launch.SetupOperation = null,
     corpus_validation_root: ?[]const u8 = null,
     corpus_validation_relative_path: ?[]const u8 = null,
     vendor_test: bool = false,
@@ -5915,7 +5916,7 @@ pub fn runHomeCapturedWithOptions(
     defer threaded.deinit();
     const io = threaded.io();
     var launch_options = options;
-    var storage = if (options.corpus_file != null) try corpus_launch.Storage.create(allocator, io, &inherited_env) else null;
+    var storage = if (options.corpus_file != null or options.setup_operation != null) try corpus_launch.Storage.create(allocator, io, &inherited_env) else null;
     defer if (storage) |*owned| owned.deinit(allocator);
     errdefer if (storage) |owned| owned.cleanup(io) catch |err| {
         std.log.err("corpus temporary cleanup failed for {s}: {s}", .{ owned.path, @errorName(err) });
@@ -5934,13 +5935,13 @@ pub fn runHomeCapturedWithOptions(
         allocator.free(invocation.executable);
         invocation.executable = resolved;
         invocation.argv[0] = resolved;
-        try owned.linkExecutable(allocator, io, resolved);
+        try owned.linkExecutable(allocator, io, resolved, options.setup_operation != null);
     }
-    if (invocation.profile) |selected| {
+    if (options.corpus_file != null) if (invocation.profile) |selected| {
         var validation_file = options.corpus_file.?;
         validation_file.relative_path = options.corpus_validation_relative_path orelse validation_file.relative_path;
         try corpus_launch.applyValidation(allocator, io, &invocation.environ_map, selected, validation_file, options.corpus_validation_root orelse options.corpus_project_root orelse return error.MissingCorpusProject);
-    }
+    };
     const timeout_ms = if (invocation.profile) |selected| selected.file_timeout_ms else home_corpus_child_timeout_ms;
     if (options.record) |record| try record.journal.start(record, invocation.argv, timeout_ms, options.corpus_project_root, &invocation.environ_map);
     const captured = try runSpawnSyncCaptured(allocator, io, .{
@@ -5963,7 +5964,7 @@ pub fn runHomeCapturedWithOptions(
     };
 }
 
-fn inheritedEnvironmentMap(allocator: std.mem.Allocator) !std.process.Environ.Map {
+pub fn inheritedEnvironmentMap(allocator: std.mem.Allocator) !std.process.Environ.Map {
     if (comptime @import("builtin").os.tag == .windows) {
         return std.process.Environ.createMap(.{ .block = .global }, allocator);
     }
@@ -5995,8 +5996,14 @@ fn prepareHomeCapturedInvocation(
         // through the corpus adapter that launched this child.
         try environ_map.put("HOME_CORPUS_FULL_VM", "1");
     }
-    if (options.corpus_file == null) try environ_map.put("NO_COLOR", "1");
-    try environ_map.put("TEST_THREAD_ID", test_thread_id);
+    if (options.setup_operation) |operation| {
+        if (options.corpus_file != null or options.junit_path != null or options.corpus_project_root == null) return error.InvalidSetupCapture;
+        const valid = if (operation == .install) args_tail.len == 1 and std.mem.eql(u8, args_tail[0], "install") else args_tail.len == 2 and std.mem.eql(u8, args_tail[0], "run") and std.mem.eql(u8, args_tail[1], "build");
+        if (!valid) return error.InvalidSetupCommand;
+    } else {
+        if (options.corpus_file == null) try environ_map.put("NO_COLOR", "1");
+        try environ_map.put("TEST_THREAD_ID", test_thread_id);
+    }
     if (options.vendor_test) {
         if (options.corpus_file) |file| if (file.is_ci) {
             try environ_map.put("CI", "1");
@@ -6028,7 +6035,7 @@ fn prepareHomeCapturedInvocation(
         try preferredHomeExecutablePathAlloc(allocator);
     errdefer allocator.free(executable);
 
-    const selected = if (options.corpus_file) |file| corpus_launch.profile(file, executable) else null;
+    const selected = if (options.corpus_file) |file| corpus_launch.profile(file, executable) else if (options.setup_operation) |operation| operation.profile() else null;
     if (selected) |value| {
         const storage = options.storage orelse return error.MissingCorpusStorage;
         const runtime_path = try std.fmt.allocPrint(allocator, "{s}{c}{s}", .{ storage.bin_path, std.fs.path.delimiter, std.fs.path.dirname(executable) orelse "." });

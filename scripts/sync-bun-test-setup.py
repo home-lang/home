@@ -41,7 +41,8 @@ def main():
         prefixes.append(str(path) + '/')
     tree = git('ls-tree', '-rz', pin).split(b'\0')
     root_inputs = {'package.json', 'bun.lock', 'bun.lockb', 'bunfig.toml',
-                   'bunfig.node-test.toml', 'tsconfig.json', '.npmrc'}
+                   'bunfig.node-test.toml', 'tsconfig.json', '.npmrc',
+                   'test/package.json', 'test/bun.lock', 'test/bunfig.toml'}
     entries = []
     for row in tree:
         if not row:
@@ -55,7 +56,7 @@ def main():
             raise ValueError('unsupported setup entry requires audit: ' + path)
         entries.append((path, mode, object_id))
     paths = {entry[0] for entry in entries}
-    for required in ['package.json', 'bunfig.toml', 'bunfig.node-test.toml', *[p + 'package.json' for p in prefixes]]:
+    for required in ['package.json', 'bunfig.toml', 'bunfig.node-test.toml', 'test/package.json', 'test/bun.lock', 'test/bunfig.toml', *[p + 'package.json' for p in prefixes]]:
         if required not in paths:
             raise ValueError('missing required setup input: ' + required)
     if not paths.intersection({'bun.lock', 'bun.lockb'}):
@@ -82,7 +83,7 @@ def main():
             target.chmod(0o755 if mode == '100755' else 0o644)
         records.append(dict(path=path, mode=mode, git_blob=oid, bytes=len(data),
                             sha256=hashlib.sha256(data).hexdigest()))
-    manifest = dict(bun_pin=pin, scope='pinned root installation inputs and complete declared workspaces',
+    manifest = dict(bun_pin=pin, scope='pinned root/test installation inputs and complete declared workspaces',
                     installation_performed=False, workspaces=workspaces, files=records)
     manifest_path = destination / 'BUN_SETUP_FILES.json'
     if args.check:

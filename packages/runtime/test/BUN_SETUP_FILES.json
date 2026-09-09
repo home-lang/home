@@ -1,6 +1,6 @@
 {
   "bun_pin": "4982b91e3702094330f3be3883354c52b8c01323",
-  "scope": "pinned root installation inputs and complete declared workspaces",
+  "scope": "pinned root/test installation inputs and complete declared workspaces",
   "installation_performed": false,
   "workspaces": [
     "./packages/bun-types",
@@ -328,6 +328,27 @@
       "git_blob": "f8c3396e2fd0dcfc16117169fd730516fa5fb951",
       "bytes": 7930,
       "sha256": "8fedbe5fb23749a10cbbd027edaa2f0a166fb802fcd65569a2119946199defbe"
+    },
+    {
+      "path": "test/bun.lock",
+      "mode": "100644",
+      "git_blob": "a1f555505ac297307292e208681a4983ffb110bc",
+      "bytes": 474866,
+      "sha256": "ed2b9b145603d661da89ba15cec4544a09f06eff4c88debe2f83452d555ca351"
+    },
+    {
+      "path": "test/bunfig.toml",
+      "mode": "100644",
+      "git_blob": "9ee12ca1fa57df0ee7f49323c0bb51cd85d9e367",
+      "bytes": 268,
+      "sha256": "4f7f52c782fce5094bdcc3ef3ab5000902a59e3bb2d7463a25acf5fd1d5cacb1"
+    },
+    {
+      "path": "test/package.json",
+      "mode": "100644",
+      "git_blob": "1301df5fb193d8f5429c52fb3416c50573136c93",
+      "bytes": 3786,
+      "sha256": "9bc7438d29a604d17ebebdba7cfbe9c33a743415fb77b46bc8ced83514c134d1"
     },
     {
       "path": "tsconfig.json",

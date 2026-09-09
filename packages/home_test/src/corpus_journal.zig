@@ -24,6 +24,11 @@ pub const Journal = struct {
     executable_sha256: ?[64]u8 = null,
 
     pub fn create(allocator: Allocator, io: Io, requested: ?[]const u8, corpus_root: []const u8) !Journal {
+        return createForPurpose(allocator, io, requested, corpus_root, .corpus);
+    }
+
+    pub const Purpose = enum { corpus, setup };
+    pub fn createForPurpose(allocator: Allocator, io: Io, requested: ?[]const u8, corpus_root: []const u8, purpose: Purpose) !Journal {
         const relative = if (requested) |path| try allocator.dupe(u8, path) else blk: {
             try Io.Dir.cwd().createDirPath(io, "zig-out/bun-corpus-results");
             var random: [16]u8 = undefined;
@@ -42,7 +47,7 @@ pub const Journal = struct {
         const events = try Io.Dir.cwd().createFile(io, path, .{ .exclusive = true });
         errdefer events.close(io);
         var journal = Journal{ .allocator = allocator, .io = io, .directory = directory, .events = events };
-        try journal.append(.{ .event = "run", .schema = 2, .corpus_root = corpus_root });
+        try journal.append(.{ .event = "run", .schema = 2, .purpose = @tagName(purpose), .corpus_root = corpus_root });
         return journal;
     }
 
@@ -184,7 +189,7 @@ pub fn hashBytes(bytes: []const u8) [64]u8 {
     return std.fmt.bytesToHex(digest, .lower);
 }
 
-fn hashFile(io: Io, file: Io.File) ![64]u8 {
+pub fn hashFile(io: Io, file: Io.File) ![64]u8 {
     var hash = std.crypto.hash.sha2.Sha256.init(.{});
     var buffer: [65536]u8 = undefined;
     var offset: u64 = 0;

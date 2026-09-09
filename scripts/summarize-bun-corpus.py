@@ -30,6 +30,8 @@ def summarize(directory):
     totals = dict.fromkeys(COUNTS, 0)
     run = None
     selection = None
+    setup = None
+    purpose = "corpus"
 
     def check(condition, message):
         if not condition:
@@ -61,8 +63,38 @@ def summarize(directory):
             if event == 'run':
                 check(number == 1 and run is None and row.get('schema') in (1, 2), 'invalid run header')
                 run = row
+                purpose = row.get('purpose', 'corpus')
+                check(purpose in ('corpus', 'setup'), 'unknown run purpose')
+                check(purpose != 'setup' or row.get('schema') == 2, 'setup requires complete-capture schema')
+            elif event == 'setup_plan':
+                check(purpose == 'setup' and run is not None and setup is None and not selected and not started, 'invalid setup plan order')
+                setup = row
+                check(row.get('contract') == 'bun-4982b91e-root-test-setup', 'unknown setup contract')
+                for key, size in [('bun_pin', 40), ('manifest_sha256', 64)]:
+                    value = row.get(key)
+                    check(isinstance(value, str) and len(value) == size and all(c in '0123456789abcdef' for c in value), 'invalid setup ' + key)
+                check(row.get('steps') == [dict(path=path, operation='install', timeout_ms=180000) for path in ('package.json', 'test/package.json')], 'invalid original setup steps')
+                inputs = row['inputs']
+                paths = []
+                for entry in inputs:
+                    path, sha = entry['path'], entry['sha256']
+                    check(isinstance(path, str) and bool(path) and not Path(path).is_absolute() and '\\' not in path and all(part not in ('', '.', '..') for part in path.split('/')), 'invalid setup input path')
+                    check(isinstance(sha, str) and len(sha) == 64 and all(c in '0123456789abcdef' for c in sha), 'invalid setup input hash')
+                    paths.append(path)
+                check(len(paths) == len(set(paths)) and all(path in paths for path in ('package.json', 'test/package.json')), 'missing or duplicate setup inputs')
+                host, expected = row['host'], row['expected_platform']
+                check(isinstance(host, dict) and isinstance(expected, dict) and all(isinstance(host.get(key), str) and host[key] for key in ('os', 'arch')), 'invalid setup platform record')
+                if expected.get('os'):
+                    for field in ('os', 'arch', 'abi', 'distro', 'release'):
+                        wanted = expected.get(field)
+                        if wanted:
+                            actual = host.get('distro_version' if field == 'release' else field)
+                            check(isinstance(actual, str) and isinstance(wanted, str) and (actual == wanted or (field == 'release' and actual.startswith(wanted + '.'))), 'setup platform mismatch: ' + field)
+            elif event == 'setup_input_changed':
+                errors.append('setup input changed: ' + str(row.get('path')))
             elif event == 'selection':
                 check(run is not None and not selected and not started and selection is None, f'line {number}: invalid policy order')
+                check(purpose == 'corpus', 'test selection in setup run')
                 selection = row
                 check(row.get('contract') in ('bun-4982b91e-primary', 'bun-4982b91e-vendor'), 'unknown selection contract')
                 vendor_policy = row.get('contract') == 'bun-4982b91e-vendor'
@@ -114,6 +146,15 @@ def summarize(directory):
                 for key in ('source_sha256', 'executable_sha256'):
                     value = row.get(key)
                     check(isinstance(value, str) and len(value) == 64 and all(c in '0123456789abcdef' for c in value), f'{identity}: missing {key}')
+                if purpose == 'setup':
+                    check(setup is not None, 'missing setup plan before launch')
+                    check(row.get('mode') == 'setup_install' and row.get('timeout_ms') == 180000, 'invalid setup launch mode or deadline')
+                    check(len(row.get('argv', [])) == 2 and row['argv'][1:] == ['install'], 'invalid setup argv')
+                    if identity in selected and run and setup:
+                        path = selected[identity]['path']
+                        check(row.get('cwd') == str(Path(run['corpus_root']) / Path(path).parent), 'invalid setup cwd')
+                        hashes = {entry['path']: entry['sha256'] for entry in setup['inputs']}
+                        check(row.get('source_sha256') == hashes.get(path), 'setup source hash disagrees with plan')
                 started[identity] = row
             elif event == 'completed':
                 identity = row['id']
@@ -131,6 +172,9 @@ def summarize(directory):
                     check(type(counts.get(key)) is int and counts[key] >= 0, f'{identity}: invalid {key} count')
                 if not all(type(counts.get(key)) is int for key in COUNTS):
                     continue
+                if purpose == 'setup':
+                    check(all(counts.get(key) == 0 for key in COUNTS) and counts.get('observed') is False, 'setup cannot claim test cases')
+                    check(row.get('junit') == 'not_requested' and row.get('junit_file') is None and row.get('junit_sha256') is None and row.get('expected_failure_verified') is False, 'invalid setup test reporting')
                 if row.get('junit') == 'retained':
                     path = artifact(row, 'junit')
                     if path:
@@ -190,11 +234,17 @@ def summarize(directory):
     if not isinstance(summary, dict):
         errors.append('malformed final summary')
         summary = {}
+    if purpose == 'setup':
+        check(setup is not None, 'missing setup plan')
+        check([row.get('path') for row in selected.values()] == ['package.json', 'test/package.json'], 'setup selection must retain both original installs')
+        check(summary.get('process_checks_passed') == 0, 'setup cannot claim passing process checks')
+        check(summary.get('setup_steps_succeeded') == len(completed) - len(failures) and summary.get('setup_steps_failed') == len(failures) and summary.get('failed_files') == len(failures), 'setup outcome counters disagree')
+        check(summary.get('inputs_unchanged') is True, 'setup inputs not verified unchanged')
     successful = not errors and not failures and summary.get('failed_files') == 0 and summary.get('unsupported') == 0
     return {'directory': str(directory), 'successful': successful, 'selected': len(selected), 'started': len(started), 'completed': len(completed),
             'unstarted': [row for identity, row in selected.items() if identity not in started],
             'incomplete': [selected[identity] for identity in started if identity in selected and identity not in completed],
-            'selection_policy': selection, 'counts': totals, 'capture_completeness': {state: sum(row.get('output_complete') is value for row in completed.values()) for state, value in [('complete', True), ('incomplete', False), ('unknown', None)]}, 'summary': summary, 'failed_file_ids': failures, 'cases': cases, 'errors': errors}
+            'purpose': purpose, 'setup_plan': setup, 'selection_policy': selection, 'counts': totals, 'capture_completeness': {state: sum(row.get('output_complete') is value for row in completed.values()) for state, value in [('complete', True), ('incomplete', False), ('unknown', None)]}, 'summary': summary, 'failed_file_ids': failures, 'cases': cases, 'errors': errors}
 
 
 def main():

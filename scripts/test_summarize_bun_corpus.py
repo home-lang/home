@@ -170,5 +170,47 @@ class JournalValidation(unittest.TestCase):
         self.assertEqual(sum(result['counts'].values()), 0)
 
 
+class SetupValidation(unittest.TestCase):
+    result = JournalValidation.result
+    artifact = JournalValidation.artifact
+    def setUp(self):
+        JournalValidation.setUp(self)
+        completed = self.rows[3].copy()
+        completed.update(counts=dict(passed=0, failed=0, skipped=0, todo=0, observed=False), junit='not_requested', junit_file=None, junit_sha256=None, output_complete=True)
+        self.rows = [dict(event='run', schema=2, purpose='setup', corpus_root='/control'),
+                     dict(event='setup_plan', contract='bun-4982b91e-root-test-setup', bun_pin='a'*40, manifest_sha256='b'*64, host=dict(os='darwin', arch='aarch64'), expected_platform={},
+                          inputs=[dict(path=path, sha256='a'*64) for path in ('package.json', 'test/package.json')],
+                          steps=[dict(path=path, operation='install', timeout_ms=180000) for path in ('package.json', 'test/package.json')]),
+                     dict(event='selected', id=0, path='package.json'), dict(event='selected', id=1, path='test/package.json')]
+        for identity, cwd in enumerate(('/control', '/control/test')):
+            self.rows.extend([dict(event='started', id=identity, phase='launch_attempt', mode='setup_install', argv=['/control/home', 'install'], cwd=cwd, timeout_ms=180000, source_sha256='a'*64, executable_sha256='b'*64), dict(completed, id=identity)])
+        self.rows.append(dict(event='finished', selected=2, started=2, completed=2, all_selected_completed=True,
+                              summary=dict(files=2, passed=0, failed=0, skipped=0, todo=0, failed_files=0, unsupported=0, process_checks_passed=0, setup_steps_succeeded=2, setup_steps_failed=0, inputs_unchanged=True)))
+
+    def test_setup_contract(self):
+        result = self.result()
+        self.assertTrue(result['successful'], result)
+        self.assertEqual(result['cases'], [])
+        for index, key, value in [(0, 'schema', 1), (1, 'host', {}), (4, 'timeout_ms', 180001), (4, 'argv', ['/control/home', 'install', '--ignore-scripts']), (5, 'expected_failure_verified', True), (5, 'counts', dict(passed=999, failed=0, skipped=0, todo=0, observed=True))]:
+            old = self.rows[index][key]
+            self.rows[index][key] = value
+            self.assertFalse(self.result()['successful'])
+            self.rows[index][key] = old
+
+    def test_setup_failure_and_interruption(self):
+        self.rows[5]['term'] = {'exited': 7}
+        self.rows[-1]['summary'].update(failed_files=1, setup_steps_failed=1, setup_steps_succeeded=1)
+        result = self.result()
+        self.assertFalse(result['successful'])
+        self.assertEqual(result['errors'], [])
+        self.assertEqual(result['failed_file_ids'], [0])
+        self.rows = self.rows[:6]
+        result = self.result()
+        self.assertFalse(result['successful'])
+        self.assertEqual(result['unstarted'][0]['path'], 'test/package.json')
+
+    # This fixture uses setup events; inherited corpus fixtures run in their own class.
+
+
 if __name__ == '__main__':
     unittest.main()

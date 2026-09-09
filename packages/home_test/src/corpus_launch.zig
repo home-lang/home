@@ -20,6 +20,15 @@ pub const Profile = struct {
     node_test: bool,
     validate_runtime: bool,
     no_orphans: bool,
+    test_invocation: bool = true,
+};
+
+pub const SetupOperation = enum {
+    install,
+    build,
+    pub fn profile(self: SetupOperation) Profile {
+        return .{ .file_timeout_ms = if (self == .install) 180_000 else 60_000, .test_timeout_ms = null, .node_test = false, .validate_runtime = false, .no_orphans = false, .test_invocation = false };
+    }
 };
 
 pub fn profile(file: File, executable: []const u8) Profile {
@@ -63,7 +72,7 @@ pub fn applyEnvironment(
     try env.put("BUN_RUNTIME_TRANSPILER_CACHE_PATH", "0");
     try env.put("BUN_ENABLE_CRASH_REPORTING", "0");
     try env.put("FORCE_COLOR", if (selected.node_test) "0" else "1");
-    if (selected.node_test) try env.put("NO_COLOR", "1") else try env.put("GITHUB_ACTIONS", "true");
+    if (selected.node_test) try env.put("NO_COLOR", "1") else if (selected.test_invocation) try env.put("GITHUB_ACTIONS", "true");
     if (selected.no_orphans) try env.put("BUN_FEATURE_FLAG_NO_ORPHANS", "1");
     const path_key = if (builtin.os.tag == .windows) "Path" else "PATH";
     const path = try std.fmt.allocPrint(allocator, "{s}{c}{s}", .{ bin_path, std.fs.path.delimiter, env.get(path_key) orelse "" });
@@ -149,15 +158,17 @@ pub const Storage = struct {
         return .{ .path = path, .temp_path = temp_path, .bin_path = bin_path };
     }
 
-    pub fn linkExecutable(self: Storage, allocator: std.mem.Allocator, io: Io, executable: []const u8) !void {
+    pub fn linkExecutable(self: Storage, allocator: std.mem.Allocator, io: Io, executable: []const u8, include_node: bool) !void {
         const target = try Io.Dir.cwd().realPathFileAlloc(io, executable, allocator);
         defer allocator.free(target);
-        inline for (.{ "bun", "home" }) |name| {
-            const path = try std.fs.path.join(allocator, &.{ self.bin_path, name ++ (if (builtin.os.tag == .windows) ".exe" else "") });
-            defer allocator.free(path);
-            Io.Dir.cwd().symLink(io, target, path, .{}) catch {
-                try Io.Dir.hardLink(.cwd(), target, .cwd(), path, io, .{});
-            };
+        inline for (.{ "bun", "home", "node" }) |name| {
+            if (!std.mem.eql(u8, name, "node") or include_node) {
+                const path = try std.fs.path.join(allocator, &.{ self.bin_path, name ++ (if (builtin.os.tag == .windows) ".exe" else "") });
+                defer allocator.free(path);
+                Io.Dir.cwd().symLink(io, target, path, .{}) catch {
+                    try Io.Dir.hardLink(.cwd(), target, .cwd(), path, io, .{});
+                };
+            }
         }
     }
 
@@ -292,4 +303,22 @@ test "corpus launch resolved executable preserves allocation ownership" {
     const resolved = try resolveExecutable(allocator, std.testing.io, &env, absolute);
     defer allocator.free(resolved);
     try std.testing.expectEqualStrings(absolute, resolved);
+}
+
+test "corpus launch setup preserves install and build contracts" {
+    const allocator = std.testing.allocator;
+    inline for (.{ SetupOperation.install, SetupOperation.build }) |operation| {
+        const selected = operation.profile();
+        try std.testing.expectEqual(@as(i64, if (operation == .install) 180_000 else 60_000), selected.file_timeout_ms);
+        try std.testing.expect(selected.test_timeout_ms == null and !selected.test_invocation and !selected.validate_runtime);
+        var env = std.process.Environ.Map.init(allocator);
+        defer env.deinit();
+        try applyEnvironment(allocator, &env, selected, "/setup/tmp", "/setup/bin");
+        try std.testing.expect(env.get("GITHUB_ACTIONS") == null and env.get("NO_COLOR") == null and env.get("TEST_THREAD_ID") == null);
+        try std.testing.expectEqualStrings("1", env.get("FORCE_COLOR").?);
+        try std.testing.expectEqualStrings("1.0", env.get("BUN_JSC_randomIntegrityAuditRate").?);
+        try env.put("GITHUB_ACTIONS", "inherited");
+        try applyEnvironment(allocator, &env, selected, "/setup/tmp", "/setup/bin");
+        try std.testing.expectEqualStrings("inherited", env.get("GITHUB_ACTIONS").?);
+    }
 }

@@ -4003,6 +4003,7 @@ fn printTestUsage() void {
         \\  --home                  Run only Home integration tests
         \\  --bun-corpus-native-subset <name>
         \\                          Run an explicit native Bun-corpus bootstrap subset
+        \\  --bun-corpus-setup       Run the original root/test installs with durable outcomes
         \\  --bun-corpus-platform    Detect the native host and check expected CI platform
         \\  --bun-corpus-prepared-vendor <name> [path filters...]
         \\                          Execute a pinned vendor after its install/build setup
@@ -5459,6 +5460,14 @@ fn runBunCorpusNativeDirectory(allocator: std.mem.Allocator, corpus_path: []cons
     if (failed) std.process.exit(1);
 }
 
+fn runBunCorpusSetup(allocator: std.mem.Allocator) !void {
+    const project_root = std.fs.path.dirname(home_test.corpus.default_root).?;
+    var summary = try home_test.corpus_setup.runRootInstalls(allocator, g_io, project_root, .{});
+    defer summary.deinit();
+    std.debug.print("[home-bun-setup] results: {s}\n{s}: {d} setup steps succeeded, {d} failed; zero corpus case credit\n", .{ summary.journal.directory, if (summary.successful()) "Setup succeeded" else "Setup failed", summary.succeeded, summary.failed });
+    if (!summary.successful()) return error.CorpusSetupFailed;
+}
+
 fn printBunCorpusPlatform(allocator: std.mem.Allocator) !void {
     var env = std.process.Environ.Map.init(allocator);
     defer env.deinit();
@@ -5512,6 +5521,10 @@ fn runPreparedBunVendor(allocator: std.mem.Allocator, name: []const u8, filters:
 }
 
 fn testCommand(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
+    for (args) |arg| if (std.mem.eql(u8, arg, "--bun-corpus-setup")) {
+        if (args.len != 1) return error.UnexpectedSetupArguments;
+        return runBunCorpusSetup(allocator);
+    };
     for (args) |arg| if (std.mem.eql(u8, arg, "--bun-corpus-platform")) {
         if (args.len != 1) return error.UnexpectedPlatformCheckArguments;
         return printBunCorpusPlatform(allocator);
