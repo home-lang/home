@@ -40,7 +40,7 @@
     "native_linux_windows_execution_verified": false
   },
   "remaining": [
-    "Native host detection and expected-agent checks are implemented. The original test install still times out compiling DuckDB (#725); services, complete vendor preparation and unified CI orchestration remain open (#724).",
+    "Native host and root/test setup execution are implemented. Both install processes now pass their original deadlines, but optional legacy DuckDB remains absent (#725). Services, complete vendor preparation and unified CI orchestration remain open (#724).",
     "Execute the entire applicable primary and vendor suite, retaining original sources/snapshots and all failures for feature porting.",
     "Native Linux/Windows child-lifetime execution and ASAN verification remain unclaimed (#723).",
     "Full runtime feature porting, default CLI fallback removal and independent native build ownership."
@@ -181,5 +181,65 @@
     ],
     "full_parity_complete": false,
     "evidence": "docs/docs/bun-port-evidence/2026-09-08-native-platform/manifest.json"
+  },
+  "native_setup_checkpoint": {
+    "kind": "native root/test setup outcomes and complete prepared Elysia regression",
+    "source": "8607e68dd01a98cede079ab4c3aebdd44e1a88ef",
+    "home_sha256": "65c97173d344a4a2cebe5f2db98c2929b34f94492a4f5929e904475f5444dc6e",
+    "bun_pin": "4982b91e3702094330f3be3883354c52b8c01323",
+    "build_steps_passed": 23,
+    "native_harness_passed": 19,
+    "launcher_units_passed": 6,
+    "validator_controls_passed": 14,
+    "private_cli_controls_verified": 4,
+    "setup_selected": 2,
+    "setup_completed": 2,
+    "setup_successful": true,
+    "setup_outcomes": [
+      {
+        "id": 0,
+        "term": {
+          "exited": 0
+        },
+        "timed_out": false,
+        "output_complete": true,
+        "source_unchanged": true
+      },
+      {
+        "id": 1,
+        "term": {
+          "exited": 0
+        },
+        "timed_out": false,
+        "output_complete": true,
+        "source_unchanged": true
+      }
+    ],
+    "protected_setup_inputs": 50,
+    "setup_inputs_unchanged": true,
+    "setup_case_pass_credit": 0,
+    "temporary_storage_removed": true,
+    "obsolete_generated_bytes_removed": 2693367959,
+    "vendor_completed_files": 129,
+    "vendor_registered_cases": {
+      "passed": 1516,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    "vendor_sources_unchanged": 283,
+    "vendor_original_excluded_file": "test/ws/connection.test.ts",
+    "vendor_attempts_this_build": 1,
+    "vendor_setup_reused_from": "../2026-09-08-selection-verified/manifest.json",
+    "first_failure": "Setup command aliases omitted node; both private lifecycle controls resolved installed system Node. Setup now aliases node to the same Home executable, and the native control also executes the build operation.",
+    "full_parity_complete": false,
+    "setup_process_gate_succeeded": true,
+    "complete_dependency_graph_verified": false,
+    "legacy_duckdb_binding_present": false,
+    "original_duckdb_files_completed": 2,
+    "original_duckdb_api_cases": 18,
+    "legacy_duckdb_early_exit_case_credit": 0,
+    "legacy_duckdb_process_exit_is_not_implementation_credit": true,
+    "evidence": "docs/docs/bun-port-evidence/2026-09-08-native-setup/manifest.json"
   }
 }

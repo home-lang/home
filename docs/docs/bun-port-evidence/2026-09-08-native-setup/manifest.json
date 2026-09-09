@@ -1,0 +1,3001 @@
+{
+  "kind": "native root/test setup outcomes and complete prepared Elysia regression",
+  "source": "8607e68dd01a98cede079ab4c3aebdd44e1a88ef",
+  "home_sha256": "65c97173d344a4a2cebe5f2db98c2929b34f94492a4f5929e904475f5444dc6e",
+  "bun_pin": "4982b91e3702094330f3be3883354c52b8c01323",
+  "build_steps_passed": 23,
+  "native_harness_passed": 19,
+  "launcher_units_passed": 6,
+  "validator_controls_passed": 14,
+  "private_cli_controls_verified": 4,
+  "setup_selected": 2,
+  "setup_completed": 2,
+  "setup_successful": true,
+  "setup_outcomes": [
+    {
+      "id": 0,
+      "term": {
+        "exited": 0
+      },
+      "timed_out": false,
+      "output_complete": true,
+      "source_unchanged": true
+    },
+    {
+      "id": 1,
+      "term": {
+        "exited": 0
+      },
+      "timed_out": false,
+      "output_complete": true,
+      "source_unchanged": true
+    }
+  ],
+  "protected_setup_inputs": 50,
+  "setup_inputs_unchanged": true,
+  "setup_case_pass_credit": 0,
+  "temporary_storage_removed": true,
+  "obsolete_generated_bytes_removed": 2693367959,
+  "vendor_completed_files": 129,
+  "vendor_registered_cases": {
+    "passed": 1516,
+    "failed": 0,
+    "skipped": 0,
+    "todo": 0
+  },
+  "vendor_sources_unchanged": 283,
+  "vendor_original_excluded_file": "test/ws/connection.test.ts",
+  "vendor_attempts_this_build": 1,
+  "vendor_setup_reused_from": "../2026-09-08-selection-verified/manifest.json",
+  "first_failure": "Setup command aliases omitted node; both private lifecycle controls resolved installed system Node. Setup now aliases node to the same Home executable, and the native control also executes the build operation.",
+  "full_parity_complete": false,
+  "files": [
+    {
+      "artifact": "000-jsc_bootstrap.zig.gz",
+      "source": "packages/home_test/src/adapters/jsc_bootstrap.zig",
+      "bytes": 362181,
+      "sha256": "4846c5a4dfa6d8807b75898893bcfd54479b21a9a2b725a072b04b45474fec9b"
+    },
+    {
+      "artifact": "001-corpus_journal.zig.gz",
+      "source": "packages/home_test/src/corpus_journal.zig",
+      "bytes": 13876,
+      "sha256": "bf759f8dbec8a500f11ec9ef0551eccdab198417f036646455fcb7f7947dca5d"
+    },
+    {
+      "artifact": "002-corpus_launch.zig.gz",
+      "source": "packages/home_test/src/corpus_launch.zig",
+      "bytes": 17786,
+      "sha256": "270ebc7c45342fd55a1eb6a18003dd2a1ff2c6778eec373a421b65fc8d3dd92b"
+    },
+    {
+      "artifact": "003-corpus_setup.zig.gz",
+      "source": "packages/home_test/src/corpus_setup.zig",
+      "bytes": 12091,
+      "sha256": "5594888b7176ab880aec3fa52e83644094ebd4af3121a9a43f244500fdacd440"
+    },
+    {
+      "artifact": "004-home_test.zig.gz",
+      "source": "packages/home_test/src/home_test.zig",
+      "bytes": 8967,
+      "sha256": "95fc1ac931697c340bd51a900bcd1be41f66844f321d1717f4e17c29486f8a97"
+    },
+    {
+      "artifact": "005-test_root.zig.gz",
+      "source": "packages/home_test/src/test_root.zig",
+      "bytes": 1028,
+      "sha256": "a9469b495c348437063b7a21ad3450c15c07750edd4dda339fba3a36bac3b36a"
+    },
+    {
+      "artifact": "006-BUN_SETUP_FILES.json.gz",
+      "source": "packages/runtime/test/BUN_SETUP_FILES.json",
+      "bytes": 12809,
+      "sha256": "aefb8e3517be0b606a0572664bd75eeb67b8b910149c6d28e22e46753f9e78fd"
+    },
+    {
+      "artifact": "007-summarize-bun-corpus.py.gz",
+      "source": "scripts/summarize-bun-corpus.py",
+      "bytes": 17867,
+      "sha256": "4f5ab3ded0d1925ab54915ad6a31d7460854b8888e6a16fa8a0939212bd55391"
+    },
+    {
+      "artifact": "008-sync-bun-test-setup.py.gz",
+      "source": "scripts/sync-bun-test-setup.py",
+      "bytes": 4987,
+      "sha256": "25c0e21141c16542d54e4ba6d027f3d3b78950967846ab6b63f49a3e3ffce815"
+    },
+    {
+      "artifact": "009-test_summarize_bun_corpus.py.gz",
+      "source": "scripts/test_summarize_bun_corpus.py",
+      "bytes": 12454,
+      "sha256": "d3f36324816828790f1b210af0067a302d708be18327a332d4c4d67aeb06c613"
+    },
+    {
+      "artifact": "010-main.zig.gz",
+      "source": "src/main.zig",
+      "bytes": 335243,
+      "sha256": "83313dc7633f39638ec649fd27a1a2e4a2c0bbd9db83ce073eccdb04226d8901"
+    },
+    {
+      "artifact": "011-build-corpus-native-setup-alias.log.gz",
+      "source": "zig-out/bun-port-recovery/build-corpus-native-setup-alias.log",
+      "bytes": 3862,
+      "sha256": "04ac1bca15cc17df598ef8acb60931809a6630c565c1c186662379e97ccbe418"
+    },
+    {
+      "artifact": "012-build-corpus-native-setup-first.log.gz",
+      "source": "zig-out/bun-port-recovery/build-corpus-native-setup-first.log",
+      "bytes": 4073,
+      "sha256": "c1bd6d1b0d21622799b002fed4745632086403bd00a34482109f4a52fcd03f61"
+    },
+    {
+      "artifact": "013-diagnose-native-setup-cli.py.gz",
+      "source": "zig-out/bun-port-recovery/diagnose-native-setup-cli.py",
+      "bytes": 3422,
+      "sha256": "80a9e3bcb277671572602e998ce11acc78a4f84820be8ff72c1c6ad16fecb34e"
+    },
+    {
+      "artifact": "014-manifest.json.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/manifest.json",
+      "bytes": 31271,
+      "sha256": "94ac532948be3c6b3da5ee75438fcb4513ac3c2dbe52ef82744bd16d292488c3"
+    },
+    {
+      "artifact": "015-000000.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000000.junit.xml",
+      "bytes": 3313,
+      "sha256": "c94b29fcb927991dff53d13f2711e09581fb35e4a6a7f937a299e5eceda33d1d"
+    },
+    {
+      "artifact": "016-000000.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000000.stderr",
+      "bytes": 2203,
+      "sha256": "93df5fd272e7d7fdb5cb94796705f76fb16398f9e638d0e8dcdb73a655c4ceea"
+    },
+    {
+      "artifact": "017-000000.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000000.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "018-000001.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000001.junit.xml",
+      "bytes": 989,
+      "sha256": "79d7906078d1222628b2009e9ae3bd13b63971c1c7b5362cc7bc88270961f003"
+    },
+    {
+      "artifact": "019-000001.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000001.stderr",
+      "bytes": 490,
+      "sha256": "9e2920aab84460091bb6adedadd7d7579711e681f16fc7b42a6709523cb09145"
+    },
+    {
+      "artifact": "020-000001.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000001.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "021-000002.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000002.junit.xml",
+      "bytes": 2039,
+      "sha256": "0128a2b832849133c75e9ea87c20b3ed8accfdcc098ae500229cda438a3c1e5a"
+    },
+    {
+      "artifact": "022-000002.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000002.stderr",
+      "bytes": 1183,
+      "sha256": "1dc1d5250e62321abf156004caa036483a27be57cea27e4aa9b8c6f101f0f312"
+    },
+    {
+      "artifact": "023-000002.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000002.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "024-000003.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000003.junit.xml",
+      "bytes": 3689,
+      "sha256": "4b60ca2f0953618977a7c9ba1d922f8cca70c746437121cc545fe1af5e940885"
+    },
+    {
+      "artifact": "025-000003.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000003.stderr",
+      "bytes": 2447,
+      "sha256": "c69fe2cc9e7d50ea15995020aef3bf2e7e05cd32ca6854692ff77f202309df1d"
+    },
+    {
+      "artifact": "026-000003.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000003.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "027-000004.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000004.junit.xml",
+      "bytes": 2107,
+      "sha256": "b465884222ff4ce446b8f19f127b69d4da595152e60316ce7ffb61ce7858cc42"
+    },
+    {
+      "artifact": "028-000004.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000004.stderr",
+      "bytes": 1288,
+      "sha256": "a42cb48dc949bd5783996bba3a4abacc00514b1c1d372ec32b6f6423eb43328f"
+    },
+    {
+      "artifact": "029-000004.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000004.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "030-000005.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000005.junit.xml",
+      "bytes": 2526,
+      "sha256": "d368918eddb9bec8926a0bd3b9dde7ac1bbe523bd048ff8ccc6b3ceee177d058"
+    },
+    {
+      "artifact": "031-000005.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000005.stderr",
+      "bytes": 1588,
+      "sha256": "957502a947987e65b6d2d0a05fb24abe2808047270d7060ef7918338915ceace"
+    },
+    {
+      "artifact": "032-000005.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000005.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "033-000006.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000006.junit.xml",
+      "bytes": 666,
+      "sha256": "1d096be5e6dcfbe8a14e85b81b4c09cdd3a0b93b462312308f34c9d9c33f3f49"
+    },
+    {
+      "artifact": "034-000006.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000006.stderr",
+      "bytes": 288,
+      "sha256": "f6d73faba06e2b162c98eebbccd105d0885f5191b182d55757567c7f3e8cd142"
+    },
+    {
+      "artifact": "035-000006.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000006.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "036-000007.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000007.junit.xml",
+      "bytes": 1803,
+      "sha256": "877ff0b8f1a11848eb73a86d94624e8b8938c903e308606f8f14d9113350e8f9"
+    },
+    {
+      "artifact": "037-000007.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000007.stderr",
+      "bytes": 1067,
+      "sha256": "6ca890808c8079acd86539786f7a986991779c113d55b0edaef9df455de304e8"
+    },
+    {
+      "artifact": "038-000007.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000007.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "039-000008.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000008.junit.xml",
+      "bytes": 1989,
+      "sha256": "e2e6ebb4ea5a3b8041b34b684effe89be148b87d3ac92be9688372ec49b81be5"
+    },
+    {
+      "artifact": "040-000008.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000008.stderr",
+      "bytes": 1204,
+      "sha256": "64dca0402e0a0a6991956933111028f2af6325d116b1937db58fbec4461ad33b"
+    },
+    {
+      "artifact": "041-000008.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000008.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "042-000009.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000009.junit.xml",
+      "bytes": 3053,
+      "sha256": "469e29c1a8f9b7fcf67b0c98ee73d8e907b539b49cd92c2baead036fb35643a7"
+    },
+    {
+      "artifact": "043-000009.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000009.stderr",
+      "bytes": 1918,
+      "sha256": "b40539652932139d1a0b5dd224df746978ec9e100fedec0bd861b9dbe58c4cb3"
+    },
+    {
+      "artifact": "044-000009.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000009.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "045-000010.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000010.junit.xml",
+      "bytes": 1310,
+      "sha256": "d25a45506c52a93f9ea2ceb9b8adbb1c97b96fcb3e34413dfafc37fb1e2c9e85"
+    },
+    {
+      "artifact": "046-000010.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000010.stderr",
+      "bytes": 709,
+      "sha256": "8ef0225da317ede1432922fd6b1757dd3f96188d9e9e28237724528317bdca8c"
+    },
+    {
+      "artifact": "047-000010.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000010.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "048-000011.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000011.junit.xml",
+      "bytes": 2205,
+      "sha256": "bb06b5e61eb6174fc32714f4d50e5db87d38b769b8e9c5c4df673f4e14ebfdd5"
+    },
+    {
+      "artifact": "049-000011.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000011.stderr",
+      "bytes": 1442,
+      "sha256": "68b3219cc493dae805a492955247f2f5c4b9b695841a89b08493eaa35ab75151"
+    },
+    {
+      "artifact": "050-000011.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000011.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "051-000012.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000012.junit.xml",
+      "bytes": 1374,
+      "sha256": "36bf8c3a3d6880ef56f97ff78034f6e3775c1a44199b44da432fc5257a723e2b"
+    },
+    {
+      "artifact": "052-000012.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000012.stderr",
+      "bytes": 783,
+      "sha256": "a77f335cdf0aeb3cc6b491f0ca7d062ace7939c0d40baf190257ecccc0a5f93b"
+    },
+    {
+      "artifact": "053-000012.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000012.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "054-000013.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000013.junit.xml",
+      "bytes": 1539,
+      "sha256": "8a11d9851234cec6a0f1692efce83bf4cdba38e5d182467f92a398cb4f95eaeb"
+    },
+    {
+      "artifact": "055-000013.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000013.stderr",
+      "bytes": 889,
+      "sha256": "87b9b02dc2e016862e14aa5297e04ff7e552d9a8c6a697f4ad4eb46af76e9cea"
+    },
+    {
+      "artifact": "056-000013.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000013.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "057-000014.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000014.junit.xml",
+      "bytes": 2302,
+      "sha256": "46c11f0300440e77f7e507a2650fdf1de4c7e541fa95dd90994f8e27089f158b"
+    },
+    {
+      "artifact": "058-000014.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000014.stderr",
+      "bytes": 1454,
+      "sha256": "9984ccabde5baced19016651aaaa83264fd4647dbe0b6fa81630172043e65a19"
+    },
+    {
+      "artifact": "059-000014.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000014.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "060-000015.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000015.junit.xml",
+      "bytes": 704,
+      "sha256": "0bf061ffced0a9c9ef9a060aeef00f98881a604d6ccfe3927f8f2e15eea1d9b2"
+    },
+    {
+      "artifact": "061-000015.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000015.stderr",
+      "bytes": 299,
+      "sha256": "725b33a8b94c59fb3c918da6e945ddf60a95a27c3c1968f9d8f78014a2555a1d"
+    },
+    {
+      "artifact": "062-000015.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000015.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "063-000016.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000016.junit.xml",
+      "bytes": 785,
+      "sha256": "ca5c74b7484610fd32482744faee643a55f184d2c428d5e886dc189bc9983294"
+    },
+    {
+      "artifact": "064-000016.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000016.stderr",
+      "bytes": 355,
+      "sha256": "ddb40efb59da1984c1d6068e563eff4c55bee94e119fb1a8bca3a8ccf934e518"
+    },
+    {
+      "artifact": "065-000016.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000016.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "066-000017.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000017.junit.xml",
+      "bytes": 1579,
+      "sha256": "58044c573fb3ec7b2baddd90cf1ede5ae35b1bc3912b217c29eb921b2665392a"
+    },
+    {
+      "artifact": "067-000017.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000017.stderr",
+      "bytes": 654,
+      "sha256": "d802a0b1250193f9c8b51ba0294156328c146d8f2906bc7768d8cf00642f206a"
+    },
+    {
+      "artifact": "068-000017.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000017.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "069-000018.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000018.junit.xml",
+      "bytes": 5267,
+      "sha256": "d2cc6c839e294fb3198112622ce694ae487bb5fea58049b6ec749ef7294dc861"
+    },
+    {
+      "artifact": "070-000018.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000018.stderr",
+      "bytes": 3480,
+      "sha256": "1186ecfa0b21e194d3d8c631140ace8349fddf5a1890ed483210a3e34234dd30"
+    },
+    {
+      "artifact": "071-000018.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000018.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "072-000019.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000019.junit.xml",
+      "bytes": 4561,
+      "sha256": "90b0603799cb042cdc8b8040906b305a59c3182b0f5e518e8b351430c4d9f063"
+    },
+    {
+      "artifact": "073-000019.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000019.stderr",
+      "bytes": 2952,
+      "sha256": "75369605a6ac3c7d5ce1f367e9f6334fc968dd372f3580a6e53b304cf9c46325"
+    },
+    {
+      "artifact": "074-000019.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000019.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "075-000020.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000020.junit.xml",
+      "bytes": 1356,
+      "sha256": "1e9a164fb7c880e092c7cff2be8d1fb0ece054206b80b16b8b46af4fe80f0c54"
+    },
+    {
+      "artifact": "076-000020.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000020.stderr",
+      "bytes": 745,
+      "sha256": "c720d73106afe5c897796d3ad56719a6f4c101ece874725080407d44a453213e"
+    },
+    {
+      "artifact": "077-000020.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000020.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "078-000021.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000021.junit.xml",
+      "bytes": 6601,
+      "sha256": "f5aa8d266e30297e363bc17a72d458324c81868f62f524e3532bed5adb9a225b"
+    },
+    {
+      "artifact": "079-000021.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000021.stderr",
+      "bytes": 4466,
+      "sha256": "c1e33e12e83fa490bed0e25a34da96e51d02b10ea79f609d3c53f7ce5a58d83c"
+    },
+    {
+      "artifact": "080-000021.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000021.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "081-000022.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000022.junit.xml",
+      "bytes": 1408,
+      "sha256": "d7deebbcf3b2947731e05c25b34f93f6b7997651c5db52ca6bc1161a9d1f0f78"
+    },
+    {
+      "artifact": "082-000022.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000022.stderr",
+      "bytes": 808,
+      "sha256": "43bab279128d95129e0d9382837125097426b32f26c29b9a77d3a634fb61bd81"
+    },
+    {
+      "artifact": "083-000022.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000022.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "084-000023.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000023.junit.xml",
+      "bytes": 3551,
+      "sha256": "9ab7c650899f21ca4e3ffd874d20003dddb966bd1d0bd904c3ca1cb01a1dd890"
+    },
+    {
+      "artifact": "085-000023.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000023.stderr",
+      "bytes": 2317,
+      "sha256": "b87e4f3265ea5444c4b371839b8cb8257327533f45ef683e45b2ab8b25f16dbd"
+    },
+    {
+      "artifact": "086-000023.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000023.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "087-000024.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000024.junit.xml",
+      "bytes": 2096,
+      "sha256": "4ce52ef30ae46955dbcb73061499bd0e05bdeb7e1b625f1efcd96b293c0bda46"
+    },
+    {
+      "artifact": "088-000024.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000024.stderr",
+      "bytes": 1287,
+      "sha256": "88b382e18533527cfebb7bfd49e167f35bbaff7b01e7c87a70655f92ce801569"
+    },
+    {
+      "artifact": "089-000024.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000024.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "090-000025.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000025.junit.xml",
+      "bytes": 1323,
+      "sha256": "d7146e1600f39159f31fe3167cd71285741d4993651b76657e9d03327cef569d"
+    },
+    {
+      "artifact": "091-000025.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000025.stderr",
+      "bytes": 696,
+      "sha256": "33b6011cd3b28520928896965dc9ab2b9b871bddfea592f6526805e0d48dce78"
+    },
+    {
+      "artifact": "092-000025.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000025.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "093-000026.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000026.junit.xml",
+      "bytes": 3975,
+      "sha256": "4910ad62e9072adf8f4c39db20f8a89134fa0bf365b4eddc8dc76b99af33a18d"
+    },
+    {
+      "artifact": "094-000026.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000026.stderr",
+      "bytes": 2633,
+      "sha256": "870ba43b6eec61c3eacaac62df62ac0ea2b7d68f129bfe94a27dc2de409da64f"
+    },
+    {
+      "artifact": "095-000026.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000026.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "096-000027.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000027.junit.xml",
+      "bytes": 1636,
+      "sha256": "688e60d4ff0666c531d4a1c27b0e4d0d26193af3d9ca2946ef60c0c8937badfc"
+    },
+    {
+      "artifact": "097-000027.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000027.stderr",
+      "bytes": 990,
+      "sha256": "eb526242f37d0cee4490e01a18ac7ae704f772b85db83155cba4deac4bea6107"
+    },
+    {
+      "artifact": "098-000027.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000027.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "099-000028.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000028.junit.xml",
+      "bytes": 831,
+      "sha256": "aaeb4cb8c2a748d6429b3f8b2c7686a5241c9846601b6c532f97bb0bc931ab1c"
+    },
+    {
+      "artifact": "100-000028.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000028.stderr",
+      "bytes": 390,
+      "sha256": "a71ccaa13b731cb80dd6dbed0bcda77ecb81ae9392ad364a23003df6e3b9f742"
+    },
+    {
+      "artifact": "101-000028.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000028.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "102-000029.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000029.junit.xml",
+      "bytes": 1096,
+      "sha256": "8a17c9183ac25a576e0f8eca46b6022f559592906045b8c9504b23440d85d3ae"
+    },
+    {
+      "artifact": "103-000029.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000029.stderr",
+      "bytes": 566,
+      "sha256": "a8361cad0ee5f2a0968e78886e2c0a61e075d860110c80fb00ac9a2ef3af9a32"
+    },
+    {
+      "artifact": "104-000029.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000029.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "105-000030.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000030.junit.xml",
+      "bytes": 2437,
+      "sha256": "593b623817e301c9b48e9e9dbd6d78e40e822a397b9ce4aea0f5abf025d439e0"
+    },
+    {
+      "artifact": "106-000030.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000030.stderr",
+      "bytes": 1528,
+      "sha256": "3998457968c7c7cbc1927b7572fd580240e7aa968d217d09a4f4bc2ea34fcd2c"
+    },
+    {
+      "artifact": "107-000030.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000030.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "108-000031.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000031.junit.xml",
+      "bytes": 825,
+      "sha256": "557c97407e348cb866751b289e090b4c64bae040b9ddc201bf18ac1b30051cfc"
+    },
+    {
+      "artifact": "109-000031.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000031.stderr",
+      "bytes": 404,
+      "sha256": "7ec8ef0a2210775520d9a226c07d00305099f81af4f6002b89527df7deb6834c"
+    },
+    {
+      "artifact": "110-000031.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000031.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "111-000032.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000032.junit.xml",
+      "bytes": 2945,
+      "sha256": "c491855fbe05f5a11d67531f15a6e28090b14a76c24bb0dea5a0e8cb483e7534"
+    },
+    {
+      "artifact": "112-000032.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000032.stderr",
+      "bytes": 1774,
+      "sha256": "4d7dae48b6c24d4cc1c80298f1a90d7d8de1030f7cc3295e583f5a2532baba53"
+    },
+    {
+      "artifact": "113-000032.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000032.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "114-000033.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000033.junit.xml",
+      "bytes": 1704,
+      "sha256": "9b7dfd2ca6a46bf4dd98a3f819beedb3c74591493b22df2c3f1020bfe37e6e2d"
+    },
+    {
+      "artifact": "115-000033.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000033.stderr",
+      "bytes": 992,
+      "sha256": "665d59d20e0c1732188ccdddce72604c5f8c8d6d0d981accb4bbe8d624069176"
+    },
+    {
+      "artifact": "116-000033.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000033.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "117-000034.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000034.junit.xml",
+      "bytes": 2861,
+      "sha256": "f0a3fd4573f81d6273b007fe5520f5b42880bde341fbbc3b1df78a3c26dd3603"
+    },
+    {
+      "artifact": "118-000034.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000034.stderr",
+      "bytes": 1765,
+      "sha256": "9b430252decab2b907feef31a9652a3845c32c47c9eeefdbb705e2ea6e738267"
+    },
+    {
+      "artifact": "119-000034.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000034.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "120-000035.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000035.junit.xml",
+      "bytes": 2657,
+      "sha256": "0a8741965770c65b353e00a8b138ee72602aa0be022068755670c25988125657"
+    },
+    {
+      "artifact": "121-000035.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000035.stderr",
+      "bytes": 1627,
+      "sha256": "4165cdb5362529445ebdbb1a800a94b5cfa2deb5da359e534d7dd308945ec369"
+    },
+    {
+      "artifact": "122-000035.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000035.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "123-000036.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000036.junit.xml",
+      "bytes": 734,
+      "sha256": "6640b817f43ecb2781fcc366904ccf44ba548a55a3bea108d8a5c96003e19179"
+    },
+    {
+      "artifact": "124-000036.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000036.stderr",
+      "bytes": 314,
+      "sha256": "045edbc8bbbe0eb4b893b7c6e3e983d6af0bda6b6ae125f42a4b8547ee909fbc"
+    },
+    {
+      "artifact": "125-000036.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000036.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "126-000037.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000037.junit.xml",
+      "bytes": 2216,
+      "sha256": "d7601ded5e5c3b737d95ddf6bb757a37d364f547773b51e5b3b7c9b37fb144e6"
+    },
+    {
+      "artifact": "127-000037.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000037.stderr",
+      "bytes": 1243,
+      "sha256": "66bc91b98083e8a6c13203b6710017d2271da173daeae1711d7fce6e9d22e9bc"
+    },
+    {
+      "artifact": "128-000037.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000037.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "129-000038.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000038.junit.xml",
+      "bytes": 875,
+      "sha256": "ce3530b891494787a7c3e090f28d5ec59e27f538c9a853bc096273aa88c74df3"
+    },
+    {
+      "artifact": "130-000038.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000038.stderr",
+      "bytes": 386,
+      "sha256": "99f1c3817a42fd0500570a42e4c3409097bc4c3266dde29473351f5123751186"
+    },
+    {
+      "artifact": "131-000038.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000038.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "132-000039.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000039.junit.xml",
+      "bytes": 3011,
+      "sha256": "242d1710967ef4b936bf8b949316bc9106a027899dc10130c214d2b9a2043252"
+    },
+    {
+      "artifact": "133-000039.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000039.stderr",
+      "bytes": 1796,
+      "sha256": "80ab0632e61365a5aed0414bfc3803a698482824f365c1252fe498dd853375a8"
+    },
+    {
+      "artifact": "134-000039.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000039.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "135-000040.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000040.junit.xml",
+      "bytes": 2199,
+      "sha256": "81d481f53150b53837507b2178065da2cbf9570e2d0fabf2d0daf2d2f9e0d87a"
+    },
+    {
+      "artifact": "136-000040.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000040.stderr",
+      "bytes": 1261,
+      "sha256": "76f82b45e106baea552e3a478cc98e3aed9bbbe05ef899333ffc4f7f05520e17"
+    },
+    {
+      "artifact": "137-000040.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000040.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "138-000041.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000041.junit.xml",
+      "bytes": 5078,
+      "sha256": "fa419c29627e389417c4ab76cfdec46372a12fca29cd50f8d09eab58ae1d823e"
+    },
+    {
+      "artifact": "139-000041.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000041.stderr",
+      "bytes": 3377,
+      "sha256": "03f9a900f66644034d28cf7f1b16729f2d0caa7d4338c21b52f65c3358fa861a"
+    },
+    {
+      "artifact": "140-000041.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000041.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "141-000042.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000042.junit.xml",
+      "bytes": 708,
+      "sha256": "6879cc4ec6dcdd8a35b346670b250743a0dc47c1b7125150d921314934e08f49"
+    },
+    {
+      "artifact": "142-000042.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000042.stderr",
+      "bytes": 289,
+      "sha256": "350cc72801c0d57772d5c5c261c556de64461b1050b414b0bff1f16a3c8a2817"
+    },
+    {
+      "artifact": "143-000042.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000042.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "144-000043.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000043.junit.xml",
+      "bytes": 1887,
+      "sha256": "d9696d8569912630757c412928361e6cdad60146d1d5d3e297788f0206ce8332"
+    },
+    {
+      "artifact": "145-000043.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000043.stderr",
+      "bytes": 1047,
+      "sha256": "5b777ee22919e5ab2a7549601b9f3623fe9e6d3df1a27f73f8bc4c1b9ac47c5d"
+    },
+    {
+      "artifact": "146-000043.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000043.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "147-000044.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000044.junit.xml",
+      "bytes": 1904,
+      "sha256": "19a3b7ff9527eaef971ddb8d05c520429c18582136bc327a4357f6f44e1bac2d"
+    },
+    {
+      "artifact": "148-000044.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000044.stderr",
+      "bytes": 1054,
+      "sha256": "23a9a644b9be604bcba65d742fb7854eda143a5d84e09721033e601567d4302f"
+    },
+    {
+      "artifact": "149-000044.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000044.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "150-000045.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000045.junit.xml",
+      "bytes": 3998,
+      "sha256": "865af2bd0008759f7e4cf70c93d234ab14e0b1a66afb92b48665573f4daf102f"
+    },
+    {
+      "artifact": "151-000045.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000045.stderr",
+      "bytes": 2422,
+      "sha256": "3b5474440409cde82e8e9bb84a214b22aa08357dbff4726c1366bd44c248e229"
+    },
+    {
+      "artifact": "152-000045.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000045.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "153-000046.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000046.junit.xml",
+      "bytes": 3193,
+      "sha256": "98882e204bbc5e38177810f8b6071c8fb3707c89e1ea712bda1a158f22edec29"
+    },
+    {
+      "artifact": "154-000046.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000046.stderr",
+      "bytes": 1961,
+      "sha256": "5aefb2cc8a8b03c41bcde8710381a2aba5994771860b10972deb64d40574b5d6"
+    },
+    {
+      "artifact": "155-000046.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000046.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "156-000047.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000047.junit.xml",
+      "bytes": 1378,
+      "sha256": "82a884d890a7d2a8957dadce18c24864a19bb885fc1171e2fed5fbb27364e875"
+    },
+    {
+      "artifact": "157-000047.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000047.stderr",
+      "bytes": 726,
+      "sha256": "89c2717a3e29ac2343111c67bf8867a0b89802fb5f763515145c4d3901c2b55d"
+    },
+    {
+      "artifact": "158-000047.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000047.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "159-000048.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000048.junit.xml",
+      "bytes": 2402,
+      "sha256": "f65ee8931a2a7d8c765dc66657ac91813d26da6094139661c17016a611601bde"
+    },
+    {
+      "artifact": "160-000048.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000048.stderr",
+      "bytes": 1397,
+      "sha256": "f9e50ead1d4f886ad1db779fb9cf6559083b620962e7b38eafcd5b7e73d05b0a"
+    },
+    {
+      "artifact": "161-000048.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000048.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "162-000049.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000049.junit.xml",
+      "bytes": 4940,
+      "sha256": "08d2b766fdd054123dc106300539306d8a44a38553547ce300d602c0365ca0ca"
+    },
+    {
+      "artifact": "163-000049.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000049.stderr",
+      "bytes": 3229,
+      "sha256": "f9160af549e1e834ace8516206cb081c59f0f7a2b6bc648b1fa4afb9eb208e24"
+    },
+    {
+      "artifact": "164-000049.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000049.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "165-000050.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000050.junit.xml",
+      "bytes": 2918,
+      "sha256": "171f3347efbb68aebe2b1b3628675d210100064e515f3feecacc4746bc627eea"
+    },
+    {
+      "artifact": "166-000050.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000050.stderr",
+      "bytes": 1726,
+      "sha256": "d23dd094ed4a0c578a2019f2fbc9d381d296e374ce89244dd6ff38fd54d861d6"
+    },
+    {
+      "artifact": "167-000050.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000050.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "168-000051.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000051.junit.xml",
+      "bytes": 7334,
+      "sha256": "956b01aac306951cbb335dcd300b62f9eb9c25c986a0ce806b45d5b82976ada7"
+    },
+    {
+      "artifact": "169-000051.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000051.stderr",
+      "bytes": 4905,
+      "sha256": "8f51785faab039e42a2ab938538e64ec3038c9acc8f38509f6d0b5f061ebbf01"
+    },
+    {
+      "artifact": "170-000051.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000051.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "171-000052.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000052.junit.xml",
+      "bytes": 2546,
+      "sha256": "ef64d69c13ace0b8e116bbf642297c79ef0c73a665f605fcafeed1e3611806e5"
+    },
+    {
+      "artifact": "172-000052.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000052.stderr",
+      "bytes": 1600,
+      "sha256": "4fcbc8a01aa255741244d592b05548036cd40b6fb4d48b2ea30f591f571a3224"
+    },
+    {
+      "artifact": "173-000052.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000052.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "174-000053.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000053.junit.xml",
+      "bytes": 3217,
+      "sha256": "100834386b0a3636d4844f7faf333148b14d7e28755000e5f058e5314e630306"
+    },
+    {
+      "artifact": "175-000053.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000053.stderr",
+      "bytes": 2067,
+      "sha256": "c007f18824b4d8978e4d8f423fef16ffd3557b1dfb327c1661fdff9016024cca"
+    },
+    {
+      "artifact": "176-000053.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000053.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "177-000054.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000054.junit.xml",
+      "bytes": 4796,
+      "sha256": "112d6e2b7002d3cc654f1ed60f99f47c787f9e8426d6e88daffd3da3e31e8442"
+    },
+    {
+      "artifact": "178-000054.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000054.stderr",
+      "bytes": 3118,
+      "sha256": "9fbfbf0163fb85aee36c2d32055ab87b58b5415f9bc614abe98d418908088516"
+    },
+    {
+      "artifact": "179-000054.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000054.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "180-000055.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000055.junit.xml",
+      "bytes": 1801,
+      "sha256": "6bfc23f47e37f50af88ca0468ed779967e00e64c993deb73bb20ff3e1402e02a"
+    },
+    {
+      "artifact": "181-000055.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000055.stderr",
+      "bytes": 1089,
+      "sha256": "fd156e9e90b90e09583132df8306dc6bfd4e02e19a97fcc1de51511ede26a564"
+    },
+    {
+      "artifact": "182-000055.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000055.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "183-000056.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000056.junit.xml",
+      "bytes": 2676,
+      "sha256": "3ffce417007b25b85d881a254e18eba8ad6fa85a748730033f4139d0ade9a3b3"
+    },
+    {
+      "artifact": "184-000056.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000056.stderr",
+      "bytes": 1636,
+      "sha256": "a6b5887e6eab99c772ffe15b5586d526c653b4fec4a33cf65da542ca67dace44"
+    },
+    {
+      "artifact": "185-000056.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000056.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "186-000057.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000057.junit.xml",
+      "bytes": 1013,
+      "sha256": "e1fe0245b51f39bb4c1060b4b983aa75bcd6612e10ac9b84a183d080e7df4ab8"
+    },
+    {
+      "artifact": "187-000057.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000057.stderr",
+      "bytes": 485,
+      "sha256": "6f187593980620145a6d2b495105194637056b2ed79055beee415ee2f9976d7b"
+    },
+    {
+      "artifact": "188-000057.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000057.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "189-000058.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000058.junit.xml",
+      "bytes": 656,
+      "sha256": "ee089185775fcf3018d3c5411846c63eae2b84d15d712bad5ae0937df14eddfc"
+    },
+    {
+      "artifact": "190-000058.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000058.stderr",
+      "bytes": 258,
+      "sha256": "42c81ae0ec2fb6731644434fb800e157bc1603756c2ef0213d691936d8f79f9b"
+    },
+    {
+      "artifact": "191-000058.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000058.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "192-000059.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000059.junit.xml",
+      "bytes": 683,
+      "sha256": "73cd13134b99214034fdcf5ca094f8e096d5929f639e3fba8e60a818c9b0ffa0"
+    },
+    {
+      "artifact": "193-000059.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000059.stderr",
+      "bytes": 266,
+      "sha256": "47091470ea4a55c39669ded799430cbe95284d789fa9b4d0ab24893d146f91f7"
+    },
+    {
+      "artifact": "194-000059.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000059.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "195-000060.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000060.junit.xml",
+      "bytes": 1160,
+      "sha256": "436136f7f7f76131b75ec9d949acdae890ba4f810173da10464761d37500168c"
+    },
+    {
+      "artifact": "196-000060.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000060.stderr",
+      "bytes": 607,
+      "sha256": "14c8aeec8b5fd1459591dd919746032c5ce00d1cc70085ee7098667d2ac7bb45"
+    },
+    {
+      "artifact": "197-000060.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000060.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "198-000061.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000061.junit.xml",
+      "bytes": 1617,
+      "sha256": "42a6077c921c55ed80e9952fe19ed3b2740917f2ff5dbeecb181ebf7d4f19cd0"
+    },
+    {
+      "artifact": "199-000061.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000061.stderr",
+      "bytes": 916,
+      "sha256": "411d6834feb4af95c8c5bf63b5f4e88701b8ac27a7c11c0f44e17a93136820d0"
+    },
+    {
+      "artifact": "200-000061.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000061.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "201-000062.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000062.junit.xml",
+      "bytes": 1911,
+      "sha256": "ca3091b8233a19b5f6e8fb331467b213ea8dc46be8b0f16a1327db83eb7e9e9a"
+    },
+    {
+      "artifact": "202-000062.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000062.stderr",
+      "bytes": 1173,
+      "sha256": "26e95977793420b552b0c7d8e39770e99c80288686e21b996caca224b4f2b526"
+    },
+    {
+      "artifact": "203-000062.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000062.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "204-000063.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000063.junit.xml",
+      "bytes": 1167,
+      "sha256": "7a536214b40fac179c538c1cd168cc51b82b3367e881e7482327d51bee05fc4a"
+    },
+    {
+      "artifact": "205-000063.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000063.stderr",
+      "bytes": 604,
+      "sha256": "843c4da7544000f8825224f35aac511c847e0c6c0c93e914e292025463dffdc1"
+    },
+    {
+      "artifact": "206-000063.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000063.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "207-000064.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000064.junit.xml",
+      "bytes": 1458,
+      "sha256": "9897d74b59b06ba5fa787e1ef352e94b692d8b3c57fda405e42d96e966afa9ab"
+    },
+    {
+      "artifact": "208-000064.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000064.stderr",
+      "bytes": 838,
+      "sha256": "ceea9aa27d063be61d9bb84c8bcdf648f83f5646c9ecf09fc72338c74a6fc6ab"
+    },
+    {
+      "artifact": "209-000064.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000064.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "210-000065.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000065.junit.xml",
+      "bytes": 1704,
+      "sha256": "b079e1d18309c13adcc92faa6b50cf1768cd1a3f6a4b5fb0f6c8ed6cf46d350a"
+    },
+    {
+      "artifact": "211-000065.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000065.stderr",
+      "bytes": 967,
+      "sha256": "80a9837eb7dc521807e75a2bb40d61ec1ca5ab9f2c2cb9cde2a538f0f2dfdea4"
+    },
+    {
+      "artifact": "212-000065.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000065.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "213-000066.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000066.junit.xml",
+      "bytes": 4714,
+      "sha256": "72175219ab0682496b5505fe131b088fd2a651084f639c66bc92e0382743fa8d"
+    },
+    {
+      "artifact": "214-000066.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000066.stderr",
+      "bytes": 3164,
+      "sha256": "e93ce1ce29763d547a8e9efa3ff08b679f87c45f3ff4633142cf76b76530ebae"
+    },
+    {
+      "artifact": "215-000066.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000066.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "216-000067.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000067.junit.xml",
+      "bytes": 3881,
+      "sha256": "110a664c63406d7fe633f02997e95d8840d1f17690be83082b70ee163de2e762"
+    },
+    {
+      "artifact": "217-000067.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000067.stderr",
+      "bytes": 2391,
+      "sha256": "a4c7268e63ac68f29b392bf25d94474f23657537015e70fd2f0e8950e0d42364"
+    },
+    {
+      "artifact": "218-000067.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000067.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "219-000068.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000068.junit.xml",
+      "bytes": 2091,
+      "sha256": "8127fc72a050e8d8ab7bb903abb9bd6251c234b4729544393204e590c5cd760a"
+    },
+    {
+      "artifact": "220-000068.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000068.stderr",
+      "bytes": 1206,
+      "sha256": "b4f6a74b75b18d14b15745b1dba03b6ca0ec6d2ef6c45675658efc09605fe54e"
+    },
+    {
+      "artifact": "221-000068.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000068.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "222-000069.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000069.junit.xml",
+      "bytes": 2410,
+      "sha256": "c9691f0915afa9bed0b072744c16c3de8683b69908e09bfa98d0a560d422b99f"
+    },
+    {
+      "artifact": "223-000069.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000069.stderr",
+      "bytes": 1433,
+      "sha256": "7c27fe9ea5463765ca6032e6468e0a090381fc86b5603cabaa3b5f898584d375"
+    },
+    {
+      "artifact": "224-000069.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000069.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "225-000070.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000070.junit.xml",
+      "bytes": 2245,
+      "sha256": "e1fa7bb4afaf33efca8ef898a355aa139cbfab86ee92a578aeee0a5f5141b16b"
+    },
+    {
+      "artifact": "226-000070.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000070.stderr",
+      "bytes": 1288,
+      "sha256": "becba7f419071c8c574d940616a6f5eca48e967813e5cdf03b751400c1f3c263"
+    },
+    {
+      "artifact": "227-000070.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000070.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "228-000071.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000071.junit.xml",
+      "bytes": 3178,
+      "sha256": "8532b076e69540a28f05abc9042425165c118a312324e2166353497d26e65800"
+    },
+    {
+      "artifact": "229-000071.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000071.stderr",
+      "bytes": 2044,
+      "sha256": "751adc326f5081c395b1d9cb8ce881cdfbaa0d54291c199f31a6290267fe8d26"
+    },
+    {
+      "artifact": "230-000071.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000071.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "231-000072.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000072.junit.xml",
+      "bytes": 2971,
+      "sha256": "3b7fbbb7d1b7200d7cdd48ff8838aacc6190fdc4819a229ee0e0f86a74a1ab36"
+    },
+    {
+      "artifact": "232-000072.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000072.stderr",
+      "bytes": 1948,
+      "sha256": "5c567e1a3fd6204a6b1ff5ae04fe5e66bdb2432293555301351013794a7bb04b"
+    },
+    {
+      "artifact": "233-000072.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000072.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "234-000073.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000073.junit.xml",
+      "bytes": 1858,
+      "sha256": "49311ebc00d940de50d5a9598a99ef51e651d1c845835108def3b9f3dec8eeff"
+    },
+    {
+      "artifact": "235-000073.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000073.stderr",
+      "bytes": 1093,
+      "sha256": "fddd11823ebdfed151cf71cafaa1f5d8b2c1c3c8f06dac87026fb6da47e0d360"
+    },
+    {
+      "artifact": "236-000073.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000073.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "237-000074.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000074.junit.xml",
+      "bytes": 4270,
+      "sha256": "c2514e9267b330a5e36dec1690e39677864b0ce42ee304c50d3df6ffbc4af216"
+    },
+    {
+      "artifact": "238-000074.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000074.stderr",
+      "bytes": 2952,
+      "sha256": "8682812a94b367df790953a226d37be28dfbcc76aafa40f7d44f95a88d8436ee"
+    },
+    {
+      "artifact": "239-000074.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000074.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "240-000075.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000075.junit.xml",
+      "bytes": 1413,
+      "sha256": "d58e66182b4b68adab5d6c14af015d838c0d2e3a34d7aeec9717b4f6f2f2c127"
+    },
+    {
+      "artifact": "241-000075.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000075.stderr",
+      "bytes": 723,
+      "sha256": "a53de18e60a0870b6fd929e1f98f0f8932407f5604c8ef44fbfeebf0bf2f6e33"
+    },
+    {
+      "artifact": "242-000075.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000075.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "243-000076.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000076.junit.xml",
+      "bytes": 685,
+      "sha256": "ab18112dc26a57964345f50294c9eedb7b9cf913c7ab8a103ee00151ef4527a6"
+    },
+    {
+      "artifact": "244-000076.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000076.stderr",
+      "bytes": 1376,
+      "sha256": "e8e2d3a9bd3d6d18d742627dcd9214dcd4bae901df8d9a4012ea45e25a7afaff"
+    },
+    {
+      "artifact": "245-000076.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000076.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "246-000077.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000077.junit.xml",
+      "bytes": 1788,
+      "sha256": "2feef17b0ddc5c08c5471a0ac6df6b89e08a1fe611e615d6b5a42d272348003a"
+    },
+    {
+      "artifact": "247-000077.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000077.stderr",
+      "bytes": 1076,
+      "sha256": "d6618d921b993735032b68780b5ee7881237bc9feaa69b125cb8ca86f90365a4"
+    },
+    {
+      "artifact": "248-000077.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000077.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "249-000078.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000078.junit.xml",
+      "bytes": 1253,
+      "sha256": "5cd6d6a5ca28b4cdb77f4d218c2e14ee6cf66b83f1de49255c8798cb8b7e935f"
+    },
+    {
+      "artifact": "250-000078.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000078.stderr",
+      "bytes": 638,
+      "sha256": "28c943d124dd7f0daecca4041f68b29e8adaa4d53168a84efc008c0e0731565e"
+    },
+    {
+      "artifact": "251-000078.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000078.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "252-000079.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000079.junit.xml",
+      "bytes": 4419,
+      "sha256": "06697d60228c0a6235a927c22617e633012d69f012f0ce31ed00e8f9193671e5"
+    },
+    {
+      "artifact": "253-000079.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000079.stderr",
+      "bytes": 2928,
+      "sha256": "5558356c2a4bb8c14051915ecad2fc8195ccc4edc302d94b7076de110a23d7b9"
+    },
+    {
+      "artifact": "254-000079.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000079.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "255-000080.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000080.junit.xml",
+      "bytes": 2213,
+      "sha256": "c0427517e4b0a4ecf5d0af58545030d6f2cd1495efff1267a25b89b34dac5776"
+    },
+    {
+      "artifact": "256-000080.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000080.stderr",
+      "bytes": 1301,
+      "sha256": "f4ad0ba6c3b132b28e332f692ab7ac90552e5b2d10ae62450a63399b103376f1"
+    },
+    {
+      "artifact": "257-000080.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000080.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "258-000081.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000081.junit.xml",
+      "bytes": 1969,
+      "sha256": "6dc7be9279f6e00ff277718ec4fbbf27db71f62a530c73b55289c20f7bec90e4"
+    },
+    {
+      "artifact": "259-000081.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000081.stderr",
+      "bytes": 1125,
+      "sha256": "4a874b4e65e793540a8204c7b2911be75e20b1742204068352563f087668aadf"
+    },
+    {
+      "artifact": "260-000081.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000081.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "261-000082.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000082.junit.xml",
+      "bytes": 2507,
+      "sha256": "1f28b022372338525cc22bb44c6f5986a495c3503ddb5a62c4553992c879c15b"
+    },
+    {
+      "artifact": "262-000082.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000082.stderr",
+      "bytes": 1526,
+      "sha256": "41b5db3f45b90ff816f261205efeae867450c3ae3969c9026951b7f2e82d8b80"
+    },
+    {
+      "artifact": "263-000082.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000082.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "264-000083.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000083.junit.xml",
+      "bytes": 774,
+      "sha256": "03bb5f448928bb463efac96df601403a842b1dc2f4b5b901a4653c780826e65b"
+    },
+    {
+      "artifact": "265-000083.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000083.stderr",
+      "bytes": 343,
+      "sha256": "3538bf59eba3dcb2b9a7cd8763323f9bb58acf11d6968ce4c77425fae3651b88"
+    },
+    {
+      "artifact": "266-000083.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000083.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "267-000084.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000084.junit.xml",
+      "bytes": 1444,
+      "sha256": "8c20010896f08a2b198d8b13842cc295cf1099fea886771b9c9352d896ba2385"
+    },
+    {
+      "artifact": "268-000084.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000084.stderr",
+      "bytes": 818,
+      "sha256": "b49c86d9ed4046b288454970e9f3c687af4234ae854d550b2dae2fe4f753d718"
+    },
+    {
+      "artifact": "269-000084.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000084.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "270-000085.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000085.junit.xml",
+      "bytes": 3483,
+      "sha256": "855c59a0488944006dec8474b64cc8dc809ee345750232eb5cb92348bf0b4fdb"
+    },
+    {
+      "artifact": "271-000085.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000085.stderr",
+      "bytes": 2209,
+      "sha256": "58566c6fab98ab641abd35836f3e414b838e4fd7740987920e53bbd820129be6"
+    },
+    {
+      "artifact": "272-000085.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000085.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "273-000086.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000086.junit.xml",
+      "bytes": 3301,
+      "sha256": "4518edaba1e0d58fc5bb01c7fb919418d7b2f181c1867a9cbcf34fcd283e14cf"
+    },
+    {
+      "artifact": "274-000086.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000086.stderr",
+      "bytes": 2098,
+      "sha256": "70cd339b9bb6c3e431ffee89673845015eab866d14b11011492628553524281a"
+    },
+    {
+      "artifact": "275-000086.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000086.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "276-000087.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000087.junit.xml",
+      "bytes": 1342,
+      "sha256": "77a5ba5f7a9dc8b60b43e6da7346735c8ea062200d038a21d9cb942772c0bde2"
+    },
+    {
+      "artifact": "277-000087.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000087.stderr",
+      "bytes": 671,
+      "sha256": "2ced12bffcf48d11dfe489603958ae1668123858c01336b77bcde25897c5bb46"
+    },
+    {
+      "artifact": "278-000087.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000087.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "279-000088.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000088.junit.xml",
+      "bytes": 1342,
+      "sha256": "d6c28788710c07dee0dab6cb21f6feeb17f9da2907eabccd51d6ee0fab71034f"
+    },
+    {
+      "artifact": "280-000088.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000088.stderr",
+      "bytes": 671,
+      "sha256": "6efd95b868d3d04dc073ecb320b98e4f507235733b76e009a49b3d2c4c49dea1"
+    },
+    {
+      "artifact": "281-000088.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000088.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "282-000089.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000089.junit.xml",
+      "bytes": 1370,
+      "sha256": "5a7870397e580bcebe40cb6ac97539fa3da3b62c92ef74e8e880b35822b0eff6"
+    },
+    {
+      "artifact": "283-000089.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000089.stderr",
+      "bytes": 683,
+      "sha256": "0e816960669d559951fd0529e5401c84bb31d465380e267badad3705608582c2"
+    },
+    {
+      "artifact": "284-000089.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000089.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "285-000090.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000090.junit.xml",
+      "bytes": 920,
+      "sha256": "2202be94c967ea08dfd9455444bf674dfc9be2392b44f7fb2a9102a0b2fbf531"
+    },
+    {
+      "artifact": "286-000090.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000090.stderr",
+      "bytes": 386,
+      "sha256": "8ea3f9dafb210daf5bf4ce3c36583f88514b59d8a954bb1920fd63b08f2a658b"
+    },
+    {
+      "artifact": "287-000090.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000090.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "288-000091.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000091.junit.xml",
+      "bytes": 1551,
+      "sha256": "1cc87ab6a6fd87377e28c8376534d4b18aa44bb1760fce10e97c98f7eff47b01"
+    },
+    {
+      "artifact": "289-000091.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000091.stderr",
+      "bytes": 847,
+      "sha256": "e014f8d0cd451dd73c8ee73450d9c65ba81d1cbcf24721035236925cbe369763"
+    },
+    {
+      "artifact": "290-000091.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000091.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "291-000092.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000092.junit.xml",
+      "bytes": 980,
+      "sha256": "14a38aff7e3711dd36744903f23298caf9cb3d7411f4a753318b9780c1c3ecdf"
+    },
+    {
+      "artifact": "292-000092.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000092.stderr",
+      "bytes": 482,
+      "sha256": "069d01ae047efef62f60d8803c1d8eaaf28d3ccebd7dd0060f9b031445b425be"
+    },
+    {
+      "artifact": "293-000092.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000092.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "294-000093.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000093.junit.xml",
+      "bytes": 951,
+      "sha256": "50454e4055e92402ddb98198c17b10bb4d647d7fd00c22661200cc94684afcb3"
+    },
+    {
+      "artifact": "295-000093.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000093.stderr",
+      "bytes": 441,
+      "sha256": "9c49646448807108eda2b5c3e9482d9bb6f040b71ce9a52525365054e9bb03af"
+    },
+    {
+      "artifact": "296-000093.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000093.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "297-000094.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000094.junit.xml",
+      "bytes": 8622,
+      "sha256": "422e78a0bd3a05ea58f23fdc801ea6d9505a367de96261dc3b2d0b2939a13ea3"
+    },
+    {
+      "artifact": "298-000094.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000094.stderr",
+      "bytes": 5524,
+      "sha256": "085561a569ff5d58b87b9983d10581b85c6f42828441560320acc9c6ef9bc56c"
+    },
+    {
+      "artifact": "299-000094.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000094.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "300-000095.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000095.junit.xml",
+      "bytes": 1681,
+      "sha256": "f231b1dafef81233d3df4fdbe49041ef62a067f28b8a12d40ff64f6fbd0da628"
+    },
+    {
+      "artifact": "301-000095.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000095.stderr",
+      "bytes": 888,
+      "sha256": "2b16e1a23f2304d53ed60e5322eb99c01675a5a61e5d0e0da7547958719a7996"
+    },
+    {
+      "artifact": "302-000095.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000095.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "303-000096.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000096.junit.xml",
+      "bytes": 1055,
+      "sha256": "b091fe2cbf5d7fdeaeaba0fcf8310ac1e09791de47668cea6daa56cb44bcf30a"
+    },
+    {
+      "artifact": "304-000096.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000096.stderr",
+      "bytes": 492,
+      "sha256": "8d25a0e1a51f4ef522bc7517673fd6a3bc7b74b3982988826b517acc8f2d85c2"
+    },
+    {
+      "artifact": "305-000096.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000096.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "306-000097.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000097.junit.xml",
+      "bytes": 707,
+      "sha256": "e7a852db629b227443d7b51c201959cfeb4acc4e8a3fa62e0e1d28f6913de045"
+    },
+    {
+      "artifact": "307-000097.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000097.stderr",
+      "bytes": 267,
+      "sha256": "f8932efae4017b80b87785b5d6fdd734011b7779a31b66c5c6a9565bfc3e5533"
+    },
+    {
+      "artifact": "308-000097.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000097.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "309-000098.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000098.junit.xml",
+      "bytes": 1328,
+      "sha256": "fc5c19d9af2d1a43b296b11b5c7bb985968332c0576ed8e30a221b689010d389"
+    },
+    {
+      "artifact": "310-000098.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000098.stderr",
+      "bytes": 673,
+      "sha256": "40dbe1a442b46887e2d6bc97767dfcfa8b8cfdc9f04fef6f2396c9f03d7de539"
+    },
+    {
+      "artifact": "311-000098.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000098.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "312-000099.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000099.stderr",
+      "bytes": 137,
+      "sha256": "7b0ccedbf4aa7abe66f9d31d095c8215712245925078ad036c066aeaf5252216"
+    },
+    {
+      "artifact": "313-000099.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000099.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "314-000100.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000100.junit.xml",
+      "bytes": 707,
+      "sha256": "01c0e8ca3718bb67faaf17fe0134791076b4d1254d5d1284da98bb7dfebb1b93"
+    },
+    {
+      "artifact": "315-000100.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000100.stderr",
+      "bytes": 263,
+      "sha256": "8aecc94bc4dcf141768271e7b9a0cc076d17feb394c23da54658c68cf863fbeb"
+    },
+    {
+      "artifact": "316-000100.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000100.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "317-000101.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000101.junit.xml",
+      "bytes": 728,
+      "sha256": "8f3a971e4178f3de8460cf6af4cc293400e73764b92ddf10c32ca84859ddcbc8"
+    },
+    {
+      "artifact": "318-000101.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000101.stderr",
+      "bytes": 283,
+      "sha256": "a38b6b7508eff16e661e4943faa70132e4ea09ebbd384930cd2ab893542075ee"
+    },
+    {
+      "artifact": "319-000101.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000101.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "320-000102.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000102.junit.xml",
+      "bytes": 2625,
+      "sha256": "232876489eb81a556f6804ee5684a2a1db230c86a17d702911c70a3d8c4c6a6b"
+    },
+    {
+      "artifact": "321-000102.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000102.stderr",
+      "bytes": 1692,
+      "sha256": "eaa7f4599bbac5257b443ecf49c34f689ad91da777f30fb1351d6e453d81c1df"
+    },
+    {
+      "artifact": "322-000102.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000102.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "323-000103.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000103.junit.xml",
+      "bytes": 2701,
+      "sha256": "cef589290f9592288690c237d95b801b6e70331ddc6e5b8bf6890a525773a2aa"
+    },
+    {
+      "artifact": "324-000103.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000103.stderr",
+      "bytes": 1717,
+      "sha256": "8265afe8b1a1c84915c98bca606e53d5f0dec9b17aca265b9aa59814689997ba"
+    },
+    {
+      "artifact": "325-000103.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000103.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "326-000104.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000104.junit.xml",
+      "bytes": 1929,
+      "sha256": "a6d6caec72a451f49e8a7420b96fa4859e049beebb928b9b033b1bd82f770337"
+    },
+    {
+      "artifact": "327-000104.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000104.stderr",
+      "bytes": 1136,
+      "sha256": "3dfef6498919fae721af9fe55101232c9f72415059b8d78866c50743d2631dab"
+    },
+    {
+      "artifact": "328-000104.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000104.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "329-000105.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000105.junit.xml",
+      "bytes": 1871,
+      "sha256": "3214f682a8631276c45eccf15d741049130239d6a5d76da971f3e35083153b13"
+    },
+    {
+      "artifact": "330-000105.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000105.stderr",
+      "bytes": 1029,
+      "sha256": "26e17be52531e892e13ccf23fa97726d9498a4d672e93e8a3766fe85201adaf3"
+    },
+    {
+      "artifact": "331-000105.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000105.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "332-000106.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000106.junit.xml",
+      "bytes": 1087,
+      "sha256": "f17e596b3186d5795adc78d6a9712cb060ab25909896bc425dae1e2fb59e70ab"
+    },
+    {
+      "artifact": "333-000106.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000106.stderr",
+      "bytes": 553,
+      "sha256": "e6ccda0349950cc01af93be022a364a21b939402260aed1cd0765d4af98e29d0"
+    },
+    {
+      "artifact": "334-000106.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000106.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "335-000107.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000107.junit.xml",
+      "bytes": 10798,
+      "sha256": "fd507b8f577c66ed1fd27d84e42d2d46f6d38bab99acabe3edc7c604852c521b"
+    },
+    {
+      "artifact": "336-000107.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000107.stderr",
+      "bytes": 6068,
+      "sha256": "779cd67ae4abea0cd95bf87330de734ed754e0a051c84c6fca12df77db5d6bae"
+    },
+    {
+      "artifact": "337-000107.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000107.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "338-000108.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000108.junit.xml",
+      "bytes": 9627,
+      "sha256": "27d12c85675cf75aa87da8a28a798194951d4dffe182be09c8118b0c51cdb8d9"
+    },
+    {
+      "artifact": "339-000108.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000108.stderr",
+      "bytes": 6626,
+      "sha256": "4bd8995f4f62834c4464c68a6e6c59f4bbc933c01f5f137a61bbf13639126c3a"
+    },
+    {
+      "artifact": "340-000108.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000108.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "341-000109.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000109.junit.xml",
+      "bytes": 4109,
+      "sha256": "2bf00ac6105503bda42fb029e71fe317d9831abdf8182721fd8ec532490ca108"
+    },
+    {
+      "artifact": "342-000109.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000109.stderr",
+      "bytes": 2717,
+      "sha256": "4dd7aec119aaec67cd9127cd214e9a4726c1e9ba68323aa5665cdeca8df74413"
+    },
+    {
+      "artifact": "343-000109.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000109.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "344-000110.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000110.junit.xml",
+      "bytes": 995,
+      "sha256": "4bb649fd2a1118f8a76046aa6fc43ceeba9ef50f87e3904a900b886d9b3f0ea7"
+    },
+    {
+      "artifact": "345-000110.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000110.stderr",
+      "bytes": 487,
+      "sha256": "99a04603180d86a0a60820eacbd523e50253030611c938a8c6ee9046c191ad54"
+    },
+    {
+      "artifact": "346-000110.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000110.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "347-000111.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000111.junit.xml",
+      "bytes": 1583,
+      "sha256": "0a8bc36295b4377e73d8150db4fc46da2bfd356233a5314b6bf7c8fc27d2e446"
+    },
+    {
+      "artifact": "348-000111.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000111.stderr",
+      "bytes": 886,
+      "sha256": "61c87470ada7edf61033bdff0b5631662e167d212ac9518511186b524931f83b"
+    },
+    {
+      "artifact": "349-000111.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000111.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "350-000112.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000112.junit.xml",
+      "bytes": 3214,
+      "sha256": "5d37c65088398fa5a60cc85ccf1d425cbbe5c22c8e934756ccf8b6bd34dd9736"
+    },
+    {
+      "artifact": "351-000112.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000112.stderr",
+      "bytes": 2019,
+      "sha256": "e04382162bb293250a2f9449f29378804bb6b4a9d7627880b13bbdd67c2f16c1"
+    },
+    {
+      "artifact": "352-000112.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000112.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "353-000113.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000113.junit.xml",
+      "bytes": 4683,
+      "sha256": "88eda2fe744d4ed0cb9ce5d93a8f4c531526957adea7e7181604cfbd1fde2a97"
+    },
+    {
+      "artifact": "354-000113.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000113.stderr",
+      "bytes": 3196,
+      "sha256": "40350a3d732a9b6ee2d4a64d17a67e02a88a1a4750825d392e043fd91cc288d3"
+    },
+    {
+      "artifact": "355-000113.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000113.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "356-000114.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000114.junit.xml",
+      "bytes": 3194,
+      "sha256": "b70eccbeec5176358cb96386387f5e6a1baf69a43517857c6ad48afdd2905790"
+    },
+    {
+      "artifact": "357-000114.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000114.stderr",
+      "bytes": 1877,
+      "sha256": "fcbca2c756169d90db0a62d47d71df1b9e1a9c69b616ff699f229be4587170f9"
+    },
+    {
+      "artifact": "358-000114.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000114.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "359-000115.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000115.junit.xml",
+      "bytes": 9718,
+      "sha256": "f2360321f81291f4e9598a13179b5c2eca84872e61ab60bbad07187654316fc4"
+    },
+    {
+      "artifact": "360-000115.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000115.stderr",
+      "bytes": 6641,
+      "sha256": "a7ca7397423ce2f7382186cf784866a9de02753221a024f40cde704f82e10029"
+    },
+    {
+      "artifact": "361-000115.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000115.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "362-000116.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000116.junit.xml",
+      "bytes": 1299,
+      "sha256": "6142019628e9949affbd6f13ad1f7925f1e4bbdfcab17577dab9840e76bea1a2"
+    },
+    {
+      "artifact": "363-000116.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000116.stderr",
+      "bytes": 671,
+      "sha256": "b65cdceef138f9ceafd13c5aa0741ab4ad500a3215de07a77372312e3840e122"
+    },
+    {
+      "artifact": "364-000116.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000116.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "365-000117.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000117.junit.xml",
+      "bytes": 5179,
+      "sha256": "369d4c12c32029fd3f5a8b92d09076be03f67566904b5479ed6640c768e115b7"
+    },
+    {
+      "artifact": "366-000117.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000117.stderr",
+      "bytes": 3395,
+      "sha256": "e7db56ddb5567cc33e2a580adc3bfc4a6008036c43393a91ef1a115474be4ef2"
+    },
+    {
+      "artifact": "367-000117.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000117.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "368-000118.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000118.junit.xml",
+      "bytes": 3401,
+      "sha256": "00b05ae3d1bec501e5c12cc71d76df4f847c2895bb754cf091c64242f4a98bd0"
+    },
+    {
+      "artifact": "369-000118.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000118.stderr",
+      "bytes": 2182,
+      "sha256": "4dcecd0162951d02eb7b4bad8e658486b92d839e209a63e1f508a24c49a1b0b0"
+    },
+    {
+      "artifact": "370-000118.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000118.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "371-000119.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000119.junit.xml",
+      "bytes": 1555,
+      "sha256": "7d1b66c5f0f292b3ddcd62b9c9ccd1040a211e5746cd26ee45cb1c6a6f5476fa"
+    },
+    {
+      "artifact": "372-000119.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000119.stderr",
+      "bytes": 867,
+      "sha256": "b04dd7958f779261a6599924058f46bbcc6ba4d94d3a33f49261e4022e337d4f"
+    },
+    {
+      "artifact": "373-000119.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000119.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "374-000120.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000120.junit.xml",
+      "bytes": 664,
+      "sha256": "9b51f6db1a88b9da5c0a8dced33b182f1aad3b42750a485b29de3b7ae2bbc90d"
+    },
+    {
+      "artifact": "375-000120.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000120.stderr",
+      "bytes": 252,
+      "sha256": "0e508b5b1781cde364cf92a7b057d89300dfe3019dcd4e8cca65c665bd4ddc2e"
+    },
+    {
+      "artifact": "376-000120.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000120.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "377-000121.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000121.junit.xml",
+      "bytes": 690,
+      "sha256": "d933b81ea6b852b9aabe97b8ff0b44e6bfa24cbf25e682a3e00c72dc4701b044"
+    },
+    {
+      "artifact": "378-000121.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000121.stderr",
+      "bytes": 275,
+      "sha256": "1015be797113656a6984c799a4ebf7060616893950b4d4249cc48915af96252a"
+    },
+    {
+      "artifact": "379-000121.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000121.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "380-000122.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000122.junit.xml",
+      "bytes": 3751,
+      "sha256": "44cad17a5fb9978a4f3aea0017a3146e104dbd9b41823487121588bd8b783b36"
+    },
+    {
+      "artifact": "381-000122.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000122.stderr",
+      "bytes": 2494,
+      "sha256": "772d5a8dc5f9b276ba9dddb7074c042fe47549f339d69cd0d6c6da76a924bf20"
+    },
+    {
+      "artifact": "382-000122.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000122.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "383-000123.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000123.junit.xml",
+      "bytes": 1160,
+      "sha256": "8e6046c9cde09ad08c9135f6919194050b22f913dfcf817e32c0d8cef9466d1c"
+    },
+    {
+      "artifact": "384-000123.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000123.stderr",
+      "bytes": 607,
+      "sha256": "c9a9a24b7a6e4b80ef003162c70c6c9ab314dbfc6e3f7732f2a7276eca6b6f1d"
+    },
+    {
+      "artifact": "385-000123.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000123.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "386-000124.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000124.junit.xml",
+      "bytes": 3906,
+      "sha256": "61d8cb7674557db39a0a0b12b9a2e5324c91e7b692c5563e2c5097e51f82b52b"
+    },
+    {
+      "artifact": "387-000124.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000124.stderr",
+      "bytes": 2449,
+      "sha256": "707c5485b6fd309e67c07231b87d1c00b66bc9931e94581ec65bfcb46b77f702"
+    },
+    {
+      "artifact": "388-000124.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000124.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "389-000125.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000125.junit.xml",
+      "bytes": 4273,
+      "sha256": "acf7aa044547e6d5922f1a78baaad7904bf5d89bad6b7ed307b06a221c3296c8"
+    },
+    {
+      "artifact": "390-000125.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000125.stderr",
+      "bytes": 2443,
+      "sha256": "6c970e35bd55b0f4c8747cd16748d0a95636f28955b84dc3ccdb78fef5de9fcc"
+    },
+    {
+      "artifact": "391-000125.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000125.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "392-000126.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000126.junit.xml",
+      "bytes": 6020,
+      "sha256": "c4e239f757d36ab457da1e9e30369775b2b10e38559a786cc643211994d6af81"
+    },
+    {
+      "artifact": "393-000126.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000126.stderr",
+      "bytes": 3589,
+      "sha256": "9aed39db830b5415b13075715e7ea2f256d6810b68c745bc17c98ac29932d8de"
+    },
+    {
+      "artifact": "394-000126.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000126.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "395-000127.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000127.junit.xml",
+      "bytes": 6775,
+      "sha256": "be829db5b5b8045e859edce35ca4ae28ae77e3d21fa61d2187ee602ba8b04d15"
+    },
+    {
+      "artifact": "396-000127.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000127.stderr",
+      "bytes": 4130,
+      "sha256": "3492373d78894e4959bbee39d89119a3944f558b2377525f9c851f3b7e4f5784"
+    },
+    {
+      "artifact": "397-000127.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000127.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "398-000128.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000128.junit.xml",
+      "bytes": 1974,
+      "sha256": "7908e517c7f14163b1ee1aa60f9c3ff06d2aab906622e431c499a78c3d1e84ea"
+    },
+    {
+      "artifact": "399-000128.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000128.stderr",
+      "bytes": 1190,
+      "sha256": "c97d0667427129b204caece1114cd37d617a3d5498330a484c61e4997a0495e1"
+    },
+    {
+      "artifact": "400-000128.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/000128.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "401-events.jsonl.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/reports/events.jsonl",
+      "bytes": 445531,
+      "sha256": "980ec8b80a9ac1773e9a41cb33bf6694bebf93b4a74700eb5f71671d815e012e"
+    },
+    {
+      "artifact": "402-runner.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/runner.stderr",
+      "bytes": 229163,
+      "sha256": "8e95044ad90020baa820464eaa624b3cc9e18458d2f936cda89ee109b4b4e52f"
+    },
+    {
+      "artifact": "403-runner.stdout.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/runner.stdout",
+      "bytes": 6063,
+      "sha256": "202411dbb689fc7ecad09524d10b515e315daf93672cf15d347d8765796784c6"
+    },
+    {
+      "artifact": "404-summary.json.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/summary.json",
+      "bytes": 241881,
+      "sha256": "1dd8f00ba3415bab87d86667598f9a0771ca755d839860738acdeae384907911"
+    },
+    {
+      "artifact": "405-validator.stderr.gz",
+      "source": "zig-out/bun-port-recovery/elysia-native-setup-execution-first/validator.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "artifact": "406-elysia-setup-build-selection-corrected.json.gz",
+      "source": "zig-out/bun-port-recovery/elysia-setup-build-selection-corrected.json",
+      "bytes": 9665,
+      "sha256": "6bc0c08e2dd1b85ec457f1184494d484e741d5b3dafe450458072407bbc3e40d"
+    },
+    {
+      "artifact": "407-elysia-setup-build-selection.json.gz",
+      "source": "zig-out/bun-port-recovery/elysia-setup-build-selection.json",
+      "bytes": 9665,
+      "sha256": "6bc0c08e2dd1b85ec457f1184494d484e741d5b3dafe450458072407bbc3e40d"
+    },
+    {
+      "artifact": "408-native-duckdb-after-setup.log.gz",
+      "source": "zig-out/bun-port-recovery/native-duckdb-after-setup.log",
+      "bytes": 275,
+      "sha256": "f81f04872c135f7d72c2130f4d93b4a17a154cf316a2a047b4c6d23d18c53a50"
+    },
+    {
+      "artifact": "409-manifest.json.gz",
+      "source": "zig-out/bun-port-recovery/native-duckdb-original-files/manifest.json",
+      "bytes": 1419,
+      "sha256": "f5e3f92d10afa6c3664f6abf14a6a8a49102bb675e8c206a4d05aec8a7200543"
+    },
+    {
+      "artifact": "410-000000.stderr.gz",
+      "source": "zig-out/bun-port-recovery/native-duckdb-original-files/reports/000000.stderr",
+      "bytes": 69,
+      "sha256": "9b6911644f62cb527f6d8ce03495b4d99e196edaf8c1b67e44b8d23cb41a868b"
+    },
+    {
+      "artifact": "411-000000.stdout.gz",
+      "source": "zig-out/bun-port-recovery/native-duckdb-original-files/reports/000000.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "412-000001.junit.xml.gz",
+      "source": "zig-out/bun-port-recovery/native-duckdb-original-files/reports/000001.junit.xml",
+      "bytes": 3776,
+      "sha256": "778a8a7d565a3806573f4a3b7751812343e30c27a769b3ec251de5f52539ce00"
+    },
+    {
+      "artifact": "413-000001.stderr.gz",
+      "source": "zig-out/bun-port-recovery/native-duckdb-original-files/reports/000001.stderr",
+      "bytes": 2085,
+      "sha256": "a356ee5637d203b1556f59360fb6a4c2b609a289fd153089b47790b3ce81c1c0"
+    },
+    {
+      "artifact": "414-000001.stdout.gz",
+      "source": "zig-out/bun-port-recovery/native-duckdb-original-files/reports/000001.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "415-events.jsonl.gz",
+      "source": "zig-out/bun-port-recovery/native-duckdb-original-files/reports/events.jsonl",
+      "bytes": 7270,
+      "sha256": "2d8ee30267dbd95ab72b3340b70ba701ef482cd67861f77cf9406dcd6fde476a"
+    },
+    {
+      "artifact": "416-runner.stderr.gz",
+      "source": "zig-out/bun-port-recovery/native-duckdb-original-files/runner.stderr",
+      "bytes": 3036,
+      "sha256": "46df96cc6f76e5fd8ff777c6006f8f36300ae39e90ba9902925c65d7e1a6e864"
+    },
+    {
+      "artifact": "417-runner.stdout.gz",
+      "source": "zig-out/bun-port-recovery/native-duckdb-original-files/runner.stdout",
+      "bytes": 94,
+      "sha256": "da4161c6297939b9b4a5d7ffaed166d25550aaeedf340814f47e659af04bd48d"
+    },
+    {
+      "artifact": "418-summary.json.gz",
+      "source": "zig-out/bun-port-recovery/native-duckdb-original-files/summary.json",
+      "bytes": 3207,
+      "sha256": "ea3bc3a45e7cc828cba5b8b5f4ac0f63d3e79a78041cb1386bc7df03b6663b6e"
+    },
+    {
+      "artifact": "419-native-duckdb-original-files.log.gz",
+      "source": "zig-out/bun-port-recovery/native-duckdb-original-files.log",
+      "bytes": 1506,
+      "sha256": "9631e2ae6bda6d9471985dc5e9813b56ae099ed0d4f561b2d816eb6d19fd54fb"
+    },
+    {
+      "artifact": "420-native-setup-batch-corrected.json.gz",
+      "source": "zig-out/bun-port-recovery/native-setup-batch-corrected.json",
+      "bytes": 252,
+      "sha256": "33d3c600f6732f973d982aeb30ba21e90d9a79a800139c9a8e815d922f616d4f"
+    },
+    {
+      "artifact": "421-native-setup-batch-corrected.log.gz",
+      "source": "zig-out/bun-port-recovery/native-setup-batch-corrected.log",
+      "bytes": 486,
+      "sha256": "96b60a1d2ec633646e92c3457bf50d3863a358bd1eaa226d5803ec239dbbcfe1"
+    },
+    {
+      "artifact": "422-native-setup-batch-first.log.gz",
+      "source": "zig-out/bun-port-recovery/native-setup-batch-first.log",
+      "bytes": 561,
+      "sha256": "90ce713db6f8865aef86c2fda04a07d2c49ec832737e3f1ed0fca5b1905b86f7"
+    },
+    {
+      "artifact": "423-native-setup-cache-cleanup.json.gz",
+      "source": "zig-out/bun-port-recovery/native-setup-cache-cleanup.json",
+      "bytes": 232,
+      "sha256": "9aa245aca7d4001f96e3d028ed86c764e03c05dc5e866630816f254a43cccc60"
+    },
+    {
+      "artifact": "424-extra-argument.stderr.gz",
+      "source": "zig-out/bun-port-recovery/native-setup-cli-controls/extra-argument.stderr",
+      "bytes": 32,
+      "sha256": "916b94fd38905de7b555652c657b8f77e6b9152c3f46adf66d04ac0d9aec20d2"
+    },
+    {
+      "artifact": "425-extra-argument.stdout.gz",
+      "source": "zig-out/bun-port-recovery/native-setup-cli-controls/extra-argument.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "artifact": "426-000000.stderr.gz",
+      "source": "zig-out/bun-port-recovery/native-setup-cli-controls/failed-reports/000000.stderr",
+      "bytes": 161,
+      "sha256": "3d5f6bdc4a026b2be1d3af9c2df1e8ff69b1a9f0d0d3c786d06408fa78a4cbc5"
+    },
+    {
+      "artifact": "427-000000.stdout.gz",
+      "source": "zig-out/bun-port-recovery/native-setup-cli-controls/failed-reports/000000.stdout",
+      "bytes": 59,
+      "sha256": "3f963c5b92ff15a8e0311f6a0553bf06cee89df2406f5f6ba7b2899ce5a929f3"
+    },
+    {
+      "artifact": "428-000001.stderr.gz",
+      "source": "zig-out/bun-port-recovery/native-setup-cli-controls/failed-reports/000001.stderr",
+      "bytes": 164,
+      "sha256": "84aa447378ca6c253cfc90ec948f9292ba8e1cb604a918eca73cb6bbdd962744"
+    },
+    {
+      "artifact": "429-000001.stdout.gz",
+      "source": "zig-out/bun-port-recovery/native-setup-cli-controls/failed-reports/000001.stdout",
+      "bytes": 59,
+      "sha256": "3f963c5b92ff15a8e0311f6a0553bf06cee89df2406f5f6ba7b2899ce5a929f3"
+    },
+    {
+      "artifact": "430-events.jsonl.gz",
+      "source": "zig-out/bun-port-recovery/native-setup-cli-controls/failed-reports/events.jsonl",
+      "bytes": 7345,
+      "sha256": "e88f3e29142101eddc3d5ce72239dc84c475db827f2bb11278fa6d25fc4a9f5e"
+    },
+    {
+      "artifact": "431-failed-summary.json.gz",
+      "source": "zig-out/bun-port-recovery/native-setup-cli-controls/failed-summary.json",
+      "bytes": 2027,
+      "sha256": "665321a4f67b493272a25b4d824458a23654f25a740e7c0e61e9ae9124e8c90c"
+    },
+    {
+      "artifact": "432-failed.stderr.gz",
+      "source": "zig-out/bun-port-recovery/native-setup-cli-controls/failed.stderr",
+      "bytes": 513,
+      "sha256": "cce793fd7e9fa1857421f93235dda59684f5a76ddb911c1a106d6ba9228f178a"
+    },
+    {
+      "artifact": "433-failed.stdout.gz",
+      "source": "zig-out/bun-port-recovery/native-setup-cli-controls/failed.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "artifact": "434-manifest.json.gz",
+      "source": "zig-out/bun-port-recovery/native-setup-cli-controls/manifest.json",
+      "bytes": 805,
+      "sha256": "0aa4cf8ca6acdeb904e683aeb66bd4e916cc8cdea76eea829299c64eba8194b3"
+    },
+    {
+      "artifact": "435-platform-mismatch.stderr.gz",
+      "source": "zig-out/bun-port-recovery/native-setup-cli-controls/platform-mismatch.stderr",
+      "bytes": 30,
+      "sha256": "9df5b29ae3bbd64f14f62a2ddb429dbc4b85834a9eabb7af57ca9de3e81d5671"
+    },
+    {
+      "artifact": "436-platform-mismatch.stdout.gz",
+      "source": "zig-out/bun-port-recovery/native-setup-cli-controls/platform-mismatch.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "artifact": "437-000000.stderr.gz",
+      "source": "zig-out/bun-port-recovery/native-setup-cli-controls/successful-reports/000000.stderr",
+      "bytes": 51,
+      "sha256": "8e16687e9fc7b3fb359538963bd1ef94aa3404bc3de3f0827831e02d4c97d836"
+    },
+    {
+      "artifact": "438-000000.stdout.gz",
+      "source": "zig-out/bun-port-recovery/native-setup-cli-controls/successful-reports/000000.stdout",
+      "bytes": 83,
+      "sha256": "8b53c0797d4fb2fb098a82f85c70be74616d98cbc7ab3ebfaa744cef17d0abbd"
+    },
+    {
+      "artifact": "439-000001.stderr.gz",
+      "source": "zig-out/bun-port-recovery/native-setup-cli-controls/successful-reports/000001.stderr",
+      "bytes": 54,
+      "sha256": "8d8f51a160730d80d49797bcc9d4f4c7367ada5b8cae90c3bfeefb88118ea4d2"
+    },
+    {
+      "artifact": "440-000001.stdout.gz",
+      "source": "zig-out/bun-port-recovery/native-setup-cli-controls/successful-reports/000001.stdout",
+      "bytes": 83,
+      "sha256": "11bf293175af055210423b8b19d9627427d90768874ac26c71bd2f58918f8e44"
+    },
+    {
+      "artifact": "441-events.jsonl.gz",
+      "source": "zig-out/bun-port-recovery/native-setup-cli-controls/successful-reports/events.jsonl",
+      "bytes": 7345,
+      "sha256": "ee1bcaf6454381ee1335b626b26d62749d02a6bc5808fdd4fc5d37daeb87d787"
+    },
+    {
+      "artifact": "442-successful-summary.json.gz",
+      "source": "zig-out/bun-port-recovery/native-setup-cli-controls/successful-summary.json",
+      "bytes": 2014,
+      "sha256": "e439b5eb77068d13e7b3d921e2003d25838d0a97e2847adc74b0131a6fba305a"
+    },
+    {
+      "artifact": "443-successful.stderr.gz",
+      "source": "zig-out/bun-port-recovery/native-setup-cli-controls/successful.stderr",
+      "bytes": 495,
+      "sha256": "4e85895a5534a6fa159d54e261f7c2a6c1c0577483565dc11da7c3f4d8bec742"
+    },
+    {
+      "artifact": "444-successful.stdout.gz",
+      "source": "zig-out/bun-port-recovery/native-setup-cli-controls/successful.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "artifact": "445-runtime.json.gz",
+      "source": "zig-out/bun-port-recovery/native-setup-cli-diagnostic/runtime.json",
+      "bytes": 201,
+      "sha256": "3ffe4c14b05650ae33eaff386b7f4e3cd9fe443ed657925cb465686d1fed8ecd"
+    },
+    {
+      "artifact": "446-000000.stderr.gz",
+      "source": "zig-out/bun-port-recovery/native-setup-cli-diagnostic/successful-reports/000000.stderr",
+      "bytes": 2788,
+      "sha256": "6362de941281d8b976a7a2012e428b258323fc1eb6847bb003d85567dec98310"
+    },
+    {
+      "artifact": "447-000000.stdout.gz",
+      "source": "zig-out/bun-port-recovery/native-setup-cli-diagnostic/successful-reports/000000.stdout",
+      "bytes": 50,
+      "sha256": "8a4c436ef8b60b7a5bd736133cb90e9616f78d5dc1b41c1e83d08ad31bfb1ceb"
+    },
+    {
+      "artifact": "448-000001.stderr.gz",
+      "source": "zig-out/bun-port-recovery/native-setup-cli-diagnostic/successful-reports/000001.stderr",
+      "bytes": 2778,
+      "sha256": "b2094326e3a37e98453b76a6aaa6b0ef7d73624952581848cacafe92284cdc34"
+    },
+    {
+      "artifact": "449-000001.stdout.gz",
+      "source": "zig-out/bun-port-recovery/native-setup-cli-diagnostic/successful-reports/000001.stdout",
+      "bytes": 50,
+      "sha256": "8a4c436ef8b60b7a5bd736133cb90e9616f78d5dc1b41c1e83d08ad31bfb1ceb"
+    },
+    {
+      "artifact": "450-events.jsonl.gz",
+      "source": "zig-out/bun-port-recovery/native-setup-cli-diagnostic/successful-reports/events.jsonl",
+      "bytes": 7345,
+      "sha256": "ff6300cfe35375aa9578aa942e433bbb1d9b20768f3319160837b76972e576ed"
+    },
+    {
+      "artifact": "451-successful-summary.json.gz",
+      "source": "zig-out/bun-port-recovery/native-setup-cli-diagnostic/successful-summary.json",
+      "bytes": 2033,
+      "sha256": "aeefafa4c1d4cd59eb9bf8c81be367a90b0a2645258295b0408464cced764640"
+    },
+    {
+      "artifact": "452-successful.stderr.gz",
+      "source": "zig-out/bun-port-recovery/native-setup-cli-diagnostic/successful.stderr",
+      "bytes": 519,
+      "sha256": "fd25e9101c69229f1976884f4c821bd1b1d37ffbdf958f0a3facc6dadcffd447"
+    },
+    {
+      "artifact": "453-successful.stdout.gz",
+      "source": "zig-out/bun-port-recovery/native-setup-cli-diagnostic/successful.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "artifact": "454-native-setup-cli-diagnostic.log.gz",
+      "source": "zig-out/bun-port-recovery/native-setup-cli-diagnostic.log",
+      "bytes": 439,
+      "sha256": "ef8471a5706771f82b75586a9a70b559831892d922d6239ba385034583f2b566"
+    },
+    {
+      "artifact": "455-native-setup-dependency-inventory.json.gz",
+      "source": "zig-out/bun-port-recovery/native-setup-dependency-inventory.json",
+      "bytes": 49983,
+      "sha256": "6fc06b3d4ceb1758b08ce314b13282df4b27d7768167d845c638aab1fb18daba"
+    },
+    {
+      "artifact": "456-native-setup-dependency-pre-cleanup.json.gz",
+      "source": "zig-out/bun-port-recovery/native-setup-dependency-pre-cleanup.json",
+      "bytes": 277,
+      "sha256": "92425f3c3f96115ee796aa5243cf67f7edf0e81ced5cdbe224e60619c4e14d31"
+    },
+    {
+      "artifact": "457-manifest.json.gz",
+      "source": "zig-out/bun-port-recovery/native-setup-first/manifest.json",
+      "bytes": 6564,
+      "sha256": "f57bc4d25ade589ffa08f58a8a8f4f9f8d75a7f16ceffb388a0215a0958a3c31"
+    },
+    {
+      "artifact": "458-000000.stderr.gz",
+      "source": "zig-out/bun-port-recovery/native-setup-first/reports/000000.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "artifact": "459-000000.stdout.gz",
+      "source": "zig-out/bun-port-recovery/native-setup-first/reports/000000.stdout",
+      "bytes": 773,
+      "sha256": "005c9a9ad89f2b002ba0431bca8afd40ac2ff87821dc21efeb0e8455a5db5c2d"
+    },
+    {
+      "artifact": "460-000001.stderr.gz",
+      "source": "zig-out/bun-port-recovery/native-setup-first/reports/000001.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "artifact": "461-000001.stdout.gz",
+      "source": "zig-out/bun-port-recovery/native-setup-first/reports/000001.stdout",
+      "bytes": 5668,
+      "sha256": "961fe4464fef4721dfad3b41313dbd9c2e9435f6ec3af806d4dba63b36bdeeb8"
+    },
+    {
+      "artifact": "462-events.jsonl.gz",
+      "source": "zig-out/bun-port-recovery/native-setup-first/reports/events.jsonl",
+      "bytes": 12762,
+      "sha256": "3d024b66ea742e316daf72cc37254f794b0c36eeb684db368ca845c082abfd4e"
+    },
+    {
+      "artifact": "463-runner.stderr.gz",
+      "source": "zig-out/bun-port-recovery/native-setup-first/runner.stderr",
+      "bytes": 365,
+      "sha256": "cf8f90c937e3b4c809292662975c95b04b975992604d6332a47e1c6ddc35bcb0"
+    },
+    {
+      "artifact": "464-runner.stdout.gz",
+      "source": "zig-out/bun-port-recovery/native-setup-first/runner.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "artifact": "465-summary.json.gz",
+      "source": "zig-out/bun-port-recovery/native-setup-first/summary.json",
+      "bytes": 9179,
+      "sha256": "3f85080c8b8880b6b5d0f4c8c5b0d548bf3003f4f4f48afdc2c226d381fd7014"
+    },
+    {
+      "artifact": "466-jsc_bootstrap.zig.gz",
+      "source": "zig-out/bun-port-recovery/native-setup-first-source/adapters/jsc_bootstrap.zig",
+      "bytes": 362148,
+      "sha256": "f22bd856539011f6933061fe853b152133b7cc14b192ef4343737d05aa76f157"
+    },
+    {
+      "artifact": "467-corpus_launch.zig.gz",
+      "source": "zig-out/bun-port-recovery/native-setup-first-source/corpus_launch.zig",
+      "bytes": 17658,
+      "sha256": "3a43941493861eed57f7887f6e640f7c7f7757ed9d6e3f57ab86986de997a907"
+    },
+    {
+      "artifact": "468-corpus_setup.zig.gz",
+      "source": "zig-out/bun-port-recovery/native-setup-first-source/corpus_setup.zig",
+      "bytes": 10992,
+      "sha256": "bf66ce4408d4fcc9d0bc1d9f677f3b8a4984ec99f5322cea64ed7eec9e212cb7"
+    },
+    {
+      "artifact": "469-native-setup-pickier.log.gz",
+      "source": "zig-out/bun-port-recovery/native-setup-pickier.log",
+      "bytes": 275,
+      "sha256": "0881e7e9c06fdddbe9d047d3f1d0c35b4a66b9bfb122db4964587f34c8c14f88"
+    },
+    {
+      "artifact": "470-native-setup-pin-verification.log.gz",
+      "source": "zig-out/bun-port-recovery/native-setup-pin-verification.log",
+      "bytes": 78,
+      "sha256": "473513ad4736a115f14c36fa164128d3e5447411e8972a7c0b3824a807a9845e"
+    },
+    {
+      "artifact": "471-native-setup-pre-rebuild-cleanup.json.gz",
+      "source": "zig-out/bun-port-recovery/native-setup-pre-rebuild-cleanup.json",
+      "bytes": 1032,
+      "sha256": "b58ab462587fed09be9a224fa289de06634037670b3bcaf829d0d9ac38ac6af8"
+    },
+    {
+      "artifact": "472-setup-launch-alias.log.gz",
+      "source": "zig-out/bun-port-recovery/setup-launch-alias.log",
+      "bytes": 668,
+      "sha256": "a50df2f9feaa80742d70378c8bc10cf356437158f63b3eecb3c10a581f7a763c"
+    },
+    {
+      "artifact": "473-setup-launch-first.log.gz",
+      "source": "zig-out/bun-port-recovery/setup-launch-first.log",
+      "bytes": 668,
+      "sha256": "f0d315d0be7f74cee8ec3aa8fd8af41bddc9ce24cc81d8512278ab8f1cc4b896"
+    },
+    {
+      "artifact": "474-setup-validator-first.log.gz",
+      "source": "zig-out/bun-port-recovery/setup-validator-first.log",
+      "bytes": 113,
+      "sha256": "65e028d9927eea93eda6259d5cea618c53e56cb2cd899853ffdf58495fe731d1"
+    },
+    {
+      "artifact": "475-setup-validator-strict.log.gz",
+      "source": "zig-out/bun-port-recovery/setup-validator-strict.log",
+      "bytes": 388,
+      "sha256": "f6eaf07589df8d327649f284881699d51856c5d9ad99b96c9268efdfcfe30f37"
+    },
+    {
+      "artifact": "476-verify-elysia-native-setup-execution-first.py.gz",
+      "source": "zig-out/bun-port-recovery/verify-elysia-native-setup-execution-first.py",
+      "bytes": 4332,
+      "sha256": "0b0e6c0083131ee7f6bc5f0df45bcb88e8b8bce58ad37c7f957953c3dc076aeb"
+    },
+    {
+      "artifact": "477-verify-elysia-native-setup-execution-first.py.log.gz",
+      "source": "zig-out/bun-port-recovery/verify-elysia-native-setup-execution-first.py.log",
+      "bytes": 1184,
+      "sha256": "634a41c58c7aca9207557e27a09e523610eac994c53e198975016c33085259c2"
+    },
+    {
+      "artifact": "478-verify-native-duckdb-after-setup.py.gz",
+      "source": "zig-out/bun-port-recovery/verify-native-duckdb-after-setup.py",
+      "bytes": 3496,
+      "sha256": "6da902a29f96fa3a639ce49822cea5b85a699d1894d14d48804ef6628d8e453d"
+    },
+    {
+      "artifact": "479-verify-native-duckdb-original-files.py.gz",
+      "source": "zig-out/bun-port-recovery/verify-native-duckdb-original-files.py",
+      "bytes": 2927,
+      "sha256": "dded1cce436f898280d79a5f4f799695fa0fcd83d55834f7572e761b017d4620"
+    },
+    {
+      "artifact": "480-verify-native-setup-batch-corrected.py.gz",
+      "source": "zig-out/bun-port-recovery/verify-native-setup-batch-corrected.py",
+      "bytes": 745,
+      "sha256": "0296233fc329711692c9827e2225c3ddc2cbfe469cc83cd47bb5264eaeb871ee"
+    },
+    {
+      "artifact": "481-verify-native-setup-batch-first.py.gz",
+      "source": "zig-out/bun-port-recovery/verify-native-setup-batch-first.py",
+      "bytes": 741,
+      "sha256": "318e9bcc47b70ff758131b86077f96c16f128c395b8487253789e2e1a6ce173c"
+    },
+    {
+      "artifact": "482-verify-native-setup-cli-controls.py.gz",
+      "source": "zig-out/bun-port-recovery/verify-native-setup-cli-controls.py",
+      "bytes": 3420,
+      "sha256": "4748c1ec96943bcd53c90c19ef5c463216edd1653dca299684382ba17ebb382a"
+    },
+    {
+      "artifact": "483-verify-native-setup-cli-controls.py.log.gz",
+      "source": "zig-out/bun-port-recovery/verify-native-setup-cli-controls.py.log",
+      "bytes": 553,
+      "sha256": "68a2cf0643b810e0a953fe583f23c0a0e43278e3dfd13c19dd586d5358cf83d2"
+    },
+    {
+      "artifact": "484-verify-native-setup-first.py.gz",
+      "source": "zig-out/bun-port-recovery/verify-native-setup-first.py",
+      "bytes": 3793,
+      "sha256": "80fa71d6963810a2ee294775fde44006d64f1a433cf63f6efaaa0be588c810fa"
+    },
+    {
+      "artifact": "485-verify-native-setup-first.py.log.gz",
+      "source": "zig-out/bun-port-recovery/verify-native-setup-first.py.log",
+      "bytes": 1252,
+      "sha256": "eef1d834b6a3be8413ca360f8037dc929481e4d499dabfb3a6c62ee1cc0888a1"
+    },
+    {
+      "artifact": "486-native-setup-evidence-pickier.log.gz",
+      "source": "zig-out/bun-port-recovery/native-setup-evidence-pickier.log",
+      "bytes": 338,
+      "sha256": "ac018e5eb33b654e2691204d2fd00ecdd2948fb3caa62ee07b3365961b4d33a1"
+    },
+    {
+      "artifact": "487-native-setup-evidence-pickier-corrected.log.gz",
+      "source": "zig-out/bun-port-recovery/native-setup-evidence-pickier-corrected.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "artifact": "488-verify-native-setup-publication.py.gz",
+      "source": "zig-out/bun-port-recovery/verify-native-setup-publication.py",
+      "bytes": 2239,
+      "sha256": "a633d8f300630b81b01ba93c72a4ff46c9403fb30762f16abf29a23eaabe54d6"
+    },
+    {
+      "artifact": "489-native-setup-publication-verification.log.gz",
+      "source": "zig-out/bun-port-recovery/native-setup-publication-verification.log",
+      "bytes": 965,
+      "sha256": "432f8bf045b81303029a1ff7c84d0b4784f5fd3c2e2291401441336ac99348f1"
+    }
+  ],
+  "setup_process_gate_succeeded": true,
+  "complete_dependency_graph_verified": false,
+  "legacy_duckdb_binding_present": false,
+  "original_duckdb_files_completed": 2,
+  "original_duckdb_api_cases": 18,
+  "legacy_duckdb_early_exit_case_credit": 0,
+  "legacy_duckdb_process_exit_is_not_implementation_credit": true
+}
