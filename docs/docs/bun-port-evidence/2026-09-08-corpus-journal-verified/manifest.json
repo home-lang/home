@@ -1,0 +1,345 @@
+{
+  "parent": "https://github.com/home-lang/home/issues/66",
+  "issue": "https://github.com/home-lang/home/issues/722",
+  "runtime_source": "719d6369f8de5fec2956d85757da8ecc6ed98264",
+  "controls_source": "aa8b9a5362526acd05dbb424c0cbb5bd07fb2884",
+  "home_sha256": "d53d30234990213f93cc0460546cab369f97cf031be1dc9f036d4c21d39900d4",
+  "status": "Selected native outcome controls verified; full corpus remains incomplete. First pipe-closing control timed out correctly; suspected post-EOF gap #723 not reproduced.",
+  "files": [
+    {
+      "file": "build-corpus-journal-diagnostics.log.gz",
+      "bytes": 3325,
+      "sha256": "e96aff4fe292583d4b1fefa83854c6212e72d3abe89ff0f57fcb946da816ee45"
+    },
+    {
+      "file": "corpus-child-exit-deadline-issue.md.gz",
+      "bytes": 1611,
+      "sha256": "eb59a2efcef1be1e6a41ec5c6c1d8f93243efd14081f86a5e500a12ab299f8a4"
+    },
+    {
+      "file": "corpus-closed-pipe-first/child-ready.gz",
+      "bytes": 5,
+      "sha256": "38f7e71a1275fec98fcb1cac8d90b87ffa17f6e929dc3b8eaa3e6d4be49aec58"
+    },
+    {
+      "file": "corpus-closed-pipe-first/execution.log.gz",
+      "bytes": 1152,
+      "sha256": "07158775c4daecb5cb7bc8dd6860cc6698cc111f57e681f52b7efd50c6b65206"
+    },
+    {
+      "file": "corpus-closed-pipe-first/manifest.json.gz",
+      "bytes": 5666,
+      "sha256": "bbaf0f0f4c6cb60600e231126b9234830373668dc93be1ba1b7025a8034c9196"
+    },
+    {
+      "file": "corpus-closed-pipe-first/reports/000000.stderr.gz",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "corpus-closed-pipe-first/reports/000000.stdout.gz",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "corpus-closed-pipe-first/reports/events.jsonl.gz",
+      "bytes": 4011,
+      "sha256": "29c2755526ee7f310d426e1b3ada53c64aff3556ff60817b6f447a53ca3354ac"
+    },
+    {
+      "file": "corpus-closed-pipe-first/source.js.gz",
+      "bytes": 242,
+      "sha256": "ad82d93bac916b6e8cd07b189e4e6f0a2f7fc40926940ec2debeeb520c16e0bd"
+    },
+    {
+      "file": "corpus-closed-pipe-first-comment.md.gz",
+      "bytes": 1007,
+      "sha256": "24d58020db7fef099820e0296115c32ef5766e09c20e7b0805c21e0770d8bd63"
+    },
+    {
+      "file": "corpus-journal-corrected/manifest.json.gz",
+      "bytes": 9244,
+      "sha256": "20a443efb87e50f708816f12c365f1f8f6560accdf091e77339c034bbf07bd1d"
+    },
+    {
+      "file": "corpus-journal-corrected/original-matrix.log.gz",
+      "bytes": 58759,
+      "sha256": "80f5ea786c184550b8f966a76f42d92552ce46788076818fce991f4ce195b5e0"
+    },
+    {
+      "file": "corpus-journal-corrected/original-reports/000000.junit.xml.gz",
+      "bytes": 77430,
+      "sha256": "691ae5bd14dee0ee4ad2e1ea1150ea4fa3cb03b71259ca56fce0a0fcfcc359e1"
+    },
+    {
+      "file": "corpus-journal-corrected/original-reports/000000.stderr.gz",
+      "bytes": 51102,
+      "sha256": "af2c65420dc0d0d9a55cfce615034d2dfdef08c738fe47c988f689bfdc328f06"
+    },
+    {
+      "file": "corpus-journal-corrected/original-reports/000000.stdout.gz",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "file": "corpus-journal-corrected/original-reports/000001.junit.xml.gz",
+      "bytes": 1671,
+      "sha256": "0fa114538e92bbd9706280ddff3afc5c6329f113c2a362efa446133fa5eb48a8"
+    },
+    {
+      "file": "corpus-journal-corrected/original-reports/000001.stderr.gz",
+      "bytes": 879,
+      "sha256": "44c24c28a5baa40aa63ccb88da1521148fbe71903d44d13b737ed81a263fc78a"
+    },
+    {
+      "file": "corpus-journal-corrected/original-reports/000001.stdout.gz",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "file": "corpus-journal-corrected/original-reports/000002.junit.xml.gz",
+      "bytes": 790,
+      "sha256": "c0697b05ee35e5ffdbb50f473e94f3b0bdb536bbc792fffca0dbbbf996f4dc21"
+    },
+    {
+      "file": "corpus-journal-corrected/original-reports/000002.stderr.gz",
+      "bytes": 317,
+      "sha256": "a8d53f4b6c0821109d168a041e91947f67d5c3a47a9770a568e18ae18a58d499"
+    },
+    {
+      "file": "corpus-journal-corrected/original-reports/000002.stdout.gz",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "file": "corpus-journal-corrected/original-reports/000003.stderr.gz",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "corpus-journal-corrected/original-reports/000003.stdout.gz",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "corpus-journal-corrected/original-reports/000004.stderr.gz",
+      "bytes": 134,
+      "sha256": "81e14cadcb3c722206265e20c8a743f111f77ed7736a8fa66074e6ab02992912"
+    },
+    {
+      "file": "corpus-journal-corrected/original-reports/000004.stdout.gz",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "file": "corpus-journal-corrected/original-reports/000005.junit.xml.gz",
+      "bytes": 606,
+      "sha256": "d77c5b8dc14d30a313d70660e7d2f7563d4ca06e09633bf600360eda9ca8cc43"
+    },
+    {
+      "file": "corpus-journal-corrected/original-reports/000005.stderr.gz",
+      "bytes": 4601,
+      "sha256": "9ad4dce55eda9c849e3beae124838b28ba99581a21ec5db0e8cd57a68e2f04bf"
+    },
+    {
+      "file": "corpus-journal-corrected/original-reports/000005.stdout.gz",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "file": "corpus-journal-corrected/original-reports/events.jsonl.gz",
+      "bytes": 20709,
+      "sha256": "a2d93972fd97d5a2e2c40d1a250a8503c98ae1b07133957803f4c27759fe20e4"
+    },
+    {
+      "file": "corpus-journal-corrected/private-controls.log.gz",
+      "bytes": 557,
+      "sha256": "a8c2dc2f651ce6477cd62a3537b10ba173936afad893fda62b1f2484b79877f8"
+    },
+    {
+      "file": "corpus-journal-corrected/private-reports/report-interruption/events.jsonl.gz",
+      "bytes": 3307,
+      "sha256": "dd198a5ae0008aefcf7840a06436c561cd66a4789d4466b79ad1913bf9112328"
+    },
+    {
+      "file": "corpus-journal-corrected/private-reports/report-invalid-negative/000000.junit.xml.gz",
+      "bytes": 610,
+      "sha256": "c93f0ad5a5f6e24ac0a7d298664ec1e159fc665e131e5e1ce21ec37561699a76"
+    },
+    {
+      "file": "corpus-journal-corrected/private-reports/report-invalid-negative/000000.stderr.gz",
+      "bytes": 579,
+      "sha256": "a5354790df0179658b9b1ae27d68a1233d1535d83732d14f79d4b02a94912717"
+    },
+    {
+      "file": "corpus-journal-corrected/private-reports/report-invalid-negative/000000.stdout.gz",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "file": "corpus-journal-corrected/private-reports/report-invalid-negative/events.jsonl.gz",
+      "bytes": 4160,
+      "sha256": "6b57b2ef9b4b84679777dc96b55f2a7dd4a5195166d70c4192eacb8d59a8a84b"
+    },
+    {
+      "file": "corpus-journal-corrected/private-reports/report-mixed/000000.junit.xml.gz",
+      "bytes": 893,
+      "sha256": "6b4f7faa9446adc796982ee8ca0b3b02ec6ec0e3ca3637b482a32da0f98a64a5"
+    },
+    {
+      "file": "corpus-journal-corrected/private-reports/report-mixed/000000.stderr.gz",
+      "bytes": 731,
+      "sha256": "c9c4d8e345413c3878e0a91c1913ed3ae4c559f72427be3463ca6ed01533a6ab"
+    },
+    {
+      "file": "corpus-journal-corrected/private-reports/report-mixed/000000.stdout.gz",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "file": "corpus-journal-corrected/private-reports/report-mixed/000001.stderr.gz",
+      "bytes": 1227,
+      "sha256": "44e6fbadbf97e9c0edb95a86ca43426be28436f9808ff433864624c6f42869dd"
+    },
+    {
+      "file": "corpus-journal-corrected/private-reports/report-mixed/000001.stdout.gz",
+      "bytes": 68,
+      "sha256": "700ce61388558191f8b7d987288af8433b7a3e20120e9f8d8fb8b011b407f1de"
+    },
+    {
+      "file": "corpus-journal-corrected/private-reports/report-mixed/000002.stderr.gz",
+      "bytes": 121,
+      "sha256": "031d806d87e57179a27ae3d115348437fae247fecc39da0d34804bc69d8942e6"
+    },
+    {
+      "file": "corpus-journal-corrected/private-reports/report-mixed/000002.stdout.gz",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "file": "corpus-journal-corrected/private-reports/report-mixed/events.jsonl.gz",
+      "bytes": 11500,
+      "sha256": "b5731648c8adde2d4fb857866f3027242e4258483537d523f53287df4e9f6a07"
+    },
+    {
+      "file": "corpus-journal-corrected/private-reports/report-script-failure/000000.stderr.gz",
+      "bytes": 464,
+      "sha256": "2cc5f390d81777f7ce5c86f25d4eba413a2e301dd1c0b03b3b81b17b552fd0ae"
+    },
+    {
+      "file": "corpus-journal-corrected/private-reports/report-script-failure/000000.stdout.gz",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "corpus-journal-corrected/private-reports/report-script-failure/events.jsonl.gz",
+      "bytes": 3879,
+      "sha256": "d4a9ede923fc89f2ffe999a4a4c016ae54205ed6c8c5d23b3cbb4a079d0d4d9f"
+    },
+    {
+      "file": "corpus-journal-corrected/private-reports/report-signal/000000.stderr.gz",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "corpus-journal-corrected/private-reports/report-signal/000000.stdout.gz",
+      "bytes": 20,
+      "sha256": "621883d464b4f25c9052535d6335e3732d7f75d8da6451ab004fa36ebabf62f0"
+    },
+    {
+      "file": "corpus-journal-corrected/private-reports/report-signal/events.jsonl.gz",
+      "bytes": 3882,
+      "sha256": "2bfe614c2f95eb5289728a74a929de813c74e6ba9286372f34d16f4a75cf4e12"
+    },
+    {
+      "file": "corpus-journal-corrected/private-reports/report-timeout/000000.stderr.gz",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "corpus-journal-corrected/private-reports/report-timeout/000000.stdout.gz",
+      "bytes": 21,
+      "sha256": "40927f3ce0f70e088f6ad740c9cc48776ca0938f2c1d5f5eb9d23f38a36b6ee7"
+    },
+    {
+      "file": "corpus-journal-corrected/private-reports/report-timeout/events.jsonl.gz",
+      "bytes": 3883,
+      "sha256": "67521bfa9359d27238d4cc6a6ee9f349ec1e73a225e59f7751d15ad8f0ba3ad8"
+    },
+    {
+      "file": "corpus-journal-corrected/private-reports/report-write-failure/events.jsonl.gz",
+      "bytes": 3152,
+      "sha256": "7b6d7c50a93581da9692442414134dfcf8113d14483a06f0519c0df6ac5c26a7"
+    },
+    {
+      "file": "corpus-journal-corrected/validated-original-reports.log.gz",
+      "bytes": 63984,
+      "sha256": "76f7d33df5e90ec422a1b8d5d11d7c43eeb40f7337687331a801286619408421"
+    },
+    {
+      "file": "corpus-journal-corrected/validated-report-interruption.log.gz",
+      "bytes": 880,
+      "sha256": "4bd1650a76859783b600484cdddcc5c879e9473d0b561b9f1a7be4cca207cbf6"
+    },
+    {
+      "file": "corpus-journal-corrected/validated-report-invalid-negative.log.gz",
+      "bytes": 776,
+      "sha256": "950007e16bed9b3c89f13d35b43be268fc9e7a4611f522de430dfd70ebad1eb3"
+    },
+    {
+      "file": "corpus-journal-corrected/validated-report-mixed.log.gz",
+      "bytes": 1081,
+      "sha256": "47c99f47eab046c359ab0b0dbfbd8dbb3cf48acfc56134b3f961d3eeb287ad6f"
+    },
+    {
+      "file": "corpus-journal-corrected/validated-report-script-failure.log.gz",
+      "bytes": 648,
+      "sha256": "9fe920502c712e5e8cccab373d9c92c334aeb38a899022ebcf198afb4f110bd4"
+    },
+    {
+      "file": "corpus-journal-corrected/validated-report-signal.log.gz",
+      "bytes": 640,
+      "sha256": "d89b036f648dac3b916c9762be6b5dfe57642d0b064fda6cbef091dc05869091"
+    },
+    {
+      "file": "corpus-journal-corrected/validated-report-timeout.log.gz",
+      "bytes": 641,
+      "sha256": "d59d1fa3768735646542c0a5a736421e37dd00299c1b52aa7fad248278fe99ef"
+    },
+    {
+      "file": "corpus-journal-corrected/validated-report-write-failure.log.gz",
+      "bytes": 576,
+      "sha256": "9d4480778f659e8facb1cbecc1af302a9f9054dd56bb50e169f88a96a1f81b00"
+    },
+    {
+      "file": "corpus-outcome-pickier-negative.log.gz",
+      "bytes": 275,
+      "sha256": "f0ae5efb98ee7ca5166e992c20b4d4b3652286980ceaf3247d57b8e836290e1c"
+    },
+    {
+      "file": "corpus-outcome-validator-unit-negative.log.gz",
+      "bytes": 381,
+      "sha256": "ca47f884d9bb6672b2f98e732cbe1ea92e9548e6e10ea5be27153721b19779fe"
+    },
+    {
+      "file": "verify-corpus-closed-pipe-first.log.gz",
+      "bytes": 850,
+      "sha256": "8069e5ca6d5c175662b05ac52efa7b7671001774f1f57402edc7cb4d1f05cf9f"
+    },
+    {
+      "file": "verify-corpus-closed-pipe.py.gz",
+      "bytes": 2582,
+      "sha256": "94c9a806cba8e9b0e99cefc1734a26b782e1f670fda01d0e794c61253cdd45c8"
+    },
+    {
+      "file": "verify-corpus-journal-corrected.log.gz",
+      "bytes": 4565,
+      "sha256": "aa40f8dc53e9949286c74eca17edbfa66553475a6b2508014566ad199a0f3b98"
+    },
+    {
+      "file": "verify-corpus-journal-corrected.py.gz",
+      "bytes": 3778,
+      "sha256": "cf0d230b0d285dc6cd9916426fa77b4abba28131b6a4c7d24107d0fb83c89748"
+    }
+  ]
+}

@@ -1,0 +1,42 @@
+{
+  "parent": "https://github.com/home-lang/home/issues/66",
+  "outcome_issue": "https://github.com/home-lang/home/issues/722",
+  "runtime_source": "719d6369f8de5fec2956d85757da8ecc6ed98264",
+  "controls_source": "aa8b9a5362526acd05dbb424c0cbb5bd07fb2884",
+  "home_sha256": "d53d30234990213f93cc0460546cab369f97cf031be1dc9f036d4c21d39900d4",
+  "bun_pin": "4982b91e3702094330f3be3883354c52b8c01323",
+  "full_parity_complete": false,
+  "verification": {
+    "build_steps_passed": 23,
+    "native_harness_passed": 11,
+    "journal_units_passed": 3,
+    "validator_units_passed": 8,
+    "targeted_pickier_passed": true,
+    "private_real_process_controls_passed": true,
+    "original_files": 6,
+    "original_registered_cases_passed": 402,
+    "original_cases_skipped": 1,
+    "original_cases_todo": 10,
+    "original_verified_negative_failure_cases": 1,
+    "successful_node_script_checks": 1,
+    "verified_negative_process_checks": 1,
+    "comment_only_files": 1,
+    "source_snapshot_executable_integrity": true
+  },
+  "first_run_failure": "ANSI styling hid the strict indexed-property negative diagnostic. First-run failure preserved; complete unstyled matching and rejected-negative raw counts now verified.",
+  "deadline_investigation": {
+    "issue": "https://github.com/home-lang/home/issues/723",
+    "first_control": "Closing descriptors 1 and 2 while alive still reaches the correct native 20-second timeout. Actual parent-observed EOF is not established; suspected post-EOF gap not reproduced.",
+    "confirmed_failure": false
+  },
+  "remaining": [
+    "Execute and retain the entire required 4754-entry inventory with real service/vendor/platform prerequisites.",
+    "Resolve #723 by verifying actual pipe EOF and child-wait lifetime behavior.",
+    "Continue original source/snapshot integrity through full-suite setup; native Windows and ASAN verification.",
+    "Full runtime feature porting, default CLI fallback removal and independent native build ownership."
+  ],
+  "evidence": [
+    "docs/docs/bun-port-evidence/2026-09-08-corpus-journal-first/manifest.json",
+    "docs/docs/bun-port-evidence/2026-09-08-corpus-journal-verified/manifest.json"
+  ]
+}
