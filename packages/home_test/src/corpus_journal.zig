@@ -42,7 +42,7 @@ pub const Journal = struct {
         const events = try Io.Dir.cwd().createFile(io, path, .{ .exclusive = true });
         errdefer events.close(io);
         var journal = Journal{ .allocator = allocator, .io = io, .directory = directory, .events = events };
-        try journal.append(.{ .event = "run", .schema = 1, .corpus_root = corpus_root });
+        try journal.append(.{ .event = "run", .schema = 2, .corpus_root = corpus_root });
         return journal;
     }
 
@@ -132,7 +132,7 @@ pub const Journal = struct {
         try file.sync(self.io);
     }
 
-    pub fn complete(self: *Journal, id: usize, term: std.process.Child.Term, timed_out: bool, stdout: []const u8, stderr: []const u8, counts: anytype, source_unchanged: bool, junit_path: ?[]const u8, expected_failure_verified: bool) !bool {
+    pub fn complete(self: *Journal, id: usize, term: std.process.Child.Term, timed_out: bool, stdout: []const u8, stderr: []const u8, counts: anytype, output_complete: bool, source_unchanged: bool, junit_path: ?[]const u8, expected_failure_verified: bool) !bool {
         if (id != self.completed or self.started != self.completed + 1) return error.InvalidCorpusEventOrder;
         try self.writeArtifact(id, "stdout", stdout);
         try self.writeArtifact(id, "stderr", stderr);
@@ -157,6 +157,7 @@ pub const Journal = struct {
             .term = term,
             .timed_out = timed_out,
             .source_unchanged = source_unchanged,
+            .output_complete = output_complete,
             .expected_failure_verified = expected_failure_verified,
             .counts = counts,
             .stdout_file = try std.fmt.bufPrint(&stdout_name, "{d:0>6}.stdout", .{id}),
@@ -238,7 +239,7 @@ test "corpus journal retains raw failures and detects executable changes" {
     const invocation = Invocation{ .journal = &journal, .id = 0, .mode = "test_runner", .source_sha256 = hashBytes("source") };
     try journal.start(invocation, &.{ executable, "test", "failing.test.js" }, 180_000, null, null);
     const counts = .{ .passed = 1, .failed = 1, .skipped = 2, .todo = 3, .observed = true };
-    try std.testing.expect(try journal.complete(0, .{ .exited = 1 }, false, "raw\x00stdout", "assertion failure", counts, true, null, false));
+    try std.testing.expect(try journal.complete(0, .{ .exited = 1 }, false, "raw\x00stdout", "assertion failure", counts, true, true, null, false));
     const stdout_path = try journal.artifactPath(0, "stdout");
     defer allocator.free(stdout_path);
     const stdout = try Io.Dir.cwd().readFileAlloc(io, stdout_path, allocator, .limited(4096));
@@ -273,5 +274,5 @@ test "corpus journal exposes a missing requested JUnit report" {
     try journal.start(.{ .journal = &journal, .id = 0, .mode = "test_runner", .source_sha256 = hashBytes("source") }, &.{executable}, 180_000, null, null);
     const junit = try journal.artifactPath(0, "junit.xml");
     defer allocator.free(junit);
-    try std.testing.expect(!try journal.complete(0, .{ .exited = 0 }, false, "", "", .{ .passed = 1 }, true, junit, false));
+    try std.testing.expect(!try journal.complete(0, .{ .exited = 0 }, false, "", "", .{ .passed = 1 }, true, true, junit, false));
 }

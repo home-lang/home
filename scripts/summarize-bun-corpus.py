@@ -58,7 +58,7 @@ def summarize(directory):
             event = row['event']
             check(finished is None, f'line {number}: event after finished')
             if event == 'run':
-                check(number == 1 and run is None and row.get('schema') == 1, 'invalid run header')
+                check(number == 1 and run is None and row.get('schema') in (1, 2), 'invalid run header')
                 run = row
             elif event == 'selected':
                 identity = row['id']
@@ -81,6 +81,8 @@ def summarize(directory):
                 for kind in ('stdout', 'stderr'):
                     artifact(row, kind)
                 check(row.get('source_unchanged') is True, f'{identity}: source changed during execution')
+                if run and run.get('schema') == 2:
+                    check(row.get('output_complete') is True, f'{identity}: captured streams did not reach verified EOF')
                 for key in ('timed_out', 'expected_failure_verified'):
                     check(type(row.get(key)) is bool, f'{identity}: invalid {key} state')
                 counts = row.get('counts', {})
@@ -144,7 +146,7 @@ def summarize(directory):
     return {'directory': str(directory), 'successful': successful, 'selected': len(selected), 'started': len(started), 'completed': len(completed),
             'unstarted': [row for identity, row in selected.items() if identity not in started],
             'incomplete': [selected[identity] for identity in started if identity in selected and identity not in completed],
-            'counts': totals, 'summary': summary, 'failed_file_ids': failures, 'cases': cases, 'errors': errors}
+            'counts': totals, 'capture_completeness': {state: sum(row.get('output_complete') is value for row in completed.values()) for state, value in [('complete', True), ('incomplete', False), ('unknown', None)]}, 'summary': summary, 'failed_file_ids': failures, 'cases': cases, 'errors': errors}
 
 
 def main():

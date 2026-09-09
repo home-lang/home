@@ -5169,12 +5169,13 @@ test "bun corpus subset parser accepts bundler transpiler bootstrap" {
 }
 
 fn emitNativeCorpusExecution(execution: home_test.corpus_runner.FileExecution) !void {
-    std.debug.print("\n[home-bun-corpus] {s}: mode={s}, status={any}, timed_out={}, timeout_ms={d}\n", .{
+    std.debug.print("\n[home-bun-corpus] {s}: mode={s}, status={any}, timed_out={}, timeout_ms={d}, output_complete={}\n", .{
         execution.relative_path,
         @tagName(execution.mode),
         execution.term,
         execution.timed_out,
         execution.timeout_ms,
+        execution.output_complete,
     });
     try std.Io.File.stdout().writeStreamingAll(g_io, execution.stdout);
     try std.Io.File.stderr().writeStreamingAll(g_io, execution.stderr);

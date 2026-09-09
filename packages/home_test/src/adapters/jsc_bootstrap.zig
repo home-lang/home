@@ -1,6 +1,7 @@
 const std = @import("std");
 const home_rt = @import("home_rt");
 const runner = @import("../runner.zig");
+const corpus_child_wait = @import("../corpus_child_wait.zig");
 const corpus_launch = @import("../corpus_launch.zig");
 const corpus_journal = @import("../corpus_journal.zig");
 
@@ -5834,6 +5835,7 @@ const SpawnSyncCapturedResult = struct {
     stdout: []u8,
     stderr: []u8,
     timed_out: bool,
+    output_complete: bool,
 };
 
 pub const HomeCapturedResult = struct {
@@ -5842,6 +5844,7 @@ pub const HomeCapturedResult = struct {
     stdout: []u8,
     stderr: []u8,
     timed_out: bool,
+    output_complete: bool,
 
     pub fn deinit(self: *HomeCapturedResult, allocator: std.mem.Allocator) void {
         allocator.free(self.stdout);
@@ -5949,6 +5952,7 @@ pub fn runHomeCapturedWithOptions(
         .stdout = captured.stdout,
         .stderr = captured.stderr,
         .timed_out = captured.timed_out,
+        .output_complete = captured.output_complete,
         .timeout_ms = timeout_ms,
     };
 }
@@ -6120,6 +6124,16 @@ fn runSpawnSyncCaptured(
         // handles; this also makes `toOwnedSlice` safe below.
         multi_reader.batch.cancel(io);
     }
+    // Pipe EOF does not imply child exit. Keep the same original deadline
+    // through the remaining lifetime, retaining ownership until final reaping.
+    if (!timed_out) {
+        if (timeout == .deadline and !try corpus_child_wait.waitForExitBefore(io, &child, timeout.deadline)) {
+            timed_out = true;
+            terminateSpawnSyncChild(&child, use_process_group);
+            const grace = Io.Clock.Timestamp.fromNow(io, .{ .raw = .fromMilliseconds(spawn_sync_termination_grace_ms), .clock = .awake });
+            if (!try corpus_child_wait.waitForExitBefore(io, &child, grace)) forceTerminateSpawnSyncChild(&child, use_process_group);
+        }
+    }
     const term = try child.wait(io);
     const stdout = try multi_reader.toOwnedSlice(0);
     errdefer allocator.free(stdout);
@@ -6131,6 +6145,7 @@ fn runSpawnSyncCaptured(
         .stdout = stdout,
         .stderr = stderr,
         .timed_out = timed_out,
+        .output_complete = pipes_fully_drained,
     };
 }
 
@@ -8280,4 +8295,32 @@ test "native Headers/Response launch resolves relative executable overrides befo
     const command = try capturedExecutableOverrideAlloc(allocator, "home", .{ .corpus_project_root = "/mirror" });
     defer allocator.free(command);
     try std.testing.expectEqualStrings("home", command);
+}
+
+test "native corpus capture enforces child lifetime after output EOF" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const cases = [_]struct { script: []const u8, timeout_ms: i64, timed_out: bool }{
+        .{ .script = "printf 'retained stdout'; printf 'retained stderr' >&2; exec 1>&- 2>&-; exit 19", .timeout_ms = 2000, .timed_out = false },
+        .{ .script = "printf 'retained stdout'; printf 'retained stderr' >&2; exec 1>&- 2>&-; exec /bin/sleep 30", .timeout_ms = 40, .timed_out = true },
+    };
+    for (cases) |case| {
+        const captured = try runSpawnSyncCaptured(allocator, io, .{
+            .argv = &.{ "/bin/sh", "-c", case.script },
+            .cwd = .inherit,
+            .environ_map = null,
+            .timeout_ms = case.timeout_ms,
+            .kill_process_group = true,
+        });
+        defer allocator.free(captured.stdout);
+        defer allocator.free(captured.stderr);
+        try std.testing.expectEqual(case.timed_out, captured.timed_out);
+        try std.testing.expect(captured.output_complete);
+        try std.testing.expectEqualStrings("retained stdout", captured.stdout);
+        try std.testing.expectEqualStrings("retained stderr", captured.stderr);
+        if (!case.timed_out) try std.testing.expectEqual(std.process.Child.Term{ .exited = 19 }, captured.term);
+    }
 }

@@ -93,6 +93,18 @@ class JournalValidation(unittest.TestCase):
         self.assertEqual(result['cases'][0]['status'], 'failed')
         self.assertEqual(sum(result['counts'].values()), 0)
 
+    def test_schema_two_requires_complete_captures(self):
+        self.rows[0]['schema'] = 2
+        self.assertFalse(self.result()['successful'])
+        self.rows[3]['output_complete'] = False
+        result = self.result()
+        self.assertFalse(result['successful'])
+        self.assertEqual(result['capture_completeness']['incomplete'], 1)
+        self.rows[3]['output_complete'] = True
+        result = self.result()
+        self.assertTrue(result['successful'], result)
+        self.assertEqual(result['capture_completeness']['complete'], 1)
+
     def test_script_success_has_no_registered_case_credit(self):
         self.rows[3].update(counts=dict.fromkeys(self.counts, 0), junit='not_requested', junit_file=None, junit_sha256=None)
         self.rows[4]['summary'].update(dict.fromkeys(self.counts, 0), process_checks_passed=1)

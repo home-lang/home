@@ -32,6 +32,7 @@ pub const FileExecution = struct {
     mode: NativeCorpusMode,
     term: std.process.Child.Term,
     timed_out: bool,
+    output_complete: bool,
     timeout_ms: i64,
     stdout: []const u8,
     stderr: []const u8,
@@ -711,6 +712,7 @@ fn runRelativeFile(
             .mode = mode,
             .term = native_run.term,
             .timed_out = native_run.timed_out,
+            .output_complete = native_run.output_complete,
             .timeout_ms = native_run.timeout_ms,
             .stdout = native_run.stdout,
             .stderr = native_run.stderr,
@@ -720,7 +722,7 @@ fn runRelativeFile(
         defer if (after_source) |bytes| allocator.free(bytes);
         const source_unchanged = if (after_source) |bytes| std.mem.eql(u8, source, bytes) else false;
         const expected_failure_verified = nativeExpectedFailureCorpusPassed(relative, native_run.term, native_run.timed_out, native_run.stdout, native_run.stderr);
-        const report_retained = if (summary.journal) |*journal| try journal.complete(id, native_run.term, native_run.timed_out, native_run.stdout, native_run.stderr, counts, source_unchanged, junit_path, expected_failure_verified) else true;
+        const report_retained = if (summary.journal) |*journal| try journal.complete(id, native_run.term, native_run.timed_out, native_run.stdout, native_run.stderr, counts, native_run.output_complete, source_unchanged, junit_path, expected_failure_verified) else true;
         const missing_case_report = !report_retained and counts.passed + counts.failed + counts.skipped + counts.todo != 0;
         if (summary.on_file) |on_file| try on_file(execution);
 

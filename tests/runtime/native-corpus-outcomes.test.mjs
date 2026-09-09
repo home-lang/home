@@ -57,6 +57,7 @@ function complete(report, expectedFiles) {
   for (const row of completed) {
     for (const stream of ['stdout', 'stderr']) assert.equal(hash(readFileSync(join(report, row[`${stream}_file`]))), row[`${stream}_sha256`])
     assert.equal(row.source_unchanged, true)
+    assert.equal(row.output_complete, true)
     if (row.junit === 'retained') assert.equal(hash(readFileSync(join(report, row.junit_file))), row.junit_sha256)
   }
   return { rows, started, completed, summary: rows.at(-1).summary }
@@ -121,6 +122,34 @@ try {
   assert.equal(timedResult.summary.failed_files, 1)
   assert.equal(timedResult.summary.passed + timedResult.summary.failed, 0)
   console.log('actual 20-second Node deadline retained')
+
+  if (process.platform === 'darwin') {
+    // fs.closeSync deliberately preserves standard descriptors in pinned Bun.
+    // Use actual libc close through the production FFI to establish pipe EOF.
+    const closedReady = join(directory, 'libc-close-results')
+    const closeSource = `import { dlopen } from 'bun:ffi'; const fs = require('node:fs');
+      const library = dlopen('/usr/lib/libSystem.B.dylib', { close: { args: ['i32'], returns: 'i32' } });
+      const results = [library.symbols.close(1), library.symbols.close(2)];
+      fs.writeFileSync(${JSON.stringify(closedReady)}, JSON.stringify(results));`
+    const closedSuccess = fixture('js/node/test/parallel/test-journal-closed-success.js', closeSource + 'setTimeout(() => process.exit(0), 50)')
+    const earlyExit = await start('closed-success', [closedSuccess]).finish()
+    assert.equal(earlyExit.code, 0)
+    assert.deepEqual(JSON.parse(readFileSync(closedReady, 'utf8')), [0, 0])
+    const earlyResult = complete(earlyExit.report, 1)
+    assert.equal(earlyResult.completed[0].timed_out, false)
+    assert.equal(earlyResult.summary.process_checks_passed, 1)
+    assert.equal(earlyResult.summary.passed, 0)
+    rmSync(closedReady)
+    const closedTimeout = fixture('js/node/test/parallel/test-journal-closed-timeout.js', closeSource + 'setInterval(() => {}, 1000)')
+    const pastEof = await start('closed-timeout', [closedTimeout]).finish()
+    assert.notEqual(pastEof.code, 0)
+    assert.deepEqual(JSON.parse(readFileSync(closedReady, 'utf8')), [0, 0])
+    const eofResult = complete(pastEof.report, 1)
+    assert.equal(eofResult.started[0].timeout_ms, 20000)
+    assert.equal(eofResult.completed[0].timed_out, true)
+    assert.equal(eofResult.summary.failed_files, 1)
+    console.log('real libc EOF preserves early exit and the actual 20-second child deadline')
+  }
 
   const signal = fixture('js/node/test/parallel/test-journal-signal.js', "console.log('signal body entered'); process.kill(process.pid, 'SIGTERM')")
   const signaled = await start('signal', [signal]).finish()
