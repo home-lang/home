@@ -12,6 +12,7 @@ const jsc_bootstrap = @import("adapters/jsc_bootstrap.zig");
 const test_result = @import("result.zig");
 const corpus_journal = @import("corpus_journal.zig");
 const corpus_selection = @import("corpus_selection.zig");
+const corpus_vendor = @import("corpus_vendor.zig");
 const Io = std.Io;
 
 pub const Subset = enum {
@@ -121,6 +122,7 @@ pub const Summary = struct {
     journal: ?corpus_journal.Journal = null,
     executions: std.ArrayList(FileExecution) = .empty,
     on_file: ?*const fn (FileExecution) anyerror!void = null,
+    vendor_context: ?VendorExecutionContext = null,
 
     pub fn deinit(self: *Summary, allocator: std.mem.Allocator) void {
         if (self.journal) |*journal| journal.deinit();
@@ -465,6 +467,158 @@ pub fn runFileWithOptions(io: Io, allocator: std.mem.Allocator, corpus_path: []c
 
 pub const FileTarget = struct { corpus_path: []const u8, relative_path: []const u8 };
 
+const VendorExecutionContext = struct {
+    corpus_project_root: []const u8,
+    preload: ?[]const u8 = null,
+};
+
+test "native corpus prepared vendors use project configs, forced test mode and complete outcomes" {
+    if (!build_options.enable_jsc) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "vendor/configured/test");
+    try tmp.dir.createDirPath(io, "vendor/bare/specs");
+    // The old primary-project derivation would explicitly select this config.
+    try tmp.dir.writeFile(io, .{ .sub_path = "vendor/bunfig.toml", .data = "[test]\npreload='./wrong-parent.js'\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "vendor/wrong-parent.js", .data = "throw new Error('incorrect vendor project root');" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "vendor/configured/package.json", .data = "{\"name\":\"configured\",\"private\":true}" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "vendor/configured/bunfig.toml", .data = "[test]\npreload='./setup.js'\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "vendor/configured/setup.js", .data = "globalThis.vendorConfigLoaded=true;" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "vendor/configured/test/a-fail.js", .data = "import {test,expect} from 'bun:test'; test('retained vendor failure',()=>expect(1).toBe(2));" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "vendor/configured/test/b-pass.js", .data =
+        \\// Flags: --not-a-real-node-flag
+        \\import {test,expect} from 'bun:test';
+        \\test('normal project config and cwd',()=>{
+        \\ expect(globalThis.vendorConfigLoaded).toBe(true);
+        \\ expect(require('node:path').basename(process.cwd())).toBe('configured');
+        \\ expect(process.env.TEST_SERIAL_ID).toBeUndefined();
+        \\ expect(process.env.CI).toBe('1');
+        \\});
+    });
+    try tmp.dir.writeFile(io, .{ .sub_path = "vendor/bare/package.json", .data = "{\"name\":\"bare\",\"private\":true}" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "vendor/bare/specs/normal.test.js", .data = "import {test,expect} from 'bun:test'; test('no config needed',()=>expect(require('node:path').basename(process.cwd())).toBe('bare'));" });
+    const root = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(root);
+    const report = try std.fs.path.join(allocator, &.{ root, "configured-results" });
+    defer allocator.free(report);
+    var configured = try runPreparedVendorWithOptions(io, allocator, root, .{
+        .package = "configured",
+        .repository = "private-control",
+        .tag = "fixture",
+        .testExtensions = &.{"js"},
+        .skipTests = .{ .bool = true },
+    }, .{ .run = .{ .report_directory = report } });
+    defer configured.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 2), configured.files);
+    try std.testing.expectEqual(@as(usize, 1), configured.passed);
+    try std.testing.expectEqual(@as(usize, 1), configured.failed);
+    try std.testing.expectEqual(@as(usize, 1), configured.failed_files);
+    try std.testing.expectEqual(@as(usize, 0), configured.unsupported + configured.process_checks_passed);
+    try std.testing.expectEqual(NativeCorpusMode.test_runner, configured.executions.items[0].mode);
+    const events_path = try std.fs.path.join(allocator, &.{ report, "events.jsonl" });
+    defer allocator.free(events_path);
+    const events = try Io.Dir.cwd().readFileAlloc(io, events_path, allocator, .limited(1024 * 1024));
+    defer allocator.free(events);
+    try std.testing.expect(std.mem.indexOf(u8, events, "bun-4982b91e-vendor") != null);
+    try std.testing.expect(std.mem.indexOf(u8, events, "--config=") == null);
+    var bare = try runPreparedVendorWithOptions(io, allocator, root, .{ .package = "bare", .repository = "private-control", .tag = "fixture", .testPath = "specs" }, .{});
+    defer bare.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), bare.passed);
+    try std.testing.expectEqual(@as(usize, 0), bare.failed_files + bare.failed + bare.unsupported);
+}
+
+pub const VendorRunOptions = struct {
+    run: RunOptions = .{},
+    filters: []const []const u8 = &.{},
+    checkout_revision: ?[]const u8 = null,
+};
+
+/// Execute a prepared vendor project. Installation/build belong to the outer
+/// CI coordinator; this entrypoint records that they were NOT performed here.
+pub fn runPreparedVendorWithOptions(io: Io, allocator: std.mem.Allocator, project_root: []const u8, vendor: corpus_vendor.Vendor, options: VendorRunOptions) !Summary {
+    if (!build_options.enable_jsc) return .{ .blocked = true, .reason = "jsc-disabled" };
+    if (options.run.selection != null) return error.PrimarySelectionNotApplicableToVendor;
+    const root = try Io.Dir.cwd().realPathFileAlloc(io, project_root, allocator);
+    defer allocator.free(root);
+    const vendor_path = try std.fs.path.join(allocator, &.{ root, "vendor", vendor.package });
+    defer allocator.free(vendor_path);
+    const package_path = try std.fs.path.join(allocator, &.{ vendor_path, "package.json" });
+    defer allocator.free(package_path);
+    try Io.Dir.cwd().access(io, package_path, .{});
+    const test_path = try std.fs.path.join(allocator, &.{ vendor_path, vendor.testDirectory() });
+    defer allocator.free(test_path);
+    const entries = try corpus_vendor.collectEntries(allocator, io, test_path);
+    defer corpus.freeTestFiles(allocator, entries);
+    var filter = try corpus_vendor.Filter.init(allocator, vendor);
+    defer filter.deinit(allocator);
+    var inventory: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (inventory.items) |path| allocator.free(path);
+        inventory.deinit(allocator);
+    }
+    var selected: std.ArrayList(usize) = .empty;
+    defer selected.deinit(allocator);
+    const Exclusion = struct { index: usize, reason: []const u8, skip_pattern: ?[]const u8 = null };
+    var excluded: std.ArrayList(Exclusion) = .empty;
+    defer excluded.deinit(allocator);
+    for (entries, 0..) |entry, index| {
+        const relative = try std.fs.path.join(allocator, &.{ vendor.testDirectory(), entry });
+        inventory.append(allocator, relative) catch |err| {
+            allocator.free(relative);
+            return err;
+        };
+        const absolute = try std.fs.path.join(allocator, &.{ vendor_path, relative });
+        defer allocator.free(absolute);
+        const decision = filter.decide(entry, absolute, options.filters);
+        if (decision == .selected) try selected.append(allocator, index) else try excluded.append(allocator, .{
+            .index = index,
+            .reason = @tagName(decision),
+            .skip_pattern = if (decision == .skip_rule) decision.skip_rule else null,
+        });
+    }
+    const preload = if (!std.mem.eql(u8, vendor.runner(), "bun")) blk: {
+        const filename = try std.fmt.allocPrint(allocator, "{s}.ts", .{vendor.runner()});
+        defer allocator.free(filename);
+        const path = try std.fs.path.join(allocator, &.{ root, "test", "runners", filename });
+        errdefer allocator.free(path);
+        try Io.Dir.cwd().access(io, path, .{});
+        break :blk path;
+    } else null;
+    defer if (preload) |path| allocator.free(path);
+    var summary = try beginSummary(io, allocator, vendor_path, options.run);
+    errdefer summary.deinit(allocator);
+    summary.vendor_context = .{ .corpus_project_root = root, .preload = preload };
+    // Context borrows this call's paths and is only used during execution.
+    const range = bunCorpusRange(selected.items.len);
+    if (summary.journal) |*journal| {
+        try journal.append(.{
+            .event = "selection",
+            .contract = "bun-4982b91e-vendor",
+            .vendor = vendor,
+            .checkout_revision = options.checkout_revision,
+            .setup_performed = false,
+            .execution = "prepared-vendor",
+            .filters = options.filters,
+            .inventory = inventory.items,
+            .selected_indices = selected.items,
+            .excluded = excluded.items,
+            .additional_home_coverage = @as([]const usize, &.{}),
+            .range_start = range.start,
+            .range_end = range.end,
+        });
+        for (selected.items[range.start..range.end]) |index| try journal.select(inventory.items[index]);
+    }
+    for (selected.items[range.start..range.end], range.start..) |index, ordinal| {
+        if (bunCorpusProgressEnabled()) std.debug.print("[home-bun-corpus] vendor {s} {d}/{d} {s}\n", .{ vendor.package, ordinal + 1, selected.items.len, inventory.items[index] });
+        try runIsolatedRelativeFile(io, allocator, vendor_path, inventory.items[index], &summary);
+    }
+    try finishSummary(&summary);
+    summary.vendor_context = null;
+    return summary;
+}
+
 pub fn runFilesWithOptions(io: Io, allocator: std.mem.Allocator, files: []const FileTarget, options: RunOptions) !Summary {
     if (!build_options.enable_jsc) return .{ .files = files.len, .blocked = true, .reason = "jsc-disabled" };
     var summary = try beginSummary(io, allocator, "", options);
@@ -542,17 +696,18 @@ fn nativeCorpusModeForSource(relative: []const u8, source: []const u8) NativeCor
 fn buildNativeCorpusArgs(
     allocator: std.mem.Allocator,
     flags: []const []const u8,
-    config_path: []const u8,
+    config_path: ?[]const u8,
     absolute_fixture_path: []const u8,
     mode: NativeCorpusMode,
 ) ![][]const u8 {
-    const args = try allocator.alloc([]const u8, flags.len + 3);
+    const offset: usize = if (config_path != null) 2 else 1;
+    const args = try allocator.alloc([]const u8, flags.len + offset + 1);
     errdefer allocator.free(args);
     args[0] = if (mode == .test_runner) "test" else "run";
     // Bun declares config as an optional-value flag. Like pinned CI, attach
     // its value so script dispatch cannot mistake the TOML for the entrypoint.
-    args[1] = try std.fmt.allocPrint(allocator, "--config={s}", .{config_path});
-    @memcpy(args[2 .. 2 + flags.len], flags);
+    if (config_path) |path| args[1] = try std.fmt.allocPrint(allocator, "--config={s}", .{path});
+    @memcpy(args[offset .. offset + flags.len], flags);
     args[args.len - 1] = absolute_fixture_path;
     return args;
 }
@@ -764,35 +919,46 @@ fn runRelativeFile(
     };
     defer allocator.free(source);
 
-    if (isNativeHomeCorpusFile(relative)) {
+    if (isNativeHomeCorpusFile(relative) or summary.vendor_context != null) {
         const absolute_fixture_path = try Io.Dir.cwd().realPathFileAlloc(io, file_path, allocator);
         defer allocator.free(absolute_fixture_path);
 
-        var flags = try parseNativeCorpusFlags(allocator, source);
+        var flags = if (summary.vendor_context != null) OwnedFlags{} else try parseNativeCorpusFlags(allocator, source);
         defer flags.deinit(allocator);
-        const mode = nativeCorpusModeForSource(relative, source);
+        const mode = if (summary.vendor_context != null) NativeCorpusMode.test_runner else nativeCorpusModeForSource(relative, source);
+        const node_test = summary.vendor_context == null and corpus.isNodeTestFile(relative);
 
         const absolute_corpus_path = try Io.Dir.cwd().realPathFileAlloc(io, corpus_path, allocator);
         defer allocator.free(absolute_corpus_path);
-        const corpus_project_root = std.fs.path.dirname(absolute_corpus_path) orelse return error.InvalidCorpusRoot;
-        const config_path = try std.fs.path.join(allocator, &.{ corpus_project_root, if (corpus.isNodeTestFile(relative)) "bunfig.node-test.toml" else "bunfig.toml" });
-        defer allocator.free(config_path);
+        const corpus_project_root = if (summary.vendor_context != null) absolute_corpus_path else std.fs.path.dirname(absolute_corpus_path) orelse return error.InvalidCorpusRoot;
+        const config_path = if (summary.vendor_context != null) null else try std.fs.path.join(allocator, &.{ corpus_project_root, if (node_test) "bunfig.node-test.toml" else "bunfig.toml" });
+        defer if (config_path) |path| allocator.free(path);
+        if (summary.vendor_context) |vendor| if (vendor.preload) |path| {
+            try flags.values.ensureUnusedCapacity(allocator, 2);
+            flags.values.appendAssumeCapacity(try allocator.dupe(u8, "--preload"));
+            flags.values.appendAssumeCapacity(try allocator.dupe(u8, path));
+        };
         const args_tail = try buildNativeCorpusArgs(allocator, flags.values.items, config_path, absolute_fixture_path, mode);
         defer allocator.free(args_tail);
-        defer allocator.free(args_tail[1]);
+        defer if (config_path != null) allocator.free(args_tail[1]);
 
         const test_thread_id = try std.fmt.allocPrint(allocator, "home-corpus-{s}", .{std.fs.path.basename(relative)});
         defer allocator.free(test_thread_id);
 
         const source_hash = corpus_journal.hashBytes(source);
         const id = summary.files;
-        const junit_path = if (summary.journal) |*journal| (if (mode == .test_runner and !corpus.isNodeTestFile(relative)) try journal.artifactPath(id, "junit.xml") else null) else null;
+        const junit_path = if (summary.journal) |*journal| (if (mode == .test_runner and !node_test) try journal.artifactPath(id, "junit.xml") else null) else null;
         defer if (junit_path) |path| allocator.free(path);
+        const validation_relative = if (summary.vendor_context) |vendor| try std.fs.path.relative(allocator, vendor.corpus_project_root, null, vendor.corpus_project_root, absolute_fixture_path) else null;
+        defer if (validation_relative) |path| allocator.free(path);
         var native_run = try jsc_bootstrap.runHomeCapturedWithOptions(allocator, test_thread_id, args_tail, .{
             .corpus_project_root = corpus_project_root,
             .junit_path = junit_path,
             .record = if (summary.journal) |*journal| .{ .journal = journal, .id = id, .mode = @tagName(mode), .source_sha256 = source_hash } else null,
-            .corpus_file = .{ .relative_path = relative, .node_test = corpus.isNodeTestFile(relative), .test_runner = mode == .test_runner },
+            .corpus_file = .{ .relative_path = relative, .node_test = node_test, .test_runner = mode == .test_runner },
+            .corpus_validation_root = if (summary.vendor_context) |vendor| vendor.corpus_project_root else null,
+            .corpus_validation_relative_path = validation_relative,
+            .vendor_test = summary.vendor_context != null,
         });
         defer native_run.deinit(allocator);
         const execution = FileExecution{
@@ -809,12 +975,12 @@ fn runRelativeFile(
         const after_source = Io.Dir.cwd().readFileAlloc(io, file_path, allocator, .limited(1024 * 1024)) catch null;
         defer if (after_source) |bytes| allocator.free(bytes);
         const source_unchanged = if (after_source) |bytes| std.mem.eql(u8, source, bytes) else false;
-        const expected_failure_verified = nativeExpectedFailureCorpusPassed(relative, native_run.term, native_run.timed_out, native_run.stdout, native_run.stderr);
+        const expected_failure_verified = summary.vendor_context == null and nativeExpectedFailureCorpusPassed(relative, native_run.term, native_run.timed_out, native_run.stdout, native_run.stderr);
         const report_retained = if (summary.journal) |*journal| try journal.complete(id, native_run.term, native_run.timed_out, native_run.stdout, native_run.stderr, counts, native_run.output_complete, source_unchanged, junit_path, expected_failure_verified) else true;
         const missing_case_report = !report_retained and counts.passed + counts.failed + counts.skipped + counts.todo != 0;
         if (summary.on_file) |on_file| try on_file(execution);
 
-        if (isNativeExpectedFailureCorpusFile(relative)) {
+        if (summary.vendor_context == null and isNativeExpectedFailureCorpusFile(relative)) {
             if (expected_failure_verified and source_unchanged and !missing_case_report) {
                 summary.process_checks_passed += 1;
             } else {

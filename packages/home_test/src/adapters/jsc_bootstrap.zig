@@ -5879,6 +5879,10 @@ pub const HomeCapturedOptions = struct {
     // Ordinary captured invocations retain their inherited launch context.
     corpus_project_root: ?[]const u8 = null,
     corpus_file: ?corpus_launch.File = null,
+    corpus_validation_root: ?[]const u8 = null,
+    corpus_validation_relative_path: ?[]const u8 = null,
+    vendor_test: bool = false,
+    vendor_serial_id: ?usize = null,
     junit_path: ?[]const u8 = null,
     record: ?corpus_journal.Invocation = null,
     // Owned by runHomeCapturedWithOptions for one invocation.
@@ -5933,7 +5937,9 @@ pub fn runHomeCapturedWithOptions(
         try owned.linkExecutable(allocator, io, resolved);
     }
     if (invocation.profile) |selected| {
-        try corpus_launch.applyValidation(allocator, io, &invocation.environ_map, selected, options.corpus_file.?, options.corpus_project_root orelse return error.MissingCorpusProject);
+        var validation_file = options.corpus_file.?;
+        validation_file.relative_path = options.corpus_validation_relative_path orelse validation_file.relative_path;
+        try corpus_launch.applyValidation(allocator, io, &invocation.environ_map, selected, validation_file, options.corpus_validation_root orelse options.corpus_project_root orelse return error.MissingCorpusProject);
     }
     const timeout_ms = if (invocation.profile) |selected| selected.file_timeout_ms else home_corpus_child_timeout_ms;
     if (options.record) |record| try record.journal.start(record, invocation.argv, timeout_ms, options.corpus_project_root, &invocation.environ_map);
@@ -5991,6 +5997,18 @@ fn prepareHomeCapturedInvocation(
     }
     if (options.corpus_file == null) try environ_map.put("NO_COLOR", "1");
     try environ_map.put("TEST_THREAD_ID", test_thread_id);
+    if (options.vendor_test) {
+        if (options.corpus_file) |file| if (file.is_ci) {
+            try environ_map.put("CI", "1");
+        };
+        // Pinned serial runTest calls fn() without an index; undefined removes
+        // even an inherited TEST_SERIAL_ID from the spawned environment.
+        _ = environ_map.swapRemove("TEST_SERIAL_ID");
+        if (options.vendor_serial_id) |serial| {
+            var buffer: [32]u8 = undefined;
+            try environ_map.put("TEST_SERIAL_ID", try std.fmt.bufPrint(&buffer, "{d}", .{serial}));
+        }
+    }
     if (options.corpus_project_root != null) {
         // Match test/harness.ts startup prerequisites before the VM initializes.
         // A preload cannot enable internal bindings after module-loader setup.
@@ -6058,6 +6076,22 @@ fn capturedExecutableOverrideAlloc(allocator: std.mem.Allocator, override: []con
     const cwd = try currentWorkingDirectoryAlloc(allocator);
     defer allocator.free(cwd);
     return std.fs.path.resolve(allocator, &.{ cwd, override });
+}
+
+/// Capture a host preparation/inspection tool with the same pipe and child
+/// lifetime ownership as native test children. This does not invoke Home or
+/// award test-case credit. Executable lookup is resolved before changing cwd.
+pub fn runToolCaptured(allocator: std.mem.Allocator, io: Io, command: []const []const u8, cwd: []const u8, timeout_ms: i64) !HomeCapturedResult {
+    if (command.len == 0) return error.MissingToolCommand;
+    var env = try inheritedEnvironmentMap(allocator);
+    defer env.deinit();
+    const executable = try corpus_launch.resolveExecutable(allocator, io, &env, command[0]);
+    defer allocator.free(executable);
+    const argv = try allocator.dupe([]const u8, command);
+    defer allocator.free(argv);
+    argv[0] = executable;
+    const result = try runSpawnSyncCaptured(allocator, io, .{ .argv = argv, .cwd = .{ .path = cwd }, .environ_map = &env, .timeout_ms = timeout_ms, .kill_process_group = true });
+    return .{ .term = result.term, .stdout = result.stdout, .stderr = result.stderr, .timed_out = result.timed_out, .output_complete = result.output_complete, .timeout_ms = timeout_ms };
 }
 
 fn runSpawnSyncCaptured(
@@ -8295,6 +8329,19 @@ test "native Headers/Response launch resolves relative executable overrides befo
     const command = try capturedExecutableOverrideAlloc(allocator, "home", .{ .corpus_project_root = "/mirror" });
     defer allocator.free(command);
     try std.testing.expectEqualStrings("home", command);
+}
+
+test "native corpus vendor serial environment removes inherited ids and preserves explicit parallel ids" {
+    const allocator = std.testing.allocator;
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("TEST_SERIAL_ID", "stale-parent-id");
+    var serial = try prepareHomeCapturedInvocation(allocator, &env, "private", &.{ "test", "/private/test/a.js" }, .{ .vendor_test = true });
+    defer serial.deinit(allocator);
+    try std.testing.expect(serial.environ_map.get("TEST_SERIAL_ID") == null);
+    var parallel = try prepareHomeCapturedInvocation(allocator, &env, "private", &.{ "test", "/private/test/a.js" }, .{ .vendor_test = true, .vendor_serial_id = 41 });
+    defer parallel.deinit(allocator);
+    try std.testing.expectEqualStrings("41", parallel.environ_map.get("TEST_SERIAL_ID").?);
 }
 
 test "native corpus capture enforces child lifetime after output EOF" {

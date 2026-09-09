@@ -64,7 +64,10 @@ def summarize(directory):
             elif event == 'selection':
                 check(run is not None and not selected and not started and selection is None, f'line {number}: invalid policy order')
                 selection = row
-                check(row.get('contract') == 'bun-4982b91e-primary', 'unknown selection contract')
+                check(row.get('contract') in ('bun-4982b91e-primary', 'bun-4982b91e-vendor'), 'unknown selection contract')
+                vendor_policy = row.get('contract') == 'bun-4982b91e-vendor'
+                if vendor_policy:
+                    check(row.get('execution') == 'prepared-vendor' and row.get('setup_performed') is False, 'invalid prepared vendor scope')
                 inventory, indices, excluded = row['inventory'], row['selected_indices'], row['excluded']
                 check(isinstance(inventory, list) and all(isinstance(path, str) for path in inventory), 'invalid policy inventory')
                 check(len(set(inventory)) == len(inventory), 'duplicate policy inventory paths')
@@ -72,9 +75,12 @@ def summarize(directory):
                 all_indices = indices + omitted
                 valid_indices = all(type(index) is int and 0 <= index < len(inventory) for index in all_indices)
                 check(valid_indices and sorted(all_indices) == list(range(len(inventory))), 'selection does not partition the inventory')
-                reasons = ('node_platform', 'node_only', 'include_filter', 'exclude_filter', 'expectation', 'positional_filter', 'shard')
+                reasons = ('not_test', 'extension', 'all_disabled', 'skip_rule', 'positional_filter') if vendor_policy else ('node_platform', 'node_only', 'include_filter', 'exclude_filter', 'expectation', 'positional_filter', 'shard')
                 for entry in excluded:
                     check(entry.get('reason') in reasons, 'unknown exclusion reason')
+                    if entry.get('reason') == 'skip_rule':
+                        pattern = entry.get('skip_pattern')
+                        check(isinstance(pattern, str) and pattern in row['vendor']['skipTests'], 'missing original vendor skip pattern')
                     if entry.get('reason') == 'expectation':
                         rule = entry.get('rule')
                         check(type(rule) is int and 0 <= rule < len(row['home_expectations']), 'missing exclusion rule')

@@ -96,6 +96,7 @@ pub const Journal = struct {
             TEMP: ?[]const u8,
             BUN_TMPDIR: ?[]const u8,
             TEST_TMPDIR: ?[]const u8,
+            TEST_SERIAL_ID: ?[]const u8,
             PATH: ?[]const u8,
             FORCE_COLOR: ?[]const u8,
             NO_COLOR: ?[]const u8,

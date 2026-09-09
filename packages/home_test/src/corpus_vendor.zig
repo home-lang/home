@@ -7,6 +7,24 @@ const selection = @import("corpus_selection.zig");
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 
+/// Inspect an already prepared checkout without modifying it. The full CI
+/// coordinator still owns clone/fetch/checkout/install/build operations.
+pub fn preparedRevision(allocator: Allocator, io: Io, project_root: []const u8, vendor: Vendor) ![]u8 {
+    const cwd = try std.fs.path.join(allocator, &.{ project_root, "vendor", vendor.package });
+    defer allocator.free(cwd);
+    const tag = try std.fmt.allocPrint(allocator, "{s}^{{commit}}", .{vendor.tag});
+    defer allocator.free(tag);
+    const capture = @import("adapters/jsc_bootstrap.zig");
+    var result = try capture.runToolCaptured(allocator, io, &.{ "git", "rev-parse", "--verify", "--end-of-options", "HEAD" }, cwd, 180_000);
+    defer result.deinit(allocator);
+    var expected = try capture.runToolCaptured(allocator, io, &.{ "git", "rev-parse", "--verify", "--end-of-options", tag }, cwd, 180_000);
+    defer expected.deinit(allocator);
+    if (!result.term.success() or !expected.term.success() or result.timed_out or expected.timed_out or !result.output_complete or !expected.output_complete) return error.VendorRevisionUnavailable;
+    const revision = std.mem.trim(u8, result.stdout, " \t\r\n");
+    if (revision.len != 40 or !std.mem.eql(u8, revision, std.mem.trim(u8, expected.stdout, " \t\r\n"))) return error.VendorCheckoutDoesNotMatchTag;
+    return allocator.dupe(u8, revision);
+}
+
 pub const Vendor = struct {
     package: []const u8,
     repository: []const u8,

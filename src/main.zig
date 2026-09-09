@@ -4003,6 +4003,8 @@ fn printTestUsage() void {
         \\  --home                  Run only Home integration tests
         \\  --bun-corpus-native-subset <name>
         \\                          Run an explicit native Bun-corpus bootstrap subset
+        \\  --bun-corpus-prepared-vendor <name> [path filters...]
+        \\                          Execute a pinned vendor after its install/build setup
         \\  -h, --help              Show this help message
         \\
         \\{s}Examples:{s}
@@ -5456,7 +5458,47 @@ fn runBunCorpusNativeDirectory(allocator: std.mem.Allocator, corpus_path: []cons
     if (failed) std.process.exit(1);
 }
 
+fn runPreparedBunVendor(allocator: std.mem.Allocator, name: []const u8, filters: []const [:0]const u8) !void {
+    if (!build_options.enable_jsc) return error.NativeRuntimeRequired;
+    const project_root = std.fs.path.dirname(home_test.corpus.default_root).?;
+    const manifest_path = try std.fs.path.join(allocator, &.{ home_test.corpus.default_root, "vendor.json" });
+    defer allocator.free(manifest_path);
+    const source = try Io.Dir.cwd().readFileAlloc(g_io, manifest_path, allocator, .limited(1024 * 1024));
+    defer allocator.free(source);
+    const parsed = try std.json.parseFromSlice([]home_test.corpus_vendor.Vendor, allocator, source, .{});
+    defer parsed.deinit();
+    for (parsed.value) |vendor| {
+        if (!std.mem.eql(u8, vendor.package, name)) continue;
+        const revision = try home_test.corpus_vendor.preparedRevision(allocator, g_io, project_root, vendor);
+        defer allocator.free(revision);
+        const selected_filters = try allocator.alloc([]const u8, filters.len);
+        defer allocator.free(selected_filters);
+        for (filters, selected_filters) |filter, *value| {
+            if (std.mem.startsWith(u8, filter, "-")) return error.UnsupportedVendorExecutionOption;
+            value.* = filter;
+        }
+        var summary = try home_test.corpus_runner.runPreparedVendorWithOptions(g_io, allocator, project_root, vendor, .{
+            .run = .{ .on_file = emitNativeCorpusExecution, .persist_results = true },
+            .filters = selected_filters,
+            .checkout_revision = revision,
+        });
+        defer summary.deinit(allocator);
+        std.debug.print("\nPrepared vendor {s} @ {s}: {d} files, {d} passing cases, {d} failing cases, {d} skips, {d} TODOs, {d} failed files\n", .{
+            name, revision, summary.files, summary.passed, summary.failed, summary.skipped, summary.todo, summary.failed_files,
+        });
+        if (summary.first_failure_file.len > 0) std.debug.print("first failure: {s}\n{s}\n", .{ summary.first_failure_file, summary.first_failure_message });
+        if (summary.blocked or summary.files == 0 or summary.failed_files != 0 or summary.failed != 0 or summary.unsupported != 0) return error.VendorExecutionFailed;
+        return;
+    }
+    return error.UnknownCorpusVendor;
+}
+
 fn testCommand(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
+    for (args, 0..) |arg, index| {
+        if (!std.mem.eql(u8, arg, "--bun-corpus-prepared-vendor")) continue;
+        if (index != 0 or args.len < 2) return error.ExpectedPreparedVendorName;
+        return runPreparedBunVendor(allocator, args[1], args[2..]);
+    }
     // VM-introspection tests must run in Home's full Bun-compatible VM. The
     // generic corpus adapter intentionally uses a plain JSGlobalContext and
     // therefore cannot expose VM-owned APIs such as bun:jsc heap/JIT state,

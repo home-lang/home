@@ -125,6 +125,24 @@ class JournalValidation(unittest.TestCase):
         policy['excluded'][0]['rule'] = 99
         self.assertFalse(self.result()['successful'])
 
+    def test_prepared_vendor_scope_and_original_skip_remain_visible(self):
+        policy = dict(event='selection', contract='bun-4982b91e-vendor',
+                      execution='prepared-vendor', setup_performed=False,
+                      vendor=dict(skipTests={'ws*connection.test.ts': 'original reason'}),
+                      inventory=['control.test.js', 'ws/connection.test.ts'], selected_indices=[0],
+                      excluded=[dict(index=1, reason='skip_rule', skip_pattern='ws*connection.test.ts')],
+                      additional_home_coverage=[], range_start=0, range_end=1)
+        self.rows.insert(1, policy)
+        result = self.result()
+        self.assertTrue(result['successful'], result)
+        self.assertFalse(result['selection_policy']['setup_performed'])
+        self.assertEqual(result['counts'], self.counts)
+        policy['setup_performed'] = True
+        self.assertFalse(self.result()['successful'])
+        policy['setup_performed'] = False
+        policy['excluded'][0]['skip_pattern'] = 'invented exclusion'
+        self.assertFalse(self.result()['successful'])
+
     def test_script_success_has_no_registered_case_credit(self):
         self.rows[3].update(counts=dict.fromkeys(self.counts, 0), junit='not_requested', junit_file=None, junit_sha256=None)
         self.rows[4]['summary'].update(dict.fromkeys(self.counts, 0), process_checks_passed=1)
