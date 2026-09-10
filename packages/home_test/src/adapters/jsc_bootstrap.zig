@@ -6050,9 +6050,15 @@ fn prepareHomeCapturedInvocation(
     }
     const timeout_arg = if (selected) |value| (if (value.test_timeout_ms) |ms| try std.fmt.allocPrint(allocator, "--timeout={d}", .{ms}) else null) else null;
     errdefer if (timeout_arg) |arg| allocator.free(arg);
-    const reporter_arg = if (options.junit_path) |path| try std.fmt.allocPrint(allocator, "--reporter-outfile={s}", .{path}) else null;
+    // `--reporter-outfile` takes its value as the following argument. The
+    // `--reporter-outfile=<path>` spelling is rejected outright ("requires
+    // --reporter-outfile [file]"), and the child dies before running a single
+    // test -- so every journalled corpus file reported no counts at all, and
+    // the expected-failure contract never saw the `0 pass / 1 fail` it looks
+    // for. Carry the bare path and pass the flag as its own argument.
+    const reporter_arg = if (options.junit_path) |path| try allocator.dupe(u8, path) else null;
     errdefer if (reporter_arg) |arg| allocator.free(arg);
-    const extra: usize = @as(usize, if (timeout_arg != null) 2 else 0) + @as(usize, if (reporter_arg != null) 2 else 0);
+    const extra: usize = @as(usize, if (timeout_arg != null) 2 else 0) + @as(usize, if (reporter_arg != null) 3 else 0);
     const argv = try allocator.alloc([]const u8, args_tail.len + 1 + extra);
     errdefer allocator.free(argv);
     argv[0] = executable;
@@ -6067,8 +6073,9 @@ fn prepareHomeCapturedInvocation(
         }
         if (reporter_arg) |arg| {
             argv[index] = "--reporter=junit";
-            argv[index + 1] = arg;
-            index += 2;
+            argv[index + 1] = "--reporter-outfile";
+            argv[index + 2] = arg;
+            index += 3;
         }
         argv[index] = args_tail[args_tail.len - 1];
     } else @memcpy(argv[1..], args_tail);
