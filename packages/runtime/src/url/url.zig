@@ -479,6 +479,8 @@ pub const URL = struct {
 };
 
 /// QueryString array-backed hash table that does few allocations and preserves the original order
+const max_query_string_params = 2048;
+
 pub const QueryStringMap = struct {
     allocator: std.mem.Allocator,
     slice: string,
@@ -507,7 +509,7 @@ pub const QueryStringMap = struct {
     pub const Iterator = struct {
         // Assume no query string param map will exceed 2048 keys
         // Browsers typically limit URL lengths to around 64k
-        const VisitedMap = bun.bit_set.ArrayBitSet(usize, 2048);
+        const VisitedMap = bun.bit_set.ArrayBitSet(usize, max_query_string_params);
 
         i: usize = 0,
         map: *const QueryStringMap,
@@ -519,11 +521,12 @@ pub const QueryStringMap = struct {
         };
 
         pub fn init(map: *const QueryStringMap) Iterator {
+            bun.assert(map.list.len <= max_query_string_params);
             return Iterator{ .i = 0, .map = map, .visited = VisitedMap.initEmpty() };
         }
 
         pub fn next(this: *Iterator, target: []string) ?Result {
-            while (this.visited.isSet(this.i)) : (this.i += 1) {}
+            while (this.i < this.map.list.len and this.visited.isSet(this.i)) : (this.i += 1) {}
             if (this.i >= this.map.list.len) return null;
 
             var slice = this.map.list.slice();
@@ -633,7 +636,8 @@ pub const QueryStringMap = struct {
         if (Environment.allow_assert)
             bun.assert(count > 0); // We should not call initWithScanner when there are no path params
 
-        while (scanner.query.next()) |result| {
+        while (count < max_query_string_params) {
+            const result = scanner.query.next() orelse break;
             if (result.name_needs_decoding or result.value_needs_decoding) {
                 nothing_needs_decoding = false;
             }
@@ -643,7 +647,7 @@ pub const QueryStringMap = struct {
 
         if (count == 0) return null;
 
-        try list.ensureTotalCapacity(allocator, count);
+        try list.ensureTotalCapacity(allocator, @min(count, max_query_string_params));
         scanner.reset();
 
         // this over-allocates
@@ -654,6 +658,7 @@ pub const QueryStringMap = struct {
 
         const Writer = *ManagedU8Writer;
         while (scanner.pathname.next()) |result| {
+            if (list.len >= max_query_string_params) break;
             var name = result.name;
             var value = result.value;
             const name_slice = result.rawName(scanner.pathname.routename);
@@ -675,6 +680,7 @@ pub const QueryStringMap = struct {
         const route_parameter_begin = list.len;
 
         while (scanner.query.next()) |result| {
+            if (list.len >= max_query_string_params) break;
             var list_slice = list.slice();
 
             var name = result.name;
@@ -730,7 +736,8 @@ pub const QueryStringMap = struct {
         var estimated_str_len: usize = 0;
 
         var nothing_needs_decoding = true;
-        while (scanner.next()) |result| {
+        while (count < max_query_string_params) {
+            const result = scanner.next() orelse break;
             if (result.name_needs_decoding or result.value_needs_decoding) {
                 nothing_needs_decoding = false;
             }
@@ -746,6 +753,7 @@ pub const QueryStringMap = struct {
         if (nothing_needs_decoding) {
             scanner = Scanner.init(query_string);
             while (scanner.next()) |result| {
+                if (list.len >= max_query_string_params) break;
                 if (Environment.allow_assert) bun.assert(!result.name_needs_decoding);
                 if (Environment.allow_assert) bun.assert(!result.value_needs_decoding);
 
@@ -770,6 +778,7 @@ pub const QueryStringMap = struct {
         var list_slice = list.slice();
         const Writer = *ManagedU8Writer;
         while (scanner.next()) |result| {
+            if (list.len >= max_query_string_params) break;
             var name = result.name;
             var value = result.value;
             var name_hash: u64 = undefined;
@@ -1360,6 +1369,28 @@ test "QueryStringMap decodes percent encoded names and values" {
     try std.testing.expectEqual(@as(usize, 2), map.getAll("name", &values));
     try std.testing.expectEqualStrings("value", values[0]);
     try std.testing.expectEqualStrings("second", values[1]);
+}
+
+test "QueryStringMap caps plain and decoded parameters and terminates iteration" {
+    inline for (.{ "v", "%76" }) |value| {
+        var query = std.array_list.Managed(u8).init(std.testing.allocator);
+        defer query.deinit();
+        var key_buf: [32]u8 = undefined;
+        for (0..3000) |i| {
+            try query.appendSlice(try std.fmt.bufPrint(&key_buf, "&k{d}={s}", .{ i, value }));
+        }
+        var map = (try QueryStringMap.init(std.testing.allocator, query.items)).?;
+        defer map.deinit();
+        try std.testing.expectEqual(@as(usize, 2048), map.list.len);
+        try std.testing.expectEqualStrings("v", map.get("k0").?);
+        try std.testing.expect(map.get("k2048") == null);
+        var iterator = map.iter();
+        var values: [2]string = undefined;
+        var count: usize = 0;
+        while (iterator.next(&values)) |_| count += 1;
+        try std.testing.expectEqual(@as(usize, 2048), count);
+        try std.testing.expect(iterator.next(&values) == null);
+    }
 }
 
 test "CombinedScanner merges route params before query params" {
