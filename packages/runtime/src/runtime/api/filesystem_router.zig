@@ -335,34 +335,39 @@ pub const FileSystemRouter = struct {
             path = try .initDupe(globalThis.allocator(), URL.parse(path.slice()).pathname);
         }
 
-        const url_path = URLPath.parse(path.slice()) catch |err| {
+        var path_is_owned_here = true;
+        defer if (path_is_owned_here) path.deinit();
+
+        var url_path = URLPath.parseOwned(globalThis.allocator(), path.slice()) catch |err| {
+            if (err == error.OutOfMemory) return globalThis.throwOutOfMemory();
             return globalThis.throw("{s} parsing path: {s}", .{ @errorName(err), path.slice() });
         };
+        defer url_path.deinit();
         var params = Router.Param.List{};
         defer params.deinit(globalThis.allocator());
         const route = this.router.routes.matchPageWithAllocator(
             "",
-            url_path,
+            url_path.value,
             &params,
             globalThis.allocator(),
         ) orelse {
             return JSValue.jsNull();
         };
 
+        if (url_path.takeStorage()) |decoded| {
+            path.deinit();
+            path = ZigString.Slice.init(globalThis.allocator(), decoded);
+        }
+
         var result = MatchedRoute.init(
             globalThis.allocator(),
             route,
+            path,
             this.origin,
             this.asset_prefix,
             this.base_dir.?,
-        ) catch unreachable;
-
-        // TODO: Memory leak? We haven't freed `path`, but we can't do so because the underlying
-        // string is borrowed in `result.route_holder.pathname` and `result.route_holder.query_string`
-        // (see `Routes.matchPageWithAllocator`, which does not clone these fields but rather
-        // directly reuses parts of the `URLPath`, which itself borrows from `path`).
-        // `MatchedRoute.deinit` doesn't free any fields of `route_holder`, so the string is not
-        // freed.
+        ) catch return globalThis.throwOutOfMemory();
+        path_is_owned_here = false;
         return result.toJS(globalThis);
     }
 
@@ -438,6 +443,7 @@ pub const MatchedRoute = struct {
     query_string_map: ?QueryStringMap = null,
     param_map: ?QueryStringMap = null,
     params_list_holder: Router.Param.List = .{},
+    pathname_backing: ZigString.Slice = .empty,
     origin: ?*jsc.RefString = null,
     asset_prefix: ?*jsc.RefString = null,
     needs_deinit: bool = true,
@@ -455,17 +461,20 @@ pub const MatchedRoute = struct {
     pub fn init(
         allocator: std.mem.Allocator,
         match: Router.Match,
+        pathname_backing: ZigString.Slice,
         origin: ?*jsc.RefString,
         asset_prefix: ?*jsc.RefString,
         base_dir: *jsc.RefString,
     ) !*MatchedRoute {
-        const params_list = try match.params.clone(allocator);
+        var params_list = try match.params.clone(allocator);
+        errdefer params_list.deinit(allocator);
 
         var route = try allocator.create(MatchedRoute);
 
         route.* = MatchedRoute{
             .route_holder = match,
             .route = undefined,
+            .pathname_backing = pathname_backing,
             .asset_prefix = asset_prefix,
             .origin = origin,
             .base_dir = base_dir,
@@ -493,10 +502,8 @@ pub const MatchedRoute = struct {
             map.deinit();
         }
         if (this.needs_deinit) {
-            if (this.route.pathname.len > 0 and bun.mimalloc.mi_is_in_heap_region(this.route.pathname.ptr)) {
-                bun.mimalloc.mi_free(@constCast(this.route.pathname.ptr));
-            }
-
+            this.pathname_backing.deinit();
+            this.pathname_backing = .empty;
             this.params_list_holder.deinit(bun.default_allocator);
             this.params_list_holder = .{};
         }

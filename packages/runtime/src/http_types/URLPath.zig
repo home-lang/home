@@ -52,6 +52,50 @@ pub fn pathWithoutAssetPrefix(this: *const URLPath, asset_prefix: string) string
 threadlocal var temp_path_buf: [1024]u8 = undefined;
 threadlocal var big_temp_path_buf: [16384]u8 = undefined;
 
+pub const Owned = struct {
+    value: URLPath,
+    storage: ?[]u8,
+    allocator: std.mem.Allocator,
+
+    pub fn deinit(this: *Owned) void {
+        if (this.storage) |storage| this.allocator.free(storage);
+        this.storage = null;
+    }
+
+    pub fn takeStorage(this: *Owned) ?[]u8 {
+        defer this.storage = null;
+        return this.storage;
+    }
+};
+
+fn rebaseSlice(slice: string, old: string, new: string) string {
+    if (slice.len == 0) return slice;
+    const old_start = @intFromPtr(old.ptr);
+    const slice_start = @intFromPtr(slice.ptr);
+    if (slice_start < old_start or slice_start + slice.len > old_start + old.len) return slice;
+    const offset = slice_start - old_start;
+    return new[offset .. offset + slice.len];
+}
+
+/// Parse a URL path while giving percent-decoded fields per-call backing
+/// storage. The ordinary `parse` API remains allocation-free for callers that
+/// consume its result before the next parse on the same thread.
+pub fn parseOwned(allocator: std.mem.Allocator, input: string) !Owned {
+    var value = try parse(input);
+    if (!strings.containsChar(input, '%')) {
+        return .{ .value = value, .storage = null, .allocator = allocator };
+    }
+
+    const previous = value.pathname;
+    const storage = try allocator.dupe(u8, previous);
+    value.extname = rebaseSlice(value.extname, previous, storage);
+    value.path = rebaseSlice(value.path, previous, storage);
+    value.pathname = storage;
+    value.first_segment = rebaseSlice(value.first_segment, previous, storage);
+    value.query_string = rebaseSlice(value.query_string, previous, storage);
+    return .{ .value = value, .storage = storage, .allocator = allocator };
+}
+
 pub fn parse(possibly_encoded_pathname_: string) !URLPath {
     var decoded_pathname = possibly_encoded_pathname_;
     var needs_redirect = false;
@@ -303,4 +347,24 @@ test "parse tolerates %PUBLIC_URL% and sets needs_redirect" {
 
 test "parse rejects malformed percent escapes" {
     try std.testing.expectError(error.DecodingError, parse("/foo%ZZ"));
+}
+
+test "parseOwned keeps decoded fields stable across later parses" {
+    var first = try parseOwned(std.testing.allocator, "/posts/alpha%20one.txt?tag=first%20tag");
+    defer first.deinit();
+    var second = try parseOwned(std.testing.allocator, "/posts/bravo%20two.ts?tag=second%20tag");
+    defer second.deinit();
+
+    try std.testing.expectEqualStrings("/posts/alpha one.txt?tag=first tag", first.value.pathname);
+    try std.testing.expectEqualStrings("posts/alpha one.txt", first.value.path);
+    try std.testing.expectEqualStrings("posts", first.value.first_segment);
+    try std.testing.expectEqualStrings("txt", first.value.extname);
+    try std.testing.expectEqualStrings("?tag=first tag", first.value.query_string);
+    try std.testing.expectEqualStrings("/posts/bravo two.ts?tag=second tag", second.value.pathname);
+}
+
+test "parseOwned decodes a percent byte exactly once" {
+    var parsed = try parseOwned(std.testing.allocator, "/literal%2520value");
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings("/literal%20value", parsed.value.pathname);
 }
