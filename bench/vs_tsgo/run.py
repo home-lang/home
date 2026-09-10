@@ -1198,7 +1198,7 @@ def validate_type_predicate_negatives(commands: dict[str, list[str]], workload: 
             )
             details = result.stdout + result.stderr
             codes = sorted(re.findall(r"\berror TS(\d+):", details))
-            if result.returncode == 0 or codes != ["2322"] * 2 + ["2339"] * 2:
+            if result.returncode not in (1, 2) or codes != ["2322"] * 2 + ["2339"] * 2:
                 raise SystemExit(f"{name} failed {workload} negative controls:\n{details}")
 
 
@@ -1232,7 +1232,7 @@ def validate_destructuring_negatives(commands: dict[str, list[str]]) -> None:
             )
             details = result.stdout + result.stderr
             codes = sorted(re.findall(r"\berror TS(\d+):", details))
-            if result.returncode == 0 or codes != ["2322"] * 4 + ["2339"]:
+            if result.returncode not in (1, 2) or codes != ["2322"] * 4 + ["2339"]:
                 raise SystemExit(f"{name} failed destructuring negative controls:\n{details}")
 
 

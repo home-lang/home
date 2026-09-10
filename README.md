@@ -271,6 +271,12 @@ every successful finite sample without filtering.
 | Apple M3 Pro, macOS ARM64 | 20 / 20 | `startup`: 11.87× faster | `type_predicates_large`: 1.60× faster |
 | Debian Bookworm, Linux ARM64 | 20 / 20 | `startup`: 21.67× faster | `checkjs_jsdoc`: 1.02× faster |
 
+The latest benchmark-harness correction is reported separately from compiler timings:
+
+| Harness audit | Result | Timing claim |
+|---|---|---|
+| [Normal diagnostic exits (#728)](docs/docs/TS_PERFORMANCE.md#admission-correction-normal-diagnostic-exits-2026-09-11) | 63 simulated admission decisions across three workloads; crashes rejected even with matching diagnostics | Untimed; historical results not revalidated |
+
 The latest untimed correctness gate is reported separately from performance:
 
 | Admission audit | TypeScript 6.0.3 | Native TypeScript 7.0.2 | Home |

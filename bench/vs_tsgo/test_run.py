@@ -336,6 +336,35 @@ class CommonJsGraphWorkloadTests(unittest.TestCase):
 
 
 class AdmissionTests(unittest.TestCase):
+    def test_predicate_and_destructuring_controls_require_normal_diagnostic_exit(self):
+        families = (
+            ("type_predicates", "  if (isReady0(value)) {\n  assertReady0(value);\n", ["2322"] * 2 + ["2339"] * 2),
+            ("type_predicates_large", "  if (isReady0(value)) {\n  assertReady0(value);\n", ["2322"] * 2 + ["2339"] * 2),
+            ("destructuring", "function projectBindings0(input: BindingRecord0): BindingProjection0 {\n"
+             "  const { meta: { label, score }, slots: [first, second], active = true, ...identity } = input;\n",
+             ["2322"] * 4 + ["2339"]),
+        )
+        for workload, source, codes in families:
+            diagnostics = "".join(f"error TS{code}: invalid control\n" for code in codes)
+            for status in (0, 1, 2, 3, 124, -6, -11):
+                for output in (diagnostics, "error TS2322: incomplete\n", ""):
+                    with self.subTest(workload=workload, status=status, output=output), mock.patch.object(
+                        run.shutil, "copytree"
+                    ), mock.patch.object(run.Path, "read_text", return_value=source), mock.patch.object(
+                        run, "write"
+                    ), mock.patch.object(run.subprocess, "run", return_value=subprocess.CompletedProcess([], status, output, "")):
+                        def validate():
+                            if workload == "destructuring":
+                                run.validate_destructuring_negatives({"home": ["home"]})
+                            else:
+                                run.validate_type_predicate_negatives({"home": ["home"]}, workload)
+
+                        if status in (1, 2) and output == diagnostics:
+                            validate()
+                        else:
+                            with self.assertRaisesRegex(SystemExit, f"failed {workload} negative controls"):
+                                validate()
+
     def test_legacy_graph_report_does_not_claim_an_unvalidated_win(self):
         import compare
         for workload in ("import_graph", "reexport_graph"):

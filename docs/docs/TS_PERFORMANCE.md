@@ -10,6 +10,23 @@ Ongoing coverage and optimization work is tracked in
 
 ## Current snapshot
 
+### Admission correction: normal diagnostic exits (2026-09-11)
+
+[Issue #728](https://github.com/home-lang/home/issues/728), under #416, tightens
+the negative controls for `type_predicates`, `type_predicates_large`, and
+`destructuring`. They now require exit status 1 or 2 as well as the exact
+expected diagnostic-code multiset. Previously, any nonzero status qualified
+when the codes matched, including a compiler crash after printing diagnostics.
+
+The regression matrix covers all three workloads with complete, incomplete,
+and empty diagnostics at statuses 0, 1, 2, 3, 124, SIGABRT, and SIGSEGV: 63
+admission decisions. Only the six complete-diagnostic cases at status 1 or 2
+qualify. These are untimed harness controls using simulated process outcomes,
+not new compiler measurements. Historical timing samples below are retained;
+this correction does not revalidate them or establish a new speedup.
+
+### Retained timing snapshot
+
 Measured 2026-09-05 at commit `e4e9d16c2` on an Apple M3 Pro MacBook Pro
 (11 cores, 18 GB RAM, arm64, macOS 27.0). Each value is the mean and sample
 standard deviation of 30 new compiler processes after three warmup rounds.
