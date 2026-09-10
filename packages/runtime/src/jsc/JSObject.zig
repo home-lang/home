@@ -158,7 +158,11 @@ pub const JSObject = opaque {
         key: *home_rt.jsc.ZigString,
         values: []home_rt.jsc.ZigString,
     ) home_rt.JSError!void {
+        var scope: home_rt.jsc.TopExceptionScope = undefined;
+        scope.init(global, @src());
+        defer scope.deinit();
         JSC__JSObject__putRecord(this, global, key, values.ptr, values.len);
+        try scope.returnIfException();
     }
 
     /// The discriminated `(tag, index|name)` payload SQL bindings pass into
