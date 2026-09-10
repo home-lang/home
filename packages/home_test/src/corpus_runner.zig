@@ -1164,7 +1164,13 @@ test "native Bun test fixtures and interop consumers execute unchanged through t
         // a pass, so `.passed = 1` was unreachable. Assert the process check so
         // the file is still verified to execute cleanly.
         .{ .path = "js/bun/test/test-interop.js", .passed = 0, .process_checks = 1 },
-        .{ .path = "js/bun/test/test-fixture-diff-indexed-properties.js", .passed = 1 },
+        // The expected-failure fixture: it asserts a mismatch on purpose so the
+        // indexed-property diff has something to print. When the contract holds
+        // -- exit 1, exactly one failure, a toEqual diff, no `undefined` -- the
+        // runner records `process_checks_passed`, never a registered pass, so
+        // `.passed = 1` was unreachable here for the same reason it was for the
+        // interop shim above.
+        .{ .path = "js/bun/test/test-fixture-diff-indexed-properties.js", .passed = 0, .process_checks = 1 },
         .{ .path = "js/bun/test/expect-extend.test.js", .passed = 28 },
         .{ .path = "js/bun/test/mock-fn.test.js", .passed = 72 },
         .{ .path = "js/bun/test/expect.test.js", .passed = 398, .todo = 10 },
