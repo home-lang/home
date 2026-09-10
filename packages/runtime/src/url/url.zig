@@ -1309,8 +1309,6 @@ fn normalizeURLPath(input: []const u8, out: []u8) []const u8 {
     }
 
     var i: usize = 0;
-    out[i] = '/';
-    i += 1;
 
     for (segments[0..segment_count], 0..) |segment, index| {
         if (index > 0) {
@@ -1425,5 +1423,13 @@ test "PercentEncoding.decode rejects malformed escapes" {
 test "URL.joinNormalize collapses dot segments" {
     var out: [256]u8 = undefined;
     const normalized = URL.joinNormalize(&out, "assets/", "pages/../home", "index", ".js");
-    try std.testing.expectEqualStrings("/assets/home/index.js", normalized);
+    try std.testing.expectEqualStrings("assets/home/index.js", normalized);
+}
+
+test "URL.joinWrite adds one separator between an origin and asset path" {
+    var out: [256]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&out);
+    const url = URL.parse("https://nextjs.org");
+    try url.joinWrite(@TypeOf(&writer), &writer, "/_next/static/", "", "/posts/[id].tsx", "");
+    try std.testing.expectEqualStrings("https://nextjs.org/_next/static/posts/[id].tsx", out[0..writer.end]);
 }
