@@ -271,6 +271,14 @@ every successful finite sample without filtering.
 | Apple M3 Pro, macOS ARM64 | 20 / 20 | `startup`: 11.87× faster | `type_predicates_large`: 1.60× faster |
 | Debian Bookworm, Linux ARM64 | 20 / 20 | `startup`: 21.67× faster | `checkjs_jsdoc`: 1.02× faster |
 
+The latest current-source focused confirmation uses the same 30-run admission
+and timing rules; it supplements rather than replaces the complete table above:
+
+| [Focused Apple ARM64 confirmation](docs/docs/TS_PERFORMANCE.md#current-source-focused-confirmation-2026-09-11) | TypeScript 6.0.3 | Native TypeScript 7.0.2 | Home | Home lead |
+|---|---:|---:|---:|---:|
+| `checkjs_jsdoc` | 270.0 ± 54.1 ms | 69.2 ± 3.7 ms | **39.0 ± 1.4 ms** | **1.77×** |
+| `type_predicates_large` | 1257.2 ± 104.6 ms | 421.8 ± 20.1 ms | **288.0 ± 15.3 ms** | **1.46×** |
+
 The latest benchmark-harness correction is reported separately from compiler timings:
 
 | Harness audit | Result | Timing claim |

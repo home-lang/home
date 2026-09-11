@@ -10,6 +10,30 @@ Ongoing coverage and optimization work is tracked in
 
 ## Current snapshot
 
+### Current-source focused confirmation (2026-09-11)
+
+Result `20260911T033015Z` measures the two historically narrowest Apple ARM64
+rows using compiler source `18f8dab8a` and the stripped ReleaseFast build path
+published in `11a38aa95`. The host was Mac14,9 with 16 GiB RAM and 10 cores,
+running macOS 26.3.1 arm64. The harness admitted both unchanged generated
+projects before timing, ran 30 fresh processes after three warmups in rotating
+compiler order, retained all 180 samples, and verified compiler and tool hashes
+unchanged before admission and after measurement.
+
+| Workload | TypeScript 6.0.3 | Native TypeScript 7.0.2 | Home 0.1.0 | Home vs fastest competitor |
+|---|---:|---:|---:|---:|
+| `checkjs_jsdoc` | 270.0 ± 54.1 ms | 69.2 ± 3.7 ms | **39.0 ± 1.4 ms** | **1.77× faster** |
+| `type_predicates_large` | 1257.2 ± 104.6 ms | 421.8 ± 20.1 ms | **288.0 ± 15.3 ms** | **1.46× faster** |
+
+Values are mean ± sample standard deviation. This focused confirmation does
+not replace the complete 20-workload snapshot below and does not establish
+cross-platform leadership. It identifies large type-predicate scaling as the
+narrower current-source lead; follow-up profiling is tracked in
+[#733](https://github.com/home-lang/home/issues/733). The stripped build used
+2,942 MB peak supervised tree footprint; benchmark execution used 452 MB.
+Current-source full-suite execution and the disabled GitHub Actions runner
+remain tracked in [#732](https://github.com/home-lang/home/issues/732).
+
 ### Admission correction: normal diagnostic exits (2026-09-11)
 
 [Issue #728](https://github.com/home-lang/home/issues/728), under #416, tightens
