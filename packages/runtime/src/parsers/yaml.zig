@@ -2713,7 +2713,6 @@ pub fn Parser(comptime enc: Encoding) type {
                 text: std.array_list.Managed(enc.unit()),
                 start: Pos,
                 content_indent: Indent,
-                previous_indent: Indent,
                 max_leading_indent: Indent,
                 /// True when a block header carried an explicit indentation
                 /// indicator (`|2`, `>3-`). The indent is then given, not
@@ -2721,6 +2720,13 @@ pub fn Parser(comptime enc: Encoding) type {
                 explicit_indent: bool,
                 line: Line,
                 folded: bool,
+                /// Whether the previous content line started beyond the
+                /// scalar's content indentation. Breaks adjacent to such a
+                /// line are preserved by YAML folded-scalar rules.
+                prev_more_indented: bool,
+                /// Whether the content line currently being appended starts
+                /// beyond the scalar's content indentation.
+                cur_more_indented: bool,
 
                 pub fn done(ctx: *@This(), was_eof: bool) OOM!Token(enc) {
                     // Bun's live implementation ignores EOF here entirely: it
@@ -2770,37 +2776,33 @@ pub fn Parser(comptime enc: Encoding) type {
                         {
                             return error.UnexpectedCharacter;
                         }
+                        try ctx.text.ensureUnusedCapacity(ctx.leading_newlines + 1);
+                        ctx.text.appendNTimesAssumeCapacity('\n', ctx.leading_newlines);
+                        ctx.text.appendAssumeCapacity(c);
+                        ctx.leading_newlines = 0;
+                        ctx.prev_more_indented = ctx.cur_more_indented;
+                        return;
                     }
-                    switch (ctx.folded) {
-                        true => {
-                            switch (ctx.leading_newlines) {
-                                0 => {
-                                    try ctx.text.append(c);
-                                },
-                                1 => {
-                                    if (ctx.previous_indent == ctx.content_indent) {
-                                        try ctx.text.appendSlice(&.{ ' ', c });
-                                    } else {
-                                        try ctx.text.appendSlice(&.{ '\n', c });
-                                    }
-                                    ctx.leading_newlines = 0;
-                                },
-                                else => {
-                                    // leading_newlines because -1 for '\n\n' and +1 for c
-                                    try ctx.text.ensureUnusedCapacity(ctx.leading_newlines);
-                                    ctx.text.appendNTimesAssumeCapacity('\n', ctx.leading_newlines - 1);
-                                    ctx.text.appendAssumeCapacity(c);
-                                    ctx.leading_newlines = 0;
-                                },
-                            }
-                        },
-                        false => {
-                            try ctx.text.ensureUnusedCapacity(ctx.leading_newlines + 1);
-                            ctx.text.appendNTimesAssumeCapacity('\n', ctx.leading_newlines);
-                            ctx.text.appendAssumeCapacity(c);
-                            ctx.leading_newlines = 0;
-                        },
+
+                    if (ctx.leading_newlines == 0) {
+                        try ctx.text.append(c);
+                        return;
                     }
+
+                    if (ctx.folded and !ctx.prev_more_indented and !ctx.cur_more_indented) {
+                        if (ctx.leading_newlines == 1) {
+                            try ctx.text.append(' ');
+                        } else {
+                            try ctx.text.ensureUnusedCapacity(ctx.leading_newlines);
+                            ctx.text.appendNTimesAssumeCapacity('\n', ctx.leading_newlines - 1);
+                        }
+                    } else {
+                        try ctx.text.ensureUnusedCapacity(ctx.leading_newlines + 1);
+                        ctx.text.appendNTimesAssumeCapacity('\n', ctx.leading_newlines);
+                    }
+                    try ctx.text.append(c);
+                    ctx.leading_newlines = 0;
+                    ctx.prev_more_indented = ctx.cur_more_indented;
                 }
             };
 
@@ -2824,22 +2826,22 @@ pub fn Parser(comptime enc: Encoding) type {
 
                 .leading_newlines = 0,
                 .content_indent = explicit_indent orelse .none,
-                .previous_indent = .none,
                 .max_leading_indent = .none,
                 .explicit_indent = explicit_indent != null,
+                .prev_more_indented = false,
+                .cur_more_indented = false,
             };
 
+            var consumed_indent_this_line = false;
             ctx.content_indent, const first = next: switch (self.next()) {
                 0 => {
-                    return .scalar(.{
-                        .start = start,
-                        .indent = self.line_indent,
-                        .line = line,
-                        .resolved = .{
-                            .data = .{ .string = .{ .list = .init(self.allocator) } },
-                            .multiline = true,
-                        },
-                    });
+                    if (consumed_indent_this_line) {
+                        ctx.leading_newlines += 1;
+                    }
+                    if (explicit_indent == null) {
+                        ctx.content_indent = self.line_indent;
+                    }
+                    return ctx.done(true);
                 },
 
                 '\r' => {
@@ -2856,6 +2858,7 @@ pub fn Parser(comptime enc: Encoding) type {
                         return error.UnexpectedCharacter;
                     }
                     ctx.leading_newlines += 1;
+                    consumed_indent_this_line = false;
                     continue :next self.next();
                 },
 
@@ -2873,6 +2876,9 @@ pub fn Parser(comptime enc: Encoding) type {
                             self.inc(1);
                         }
                         self.line_indent = indent;
+                        if (!indent.isLessThan(ci)) {
+                            consumed_indent_this_line = true;
+                        }
                         switch (self.next()) {
                             0, '\n', '\r' => continue :next self.next(),
                             else => {},
@@ -2880,6 +2886,7 @@ pub fn Parser(comptime enc: Encoding) type {
                         break :next .{ ci, self.next() };
                     }
 
+                    consumed_indent_this_line = true;
                     while (self.next() == ' ') {
                         indent.inc(1);
                         self.inc(1);
@@ -2902,7 +2909,12 @@ pub fn Parser(comptime enc: Encoding) type {
                 },
             };
 
-            ctx.previous_indent = ctx.content_indent;
+            ctx.cur_more_indented = first == ' ' or first == '\t';
+
+            const min_indent = if (self.block_indents.get()) |block_indent|
+                Indent.from(@max(ctx.content_indent.cast(), block_indent.cast() + 1))
+            else
+                ctx.content_indent;
 
             next: switch (first) {
                 0 => {
@@ -2938,55 +2950,29 @@ pub fn Parser(comptime enc: Encoding) type {
                         },
                         ' ' => {
                             var indent: Indent = .from(0);
-                            while (self.next() == ' ') {
+                            while (indent.isLessThan(ctx.content_indent) and self.next() == ' ') {
                                 indent.inc(1);
-                                if (ctx.content_indent.isLessThan(indent)) {
-                                    switch (folded) {
-                                        true => {
-                                            switch (ctx.leading_newlines) {
-                                                0 => {
-                                                    try ctx.text.append(' ');
-                                                },
-                                                else => {
-                                                    try ctx.text.ensureUnusedCapacity(ctx.leading_newlines + 1);
-                                                    ctx.text.appendNTimesAssumeCapacity('\n', ctx.leading_newlines);
-                                                    ctx.text.appendAssumeCapacity(' ');
-                                                    ctx.leading_newlines = 0;
-                                                },
-                                            }
-                                        },
-                                        else => {
-                                            try ctx.text.ensureUnusedCapacity(ctx.leading_newlines + 1);
-                                            ctx.text.appendNTimesAssumeCapacity('\n', ctx.leading_newlines);
-                                            ctx.leading_newlines = 0;
-                                            ctx.text.appendAssumeCapacity(' ');
-                                        },
-                                    }
-                                }
                                 self.inc(1);
                             }
 
-                            if (ctx.content_indent.isLessThan(indent)) {
-                                ctx.previous_indent = self.line_indent;
-                            }
                             self.line_indent = indent;
-
-                            continue :next self.next();
+                            const c = self.next();
+                            ctx.cur_more_indented = c == ' ' or c == '\t';
+                            continue :next c;
                         },
-                        else => |c| continue :next c,
+                        else => |c| {
+                            ctx.cur_more_indented = c == '\t';
+                            continue :next c;
+                        },
                     }
                 },
 
                 '-' => {
-                    if (self.line_indent == .none and self.remainStartsWith("---") and self.isAnyOrEofAt(" \t\n\r", 3)) {
+                    if (self.isAtLineStart() and self.line_indent == .none and self.remainStartsWith("---") and self.isAnyOrEofAt(" \t\n\r", 3)) {
                         return ctx.done(false);
                     }
 
-                    if (self.block_indents.get()) |block_indent| {
-                        if (self.line_indent.isLessThanOrEqual(block_indent)) {
-                            return ctx.done(false);
-                        }
-                    } else if (self.line_indent.isLessThan(ctx.content_indent)) {
+                    if (self.line_indent.isLessThan(min_indent)) {
                         return ctx.done(false);
                     }
 
@@ -2997,15 +2983,11 @@ pub fn Parser(comptime enc: Encoding) type {
                 },
 
                 '.' => {
-                    if (self.line_indent == .none and self.remainStartsWith("...") and self.isAnyOrEofAt(" \t\n\r", 3)) {
+                    if (self.isAtLineStart() and self.line_indent == .none and self.remainStartsWith("...") and self.isAnyOrEofAt(" \t\n\r", 3)) {
                         return ctx.done(false);
                     }
 
-                    if (self.block_indents.get()) |block_indent| {
-                        if (self.line_indent.isLessThanOrEqual(block_indent)) {
-                            return ctx.done(false);
-                        }
-                    } else if (self.line_indent.isLessThan(ctx.content_indent)) {
+                    if (self.line_indent.isLessThan(min_indent)) {
                         return ctx.done(false);
                     }
 
@@ -3016,11 +2998,7 @@ pub fn Parser(comptime enc: Encoding) type {
                 },
 
                 else => |c| {
-                    if (self.block_indents.get()) |block_indent| {
-                        if (self.line_indent.isLessThanOrEqual(block_indent)) {
-                            return ctx.done(false);
-                        }
-                    } else if (self.line_indent.isLessThan(ctx.content_indent)) {
+                    if (self.line_indent.isLessThan(min_indent)) {
                         return ctx.done(false);
                     }
 
@@ -4318,6 +4296,12 @@ pub fn Parser(comptime enc: Encoding) type {
             return false;
         }
 
+        fn isAtLineStart(self: *const @This()) bool {
+            if (self.pos == .zero) return true;
+            const previous = self.input[self.pos.sub(1).cast()];
+            return previous == '\n' or previous == '\r';
+        }
+
         fn isAnyAt(self: *const @This(), values: []const enc.unit(), n: usize) bool {
             const pos = self.pos.add(n);
             if (pos.isLessThan(self.input.len)) {
@@ -4331,7 +4315,7 @@ pub fn Parser(comptime enc: Encoding) type {
             if (pos.isLessThan(self.input.len)) {
                 return std.mem.indexOfScalar(enc.unit(), values, self.input[pos.cast()]) != null;
             }
-            return false;
+            return true;
         }
 
         fn isEof(self: *const @This()) bool {
@@ -5793,3 +5777,37 @@ const ast = bun.ast;
 const E = ast.E;
 const Expr = ast.Expr;
 const G = ast.G;
+
+fn expectSequenceScalar(input: []const u8, expected: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const parsed = parse(.utf8, arena.allocator(), input);
+    const stream = switch (parsed) {
+        .result => |result| result.stream,
+        .err => return error.TestUnexpectedResult,
+    };
+
+    try std.testing.expectEqual(@as(usize, 1), stream.docs.items.len);
+    const root = stream.docs.items[0].root;
+    try std.testing.expect(root.data == .e_array);
+    const items = root.data.e_array.items.slice();
+    try std.testing.expectEqual(@as(usize, 1), items.len);
+    try std.testing.expect(items[0].data == .e_string);
+    try std.testing.expectEqualStrings(expected, items[0].data.e_string.data);
+}
+
+test "YAML folded scalars preserve breaks around more-indented lines" {
+    try expectSequenceScalar(
+        "- >\n  a\n  b\n    c\n    d\n  e\n  f\n",
+        "a b\n  c\n  d\ne f\n",
+    );
+}
+
+test "YAML keep chomping retains an empty content line" {
+    try expectSequenceScalar("- |+\n\n", "\n");
+}
+
+test "YAML explicit indentation retains additional whitespace content" {
+    try expectSequenceScalar("- |2+\n   \n", " \n");
+}
