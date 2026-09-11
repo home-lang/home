@@ -6,6 +6,7 @@
 // in additional helpers.
 
 const std = @import("std");
+const Environment = @import("environment.zig");
 
 pub const percentEncodeWrite = @import("string/immutable.zig").percentEncodeWrite;
 pub const ANSIIterator = @import("string/immutable.zig").ANSIIterator;
@@ -372,7 +373,7 @@ pub fn withoutTrailingSlash(input: []const u8) []const u8 {
 }
 
 pub fn withoutTrailingSlashWindowsPath(input: []const u8) []const u8 {
-    if (input.len < 3 or input[1] != ':') return withoutTrailingSlash(input);
+    if (Environment.isPosix or input.len < 3 or input[1] != ':') return withoutTrailingSlash(input);
 
     var root_len: usize = 3;
     if (input.len >= 2 and input[0] == '\\' and input[1] == '\\') {
@@ -394,6 +395,13 @@ pub fn withoutTrailingSlashWindowsPath(input: []const u8) []const u8 {
         path.len -= 1;
     }
     return path;
+}
+
+test "withoutTrailingSlashWindowsPath uses POSIX semantics on POSIX hosts" {
+    if (Environment.isPosix) {
+        try std.testing.expectEqualStrings("::", withoutTrailingSlashWindowsPath("::/"));
+        try std.testing.expectEqualStrings("C:", withoutTrailingSlashWindowsPath("C:/"));
+    }
 }
 
 pub fn pathContainsNodeModulesFolder(path: []const u8) bool {
