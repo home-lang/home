@@ -19,6 +19,7 @@ comptime {
 pub var is_allowed_to_use_internal_testing_apis = false;
 
 const internal_stream_wrap_template = @embedFile("internal-stream-wrap.js");
+const wasi_runner_source = @embedFile("wasi-runner.js");
 const internal_stream_wrap_marker = "__HOME_NODE_STREAM__";
 const internal_stream_wrap_marker_index = std.mem.indexOf(u8, internal_stream_wrap_template, internal_stream_wrap_marker) orelse
     @compileError("internal stream wrapper lost its node:stream placeholder");
@@ -694,10 +695,11 @@ pub fn transpileSourceCode(
                 }
                 return ResolvedSource{
                     .allocator = null,
-                    .source_code = bun.String.static(""),
+                    .source_code = bun.String.static(wasi_runner_source),
                     .specifier = input_specifier.dupeRef(),
                     .source_url = input_specifier.createIfDifferent(path.text),
                     .tag = .esm,
+                    .source_code_needs_deref = false,
                 };
             }
 
