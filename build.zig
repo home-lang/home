@@ -377,6 +377,7 @@ pub fn build(b: *std.Build) void {
     // Performance options
     const enable_ir_cache = b.option(bool, "ir-cache", "Enable IR caching for faster recompilation") orelse true;
     const parallel_build = b.option(bool, "parallel", "Enable parallel compilation") orelse true;
+    const strip_home_tsc = b.option(bool, "home-tsc-strip", "Strip symbols from the home-tsc executable") orelse false;
 
     // Safety options
     // Zig 0.17 moved the build-facing optimize enum to `std.lang.Optimize`,
@@ -794,6 +795,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("packages/ts_cli/src/tsc_main.zig"),
             .target = target,
             .optimize = optimize,
+            .strip = strip_home_tsc,
         }),
     });
     home_tsc_exe.root_module.addImport("ts_cli", ts_cli_pkg);

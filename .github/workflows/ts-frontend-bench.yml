@@ -25,7 +25,7 @@ jobs:
           version: '0.17.0-dev.1441+d5181a9c9'
 
       - name: Build native Home TypeScript frontend
-        run: zig build home-tsc -Doptimize=ReleaseFast
+        run: zig build home-tsc -Doptimize=ReleaseFast -Dhome-tsc-strip=true
 
       - name: Run benchmark harness regressions
         run: python3 -m unittest discover -s bench/vs_tsgo -p 'test_*.py'

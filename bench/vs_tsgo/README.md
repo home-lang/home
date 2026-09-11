@@ -7,7 +7,7 @@ identical, deterministic TypeScript projects.
 ## Run it
 
 ```sh
-./pantry/.bin/zig build home-tsc -Doptimize=ReleaseFast
+./pantry/.bin/zig build home-tsc -Doptimize=ReleaseFast -Dhome-tsc-strip=true
 ./bench/vs_tsgo/run.sh setup
 ./bench/vs_tsgo/run.sh corpus
 ./bench/vs_tsgo/run.sh cold
@@ -15,6 +15,9 @@ identical, deterministic TypeScript projects.
 ```
 
 Set `HOME_TSC=/absolute/path/to/home-tsc` to benchmark a different Home binary.
+The benchmark build strips symbols only; optimization mode and compiler
+behavior remain ReleaseFast. This keeps the executable production-shaped and
+reduces local link memory without changing the measured TypeScript workload.
 Raw Hyperfine JSON and run metadata land under `results/<UTC timestamp>/`.
 The runner rejects installed TS 6 or TS 7 versions that differ from
 `corpus.toml` before creating timing results. Rerun `setup` after changing a pin.
@@ -29,7 +32,7 @@ Build `home-tsc` natively for the Linux machine that will run the benchmark,
 then build the pinned benchmark image from the repository root:
 
 ```sh
-./pantry/.bin/zig build home-tsc -Doptimize=ReleaseFast
+./pantry/.bin/zig build home-tsc -Doptimize=ReleaseFast -Dhome-tsc-strip=true
 docker build -f bench/vs_tsgo/Dockerfile -t home-ts-frontend-bench .
 docker run --rm --mount type=bind,src="$PWD",dst=/work \
   home-ts-frontend-bench cold --runs 30 --warmup 3
