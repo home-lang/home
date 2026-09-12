@@ -292,8 +292,12 @@ pub fn Path(comptime opts: Options) type {
         }
 
         pub fn initTopLevelDir() @This() {
-            var this = init();
-            const top_level_dir = bun.getcwd(this._buf.pooled) catch unreachable;
+            // Keep the cwd source independent from the destination pool.
+            // Bun reads FileSystem.top_level_dir here; Home obtains it on
+            // demand, so using the destination as getcwd's scratch storage
+            // would make append's source and destination alias.
+            var cwd_buf: PathBuffer = undefined;
+            const top_level_dir = bun.getcwd(&cwd_buf) catch unreachable;
 
             const trimmed = switch (comptime opts.kind) {
                 .abs => trimmed: {
@@ -304,13 +308,14 @@ pub fn Path(comptime opts: Options) type {
                 .any => trimInput(.abs, top_level_dir),
             };
 
+            var this = init();
             this._buf.append(trimmed, false);
             return this;
         }
 
         pub fn initTopLevelDirLongPath() @This() {
-            var this = init();
-            const top_level_dir = bun.getcwd(this._buf.pooled) catch unreachable;
+            var cwd_buf: PathBuffer = undefined;
+            const top_level_dir = bun.getcwd(&cwd_buf) catch unreachable;
 
             const trimmed = switch (comptime opts.kind) {
                 .abs => trimmed: {
@@ -321,6 +326,7 @@ pub fn Path(comptime opts: Options) type {
                 .any => trimInput(.abs, top_level_dir),
             };
 
+            var this = init();
             if (comptime Environment.isWindows) {
                 switch (comptime opts.unit) {
                     .u8 => this._buf.append(windows.long_path_prefix_u8, false),
@@ -1044,3 +1050,20 @@ const MAX_PATH_BYTES: usize = std.fs.max_path_bytes;
 const PATH_MAX_WIDE = if (Environment.isWindows) std.os.windows.PATH_MAX_WIDE else 0;
 const PathBuffer = [MAX_PATH_BYTES]u8;
 const WPathBuffer = [PATH_MAX_WIDE]u16;
+
+test "initTopLevelDir copies cwd from independent storage" {
+    var cwd_buf: PathBuffer = undefined;
+    const cwd = bun.getcwd(&cwd_buf) catch unreachable;
+    var path = AbsPath(.{}).initTopLevelDir();
+    defer path.deinit();
+    try std.testing.expectEqualStrings(cwd, path.slice());
+}
+
+test "initTopLevelDirLongPath copies cwd from independent storage" {
+    if (Environment.isWindows) return error.SkipZigTest;
+    var cwd_buf: PathBuffer = undefined;
+    const cwd = bun.getcwd(&cwd_buf) catch unreachable;
+    var path = AbsPath(.{}).initTopLevelDirLongPath();
+    defer path.deinit();
+    try std.testing.expectEqualStrings(cwd, path.slice());
+}
