@@ -153,19 +153,12 @@ fn fmtStringImpl(global: *JSGlobalObject, code: []const u8, formatter: FmtFormat
     defer buffer.deinit();
     var w = buffer.bufferedWriter();
     switch (formatter) {
-        // `bun.fmt.fmtJavaScript` is Home's pared-down highlighter (the full
-        // `bun_core/fmt.zig` one needs unported `strings.startsWith{Secret,UUID}`).
         .highlight_javascript => {
             const f = bun.fmt.fmtJavaScript(code, .{ .enable_colors = true });
             w.writer().print("{f}", .{f}) catch |err| return global.throwError(err, "while formatting");
         },
         // Same highlighter with redaction requested, mirroring the pin's
-        // `Formatter::HighlightJavascriptRedacted` arm. NOTE: `bun.fmt` is
-        // Home's stub highlighter, whose `format` ignores every option and
-        // echoes the text, so neither highlighting nor redaction happens yet —
-        // the real one is `bun_core/fmt.zig`. That is a separate gap; what
-        // matters here is that this arm exists at all, because its absence
-        // aborted the process.
+        // `Formatter::HighlightJavascriptRedacted` arm.
         .highlight_javascript_redacted => {
             const f = bun.fmt.fmtJavaScript(code, .{ .enable_colors = true, .redact_sensitive_information = true });
             w.writer().print("{f}", .{f}) catch |err| return global.throwError(err, "while formatting");

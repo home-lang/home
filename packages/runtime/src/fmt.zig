@@ -225,28 +225,8 @@ pub fn fastDigitCount(value: anytype) u64 {
     return count;
 }
 
-pub const QuickAndDirtyJavaScriptSyntaxHighlighter = struct {
-    text: []const u8,
-    opts: Options,
-
-    pub const Options = struct {
-        enable_colors: bool = false,
-        // Accepted for source-compatibility with bun_core/fmt.zig's richer
-        // highlighter (the markdown ANSI renderer passes this). This stub
-        // does not syntax-highlight, so the flag has no effect here.
-        check_for_unhighlighted_write: bool = false,
-        redact_sensitive_information: bool = false,
-    };
-
-    pub fn format(self: QuickAndDirtyJavaScriptSyntaxHighlighter, writer: *std.Io.Writer) std.Io.Writer.Error!void {
-        _ = self.opts;
-        try writer.writeAll(self.text);
-    }
-};
-
-pub fn fmtJavaScript(text: []const u8, opts: QuickAndDirtyJavaScriptSyntaxHighlighter.Options) QuickAndDirtyJavaScriptSyntaxHighlighter {
-    return .{ .text = text, .opts = opts };
-}
+pub const QuickAndDirtyJavaScriptSyntaxHighlighter = @import("bun_core/fmt.zig").QuickAndDirtyJavaScriptSyntaxHighlighter;
+pub const fmtJavaScript = @import("bun_core/fmt.zig").fmtJavaScript;
 
 pub fn truncatedHash32(int: u64) std.fmt.Alt(u64, truncatedHash32Impl) {
     return .{ .data = int };
@@ -678,6 +658,26 @@ test "fmtIdentifier folds invalid separators into gaps" {
     var writer = std.Io.Writer.fixed(&buf);
     try writer.print("{f}", .{fmtIdentifier("pkg-name/file.ts")});
     try std.testing.expectEqualStrings("pkg_name_file_ts", writer.buffered());
+}
+
+test "fmtJavaScript highlights syntax when colors are enabled" {
+    const source = "const answer = 42;";
+    var buf: [256]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    try writer.print("{f}", .{fmtJavaScript(source, .{ .enable_colors = true })});
+    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "\x1b[") != null);
+    try std.testing.expect(!std.mem.eql(u8, source, writer.buffered()));
+}
+
+test "fmtJavaScript redacts sensitive values" {
+    var buf: [256]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+    try writer.print("{f}", .{fmtJavaScript(
+        "const token = \"hunter2\";",
+        .{ .enable_colors = true, .redact_sensitive_information = true },
+    )});
+    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "hunter2") == null);
+    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "***") != null);
 }
 
 test "FormatDouble dtoa writes a finite value" {
