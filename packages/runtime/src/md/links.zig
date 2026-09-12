@@ -8,10 +8,129 @@ const MAX_LINK_DEST_PAREN_DEPTH: u32 = 32;
 /// for `]]` when wiki links are enabled and many candidates are unclosed.
 const MAX_WIKI_BRACKET_DEPTH: u32 = 32;
 
-pub fn processLink(self: *Parser, content: []const u8, start: usize, base_off: OFF, is_image: bool) Parser.Error!?usize {
-    _ = base_off;
-    // start points at '['
-    // Find matching ']', skipping code spans and HTML tags (which take precedence)
+const BracketLookup = union(enum) {
+    matched: usize,
+    unmatched,
+    unknown,
+};
+
+const BracketScan = struct {
+    close: usize,
+    has_inner_bracket: bool,
+};
+
+const UNMATCHED_BRACKET: OFF = std.math.maxInt(OFF);
+
+/// Build the bracket-pair map for one top-level inline slice. While an opener
+/// is unmatched, its close slot threads the previous opener's index, so no
+/// second stack allocation is required. Code spans, HTML/autolinks and escapes
+/// hide brackets exactly as they do in the link parser.
+pub fn computeBracketMatches(self: *Parser, content: []const u8) Parser.Error!void {
+    self.bracket_pairs.clearRetainingCapacity();
+    self.bracket_slice_addr = @intFromPtr(content.ptr);
+    self.bracket_slice_len = content.len;
+    self.bracket_no_closers = false;
+
+    if (std.mem.indexOfScalar(u8, content, '[') == null) return;
+    if (std.mem.indexOfScalar(u8, content, ']') == null) {
+        self.bracket_no_closers = true;
+        return;
+    }
+
+    const scan_chars: []const u8 = if (self.flags.no_html_spans) "[]\\`" else "[]\\`<";
+    var top = UNMATCHED_BRACKET;
+    var pos: usize = 0;
+    while (pos < content.len) {
+        switch (content[pos]) {
+            '\\' => pos += 2,
+            '`' => {
+                const count = inlines_mod.countBackticks(content, pos);
+                if (self.findCodeSpanEnd(content, pos + count, count)) |end_pos| {
+                    pos = end_pos + count;
+                } else {
+                    pos += count;
+                }
+            },
+            '<' => if (!self.flags.no_html_spans) {
+                if (self.findHtmlTag(content, pos)) |tag_end| {
+                    pos = tag_end;
+                } else if (self.findAutolink(content, pos)) |autolink| {
+                    pos = autolink.end_pos;
+                } else {
+                    pos += 1;
+                }
+            } else {
+                pos += 1;
+            },
+            '[' => {
+                const index: OFF = @intCast(self.bracket_pairs.items.len);
+                try self.bracket_pairs.append(self.allocator, .{ .open = @intCast(pos), .close = top });
+                top = index;
+                pos += 1;
+            },
+            ']' => {
+                if (top != UNMATCHED_BRACKET) {
+                    const index: usize = @intCast(top);
+                    top = self.bracket_pairs.items[index].close;
+                    self.bracket_pairs.items[index].close = @intCast(pos);
+                }
+                pos += 1;
+            },
+            else => {
+                const relative = std.mem.indexOfAny(u8, content[pos..], scan_chars) orelse break;
+                pos += relative;
+            },
+        }
+    }
+
+    while (top != UNMATCHED_BRACKET) {
+        const index: usize = @intCast(top);
+        top = self.bracket_pairs.items[index].close;
+        self.bracket_pairs.items[index].close = UNMATCHED_BRACKET;
+    }
+}
+
+fn bracketSliceOffset(self: *const Parser, content: []const u8) ?usize {
+    const addr = @intFromPtr(content.ptr);
+    if (addr < self.bracket_slice_addr) return null;
+    const offset = addr - self.bracket_slice_addr;
+    if (offset > self.bracket_slice_len or content.len > self.bracket_slice_len - offset) return null;
+    return offset;
+}
+
+fn lookupBracket(self: *const Parser, absolute_open: usize) BracketLookup {
+    if (self.bracket_no_closers) return .unmatched;
+    var lo: usize = 0;
+    var hi = self.bracket_pairs.items.len;
+    while (lo < hi) {
+        const mid = lo + (hi - lo) / 2;
+        if (@as(usize, self.bracket_pairs.items[mid].open) < absolute_open) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    if (lo >= self.bracket_pairs.items.len or @as(usize, self.bracket_pairs.items[lo].open) != absolute_open) return .unknown;
+    const close = self.bracket_pairs.items[lo].close;
+    if (close == UNMATCHED_BRACKET) return .unmatched;
+    return .{ .matched = @intCast(close) };
+}
+
+fn hasBracketOpenerBetween(self: *const Parser, low: usize, high: usize) bool {
+    var lo: usize = 0;
+    var hi = self.bracket_pairs.items.len;
+    while (lo < hi) {
+        const mid = lo + (hi - lo) / 2;
+        if (@as(usize, self.bracket_pairs.items[mid].open) <= low) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    return lo < self.bracket_pairs.items.len and @as(usize, self.bracket_pairs.items[lo].open) < high;
+}
+
+fn scanBracketClose(self: *Parser, content: []const u8, start: usize) ?BracketScan {
     var pos = start + 1;
     var bracket_depth: u32 = 1;
     var has_inner_bracket = false;
@@ -20,15 +139,15 @@ pub fn processLink(self: *Parser, content: []const u8, start: usize, base_off: O
             pos += 2;
             continue;
         }
-        // Skip code spans — they take precedence over brackets (CommonMark §6.3)
         if (content[pos] == '`') {
             const count = inlines_mod.countBackticks(content, pos);
             if (self.findCodeSpanEnd(content, pos + count, count)) |end_pos| {
                 pos = end_pos + count;
-                continue;
+            } else {
+                pos += count;
             }
+            continue;
         }
-        // Skip HTML tags and autolinks — they take precedence over brackets
         if (content[pos] == '<' and !self.flags.no_html_spans) {
             if (self.findHtmlTag(content, pos)) |tag_end| {
                 pos = tag_end;
@@ -46,12 +165,31 @@ pub fn processLink(self: *Parser, content: []const u8, start: usize, base_off: O
         if (content[pos] == ']') bracket_depth -= 1;
         if (bracket_depth > 0) pos += 1;
     }
-
     if (bracket_depth != 0) return null;
+    return .{ .close = pos, .has_inner_bracket = has_inner_bracket };
+}
 
-    const label_end = pos;
+fn matchBracket(self: *Parser, content: []const u8, start: usize) ?BracketScan {
+    const base = bracketSliceOffset(self, content) orelse return scanBracketClose(self, content, start);
+    switch (lookupBracket(self, base + start)) {
+        .matched => |close| {
+            if (close > base and close - base < content.len) {
+                return .{ .close = close - base, .has_inner_bracket = hasBracketOpenerBetween(self, base + start, close) };
+            }
+            return scanBracketClose(self, content, start);
+        },
+        .unmatched => return null,
+        .unknown => return scanBracketClose(self, content, start),
+    }
+}
+
+pub fn processLink(self: *Parser, content: []const u8, start: usize, base_off: OFF, is_image: bool) Parser.Error!?usize {
+    _ = base_off;
+    const bracket = matchBracket(self, content, start) orelse return null;
+    const has_inner_bracket = bracket.has_inner_bracket;
+    const label_end = bracket.close;
     const label = content[start + 1 .. label_end];
-    pos += 1; // skip ']'
+    var pos = label_end + 1;
 
     // Inline link: [text](url "title")
     if (pos < content.len and content[pos] == '(') {
@@ -228,38 +366,9 @@ pub fn processLink(self: *Parser, content: []const u8, start: usize, base_off: O
 /// Try to match a bracket pair starting at `start` and check if it forms a link.
 /// Returns whether it's a link, where the label ends, and the full link end position.
 pub fn tryMatchBracketLink(self: *Parser, content: []const u8, start: usize) struct { is_link: bool, label_end: usize, link_end: usize } {
-    var pos = start + 1;
-    var depth: u32 = 1;
-    while (pos < content.len and depth > 0) {
-        if (content[pos] == '\\' and pos + 1 < content.len) {
-            pos += 2;
-            continue;
-        }
-        if (content[pos] == '`') {
-            const count = inlines_mod.countBackticks(content, pos);
-            if (self.findCodeSpanEnd(content, pos + count, count)) |end_pos| {
-                pos = end_pos + count;
-                continue;
-            }
-        }
-        if (content[pos] == '<' and !self.flags.no_html_spans) {
-            if (self.findHtmlTag(content, pos)) |tag_end| {
-                pos = tag_end;
-                continue;
-            }
-            if (self.findAutolink(content, pos)) |al| {
-                pos = al.end_pos;
-                continue;
-            }
-        }
-        if (content[pos] == '[') depth += 1;
-        if (content[pos] == ']') depth -= 1;
-        if (depth > 0) pos += 1;
-    }
-    if (depth != 0) return .{ .is_link = false, .label_end = 0, .link_end = 0 };
-
-    const label_end = pos;
-    pos += 1; // skip ]
+    const bracket = matchBracket(self, content, start) orelse return .{ .is_link = false, .label_end = 0, .link_end = 0 };
+    const label_end = bracket.close;
+    const pos = label_end + 1;
 
     if (pos >= content.len) {
         // Shortcut reference check
@@ -580,6 +689,7 @@ pub fn renderAutolink(self: *Parser, url: []const u8, is_email: bool) bun.JSErro
 const bun = @import("bun");
 const helpers = @import("./helpers.zig");
 const inlines_mod = @import("./inlines.zig");
+const std = @import("std");
 
 const parser_mod = @import("./parser.zig");
 const Parser = parser_mod.Parser;

@@ -99,7 +99,10 @@ pub fn processInlineContent(self: *Parser, content: []const u8, base_off: OFF) P
     const is_root_inline = self.inline_parse_depth == 0;
     self.inline_parse_depth +|= 1;
     defer self.inline_parse_depth -|= 1;
-    if (is_root_inline) self.html_scan_memo = .empty;
+    if (is_root_inline) {
+        self.html_scan_memo = .empty;
+        try self.computeBracketMatches(content);
+    }
 
     // Phase 1: Collect and resolve emphasis delimiters
     self.collectEmphasisDelimiters(content);

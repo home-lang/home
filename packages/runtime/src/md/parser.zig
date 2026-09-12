@@ -25,6 +25,12 @@ pub const Parser = struct {
     block_bytes: std.ArrayListAlignedUnmanaged(u8, .@"4") = .empty,
     buffer: std.ArrayListUnmanaged(u8) = .empty,
     emph_delims: std.ArrayListUnmanaged(EmphDelim) = .empty,
+    // Scratch bracket-pair map, rebuilt once per top-level inline block and
+    // shared by recursive label sub-slices.
+    bracket_pairs: std.ArrayListUnmanaged(BracketPair) = .empty,
+    bracket_slice_addr: usize = 0,
+    bracket_slice_len: usize = 0,
+    bracket_no_closers: bool = false,
     // Failed inline-HTML terminator searches, retained across recursive label
     // sub-slices and reset for each top-level inline block.
     html_scan_memo: inlines_mod.HtmlScanMemo = .empty,
@@ -83,6 +89,7 @@ pub const Parser = struct {
     };
 
     pub const EmphDelim = inlines_mod.EmphDelim;
+    pub const BracketPair = struct { open: OFF, close: OFF };
     pub const MAX_EMPH_MATCHES = inlines_mod.MAX_EMPH_MATCHES;
     pub const RefDef = ref_defs_mod.RefDef;
 
@@ -113,6 +120,7 @@ pub const Parser = struct {
         self.current_block_lines.deinit(self.allocator);
         self.ref_defs.deinit(self.allocator);
         self.emph_delims.deinit(self.allocator);
+        self.bracket_pairs.deinit(self.allocator);
     }
 
     pub inline fn ch(self: *const Parser, off: OFF) u8 {
@@ -200,6 +208,7 @@ pub const Parser = struct {
     pub const findHtmlTag = inlines_mod.findHtmlTag;
 
     // links.zig
+    pub const computeBracketMatches = links_mod.computeBracketMatches;
     pub const processLink = links_mod.processLink;
     pub const tryMatchBracketLink = links_mod.tryMatchBracketLink;
     pub const labelContainsLink = links_mod.labelContainsLink;
