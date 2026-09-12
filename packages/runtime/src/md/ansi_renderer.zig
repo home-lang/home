@@ -83,6 +83,11 @@ pub const AnsiRenderer = struct {
     theme: Theme,
     /// Stack of active block contexts (li/quote) for indentation.
     block_stack: std.ArrayListUnmanaged(BlockContext) = .empty,
+    /// Number of quote entries currently in `block_stack`. Kept in sync with
+    /// push/pop so per-line indentation does not rescan the whole stack.
+    quote_depth: u32 = 0,
+    /// Sum of `indent` over the non-quote entries currently in `block_stack`.
+    list_indent_cols: u32 = 0,
     /// Currently open span styles (bit flags).
     span_flags: u32 = 0,
     /// Non-null when we're inside a link span; the href to emit in OSC 8.
@@ -161,6 +166,12 @@ pub const AnsiRenderer = struct {
     const SPAN_DEL: u32 = 1 << 2;
     const SPAN_U: u32 = 1 << 3;
     const SPAN_CODE: u32 = 1 << 4;
+
+    /// Upper bound on the visible indentation (blockquote bars + list indent)
+    /// emitted at the start of each rendered line. Nesting deeper than this is
+    /// unreadable on any terminal, and without a cap every line's prefix grows
+    /// with the nesting depth, making pathological documents quadratic.
+    const MAX_INDENT_COLS: u32 = 128;
 
     const InlineStyle = struct {
         flag: u32,
@@ -282,21 +293,15 @@ pub const AnsiRenderer = struct {
             .doc => {},
             .quote => {
                 self.ensureBlankLine();
-                self.block_stack.append(self.allocator, .{ .kind = .quote, .indent = 2 }) catch {
-                    self.out.oom = true;
-                };
+                self.pushBlock(.{ .kind = .quote, .indent = 2 });
             },
             .ul => {
                 self.ensureNewline();
-                self.block_stack.append(self.allocator, .{ .kind = .ul, .data = data, .indent = 2 }) catch {
-                    self.out.oom = true;
-                };
+                self.pushBlock(.{ .kind = .ul, .data = data, .indent = 2 });
             },
             .ol => {
                 self.ensureNewline();
-                self.block_stack.append(self.allocator, .{ .kind = .ol, .data = data, .indent = 3 }) catch {
-                    self.out.oom = true;
-                };
+                self.pushBlock(.{ .kind = .ol, .data = data, .indent = 3 });
             },
             .li => {
                 self.ensureNewline();
@@ -329,9 +334,7 @@ pub const AnsiRenderer = struct {
                 // Wrapped continuation lines need to land under the item's
                 // content (past the marker), so record the marker width.
                 entry.indent = @intCast(visibleWidth(glyph));
-                self.block_stack.append(self.allocator, entry) catch {
-                    self.out.oom = true;
-                };
+                self.pushBlock(entry);
             },
             .hr => {
                 self.ensureBlankLine();
@@ -422,7 +425,7 @@ pub const AnsiRenderer = struct {
         switch (block_type) {
             .doc => {},
             .quote, .ul, .ol, .li => {
-                _ = self.block_stack.pop();
+                self.popBlock();
                 self.ensureNewline();
             },
             .hr => {},
@@ -1014,19 +1017,44 @@ pub const AnsiRenderer = struct {
         }
     }
 
+    /// Track a block push so indentation stays O(1) per line instead of
+    /// rescanning the whole block stack.
+    fn pushBlock(self: *AnsiRenderer, entry: BlockContext) void {
+        self.block_stack.append(self.allocator, entry) catch {
+            self.out.oom = true;
+            return;
+        };
+        switch (entry.kind) {
+            .quote => self.quote_depth +|= 1,
+            else => self.list_indent_cols +|= entry.indent,
+        }
+    }
+
+    fn popBlock(self: *AnsiRenderer) void {
+        const entry = self.block_stack.pop() orelse return;
+        switch (entry.kind) {
+            .quote => self.quote_depth -|= 1,
+            else => self.list_indent_cols -|= entry.indent,
+        }
+    }
+
+    /// Quote bars and indent spaces to draw for the current block stack,
+    /// capped at `MAX_INDENT_COLS` visible columns total. `writeIndent` and
+    /// `currentIndent` must agree so wrap calculations match emitted output.
+    fn indentCounts(self: *const AnsiRenderer) struct { quote_bars: u32, other_indent: u32 } {
+        const quote_bars = @min(self.quote_depth, MAX_INDENT_COLS / 2);
+        const other_indent = @min(self.list_indent_cols, MAX_INDENT_COLS - quote_bars * 2);
+        return .{ .quote_bars = quote_bars, .other_indent = other_indent };
+    }
+
     fn writeIndent(self: *AnsiRenderer) void {
         // writeIndent is called at the start of every content line, so
         // this is the right place to clear the "blank line just emitted"
         // flag ensureBlankLine uses for dedup.
         self.blank_emitted = false;
-        var quote_bars: u32 = 0;
-        var other_indent: u32 = 0;
-        for (self.block_stack.items) |entry| {
-            switch (entry.kind) {
-                .quote => quote_bars += 1,
-                else => other_indent += entry.indent,
-            }
-        }
+        const counts = self.indentCounts();
+        const quote_bars = counts.quote_bars;
+        const other_indent = counts.other_indent;
         const bar = if (self.theme.colors) "│ " else "| ";
         if (self.theme.colors and quote_bars > 0) {
             self.out.write("\x1b[38;5;242m");
@@ -1050,11 +1078,8 @@ pub const AnsiRenderer = struct {
     }
 
     fn currentIndent(self: *AnsiRenderer) u32 {
-        var total: u32 = 0;
-        for (self.block_stack.items) |entry| {
-            total += if (entry.kind == .quote) 2 else entry.indent;
-        }
-        return total;
+        const counts = self.indentCounts();
+        return counts.quote_bars * 2 + counts.other_indent;
     }
 
     fn updateColFromText(self: *AnsiRenderer, data: []const u8) void {
@@ -1080,10 +1105,7 @@ pub const AnsiRenderer = struct {
     /// current block_stack. Used by ensureBlankLine so the inter-block
     /// gap inside a blockquote keeps its visual border.
     fn writeQuoteBars(self: *AnsiRenderer) void {
-        var quote_bars: u32 = 0;
-        for (self.block_stack.items) |entry| {
-            if (entry.kind == .quote) quote_bars += 1;
-        }
+        const quote_bars = self.indentCounts().quote_bars;
         if (quote_bars == 0) return;
         const bar = if (self.theme.colors) "│" else "|";
         if (self.theme.colors) self.out.write("\x1b[38;5;242m");
