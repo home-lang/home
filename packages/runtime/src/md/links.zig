@@ -1,3 +1,13 @@
+/// Maximum parenthesis nesting depth inside a bare inline-link destination.
+/// CommonMark permits an implementation limit; cmark, commonmark.js, and Bun
+/// all use 32. The bound also prevents repeated unclosed candidates from
+/// turning their destination scan quadratic.
+const MAX_LINK_DEST_PAREN_DEPTH: u32 = 32;
+
+/// Maximum bracket nesting inside a wiki link. This bounds the forward scan
+/// for `]]` when wiki links are enabled and many candidates are unclosed.
+const MAX_WIKI_BRACKET_DEPTH: u32 = 32;
+
 pub fn processLink(self: *Parser, content: []const u8, start: usize, base_off: OFF, is_image: bool) Parser.Error!?usize {
     _ = base_off;
     // start points at '['
@@ -52,14 +62,15 @@ pub fn processLink(self: *Parser, content: []const u8, start: usize, base_off: O
         // Parse destination
         var dest_start = pos;
         var dest_end = pos;
+        var dest_valid = true;
 
         if (pos < content.len and content[pos] == '<') {
-            // Angle-bracket destination (no newlines allowed)
+            // Angle-bracket destination (no newlines or unescaped '<' allowed)
             dest_start = pos + 1;
             pos += 1;
             var angle_valid = true;
             while (pos < content.len and content[pos] != '>') {
-                if (content[pos] == '\n' or content[pos] == '\r') {
+                if (content[pos] == '\n' or content[pos] == '\r' or content[pos] == '<') {
                     angle_valid = false;
                     break;
                 }
@@ -73,11 +84,15 @@ pub fn processLink(self: *Parser, content: []const u8, start: usize, base_off: O
             dest_end = pos;
             if (pos < content.len) pos += 1; // skip >
         } else {
-            // Bare destination — balance parentheses
+            // Bare destination — balance parentheses with Bun/cmark's cap.
             var paren_depth: u32 = 0;
             while (pos < content.len and !helpers.isWhitespace(content[pos])) {
                 if (content[pos] == '(') {
                     paren_depth += 1;
+                    if (paren_depth > MAX_LINK_DEST_PAREN_DEPTH) {
+                        dest_valid = false;
+                        break;
+                    }
                 } else if (content[pos] == ')') {
                     if (paren_depth == 0) break;
                     paren_depth -= 1;
@@ -91,6 +106,12 @@ pub fn processLink(self: *Parser, content: []const u8, start: usize, base_off: O
             dest_end = pos;
         }
 
+        if (!dest_valid) {
+            // The overflowing '(' must not be reinterpreted as a title opener,
+            // but reference and shortcut fallback below remain reachable.
+            pos = content.len;
+        }
+
         // Skip whitespace (including newlines)
         while (pos < content.len and (helpers.isBlank(content[pos]) or content[pos] == '\n' or content[pos] == '\r')) pos += 1;
 
@@ -98,17 +119,27 @@ pub fn processLink(self: *Parser, content: []const u8, start: usize, base_off: O
         var title: []const u8 = "";
         if (pos < content.len and (content[pos] == '"' or content[pos] == '\'' or content[pos] == '(')) {
             const close_char: u8 = if (content[pos] == '(') ')' else content[pos];
+            const title_open = pos;
             pos += 1;
             const title_start = pos;
+            var title_valid = true;
             while (pos < content.len and content[pos] != close_char) {
                 if (content[pos] == '\\' and pos + 1 < content.len) {
                     pos += 2;
-                } else {
-                    pos += 1;
+                    continue;
                 }
+                if (close_char == ')' and content[pos] == '(') {
+                    title_valid = false;
+                    break;
+                }
+                pos += 1;
             }
-            title = content[title_start..pos];
-            if (pos < content.len) pos += 1; // skip closing quote
+            if (title_valid) {
+                title = content[title_start..pos];
+                if (pos < content.len) pos += 1; // skip closing quote
+            } else {
+                pos = title_open;
+            }
         }
 
         // Skip whitespace (including newlines)
@@ -145,9 +176,11 @@ pub fn processLink(self: *Parser, content: []const u8, start: usize, base_off: O
         }
     }
 
-    // Reference link: [text][ref] or [text][] or shortcut [text]
+    // Reference link: [text][ref] or [text][] or shortcut [text]. A failed
+    // inline parse may have advanced `pos` to a later '[', which is not an
+    // adjacent reference label, so restore it to the byte after the label.
+    pos = label_end + 1;
     if (pos < content.len and content[pos] == '[') {
-        const bracket_pos = pos;
         pos += 1;
         const ref_start = pos;
         while (pos < content.len and content[pos] != ']') {
@@ -170,9 +203,6 @@ pub fn processLink(self: *Parser, content: []const u8, start: usize, base_off: O
                 try self.renderRefLink(label, ref_def, is_image);
                 return pos;
             }
-        } else {
-            // Reset pos if we didn't find a valid ]
-            pos = bracket_pos;
         }
     }
 
@@ -243,10 +273,11 @@ pub fn tryMatchBracketLink(self: *Parser, content: []const u8, start: usize) str
         var p = pos + 1;
         // Skip whitespace
         while (p < content.len and (helpers.isBlank(content[p]) or content[p] == '\n' or content[p] == '\r')) p += 1;
-        // Parse dest
+        // Parse dest. The lookahead must use the same validity rules as
+        // `processLink` or emphasis and nested-link decisions can diverge.
         if (p < content.len and content[p] == '<') {
             p += 1;
-            while (p < content.len and content[p] != '>' and content[p] != '\n') {
+            while (p < content.len and content[p] != '>' and content[p] != '\n' and content[p] != '\r' and content[p] != '<') {
                 if (content[p] == '\\' and p + 1 < content.len) {
                     p += 2;
                 } else {
@@ -259,6 +290,10 @@ pub fn tryMatchBracketLink(self: *Parser, content: []const u8, start: usize) str
             while (p < content.len and !helpers.isWhitespace(content[p])) {
                 if (content[p] == '(') {
                     paren_depth += 1;
+                    if (paren_depth > MAX_LINK_DEST_PAREN_DEPTH) {
+                        p = content.len;
+                        break;
+                    }
                 } else if (content[p] == ')') {
                     if (paren_depth == 0) break;
                     paren_depth -= 1;
@@ -275,15 +310,25 @@ pub fn tryMatchBracketLink(self: *Parser, content: []const u8, start: usize) str
         // Optional title
         if (p < content.len and (content[p] == '"' or content[p] == '\'' or content[p] == '(')) {
             const close_ch: u8 = if (content[p] == '(') ')' else content[p];
+            const title_open = p;
             p += 1;
+            var title_valid = true;
             while (p < content.len and content[p] != close_ch) {
                 if (content[p] == '\\' and p + 1 < content.len) {
                     p += 2;
-                } else {
-                    p += 1;
+                    continue;
                 }
+                if (close_ch == ')' and content[p] == '(') {
+                    title_valid = false;
+                    break;
+                }
+                p += 1;
             }
-            if (p < content.len) p += 1;
+            if (title_valid) {
+                if (p < content.len) p += 1;
+            } else {
+                p = title_open;
+            }
         }
         // Skip whitespace
         while (p < content.len and (helpers.isBlank(content[p]) or content[p] == '\n' or content[p] == '\r')) p += 1;
@@ -309,9 +354,11 @@ pub fn tryMatchBracketLink(self: *Parser, content: []const u8, start: usize) str
         }
     }
 
-    // Shortcut reference
-    const inner_label = content[start + 1 .. label_end];
-    if (self.lookupRefDef(inner_label) != null) return .{ .is_link = true, .label_end = label_end, .link_end = label_end + 1 };
+    // Shortcut references may not be followed by another '['.
+    if (label_end + 1 >= content.len or content[label_end + 1] != '[') {
+        const inner_label = content[start + 1 .. label_end];
+        if (self.lookupRefDef(inner_label) != null) return .{ .is_link = true, .label_end = label_end, .link_end = label_end + 1 };
+    }
 
     return .{ .is_link = false, .label_end = label_end, .link_end = label_end + 1 };
 }
@@ -377,6 +424,7 @@ pub fn processWikiLink(self: *Parser, content: []const u8, start: usize) Parser.
         }
         if (content[pos] == '[') {
             bracket_depth += 1;
+            if (bracket_depth > MAX_WIKI_BRACKET_DEPTH) return null;
         } else if (content[pos] == ']') {
             if (bracket_depth > 0) {
                 bracket_depth -= 1;
