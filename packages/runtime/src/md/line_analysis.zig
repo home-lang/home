@@ -350,6 +350,9 @@ pub fn isTableUnderline(self: *Parser, off: OFF) struct { is_underline: bool, co
         }
 
         col_count += 1;
+        if (col_count > types.TABLE_MAXCOLCOUNT) {
+            return .{ .is_underline = false, .col_count = 0 };
+        }
 
         // Skip whitespace
         while (pos < self.size and helpers.isBlank(self.text[pos])) pos += 1;
