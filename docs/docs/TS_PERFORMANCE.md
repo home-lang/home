@@ -8802,6 +8802,44 @@ zig build -Doptimize=ReleaseFast
 bunx --bun pickier .
 ```
 
+### Positive `instanceof` assignment fallthrough (untimed)
+
+Issue [#738](https://github.com/home-lang/home/issues/738), found while
+reducing [#688](https://github.com/home-lang/home/issues/688), completes the
+positive counterpart to the terminating and negated `instanceof` flow rules.
+For `if (value instanceof Promise) value = await value`, the false path
+excludes `Promise` while the true path carries the assigned awaited payload;
+the fallthrough type is their structural join. This is implemented as normal
+control-flow analysis, with no library or source-name special case.
+
+The strict oracle contains an exact `string` assignment plus deliberately
+invalid `number` and missing-property controls after the guard:
+
+| Positive-guard assignment oracle | TypeScript 6.0.3 | Native TypeScript 7.0.2 | ReleaseSafe Home |
+|---|---:|---:|---:|
+| False TS7006 | 0 | 0 | **0** |
+| Invalid assignment | TS2322 at 13:11 | TS2322 at 13:11 | **TS2322 at 13:11** |
+| Missing property | TS2339 at 14:11 | TS2339 at 14:11 | **TS2339 at 14:11** |
+| Complete diagnostic multiset | 2 | 2 | **2** |
+
+The independently pinned Zod 4.5.2 `src/v4/core/**/*.ts` shard remains
+exactly diagnostic-identical to the `origin/main` baseline: **150 diagnostics,
+zero additions, and zero removals**. The full checker suite and stripped
+ReleaseSafe `home-tsc` build pass. The guarded build peaked at 3,149 MB and the
+Zod shard at 2,595 MB under the fixed 3,840 MB process-tree ceiling.
+
+A broader #688 projection experiment was rejected before commit: one version
+bus-faulted on the Zod core shard, while a bounded variant added 14 diagnostics.
+The qualified imported issue-array work therefore remains open in #688. This
+checkpoint makes no timing claim.
+
+```sh
+zig build test -Dfilter=ts_checker
+zig build home-tsc -Doptimize=ReleaseSafe -Dhome-tsc-strip=true
+./zig-out/bin/home-tsc -p /path/to/positive-instanceof/tsconfig.json
+./zig-out/bin/home-tsc -p /path/to/zod-4.5.2/tsconfig.core.json
+```
+
 ### Typed cross-file global ownership and cyclic provenance (untimed)
 
 Issue [#480](https://github.com/home-lang/home/issues/480), under

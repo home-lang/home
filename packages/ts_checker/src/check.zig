@@ -9845,6 +9845,7 @@ pub const Checker = struct {
                     try self.applyTypeGuard(i.cond, false);
                 } else {
                     try self.applyNullishGuardAssignmentFlow(i.cond, i.then_branch);
+                    try self.applyInstanceofAssignmentFlow(i.cond, i.then_branch);
                     try self.applyNegatedInstanceofAssignmentFlow(i.cond, i.then_branch);
                     try self.applyInstanceofFallthroughJoin(i.cond);
                 }
@@ -129752,6 +129753,35 @@ pub const Checker = struct {
         else
             self.interner.internUnion(&.{ false_t, assigned_t }) catch return error.OutOfMemory;
         try self.recordNarrow(guard.name, narrowed);
+    }
+
+    /// Join a positive `instanceof` guard whose branch replaces the guarded
+    /// value. On fallthrough, the false path excludes the tested instance
+    /// type while the true path has the assigned value. This covers async
+    /// normalization such as `if (value instanceof Promise) value = await
+    /// value`, where both paths leave `value` as the resolved payload.
+    fn applyInstanceofAssignmentFlow(self: *Checker, cond: NodeId, then_branch: NodeId) !void {
+        if (self.hir.kindOf(cond) != .binary_op) return;
+        const binary = hir_mod.binopOf(self.hir, cond);
+        if (binary.op != .instanceof or self.hir.kindOf(binary.lhs) != .identifier) return;
+        const id = hir_mod.identifierOf(self.hir, binary.lhs);
+        const target = (try self.directInstanceofTargetType(binary.rhs)) orelse return;
+        const value_node = self.singleAssignmentValueToIdentifier(then_branch, id.name) orelse return;
+        var assigned_t = self.hir.typeOf(value_node);
+        if (assigned_t == types.Primitive.none) assigned_t = try self.checkExpression(value_node);
+        if (assigned_t == types.Primitive.none or assigned_t == types.Primitive.any or assigned_t == types.Primitive.unknown) return;
+        const current = self.lookupNarrow(id.name) orelse self.typeOfIdentifierDeclared(binary.lhs);
+        const false_t = try self.subtractTypeByDirectInstanceof(current, target);
+        const narrowed = if (false_t == assigned_t or
+            (self.engine.isIdenticalTo(false_t, assigned_t) catch false))
+            assigned_t
+        else if (false_t == types.Primitive.never)
+            assigned_t
+        else if (assigned_t == types.Primitive.never)
+            false_t
+        else
+            self.interner.internUnion(&.{ false_t, assigned_t }) catch return error.OutOfMemory;
+        try self.recordNarrow(id.name, narrowed);
     }
 
     fn applyNegatedInstanceofAssignmentFlow(self: *Checker, cond: NodeId, then_branch: NodeId) !void {
@@ -251415,6 +251445,31 @@ test "checker: terminating Promise guard subtracts the promised union member" {
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
     try T.expectEqual(@as(usize, 1), s.checker.diagnostics.items.len);
+}
+
+test "checker: Promise guard assignment joins the awaited payload" {
+    const s = try newSetup(
+        \\interface Payload { value: unknown; issues: string[]; }
+        \\declare function load(): Payload | Promise<Payload>;
+        \\async function parse() {
+        \\  let result = load();
+        \\  if (result instanceof Promise) result = await result;
+        \\  result.issues.map((issue) => {
+        \\    const exact: string = issue;
+        \\    const wrong: number = issue;
+        \\    issue.missing;
+        \\    void exact; void wrong;
+        \\  });
+        \\  return result.value;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true, .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.parameter_implicitly_any));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 2), s.checker.diagnostics.items.len);
 }
 
 test "checker: constructor-constrained type parameter supports instanceof" {

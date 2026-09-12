@@ -538,6 +538,15 @@ guards, and validates actual multi-statement return unions:
 | Unique path/line/column/code identities | 345 | **343** | **2 removed; 0 added** |
 | Focused three-engine oracle | valid | **valid + exact 1× TS2322 control** | no TS7006/TS2339 |
 
+Positive `instanceof` branches that replace their guarded value now join the
+assigned true path with the excluded false path at fallthrough:
+
+| [Positive `instanceof` assignment audit](docs/docs/TS_PERFORMANCE.md#positive-instanceof-assignment-fallthrough-untimed) | TypeScript 6.0.3 | Native TypeScript 7.0.2 | Home |
+|---|---:|---:|---:|
+| Exact strict oracle | TS2322 + TS2339 | TS2322 + TS2339 | **TS2322 + TS2339** |
+| False TS7006 | 0 | 0 | **0** |
+| Zod 4.5.2 core diagnostics versus `origin/main` | — | — | **150 → 150; 0 added/removed** |
+
 TypeScript 6.0.3 reports zero diagnostics on this graph. Home still reports
 348, so Zod remains outside the cross-compiler timing table until Home also
 reaches zero diagnostics.
