@@ -25,6 +25,10 @@ pub const Parser = struct {
     block_bytes: std.ArrayListAlignedUnmanaged(u8, .@"4") = .empty,
     buffer: std.ArrayListUnmanaged(u8) = .empty,
     emph_delims: std.ArrayListUnmanaged(EmphDelim) = .empty,
+    // Failed inline-HTML terminator searches, retained across recursive label
+    // sub-slices and reset for each top-level inline block.
+    html_scan_memo: inlines_mod.HtmlScanMemo = .empty,
+    inline_parse_depth: u32 = 0,
 
     // Number of active containers
     n_containers: u32 = 0,

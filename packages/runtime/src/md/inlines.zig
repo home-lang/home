@@ -24,6 +24,43 @@ pub const EmphDelim = struct {
     active: bool = true, // false if deactivated between matched pairs
 };
 
+/// Closing-delimiter kinds tracked by `HtmlScanMemo`.
+pub const HtmlScanKind = enum(u2) {
+    comment,
+    processing_instruction,
+    declaration,
+    cdata,
+};
+
+const HTML_SCAN_KIND_COUNT = 4;
+
+/// Memo of failed closing-delimiter searches in `findHtmlTag`.
+///
+/// Once a terminator search of one kind reaches the end of an inline slice,
+/// every search of that kind beginning later in the same slice is known to
+/// fail. The memo also answers queries for contained link-label sub-slices by
+/// translating their positions into the enclosing slice's coordinates.
+pub const HtmlScanMemo = struct {
+    slice_addr: usize = 0,
+    slice_len: usize = 0,
+    no_terminator_from: [HTML_SCAN_KIND_COUNT]usize = @splat(std.math.maxInt(usize)),
+
+    pub const empty: HtmlScanMemo = .{};
+
+    fn appliesTo(self: *const HtmlScanMemo, content: []const u8) bool {
+        return self.slice_addr == @intFromPtr(content.ptr) and self.slice_len == content.len;
+    }
+
+    /// Return `content`'s offset when it lies wholly inside the memoized slice.
+    fn offsetWithin(self: *const HtmlScanMemo, content: []const u8) ?usize {
+        const addr = @intFromPtr(content.ptr);
+        if (addr < self.slice_addr) return null;
+        const offset = addr - self.slice_addr;
+        if (offset > self.slice_len or content.len > self.slice_len - offset) return null;
+        return offset;
+    }
+};
+
 /// Merge all lines into buffer with \n between them (unmodified),
 /// then process inlines on the merged text. Hard/soft breaks are detected
 /// during inline processing when \n is encountered.
@@ -55,6 +92,14 @@ pub fn processInlineContent(self: *Parser, content: []const u8, base_off: OFF) P
     if (!self.stack_check.isSafeToRecurse()) {
         return bun.throwStackOverflow();
     }
+
+    // Reset failed HTML-scan facts at each top-level inline block. Recursive
+    // link/image labels are sub-slices of that block and deliberately retain
+    // the enclosing memo so they do not repeat the same failed scans.
+    const is_root_inline = self.inline_parse_depth == 0;
+    self.inline_parse_depth +|= 1;
+    defer self.inline_parse_depth -|= 1;
+    if (is_root_inline) self.html_scan_memo = .empty;
 
     // Phase 1: Collect and resolve emphasis delimiters
     self.collectEmphasisDelimiters(content);
@@ -593,8 +638,28 @@ pub fn findEntity(self: *const Parser, content: []const u8, start: usize) ?usize
     return helpers.findEntity(content, start);
 }
 
-pub fn findHtmlTag(self: *const Parser, content: []const u8, start: usize) ?usize {
-    _ = self;
+/// True when an earlier scan proved that `kind` has no terminator at or after
+/// `scan_start` in this slice or an enclosing slice.
+fn htmlScanKnownUnterminated(self: *const Parser, content: []const u8, kind: HtmlScanKind, scan_start: usize) bool {
+    const offset = self.html_scan_memo.offsetWithin(content) orelse return false;
+    return offset + scan_start >= self.html_scan_memo.no_terminator_from[@backingInt(kind)];
+}
+
+/// Record that a terminator search reached the end of `content`. A failed scan
+/// in a sub-slice cannot prove anything about the rest of its enclosing slice,
+/// so it never replaces an enclosing memo entry.
+fn noteUnterminatedHtmlScan(self: *Parser, content: []const u8, kind: HtmlScanKind, scan_start: usize) void {
+    if (!self.html_scan_memo.appliesTo(content)) {
+        if (self.html_scan_memo.offsetWithin(content) != null) return;
+        self.html_scan_memo = .empty;
+        self.html_scan_memo.slice_addr = @intFromPtr(content.ptr);
+        self.html_scan_memo.slice_len = content.len;
+    }
+    const slot = &self.html_scan_memo.no_terminator_from[@backingInt(kind)];
+    slot.* = @min(slot.*, scan_start);
+}
+
+pub fn findHtmlTag(self: *Parser, content: []const u8, start: usize) ?usize {
     if (start + 1 >= content.len) return null;
 
     var pos = start + 1;
@@ -624,20 +689,26 @@ pub fn findHtmlTag(self: *const Parser, content: []const u8, start: usize) ?usiz
         // Minimal comments: <!--> and <!--->
         if (pos < content.len and content[pos] == '>') return pos + 1;
         if (pos + 1 < content.len and content[pos] == '-' and content[pos + 1] == '>') return pos + 2;
+        if (htmlScanKnownUnterminated(self, content, .comment, pos)) return null;
+        const scan_start = pos;
         while (pos + 2 < content.len) {
             if (content[pos] == '-' and content[pos + 1] == '-' and content[pos + 2] == '>') {
                 return pos + 3;
             }
             pos += 1;
         }
+        noteUnterminatedHtmlScan(self, content, .comment, scan_start);
         return null;
     }
 
     // HTML declaration: <! followed by uppercase letter, ended by >
     if (c == '!' and pos + 1 < content.len and content[pos + 1] >= 'A' and content[pos + 1] <= 'Z') {
         pos += 2;
+        if (htmlScanKnownUnterminated(self, content, .declaration, pos)) return null;
+        const scan_start = pos;
         while (pos < content.len and content[pos] != '>') pos += 1;
         if (pos < content.len) return pos + 1;
+        noteUnterminatedHtmlScan(self, content, .declaration, scan_start);
         return null;
     }
 
@@ -647,24 +718,30 @@ pub fn findHtmlTag(self: *const Parser, content: []const u8, start: usize) ?usiz
         content[pos + 4] == 'A' and content[pos + 5] == 'T' and content[pos + 6] == 'A' and content[pos + 7] == '[')
     {
         pos += 8;
+        if (htmlScanKnownUnterminated(self, content, .cdata, pos)) return null;
+        const scan_start = pos;
         while (pos + 2 < content.len) {
             if (content[pos] == ']' and content[pos + 1] == ']' and content[pos + 2] == '>') {
                 return pos + 3;
             }
             pos += 1;
         }
+        noteUnterminatedHtmlScan(self, content, .cdata, scan_start);
         return null;
     }
 
     // Processing instruction: <? ... ?>
     if (c == '?') {
         pos += 1;
+        if (htmlScanKnownUnterminated(self, content, .processing_instruction, pos)) return null;
+        const scan_start = pos;
         while (pos + 1 < content.len) {
             if (content[pos] == '?' and content[pos + 1] == '>') {
                 return pos + 2;
             }
             pos += 1;
         }
+        noteUnterminatedHtmlScan(self, content, .processing_instruction, scan_start);
         return null;
     }
 
