@@ -273,20 +273,18 @@ fn postProcessAutolinkEnd(content: []const u8, beg: usize, end_in: usize) usize 
         }
     }
 
-    // Trim trailing unbalanced `)`: count all ( and ) in the URL.
-    // If closing > opening, remove trailing ) until balanced.
-    while (end > beg and content[end - 1] == ')') {
-        var open: i32 = 0;
-        var close: i32 = 0;
-        for (content[beg..end]) |ch| {
-            if (ch == '(') open += 1;
-            if (ch == ')') close += 1;
-        }
-        if (close > open) {
-            end -= 1;
-        } else {
-            break;
-        }
+    // Trim trailing unbalanced `)`: count once, then update the closing count
+    // as the suffix is removed. Recounting the whole URL for every trailing
+    // byte is quadratic for attacker-controlled runs of `)`.
+    var open: i32 = 0;
+    var close: i32 = 0;
+    for (content[beg..end]) |ch| {
+        if (ch == '(') open += 1;
+        if (ch == ')') close += 1;
+    }
+    while (end > beg and content[end - 1] == ')' and close > open) {
+        end -= 1;
+        close -= 1;
     }
 
     return end;
