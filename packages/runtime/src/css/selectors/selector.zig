@@ -1153,12 +1153,19 @@ pub const serialize = struct {
         }
     }
 
+    /// Maximum number of parent-selector substitutions allowed while
+    /// serializing one rule prelude with compiled nesting.
+    pub const MAX_NESTING_EXPANSIONS = expansion_budget.MAX_NESTING_EXPANSIONS;
+
     pub fn serializeNesting(
         dest: *Printer,
         context: ?*const css.StyleContext,
         first: bool,
     ) PrintErr!void {
         if (context) |ctx| {
+            if (!expansion_budget.chargeNesting(&dest.nesting_expansions)) {
+                return dest.newError(.maximum_nesting_expansion, null);
+            }
             // If there's only one simple selector, just serialize it directly.
             // Otherwise, use an :is() pseudo class.
             // Type selectors are only allowed at the start of a compound selector,
@@ -1611,5 +1618,6 @@ const bun = @import("bun");
 const bits = bun.bits;
 
 const std = @import("std");
+const expansion_budget = @import("../expansion_budget.zig");
 const ArrayList = std.ArrayListUnmanaged;
 const Allocator = std.mem.Allocator;

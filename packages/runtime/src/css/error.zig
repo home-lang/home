@@ -223,6 +223,9 @@ pub const PrinterErrorKind = union(enum) {
     invalid_composes_selector,
     /// The CSS modules pattern must end with `[local]` for use in CSS grid.
     invalid_css_modules_pattern_in_grid,
+    /// Substituting parent selectors for `&` exceeded the bounded expansion
+    /// budget while compiling CSS nesting for the configured targets.
+    maximum_nesting_expansion,
     no_import_records,
 
     pub fn format(this: @This(), writer: *std.Io.Writer) !void {
@@ -232,6 +235,7 @@ pub const PrinterErrorKind = union(enum) {
             .invalid_composes_nesting => writer.writeAll("The 'composes' property cannot be used within nested rules"),
             .invalid_composes_selector => writer.writeAll("The 'composes' property can only be used with a simple class selector"),
             .invalid_css_modules_pattern_in_grid => writer.writeAll("CSS modules pattern must end with '[local]' when used in CSS grid"),
+            .maximum_nesting_expansion => writer.writeAll("Maximum nesting expansion exceeded when compiling CSS nesting for the configured targets"),
             .no_import_records => writer.writeAll("No import records found"),
         };
     }
@@ -426,6 +430,11 @@ pub const MinifyErrorKind = union(enum) {
         /// The source location of the `@custom-media` rule with unsupported boolean logic.
         custom_media_loc: Location,
     },
+    /// Compiling nested rules for the configured browser targets would expand
+    /// to more than the supported selector budget.
+    selector_expansion_limit_exceeded,
+    /// Minification failed without recording a more specific diagnostic.
+    unknown,
 
     pub fn format(this: *const @This(), writer: *std.Io.Writer) std.Io.Writer.Error!void {
         return switch (this.*) {
@@ -438,6 +447,11 @@ pub const MinifyErrorKind = union(enum) {
                     custom_media_loc.custom_media_loc.column,
                 },
             ),
+            .selector_expansion_limit_exceeded => try writer.print(
+                "Nested CSS rules expand to more than {d} selectors when compiled for the configured browser targets. Reduce the nesting depth or the number of selectors per rule, or target browsers that support CSS nesting.",
+                .{65_536},
+            ),
+            .unknown => try writer.writeAll("CSS minification failed"),
         };
     }
 };
@@ -452,6 +466,26 @@ test "fmtPrinterError returns formatting error without a location" {
     const err = fmtPrinterError();
     try std.testing.expect(err.kind == .fmt_error);
     try std.testing.expect(err.loc == null);
+}
+
+test "nesting expansion printer error has the Bun diagnostic" {
+    const err = PrinterErrorKind.maximum_nesting_expansion;
+    const message = try std.fmt.allocPrint(std.testing.allocator, "{f}", .{err});
+    defer std.testing.allocator.free(message);
+    try std.testing.expectEqualStrings(
+        "Maximum nesting expansion exceeded when compiling CSS nesting for the configured targets",
+        message,
+    );
+}
+
+test "selector expansion minify error explains the bounded limit" {
+    const err = MinifyErrorKind.selector_expansion_limit_exceeded;
+    const message = try std.fmt.allocPrint(std.testing.allocator, "{f}", .{err});
+    defer std.testing.allocator.free(message);
+    try std.testing.expectEqualStrings(
+        "Nested CSS rules expand to more than 65536 selectors when compiled for the configured browser targets. Reduce the nesting depth or the number of selectors per rule, or target browsers that support CSS nesting.",
+        message,
+    );
 }
 
 test "ErrorLocation.withFilename preserves line and column" {

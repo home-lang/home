@@ -211,10 +211,7 @@ pub fn CssRuleList(comptime AtRule: type) type {
                         _ = try supp.minify(context, parent_is_unused);
                         if (supp.rules.v.items.len == 0) continue;
                     },
-                    .container => |*cont| {
-                        _ = cont; // autofix
-                        debug("TODO: ContainerRule", .{});
-                    },
+                    .container => |*cont| try cont.rules.minify(context, parent_is_unused),
                     .layer_block => |*lay| {
                         try lay.rules.minify(context, parent_is_unused);
                         if (lay.rules.v.items.len == 0) continue;
@@ -223,10 +220,7 @@ pub fn CssRuleList(comptime AtRule: type) type {
                         _ = lay; // autofix
                         debug("TODO: LayerStatementRule", .{});
                     },
-                    .moz_document => |*doc| {
-                        _ = doc; // autofix
-                        debug("TODO: MozDocumentRule", .{});
-                    },
+                    .moz_document => |*doc| try doc.rules.minify(context, parent_is_unused),
                     .style => |*sty| {
                         const Selector = css.selector.Selector;
                         const SelectorList = css.selector.SelectorList;
@@ -428,18 +422,12 @@ pub fn CssRuleList(comptime AtRule: type) type {
                         _ = cntr; // autofix
                         debug("TODO: CounterStyleRule", .{});
                     },
-                    .scope => |*scpe| {
-                        _ = scpe; // autofix
-                        debug("TODO: ScopeRule", .{});
-                    },
+                    .scope => |*scpe| try scpe.rules.minify(context, parent_is_unused),
                     .nesting => |*nst| {
-                        _ = nst; // autofix
-                        debug("TODO: NestingRule", .{});
+                        try nst.style.chargeSelectorExpansion(context);
+                        try nst.style.minifyNestedRules(context, parent_is_unused);
                     },
-                    .starting_style => |*rl| {
-                        _ = rl; // autofix
-                        debug("TODO: StartingStyleRule", .{});
-                    },
+                    .starting_style => |*rl| try rl.rules.minify(context, parent_is_unused),
                     .font_palette_values => |*f| {
                         _ = f; // autofix
                         debug("TODO: FontPaletteValuesRule", .{});
@@ -512,6 +500,9 @@ pub fn CssRuleList(comptime AtRule: type) type {
     };
 }
 
+/// Maximum number of selectors that compiling nested rules may generate.
+pub const MAX_SELECTOR_EXPANSION = @import("../expansion_budget.zig").MAX_SELECTOR_EXPANSION;
+
 pub const MinifyContext = struct {
     /// NOTE: this should the same allocator the AST was allocated with
     allocator: std.mem.Allocator,
@@ -524,25 +515,13 @@ pub const MinifyContext = struct {
     extra: *const css.StylesheetExtra,
     css_modules: bool,
     err: ?css.MinifyError = null,
+    /// Product of enclosing selector-list lengths while compiling nesting.
+    selector_expansion_multiplier: u32 = 1,
+    /// Running count of selectors that nesting compilation will generate.
+    selector_expansion_total: u32 = 0,
 };
 
-pub const Location = struct {
-    /// The index of the source file within the source map.
-    source_index: u32,
-    /// The line number, starting at 0.
-    line: u32,
-    /// The column number within a line, starting at 1 for first the character of the line.
-    /// Column numbers are counted in UTF-16 code units.
-    column: u32,
-
-    pub fn dummy() Location {
-        return .{
-            .source_index = std.math.maxInt(u32),
-            .line = std.math.maxInt(u32),
-            .column = std.math.maxInt(u32),
-        };
-    }
-};
+pub const Location = @import("../location.zig").Location;
 
 pub const StyleContext = struct {
     selectors: *const css.SelectorList,

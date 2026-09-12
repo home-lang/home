@@ -2558,8 +2558,7 @@ pub fn NestedRuleParser(comptime T: type) type {
                         return .success;
                     },
                     .nest => {
-                        _ = prelude.nest;
-                        _ = switch (this.parseNested(input, true)) {
+                        const declarations, const nested_rules = switch (this.parseNested(input, true)) {
                             .err => |e| return .{ .err = e },
                             .result => |v| v,
                         };
@@ -2567,7 +2566,13 @@ pub fn NestedRuleParser(comptime T: type) type {
                             input.allocator(),
                             .{
                                 .nesting = css_rules.nesting.NestingRule(T.CustomAtRuleParser.AtRule){
-                                    .style = .{},
+                                    .style = .{
+                                        .selectors = prelude.nest,
+                                        .vendor_prefix = .{},
+                                        .declarations = declarations,
+                                        .rules = nested_rules,
+                                        .loc = .{ .source_index = loc.source_index, .line = loc.line, .column = loc.column },
+                                    },
                                     .loc = .{ .source_index = loc.source_index, .line = loc.line, .column = loc.column },
                                 },
                             },
@@ -3220,10 +3225,27 @@ pub fn StyleSheet(comptime AtRule: type) type {
                 .custom_media = custom_media,
                 .css_modules = this.options.css_modules != null,
                 .extra = extra,
+                .selector_expansion_multiplier = 1,
+                .selector_expansion_total = 0,
             };
 
             this.rules.minify(&minify_ctx, false) catch {
-                @panic("TODO: Handle");
+                const err = minify_ctx.err orelse MinifyError{
+                    .kind = .unknown,
+                    .loc = .{ .source_index = 0, .line = 0, .column = 0 },
+                };
+                const filename = if (err.loc.source_index < this.sources.items.len)
+                    this.sources.items[err.loc.source_index]
+                else
+                    this.options.filename;
+                return .{ .err = .{
+                    .kind = err.kind,
+                    .loc = .{
+                        .filename = filename,
+                        .line = err.loc.line,
+                        .column = err.loc.column,
+                    },
+                } };
             };
 
             return .success;
@@ -7497,6 +7519,74 @@ pub fn f32_length_with_5_digits(n_input: f32) usize {
     }
 
     return count;
+}
+
+test "CSS minify bounds multiplicative nested selector expansion" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var source = std.ArrayListUnmanaged(u8).empty;
+    for (0..17) |_| try source.appendSlice(allocator, ".a,.b{");
+    try source.appendSlice(allocator, "color:red;");
+    for (0..17) |_| try source.append(allocator, '}');
+
+    const parsed = StyleSheet(DefaultAtRule).parse(
+        allocator,
+        source.items,
+        ParserOptions.default(allocator, null),
+        null,
+        SrcIndex.invalid,
+    );
+    var stylesheet, var extra = switch (parsed) {
+        .result => |value| value,
+        .err => return error.UnexpectedParseFailure,
+    };
+
+    var options = MinifyOptions.default();
+    options.targets.browsers = .{ .chrome = 80 << 16 };
+    switch (stylesheet.minify(allocator, options, &extra)) {
+        .result => return error.ExpectedSelectorExpansionLimit,
+        .err => |err| try std.testing.expect(err.kind == .selector_expansion_limit_exceeded),
+    }
+}
+
+test "CSS printer bounds recursive parent selector expansion" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var source = std.ArrayListUnmanaged(u8).empty;
+    try source.appendSlice(allocator, ".root{");
+    for (0..17) |_| try source.appendSlice(allocator, "&:is(.a,&.b){");
+    try source.appendSlice(allocator, "color:red;");
+    for (0..18) |_| try source.append(allocator, '}');
+
+    const parsed = StyleSheet(DefaultAtRule).parse(
+        allocator,
+        source.items,
+        ParserOptions.default(allocator, null),
+        null,
+        SrcIndex.invalid,
+    );
+    var stylesheet, var extra = switch (parsed) {
+        .result => |value| value,
+        .err => return error.UnexpectedParseFailure,
+    };
+
+    var minify_options = MinifyOptions.default();
+    minify_options.targets.browsers = .{ .safari = 13 << 16 };
+    if (stylesheet.minify(allocator, minify_options, &extra).asErr()) |_| {
+        return error.UnexpectedMinifyFailure;
+    }
+
+    var printer_options = PrinterOptions.defaultWithMinify(true);
+    printer_options.targets = minify_options.targets;
+    const symbols = bun.ast.Symbol.Map{};
+    switch (stylesheet.toCss(allocator, printer_options, null, null, &symbols)) {
+        .result => return error.ExpectedNestingExpansionLimit,
+        .err => |err| try std.testing.expect(err.kind == .maximum_nesting_expansion),
+    }
 }
 
 const bun = @import("bun");

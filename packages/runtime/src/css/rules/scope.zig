@@ -35,6 +35,9 @@ pub fn ScopeRule(comptime R: type) type {
         pub fn toCss(this: *const This, dest: *Printer) PrintErr!void {
             try dest.writeStr("@scope");
             try dest.whitespace();
+            // Scope preludes can themselves contain nested selectors and need
+            // the same independent substitution budget as style preludes.
+            dest.nesting_expansions = 0;
             if (this.scope_start) |*scope_start| {
                 try dest.writeChar('(');
                 try css.selector.serialize.serializeSelectorList(scope_start.v.slice(), dest, dest.context(), false);

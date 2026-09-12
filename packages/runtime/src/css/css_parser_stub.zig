@@ -155,20 +155,7 @@ pub const TokenList = struct {
 
 // ---- Location ---------------------------------------------------------------
 
-/// Verbatim from upstream rules/rules.zig:Location.
-pub const Location = struct {
-    source_index: u32,
-    line: u32,
-    column: u32,
-
-    pub fn dummy() Location {
-        return .{
-            .source_index = std.math.maxInt(u32),
-            .line = std.math.maxInt(u32),
-            .column = std.math.maxInt(u32),
-        };
-    }
-};
+pub const Location = @import("./location.zig").Location;
 
 // ---- VendorPrefix -----------------------------------------------------------
 

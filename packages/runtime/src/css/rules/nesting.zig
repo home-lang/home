@@ -1,12 +1,8 @@
 // Copied from bun/src/css/rules/nesting.zig at upstream
 // SHA fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../../cli/LICENSE.bun.md.
-// Imports rewritten: @import("../css_parser.zig") → @import("../css_parser_stub.zig").
-// `style.StyleRule(R)` and `Location` resolve via the stub (the stub's
-// `css_rules.style.StyleRule` is the matching generic). Method bodies that
-// touch the Printer / StyleRule.toCss trip `@compileError` until the real
-// css_parser ports.
+// Uses the real parser/printer surface so @nest retains its parsed style rule.
 
-pub const css = @import("../css_parser_stub.zig");
+pub const css = @import("../css_parser.zig");
 const Printer = css.Printer;
 const PrintErr = css.PrintErr;
 const Location = css.css_rules.Location;

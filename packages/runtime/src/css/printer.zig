@@ -118,6 +118,10 @@ pub const Printer = struct {
     pseudo_classes: ?PseudoClasses = null,
     indentation_buf: std.array_list.Managed(u8),
     ctx: ?*const css.StyleContext = null,
+    /// Number of parent-selector substitutions performed while serializing
+    /// the current rule prelude. Reset before each prelude and bounded by the
+    /// selector serializer.
+    nesting_expansions: u32 = 0,
     scratchbuf: std.array_list.Managed(u8),
     error_kind: ?css.PrinterError = null,
     import_info: ?ImportInfo = null,
@@ -253,6 +257,7 @@ pub const Printer = struct {
             .indentation_buf = .init(allocator),
             .import_info = import_info,
             .scratchbuf = scratchbuf,
+            .nesting_expansions = 0,
             .allocator = allocator,
             .public_path = options.public_path,
             .local_names = local_names,

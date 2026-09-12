@@ -271,8 +271,9 @@ pub fn SupportsRule(comptime R: type) type {
             try dest.writeChar('}');
         }
 
-        pub fn minify(_: *@This(), _: anytype, _: bool) !bool {
-            return false;
+        pub fn minify(this: *@This(), context: *css.MinifyContext, parent_is_unused: bool) css.MinifyErr!bool {
+            try this.rules.minify(context, parent_is_unused);
+            return this.rules.v.items.len == 0;
         }
     };
 }

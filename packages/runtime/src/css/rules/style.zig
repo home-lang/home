@@ -60,6 +60,9 @@ pub fn StyleRule(comptime R: type) type {
             const has_declarations = supports_nesting or len > 0 or this.rules.v.items.len == 0;
 
             if (has_declarations) {
+                // Each selector prelude receives an independent budget for
+                // recursive `&` substitution while compiling nesting.
+                dest.nesting_expansions = 0;
                 try css.selector.serialize.serializeSelectorList(this.selectors.v.slice(), dest, dest.context(), false);
                 try dest.whitespace();
                 try dest.writeChar('{');
@@ -151,15 +154,14 @@ pub fn StyleRule(comptime R: type) type {
                 }
             }
 
+            try this.chargeSelectorExpansion(context);
+
             context.handler_context.context = .style_rule;
             this.declarations.minify(context.handler, context.important_handler, &context.handler_context);
             context.handler_context.context = .none;
 
             if (this.rules.v.items.len > 0) {
-                var handler_context = context.handler_context.child(.style_rule);
-                std.mem.swap(css.PropertyHandlerContext, &context.handler_context, &handler_context);
-                try this.rules.minify(context, unused);
-                std.mem.swap(css.PropertyHandlerContext, &context.handler_context, &handler_context);
+                try this.minifyNestedRules(context, unused);
                 if (unused and this.rules.v.items.len == 0) {
                     return true;
                 }
@@ -168,8 +170,52 @@ pub fn StyleRule(comptime R: type) type {
             return false;
         }
 
-        pub fn isCompatible(_: *const @This(), _: anytype) bool {
-            return true;
+        /// Charge this rule against the selector fan-out accumulated from its
+        /// enclosing style rules. Saturating arithmetic makes overflow fail
+        /// closed rather than wrapping below the limit.
+        pub fn chargeSelectorExpansion(this: *const This, context: *css.MinifyContext) css.MinifyErr!void {
+            if (!expansion_budget.chargeSelector(
+                &context.selector_expansion_total,
+                context.selector_expansion_multiplier,
+                this.selectors.v.len(),
+            )) {
+                context.err = .{
+                    .kind = .selector_expansion_limit_exceeded,
+                    .loc = this.loc,
+                };
+                return error.minify_err;
+            }
+        }
+
+        /// Minify nested rules while carrying their multiplicative selector
+        /// expansion cost, restoring both pieces of caller state on failure.
+        pub fn minifyNestedRules(this: *This, context: *css.MinifyContext, parent_is_unused: bool) css.MinifyErr!void {
+            const saved_expansion_multiplier = context.selector_expansion_multiplier;
+            const selectors_incompatible = this.selectors.v.len() > 1 and
+                context.targets.shouldCompileSelectors() and
+                !this.isCompatible(context.targets.*);
+            const splits_selectors = selectors_incompatible and
+                !(context.targets.isCompatible(.is_selector) and
+                    !this.selectors.anyHasPseudoElement() and
+                    this.selectors.specifitiesAllEqual());
+
+            if (context.targets.shouldCompileSame(.nesting) or splits_selectors) {
+                context.selector_expansion_multiplier = expansion_budget.multiplySelectorFanout(
+                    context.selector_expansion_multiplier,
+                    this.selectors.v.len(),
+                );
+            }
+
+            var handler_context = context.handler_context.child(.style_rule);
+            std.mem.swap(css.PropertyHandlerContext, &context.handler_context, &handler_context);
+            const result = this.rules.minify(context, parent_is_unused);
+            std.mem.swap(css.PropertyHandlerContext, &context.handler_context, &handler_context);
+            context.selector_expansion_multiplier = saved_expansion_multiplier;
+            try result;
+        }
+
+        pub fn isCompatible(this: *const This, targets: css.targets.Targets) bool {
+            return css.selector.isCompatible(this.selectors.v.slice(), targets);
         }
 
         pub fn isEmpty(this: *const This) bool {
@@ -221,3 +267,4 @@ test "StyleRule(u8) deepClone preserves loc + vendor_prefix" {
 }
 
 const std = @import("std");
+const expansion_budget = @import("../expansion_budget.zig");
