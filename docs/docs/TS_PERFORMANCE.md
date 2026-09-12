@@ -2476,6 +2476,21 @@ run and the probe was fully reverted. Raw binaries, exact outputs, and every
 screen round remain under
 `bench/vs_tsgo/results/identifier-decl-slot-reuse.20260901T035734Z/`.
 
+A 2026-09-12 profile follow-up independently rediscovered the same exact probe
+against current parent `b164b747e`. The ReleaseFast object confirmed that the
+change removed 36 call relocations to `isDeclNameSlot`, and both binaries again
+accepted the unchanged generated predicate project silently. The larger frozen
+diagnostic workload contained 32,768 families in 50,252,408 bytes with SHA-256
+`d924932d25ebc8b6f8e78c89e0da6922ef8436f588d01d1879c5b7c16af0c9af`.
+Its 20 alternating AB/BA pairs retained every sample after three warmups each:
+the parent measured 6.207927 ± 1.853128 seconds and the candidate measured
+5.625798 ± 0.978428 seconds, with 15/20 candidate wins. The paired improvement
+was 0.582129 seconds, but its 95% interval was -0.055687 to +1.219945 seconds,
+so it still failed the pre-existing paired-mean admission rule. The candidate
+was reverted again. The run stayed under the fixed 3,840 MB ceiling (996 MB
+observed peak; 35% host low-water), and no official competitor checkpoint was
+admitted from this inconclusive scale retest.
+
 ### Rejected parser identifier escape-flag reuse
 
 The scanner already records whether an identifier token contains a consumed
