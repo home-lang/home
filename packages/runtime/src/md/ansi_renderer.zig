@@ -70,7 +70,10 @@ pub const ImageUrlCollector = struct {
         // detail.href is a slice into the parser's reusable buffer, which
         // is freed when renderWithRenderer returns (p.deinit). Dupe it so
         // callers can safely read collector.urls after rendering finishes.
-        const owned = self.allocator.dupe(u8, detail.href) catch return error.OutOfMemory;
+        var scratch: std.ArrayListUnmanaged(u8) = .empty;
+        defer scratch.deinit(self.allocator);
+        const safe_href = sanitizeSourceText(detail.href, &scratch, self.allocator) catch return error.OutOfMemory;
+        const owned = self.allocator.dupe(u8, safe_href) catch return error.OutOfMemory;
         errdefer self.allocator.free(owned);
         self.urls.append(self.allocator, owned) catch return error.OutOfMemory;
     }
@@ -529,8 +532,26 @@ pub const AnsiRenderer = struct {
             .img => {
                 self.image_depth += 1;
                 if (self.image_depth == 1) {
-                    self.image_src = self.allocator.dupe(u8, detail.href) catch null;
-                    self.image_title = self.allocator.dupe(u8, detail.title) catch null;
+                    var src_scratch: std.ArrayListUnmanaged(u8) = .empty;
+                    defer src_scratch.deinit(self.allocator);
+                    var title_scratch: std.ArrayListUnmanaged(u8) = .empty;
+                    defer title_scratch.deinit(self.allocator);
+                    const safe_src = sanitizeSourceText(detail.href, &src_scratch, self.allocator) catch {
+                        self.out.oom = true;
+                        return;
+                    };
+                    const safe_title = sanitizeSourceText(detail.title, &title_scratch, self.allocator) catch {
+                        self.out.oom = true;
+                        return;
+                    };
+                    self.image_src = self.allocator.dupe(u8, safe_src) catch brk: {
+                        self.out.oom = true;
+                        break :brk null;
+                    };
+                    self.image_title = self.allocator.dupe(u8, safe_title) catch brk: {
+                        self.out.oom = true;
+                        break :brk null;
+                    };
                     self.image_alt.clearRetainingCapacity();
                 }
             },
@@ -617,6 +638,12 @@ pub const AnsiRenderer = struct {
     // ========================================
 
     pub fn text(self: *AnsiRenderer, text_type: TextType, content: []const u8) void {
+        var sanitized: std.ArrayListUnmanaged(u8) = .empty;
+        defer sanitized.deinit(self.allocator);
+        const safe_content = sanitizeSourceText(content, &sanitized, self.allocator) catch {
+            self.out.oom = true;
+            return;
+        };
         switch (text_type) {
             .null_char => self.writeContent("\xEF\xBF\xBD"),
             .br => self.writeContent("\n"),
@@ -626,24 +653,30 @@ pub const AnsiRenderer = struct {
                 // (\x1b[22m) rather than a full reset, then reapply any
                 // outer span/link styles.
                 self.writeStyled(color(.dim), "");
-                self.writeContent(content);
+                self.writeContent(safe_content);
                 self.writeStyled("\x1b[22m", "");
                 self.reapplyStyles();
             },
             .entity => {
                 var buf: [8]u8 = undefined;
-                const decoded = helpers.decodeEntityToUtf8(content, &buf) orelse content;
-                self.writeContent(decoded);
+                const decoded = helpers.decodeEntityToUtf8(safe_content, &buf) orelse safe_content;
+                var decoded_sanitized: std.ArrayListUnmanaged(u8) = .empty;
+                defer decoded_sanitized.deinit(self.allocator);
+                const safe_decoded = sanitizeSourceText(decoded, &decoded_sanitized, self.allocator) catch {
+                    self.out.oom = true;
+                    return;
+                };
+                self.writeContent(safe_decoded);
             },
             // Inline code spans are atomic — don't let writeWrapped split
             // them at internal spaces. writeStyled with empty prefix routes
             // the content through the active buffer + updates col in one
             // pass, without the paragraph word-wrap logic.
-            .code => self.writeStyled("", content),
+            .code => self.writeStyled("", safe_content),
             // LaTeX math spans are atomic like .code — don't let
             // writeWrapped split `$E = mc^2$` at internal spaces.
-            .latexmath => self.writeStyled("", content),
-            else => self.writeContent(content),
+            .latexmath => self.writeStyled("", safe_content),
+            else => self.writeContent(safe_content),
         }
     }
 
@@ -1239,7 +1272,15 @@ pub const AnsiRenderer = struct {
         // Language badge
         if (self.theme.colors) self.out.write(color(.dim));
         self.writeIndent();
-        const badge = if (self.code_lang.len > 0) self.code_lang else "";
+        var badge_scratch: std.ArrayListUnmanaged(u8) = .empty;
+        defer badge_scratch.deinit(self.allocator);
+        const badge = if (self.code_lang.len > 0)
+            sanitizeSourceText(self.code_lang, &badge_scratch, self.allocator) catch {
+                self.out.oom = true;
+                return;
+            }
+        else
+            "";
         if (badge.len > 0) {
             self.out.write(top_border);
             if (self.theme.colors) self.out.write("\x1b[0m");
@@ -2004,6 +2045,69 @@ fn visibleIndexAt(s: []const u8, max_cols: usize) usize {
     return bun.strings.visible.width.exclude_ansi_colors.utf8IndexAtWidth(s, max_cols);
 }
 
+/// Remove terminal control bytes and complete CSI/OSC sequences originating
+/// in Markdown source. The common printable path returns `bytes` directly and
+/// allocates nothing; `scratch` is used only when stripping is required.
+fn sanitizeSourceText(bytes: []const u8, scratch: *std.ArrayListUnmanaged(u8), allocator: Allocator) Allocator.Error![]const u8 {
+    const SourceControl = struct {
+        fn isDisallowed(c: u8) bool {
+            return (c < 0x20 and c != '\n' and c != '\t') or c == 0x7f;
+        }
+
+        fn isUtf8C1(input: []const u8, i: usize) bool {
+            return input[i] == 0xC2 and i + 1 < input.len and input[i + 1] >= 0x80 and input[i + 1] <= 0x9F;
+        }
+
+        fn needsStrip(input: []const u8, i: usize) bool {
+            return isDisallowed(input[i]) or isUtf8C1(input, i);
+        }
+    };
+
+    for (0..bytes.len) |i| {
+        if (SourceControl.needsStrip(bytes, i)) break;
+    } else return bytes;
+
+    var i: usize = 0;
+    while (i < bytes.len) {
+        if (bytes[i] == 0x1b) {
+            i += 1;
+            if (i < bytes.len and bytes[i] == '[') {
+                i += 1;
+                while (i < bytes.len and (bytes[i] < 0x40 or bytes[i] > 0x7e)) i += 1;
+                if (i < bytes.len) i += 1;
+            } else if (i < bytes.len and bytes[i] == ']') {
+                i += 1;
+                while (i < bytes.len) {
+                    if (bytes[i] == 0x07) {
+                        i += 1;
+                        break;
+                    }
+                    if (bytes[i] == 0x1b and i + 1 < bytes.len and bytes[i + 1] == '\\') {
+                        i += 2;
+                        break;
+                    }
+                    i += 1;
+                }
+            } else if (i < bytes.len) {
+                i += 1;
+            }
+            continue;
+        }
+        if (SourceControl.isUtf8C1(bytes, i)) {
+            i += 2;
+            continue;
+        }
+        if (SourceControl.isDisallowed(bytes[i])) {
+            i += 1;
+            continue;
+        }
+        const start = i;
+        while (i < bytes.len and !SourceControl.needsStrip(bytes, i)) i += 1;
+        try scratch.appendSlice(allocator, bytes[start..i]);
+    }
+    return scratch.items;
+}
+
 fn isJsLang(lang: []const u8) bool {
     const names = [_][]const u8{
         "js", "javascript", "jsx", "mjs", "cjs",
@@ -2033,7 +2137,9 @@ fn resolveHref(detail: SpanDetail, allocator: Allocator) ![]u8 {
     errdefer buf.deinit(allocator);
     if (detail.autolink_email) try buf.appendSlice(allocator, "mailto:");
     if (detail.autolink_www) try buf.appendSlice(allocator, "http://");
-    try buf.appendSlice(allocator, detail.href);
+    var scratch: std.ArrayListUnmanaged(u8) = .empty;
+    defer scratch.deinit(allocator);
+    try buf.appendSlice(allocator, try sanitizeSourceText(detail.href, &scratch, allocator));
     return try buf.toOwnedSlice(allocator);
 }
 
@@ -2269,3 +2375,56 @@ const Renderer = types.Renderer;
 const SpanDetail = types.SpanDetail;
 const SpanType = types.SpanType;
 const TextType = types.TextType;
+
+test "sanitizeSourceText strips terminal controls without copying ordinary text" {
+    const allocator = std.testing.allocator;
+
+    var plain_scratch: std.ArrayListUnmanaged(u8) = .empty;
+    defer plain_scratch.deinit(allocator);
+    const plain = "hello\nworld\t!";
+    const unchanged = try sanitizeSourceText(plain, &plain_scratch, allocator);
+    try std.testing.expectEqual(@intFromPtr(plain.ptr), @intFromPtr(unchanged.ptr));
+    try std.testing.expectEqual(@as(usize, 0), plain_scratch.items.len);
+
+    var hostile_scratch: std.ArrayListUnmanaged(u8) = .empty;
+    defer hostile_scratch.deinit(allocator);
+    const hostile = "a\x1b]52;c;x\x07b\x1b[31mc\x07d\xC2\x80e\x1bXf";
+    try std.testing.expectEqualStrings("abcdef", try sanitizeSourceText(hostile, &hostile_scratch, allocator));
+
+    hostile_scratch.clearRetainingCapacity();
+    try std.testing.expectEqualStrings("left", try sanitizeSourceText("left\x1b]0;unterminated", &hostile_scratch, allocator));
+}
+
+test "AnsiRenderer text sink sanitizes source controls" {
+    const allocator = std.testing.allocator;
+    var renderer = AnsiRenderer.init(allocator, "", .{ .colors = false, .columns = 0 });
+    defer renderer.deinit();
+
+    // Capture through the image-alt sink so this exercises `text` without
+    // introducing terminal wrapping or styling into the expected bytes.
+    renderer.image_depth = 1;
+    renderer.text(.normal, "a\x1b]52;c;x\x07b\x1b[31mc\x07d\xC2\x80e\x1bXf");
+    try std.testing.expect(!renderer.out.oom);
+    try std.testing.expectEqualStrings("abcdef", renderer.image_alt.items);
+}
+
+test "ANSI link and image metadata are sanitized before ownership transfer" {
+    const allocator = std.testing.allocator;
+    const hostile = "a\x1b]52;c;x\x07b";
+
+    var collector = ImageUrlCollector.init(allocator);
+    defer collector.deinit();
+    try ImageUrlCollector.enterSpanImpl(@ptrCast(&collector), .img, .{ .href = hostile });
+    try std.testing.expectEqual(@as(usize, 1), collector.urls.items.len);
+    try std.testing.expectEqualStrings("ab", collector.urls.items[0]);
+
+    var renderer = AnsiRenderer.init(allocator, "", .{ .colors = false, .columns = 0 });
+    defer renderer.deinit();
+    renderer.enterSpan(.a, .{ .href = hostile });
+    try std.testing.expectEqualStrings("ab", renderer.link_href.?);
+
+    renderer.enterSpan(.img, .{ .href = hostile, .title = "c\x1b[31md" });
+    try std.testing.expect(!renderer.out.oom);
+    try std.testing.expectEqualStrings("ab", renderer.image_src.?);
+    try std.testing.expectEqualStrings("cd", renderer.image_title.?);
+}
