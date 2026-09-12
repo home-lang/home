@@ -46,6 +46,32 @@ const ZigString = jsc.ZigString;
 const StringOrBuffer = jsc.Node.StringOrBuffer;
 const md = home_rt.md;
 
+/// Pins a JavaScript-backed `StringOrBuffer` for the duration of a synchronous
+/// Markdown operation. Pinning can materialize a typed array's backing buffer
+/// and move its data, so consumers must read through the returned ArrayBuffer
+/// instead of retaining the pre-pin slice.
+const PinnedView = struct {
+    value: JSValue,
+    buffer: jsc.ArrayBuffer,
+
+    fn pin(globalThis: *JSGlobalObject, input: *const StringOrBuffer) JSError!?PinnedView {
+        const value = switch (input.*) {
+            .buffer => |buffer| buffer.buffer.value,
+            else => return null,
+        };
+        const pinned = value.asPinnedArrayBuffer(globalThis) orelse return globalThis.throwOutOfMemory();
+        return .{ .value = value, .buffer = pinned };
+    }
+
+    fn slice(self: *const PinnedView) []const u8 {
+        return self.buffer.byteSlice();
+    }
+
+    fn deinit(self: *PinnedView) void {
+        self.value.unpinArrayBuffer();
+    }
+};
+
 // Upstream `create()` parked verbatim — depends on `JSValue.createEmptyObject`,
 // `ZigString.static`, and `jsc.JSFunction.create`. None on home_rt yet.
 //
@@ -104,7 +130,10 @@ pub fn renderToHTML(globalThis: *JSGlobalObject, callframe: *CallFrame) JSError!
     const buffer = try StringOrBuffer.fromJS(globalThis, arena.allocator(), input_value) orelse {
         return globalThis.throwInvalidArguments("Expected a string or buffer to render", .{});
     };
-    const input = buffer.slice();
+    defer buffer.deinit();
+    var pinned = try PinnedView.pin(globalThis, &buffer);
+    defer if (pinned) |*view| view.deinit();
+    const input = if (pinned) |*view| view.slice() else buffer.slice();
     const options = try parseOptions(globalThis, opts_value);
     const result = md.renderToHtmlWithOptions(input, arena.allocator(), options) catch {
         return globalThis.throwOutOfMemory();
@@ -130,8 +159,10 @@ pub fn renderToAnsi(globalThis: *JSGlobalObject, callframe: *CallFrame) JSError!
     const buffer = try jsc.Node.StringOrBuffer.fromJS(globalThis, arena.allocator(), input_value) orelse {
         return globalThis.throwInvalidArguments("Expected a string or buffer to render", .{});
     };
-
-    const input = buffer.slice();
+    defer buffer.deinit();
+    var pinned = try PinnedView.pin(globalThis, &buffer);
+    defer if (pinned) |*view| view.deinit();
+    const input = if (pinned) |*view| view.slice() else buffer.slice();
 
     var theme: md.AnsiTheme = .{
         .colors = true,
@@ -228,11 +259,10 @@ pub fn render(globalThis: *JSGlobalObject, callframe: *CallFrame) JSError!JSValu
     const buffer = try StringOrBuffer.fromJS(globalThis, arena.allocator(), input_value) orelse {
         return globalThis.throwInvalidArguments("Expected a string or buffer to render", .{});
     };
-
-    // Copy into the arena: buffer.slice() borrows JS-owned memory for a
-    // Buffer/ArrayBuffer arg, and the renderer runs JS callbacks mid-parse that
-    // could detach/resize it, freeing the slice under us (use-after-free).
-    const input = arena.allocator().dupe(u8, buffer.slice()) catch return globalThis.throwOutOfMemory();
+    defer buffer.deinit();
+    var pinned = try PinnedView.pin(globalThis, &buffer);
+    defer if (pinned) |*view| view.deinit();
+    const input = if (pinned) |*view| view.slice() else buffer.slice();
 
     const options = try parseOptions(globalThis, opts_value);
 
@@ -304,11 +334,10 @@ fn renderAST(
     const buffer = try StringOrBuffer.fromJS(globalThis, arena.allocator(), input_value) orelse {
         return globalThis.throwInvalidArguments("Expected a string or buffer to render", .{});
     };
-
-    // Copy into the arena: buffer.slice() borrows JS-owned memory for a
-    // Buffer/ArrayBuffer arg, and the renderer runs JS callbacks mid-parse that
-    // could detach/resize it, freeing the slice under us (use-after-free).
-    const input = arena.allocator().dupe(u8, buffer.slice()) catch return globalThis.throwOutOfMemory();
+    defer buffer.deinit();
+    var pinned = try PinnedView.pin(globalThis, &buffer);
+    defer if (pinned) |*view| view.deinit();
+    const input = if (pinned) |*view| view.slice() else buffer.slice();
 
     const options = try parseOptions(globalThis, opts_value);
 
