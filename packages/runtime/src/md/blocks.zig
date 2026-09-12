@@ -788,25 +788,40 @@ pub fn consumeRefDefsFromCurrentBlock(self: *Parser) void {
     while (pos < merged.len) {
         const result = self.parseRefDef(merged, pos) orelse break;
 
-        const norm_label = self.normalizeLabel(result.label);
-        if (norm_label.len == 0) break;
+        const norm_label = self.normalizeLabel(result.label) catch return;
+        if (norm_label.len == 0) {
+            self.allocator.free(norm_label);
+            break;
+        }
 
         // First definition wins
-        var already_exists = false;
-        for (self.ref_defs.items) |existing| {
-            if (std.mem.eql(u8, existing.label, norm_label)) {
-                already_exists = true;
-                break;
-            }
-        }
-        if (!already_exists) {
-            const dest_dupe = self.allocator.dupe(u8, result.dest) catch return;
-            const title_dupe = self.allocator.dupe(u8, result.title) catch return;
-            self.ref_defs.append(self.allocator, .{
+        if (!self.ref_def_labels.contains(norm_label)) {
+            self.ref_defs.ensureUnusedCapacity(self.allocator, 1) catch {
+                self.allocator.free(norm_label);
+                return;
+            };
+            self.ref_def_labels.ensureUnusedCapacity(self.allocator, 1) catch {
+                self.allocator.free(norm_label);
+                return;
+            };
+            const dest_dupe = self.allocator.dupe(u8, result.dest) catch {
+                self.allocator.free(norm_label);
+                return;
+            };
+            const title_dupe = self.allocator.dupe(u8, result.title) catch {
+                self.allocator.free(dest_dupe);
+                self.allocator.free(norm_label);
+                return;
+            };
+            const index = self.ref_defs.items.len;
+            self.ref_defs.appendAssumeCapacity(.{
                 .label = norm_label,
                 .dest = dest_dupe,
                 .title = title_dupe,
-            }) catch return;
+            });
+            self.ref_def_labels.putAssumeCapacity(norm_label, index);
+        } else {
+            self.allocator.free(norm_label);
         }
 
         var newlines: u32 = 0;

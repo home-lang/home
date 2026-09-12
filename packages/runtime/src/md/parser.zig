@@ -71,6 +71,7 @@ pub const Parser = struct {
 
     // Ref defs
     ref_defs: std.ArrayListUnmanaged(RefDef) = .empty,
+    ref_def_labels: bun.StringHashMapUnmanaged(usize) = .empty,
 
     // State
     last_line_has_list_loosening_effect: bool = false,
@@ -118,7 +119,13 @@ pub const Parser = struct {
         self.block_bytes.deinit(self.allocator);
         self.buffer.deinit(self.allocator);
         self.current_block_lines.deinit(self.allocator);
+        for (self.ref_defs.items) |ref_def| {
+            self.allocator.free(ref_def.label);
+            self.allocator.free(ref_def.dest);
+            self.allocator.free(ref_def.title);
+        }
         self.ref_defs.deinit(self.allocator);
+        self.ref_def_labels.deinit(self.allocator);
         self.emph_delims.deinit(self.allocator);
         self.bracket_pairs.deinit(self.allocator);
         self.label_frames.deinit(self.allocator);
