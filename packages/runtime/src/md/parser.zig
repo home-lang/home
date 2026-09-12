@@ -31,10 +31,10 @@ pub const Parser = struct {
     bracket_slice_addr: usize = 0,
     bracket_slice_len: usize = 0,
     bracket_no_closers: bool = false,
-    // Failed inline-HTML terminator searches, retained across recursive label
+    label_frames: std.ArrayListUnmanaged(inlines_mod.LabelFrame) = .empty,
+    // Failed inline-HTML terminator searches, retained across nested label
     // sub-slices and reset for each top-level inline block.
     html_scan_memo: inlines_mod.HtmlScanMemo = .empty,
-    inline_parse_depth: u32 = 0,
 
     // Number of active containers
     n_containers: u32 = 0,
@@ -121,6 +121,7 @@ pub const Parser = struct {
         self.ref_defs.deinit(self.allocator);
         self.emph_delims.deinit(self.allocator);
         self.bracket_pairs.deinit(self.allocator);
+        self.label_frames.deinit(self.allocator);
     }
 
     pub inline fn ch(self: *const Parser, off: OFF) u8 {
@@ -213,7 +214,6 @@ pub const Parser = struct {
     pub const tryMatchBracketLink = links_mod.tryMatchBracketLink;
     pub const labelContainsLink = links_mod.labelContainsLink;
     pub const processWikiLink = links_mod.processWikiLink;
-    pub const renderRefLink = links_mod.renderRefLink;
     pub const chargeRefDefOutput = links_mod.chargeRefDefOutput;
     pub const findAutolink = links_mod.findAutolink;
     pub const renderAutolink = links_mod.renderAutolink;

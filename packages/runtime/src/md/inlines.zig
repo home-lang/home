@@ -61,6 +61,19 @@ pub const HtmlScanMemo = struct {
     }
 };
 
+/// Saved walk state for an enclosing inline slice while a nested link, image,
+/// or wiki-link label is rendered. Keeping these frames on the heap removes
+/// native-stack recursion without imposing a nesting limit.
+pub const LabelFrame = struct {
+    base: usize,
+    end: usize,
+    i: usize,
+    text_start: usize,
+    resolved: []EmphDelim,
+    delim_cursor: usize,
+    leave: links_mod.LabelLeave,
+};
+
 /// Merge all lines into buffer with \n between them (unmodified),
 /// then process inlines on the merged text. Hard/soft breaks are detected
 /// during inline processing when \n is encountered.
@@ -88,266 +101,326 @@ pub fn processLeafBlock(self: *Parser, block_lines: []const VerbatimLine, trim_t
     try self.processInlineContent(merged, block_lines[0].beg);
 }
 
-pub fn processInlineContent(self: *Parser, content: []const u8, base_off: OFF) Parser.Error!void {
+fn enterLabelFrame(
+    self: *Parser,
+    frames: *std.ArrayListUnmanaged(LabelFrame),
+    cur: *[]const u8,
+    base: *usize,
+    i: *usize,
+    text_start: *usize,
+    resolved: *[]EmphDelim,
+    delim_cursor: *usize,
+    parse: links_mod.LabelParse,
+) Parser.Error!void {
+    const label = cur.*[parse.label_start..parse.label_end];
+    self.collectEmphasisDelimiters(label);
+    self.resolveEmphasisDelimiters();
+    const child_resolved = try self.allocator.dupe(EmphDelim, self.emph_delims.items);
+    errdefer self.allocator.free(child_resolved);
+
+    try frames.append(self.allocator, .{
+        .base = base.*,
+        .end = base.* + cur.*.len,
+        .i = parse.link_end,
+        .text_start = parse.link_end,
+        .resolved = resolved.*,
+        .delim_cursor = delim_cursor.*,
+        .leave = parse.leave,
+    });
+
+    base.* += parse.label_start;
+    cur.* = label;
+    resolved.* = child_resolved;
+    i.* = 0;
+    text_start.* = 0;
+    delim_cursor.* = 0;
+}
+
+pub fn processInlineContent(self: *Parser, root_content: []const u8, base_off: OFF) Parser.Error!void {
     if (!self.stack_check.isSafeToRecurse()) {
         return bun.throwStackOverflow();
     }
+    _ = base_off;
 
-    // Reset failed HTML-scan facts at each top-level inline block. Recursive
-    // link/image labels are sub-slices of that block and deliberately retain
-    // the enclosing memo so they do not repeat the same failed scans.
-    const is_root_inline = self.inline_parse_depth == 0;
-    self.inline_parse_depth +|= 1;
-    defer self.inline_parse_depth -|= 1;
-    if (is_root_inline) {
-        self.html_scan_memo = .empty;
-        try self.computeBracketMatches(content);
-    }
+    self.html_scan_memo = .empty;
+    try self.computeBracketMatches(root_content);
+    self.label_frames.clearRetainingCapacity();
+
+    var cur = root_content;
+    var base: usize = 0;
 
     // Phase 1: Collect and resolve emphasis delimiters
-    self.collectEmphasisDelimiters(content);
+    self.collectEmphasisDelimiters(cur);
     self.resolveEmphasisDelimiters();
 
-    // Copy resolved delimiters locally (recursive calls may modify emph_delims)
-    const resolved = self.allocator.dupe(EmphDelim, self.emph_delims.items) catch {
+    // Each frame owns its resolved delimiter copy until it is restored.
+    var resolved = self.allocator.dupe(EmphDelim, self.emph_delims.items) catch {
         // Fallback: emit content as plain text
-        try self.emitText(.normal, content);
+        try self.emitText(.normal, root_content);
         return;
     };
-    defer self.allocator.free(resolved);
+    defer {
+        self.allocator.free(resolved);
+        for (self.label_frames.items) |frame| self.allocator.free(frame.resolved);
+        self.label_frames.clearRetainingCapacity();
+    }
 
     // Phase 2: Emit content using resolved emphasis info
     var i: usize = 0;
     var text_start: usize = 0;
     var delim_cursor: usize = 0;
 
-    while (i < content.len) {
-        const c = content[i];
+    while (true) {
+        while (i < cur.len) {
+            const content = cur;
+            const c = content[i];
 
-        // Fast path: character has no special meaning, skip it
-        if (!self.mark_char_map.isSet(c)) {
-            i += 1;
-            continue;
-        }
+            // Fast path: character has no special meaning, skip it
+            if (!self.mark_char_map.isSet(c)) {
+                i += 1;
+                continue;
+            }
 
-        // Newline from merged lines — check for hard break
-        if (c == '\n') {
-            var emit_end = i;
-            var is_hard = false;
-            if (emit_end > text_start and content[emit_end - 1] == '\\') {
-                emit_end -= 1;
-                is_hard = true;
-            } else {
-                var sp = emit_end;
-                while (sp > text_start and content[sp - 1] == ' ') sp -= 1;
-                if (emit_end - sp >= 2) {
-                    // Also strip any trailing tabs/spaces before the space run
-                    while (sp > text_start and (content[sp - 1] == ' ' or content[sp - 1] == '\t')) sp -= 1;
-                    emit_end = sp;
+            // Newline from merged lines — check for hard break
+            if (c == '\n') {
+                var emit_end = i;
+                var is_hard = false;
+                if (emit_end > text_start and content[emit_end - 1] == '\\') {
+                    emit_end -= 1;
                     is_hard = true;
-                }
-            }
-            if (emit_end > text_start) try self.emitText(.normal, content[text_start..emit_end]);
-            if (is_hard) try self.emitText(.br, "") else try self.emitText(.softbr, "");
-            i += 1;
-            text_start = i;
-            continue;
-        }
-
-        // Check for backslash escape
-        if (c == '\\' and i + 1 < content.len and helpers.isAsciiPunctuation(content[i + 1])) {
-            if (i > text_start) try self.emitText(.normal, content[text_start..i]);
-            i += 1;
-            try self.emitText(.normal, content[i .. i + 1]);
-            i += 1;
-            text_start = i;
-            continue;
-        }
-
-        // Code span
-        if (c == '`') {
-            if (i > text_start) try self.emitText(.normal, content[text_start..i]);
-            const count = countBackticks(content, i);
-            if (self.findCodeSpanEnd(content, i + count, count)) |end_pos| {
-                try self.enterSpan(.code);
-                const code_content = self.normalizeCodeSpanContent(content[i + count .. end_pos]);
-                try self.emitText(.code, code_content);
-                try self.leaveSpan(.code);
-                i = end_pos + count;
-            } else {
-                // No matching closer found — emit the entire backtick run as literal text
-                try self.emitText(.normal, content[i .. i + count]);
-                i += count;
-            }
-            text_start = i;
-            continue;
-        }
-
-        // Emphasis/strikethrough with * or _ or ~ — use resolved delimiters
-        if (c == '*' or c == '_' or (c == '~' and self.flags.strikethrough)) {
-            // Find the corresponding resolved delimiter
-            while (delim_cursor < resolved.len and resolved[delim_cursor].pos < i) delim_cursor += 1;
-
-            if (delim_cursor < resolved.len and resolved[delim_cursor].pos == i) {
-                if (i > text_start) try self.emitText(.normal, content[text_start..i]);
-
-                const d = &resolved[delim_cursor];
-                const run_end = d.pos + d.count;
-
-                // Emit closing tags first (innermost to outermost)
-                if (d.emph_char == '~') {
-                    if (d.close_count > 0) try self.leaveSpan(.del);
                 } else {
-                    try self.emitEmphCloseTags(d.close_sizes[0..d.close_num]);
+                    var sp = emit_end;
+                    while (sp > text_start and content[sp - 1] == ' ') sp -= 1;
+                    if (emit_end - sp >= 2) {
+                        // Also strip any trailing tabs/spaces before the space run
+                        while (sp > text_start and (content[sp - 1] == ' ' or content[sp - 1] == '\t')) sp -= 1;
+                        emit_end = sp;
+                        is_hard = true;
+                    }
                 }
+                if (emit_end > text_start) try self.emitText(.normal, content[text_start..emit_end]);
+                if (is_hard) try self.emitText(.br, "") else try self.emitText(.softbr, "");
+                i += 1;
+                text_start = i;
+                continue;
+            }
 
-                // Emit remaining delimiter chars as text
-                const text_chars = d.count -| (d.open_count + d.close_count);
-                if (text_chars > 0) {
-                    try self.emitText(.normal, content[i .. i + text_chars]);
-                }
+            // Check for backslash escape
+            if (c == '\\' and i + 1 < content.len and helpers.isAsciiPunctuation(content[i + 1])) {
+                if (i > text_start) try self.emitText(.normal, content[text_start..i]);
+                i += 1;
+                try self.emitText(.normal, content[i .. i + 1]);
+                i += 1;
+                text_start = i;
+                continue;
+            }
 
-                // Emit opening tags (outermost to innermost)
-                if (d.emph_char == '~') {
-                    if (d.open_count > 0) try self.enterSpan(.del);
+            // Code span
+            if (c == '`') {
+                if (i > text_start) try self.emitText(.normal, content[text_start..i]);
+                const count = countBackticks(content, i);
+                if (self.findCodeSpanEnd(content, i + count, count)) |end_pos| {
+                    try self.enterSpan(.code);
+                    const code_content = self.normalizeCodeSpanContent(content[i + count .. end_pos]);
+                    try self.emitText(.code, code_content);
+                    try self.leaveSpan(.code);
+                    i = end_pos + count;
                 } else {
-                    try self.emitEmphOpenTags(d.open_sizes[0..d.open_num]);
+                    // No matching closer found — emit the entire backtick run as literal text
+                    try self.emitText(.normal, content[i .. i + count]);
+                    i += count;
                 }
-
-                delim_cursor += 1;
-                i = run_end;
                 text_start = i;
                 continue;
             }
-            // No resolved delimiter found, just advance
-            i += 1;
-            continue;
-        }
 
-        // HTML entity
-        if (c == '&') {
-            if (self.findEntity(content, i)) |end_pos| {
-                if (i > text_start) try self.emitText(.normal, content[text_start..i]);
-                try self.emitText(.entity, content[i..end_pos]);
-                i = end_pos;
-                text_start = i;
-                continue;
-            }
-        }
+            // Emphasis/strikethrough with * or _ or ~ — use resolved delimiters
+            if (c == '*' or c == '_' or (c == '~' and self.flags.strikethrough)) {
+                // Find the corresponding resolved delimiter
+                while (delim_cursor < resolved.len and resolved[delim_cursor].pos < i) delim_cursor += 1;
 
-        // HTML tag
-        if (c == '<' and !self.flags.no_html_spans) {
-            if (self.findHtmlTag(content, i)) |tag_end| {
-                if (i > text_start) try self.emitText(.normal, content[text_start..i]);
-                try self.emitText(.html, content[i..tag_end]);
-                i = tag_end;
-                text_start = i;
-                continue;
-            }
-            if (self.findAutolink(content, i)) |autolink| {
-                if (i > text_start) try self.emitText(.normal, content[text_start..i]);
-                try self.renderAutolink(content[i + 1 .. autolink.end_pos - 1], autolink.is_email);
-                i = autolink.end_pos;
-                text_start = i;
-                continue;
-            }
-        }
+                if (delim_cursor < resolved.len and resolved[delim_cursor].pos == i) {
+                    if (i > text_start) try self.emitText(.normal, content[text_start..i]);
 
-        // Wiki links: [[destination]] or [[destination|label]]
-        if (c == '[' and self.flags.wiki_links and i + 1 < content.len and content[i + 1] == '[') {
-            if (i > text_start) try self.emitText(.normal, content[text_start..i]);
-            if (try self.processWikiLink(content, i)) |end_pos| {
-                i = end_pos;
-                text_start = i;
-                continue;
-            }
-            // No wikilink matched: restore text_start so preceding text
-            // isn't double-emitted by the next span branch.
-            text_start = i;
-        }
+                    const d = &resolved[delim_cursor];
+                    const run_end = d.pos + d.count;
 
-        // Links: [text](url) or [text][ref]
-        if (c == '[') {
-            if (i > text_start) try self.emitText(.normal, content[text_start..i]);
-            if (try self.processLink(content, i, base_off, false)) |end_pos| {
-                i = end_pos;
-            } else {
-                try self.emitText(.normal, "[");
+                    // Emit closing tags first (innermost to outermost)
+                    if (d.emph_char == '~') {
+                        if (d.close_count > 0) try self.leaveSpan(.del);
+                    } else {
+                        try self.emitEmphCloseTags(d.close_sizes[0..d.close_num]);
+                    }
+
+                    // Emit remaining delimiter chars as text
+                    const text_chars = d.count -| (d.open_count + d.close_count);
+                    if (text_chars > 0) {
+                        try self.emitText(.normal, content[i .. i + text_chars]);
+                    }
+
+                    // Emit opening tags (outermost to innermost)
+                    if (d.emph_char == '~') {
+                        if (d.open_count > 0) try self.enterSpan(.del);
+                    } else {
+                        try self.emitEmphOpenTags(d.open_sizes[0..d.open_num]);
+                    }
+
+                    delim_cursor += 1;
+                    i = run_end;
+                    text_start = i;
+                    continue;
+                }
+                // No resolved delimiter found, just advance
                 i += 1;
+                continue;
             }
-            text_start = i;
-            continue;
-        }
 
-        // Images: ![text](url)
-        if (c == '!' and i + 1 < content.len and content[i + 1] == '[') {
-            if (i > text_start) try self.emitText(.normal, content[text_start..i]);
-            if (try self.processLink(content, i + 1, base_off, true)) |end_pos| {
-                i = end_pos;
-            } else {
-                try self.emitText(.normal, "!");
-                i += 1;
+            // HTML entity
+            if (c == '&') {
+                if (self.findEntity(content, i)) |end_pos| {
+                    if (i > text_start) try self.emitText(.normal, content[text_start..i]);
+                    try self.emitText(.entity, content[i..end_pos]);
+                    i = end_pos;
+                    text_start = i;
+                    continue;
+                }
             }
-            text_start = i;
-            continue;
-        }
 
-        // Note: Strikethrough (~) is handled above via the resolved delimiter system
+            // HTML tag
+            if (c == '<' and !self.flags.no_html_spans) {
+                if (self.findHtmlTag(content, i)) |tag_end| {
+                    if (i > text_start) try self.emitText(.normal, content[text_start..i]);
+                    try self.emitText(.html, content[i..tag_end]);
+                    i = tag_end;
+                    text_start = i;
+                    continue;
+                }
+                if (self.findAutolink(content, i)) |autolink| {
+                    if (i > text_start) try self.emitText(.normal, content[text_start..i]);
+                    try self.renderAutolink(content[i + 1 .. autolink.end_pos - 1], autolink.is_email);
+                    i = autolink.end_pos;
+                    text_start = i;
+                    continue;
+                }
+            }
 
-        // Permissive autolinks: detect URL, email, and WWW autolinks
-        // Suppress inside explicit links to avoid double-wrapping (md4c issue #152)
-        if (self.link_nesting_level == 0 and
-            ((c == ':' and self.flags.permissive_url_autolinks) or
-                (c == '@' and self.flags.permissive_email_autolinks) or
-                (c == '.' and self.flags.permissive_www_autolinks)))
-        {
-            // First try with strict boundaries, then with relaxed (emphasis-aware)
-            var al = findPermissiveAutolink(content, i, false);
-            if (al == null) {
-                al = findPermissiveAutolink(content, i, true);
+            // Wiki links: [[destination]] or [[destination|label]]
+            if (c == '[' and self.flags.wiki_links and i + 1 < content.len and content[i + 1] == '[') {
+                if (i > text_start) try self.emitText(.normal, content[text_start..i]);
+                if (try self.processWikiLink(content, i)) |parse| {
+                    try enterLabelFrame(self, &self.label_frames, &cur, &base, &i, &text_start, &resolved, &delim_cursor, parse);
+                    continue;
+                }
+                // No wikilink matched: restore text_start so preceding text
+                // isn't double-emitted by the next span branch.
+                text_start = i;
+            }
+
+            // Links: [text](url) or [text][ref]
+            if (c == '[') {
+                if (i > text_start) try self.emitText(.normal, content[text_start..i]);
+                if (try self.processLink(content, i, 0, false)) |parse| {
+                    try enterLabelFrame(self, &self.label_frames, &cur, &base, &i, &text_start, &resolved, &delim_cursor, parse);
+                } else {
+                    try self.emitText(.normal, "[");
+                    i += 1;
+                    text_start = i;
+                }
+                continue;
+            }
+
+            // Images: ![text](url)
+            if (c == '!' and i + 1 < content.len and content[i + 1] == '[') {
+                if (i > text_start) try self.emitText(.normal, content[text_start..i]);
+                if (try self.processLink(content, i + 1, 0, true)) |parse| {
+                    try enterLabelFrame(self, &self.label_frames, &cur, &base, &i, &text_start, &resolved, &delim_cursor, parse);
+                } else {
+                    try self.emitText(.normal, "!");
+                    i += 1;
+                    text_start = i;
+                }
+                continue;
+            }
+
+            // Note: Strikethrough (~) is handled above via the resolved delimiter system
+
+            // Permissive autolinks: detect URL, email, and WWW autolinks
+            // Suppress inside explicit links to avoid double-wrapping (md4c issue #152)
+            if (self.link_nesting_level == 0 and
+                ((c == ':' and self.flags.permissive_url_autolinks) or
+                    (c == '@' and self.flags.permissive_email_autolinks) or
+                    (c == '.' and self.flags.permissive_www_autolinks)))
+            {
+                // First try with strict boundaries, then with relaxed (emphasis-aware)
+                var al = findPermissiveAutolink(content, i, false);
+                if (al == null) {
+                    al = findPermissiveAutolink(content, i, true);
+                    if (al) |a| {
+                        if (!isEmphBoundaryResolved(content, a, resolved))
+                            al = null;
+                    }
+                }
                 if (al) |a| {
-                    if (!isEmphBoundaryResolved(content, a, resolved))
-                        al = null;
+                    if (a.beg > text_start) try self.emitText(.normal, content[text_start..a.beg]);
+
+                    // Determine URL prefix and render through the renderer
+                    const link_text = content[a.beg..a.end];
+                    if (c == '@') {
+                        try self.renderer.enterSpan(.a, .{ .href = link_text, .permissive_autolink = true, .autolink_email = true });
+                        try self.emitText(.normal, link_text);
+                        try self.renderer.leaveSpan(.a);
+                    } else if (c == '.') {
+                        try self.renderer.enterSpan(.a, .{ .href = link_text, .permissive_autolink = true, .autolink_www = true });
+                        try self.emitText(.normal, link_text);
+                        try self.renderer.leaveSpan(.a);
+                    } else {
+                        try self.renderer.enterSpan(.a, .{ .href = link_text, .permissive_autolink = true });
+                        try self.emitText(.normal, link_text);
+                        try self.renderer.leaveSpan(.a);
+                    }
+                    i = a.end;
+                    text_start = i;
+                    continue;
                 }
             }
-            if (al) |a| {
-                if (a.beg > text_start) try self.emitText(.normal, content[text_start..a.beg]);
 
-                // Determine URL prefix and render through the renderer
-                const link_text = content[a.beg..a.end];
-                if (c == '@') {
-                    try self.renderer.enterSpan(.a, .{ .href = link_text, .permissive_autolink = true, .autolink_email = true });
-                    try self.emitText(.normal, link_text);
-                    try self.renderer.leaveSpan(.a);
-                } else if (c == '.') {
-                    try self.renderer.enterSpan(.a, .{ .href = link_text, .permissive_autolink = true, .autolink_www = true });
-                    try self.emitText(.normal, link_text);
-                    try self.renderer.leaveSpan(.a);
-                } else {
-                    try self.renderer.enterSpan(.a, .{ .href = link_text, .permissive_autolink = true });
-                    try self.emitText(.normal, link_text);
-                    try self.renderer.leaveSpan(.a);
-                }
-                i = a.end;
+            // Null character
+            if (c == 0) {
+                if (i > text_start) try self.emitText(.normal, content[text_start..i]);
+                try self.emitText(.null_char, "");
+                i += 1;
                 text_start = i;
                 continue;
             }
-        }
 
-        // Null character
-        if (c == 0) {
-            if (i > text_start) try self.emitText(.normal, content[text_start..i]);
-            try self.emitText(.null_char, "");
             i += 1;
-            text_start = i;
-            continue;
         }
 
-        i += 1;
-    }
+        if (text_start < cur.len) try self.emitText(.normal, cur[text_start..]);
 
-    if (text_start < content.len) {
-        try self.emitText(.normal, content[text_start..]);
+        const frame = self.label_frames.pop() orelse break;
+        const child_resolved = resolved;
+        resolved = frame.resolved;
+        self.allocator.free(child_resolved);
+
+        switch (frame.leave) {
+            .alt_text => {},
+            .image => {
+                self.image_nesting_level -= 1;
+                try self.renderer.leaveSpan(.img);
+            },
+            .link => {
+                self.link_nesting_level -= 1;
+                try self.renderer.leaveSpan(.a);
+            },
+            .wikilink => try self.renderer.leaveSpan(.wikilink),
+        }
+
+        cur = root_content[frame.base..frame.end];
+        base = frame.base;
+        i = frame.i;
+        text_start = frame.text_start;
+        delim_cursor = frame.delim_cursor;
     }
 }
 
@@ -823,6 +896,7 @@ const std = @import("std");
 const autolinks_mod = @import("./autolinks.zig");
 const findPermissiveAutolink = autolinks_mod.findPermissiveAutolink;
 const isEmphBoundaryResolved = autolinks_mod.isEmphBoundaryResolved;
+const links_mod = @import("./links.zig");
 
 const parser_mod = @import("./parser.zig");
 const Parser = parser_mod.Parser;

@@ -19,6 +19,20 @@ const BracketScan = struct {
     has_inner_bracket: bool,
 };
 
+pub const LabelLeave = enum {
+    alt_text,
+    image,
+    link,
+    wikilink,
+};
+
+pub const LabelParse = struct {
+    label_start: usize,
+    label_end: usize,
+    link_end: usize,
+    leave: LabelLeave,
+};
+
 const UNMATCHED_BRACKET: OFF = std.math.maxInt(OFF);
 
 /// Build the bracket-pair map for one top-level inline slice. While an opener
@@ -183,7 +197,19 @@ fn matchBracket(self: *Parser, content: []const u8, start: usize) ?BracketScan {
     }
 }
 
-pub fn processLink(self: *Parser, content: []const u8, start: usize, base_off: OFF, is_image: bool) Parser.Error!?usize {
+fn enterLabelSpan(self: *Parser, dest: []const u8, title: []const u8, is_image: bool) Parser.Error!LabelLeave {
+    if (self.image_nesting_level > 0) return .alt_text;
+    if (is_image) {
+        try self.renderer.enterSpan(.img, .{ .href = dest, .title = title });
+        self.image_nesting_level += 1;
+        return .image;
+    }
+    try self.renderer.enterSpan(.a, .{ .href = dest, .title = title });
+    self.link_nesting_level += 1;
+    return .link;
+}
+
+pub fn processLink(self: *Parser, content: []const u8, start: usize, base_off: OFF, is_image: bool) Parser.Error!?LabelParse {
     _ = base_off;
     const bracket = matchBracket(self, content, start) orelse return null;
     const has_inner_bracket = bracket.has_inner_bracket;
@@ -293,24 +319,8 @@ pub fn processLink(self: *Parser, content: []const u8, start: usize, base_off: O
                 return null;
             }
 
-            if (self.image_nesting_level > 0) {
-                // Inside image alt text — emit only text, no HTML tags
-                try self.processInlineContent(label, 0);
-            } else if (is_image) {
-                try self.renderer.enterSpan(.img, .{ .href = dest, .title = title });
-                self.image_nesting_level += 1;
-                try self.processInlineContent(label, 0);
-                self.image_nesting_level -= 1;
-                try self.renderer.leaveSpan(.img);
-            } else {
-                try self.renderer.enterSpan(.a, .{ .href = dest, .title = title });
-                self.link_nesting_level += 1;
-                try self.processInlineContent(label, 0);
-                self.link_nesting_level -= 1;
-                try self.renderer.leaveSpan(.a);
-            }
-
-            return pos;
+            const leave = try enterLabelSpan(self, dest, title, is_image);
+            return .{ .label_start = start + 1, .label_end = label_end, .link_end = pos, .leave = leave };
         }
     }
 
@@ -338,8 +348,8 @@ pub fn processLink(self: *Parser, content: []const u8, start: usize, base_off: O
                     return null;
                 }
                 if (!self.chargeRefDefOutput(ref_def.dest.len, ref_def.title.len)) return null;
-                try self.renderRefLink(label, ref_def, is_image);
-                return pos;
+                const leave = try enterLabelSpan(self, ref_def.dest, ref_def.title, is_image);
+                return .{ .label_start = start + 1, .label_end = label_end, .link_end = pos, .leave = leave };
             }
         }
     }
@@ -355,8 +365,8 @@ pub fn processLink(self: *Parser, content: []const u8, start: usize, base_off: O
                 return null;
             }
             if (!self.chargeRefDefOutput(ref_def.dest.len, ref_def.title.len)) return null;
-            try self.renderRefLink(label, ref_def, is_image);
-            return label_end + 1;
+            const leave = try enterLabelSpan(self, ref_def.dest, ref_def.title, is_image);
+            return .{ .label_start = start + 1, .label_end = label_end, .link_end = label_end + 1, .leave = leave };
         }
     }
 
@@ -518,7 +528,7 @@ pub fn labelContainsLink(self: *Parser, label: []const u8) bool {
 }
 
 /// Process wiki link: [[destination]] or [[destination|label]]
-pub fn processWikiLink(self: *Parser, content: []const u8, start: usize) Parser.Error!?usize {
+pub fn processWikiLink(self: *Parser, content: []const u8, start: usize) Parser.Error!?LabelParse {
     // start points at first '[', next char is also '['
     var pos = start + 2;
 
@@ -558,8 +568,6 @@ pub fn processWikiLink(self: *Parser, content: []const u8, start: usize) Parser.
 
     // Determine target and label
     const target = if (pipe_pos) |pp| content[inner_start..pp] else content[inner_start..inner_end];
-    const label = if (pipe_pos) |pp| content[pp + 1 .. inner_end] else content[inner_start..inner_end];
-
     // Target must not exceed 100 characters
     if (target.len > 100) {
         return null;
@@ -567,10 +575,12 @@ pub fn processWikiLink(self: *Parser, content: []const u8, start: usize) Parser.
 
     // Render the wikilink
     try self.renderer.enterSpan(.wikilink, .{ .href = target });
-    try self.processInlineContent(label, 0);
-    try self.renderer.leaveSpan(.wikilink);
-
-    return pos + 2; // skip both ']'
+    return .{
+        .label_start = if (pipe_pos) |pp| pp + 1 else inner_start,
+        .label_end = inner_end,
+        .link_end = pos + 2,
+        .leave = .wikilink,
+    };
 }
 
 /// Render a reference link/image given the resolved ref def.
@@ -586,25 +596,6 @@ pub fn chargeRefDefOutput(self: *Parser, dest_len: usize, title_len: usize) bool
     }
     self.max_ref_def_output = 0;
     return false;
-}
-
-pub fn renderRefLink(self: *Parser, label_content: []const u8, ref: RefDef, is_image: bool) Parser.Error!void {
-    if (self.image_nesting_level > 0) {
-        // Inside image alt text — emit only text, no HTML tags
-        try self.processInlineContent(label_content, 0);
-    } else if (is_image) {
-        try self.renderer.enterSpan(.img, .{ .href = ref.dest, .title = ref.title });
-        self.image_nesting_level += 1;
-        try self.processInlineContent(label_content, 0);
-        self.image_nesting_level -= 1;
-        try self.renderer.leaveSpan(.img);
-    } else {
-        try self.renderer.enterSpan(.a, .{ .href = ref.dest, .title = ref.title });
-        self.link_nesting_level += 1;
-        try self.processInlineContent(label_content, 0);
-        self.link_nesting_level -= 1;
-        try self.renderer.leaveSpan(.a);
-    }
 }
 
 pub fn findAutolink(self: *const Parser, content: []const u8, start: usize) ?struct { end_pos: usize, is_email: bool } {
@@ -693,9 +684,6 @@ const std = @import("std");
 
 const parser_mod = @import("./parser.zig");
 const Parser = parser_mod.Parser;
-
-const ref_defs_mod = @import("./ref_defs.zig");
-const RefDef = ref_defs_mod.RefDef;
 
 const types = @import("./types.zig");
 const OFF = types.OFF;
