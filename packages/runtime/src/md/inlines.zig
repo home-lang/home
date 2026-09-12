@@ -114,7 +114,7 @@ fn enterLabelFrame(
 ) Parser.Error!void {
     const label = cur.*[parse.label_start..parse.label_end];
     self.collectEmphasisDelimiters(label);
-    self.resolveEmphasisDelimiters();
+    try self.resolveEmphasisDelimiters();
     const child_resolved = try self.allocator.dupe(EmphDelim, self.emph_delims.items);
     errdefer self.allocator.free(child_resolved);
 
@@ -151,7 +151,7 @@ pub fn processInlineContent(self: *Parser, root_content: []const u8, base_off: O
 
     // Phase 1: Collect and resolve emphasis delimiters
     self.collectEmphasisDelimiters(cur);
-    self.resolveEmphasisDelimiters();
+    try self.resolveEmphasisDelimiters();
 
     // Each frame owns its resolved delimiter copy until it is restored.
     var resolved = self.allocator.dupe(EmphDelim, self.emph_delims.items) catch {
@@ -630,9 +630,25 @@ pub fn collectEmphasisDelimiters(self: *Parser, content: []const u8) void {
 }
 
 /// Resolve emphasis delimiters using the CommonMark algorithm.
-pub fn resolveEmphasisDelimiters(self: *Parser) void {
+pub fn resolveEmphasisDelimiters(self: *Parser) Parser.Error!void {
     const delims = self.emph_delims.items;
     if (delims.len == 0) return;
+
+    const Key = struct {
+        fn of(d: *const EmphDelim) usize {
+            const char_idx: usize = switch (d.emph_char) {
+                '*' => 0,
+                '_' => 1,
+                '~' => 2,
+                else => 0,
+            };
+            return ((char_idx * 3) + (d.count % 3)) * 2 + @intFromBool(d.can_open);
+        }
+    };
+    var openers_bottom: [18]usize = @splat(0);
+    const prev_candidate = try self.allocator.alloc(usize, delims.len);
+    defer self.allocator.free(prev_candidate);
+    for (prev_candidate, 0..) |*prev, i| prev.* = i -% 1;
 
     // Process potential closers from left to right
     var closer_idx: usize = 0;
@@ -640,41 +656,54 @@ pub fn resolveEmphasisDelimiters(self: *Parser) void {
         if (!delims[closer_idx].can_close or delims[closer_idx].remaining == 0) continue;
 
         // Look backward for a matching opener
+        const opener_bottom = openers_bottom[Key.of(&delims[closer_idx])];
         var found_match = false;
-        if (closer_idx > 0) {
-            var oi: usize = closer_idx;
-            while (oi > 0) {
-                oi -= 1;
-                const opener = &delims[oi];
-                if (opener.emph_char != delims[closer_idx].emph_char) continue;
-                if (!opener.can_open or opener.remaining == 0 or !opener.active) continue;
+        if (closer_idx > opener_bottom) {
+            var from = closer_idx;
+            var oi = prev_candidate[closer_idx];
+            while (oi != std.math.maxInt(usize) and oi >= opener_bottom) {
+                if (!delims[oi].can_open or delims[oi].remaining == 0 or !delims[oi].active) {
+                    const next = prev_candidate[oi];
+                    prev_candidate[from] = next;
+                    oi = next;
+                    continue;
+                }
+                if (delims[oi].emph_char != delims[closer_idx].emph_char) {
+                    from = oi;
+                    oi = prev_candidate[oi];
+                    continue;
+                }
 
                 // Strikethrough: exact count match required
-                if (opener.emph_char == '~') {
-                    if (opener.count != delims[closer_idx].count) continue;
+                if (delims[oi].emph_char == '~' and delims[oi].count != delims[closer_idx].count) {
+                    from = oi;
+                    oi = prev_candidate[oi];
+                    continue;
                 }
 
                 // Rule of three: if closer can also open OR opener can also close,
                 // and the sum is a multiple of 3, and neither is individually a multiple of 3, skip
-                if (opener.emph_char != '~' and
-                    (opener.can_close or delims[closer_idx].can_open) and
-                    (opener.count + delims[closer_idx].count) % 3 == 0 and
-                    opener.count % 3 != 0 and delims[closer_idx].count % 3 != 0)
+                if (delims[oi].emph_char != '~' and
+                    (delims[oi].can_close or delims[closer_idx].can_open) and
+                    (delims[oi].count + delims[closer_idx].count) % 3 == 0 and
+                    delims[oi].count % 3 != 0 and delims[closer_idx].count % 3 != 0)
                 {
+                    from = oi;
+                    oi = prev_candidate[oi];
                     continue;
                 }
 
                 // Match found! Determine how many chars to use
                 // For strikethrough (~): consume entire run at once
-                const use: usize = if (opener.emph_char == '~')
-                    opener.remaining
-                else if (opener.remaining >= 2 and delims[closer_idx].remaining >= 2) 2 else 1;
+                const use: usize = if (delims[oi].emph_char == '~')
+                    delims[oi].remaining
+                else if (delims[oi].remaining >= 2 and delims[closer_idx].remaining >= 2) 2 else 1;
 
-                opener.remaining -= use;
-                opener.open_count += use;
-                if (opener.open_num < MAX_EMPH_MATCHES) {
-                    opener.open_sizes[opener.open_num] = @intCast(use);
-                    opener.open_num += 1;
+                delims[oi].remaining -= use;
+                delims[oi].open_count += use;
+                if (delims[oi].open_num < MAX_EMPH_MATCHES) {
+                    delims[oi].open_sizes[delims[oi].open_num] = @intCast(use);
+                    delims[oi].open_num += 1;
                 }
                 delims[closer_idx].remaining -= use;
                 delims[closer_idx].close_count += use;
@@ -684,10 +713,12 @@ pub fn resolveEmphasisDelimiters(self: *Parser) void {
                 }
 
                 // Remove all delimiters between opener and closer (CommonMark §6.4)
-                var k = oi + 1;
-                while (k < closer_idx) : (k += 1) {
+                var k = prev_candidate[closer_idx];
+                while (k != std.math.maxInt(usize) and k > oi) {
                     delims[k].active = false;
+                    k = prev_candidate[k];
                 }
+                prev_candidate[closer_idx] = oi;
 
                 found_match = true;
 
@@ -702,9 +733,10 @@ pub fn resolveEmphasisDelimiters(self: *Parser) void {
             }
         }
 
-        // If no match and can't open, deactivate
-        if (!found_match and !delims[closer_idx].can_open) {
-            delims[closer_idx].active = false;
+        // Avoid rescanning the same failed prefix for this closer class.
+        if (!found_match) {
+            openers_bottom[Key.of(&delims[closer_idx])] = closer_idx;
+            if (!delims[closer_idx].can_open) delims[closer_idx].active = false;
         }
     }
 }
