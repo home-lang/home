@@ -4,6 +4,9 @@ pub const RefDef = struct {
     title: []const u8, // raw title (slice of source)
 };
 
+/// CommonMark limits the raw contents of a link label to 999 characters.
+pub const MAX_LINK_LABEL_LEN: usize = 999;
+
 /// Normalize a link label for comparison: collapse whitespace runs to single space,
 /// strip leading/trailing whitespace, case-fold.
 pub fn normalizeLabel(self: *Parser, raw: []const u8) []const u8 {
@@ -53,7 +56,8 @@ pub fn normalizeLabel(self: *Parser, raw: []const u8) []const u8 {
 
 /// Look up a reference definition by label (case-insensitive, whitespace-normalized).
 pub fn lookupRefDef(self: *Parser, raw_label: []const u8) ?RefDef {
-    if (raw_label.len == 0) return null;
+    if (raw_label.len == 0 or self.ref_defs.items.len == 0) return null;
+    if (raw_label.len > MAX_LINK_LABEL_LEN) return null;
     const normalized = self.normalizeLabel(raw_label);
     if (normalized.len == 0) return null; // whitespace-only labels are invalid
     for (self.ref_defs.items) |rd| {
@@ -83,7 +87,7 @@ pub fn parseRefDef(self: *Parser, text: []const u8, pos: usize) ?struct { end_po
             p += 1;
             label_len += 1;
         }
-        if (label_len > 999) return null; // label too long
+        if (label_len > MAX_LINK_LABEL_LEN) return null; // label too long
     }
     if (p >= text.len) return null; // no closing ]
     const label = text[label_start..p];
