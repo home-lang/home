@@ -113218,25 +113218,49 @@ pub const Checker = struct {
                                         if (self.callbackHasQualifiedTypeofInstantiationReturn(args[i])) continue;
                                         const arg_has_own_type_params = self.isContextualFunctionExpressionLike(args[i]) and
                                             hir_mod.fnDeclOf(self.hir, args[i]).type_params_len != 0;
+                                        var inference_arg_t = arg_types.items[i];
+                                        if (phase == 1 and is_contextual_callback and !arg_has_own_type_params) {
+                                            // Ordinary arguments have already fixed every type parameter they can.
+                                            // Recheck a context-sensitive callback against that partially
+                                            // instantiated signature before using its body as inference evidence.
+                                            // Otherwise `(value: T) => U | PromiseLike<U>` is checked while T is
+                                            // still opaque, so `value.member` degrades to `any` and poisons U.
+                                            const contextual_param_t = self.substituteType(param_t, &call_subs) catch param_t;
+                                            if (contextual_param_t != param_t) {
+                                                var contextual_evidence: TypeId = types.Primitive.none;
+                                                try self.checkFunctionWithContextualSignatureMode(
+                                                    args[i],
+                                                    contextual_param_t,
+                                                    false,
+                                                    &contextual_evidence,
+                                                );
+                                                if (contextual_evidence != types.Primitive.none and
+                                                    self.interner.isSignature(contextual_evidence))
+                                                {
+                                                    inference_arg_t = contextual_evidence;
+                                                    arg_types.items[i] = contextual_evidence;
+                                                }
+                                            }
+                                        }
                                         const suppress_generic_callback_inference = if (arg_has_own_type_params)
                                             false
                                         else
                                             try self.inferFromPartiallyAnnotatedFunctionArgument(param_t, args[i], &call_subs);
-                                        if (!try self.inferFromPredicateSignatureArgument(param_t, param_pred, args[i], arg_types.items[i], &call_subs)) {
+                                        if (!try self.inferFromPredicateSignatureArgument(param_t, param_pred, args[i], inference_arg_t, &call_subs)) {
                                             if (suppress_generic_callback_inference) {
                                                 // The specialized pass handled all valid
                                                 // evidence from this callback shape.
                                             } else if (self.signatureHasBareGenericRestParam(param_t)) {
-                                                try self.inferFromArgument(param_t, arg_types.items[i], args[i], &call_subs);
-                                            } else if (arg_types.items[i] < self.interner.pool.typeCount() and
-                                                self.interner.pool.flagsOf(arg_types.items[i]).is_signature)
+                                                try self.inferFromArgument(param_t, inference_arg_t, args[i], &call_subs);
+                                            } else if (inference_arg_t < self.interner.pool.typeCount() and
+                                                self.interner.pool.flagsOf(inference_arg_t).is_signature)
                                             {
-                                                const inference_arg_t = try self.genericInferenceFunctionArgumentType(
+                                                const inferred_callback_t = try self.genericInferenceFunctionArgumentType(
                                                     args[i],
-                                                    arg_types.items[i],
+                                                    inference_arg_t,
                                                     param_t,
                                                 );
-                                                try self.inferFromPair(param_t, inference_arg_t, &call_subs);
+                                                try self.inferFromPair(param_t, inferred_callback_t, &call_subs);
                                             } else if (self.signatureIsConstruct(param_t)) {
                                                 _ = try self.inferFromConstructSignatureArgument(param_t, arg_types.items[i], &call_subs);
                                             } else {
@@ -226751,6 +226775,48 @@ test "checker: higher-order generic map infers callback element + return" {
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.type_not_assignable);
         try T.expect(d.code != TsCodes.argument_type_mismatch);
+    }
+}
+
+test "checker: generic async projection callbacks infer fixed input and awaited output" {
+    const b = try newBoundSetup(
+        \\declare function load<T>(value: T): PromiseLike<T>;
+        \\async function mapAsync<T, U>(input: PromiseLike<T>, project: (value: T) => U | PromiseLike<U>): Promise<U> {
+        \\  return project(await input);
+        \\}
+        \\async function use(input: { label: string }) {
+        \\  const projected = mapAsync(load(input), value => value.label);
+        \\  const exactPromise: Promise<string> = projected;
+        \\  const mapped = await projected;
+        \\  const label: string = mapped;
+        \\  const wrong: number = mapped;
+        \\  const projectedLike = mapAsync(load(input), value => load(value.label));
+        \\  const exactLikePromise: Promise<string> = projectedLike;
+        \\  const mappedLike = await projectedLike;
+        \\  const likeLabel: string = mappedLike;
+        \\  const likeWrong: number = mappedLike;
+        \\  const blockProjected = mapAsync(load(input), value => {
+        \\    const exactValue: { label: string } = value;
+        \\    const wrongValue: number = value.label;
+        \\    return value.label;
+        \\  });
+        \\  const blockExactPromise: Promise<string> = blockProjected;
+        \\  const blockMapped = await blockProjected;
+        \\  const blockLabel: string = blockMapped;
+        \\  const blockWrong: number = blockMapped;
+        \\}
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{
+        .strict_null_checks = true,
+        .strict_function_types = true,
+        .no_implicit_any = true,
+    });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 4), b.base.checker.diagnostics.items.len);
+    try T.expectEqual(@as(usize, 4), checkerCountCode(b.base, TsCodes.type_not_assignable));
+    for (b.base.checker.diagnostics.items) |diagnostic| {
+        try T.expectEqualStrings("Type 'string' is not assignable to type 'number'.", diagnostic.message);
     }
 }
 
