@@ -76971,6 +76971,10 @@ pub const Checker = struct {
     }
 
     fn currentGenericReturnAnnotationDiagnosticName(self: *Checker) CheckError!?[]const u8 {
+        // Async return expressions are checked against Awaited<R>, not the
+        // syntactic Promise-like annotation R. Let the checked target type
+        // supply the diagnostic name so `Promise<string>` reports `string`.
+        if (self.current_async_function_return_check) return null;
         const return_node = self.current_function_return_node;
         if (return_node == hir_mod.none_node_id or self.hir.kindOf(return_node) != .type_ref) return null;
         if (hir_mod.typeRefOf(self.hir, return_node).args_len == 0) return null;
@@ -240835,6 +240839,53 @@ test "checker: primitive return contracts reject incompatible awaited values" {
     try b.base.checker.checkSourceFile(b.base.root);
     try T.expectEqual(@as(usize, 5), checkerCountCode(b.base, TsCodes.type_not_assignable));
     try T.expectEqual(@as(usize, 5), b.base.checker.diagnostics.items.len);
+}
+
+test "checker: async return diagnostics display the awaited target" {
+    const b = try newBoundSetup(
+        \\type Text = string;
+        \\type AsyncText = Promise<Text>;
+        \\type NestedText = Promise<Promise<Text>>;
+        \\declare const promisedNumber: Promise<number>;
+        \\declare const likeNumber: PromiseLike<number>;
+        \\declare const unknownValue: unknown;
+        \\async function direct(value: number): Promise<string> { return value; }
+        \\async function promised(): Promise<string> { return promisedNumber; }
+        \\async function promiseLike(): Promise<string> { return likeNumber; }
+        \\async function unknownSource(): Promise<string> { return unknownValue; }
+        \\async function aliasTarget(value: number): Promise<Text> { return value; }
+        \\async function aliasedPromise(value: number): AsyncText { return value; }
+        \\async function nested(value: number): NestedText { return value; }
+        \\const expression = async (value: number): Promise<string> => value;
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{ .strict_null_checks = true, .strict_function_types = true, .no_implicit_any = true });
+    try b.base.checker.checkSourceFile(b.base.root);
+
+    var number_to_string: usize = 0;
+    var unknown_to_string: usize = 0;
+    var return_statement_anchors: usize = 0;
+    var expression_body_anchors: usize = 0;
+    for (b.base.checker.diagnostics.items) |diagnostic| {
+        try T.expectEqual(TsCodes.type_not_assignable, diagnostic.code);
+        if (std.mem.eql(u8, diagnostic.message, "Type 'number' is not assignable to type 'string'.")) {
+            number_to_string += 1;
+        } else if (std.mem.eql(u8, diagnostic.message, "Type 'unknown' is not assignable to type 'string'.")) {
+            unknown_to_string += 1;
+        } else {
+            return error.TestUnexpectedResult;
+        }
+        switch (b.base.checker.hir.kindOf(diagnostic.node)) {
+            .return_stmt => return_statement_anchors += 1,
+            .identifier => expression_body_anchors += 1,
+            else => return error.TestUnexpectedResult,
+        }
+    }
+    try T.expectEqual(@as(usize, 7), number_to_string);
+    try T.expectEqual(@as(usize, 1), unknown_to_string);
+    try T.expectEqual(@as(usize, 7), return_statement_anchors);
+    try T.expectEqual(@as(usize, 1), expression_body_anchors);
+    try T.expectEqual(@as(usize, 8), b.base.checker.diagnostics.items.len);
 }
 
 test "checker: primitive return contracts reject unknown and strict nullish values" {
