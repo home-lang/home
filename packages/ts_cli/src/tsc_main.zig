@@ -2792,6 +2792,7 @@ pub fn main(init: std.process.Init) !void {
     var loaded_cfg: ?tsconfig_mod.TsConfig = null;
     const explicit_project = opts.project;
     const should_load_config = shouldLoadConfig(opts);
+    const should_check_positional_config = shouldCheckPositionalConfig(opts);
 
     // For an explicit `--project`, validate existence the way upstream
     // does before resolving the config path: a path that names an
@@ -2816,7 +2817,15 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    if (should_load_config) {
+    // TypeScript still discovers the nearest config beside positional files,
+    // but only to reject the ambiguous invocation with TS5112. Do not publish
+    // that path as `opts.project`: the config must never be loaded in this
+    // branch. Help, version, and --init retain their upstream precedence below.
+    if (should_check_positional_config) {
+        if (resolveTsConfigPath(gpa, null) catch null) |path| {
+            cfg_path_buf = path;
+        }
+    } else if (should_load_config) {
         if (resolveTsConfigPath(gpa, opts.project) catch null) |path| {
             opts.project = path;
             cfg_path_buf = path;
@@ -2864,6 +2873,15 @@ pub fn main(init: std.process.Init) !void {
     if (dec.code != .success) std.process.exit(@backingInt(dec.code));
 
     if (opts.show_version or opts.show_help) return;
+
+    if (should_check_positional_config and cfg_path_buf != null) {
+        const msg = positionalFilesBesideConfigDiagnostic(gpa) catch {
+            std.process.exit(@backingInt(ts_cli.ExitCode.type_errors));
+        };
+        defer gpa.free(msg);
+        std.debug.print("{s}\n", .{msg});
+        std.process.exit(@backingInt(ts_cli.ExitCode.type_errors));
+    }
 
     // Load the discovered tsconfig. The JSONC parser aliases
     // strings into the source buffer, so cfg_src must outlive
@@ -3930,6 +3948,17 @@ fn projectMixedWithSourceFilesDiagnostic(gpa: std.mem.Allocator) ![]u8 {
     );
 }
 
+/// TS5112: a discovered tsconfig would be ignored because positional source
+/// files were supplied without the explicit `--ignoreConfig` escape hatch.
+fn positionalFilesBesideConfigDiagnostic(gpa: std.mem.Allocator) ![]u8 {
+    const code: u32 = 5112;
+    return try std.fmt.allocPrint(
+        gpa,
+        "error TS{d}: tsconfig.json is present but will not be loaded if files are specified on commandline. Use '--ignoreConfig' to skip this error.",
+        .{code},
+    );
+}
+
 /// TS5058: an explicit `--project` path (treated as a file because it
 /// isn't an existing directory) does not exist on disk.
 fn specifiedPathDoesNotExistDiagnostic(gpa: std.mem.Allocator, file_or_directory: []const u8) ![]u8 {
@@ -4086,6 +4115,10 @@ fn shouldLoadConfig(opts: ts_cli.Options) bool {
     return opts.project != null or opts.files.len == 0 or (opts.show_config and !opts.ignore_config);
 }
 
+fn shouldCheckPositionalConfig(opts: ts_cli.Options) bool {
+    return opts.project == null and opts.files.len > 0 and !opts.ignore_config;
+}
+
 fn applyCommandLineCompileOptions(compile_opts: *ts_driver.CompileOptions, opts: ts_cli.Options) void {
     compile_opts.strict = opts.strict;
     compile_opts.no_emit = compile_opts.no_emit or opts.no_emit;
@@ -4147,13 +4180,27 @@ test "tsc_main: TS5042 project mixed with source files diagnostic" {
     );
 }
 
+test "tsc_main: TS5112 positional files beside discovered config diagnostic" {
+    const msg = try positionalFilesBesideConfigDiagnostic(std.testing.allocator);
+    defer std.testing.allocator.free(msg);
+    try std.testing.expectEqualStrings(
+        "error TS5112: tsconfig.json is present but will not be loaded if files are specified on commandline. Use '--ignoreConfig' to skip this error.",
+        msg,
+    );
+}
+
 test "tsc_main: ignoreConfig only suppresses config discovery beside positional files" {
     const files = [_][]const u8{"entry.ts"};
     try std.testing.expect(!shouldLoadConfig(.{ .files = &files }));
+    try std.testing.expect(shouldCheckPositionalConfig(.{ .files = &files }));
     try std.testing.expect(shouldLoadConfig(.{ .files = &files, .show_config = true }));
+    try std.testing.expect(shouldCheckPositionalConfig(.{ .files = &files, .show_config = true }));
     try std.testing.expect(!shouldLoadConfig(.{ .files = &files, .show_config = true, .ignore_config = true }));
+    try std.testing.expect(!shouldCheckPositionalConfig(.{ .files = &files, .show_config = true, .ignore_config = true }));
     try std.testing.expect(shouldLoadConfig(.{ .ignore_config = true }));
+    try std.testing.expect(!shouldCheckPositionalConfig(.{ .ignore_config = true }));
     try std.testing.expect(shouldLoadConfig(.{ .files = &files, .project = "tsconfig.json", .ignore_config = true }));
+    try std.testing.expect(!shouldCheckPositionalConfig(.{ .files = &files, .project = "tsconfig.json", .ignore_config = true }));
 }
 
 test "tsc_main: command-line skipLibCheck overrides config in both directions" {

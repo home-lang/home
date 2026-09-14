@@ -7329,10 +7329,32 @@ codes are not normalized into semantic results.
 | `--ignoreConfig` with no files | config TS2322 | config TS2322 | config TS2322 | config TS2322 |
 | malformed declaration with `skipLibCheck` | syntax error | syntax error | exit 139 | syntax error |
 
-The absent-`ignoreConfig` TS5112 decision remains separately scoped to
-[#486](https://github.com/home-lang/home/issues/486). This change makes the
-escape hatch safe and semantically effective; it does not hide that remaining
-diagnostic difference.
+Issue [#486](https://github.com/home-lang/home/issues/486) closes the
+complementary absent-`ignoreConfig` branch. Like TypeScript 6.0.3 and native
+TypeScript 7.0.2, Home now searches upward for the nearest `tsconfig.json` when
+positional files are present. If one exists, Home reports byte-identical TS5112
+and exits 1 without loading the config. Explicit `--ignoreConfig` skips that
+search; a positional file with no discoverable config still compiles normally.
+The existing TS5042 check keeps precedence for `-p` mixed with positional files,
+and normal `-p` loading is unchanged.
+
+The oracle below is untimed CLI correctness evidence, not a throughput
+benchmark. Every compiler receives the same files, working directory, and
+arguments. The Home parent is the frozen source-matched binary with SHA-256
+`bfba4f9e94731d4e9639094e53fea1e707fd1c4c160157474ee2de86ba1275b3`;
+the candidate binary has SHA-256
+`2ab2f15d4ef0a2aef5675ffbf911a8a8612f29e2b9132860c29f88d02119db0d`.
+
+| Positional-config control | TypeScript 6.0.3 | Native TypeScript 7.0.2 | Frozen Home parent | #486 candidate |
+|---|---:|---:|---:|---:|
+| nearby config + `entry.ts` | TS5112, exit 1 | TS5112, exit 1 | pass | **TS5112, exit 1** |
+| nearby config + `--ignoreConfig entry.ts` | pass | pass | pass | **pass** |
+| no config + `entry.ts` | pass | pass | pass | **pass** |
+| `-p tsconfig.json entry.ts` | TS5042 | TS5042 | TS5042 | **TS5042** |
+| `-p tsconfig.json` | pass | pass | pass | **pass** |
+
+The guarded ReleaseSafe build peaked at 2,820 MB and the focused `ts_cli` test
+target passed at 272 MB, both below the fixed 3,840 MB process-tree ceiling.
 
 The complete post-#639 Zod 4.5.2 graph is also checked unchanged with exact
 parent `df4dff88f` and candidate ReleaseFast binaries. Diagnostic identities

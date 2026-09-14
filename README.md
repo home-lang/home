@@ -360,6 +360,14 @@ declaration-file semantic reporting:
 | Pinned `ignoreConfig` / `skipLibCheck` oracle | exit 139 | **all 6 cases match** | source path preserved; true/false honored |
 | Zod 4.5.2 diagnostics | 600 | **600** | **0 added; 0 removed** |
 
+The complementary config-discovery check is source-matched against both pinned
+TypeScript controls and keeps explicit-file mode unambiguous:
+
+| [Positional-file config audit](docs/docs/TS_PERFORMANCE.md#explicit-file-cli-boolean-integrity) | Frozen parent | #486 candidate | TypeScript 6.0.3 / native 7.0.2 |
+|---|---:|---:|---:|
+| Nearby `tsconfig.json`, no `--ignoreConfig` | exit 0 | **TS5112, exit 1** | TS5112, exit 1 |
+| Escape hatch / no nearby config / normal `-p` | 3/3 pass | **3/3 pass** | 3/3 pass |
+
 The next owner/projection and narrowing audit uses the unchanged pinned graph
 and compares complete diagnostic identities rather than only aggregate counts:
 
