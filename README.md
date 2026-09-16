@@ -546,6 +546,16 @@ guards, and validates actual multi-statement return unions:
 | Unique path/line/column/code identities | 345 | **343** | **2 removed; 0 added** |
 | Focused three-engine oracle | valid | **valid + exact 1× TS2322 control** | no TS7006/TS2339 |
 
+Qualified Program constraints then resolve for every type-parameter
+declaration form, `await` distributes over union constituents, and contextual
+issue-array projections type callbacks without becoming value types:
+
+| [Zod 4.5.2 qualified-constraint audit](docs/docs/TS_PERFORMANCE.md#qualified-program-constraints-and-contextual-issue-arrays-untimed) | `main` `65f80a525` | #688 main | Change |
+|---|---:|---:|---:|
+| Core diagnostics | 150 | **146** | **4 TS7006 removed (2.7%); 0 added** |
+| Unique path/line/column/code identities | 145 | **141** | **4 removed; 0 added** |
+| Focused three-engine oracle | 3× TS7006 | **exact 3× TS2322 parity** | no TS7006/TS2339 |
+
 Positive `instanceof` branches that replace their guarded value now join the
 assigned true path with the excluded false path at fallthrough:
 

@@ -10595,6 +10595,281 @@ test "Program: qualified imported leaves retain contextual callback signatures" 
     for (compilation.diagnostics.items) |diagnostic| try T.expectEqual(@as(u32, 2322), diagnostic.code);
 }
 
+/// The four-module #688 oracle, verbatim: a generic parse callback whose
+/// constraint names a type imported through a namespace, reading issue arrays
+/// typed by a qualified distributive alias. TypeScript 6.0 reports exactly the
+/// three deliberate TS2322 on `wrong` and no implicit-`any` parameter.
+const issue_688_util =
+    \\export type Primitive = string | number | symbol | bigint | boolean | null | undefined;
+    \\export type Omit<T, K extends keyof T> = Pick<T, Exclude<keyof T, K>>;
+    \\export type InexactPartial<T> = { [P in keyof T]?: T[P] | undefined };
+    \\export type MakePartial<T, K extends keyof T> = Omit<T, K> & InexactPartial<Pick<T, K>>;
+    \\export type Identity<T> = T;
+    \\export type Flatten<T> = Identity<{ [K in keyof T]: T[K] }>;
+;
+const issue_688_errors =
+    \\import type * as util from "./util.js";
+    \\
+    \\export interface IssueBase {
+    \\  readonly code?: string;
+    \\  readonly path: PropertyKey[];
+    \\  readonly message: string;
+    \\}
+    \\
+    \\export interface InvalidType extends IssueBase {
+    \\  readonly code: "invalid_type";
+    \\  readonly expected: string;
+    \\}
+    \\
+    \\export interface InvalidValue extends IssueBase {
+    \\  readonly code: "invalid_value";
+    \\  readonly values: string[];
+    \\}
+    \\
+    \\export type Issue = InvalidType | InvalidValue;
+    \\type InternalIssue<T extends IssueBase = Issue> = T extends any ? RawIssue<T> : never;
+    \\type RawIssue<T extends IssueBase> = T extends any
+    \\  ? util.Flatten<
+    \\      util.MakePartial<T, "message" | "path"> &
+    \\        { readonly input: unknown } &
+    \\        Record<string, unknown>
+    \\    >
+    \\  : never;
+    \\export type QualifiedRawIssue<T extends IssueBase = Issue> = InternalIssue<T>;
+;
+const issue_688_schemas =
+    \\import type * as errors from "./errors.js";
+    \\
+    \\export type MaybeAsync<T> = T | Promise<T>;
+    \\
+    \\export interface ParsePayload<T = unknown> {
+    \\  value: T;
+    \\  issues: errors.QualifiedRawIssue[];
+    \\}
+    \\
+    \\export interface SchemaInternals {
+    \\  run(payload: ParsePayload): MaybeAsync<ParsePayload>;
+    \\}
+    \\
+    \\export interface Schema {
+    \\  _zod: SchemaInternals;
+    \\}
+;
+const issue_688_consumer =
+    \\import type * as errors from "./errors.js";
+    \\import type * as schemas from "./schemas.js";
+    \\
+    \\declare const direct: schemas.ParsePayload;
+    \\direct.issues.map((issue) => {
+    \\  const exact: errors.QualifiedRawIssue = issue;
+    \\  const wrong: number = issue;
+    \\  return issue.code;
+    \\});
+    \\
+    \\export type Parse = <T extends schemas.Schema>(schema: T, value: unknown) => unknown;
+    \\
+    \\export const parse: Parse = (schema, value) => {
+    \\  const result = schema._zod.run({ value, issues: [] });
+    \\  if (result instanceof Promise) throw new Error("async");
+    \\  result.issues.map((issue) => {
+    \\    const exact: errors.QualifiedRawIssue = issue;
+    \\    const wrong: number = issue;
+    \\    return issue.code;
+    \\  });
+    \\  return result.value;
+    \\};
+    \\
+    \\export type ParseAsync = <T extends schemas.Schema>(schema: T, value: unknown) => Promise<unknown>;
+    \\
+    \\export const parseAsync: ParseAsync = async (schema, value) => {
+    \\  let result = schema._zod.run({ value, issues: [] });
+    \\  if (result instanceof Promise) result = await result;
+    \\  result.issues.map((issue) => {
+    \\    const exact: errors.QualifiedRawIssue = issue;
+    \\    const wrong: number = issue;
+    \\    return issue.code;
+    \\  });
+    \\  return result.value;
+    \\};
+;
+
+test "Program: imported generic parse contexts retain qualified issue array elements" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver };
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+
+    const consumer = issue_688_consumer;
+    try vfs.addFile("/proj/util.ts", issue_688_util);
+    try vfs.addFile("/proj/errors.ts", issue_688_errors);
+    try vfs.addFile("/proj/schemas.ts", issue_688_schemas);
+    try vfs.addFile("/proj/consumer.ts", consumer);
+    _ = try p.add("/proj/util.ts", issue_688_util);
+    _ = try p.add("/proj/errors.ts", issue_688_errors);
+    _ = try p.add("/proj/schemas.ts", issue_688_schemas);
+    const consumer_id = try p.add("/proj/consumer.ts", consumer);
+
+    try p.compileAll(.{
+        .no_emit = true,
+        .strict_flags = .{ .no_implicit_any = true, .strict_null_checks = true },
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    });
+    var graph = try p.collectProgramDeclarations();
+    defer graph.deinit();
+    var found_contextual_parse = false;
+    for (graph.types) |entry| {
+        if (!std.mem.eql(u8, entry.export_name, "Parse") or
+            !std.mem.eql(u8, entry.target_path, "/proj/consumer.ts")) continue;
+        found_contextual_parse = true;
+        try T.expect(entry.contextual_only);
+        try T.expect(!entry.projection_only);
+    }
+    try T.expect(found_contextual_parse);
+    const compilation = p.fileById(consumer_id).compilation.?;
+    // Every `schema` receiver in the two `Parse` bodies is the type
+    // parameter `T`, and `T extends schemas.Schema` must lower to the
+    // imported `Schema` object type. If the qualified constraint falls back
+    // to `any` the member reads below still typecheck, so assert the
+    // constraint itself rather than only the diagnostics it produces.
+    var constrained_receivers: usize = 0;
+    var probe_node: hir_mod_ns.NodeId = 1;
+    while (probe_node < compilation.hir.nodeCount()) : (probe_node += 1) {
+        if (compilation.hir.kindOf(probe_node) != .member_access) continue;
+        const access = hir_mod_ns.memberOf(&compilation.hir, probe_node);
+        const receiver_t = compilation.hir.typeOf(access.object);
+        if (receiver_t >= compilation.type_interner.pool.typeCount() or
+            !compilation.type_interner.pool.flagsOf(receiver_t).is_type_parameter) continue;
+        const payload = compilation.type_interner.pool.type_parameter_payloads.items[compilation.type_interner.pool.payloadOf(receiver_t)];
+        try T.expect(payload.constraint < compilation.type_interner.pool.typeCount());
+        try T.expect(compilation.type_interner.pool.flagsOf(payload.constraint).is_object_type);
+        constrained_receivers += 1;
+    }
+    try T.expect(constrained_receivers > 0);
+    try expectCompilationLacksDiagnosticCode(compilation, 7006);
+    try T.expectEqual(@as(usize, 3), compilation.diagnostics.items.len);
+    for (compilation.diagnostics.items) |diagnostic| try T.expectEqual(@as(u32, 2322), diagnostic.code);
+}
+
+test "Program: qualified Program constraints resolve for function and class type parameters" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver };
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+
+    // Every declaration form that owns type parameters lowers `extends`
+    // through the same path, so the #688 constraint resolves for a function
+    // declaration and a class exactly as it does for a function type alias.
+    // TypeScript 6.0 reports one TS2322 per `wrong` and no implicit `any`.
+    const consumer =
+        \\import type * as schemas from "./schemas.js";
+        \\
+        \\export function parseFn<T extends schemas.Schema>(schema: T, value: unknown) {
+        \\  const result = schema._zod.run({ value, issues: [] });
+        \\  if (result instanceof Promise) throw new Error("async");
+        \\  result.issues.map((issue) => {
+        \\    const wrong: number = issue;
+        \\    return issue.code;
+        \\  });
+        \\  return result.value;
+        \\}
+        \\
+        \\export class Parser<T extends schemas.Schema> {
+        \\  constructor(readonly schema: T) {}
+        \\  parse(value: unknown) {
+        \\    const result = this.schema._zod.run({ value, issues: [] });
+        \\    if (result instanceof Promise) throw new Error("async");
+        \\    result.issues.map((issue) => {
+        \\      const wrong: number = issue;
+        \\      return issue.code;
+        \\    });
+        \\    return result.value;
+        \\  }
+        \\}
+    ;
+    try vfs.addFile("/proj/util.ts", issue_688_util);
+    try vfs.addFile("/proj/errors.ts", issue_688_errors);
+    try vfs.addFile("/proj/schemas.ts", issue_688_schemas);
+    try vfs.addFile("/proj/consumer.ts", consumer);
+    _ = try p.add("/proj/util.ts", issue_688_util);
+    _ = try p.add("/proj/errors.ts", issue_688_errors);
+    _ = try p.add("/proj/schemas.ts", issue_688_schemas);
+    const consumer_id = try p.add("/proj/consumer.ts", consumer);
+
+    try p.compileAll(.{
+        .no_emit = true,
+        .strict_flags = .{ .no_implicit_any = true, .strict_null_checks = true },
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    });
+    const compilation = p.fileById(consumer_id).compilation.?;
+    try expectCompilationLacksDiagnosticCode(compilation, 7006);
+    try T.expectEqual(@as(usize, 2), compilation.diagnostics.items.len);
+    for (compilation.diagnostics.items) |diagnostic| try T.expectEqual(@as(u32, 2322), diagnostic.code);
+}
+
+test "Program: projected issue arrays accept valid raw issue pushes beside typed callbacks" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver };
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+
+    // Issue arrays reached through the #688 projections still type their
+    // `issue` callbacks, so `wrong` is the only diagnostic in each block, and
+    // valid raw issues pushed into the same arrays stay accepted (TypeScript
+    // 6.0 reports exactly the two TS2322).
+    const consumer =
+        \\import type * as schemas from "./schemas.js";
+        \\
+        \\declare const direct: schemas.ParsePayload;
+        \\direct.issues.push({ code: "invalid_type", expected: "string", input: 1 });
+        \\direct.issues.push({ code: "invalid_value", values: ["a"], input: 1, note: "extra" });
+        \\direct.issues.map((issue) => {
+        \\  const wrong: number = issue;
+        \\  return issue.code;
+        \\});
+        \\
+        \\export type Parse = <T extends schemas.Schema>(schema: T, value: unknown) => unknown;
+        \\
+        \\export const parse: Parse = (schema, value) => {
+        \\  const result = schema._zod.run({ value, issues: [] });
+        \\  if (result instanceof Promise) throw new Error("async");
+        \\  result.issues.push({ code: "invalid_type", expected: "string", input: value });
+        \\  result.issues.map((issue) => {
+        \\    const wrong: number = issue;
+        \\    return issue.code;
+        \\  });
+        \\  return result.value;
+        \\};
+    ;
+    try vfs.addFile("/proj/util.ts", issue_688_util);
+    try vfs.addFile("/proj/errors.ts", issue_688_errors);
+    try vfs.addFile("/proj/schemas.ts", issue_688_schemas);
+    try vfs.addFile("/proj/consumer.ts", consumer);
+    _ = try p.add("/proj/util.ts", issue_688_util);
+    _ = try p.add("/proj/errors.ts", issue_688_errors);
+    _ = try p.add("/proj/schemas.ts", issue_688_schemas);
+    const consumer_id = try p.add("/proj/consumer.ts", consumer);
+
+    try p.compileAll(.{
+        .no_emit = true,
+        .strict_flags = .{ .no_implicit_any = true, .strict_null_checks = true },
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    });
+    const compilation = p.fileById(consumer_id).compilation.?;
+    try expectCompilationLacksDiagnosticCode(compilation, 7006);
+    try expectCompilationLacksDiagnosticCode(compilation, 2345);
+    try T.expectEqual(@as(usize, 2), compilation.diagnostics.items.len);
+    for (compilation.diagnostics.items) |diagnostic| try T.expectEqual(@as(u32, 2322), diagnostic.code);
+}
+
 test "Program: returned imported callable interfaces retain callback read contracts" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();

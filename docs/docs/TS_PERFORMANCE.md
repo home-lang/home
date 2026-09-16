@@ -8839,6 +8839,98 @@ zig build -Doptimize=ReleaseFast
 bunx --bun pickier .
 ```
 
+### Qualified Program constraints and contextual issue arrays (untimed)
+
+Issue [#688](https://github.com/home-lang/home/issues/688), under
+[#548](https://github.com/home-lang/home/issues/548) and
+[#416](https://github.com/home-lang/home/issues/416), finishes the path that
+[#687](https://github.com/home-lang/home/issues/687) left open: four Zod
+`core/parse.ts` callbacks whose `issue` parameter stayed implicitly `any`
+behind `ParsePayload.issues: errors.$ZodRawIssue[]`.
+
+Three independent defects composed the failure:
+
+- **Constraints.** A type parameter whose `extends` clause names a type
+  reached through a qualified import (`<T extends schemas.Schema>`) lowered to
+  `any`, so every member read off `T` widened. All five declaration forms that
+  own type parameters (function types, function declarations, classes,
+  interfaces, and type aliases) now lower the clause through one helper that
+  resolves the qualified reference, or its contextual Program projection, only
+  when plain lowering produced `any`.
+- **Awaited unions.** Commit
+  [`bb5e06956`](https://github.com/home-lang/home/commit/bb5e069569cafe2e854366876862e43f50fa1eb7)
+  fixes `await` on `A | Promise<A>`, which left the union intact.
+  `Awaited<T>` distributes over unions, so each constituent is awaited and the
+  results are rejoined (`Promise<A> | Promise<B>` awaits to `A | B`). A union
+  is no longer probed for a `then` member as a whole.
+- **Projection scope.** The issue-array element type is available only as a
+  contextual Program *read* projection. It now types callbacks passed to array
+  methods on that member (`issues.map((issue) => ...)`) and is never
+  substituted as the member's value type, which is how `main` already scopes
+  `programImportedClassContextualMemberType`.
+
+The acceptance oracle is the four-module graph at
+`/private/tmp/home-goal-688-oracle`: separate `util`, `errors`, `schemas`, and
+`consumer` modules; a namespace-qualified distributive raw-issue alias; a
+direct annotation; and synchronous and `let`/`await` generic parse paths. Each
+callback assigns the element to `number`, so exact context is proven rather
+than inferred from silence:
+
+| #688 oracle and controls (file:line:column:code) | TypeScript 6.0.3 | Native TypeScript 7.0.2 | ReleaseSafe Home | `main` |
+|---|---:|---:|---:|---:|
+| Acceptance oracle | 3× TS2322 (7:9, 18:11, 31:11) | **identical** | **identical** | 3× TS7006 |
+| Function declaration and class constraints | 2× TS2322 (7:11, 19:13) | **identical** | **identical** | 2× TS7006 |
+| Valid raw-issue pushes beside typed callbacks | 2× TS2322 (7:9, 18:11) | **identical** | **identical** | 2× TS7006 |
+| `await` over `Payload \| Promise<Payload>` and `Promise<Payload> \| Promise<string>` | 2× TS2322 (7:9, 9:9) | **identical** | **identical** | 2× TS2339, TS7006, TS2322 |
+
+The Program suite encodes the first three graphs and the checker suite the
+fourth. The oracle test uses the on-disk modules verbatim.
+
+The unchanged 21-file Zod 4.5.2 `core` graph (`tsconfig.core.json`) is the
+production admission gate against `main` `65f80a525`:
+
+| Zod 4.5.2 core, qualified constraints | `main` `65f80a525` | #688 | Change |
+|---|---:|---:|---:|
+| All diagnostics | 150 | **146** | **4 removed (2.7%); 0 added** |
+| Unique path/line/column/code identities | 145 | **141** | **4 removed; 0 added** |
+| Removed identities | — | 4 TS7006 | `core/parse.ts:30:63`, `54:62`, `81:66`, `101:44` |
+
+Every other code count is unchanged: 44 TS2345, 21 TS7006, 20 TS2339,
+16 TS1361, 11 TS2322, 5 TS2304, 4 TS7031, 4 TS2554, 4 TS2430, 3 TS2488,
+3 TS2411, 2 TS2749, 2 TS2741, 2 TS2552, 2 TS2367, 2 TS18048, and 1 TS2571.
+
+Three other shapes were measured first:
+
+- The inherited candidate substituted the contextual read projection as the
+  issue array's value type. It removed the same four TS7006 but added twelve
+  TS2345 identities at `core/schemas.ts` string-format checks
+  (`payload.issues.push({ code: "invalid_format", ... })`). The displayed
+  projection keeps `path` and `message` required, whereas `$ZodRawIssue` makes
+  them optional, and every valid push tested failed. The substitution was
+  replaced by the contextual-only scope above.
+- Exposing flow narrowings below a function's lookup floor to contextual
+  signature probes was unnecessary once constraints resolved. It also leaked
+  narrowings into nested functions and added `core/schemas.ts:2002:9` TS2322,
+  so it was removed.
+- Routing only the function-type constraint site passed the acceptance oracle
+  but left function declarations and classes at TS7006, so the helper now
+  serves all five sites.
+
+Bisection against `main` attributes the additions. The candidate
+`class_schema.zig` alone adds three TS2801 identities (`core/checks.ts:821:9`,
+`core/schemas.ts:2975:9`, `3789:14`). The full candidate without the
+distributive `await` still adds `core/checks.ts:821:9`, and with it none remain.
+The candidate `check.zig` alone, with `main`'s schema, adds exactly the twelve
+TS2345.
+
+The complete Program and checker targets pass (210 and 4,371 tests), as do
+ReleaseSafe and ReleaseFast `home-tsc` builds, `zig fmt --check`, and
+`git diff --check`. The distributive `await` commit was verified on its own
+first: 4,371 checker and 205 Program tests, a ReleaseSafe build, exact
+three-engine parity on its focused graph, and an unchanged Zod core
+(150 diagnostics, 145 identities; none added or removed). No timing is
+claimed.
+
 ### Positive `instanceof` assignment fallthrough (untimed)
 
 Issue [#738](https://github.com/home-lang/home/issues/738), found while

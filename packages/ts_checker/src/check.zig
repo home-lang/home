@@ -5422,6 +5422,14 @@ pub const Checker = struct {
     program_contextual_types: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
     program_contextual_function_nodes: std.AutoHashMapUnmanaged(NodeId, void) = .empty,
     program_contextual_type_origins: std.AutoHashMapUnmanaged(TypeId, *const ProgramContextualTypeOrigin) = .empty,
+    /// Member reads whose value type is `any` but whose receiver has a
+    /// contextual-only Program projection for that member. The projection is
+    /// a proven read surface, so it may type callbacks passed to the member's
+    /// methods (`issues.map((issue) => ...)`) but is never the member's value
+    /// type: writes through it (`issues.push(x)`) would be checked against a
+    /// surface that only guarantees reads. Keyed by the member-access node and
+    /// refreshed on every evaluation of that node.
+    program_contextual_member_projections: std.AutoHashMapUnmanaged(NodeId, TypeId) = .empty,
     program_expression_parameters: std.AutoHashMapUnmanaged(*const ProgramClassSchema.Parameter, TypeId) = .empty,
     /// Type parameters owned by source declarations transferred through the
     /// Program schema. They have no node in the importing checker's HIR, so
@@ -6082,6 +6090,7 @@ pub const Checker = struct {
         self.program_contextual_types.deinit(self.gpa);
         self.program_contextual_function_nodes.deinit(self.gpa);
         self.program_contextual_type_origins.deinit(self.gpa);
+        self.program_contextual_member_projections.deinit(self.gpa);
         self.program_expression_parameters.deinit(self.gpa);
         self.program_declaration_type_parameters.deinit(self.gpa);
         self.program_schema_tuple_types.deinit(self.gpa);
@@ -32909,6 +32918,16 @@ pub const Checker = struct {
             else => return null,
         };
         if (type_annotation == hir_mod.none_node_id) return null;
+        if (try self.programContextualExportedType(type_annotation)) |contextual_t| {
+            if (self.firstSignatureType(contextual_t)) |signature| {
+                const index = self.functionValueParameterIndex(fn_node, param_node) orelse return null;
+                const source_is_rest = self.hir.kindOf(param_node) == .parameter and
+                    hir_mod.parameterOf(self.hir, param_node).flags.is_rest;
+                if (self.contextualParameterTypeForSignature(signature, index, source_is_rest)) |parameter_t| {
+                    return parameter_t;
+                }
+            }
+        }
         const target_node = self.resolveContextualTypeAliasNode(parent, type_annotation) orelse return null;
         if (self.hir.kindOf(target_node) != .fn_type) return null;
         const source_index = self.functionValueParameterIndex(fn_node, param_node) orelse return null;
@@ -33158,6 +33177,9 @@ pub const Checker = struct {
         if (recv_t == types.Primitive.any and self.hir.kindOf(m.object) == .identifier) {
             const receiver_name = hir_mod.identifierOf(self.hir, m.object).name;
             recv_t = (try self.programQualifiedIndexedAssertionDestructuredArrayType(m.object, receiver_name)) orelse recv_t;
+        }
+        if (recv_t == types.Primitive.any and self.hir.kindOf(m.object) == .member_access) {
+            recv_t = self.program_contextual_member_projections.get(m.object) orelse recv_t;
         }
         if (!self.arrayCallbackReceiverIsArrayLike(recv_t)) return null;
         const elem_t = try self.contextualArrayElementType(recv_t);
@@ -37070,10 +37092,7 @@ pub const Checker = struct {
             if (self.hir.kindOf(tp) != .type_parameter) continue;
             const tpp = hir_mod.typeParameterOf(self.hir, tp);
             const placeholder = self.hir.typeOf(tp);
-            const constraint: TypeId = if (tpp.constraint != hir_mod.none_node_id)
-                try self.lowererLowerWithTypeParams(tpp.constraint)
-            else
-                types.Primitive.unknown;
+            const constraint: TypeId = try self.typeParameterConstraintType(tpp.constraint);
             const def: TypeId = if (tpp.default != hir_mod.none_node_id)
                 try self.lowerTypeParameterDefault(tpp.default)
             else
@@ -41745,10 +41764,7 @@ pub const Checker = struct {
             if (self.hir.kindOf(tp) != .type_parameter) continue;
             const tpp = hir_mod.typeParameterOf(self.hir, tp);
             const placeholder = self.hir.typeOf(tp);
-            const constraint: TypeId = if (tpp.constraint != hir_mod.none_node_id)
-                try self.lowererLowerWithTypeParams(tpp.constraint)
-            else
-                types.Primitive.unknown;
+            const constraint: TypeId = try self.typeParameterConstraintType(tpp.constraint);
             const def: TypeId = if (tpp.default != hir_mod.none_node_id)
                 try self.lowerTypeParameterDefault(tpp.default)
             else
@@ -66082,10 +66098,7 @@ pub const Checker = struct {
             if (self.hir.kindOf(tp) != .type_parameter) continue;
             const tpp = hir_mod.typeParameterOf(self.hir, tp);
             const placeholder = self.hir.typeOf(tp);
-            const constraint: TypeId = if (tpp.constraint != hir_mod.none_node_id)
-                try self.lowererLowerWithTypeParams(tpp.constraint)
-            else
-                types.Primitive.unknown;
+            const constraint: TypeId = try self.typeParameterConstraintType(tpp.constraint);
             const def: TypeId = if (tpp.default != hir_mod.none_node_id)
                 try self.lowerTypeParameterDefault(tpp.default)
             else
@@ -72425,10 +72438,7 @@ pub const Checker = struct {
             if (self.hir.kindOf(tp) != .type_parameter) continue;
             const tpp = hir_mod.typeParameterOf(self.hir, tp);
             const placeholder = self.hir.typeOf(tp);
-            const constraint: TypeId = if (tpp.constraint != hir_mod.none_node_id)
-                try self.lowererLowerWithTypeParams(tpp.constraint)
-            else
-                types.Primitive.unknown;
+            const constraint: TypeId = try self.typeParameterConstraintType(tpp.constraint);
             const def: TypeId = if (tpp.default != hir_mod.none_node_id)
                 try self.lowerTypeParameterDefault(tpp.default)
             else
@@ -78841,10 +78851,7 @@ pub const Checker = struct {
                     if (self.hir.kindOf(tp) != .type_parameter) continue;
                     const tpp = hir_mod.typeParameterOf(self.hir, tp);
                     const placeholder = self.hir.typeOf(tp);
-                    const constraint: TypeId = if (tpp.constraint != hir_mod.none_node_id)
-                        try self.lowererLowerWithTypeParams(tpp.constraint)
-                    else
-                        types.Primitive.unknown;
+                    const constraint: TypeId = try self.typeParameterConstraintType(tpp.constraint);
                     const def: TypeId = if (tpp.default != hir_mod.none_node_id)
                         try self.lowerTypeParameterDefault(tpp.default)
                     else
@@ -108584,9 +108591,17 @@ pub const Checker = struct {
                 type_node,
             );
         }
-        if (self.nameHasEnclosingTypeParameter(reference.name, type_node) or
-            self.findVisibleNamedTypeDecl(type_node, reference.name) != null)
+        if (self.nameHasEnclosingTypeParameter(reference.name, type_node)) return null;
+        if (self.findVisibleNamedTypeDecl(type_node, reference.name)) |local| {
+            const position = self.hir.spanOf(local).start;
+            for (self.program_exported_types) |entry| {
+                if (entry.projection_only or !entry.contextual_only) continue;
+                if (entry.declaration.position != position or
+                    !std.mem.eql(u8, entry.declaration.path, self.importer_path)) continue;
+                return self.programContextualExportedDeclarationType(entry.declaration, type_node);
+            }
             return null;
+        }
         const root = self.rootBlockFor(type_node);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
         for (hir_mod.blockStmts(self.hir, root)) |statement| {
@@ -108637,6 +108652,34 @@ pub const Checker = struct {
         return result;
     }
 
+    /// Lower a type parameter's `extends` clause.
+    ///
+    /// A constraint naming a type reached through a qualified import —
+    /// `<T extends schemas.Schema>` — resolves to `any` under the plain
+    /// lowering, silently widening every member read off `T`. Annotation
+    /// positions already resolve such names; the constraint position did not.
+    fn typeParameterConstraintType(self: *Checker, constraint_node: NodeId) CheckError!TypeId {
+        if (constraint_node == hir_mod.none_node_id) return types.Primitive.unknown;
+        const lowered = try self.lowererLowerWithTypeParams(constraint_node);
+        if (lowered != types.Primitive.any) return lowered;
+        if (self.hir.kindOf(constraint_node) != .type_ref) return lowered;
+        const r = hir_mod.typeRefOf(self.hir, constraint_node);
+        if (r.qualifier_len == 0) return lowered;
+        if (try self.resolveQualifiedTypeRef(constraint_node)) |t| return t;
+        const qualifiers = hir_mod.typeRefQualifier(self.hir, constraint_node);
+        if (qualifiers.len != 1 or self.hir.kindOf(qualifiers[0]) != .identifier) return lowered;
+        const root_name = hir_mod.identifierOf(self.hir, qualifiers[0]).name;
+        const info = (try self.localImportModuleInfo(root_name, constraint_node)) orelse return lowered;
+        if (info.exported_root != null) return lowered;
+        for (self.program_exported_types) |entry| {
+            if (!entry.projection_only) continue;
+            if (!std.mem.eql(u8, entry.export_name, self.string_interner.get(r.name))) continue;
+            if (!try self.programImportTargetsPath(info.import_node, self.string_interner.get(info.specifier), entry.target_path)) continue;
+            if (try self.programContextualExportedDeclarationType(entry.declaration, constraint_node)) |t| return t;
+        }
+        return lowered;
+    }
+
     fn programContextualExportedTypeForImportPath(
         self: *Checker,
         import_node: NodeId,
@@ -108647,23 +108690,31 @@ pub const Checker = struct {
         for (self.program_exported_types) |entry| {
             if (entry.projection_only or !entry.contextual_only or !std.mem.eql(u8, entry.export_name, self.string_interner.get(name))) continue;
             if (!try self.programImportTargetsPath(import_node, self.string_interner.get(specifier), entry.target_path)) continue;
-            _ = (try self.programDeclarationTypeReference(entry.declaration, anchor)) orelse return null;
-            const arg_nodes = hir_mod.typeRefArgs(self.hir, anchor);
-            const args = try self.gpa.alloc(TypeId, arg_nodes.len);
-            defer self.gpa.free(args);
-            for (arg_nodes, args) |arg_node, *arg| arg.* = try self.lowererLowerWithTypeParams(arg_node);
-            const result = self.programContextualDeclarationReference(entry.declaration, args) catch |err| switch (err) {
-                error.UnsupportedProgramType => return null,
-                error.OutOfMemory => return error.OutOfMemory,
-            };
-            const resolved = try self.resolveGenericType(result);
-            try self.program_contextual_types.put(self.gpa, resolved, {});
-            if (self.firstSignatureType(resolved)) |signature| {
-                try self.program_contextual_types.put(self.gpa, signature, {});
-            }
-            return @as(?TypeId, resolved);
+            return self.programContextualExportedDeclarationType(entry.declaration, anchor);
         }
         return null;
+    }
+
+    fn programContextualExportedDeclarationType(
+        self: *Checker,
+        declaration: *const ProgramClassSchema.Declaration,
+        anchor: NodeId,
+    ) CheckError!?TypeId {
+        _ = (try self.programDeclarationTypeReference(declaration, anchor)) orelse return null;
+        const arg_nodes = hir_mod.typeRefArgs(self.hir, anchor);
+        const args = try self.gpa.alloc(TypeId, arg_nodes.len);
+        defer self.gpa.free(args);
+        for (arg_nodes, args) |arg_node, *arg| arg.* = try self.lowererLowerWithTypeParams(arg_node);
+        const result = self.programContextualDeclarationReference(declaration, args) catch |err| switch (err) {
+            error.UnsupportedProgramType => return null,
+            error.OutOfMemory => return error.OutOfMemory,
+        };
+        const resolved = try self.resolveGenericType(result);
+        try self.program_contextual_types.put(self.gpa, resolved, {});
+        if (self.firstSignatureType(resolved)) |signature| {
+            try self.program_contextual_types.put(self.gpa, signature, {});
+        }
+        return @as(?TypeId, resolved);
     }
 
     /// Construct the whole runtime export shape, not a class-only namespace.
@@ -108816,6 +108867,7 @@ pub const Checker = struct {
         self.program_contextual_types.clearRetainingCapacity();
         self.program_contextual_function_nodes.clearRetainingCapacity();
         self.program_contextual_type_origins.clearRetainingCapacity();
+        self.program_contextual_member_projections.clearRetainingCapacity();
         self.program_class_declarations.clearRetainingCapacity();
         self.program_contextual_class_receivers.clearRetainingCapacity();
         self.program_expression_parameters.clearRetainingCapacity();
@@ -113630,12 +113682,21 @@ pub const Checker = struct {
                     }
                 }
                 obj_t = self.resolvedRecursiveInterfaceType(obj_t);
+                _ = self.program_contextual_member_projections.remove(node);
                 if (obj_t == types.Primitive.any) {
                     if (try self.programQualifiedAssertionMemberType(m.object, m.name)) |member_t| {
                         break :blk try self.optionalChainResult(member_t, m.optional or self.expressionIsOptionalChain(m.object));
                     }
                     if (try self.programQualifiedAssertionArrayMemberType(m.object, m.name)) |member_t| {
                         break :blk try self.optionalChainResult(member_t, m.optional or self.expressionIsOptionalChain(m.object));
+                    }
+                    if (!self.isInAssignmentTargetChain(node)) {
+                        if (self.visibleAnnotatedIdentifierTypeNode(m.object)) |type_node| {
+                            if (try self.programQualifiedInterfaceMemberType(type_node, m.name, null)) |member_t| {
+                                if (member_t != types.Primitive.any)
+                                    try self.program_contextual_member_projections.put(self.gpa, node, member_t);
+                            }
+                        }
                     }
                 }
                 if (!object_is_catch_binding and
@@ -114103,6 +114164,14 @@ pub const Checker = struct {
                 }
                 const direct_member = (try self.schemaStaticProjectionForKey(obj_t, m.name, 0)) orelse
                     (try self.lookupObjectMember(obj_t, m.name));
+                if (!self.isInAssignmentTargetChain(node) and
+                    (direct_member == null or direct_member.? == types.Primitive.any))
+                {
+                    if (try self.programContextualOriginMemberType(access_obj_t, m.name)) |projected| {
+                        if (projected != types.Primitive.any)
+                            try self.program_contextual_member_projections.put(self.gpa, node, projected);
+                    }
+                }
                 const member = direct_member orelse
                     try self.programInheritedMemberType(obj_t, m.name, m.object);
                 if (member) |t| {

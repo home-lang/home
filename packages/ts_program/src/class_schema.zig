@@ -168,14 +168,21 @@ pub const Builder = struct {
                 if (active.contains(reference.declaration)) return null;
                 try active.put(self.gpa, reference.declaration, {});
                 defer _ = active.remove(reference.declaration);
-                if (reference.arguments.len != reference.declaration.parameters.len or reference.declaration.body == null) return null;
-                const nested = try self.gpa.alloc(ReadBinding, bindings.len + reference.arguments.len);
+                if (reference.arguments.len > reference.declaration.parameters.len or reference.declaration.body == null) return null;
+                const nested = try self.gpa.alloc(ReadBinding, bindings.len + reference.declaration.parameters.len);
                 defer self.gpa.free(nested);
                 @memcpy(nested[0..bindings.len], bindings);
-                for (reference.declaration.parameters, reference.arguments, nested[bindings.len..]) |*parameter, argument, *binding| binding.* = .{
+                for (reference.declaration.parameters[0..reference.arguments.len], reference.arguments, nested[bindings.len..][0..reference.arguments.len]) |*parameter, argument, *binding| binding.* = .{
                     .parameter = parameter,
                     .argument = contextualReadArgument(argument, bindings),
                 };
+                for (reference.declaration.parameters[reference.arguments.len..], reference.arguments.len..) |*parameter, index| {
+                    const default = parameter.default orelse return null;
+                    nested[bindings.len + index] = .{
+                        .parameter = parameter,
+                        .argument = contextualReadArgument(default, nested[0 .. bindings.len + index]),
+                    };
+                }
                 return self.contextualReadCoverage(reference.declaration.body.?, nested, active);
             },
             .conditional => |conditional| {
@@ -298,13 +305,20 @@ pub const Builder = struct {
     }
 
     fn contextualReadProjection(self: *Builder, reference: schema.Reference) !?ReadCoverage {
-        if (reference.arguments.len != reference.declaration.parameters.len or reference.declaration.body == null) return null;
-        const bindings = try self.gpa.alloc(ReadBinding, reference.arguments.len);
+        if (reference.arguments.len > reference.declaration.parameters.len or reference.declaration.body == null) return null;
+        const bindings = try self.gpa.alloc(ReadBinding, reference.declaration.parameters.len);
         defer self.gpa.free(bindings);
-        for (reference.declaration.parameters, reference.arguments, bindings) |*parameter, argument, *binding| binding.* = .{
+        for (reference.declaration.parameters[0..reference.arguments.len], reference.arguments, bindings[0..reference.arguments.len]) |*parameter, argument, *binding| binding.* = .{
             .parameter = parameter,
             .argument = argument,
         };
+        for (reference.declaration.parameters[reference.arguments.len..], reference.arguments.len..) |*parameter, index| {
+            const default = parameter.default orelse return null;
+            bindings[index] = .{
+                .parameter = parameter,
+                .argument = contextualReadArgument(default, bindings[0..index]),
+            };
+        }
         var active: std.AutoHashMapUnmanaged(*const schema.Declaration, void) = .empty;
         defer active.deinit(self.gpa);
         try active.put(self.gpa, reference.declaration, {});
@@ -759,7 +773,11 @@ pub const Builder = struct {
             const value = hir.typeParameterOf(&c.hir, node);
             parameter.variance = value.variance;
             parameter.is_const = value.is_const;
-            if (value.constraint != 0) parameter.constraint = try self.lowerTransferable(function_context, value.constraint);
+            if (value.constraint != 0) {
+                var constraint_context = function_context;
+                constraint_context.allow_contextual_projection = true;
+                parameter.constraint = try self.lowerTransferable(constraint_context, value.constraint);
+            }
             if (value.default != 0) parameter.default = try self.lowerContextualDefault(function_context, value.default);
         }
         var params: std.ArrayListUnmanaged(schema.Element) = .empty;
@@ -859,6 +877,25 @@ pub const Builder = struct {
                             !try self.qualifiedDeclarationGraphSupported(target);
                         if (ref.qualifier_len != 0 and context.allow_opaque) context.declaration.contextual_only = true;
                         qualified_unresolved = false;
+                        if (projection_only) {
+                            const projected = schema.Reference{
+                                .declaration = target,
+                                .arguments = args,
+                                .projection_only = true,
+                            };
+                            if (try self.contextualReadProjection(projected)) |read| {
+                                return self.expression(.{ .reference = .{
+                                    .declaration = target,
+                                    .arguments = args,
+                                    .projection_only = true,
+                                    .contextual_projection = true,
+                                    .contextual_read = read.source,
+                                    .contextual_read_optional_keys = read.optional_keys,
+                                    .contextual_read_optional_all = read.optional_all,
+                                    .contextual_read_string_index = read.string_index,
+                                } });
+                            }
+                        }
                         return self.expression(.{ .reference = .{
                             .declaration = target,
                             .arguments = args,
@@ -1804,6 +1841,68 @@ test "class schema: qualified imports retain callable shells around opaque leave
     const shadowed = try graph.class(0, "Shadowed");
     defer shadowed.deinit(T.allocator);
     try T.expect(shadowed.declaration.body.?.* == .unsupported);
+}
+
+test "class schema: imported callable constraints retain contextual qualified issue arrays" {
+    const graph = try TestGraph.init(&.{
+        .{ .path = "/errors.ts", .text =
+        \\export type QualifiedRawIssue = Record<string, unknown> & { readonly code: string };
+        },
+        .{ .path = "/schemas.ts", .text =
+        \\import type * as errors from "./errors.js";
+        \\export interface ParsePayload { value: unknown; issues: errors.QualifiedRawIssue[]; }
+        \\export interface Schema { _zod: { run(payload: ParsePayload): ParsePayload } }
+        },
+        .{ .path = "/consumer.ts", .text =
+        \\import type * as schemas from "./schemas.js";
+        \\export type Parse = <T extends schemas.Schema>(schema: T) => unknown;
+        },
+    });
+    defer graph.deinit();
+    const result = try graph.class(2, "Parse");
+    defer result.deinit(T.allocator);
+    try T.expect(try result.isSupported(T.allocator));
+    const constraint = result.declaration.body.?.function.type_parameters[0].constraint.?;
+    try T.expect(constraint.* == .reference);
+    try T.expect(constraint.reference.contextual_projection);
+    const schema_members = constraint.reference.declaration.body.?.object;
+    try T.expectEqualStrings("_zod", schema_members[0].name);
+    const payload = schema_members[0].type.object[0].type.function.result.reference.declaration.body.?.object;
+    try T.expectEqualStrings("issues", payload[1].name);
+    try T.expect(payload[1].type.* == .array);
+    try T.expect(payload[1].type.array.* == .reference);
+}
+
+test "class schema: contextual read coverage follows defaulted qualified aliases" {
+    const graph = try TestGraph.init(&.{
+        .{ .path = "/errors.ts", .text =
+        \\export interface Issue { readonly code: string; readonly message: string; }
+        \\type Flatten<T> = { [K in keyof T]: T[K] } & {};
+        \\type MakePartial<T, K extends keyof T> = Omit<T, K> & Partial<Pick<T, K>>;
+        \\type Raw<T extends Issue = Issue> = T extends any
+        \\  ? Flatten<MakePartial<T, "message"> & Record<string, unknown>>
+        \\  : never;
+        \\export type QualifiedRawIssue<T extends Issue = Issue> = Raw<T>;
+        },
+        .{ .path = "/schemas.ts", .text =
+        \\import type * as errors from "./errors.js";
+        \\export interface ParsePayload { issues: errors.QualifiedRawIssue[]; }
+        },
+    });
+    defer graph.deinit();
+    const payload = try graph.class(1, "ParsePayload");
+    defer payload.deinit(T.allocator);
+    const reference = payload.declaration.body.?.object[0].type.array.reference;
+    try T.expectEqual(@as(usize, 0), reference.arguments.len);
+    try T.expectEqual(@as(usize, 1), reference.declaration.parameters.len);
+    try T.expect(reference.projection_only);
+    try T.expect(reference.contextual_projection);
+    try T.expect(reference.contextual_read != null);
+    var builder = try Builder.init(T.allocator, payload.arena.allocator(), &graph.resolver, graph.sources.items);
+    defer builder.query.deinit();
+    const read = try builder.contextualReadProjection(reference);
+    try T.expect(read != null);
+    try T.expect(read.?.transformed);
 }
 
 test "class schema: generic interface methods retain local type parameters" {
