@@ -29454,8 +29454,47 @@ pub const Checker = struct {
     }
 
     fn promiseLikeResult(self: *Checker, t: TypeId) PromiseLikeResult {
+        return self.promiseLikeResultDepth(t, 0);
+    }
+
+    /// `Awaited<T>` is a distributive conditional type, so awaiting a union
+    /// awaits each constituent and rejoins the results: `A | Promise<A>`
+    /// resolves to `A`, and `Promise<A> | Promise<B>` to `A | B`. Without
+    /// this, `await` on a `T | Promise<T>` alias (the shape every
+    /// "maybe async" helper takes) leaves the union intact and every member
+    /// read off the result reports TS2339.
+    fn promiseLikeUnionResult(self: *Checker, t: TypeId, depth: u8) PromiseLikeResult {
+        var awaited: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer awaited.deinit(self.gpa);
+        var saw_promise = false;
+        for (self.interner.unionMembers(t)) |member| {
+            const resolved = switch (self.promiseLikeResultDepth(member, depth + 1)) {
+                .malformed => return .malformed,
+                .none => member,
+                .promised => |promised| blk: {
+                    saw_promise = true;
+                    break :blk promised;
+                },
+            };
+            if (std.mem.indexOfScalar(TypeId, awaited.items, resolved) != null) continue;
+            awaited.append(self.gpa, resolved) catch return .none;
+        }
+        if (!saw_promise or awaited.items.len == 0) return .none;
+        if (awaited.items.len == 1) return .{ .promised = awaited.items[0] };
+        const rejoined = self.interner.internUnion(awaited.items) catch return .none;
+        // A union that awaits to itself (`type T = A | Promise<T>`) makes no
+        // progress; report `.none` so callers that iterate cannot spin.
+        if (rejoined == t) return .none;
+        return .{ .promised = rejoined };
+    }
+
+    fn promiseLikeResultDepth(self: *Checker, t: TypeId, depth: u8) PromiseLikeResult {
         if (t == types.Primitive.any or t == types.Primitive.unknown) return .none;
         if (t >= self.interner.pool.typeCount()) return .none;
+        if (self.interner.pool.flagsOf(t).is_union) {
+            if (depth >= 8) return .none;
+            return self.promiseLikeUnionResult(t, depth);
+        }
         if (!self.interner.pool.flagsOf(t).is_object_type) return .none;
         const then_id = self.string_interner.intern("then") catch return .none;
         const then_t = self.interner.objectMember(t, then_id) orelse return .none;
@@ -200035,6 +200074,31 @@ test "checker: callable condition used in body suppresses TS2774" {
     s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.condition_function_always_defined));
+}
+
+test "checker: await distributes over union constituents" {
+    const s = try newSetup(
+        \\type Payload = { value: number; issues: string[] };
+        \\declare const maybe: Payload | Promise<Payload>;
+        \\declare const either: Promise<Payload> | Promise<string>;
+        \\async function f() {
+        \\  const r = await maybe;
+        \\  r.issues.map((issue) => issue.length);
+        \\  const wrong: string = r.value;
+        \\  const b = await either;
+        \\  const n: number = b;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true, .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    // `Awaited<Payload | Promise<Payload>>` is `Payload`, and
+    // `Awaited<Promise<Payload> | Promise<string>>` is `Payload | string`.
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.parameter_implicitly_any));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'number' is not assignable to type 'string'."));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type 'string | Payload' is not assignable to type 'number'."));
 }
 
 test "checker: Promise identifier condition emits TS2801 under strictNullChecks" {
