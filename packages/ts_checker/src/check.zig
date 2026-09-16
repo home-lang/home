@@ -108656,8 +108656,9 @@ pub const Checker = struct {
     ///
     /// A constraint naming a type reached through a qualified import —
     /// `<T extends schemas.Schema>` — resolves to `any` under the plain
-    /// lowering, silently widening every member read off `T`. Annotation
-    /// positions already resolve such names; the constraint position did not.
+    /// lowering, silently widening every member read off `T`. Every
+    /// declaration form that owns type parameters lowers its constraints here,
+    /// so they share one Program path for such names.
     fn typeParameterConstraintType(self: *Checker, constraint_node: NodeId) CheckError!TypeId {
         if (constraint_node == hir_mod.none_node_id) return types.Primitive.unknown;
         const lowered = try self.lowererLowerWithTypeParams(constraint_node);
