@@ -1,0 +1,68 @@
+name: Toolchain
+
+# Proves the toolchain the repo actually pins can be installed the way a
+# contributor installs it: pantry, from pantry.json, via scripts/setup-toolchain.sh.
+#
+# The build/test jobs in ci.yml deliberately use mlugg/setup-zig instead, which
+# carries its own mirror. That keeps the main pipeline insulated from an
+# upstream outage, but it also means nothing exercises the pantry path, so a
+# pruned pin or an unreachable registry stays invisible until someone clones the
+# repo. This job is that missing signal.
+
+on:
+  push:
+    branches:
+      - main
+      - 'claude/**'
+
+  pull_request:
+    branches:
+      - main
+
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  pantry-toolchain:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+
+      # pantry/ is gitignored, so a hit here skips the toolchain download.
+      - name: Use cached pantry toolchain
+        uses: actions/cache@v5
+        with:
+          path: pantry
+          key: pantry-${{ runner.os }}-${{ hashFiles('pantry.lock', 'pantry.json') }}
+          restore-keys: |
+            pantry-${{ runner.os }}-
+
+      - name: Install toolchain via pantry
+        run: ./scripts/setup-toolchain.sh
+
+      # A toolchain that installs but resolves to some other version would let
+      # the pin rot silently, so compare against pantry.json rather than just
+      # checking that `zig version` exits 0.
+      - name: Verify installed version matches the pin
+        run: |
+          expected="$(bun --print 'require("./pantry.json").dependencies["ziglang.org"]')"
+          actual="$(pantry/.bin/zig version)"
+          echo "pinned:    $expected"
+          echo "installed: $actual"
+          if [ "$expected" != "$actual" ]; then
+            echo "::error::pantry installed Zig $actual but pantry.json pins $expected"
+            exit 1
+          fi
+
+      - name: Run TypeScript checker and program suites
+        run: |
+          export PATH="$PWD/pantry/.bin:$PATH"
+          zig build test -Dfilter=ts_program --summary all
+          zig build test -Dfilter=ts_checker --summary all
