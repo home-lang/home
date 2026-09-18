@@ -11005,6 +11005,90 @@ test "Program: annotated receivers project members of imported Program types" {
     try expectCompilationLacksDiagnosticCode(writes, 2322);
     try expectCompilationLacksDiagnosticCode(writes, 2345);
     try expectCompilationLacksDiagnosticCode(writes, 2741);
+    // The callbacks written into these annotations are contextually typed
+    // from the same projection that types the reads above, so no parameter
+    // falls back to an implicit `any`. Neither engine reports anything here.
+    try expectCompilationLacksDiagnosticCode(writes, 7006);
+}
+
+test "Program: object literals written against imported Program types type their callbacks" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver };
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+
+    // The write counterpart of the read projection: a literal assigned to a
+    // binding, passed as a call argument, or written with method shorthand
+    // takes its callback parameter types from the declaration it is written
+    // against. Each callback assigns `payload` to `number`, so the single
+    // TS2322 proves the concrete type arrived rather than an implicit `any`
+    // being silenced. TypeScript 6.0.3 and 7.0.2 agree on every position.
+    const w1_binding =
+        \\import type * as schemas from "./schemas.js";
+        \\export const bound: schemas.Schema = {
+        \\  _zod: {
+        \\    run: (payload) => {
+        \\      const wrong: number = payload;
+        \\      return payload;
+        \\    },
+        \\  },
+        \\};
+    ;
+    const w2_argument =
+        \\import type * as schemas from "./schemas.js";
+        \\declare function takesSchema(schema: schemas.Schema): void;
+        \\takesSchema({
+        \\  _zod: {
+        \\    run: (payload) => {
+        \\      const wrong: number = payload;
+        \\      return payload;
+        \\    },
+        \\  },
+        \\});
+    ;
+    const w3_method =
+        \\import type * as schemas from "./schemas.js";
+        \\export const shorthand: schemas.Schema = {
+        \\  _zod: {
+        \\    run(payload) {
+        \\      const wrong: number = payload;
+        \\      return payload;
+        \\    },
+        \\  },
+        \\};
+    ;
+    const sources = [_]struct { path: []const u8, text: []const u8 }{
+        .{ .path = "/proj/w1_binding.ts", .text = w1_binding },
+        .{ .path = "/proj/w2_argument.ts", .text = w2_argument },
+        .{ .path = "/proj/w3_method.ts", .text = w3_method },
+    };
+    try vfs.addFile("/proj/util.ts", issue_688_util);
+    try vfs.addFile("/proj/errors.ts", issue_688_errors);
+    try vfs.addFile("/proj/schemas.ts", issue_688_schemas);
+    for (sources) |source| try vfs.addFile(source.path, source.text);
+    _ = try p.add("/proj/util.ts", issue_688_util);
+    _ = try p.add("/proj/errors.ts", issue_688_errors);
+    _ = try p.add("/proj/schemas.ts", issue_688_schemas);
+    var ids: [sources.len]FileId = undefined;
+    for (sources, &ids) |source, *id| id.* = try p.add(source.path, source.text);
+
+    try p.compileAll(.{
+        .no_emit = true,
+        .strict_flags = .{ .no_implicit_any = true, .strict_null_checks = true },
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    });
+    for (sources, ids) |source, id| {
+        const compilation = p.fileById(id).compilation.?;
+        try expectCompilationLacksDiagnosticCode(compilation, 7006);
+        try T.expectEqual(@as(usize, 1), compilation.diagnostics.items.len);
+        const diagnostic = compilation.diagnostics.items[0];
+        try T.expectEqual(@as(u32, 2322), diagnostic.code);
+        const wrong = std.mem.indexOf(u8, source.text, "wrong").?;
+        try T.expectEqual(@as(u32, @intCast(wrong)), diagnostic.pos);
+    }
 }
 
 test "Program: a failed imported declaration lowering keeps completed class projections" {

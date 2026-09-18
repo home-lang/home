@@ -9006,6 +9006,67 @@ callback parameters implicitly `any` (`const s: schemas.Schema = { _zod: { run:
 (payload) => ... } }`), which both engines type. That contextual-write
 position is tracked separately.
 
+### Object literals written against imported Program types (untimed)
+
+Issue [#754](https://github.com/home-lang/home/issues/754), under
+[#548](https://github.com/home-lang/home/issues/548) and
+[#416](https://github.com/home-lang/home/issues/416), completes
+[#751](https://github.com/home-lang/home/issues/751). Members *read* through
+an imported type that could only be transferred as a projection resolve, but
+values *written* into one did not: an object literal assigned to such an
+annotation, passed as a call argument, or written with method shorthand left
+its nested callback parameters implicitly `any`.
+
+The literal takes its contextual target from the type that was written rather
+than from its checked type: a binding's annotation, the callee's parameter
+annotation, or the enclosing literal's member, walked syntactically until a
+reference to an imported declaration is reached. An overload set or a name
+that walk cannot resolve uniquely yields nothing rather than a guess.
+
+Only the member the literal actually writes is lowered, and only as
+*context*. The literal's own type and every assignability check still see
+`any`, which is the same scope the read side uses. Publishing the projection
+as the annotation's type was measured and rejected under #751 at 38 added Zod
+identities, because the approximation then becomes an assignment target.
+Context cannot reject a program that plain `any` accepted: it only replaces an
+implicit `any` parameter with the declared one.
+
+| #754 write positions (file:line:column:code) | TypeScript 6.0.3 | Native TypeScript 7.0.2 | ReleaseSafe Home | #751 `8c587f6fb` |
+|---|---:|---:|---:|---:|
+| Binding annotation | TS2322 at 5:13 | **identical** | **identical** | TS7006 at 4:11 |
+| Call argument | TS2322 at 6:13 | **identical** | **identical** | TS7006 at 5:11 |
+| Method shorthand | TS2322 at 5:13 | **identical** | **identical** | TS7006 at 4:9 |
+
+Each callback assigns its `payload` parameter to `number`, so the single
+TS2322 proves the declared type arrived rather than an implicit `any` being
+silenced. The #751 read positions and the #688 oracle are unchanged.
+
+Against #751 `8c587f6fb` on the same 21-file Zod 4.5.2 `core` graph:
+
+| Zod 4.5.2 core, written object literals | #751 `8c587f6fb` | #754 | Change |
+|---|---:|---:|---:|
+| All diagnostics | 146 | **140** | **6 removed (4.1%); 0 added** |
+| Unique path/line/column/code identities | 141 | **135** | **6 removed; 0 added** |
+| Removed identities | — | 6 TS7006 | `core/api.ts:1850:56`, `core/memoizer.ts:97:9`, `97:16`, `97:25`, `107:9`, `121:10` |
+
+Both removals are the shape the change targets: `const memo: $ZodMemoizer = {
+alloc(_inst, payload, empty) { ... } }` is a binding annotation with method
+shorthand, and `const def: schemas.$ZodCustomStringFormatDef = { fn: (val) =>
+... }` is a binding annotation with an arrow property.
+
+TypeScript 6.0.3 and native 7.0.2 both report exactly one diagnostic on this
+graph — the `locales` module the shard omits — and no TS7006 anywhere, so
+every diagnostic Home still emits here is a false positive and the six
+removals are unambiguous. That also bounds the claim: the measurement covers
+the 21 `src/v4/core/**/*.ts` files only, because the pinned tree's
+`src/v4/locales` shard was deleted by the host's periodic `/private/tmp`
+cleanup during #751. The shard's own identities remain unmeasured.
+
+The complete Program and checker targets pass (213 and 4,371 tests), as do
+ReleaseSafe and ReleaseFast `home-tsc` builds, `zig fmt --check`, and
+`git diff --check`. The added test fails against `8c587f6fb`, which reports
+TS7006 at each of the three positions instead. No timing is claimed.
+
 ### Positive `instanceof` assignment fallthrough (untimed)
 
 Issue [#738](https://github.com/home-lang/home/issues/738), found while

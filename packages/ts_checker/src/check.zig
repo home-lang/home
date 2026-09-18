@@ -31129,10 +31129,12 @@ pub const Checker = struct {
                 if (property.value != expr_node or property.is_computed) return null;
                 const object_node = self.hir.parentOf(parent);
                 if (object_node == hir_mod.none_node_id or self.hir.kindOf(object_node) != .object_literal) return null;
-                const object_target = (self.jsDocSatisfiesTypeForExpression(object_node) catch null) orelse
-                    self.contextualTargetTypeForExpression(object_node) orelse return null;
                 const name = self.propertyNameFromKeyNode(property.key) orelse return null;
-                return self.contextualObjectLiteralMemberTarget(object_target, name) catch null;
+                const object_target = (self.jsDocSatisfiesTypeForExpression(object_node) catch null) orelse
+                    self.contextualTargetTypeForExpression(object_node) orelse
+                    return self.programContextualObjectLiteralMemberType(object_node, name) catch null;
+                if (self.contextualObjectLiteralMemberTarget(object_target, name) catch null) |member_t| return member_t;
+                return self.programContextualObjectLiteralMemberType(object_node, name) catch null;
             },
             else => return null,
         }
@@ -37333,6 +37335,9 @@ pub const Checker = struct {
                             self.interner.pool.flagsOf(narrowed_object_target).is_union) break :blk null;
                         const member_name = self.propertyNameFromKeyNode(property.key) orelse break :blk null;
                         object_member_target = try self.contextualObjectLiteralMemberTarget(narrowed_object_target, member_name);
+                        if (object_member_target == null and !object_context_claimed) {
+                            object_member_target = try self.programContextualObjectLiteralMemberType(object_node, member_name);
+                        }
                     },
                     else => break :blk null,
                 }
@@ -108387,6 +108392,118 @@ pub const Checker = struct {
         const declaration = (try self.programDeclarationForQualifiedInterfaceRef(type_node)) orelse
             (try self.programDeclarationForNamedImportRef(type_node)) orelse return null;
         const member_t = (try self.programDeclarationReferenceMemberType(declaration, type_node, member_name, null, false)) orelse return null;
+        return if (member_t == types.Primitive.any) null else member_t;
+    }
+
+    /// The annotation of the parameter that receives `arg_node` in a call to a
+    /// plainly-named function declaration. An overload set or a name this walk
+    /// cannot resolve uniquely yields nothing rather than a guess.
+    fn programCallArgumentDeclaredTypeNode(self: *Checker, call_node: NodeId, arg_node: NodeId) ?NodeId {
+        const call = hir_mod.callOf(self.hir, call_node);
+        if (call.callee == hir_mod.none_node_id or self.hir.kindOf(call.callee) != .identifier) return null;
+        const callee_name = hir_mod.identifierOf(self.hir, call.callee).name;
+        var arg_index: usize = 0;
+        var found = false;
+        for (hir_mod.callArgs(self.hir, call_node), 0..) |argument, index| {
+            if (argument != arg_node) continue;
+            arg_index = index;
+            found = true;
+            break;
+        }
+        if (!found) return null;
+        var cur = self.hir.parentOf(call_node);
+        while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            const statements: []const NodeId = switch (self.hir.kindOf(cur)) {
+                .block_stmt => hir_mod.blockStmts(self.hir, cur),
+                .namespace_decl => hir_mod.namespaceBody(self.hir, cur),
+                else => continue,
+            };
+            var matched: NodeId = hir_mod.none_node_id;
+            for (statements) |statement| {
+                const decl = if (self.hir.kindOf(statement) == .export_decl)
+                    hir_mod.exportOf(self.hir, statement).decl
+                else
+                    statement;
+                if (decl == hir_mod.none_node_id or self.hir.kindOf(decl) != .fn_decl) continue;
+                const function = hir_mod.fnDeclOf(self.hir, decl);
+                if (function.name == hir_mod.none_node_id or self.hir.kindOf(function.name) != .identifier) continue;
+                if (hir_mod.identifierOf(self.hir, function.name).name != callee_name) continue;
+                // A second declaration of the same name is an overload set,
+                // whose applicable signature is a call-site decision.
+                if (matched != hir_mod.none_node_id) return null;
+                matched = decl;
+            }
+            if (matched == hir_mod.none_node_id) continue;
+            var value_index: usize = 0;
+            for (hir_mod.fnParams(self.hir, matched)) |param_node| {
+                if (self.hir.kindOf(param_node) != .parameter) continue;
+                if (self.isThisParameter(param_node)) continue;
+                const parameter = hir_mod.parameterOf(self.hir, param_node);
+                if (parameter.flags.is_rest) return null;
+                if (value_index == arg_index) {
+                    return if (parameter.type_annotation == hir_mod.none_node_id) null else parameter.type_annotation;
+                }
+                value_index += 1;
+            }
+            return null;
+        }
+        return null;
+    }
+
+    /// The written type node that declares an object literal's shape. A
+    /// literal reaches its declaration through a binding's annotation, a call
+    /// argument's parameter annotation, or an enclosing literal's member.
+    fn programObjectLiteralDeclaredTypeNode(self: *Checker, object_node: NodeId, depth: u8) CheckError!?NodeId {
+        if (object_node == hir_mod.none_node_id or depth >= 8) return null;
+        const parent = self.hir.parentOf(object_node);
+        if (parent == hir_mod.none_node_id) return null;
+        switch (self.hir.kindOf(parent)) {
+            .var_decl, .let_decl, .const_decl => {
+                const variable = hir_mod.varDeclOf(self.hir, parent);
+                if (variable.init != object_node or variable.type_annotation == hir_mod.none_node_id) return null;
+                return variable.type_annotation;
+            },
+            .call_expr, .new_expr => return self.programCallArgumentDeclaredTypeNode(parent, object_node),
+            .object_property => {
+                const property = hir_mod.objectPropertyOf(self.hir, parent);
+                if (property.value != object_node or property.is_computed) return null;
+                const outer = self.hir.parentOf(parent);
+                if (outer == hir_mod.none_node_id or self.hir.kindOf(outer) != .object_literal) return null;
+                const name = self.propertyNameFromKeyNode(property.key) orelse return null;
+                const outer_node = (try self.programObjectLiteralDeclaredTypeNode(outer, depth + 1)) orelse return null;
+                var active: std.AutoHashMapUnmanaged(NodeId, void) = .empty;
+                defer active.deinit(self.gpa);
+                const projected = (try self.contextualProjectedMemberFromTypeNode(outer_node, &.{}, name, &active)) orelse return null;
+                return switch (projected) {
+                    .node => |member_node| member_node,
+                    .type => null,
+                };
+            },
+            else => return null,
+        }
+    }
+
+    /// Contextually type a property of an object literal written against an
+    /// imported Program type that could only be transferred as a projection.
+    ///
+    /// Only the member the literal actually writes is lowered, and only as
+    /// *context*. The literal's own type and every assignability check still
+    /// see `any`, exactly as on the read side
+    /// (`programAnnotatedReceiverMemberType`): publishing the projection as the
+    /// annotation's type was measured and rejected, because the approximation
+    /// then becomes an assignment target. Supplying it as context cannot
+    /// reject a program that plain `any` accepted; it only replaces an
+    /// implicit `any` parameter with the declared one.
+    fn programContextualObjectLiteralMemberType(
+        self: *Checker,
+        object_node: NodeId,
+        member_name: hir_mod.StringId,
+    ) CheckError!?TypeId {
+        const type_node = (try self.programObjectLiteralDeclaredTypeNode(object_node, 0)) orelse return null;
+        if (self.hir.kindOf(type_node) != .type_ref) return null;
+        const declaration = (try self.programDeclarationForQualifiedInterfaceRef(type_node)) orelse
+            (try self.programDeclarationForNamedImportRef(type_node)) orelse return null;
+        const member_t = (try self.programDeclarationReferenceMemberType(declaration, type_node, member_name, null, true)) orelse return null;
         return if (member_t == types.Primitive.any) null else member_t;
     }
 

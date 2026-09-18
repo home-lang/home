@@ -566,6 +566,15 @@ projections:
 | Unique path/line/column/code identities | 141 | **141** | **0 added; 0 removed** |
 | Focused three-engine oracle | 5× TS7006 | **exact 5× TS2322 parity** | no TS7006 |
 
+Object literals written against those same imported types now type their
+nested callbacks from the declaration they are written against:
+
+| [Zod 4.5.2 written-literal audit](docs/docs/TS_PERFORMANCE.md#object-literals-written-against-imported-program-types-untimed) | #751 `8c587f6fb` | #754 main | Change |
+|---|---:|---:|---:|
+| Core diagnostics (21-file shard) | 146 | **140** | **6 TS7006 removed (4.1%); 0 added** |
+| Unique path/line/column/code identities | 141 | **135** | **6 removed; 0 added** |
+| Focused three-engine oracle | 3× TS7006 | **exact 3× TS2322 parity** | no TS7006 |
+
 Positive `instanceof` branches that replace their guarded value now join the
 assigned true path with the excluded false path at fallthrough:
 
