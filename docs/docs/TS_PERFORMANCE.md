@@ -8931,6 +8931,81 @@ three-engine parity on its focused graph, and an unchanged Zod core
 (150 diagnostics, 145 identities; none added or removed). No timing is
 claimed.
 
+### Annotated receivers of imported Program types (untimed)
+
+Issue [#751](https://github.com/home-lang/home/issues/751), under
+[#548](https://github.com/home-lang/home/issues/548) and
+[#416](https://github.com/home-lang/home/issues/416), continues
+[#688](https://github.com/home-lang/home/issues/688). A constraint naming an
+imported type now resolves, but the same type written as an ordinary
+annotation did not: a parameter, a declared binding, a written type argument,
+a class parameter property, or a named import left the value `any`, so every
+callback read through it reported a false TS7006.
+
+Two changes carry the fix, and neither is observable alone.
+
+- **Member scope.** A receiver whose checked type is `any` keeps that type;
+  only the members it explicitly reads are lowered from the owning
+  declaration. This is the scope `main` already gives a qualified assertion
+  (`programQualifiedAssertionMemberType`), extended to the written type of a
+  binding, a class field, and interface members reached through bound type
+  arguments (`holder: Holder<schemas.Schema>` makes `holder.schema` name
+  `schemas.Schema`). Relations never observe an approximate whole type.
+- **Definition rollback.** Lowering a declaration that contains an
+  unsupported leaf raises `UnsupportedProgramType`, and the failure previously
+  cleared *every* Program cache, including completed imported-class
+  registrations. Type identities are allocated monotonically, so the rollback
+  now drops only entries at or above the identity watermark taken when the
+  attempt began.
+
+Publishing the whole projection as the annotation's type was measured and
+rejected: it added 38 Zod identities (30 TS7006 in `core/compile.ts`, plus
+TS2322, TS2345, TS2559, and TS18048 approximation mismatches), because
+assignments and contextual typing then observe the approximation. Member
+scope without the rollback still added 29 of those TS7006: reading
+`schema._zod` on Zod's `SomeType` fails, and the old blanket clear discarded
+the `Doc` class registration that types `doc.indented((d) => ...)`.
+
+| #751 annotation positions (file:line:column:code) | TypeScript 6.0.3 | Native TypeScript 7.0.2 | ReleaseSafe Home | `main` |
+|---|---:|---:|---:|---:|
+| Parameter annotation | TS2322 at 6:11 | **identical** | **identical** | TS7006 |
+| Declared binding | TS2322 at 7:11 | **identical** | **identical** | TS7006 |
+| Written type argument | TS2322 at 7:11 | **identical** | **identical** | TS7006 |
+| Class parameter property | TS2322 at 8:13 | **identical** | **identical** | TS7006 |
+| Named (unqualified) import | TS2322 at 6:11 | **identical** | **identical** | TS7006 |
+| Writes into the same types | none | **none** | **none** | none |
+| Failed lowering beside an imported class | none | **none** | **none** | none |
+
+Each read assigns the projected element to `number`, so the single TS2322 is
+a deliberate control rather than silence. The Program suite encodes all seven
+graphs.
+
+The Zod 4.5.2 `core` graph is unchanged against #688 `cfdec2ea3`:
+
+| Zod 4.5.2 core, annotated receivers | #688 `cfdec2ea3` | #751 | Change |
+|---|---:|---:|---:|
+| All diagnostics | 146 | **146** | **0 added; 0 removed** |
+| Unique path/line/column/code identities | 141 | **141** | **0 added; 0 removed** |
+
+That measurement covers the 21 `src/v4/core/**/*.ts` files only. The pinned
+tree's `src/v4/locales` shard was deleted by the host's periodic
+`/private/tmp` cleanup during this work, so the graph resolves one fewer
+module: it reproduces every core identity of the #688 run and differs from it
+only by `locales/he.ts:126:47` TS7006 giving way to `core/index.ts:11:26`
+TS2307. The locale shard's own identities are therefore unmeasured here and
+are re-checked when the pinned tree is restored.
+
+The complete Program and checker targets pass (212 and 4,371 tests), as do
+ReleaseSafe and ReleaseFast `home-tsc` builds, `zig fmt --check`, and
+`git diff --check`. Removing either half fails a test: without the rollback
+only the failed-lowering graph regresses; without member scope the annotation
+graphs and both #688 read tests regress. No timing is claimed.
+
+An object literal assigned to one of these annotations still leaves its nested
+callback parameters implicitly `any` (`const s: schemas.Schema = { _zod: { run:
+(payload) => ... } }`), which both engines type. That contextual-write
+position is tracked separately.
+
 ### Positive `instanceof` assignment fallthrough (untimed)
 
 Issue [#738](https://github.com/home-lang/home/issues/738), found while

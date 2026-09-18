@@ -556,6 +556,16 @@ issue-array projections type callbacks without becoming value types:
 | Unique path/line/column/code identities | 145 | **141** | **4 removed; 0 added** |
 | Focused three-engine oracle | 3× TS7006 | **exact 3× TS2322 parity** | no TS7006/TS2339 |
 
+Imported types written as ordinary annotations project the members they read,
+and a failed declaration lowering no longer discards completed imported-class
+projections:
+
+| [Zod 4.5.2 annotated-receiver audit](docs/docs/TS_PERFORMANCE.md#annotated-receivers-of-imported-program-types-untimed) | #688 `cfdec2ea3` | #751 main | Change |
+|---|---:|---:|---:|
+| Core diagnostics (21-file shard) | 146 | **146** | **0 added; 0 removed** |
+| Unique path/line/column/code identities | 141 | **141** | **0 added; 0 removed** |
+| Focused three-engine oracle | 5× TS7006 | **exact 5× TS2322 parity** | no TS7006 |
+
 Positive `instanceof` branches that replace their guarded value now join the
 assigned true path with the excluded false path at fallthrough:
 

@@ -108263,6 +108263,133 @@ pub const Checker = struct {
         return matched;
     }
 
+    /// Resolve the Program declaration named by an unqualified reference to
+    /// a type-only or value import (`import type { Schema }` then `Schema`).
+    /// Local declarations and type parameters shadow the import.
+    fn programDeclarationForNamedImportRef(
+        self: *Checker,
+        type_node: NodeId,
+    ) CheckError!?*const ProgramClassSchema.Declaration {
+        if (type_node == hir_mod.none_node_id or self.hir.kindOf(type_node) != .type_ref) return null;
+        const reference = hir_mod.typeRefOf(self.hir, type_node);
+        if (reference.qualifier_len != 0) return null;
+        if (self.nameHasEnclosingTypeParameter(reference.name, type_node)) return null;
+        if (self.findVisibleNamedTypeDecl(type_node, reference.name) != null) return null;
+        const root = self.rootBlockFor(type_node);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        for (hir_mod.blockStmts(self.hir, root)) |statement| {
+            if (self.hir.kindOf(statement) != .import_decl) continue;
+            const import = hir_mod.importOf(self.hir, statement);
+            for (hir_mod.importNamed(self.hir, statement)) |specifier| {
+                const item = hir_mod.importSpecifierOf(self.hir, specifier);
+                if (item.local != reference.name) continue;
+                var matched: ?*const ProgramClassSchema.Declaration = null;
+                for (self.program_exported_types) |entry| {
+                    if (!std.mem.eql(u8, entry.export_name, self.string_interner.get(item.imported))) continue;
+                    if (!try self.programImportTargetsPath(statement, self.string_interner.get(import.module), entry.target_path)) continue;
+                    if (matched) |existing| {
+                        if (existing != entry.declaration) return null;
+                        continue;
+                    }
+                    matched = entry.declaration;
+                }
+                return matched;
+            }
+        }
+        return null;
+    }
+
+    /// The written type of a member-access receiver whose checked type is
+    /// `any`: a binding's annotation, a class field or parameter property
+    /// read through `this`, or an interface member reached from either,
+    /// with type parameters bound to the written type arguments
+    /// (`holder: Holder<schemas.Schema>` makes `holder.schema` name
+    /// `schemas.Schema`).
+    fn programReceiverDeclaredTypeNode(self: *Checker, expression: NodeId, depth: u8) CheckError!?NodeId {
+        if (expression == hir_mod.none_node_id or depth >= 8) return null;
+        switch (self.hir.kindOf(expression)) {
+            .identifier => return self.visibleAnnotatedIdentifierTypeNode(expression),
+            .member_access => {
+                const access = hir_mod.memberOf(self.hir, expression);
+                if (self.nodeIsThisIdentifier(access.object)) {
+                    if (self.thisClassMemberTypeNode(access.object, access.name)) |member_node| return member_node;
+                }
+                const object_node = (try self.programReceiverDeclaredTypeNode(access.object, depth + 1)) orelse return null;
+                var active: std.AutoHashMapUnmanaged(NodeId, void) = .empty;
+                defer active.deinit(self.gpa);
+                const projected = (try self.contextualProjectedMemberFromTypeNode(object_node, &.{}, access.name, &active)) orelse return null;
+                return switch (projected) {
+                    .node => |member_node| member_node,
+                    .type => null,
+                };
+            },
+            else => return null,
+        }
+    }
+
+    /// The annotation of an instance field or constructor parameter property
+    /// named `name` on the class that binds `this_node`. A non-arrow function
+    /// between them rebinds `this`, so no class member is implied.
+    fn thisClassMemberTypeNode(self: *Checker, this_node: NodeId, name: hir_mod.StringId) ?NodeId {
+        var cur = self.hir.parentOf(this_node);
+        const class_node = while (cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+            switch (self.hir.kindOf(cur)) {
+                .class_decl, .class_expr => break cur,
+                .fn_decl, .fn_expr => {
+                    const parent = self.hir.parentOf(cur);
+                    if (parent == hir_mod.none_node_id) return null;
+                    const parent_kind = self.hir.kindOf(parent);
+                    if (parent_kind != .class_decl and parent_kind != .class_expr) return null;
+                },
+                else => {},
+            }
+        } else return null;
+        for (hir_mod.classMembers(self.hir, class_node)) |member| {
+            switch (self.hir.kindOf(member)) {
+                .object_property => {
+                    const property = hir_mod.objectPropertyOf(self.hir, member);
+                    if (property.is_static or property.type_annotation == hir_mod.none_node_id) continue;
+                    if (self.nodeIsBracketedComputedName(property.key)) continue;
+                    if (self.hir.kindOf(property.key) != .identifier) continue;
+                    if (hir_mod.identifierOf(self.hir, property.key).name == name) return property.type_annotation;
+                },
+                .fn_decl, .fn_expr => {
+                    const function = hir_mod.fnDeclOf(self.hir, member);
+                    if (!function.flags.is_constructor) continue;
+                    for (hir_mod.fnParams(self.hir, member)) |param_node| {
+                        if (self.hir.kindOf(param_node) != .parameter) continue;
+                        const parameter = hir_mod.parameterOf(self.hir, param_node);
+                        if (!parameter.flags.is_parameter_property) continue;
+                        if (parameter.name == hir_mod.none_node_id or self.hir.kindOf(parameter.name) != .identifier) continue;
+                        if (hir_mod.identifierOf(self.hir, parameter.name).name != name) continue;
+                        return if (parameter.type_annotation == hir_mod.none_node_id) null else parameter.type_annotation;
+                    }
+                },
+                else => {},
+            }
+        }
+        return null;
+    }
+
+    /// Resolve one explicitly read member of an imported Program type written
+    /// as a binding, field, or type-argument annotation, even when the whole
+    /// declaration can only be transferred as a projection. As with
+    /// `programQualifiedAssertionMemberType`, only the requested member is
+    /// lowered: the receiver stays `any`, so relations never observe an
+    /// approximate whole-object type.
+    fn programAnnotatedReceiverMemberType(
+        self: *Checker,
+        receiver: NodeId,
+        member_name: hir_mod.StringId,
+    ) CheckError!?TypeId {
+        const type_node = (try self.programReceiverDeclaredTypeNode(receiver, 0)) orelse return null;
+        if (self.hir.kindOf(type_node) != .type_ref) return null;
+        const declaration = (try self.programDeclarationForQualifiedInterfaceRef(type_node)) orelse
+            (try self.programDeclarationForNamedImportRef(type_node)) orelse return null;
+        const member_t = (try self.programDeclarationReferenceMemberType(declaration, type_node, member_name, null, false)) orelse return null;
+        return if (member_t == types.Primitive.any) null else member_t;
+    }
+
     fn programQualifiedInterfaceMemberType(
         self: *Checker,
         type_node: NodeId,
@@ -108289,6 +108416,19 @@ pub const Checker = struct {
         contextual: bool,
     ) CheckError!?TypeId {
         const declaration = (try self.programDeclarationForQualifiedInterfaceRef(type_node)) orelse return null;
+        return self.programDeclarationReferenceMemberType(declaration, type_node, member_name, substitutions, contextual);
+    }
+
+    /// Lower one member of `declaration` as referenced by `type_node`, whose
+    /// written arguments instantiate the declaration's parameters.
+    fn programDeclarationReferenceMemberType(
+        self: *Checker,
+        declaration: *const ProgramClassSchema.Declaration,
+        type_node: NodeId,
+        member_name: hir_mod.StringId,
+        substitutions: ?*const std.AutoHashMapUnmanaged(TypeId, TypeId),
+        contextual: bool,
+    ) CheckError!?TypeId {
         const arg_nodes = hir_mod.typeRefArgs(self.hir, type_node);
         if (arg_nodes.len > declaration.parameters.len) return null;
         const args = try self.gpa.alloc(TypeId, declaration.parameters.len);
@@ -108861,6 +109001,73 @@ pub const Checker = struct {
         return types.Primitive.any;
     }
 
+    /// Undo one failed Program definition. Type identities are allocated
+    /// monotonically, so everything the attempt published has an identity at
+    /// or above `watermark`; every earlier entry was completed before the
+    /// attempt began and stays valid. Clearing those too would discard
+    /// unrelated imported class and instance bookkeeping whenever any
+    /// declaration graph contains an unsupported leaf.
+    fn rollbackProgramGenericInstancesFrom(self: *Checker, watermark: TypeId) void {
+        self.rollbackProgramGenericInstancesChecked(watermark) catch self.clearProgramGenericInstances();
+    }
+
+    fn rollbackProgramGenericInstancesChecked(self: *Checker, watermark: TypeId) error{OutOfMemory}!void {
+        try self.removeProgramEntriesFrom(&self.program_generic_definitions, watermark, false, true);
+        try self.removeProgramEntriesFrom(&self.program_contextual_types, watermark, true, false);
+        try self.removeProgramEntriesFrom(&self.program_contextual_member_projections, watermark, false, true);
+        try self.removeProgramEntriesFrom(&self.program_class_declarations, watermark, true, false);
+        try self.removeProgramEntriesFrom(&self.program_contextual_class_receivers, watermark, false, true);
+        try self.removeProgramEntriesFrom(&self.program_expression_parameters, watermark, false, true);
+        try self.removeProgramEntriesFrom(&self.program_declaration_type_parameters, watermark, true, false);
+        try self.removeProgramEntriesFrom(&self.program_definition_names, watermark, true, false);
+        try self.removeProgramEntriesFrom(&self.program_type_display_names, watermark, true, false);
+        try self.removeProgramEntriesFrom(&self.program_definition_classes, watermark, true, false);
+        try self.removeProgramEntriesFrom(&self.generic_instances, watermark, true, true);
+        try self.removeProgramEntriesFrom(&self.generic_instance_origins, watermark, true, true);
+
+        var stale_origins: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer stale_origins.deinit(self.gpa);
+        var origins = self.program_contextual_type_origins.iterator();
+        while (origins.next()) |entry| {
+            var stale = entry.key_ptr.* >= watermark;
+            var origin: ?*const ProgramContextualTypeOrigin = entry.value_ptr.*;
+            while (!stale) {
+                const current = origin orelse break;
+                for (current.args) |arg| {
+                    if (arg >= watermark) stale = true;
+                }
+                origin = current.next;
+            }
+            if (stale) try stale_origins.append(self.gpa, entry.key_ptr.*);
+        }
+        for (stale_origins.items) |key| _ = self.program_contextual_type_origins.remove(key);
+    }
+
+    fn removeProgramEntriesFrom(
+        self: *Checker,
+        map: anytype,
+        watermark: TypeId,
+        comptime key_is_type: bool,
+        comptime value_is_type: bool,
+    ) error{OutOfMemory}!void {
+        const Key = @FieldType(@TypeOf(map.*).KV, "key");
+        var stale: std.ArrayListUnmanaged(Key) = .empty;
+        defer stale.deinit(self.gpa);
+        var entries = map.iterator();
+        while (entries.next()) |entry| {
+            if (comptime key_is_type) {
+                if (entry.key_ptr.* >= watermark) {
+                    try stale.append(self.gpa, entry.key_ptr.*);
+                    continue;
+                }
+            }
+            if (comptime value_is_type) {
+                if (entry.value_ptr.* >= watermark) try stale.append(self.gpa, entry.key_ptr.*);
+            }
+        }
+        for (stale.items) |key| _ = map.remove(key);
+    }
+
     fn clearProgramGenericInstances(self: *Checker) void {
         self.program_generic_definitions.clearRetainingCapacity();
         self.program_contextual_declarations.clearRetainingCapacity();
@@ -108948,9 +109155,10 @@ pub const Checker = struct {
 
     fn programGenericDefinition(self: *Checker, declaration: *const ProgramClassSchema.Declaration) ProgramTypeError!TypeId {
         if (self.program_generic_definitions.get(declaration)) |definition| return definition;
+        const watermark = self.interner.pool.typeCount();
         const definition = try self.interner.reserveGenericDefinition();
         try self.program_generic_definitions.put(self.gpa, declaration, definition);
-        errdefer self.clearProgramGenericInstances();
+        errdefer self.rollbackProgramGenericInstancesFrom(watermark);
         const parameters = try self.gpa.alloc(TypeId, declaration.parameters.len);
         defer self.gpa.free(parameters);
         for (declaration.parameters, parameters) |parameter, *id| {
@@ -113692,11 +113900,8 @@ pub const Checker = struct {
                         break :blk try self.optionalChainResult(member_t, m.optional or self.expressionIsOptionalChain(m.object));
                     }
                     if (!self.isInAssignmentTargetChain(node)) {
-                        if (self.visibleAnnotatedIdentifierTypeNode(m.object)) |type_node| {
-                            if (try self.programQualifiedInterfaceMemberType(type_node, m.name, null)) |member_t| {
-                                if (member_t != types.Primitive.any)
-                                    try self.program_contextual_member_projections.put(self.gpa, node, member_t);
-                            }
+                        if (try self.programAnnotatedReceiverMemberType(m.object, m.name)) |member_t| {
+                            break :blk try self.optionalChainResult(member_t, m.optional or self.expressionIsOptionalChain(m.object));
                         }
                     }
                 }

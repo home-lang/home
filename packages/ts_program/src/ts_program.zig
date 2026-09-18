@@ -10870,6 +10870,218 @@ test "Program: projected issue arrays accept valid raw issue pushes beside typed
     for (compilation.diagnostics.items) |diagnostic| try T.expectEqual(@as(u32, 2322), diagnostic.code);
 }
 
+test "Program: annotated receivers project members of imported Program types" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver };
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+
+    // `schemas.Schema` can only be transferred as a projection. Written as a
+    // parameter, declared binding, type argument, class parameter property,
+    // or named import, the receiver stays `any` while each explicitly read
+    // member is lowered from its declaration, so the `issue` callbacks are
+    // exact. TypeScript 6.0.3 and 7.0.2 report exactly one TS2322 on each
+    // `wrong`, and nothing for the writes, which must never be checked
+    // against an approximate whole type.
+    const c1_param =
+        \\import type * as schemas from "./schemas.js";
+        \\export function parseParam(schema: schemas.Schema, value: unknown) {
+        \\  const result = schema._zod.run({ value, issues: [] });
+        \\  if (result instanceof Promise) throw new Error("async");
+        \\  result.issues.map((issue) => {
+        \\    const wrong: number = issue;
+        \\    return issue.code;
+        \\  });
+        \\  return result.value;
+        \\}
+    ;
+    const c2_declared =
+        \\import type * as schemas from "./schemas.js";
+        \\declare const bare: schemas.Schema;
+        \\export function parseDeclared(value: unknown) {
+        \\  const result = bare._zod.run({ value, issues: [] });
+        \\  if (result instanceof Promise) throw new Error("async");
+        \\  result.issues.map((issue) => {
+        \\    const wrong: number = issue;
+        \\    return issue.code;
+        \\  });
+        \\  return result.value;
+        \\}
+    ;
+    const c3_typearg =
+        \\import type * as schemas from "./schemas.js";
+        \\export interface Holder<T extends schemas.Schema> { schema: T }
+        \\export function parseHeld(holder: Holder<schemas.Schema>, value: unknown) {
+        \\  const result = holder.schema._zod.run({ value, issues: [] });
+        \\  if (result instanceof Promise) throw new Error("async");
+        \\  result.issues.map((issue) => {
+        \\    const wrong: number = issue;
+        \\    return issue.code;
+        \\  });
+        \\  return result.value;
+        \\}
+    ;
+    const c4_field =
+        \\import type * as schemas from "./schemas.js";
+        \\export class Owner {
+        \\  constructor(readonly schema: schemas.Schema) {}
+        \\  parse(value: unknown) {
+        \\    const result = this.schema._zod.run({ value, issues: [] });
+        \\    if (result instanceof Promise) throw new Error("async");
+        \\    result.issues.map((issue) => {
+        \\      const wrong: number = issue;
+        \\      return issue.code;
+        \\    });
+        \\    return result.value;
+        \\  }
+        \\}
+    ;
+    const c5_named =
+        \\import type { Schema } from "./schemas.js";
+        \\export function parseNamed(schema: Schema, value: unknown) {
+        \\  const result = schema._zod.run({ value, issues: [] });
+        \\  if (result instanceof Promise) throw new Error("async");
+        \\  result.issues.map((issue) => {
+        \\    const wrong: number = issue;
+        \\    return issue.code;
+        \\  });
+        \\  return result.value;
+        \\}
+    ;
+    const c6_writes =
+        \\import type * as schemas from "./schemas.js";
+        \\declare function takesSchema(schema: schemas.Schema): void;
+        \\const literal: schemas.Schema = { _zod: { run: (payload) => payload } };
+        \\takesSchema(literal);
+        \\takesSchema({
+        \\  _zod: {
+        \\    run: (payload) => {
+        \\      payload.issues.push({ code: "invalid_type", expected: "string", input: 1 });
+        \\      return Promise.resolve(payload);
+        \\    },
+        \\  },
+        \\});
+        \\const payload: schemas.ParsePayload = { value: 1, issues: [] };
+        \\payload.issues.push({ code: "invalid_value", values: ["a"], input: 1, note: "extra" });
+        \\declare const wide: { _zod: { run(payload: schemas.ParsePayload): schemas.MaybeAsync<schemas.ParsePayload> } };
+        \\takesSchema(wide);
+    ;
+    const sources = [_]struct { path: []const u8, text: []const u8 }{
+        .{ .path = "/proj/c1_param.ts", .text = c1_param },
+        .{ .path = "/proj/c2_declared.ts", .text = c2_declared },
+        .{ .path = "/proj/c3_typearg.ts", .text = c3_typearg },
+        .{ .path = "/proj/c4_field.ts", .text = c4_field },
+        .{ .path = "/proj/c5_named.ts", .text = c5_named },
+        .{ .path = "/proj/c6_writes.ts", .text = c6_writes },
+    };
+    try vfs.addFile("/proj/util.ts", issue_688_util);
+    try vfs.addFile("/proj/errors.ts", issue_688_errors);
+    try vfs.addFile("/proj/schemas.ts", issue_688_schemas);
+    for (sources) |source| try vfs.addFile(source.path, source.text);
+    _ = try p.add("/proj/util.ts", issue_688_util);
+    _ = try p.add("/proj/errors.ts", issue_688_errors);
+    _ = try p.add("/proj/schemas.ts", issue_688_schemas);
+    var ids: [sources.len]FileId = undefined;
+    for (sources, &ids) |source, *id| id.* = try p.add(source.path, source.text);
+
+    try p.compileAll(.{
+        .no_emit = true,
+        .strict_flags = .{ .no_implicit_any = true, .strict_null_checks = true },
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    });
+    for (sources[0 .. sources.len - 1], ids[0 .. ids.len - 1]) |source, id| {
+        const compilation = p.fileById(id).compilation.?;
+        try expectCompilationLacksDiagnosticCode(compilation, 7006);
+        try T.expectEqual(@as(usize, 1), compilation.diagnostics.items.len);
+        const diagnostic = compilation.diagnostics.items[0];
+        try T.expectEqual(@as(u32, 2322), diagnostic.code);
+        const wrong = std.mem.indexOf(u8, source.text, "wrong").?;
+        try T.expectEqual(@as(u32, @intCast(wrong)), diagnostic.pos);
+    }
+    const writes = p.fileById(ids[ids.len - 1]).compilation.?;
+    try expectCompilationLacksDiagnosticCode(writes, 2322);
+    try expectCompilationLacksDiagnosticCode(writes, 2345);
+    try expectCompilationLacksDiagnosticCode(writes, 2741);
+}
+
+test "Program: a failed imported declaration lowering keeps completed class projections" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver };
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+
+    // Reading `schema._zod` lowers `Internals`, whose tuple leaf is
+    // unsupported, so that definition is rolled back. The rollback must not
+    // discard `Doc`, whose `indented` callback is typed through its
+    // already materialized class projection. TypeScript reports nothing.
+    const doc_source =
+        \\type ModeWriter = (doc: Doc, modes: { execution: "sync" | "async" }) => void;
+        \\
+        \\export class Doc {
+        \\  content: string[] = [];
+        \\  indent = 0;
+        \\
+        \\  indented(fn: (doc: Doc) => void) {
+        \\    this.indent += 1;
+        \\    fn(this);
+        \\    this.indent -= 1;
+        \\  }
+        \\
+        \\  write(fn: ModeWriter): void;
+        \\  write(line: string): void;
+        \\  write(arg: any) {
+        \\    if (typeof arg === "function") return;
+        \\    this.content.push(arg as string);
+        \\  }
+        \\}
+    ;
+    const types_source =
+        \\export interface Internals {
+        \\  readonly pair: readonly [string];
+        \\  readonly def: { readonly kind: string };
+        \\}
+        \\export type SomeType = { _zod: Internals };
+    ;
+    const consumer_source =
+        \\import { Doc } from "./doc.js";
+        \\import type { SomeType } from "./types.js";
+        \\
+        \\export function first(doc: Doc, schema: SomeType) {
+        \\  const def = schema._zod.def;
+        \\  doc.indented((d) => {
+        \\    d.write(`${def.kind}`);
+        \\  });
+        \\}
+        \\
+        \\export function second(doc: Doc, schema: SomeType) {
+        \\  const def = schema._zod.def;
+        \\  doc.indented((d) => {
+        \\    d.write(`${def.kind}`);
+        \\  });
+        \\}
+    ;
+    try vfs.addFile("/proj/doc.ts", doc_source);
+    try vfs.addFile("/proj/types.ts", types_source);
+    try vfs.addFile("/proj/consumer.ts", consumer_source);
+    _ = try p.add("/proj/doc.ts", doc_source);
+    _ = try p.add("/proj/types.ts", types_source);
+    const consumer_id = try p.add("/proj/consumer.ts", consumer_source);
+
+    try p.compileAll(.{
+        .no_emit = true,
+        .strict_flags = .{ .no_implicit_any = true, .strict_null_checks = true },
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    });
+    const compilation = p.fileById(consumer_id).compilation.?;
+    try T.expectEqual(@as(usize, 0), compilation.diagnostics.items.len);
+}
+
 test "Program: returned imported callable interfaces retain callback read contracts" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();
