@@ -57,7 +57,7 @@ pub const JSError = home_rt.JSError;
 pub const Task = home_rt.jsc.Task;
 
 const builtin = @import("builtin");
-pub const callmod_inline: std.builtin.CallModifier = if (builtin.mode == .Debug) .auto else .always_inline;
+pub const callmod_inline: std.builtin.CallModifier = if (builtin.mode == .debug) .auto else .always_inline;
 
 const home_rt = @import("home");
 const std = @import("std");

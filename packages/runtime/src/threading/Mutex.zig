@@ -62,7 +62,7 @@ pub fn assertLocked(_: *Mutex) void {}
 
 pub const deinit = void;
 
-const Impl = if (builtin.mode == .Debug and !builtin.single_threaded)
+const Impl = if (builtin.mode == .debug and !builtin.single_threaded)
     DebugImpl
 else
     ReleaseImpl;

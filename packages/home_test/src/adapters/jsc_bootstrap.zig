@@ -5670,7 +5670,7 @@ fn mimallocDumpJsonNative(
     const include_blocks = argument_count >= 1 and
         arguments[0] != null and
         extern_fns.JSValueToBoolean(actual_ctx, arguments[0]);
-    const hash_addresses = @import("builtin").mode != .Debug;
+    const hash_addresses = @import("builtin").mode != .debug;
     const json = mi_heap_dump_json(include_blocks, hash_addresses) orelse {
         setException(actual_ctx, exception, "bun:jsc heapStats() could not read the mimalloc heap dump");
         return null;

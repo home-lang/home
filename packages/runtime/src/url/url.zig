@@ -1124,8 +1124,8 @@ const expect = std.testing.expect;
 const builtin = @import("builtin");
 
 const Environment = struct {
-    pub const allow_assert = builtin.mode == .Debug;
-    pub const isDebug = builtin.mode == .Debug;
+    pub const allow_assert = builtin.mode == .debug;
+    pub const isDebug = builtin.mode == .debug;
 };
 
 const Output = struct {
@@ -1198,7 +1198,7 @@ const strings = StringFns;
 
 const bun = struct {
     pub const OOM = error{OutOfMemory};
-    pub const callmod_inline: std.builtin.CallModifier = if (builtin.mode == .Debug) .auto else .always_inline;
+    pub const callmod_inline: std.builtin.CallModifier = if (builtin.mode == .debug) .auto else .always_inline;
     pub const strings = StringFns;
     // Home's own bit_set, not std's: `ArrayBitSet.initEmpty()` here takes no
     // arguments, where std's Zig 0.17 equivalent requires an allocator and a

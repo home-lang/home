@@ -460,7 +460,7 @@ pub fn transpileSourceCode(
 
             if (cache.entry) |*entry| {
                 jsc_vm.source_mappings.putMappings(source, .{
-                    .list = .{ .items = @constCast(entry.sourcemap), .capacity = entry.sourcemap.len },
+                    .list = .{ .items = @constCast(entry.sourcemap), .capacity = entry.sourcemap.len, .pointer_stability = .{} },
                     .allocator = bun.default_allocator,
                 }) catch {};
 

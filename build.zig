@@ -1028,7 +1028,7 @@ pub fn build(b: *std.Build) void {
     build_options.addOption(bool, "is_canary", false);
     build_options.addOption([]const u8, "canary_revision", "");
     build_options.addOption([]const u8, "base_path", "");
-    build_options.addOption(bool, "enable_logs", debug_logging or optimize == .Debug);
+    build_options.addOption(bool, "enable_logs", debug_logging or optimize == .debug);
     build_options.addOption(bool, "enable_asan", enable_sanitize_address);
     build_options.addOption(bool, "enable_fuzzilli", false);
     build_options.addOption(bool, "enable_tinycc", false);
@@ -1470,7 +1470,7 @@ pub fn build(b: *std.Build) void {
         .root_module = b.createModule(.{
             .root_source_file = b.path("packages/home_test/src/home_rt_test_launcher.zig"),
             .target = b.graph.host,
-            .optimize = .ReleaseSafe,
+            .optimize = .safe,
         }),
     });
     // Pantry Zig's server-mode test runner deadlocks for the native-linked
@@ -1937,7 +1937,7 @@ pub fn build(b: *std.Build) void {
         .root_module = b.createModule(.{
             .root_source_file = b.path("bench/lexer_bench.zig"),
             .target = target,
-            .optimize = .ReleaseFast,
+            .optimize = .fast,
         }),
     });
 
@@ -1958,7 +1958,7 @@ pub fn build(b: *std.Build) void {
         .root_module = b.createModule(.{
             .root_source_file = b.path("bench/parser_bench.zig"),
             .target = target,
-            .optimize = .ReleaseFast,
+            .optimize = .fast,
         }),
     });
 
@@ -2141,7 +2141,7 @@ pub fn build(b: *std.Build) void {
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
-            .optimize = .Debug,
+            .optimize = .debug,
         }),
     });
     debug_exe.root_module.addImport("lexer", lexer_pkg);
@@ -2212,7 +2212,7 @@ pub fn build(b: *std.Build) void {
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
-            .optimize = .ReleaseSafe,
+            .optimize = .safe,
         }),
     });
     release_safe_exe.root_module.addImport("lexer", lexer_pkg);
@@ -2254,7 +2254,7 @@ pub fn build(b: *std.Build) void {
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
-            .optimize = .ReleaseSmall,
+            .optimize = .small,
         }),
     });
     release_small_exe.root_module.addImport("lexer", lexer_pkg);
@@ -2301,7 +2301,7 @@ pub fn build(b: *std.Build) void {
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
-            .optimize = .ReleaseFast,
+            .optimize = .fast,
         }),
     });
     release_fast_exe.root_module.addImport("lexer", lexer_pkg);

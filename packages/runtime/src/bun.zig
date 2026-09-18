@@ -17,8 +17,8 @@ pub const DefaultAllocator = allocators.Default;
 /// Zeroing memory allocator
 pub const z_allocator: std.mem.Allocator = allocators.z_allocator;
 
-pub const callmod_inline: std.builtin.CallModifier = if (builtin.mode == .Debug) .auto else .always_inline;
-pub const callconv_inline: std.builtin.CallingConvention = if (builtin.mode == .Debug) .auto else .@"inline";
+pub const callmod_inline: std.builtin.CallModifier = if (builtin.mode == .debug) .auto else .always_inline;
+pub const callconv_inline: std.builtin.CallingConvention = if (builtin.mode == .debug) .auto else .@"inline";
 
 /// In debug builds, this will catch memory leaks. In release builds, it is mimalloc.
 pub const debug_allocator: std.mem.Allocator = if (Environment.isDebug or Environment.enable_asan)
@@ -2851,19 +2851,19 @@ pub const io = @import("./io/io.zig");
 const errno_map = errno_map: {
     var max_value = 0;
     for (std.enums.values(sys.SystemErrno)) |v|
-        max_value = @max(max_value, @intFromEnum(v));
+        max_value = @max(max_value, @backingInt(v));
 
     var map: [max_value + 1]anyerror = undefined;
     @memset(&map, error.Unexpected);
     for (std.enums.values(sys.SystemErrno)) |v|
-        map[@intFromEnum(v)] = @field(anyerror, @tagName(v));
+        map[@backingInt(v)] = @field(anyerror, @tagName(v));
 
     break :errno_map map;
 };
 
 pub fn errnoToZigErr(err: anytype) anyerror {
     var num = if (@typeInfo(@TypeOf(err)) == .@"enum")
-        @intFromEnum(err)
+        @backingInt(err)
     else
         err;
 
@@ -3440,20 +3440,20 @@ pub fn OrdinalT(comptime Int: type) type {
         pub inline fn fromZeroBased(int: Int) @This() {
             assert(int >= 0);
             assert(int != std.math.maxInt(Int));
-            return @enumFromInt(int);
+            return @fromBackingInt(@intCast(int));
         }
 
         pub inline fn fromOneBased(int: Int) @This() {
             assert(int > 0);
-            return @enumFromInt(int - 1);
+            return @fromBackingInt(@intCast(int - 1));
         }
 
         pub inline fn zeroBased(ord: @This()) Int {
-            return @intFromEnum(ord);
+            return @backingInt(ord);
         }
 
         pub inline fn oneBased(ord: @This()) Int {
-            return @intFromEnum(ord) + 1;
+            return @backingInt(ord) + 1;
         }
 
         /// Add two ordinal numbers together. Both are converted to zero-based before addition.
@@ -3501,7 +3501,7 @@ pub const bake = @import("./runtime/bake/bake.zig");
 /// like std.enums.tagName, except it doesn't lose the sentinel value.
 pub fn tagName(comptime Enum: type, value: Enum) ?[:0]const u8 {
     return inline for (bun.meta.fieldsOf(Enum)) |f| {
-        if (@intFromEnum(value) == f.value) break f.name;
+        if (@backingInt(value) == f.value) break f.name;
     } else null;
 }
 
@@ -3532,17 +3532,17 @@ pub fn GenericIndex(backing_int: type, uid: anytype) type {
         /// Prefer this over @enumFromInt to assert the int is in range
         pub inline fn init(int: backing_int) Index {
             bun.assert(int != null_value); // would be confused for null
-            return @enumFromInt(int);
+            return @fromBackingInt(@intCast(int));
         }
 
         /// Prefer this over @intFromEnum because of type confusion with `.Optional`
         pub inline fn get(i: @This()) backing_int {
-            bun.assert(@intFromEnum(i) != null_value); // memory corruption
-            return @intFromEnum(i);
+            bun.assert(@backingInt(i) != null_value); // memory corruption
+            return @backingInt(i);
         }
 
         pub inline fn toOptional(oi: @This()) Optional {
-            return @enumFromInt(oi.get());
+            return @fromBackingInt(@intCast(oi.get()));
         }
 
         pub fn sortFnAsc(_: void, a: @This(), b: @This()) bool {
@@ -3554,7 +3554,7 @@ pub fn GenericIndex(backing_int: type, uid: anytype) type {
         }
 
         pub fn format(this: @This(), writer: *std.Io.Writer) !void {
-            return writer.print("{d}", .{@intFromEnum(this)});
+            return writer.print("{d}", .{@backingInt(this)});
         }
 
         pub const Optional = enum(backing_int) {
@@ -3573,11 +3573,11 @@ pub fn GenericIndex(backing_int: type, uid: anytype) type {
             }
 
             pub inline fn unwrap(oi: Optional) ?Index {
-                return if (oi == .none) null else @enumFromInt(@intFromEnum(oi));
+                return if (oi == .none) null else @fromBackingInt(@intCast(@backingInt(oi)));
             }
 
             pub inline fn unwrapGet(oi: Optional) ?backing_int {
-                return if (oi == .none) null else @intFromEnum(oi);
+                return if (oi == .none) null else @backingInt(oi);
             }
         };
     };

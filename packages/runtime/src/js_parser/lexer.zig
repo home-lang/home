@@ -279,7 +279,7 @@ fn NewLexer_(
         }
 
         pub inline fn isIdentifierOrKeyword(noalias lexer: *const LexerType) bool {
-            return @intFromEnum(lexer.token) >= @intFromEnum(T.t_identifier);
+            return @backingInt(lexer.token) >= @backingInt(T.t_identifier);
         }
 
         pub fn deinit(noalias this: *LexerType) void {
@@ -988,7 +988,7 @@ fn NewLexer_(
 
         pub fn expectContextualKeyword(noalias self: *LexerType, comptime keyword: string) !void {
             if (!self.isContextualKeyword(keyword)) {
-                if (@import("builtin").mode == std.builtin.OptimizeMode.Debug) {
+                if (@import("builtin").mode == std.builtin.OptimizeMode.debug) {
                     self.addError(self.start, "Expected \"{s}\" but found \"{s}\" (token: {s})", .{
                         keyword,
                         self.raw(),

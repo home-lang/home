@@ -37,7 +37,7 @@ pub const isAndroid = false; // Home does not currently target Android.
 /// `process.release.sourceUrl`) never carries the suffix.
 pub const baseline = false;
 pub const enable_fuzzilli = false; // Fuzzilli REPRL — re-attaches in a future phase.
-pub const isDebug = builtin.mode == .Debug;
+pub const isDebug = builtin.mode == .debug;
 pub const isRelease = !isDebug;
 pub const allow_assert = isDebug;
 pub const enable_asan = false;

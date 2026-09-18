@@ -616,10 +616,7 @@ pub const ShellSubprocess = struct {
         cmd_parent: *ShellCmd,
 
         override_env: bool = false,
-        env_array: std.ArrayListUnmanaged(?[*:0]const u8) = .{
-            .items = &.{},
-            .capacity = 0,
-        },
+        env_array: std.ArrayListUnmanaged(?[*:0]const u8) = .{ .items = &.{}, .capacity = 0, .pointer_stability = .{} },
         cwd: []const u8,
         stdio: [3]Stdio = .{
             .ignore,
@@ -691,10 +688,7 @@ pub const ShellSubprocess = struct {
                 .arena = arena,
 
                 .override_env = false,
-                .env_array = .{
-                    .items = &.{},
-                    .capacity = 0,
-                },
+                .env_array = .{ .items = &.{}, .capacity = 0, .pointer_stability = .{} },
                 .cwd = event_loop.topLevelDir(),
                 .stdio = .{
                     .{ .ignore = {} },
@@ -890,7 +884,7 @@ pub const ShellSubprocess = struct {
             const buf = bun.handleOom(allocator.alloc(?[*:0]const u8, n + 1));
             @memcpy(buf[0..n], spawn_args.env_array.items[0..n]);
             buf[n] = null;
-            spawn_args.env_array = .{ .items = buf[0 .. n + 1], .capacity = n + 1 };
+            spawn_args.env_array = .{ .items = buf[0 .. n + 1], .capacity = n + 1, .pointer_stability = .{} };
         }
 
         var spawn_result = switch (bun.spawn.spawnProcess(
@@ -954,7 +948,7 @@ pub const ShellSubprocess = struct {
         if (subprocess.stdin == .buffer) {
             if (subprocess.stdin.buffer.start().asErr()) |err| {
                 const sys_err = err.toShellSystemError();
-                _ = subprocess.tryKill(@intFromEnum(bun.SignalCode.SIGTERM));
+                _ = subprocess.tryKill(@backingInt(bun.SignalCode.SIGTERM));
                 subprocess.abortAfterFailedStart();
                 return .{ .err = .{ .sys = sys_err } };
             }
@@ -970,7 +964,7 @@ pub const ShellSubprocess = struct {
             defer pipe.deref();
             if (pipe.start(subprocess, event_loop).asErr()) |err| {
                 const sys_err = err.toShellSystemError();
-                _ = subprocess.tryKill(@intFromEnum(bun.SignalCode.SIGTERM));
+                _ = subprocess.tryKill(@backingInt(bun.SignalCode.SIGTERM));
                 subprocess.abortAfterFailedStart();
                 return .{ .err = .{ .sys = sys_err } };
             }
@@ -985,7 +979,7 @@ pub const ShellSubprocess = struct {
             defer pipe.deref();
             if (pipe.start(subprocess, event_loop).asErr()) |err| {
                 const sys_err = err.toShellSystemError();
-                _ = subprocess.tryKill(@intFromEnum(bun.SignalCode.SIGTERM));
+                _ = subprocess.tryKill(@backingInt(bun.SignalCode.SIGTERM));
                 subprocess.abortAfterFailedStart();
                 return .{ .err = .{ .sys = sys_err } };
             }

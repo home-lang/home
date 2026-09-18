@@ -467,7 +467,7 @@ pub const Process = struct {
         const poller: *PollerWindows = @fieldParentPtr("uv", process);
         var this: *Process = @fieldParentPtr("poller", poller);
         const exit_code: u8 = if (exit_status >= 0) @as(u8, @truncate(@as(u64, @intCast(exit_status)))) else 0;
-        const signal_code: ?bun.SignalCode = if (term_signal > 0 and term_signal < @intFromEnum(bun.SignalCode.SIGSYS)) @enumFromInt(term_signal) else null;
+        const signal_code: ?bun.SignalCode = if (term_signal > 0 and term_signal < @backingInt(bun.SignalCode.SIGSYS)) @fromBackingInt(@intCast(term_signal)) else null;
         const rusage = uv_getrusage(process);
 
         bun.windows.libuv.log("Process.onExit({d}) code: {d}, signal: {?}", .{ process.pid, exit_code, signal_code });
@@ -483,7 +483,7 @@ pub const Process = struct {
             this.close();
             this.onExit(
                 .{
-                    .exited = .{ .code = exit_code, .signal = @enumFromInt(0) },
+                    .exited = .{ .code = exit_code, .signal = @fromBackingInt(@intCast(0)) },
                 },
                 &rusage,
             );
@@ -577,7 +577,7 @@ pub const Process = struct {
         if (comptime Environment.isPosix) {
             switch (this.poller) {
                 .waiter_thread, .fd => {
-                    const err = std.c.kill(this.pid, @enumFromInt(signal));
+                    const err = std.c.kill(this.pid, @fromBackingInt(@intCast(signal)));
                     if (err != 0) {
                         const errno_ = bun.sys.getErrno(err);
 
@@ -593,7 +593,7 @@ pub const Process = struct {
                 .uv => |*handle| {
                     if (handle.kill(signal).toError(.kill)) |err| {
                         // if the process was already killed don't throw
-                        if (err.errno != @intFromEnum(bun.sys.E.SRCH)) {
+                        if (err.errno != @backingInt(bun.sys.E.SRCH)) {
                             return .{ .err = err };
                         }
                     }
@@ -624,7 +624,7 @@ pub const Status = union(enum) {
 
     pub const Exited = struct {
         code: u8 = 0,
-        signal: bun.SignalCode = @enumFromInt(0),
+        signal: bun.SignalCode = @fromBackingInt(@intCast(0)),
     };
 
     pub fn from(pid: pid_t, waitpid_result: *const Maybe(PosixSpawn.WaitPidResult)) ?Status {
@@ -646,7 +646,7 @@ pub const Status = union(enum) {
                 }
 
                 if (std.posix.W.IFSIGNALED(result.status)) {
-                    signal = @as(u8, @truncate(@intFromEnum(std.posix.W.TERMSIG(result.status))));
+                    signal = @as(u8, @truncate(@backingInt(std.posix.W.TERMSIG(result.status))));
                 }
 
                 // https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/waitpid.2.html
@@ -655,7 +655,7 @@ pub const Status = union(enum) {
                 // ified the WUNTRACED option or if the child process is being
                 // traced (see ptrace(2)).
                 else if (std.posix.W.IFSTOPPED(result.status)) {
-                    signal = @as(u8, @truncate(@intFromEnum(std.posix.W.STOPSIG(result.status))));
+                    signal = @as(u8, @truncate(@backingInt(std.posix.W.STOPSIG(result.status))));
                 }
             },
         }
@@ -664,12 +664,12 @@ pub const Status = union(enum) {
             return .{
                 .exited = .{
                     .code = exit_code.?,
-                    .signal = @enumFromInt(signal orelse 0),
+                    .signal = @fromBackingInt(@intCast(signal orelse 0)),
                 },
             };
         } else if (signal != null) {
             return .{
-                .signaled = @enumFromInt(signal.?),
+                .signaled = @fromBackingInt(@intCast(signal.?)),
             };
         }
 
@@ -679,7 +679,7 @@ pub const Status = union(enum) {
     pub fn signalCode(this: *const Status) ?bun.SignalCode {
         return switch (this.*) {
             .signaled => |sig| sig,
-            .exited => |exit| if (@intFromEnum(exit.signal) > 0) exit.signal else null,
+            .exited => |exit| if (@backingInt(exit.signal) > 0) exit.signal else null,
             else => null,
         };
     }
@@ -697,7 +697,7 @@ pub const Status = union(enum) {
                 try writer.print("code: {d}", .{exit.code});
             },
             .signaled => |signal| {
-                try writer.print("signal: {d}", .{@intFromEnum(signal)});
+                try writer.print("signal: {d}", .{@backingInt(signal)});
             },
             .err => |err| {
                 try writer.print("{f}", .{err});
@@ -1042,7 +1042,7 @@ const WaiterThreadPosix = struct {
                 _ = std.posix.poll(&polls, std.math.maxInt(i32)) catch 0;
             } else {
                 var mask = std.posix.sigemptyset();
-                var signal: c_int = @intFromEnum(std.posix.SIG.CHLD);
+                var signal: c_int = @backingInt(std.posix.SIG.CHLD);
                 const rc = std.c.sigwait(&mask, &signal);
                 _ = rc;
             }
@@ -1993,8 +1993,8 @@ pub const sync = struct {
 
     pub const Result = struct {
         status: Status,
-        stdout: std.array_list.Managed(u8) = .{ .items = &.{}, .allocator = bun.default_allocator, .capacity = 0 },
-        stderr: std.array_list.Managed(u8) = .{ .items = &.{}, .allocator = bun.default_allocator, .capacity = 0 },
+        stdout: std.array_list.Managed(u8) = .{ .items = &.{}, .allocator = bun.default_allocator, .capacity = 0, .pointer_stability = .{} },
+        stderr: std.array_list.Managed(u8) = .{ .items = &.{}, .allocator = bun.default_allocator, .capacity = 0, .pointer_stability = .{} },
 
         pub fn isOK(this: *const Result) bool {
             return this.status.isOK();
@@ -2658,7 +2658,7 @@ pub const sync = struct {
                 // is a best-effort miss — same policy as
                 // `ParentDeathWatchdog.installOnEventLoop`. The
                 // `getppid() != ppid` recheck below is the backstop.
-                if (r.data == @intFromEnum(std.c.E.SRCH))
+                if (r.data == @backingInt(std.c.E.SRCH))
                     bun.Global.exit(bun.ParentDeathWatchdog.exit_code);
                 continue;
             }

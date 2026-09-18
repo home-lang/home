@@ -55,7 +55,7 @@ pub const Flags = packed struct(u16) {
             .is_node_or_bun = false,
             .is_node = false,
             .has_shebang = false,
-            .version_tag = @enumFromInt(std.math.maxInt(u13)),
+            .version_tag = @fromBackingInt(@intCast(std.math.maxInt(u13))),
         });
 
         const compare_to: u16 = @bitCast(Flags{
@@ -262,7 +262,7 @@ pub fn encodeInto(options: @This(), buf: []u8) !void {
     @as(*align(1) Flags, @ptrCast(&wbuf[0])).* = flags;
     wbuf = wbuf[@sizeOf(Flags) / @sizeOf(u16) ..];
 
-    if (@import("builtin").mode == .Debug) {
+    if (@import("builtin").mode == .debug) {
         if (wbuf.len != 0) std.debug.panic("wbuf.len != 0, got {d}", .{wbuf.len});
     }
 }

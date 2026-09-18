@@ -2084,7 +2084,7 @@ pub const Emitter = struct {
 const testing = std.testing;
 
 fn emitToString(arch: Arch, comptime body: fn (Emitter) anyerror!void) ![]u8 {
-    var out: std.ArrayList(u8) = .{ .items = &[_]u8{}, .capacity = 0 };
+    var out: std.ArrayList(u8) = .{ .items = &[_]u8{}, .capacity = 0, .pointer_stability = .{} };
     const e = Emitter{ .arch = arch, .out = &out, .gpa = testing.allocator };
     try body(e);
     return out.toOwnedSlice(testing.allocator);

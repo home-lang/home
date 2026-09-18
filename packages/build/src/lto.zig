@@ -1149,9 +1149,9 @@ test "LTO configuration" {
 }
 
 test "LTO level from build mode" {
-    try std.testing.expectEqual(LtoLevel.None, LtoLevel.fromBuildMode(.Debug));
-    try std.testing.expectEqual(LtoLevel.Thin, LtoLevel.fromBuildMode(.ReleaseSafe));
-    try std.testing.expectEqual(LtoLevel.Fat, LtoLevel.fromBuildMode(.ReleaseFast));
+    try std.testing.expectEqual(LtoLevel.None, LtoLevel.fromBuildMode(.debug));
+    try std.testing.expectEqual(LtoLevel.Thin, LtoLevel.fromBuildMode(.safe));
+    try std.testing.expectEqual(LtoLevel.Fat, LtoLevel.fromBuildMode(.fast));
 }
 
 test "IR module creation" {

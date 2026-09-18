@@ -443,7 +443,7 @@ pub const RuntimeTranspilerStore = struct {
 
             if (cache.entry) |*entry| {
                 vm.source_mappings.putMappings(&parse_result.source, .{
-                    .list = .{ .items = @constCast(entry.sourcemap), .capacity = entry.sourcemap.len },
+                    .list = .{ .items = @constCast(entry.sourcemap), .capacity = entry.sourcemap.len, .pointer_stability = .{} },
                     .allocator = bun.default_allocator,
                 }) catch {};
 

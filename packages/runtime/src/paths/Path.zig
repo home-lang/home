@@ -1039,7 +1039,7 @@ const bun = @import("home");
 
 const Environment = struct {
     const isWindows = builtin.os.tag == .windows;
-    const isDebug = builtin.mode == .Debug;
+    const isDebug = builtin.mode == .debug;
 };
 
 const pools = @import("./path_buffer_pool.zig");

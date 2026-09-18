@@ -42,9 +42,9 @@ test "build - optimization levels" {
         pub fn description(self: @This()) []const u8 {
             return switch (self) {
                 .Debug => "No optimization, safety checks enabled",
-                .ReleaseSafe => "Optimize for speed, safety checks enabled",
-                .ReleaseFast => "Optimize for speed, safety checks disabled",
-                .ReleaseSmall => "Optimize for size",
+                .safe => "Optimize for speed, safety checks enabled",
+                .fast => "Optimize for speed, safety checks disabled",
+                .small => "Optimize for size",
             };
         }
     };

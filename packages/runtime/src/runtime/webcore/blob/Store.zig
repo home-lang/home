@@ -210,7 +210,7 @@ pub fn serialize(this: *Store, comptime Writer: type, writer: Writer) !void {
     switch (this.data) {
         .file => |file| {
             const pathlike_tag: jsc.Node.PathOrFileDescriptor.SerializeTag = if (file.pathlike == .fd) .fd else .path;
-            try writer.writeInt(u8, @intFromEnum(pathlike_tag), .little);
+            try writer.writeInt(u8, @backingInt(pathlike_tag), .little);
 
             switch (file.pathlike) {
                 .fd => |fd| {
@@ -225,7 +225,7 @@ pub fn serialize(this: *Store, comptime Writer: type, writer: Writer) !void {
         },
         .s3 => |s3| {
             const pathlike_tag: jsc.Node.PathOrFileDescriptor.SerializeTag = .path;
-            try writer.writeInt(u8, @intFromEnum(pathlike_tag), .little);
+            try writer.writeInt(u8, @backingInt(pathlike_tag), .little);
 
             const path_slice = s3.pathlike.slice();
             try writer.writeInt(u32, @as(u32, @truncate(path_slice.len)), .little);
@@ -500,19 +500,11 @@ pub const Bytes = struct {
 
     pub fn toInternalBlob(this: *Bytes) Blob.Internal {
         const ptr = this.ptr orelse return .{
-            .bytes = std.array_list.Managed(u8){
-                .items = &.{},
-                .capacity = 0,
-                .allocator = this.allocator,
-            },
+            .bytes = std.array_list.Managed(u8){ .items = &.{}, .capacity = 0, .allocator = this.allocator, .pointer_stability = .{} },
         };
 
         const result: Blob.Internal = .{
-            .bytes = .{
-                .items = ptr[0..this.len],
-                .capacity = this.cap,
-                .allocator = this.allocator,
-            },
+            .bytes = .{ .items = ptr[0..this.len], .capacity = this.cap, .allocator = this.allocator, .pointer_stability = .{} },
         };
 
         this.allocator = bun.default_allocator;

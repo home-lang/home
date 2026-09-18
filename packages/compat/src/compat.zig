@@ -42,7 +42,7 @@ pub const JSError = error{ JSException, OutOfMemory };
 pub const Environment = struct {
     pub const ci_assert = false;
     pub const enable_logs = false;
-    pub const isDebug = builtin.mode == .Debug;
+    pub const isDebug = builtin.mode == .debug;
     pub const isWindows = builtin.os.tag == .windows;
     pub const isMac = builtin.os.tag == .macos;
 };
@@ -98,7 +98,7 @@ pub const Output = struct {
 };
 
 pub fn debugAssert(ok: bool) void {
-    if (builtin.mode == .Debug) std.debug.assert(ok);
+    if (builtin.mode == .debug) std.debug.assert(ok);
 }
 
 pub fn create(allocator: std.mem.Allocator, comptime TArg: type, value: TArg) *TArg {

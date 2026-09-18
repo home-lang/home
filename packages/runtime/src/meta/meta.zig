@@ -341,8 +341,10 @@ pub fn looksLikeListContainerType(comptime T: type) ?struct { list: ListContaine
     if (tyinfo == .@"struct") {
         const st = tyinfo.@"struct";
 
-        // Looks like array list
-        if (st.field_names.len == 2 and
+        // Looks like array list. Zig 0.17.0-dev.2163 added a third
+        // `pointer_stability` safety field to `ArrayList`, so match on the
+        // leading `items`/`capacity` pair rather than an exact field count.
+        if (st.field_names.len >= 2 and
             std.mem.eql(u8, st.field_names[0], "items") and
             std.mem.eql(u8, st.field_names[1], "capacity"))
             return .{ .list = .array_list, .child = std.meta.Child(st.field_types[0]) };

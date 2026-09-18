@@ -5331,17 +5331,11 @@ pub const H2FrameParser = struct {
                     .allocator = bun.default_allocator,
                     .readBuffer = .{
                         .allocator = bun.default_allocator,
-                        .list = .{
-                            .items = &.{},
-                            .capacity = 0,
-                        },
+                        .list = .{ .items = &.{}, .capacity = 0, .pointer_stability = .{} },
                     },
                     .pendingHeaderBlock = .{
                         .allocator = bun.default_allocator,
-                        .list = .{
-                            .items = &.{},
-                            .capacity = 0,
-                        },
+                        .list = .{ .items = &.{}, .capacity = 0, .pointer_stability = .{} },
                     },
                     .streams = bun.U32HashMap(*Stream).init(bun.default_allocator),
                 };

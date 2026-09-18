@@ -71,10 +71,10 @@ pub const ElfFile = struct {
         for (0..ehdr.e_phnum) |i| {
             const phdr_offset = @as(usize, @intCast(ehdr.e_phoff)) + i * phdr_size;
             const phdr = std.mem.bytesAsValue(Elf64_Phdr, self.data.items[phdr_offset..][0..phdr_size]).*;
-            if (phdr.p_type != elf.PT_INTERP) continue;
+            if (phdr.type != .INTERP) continue;
 
-            const interp_offset: usize = @intCast(phdr.p_offset);
-            const interp_filesz: usize = @intCast(phdr.p_filesz);
+            const interp_offset: usize = @intCast(phdr.offset);
+            const interp_filesz: usize = @intCast(phdr.filesz);
             if (interp_offset + interp_filesz > self.data.items.len) return;
 
             const interp_region = self.data.items[interp_offset..][0..interp_filesz];
@@ -188,12 +188,12 @@ pub const ElfFile = struct {
         for (0..ehdr.e_phnum) |i| {
             const phdr_offset = @as(usize, @intCast(ehdr.e_phoff)) + i * phdr_size;
             const phdr = std.mem.bytesAsValue(Elf64_Phdr, self.data.items[phdr_offset..][0..phdr_size]).*;
-            if (phdr.p_type != elf.PT_LOAD) continue;
+            if (phdr.type != .LOAD) continue;
 
-            const vaddr_end = phdr.p_vaddr + phdr.p_memsz;
+            const vaddr_end = phdr.vaddr + phdr.memsz;
             if (vaddr_end > max_vaddr_end) max_vaddr_end = vaddr_end;
 
-            if ((phdr.p_flags & elf.PF_W) != 0 and rw_phdr_index == null) {
+            if (phdr.flags.W and rw_phdr_index == null) {
                 rw_phdr_index = i;
                 rw_phdr = phdr;
             }
@@ -215,14 +215,14 @@ pub const ElfFile = struct {
         // delta, so the kernel's mmap at `rw_phdr.p_offset → rw_phdr.p_vaddr`
         // covers our new payload continuously once we grow p_filesz.
         const new_vaddr = alignUp(max_vaddr_end, page_size);
-        const offset_in_segment = new_vaddr - rw_phdr.p_vaddr;
-        const new_file_offset = rw_phdr.p_offset + offset_in_segment;
+        const offset_in_segment = new_vaddr - rw_phdr.vaddr;
+        const new_file_offset = rw_phdr.offset + offset_in_segment;
 
         // Sanity: `max_vaddr_end` already reflects the RW segment's full
         // memsz range (the loop above folds every PT_LOAD), so new_vaddr is
         // past it by construction. This guard catches pathological inputs
         // (e.g. corrupt ELF with rw_phdr.p_vaddr past max_vaddr_end).
-        if (new_vaddr < rw_phdr.p_vaddr + rw_phdr.p_memsz) return error.NewVaddrCollides;
+        if (new_vaddr < rw_phdr.vaddr + rw_phdr.memsz) return error.NewVaddrCollides;
 
         // File layout after this function returns:
         //
@@ -243,7 +243,7 @@ pub const ElfFile = struct {
         // because that file range now lives inside the extended RW PT_LOAD.
         // Leaving it in place would mmap it into what was previously BSS
         // (zero-initialized statics), corrupting the process.
-        const old_rw_file_end = rw_phdr.p_offset + rw_phdr.p_filesz;
+        const old_rw_file_end = rw_phdr.offset + rw_phdr.filesz;
         const old_file_size: u64 = self.data.items.len;
         if (old_rw_file_end > old_file_size) return error.InvalidElfFile;
 
@@ -337,14 +337,14 @@ pub const ElfFile = struct {
         {
             const new_segment_size = offset_in_segment + aligned_new_size;
             const extended: Elf64_Phdr = .{
-                .p_type = rw_phdr.p_type,
-                .p_flags = rw_phdr.p_flags,
-                .p_offset = rw_phdr.p_offset,
-                .p_vaddr = rw_phdr.p_vaddr,
-                .p_paddr = rw_phdr.p_paddr,
-                .p_filesz = new_segment_size,
-                .p_memsz = new_segment_size,
-                .p_align = rw_phdr.p_align,
+                .type = rw_phdr.type,
+                .flags = rw_phdr.flags,
+                .offset = rw_phdr.offset,
+                .vaddr = rw_phdr.vaddr,
+                .paddr = rw_phdr.paddr,
+                .filesz = new_segment_size,
+                .memsz = new_segment_size,
+                .@"align" = rw_phdr.@"align",
             };
             const phdr_offset = @as(usize, @intCast(ehdr.e_phoff)) + rw_index * phdr_size;
             @memcpy(self.data.items[phdr_offset..][0..phdr_size], std.mem.asBytes(&extended));
@@ -508,10 +508,10 @@ fn hostUsesNixStoreInterpreter() bool {
             for (0..ehdr.e_phnum) |i| {
                 const off = @as(usize, @intCast(ehdr.e_phoff)) + i * phdr_size;
                 const phdr = std.mem.bytesAsValue(Elf64_Phdr, data[off..][0..phdr_size]).*;
-                if (phdr.p_type != elf.PT_INTERP) continue;
+                if (phdr.type != .INTERP) continue;
 
-                const interp_off: usize = @intCast(phdr.p_offset);
-                const interp_sz: usize = @intCast(phdr.p_filesz);
+                const interp_off: usize = @intCast(phdr.offset);
+                const interp_sz: usize = @intCast(phdr.filesz);
                 if (interp_off + interp_sz > data.len) return false;
 
                 const interp = std.mem.sliceTo(data[interp_off..][0..interp_sz], 0);
@@ -539,7 +539,7 @@ const log = std.log.scoped(.elf);
 
 const elf = std.elf;
 const Elf64_Ehdr = elf.Elf64_Ehdr;
-const Elf64_Phdr = elf.Elf64_Phdr;
+const Elf64_Phdr = elf.Elf64.Phdr;
 const Elf64_Shdr = elf.Elf64_Shdr;
 
 fn makeElfHeader(class: u8, data_encoding: u8) [@sizeOf(Elf64_Ehdr)]u8 {

@@ -444,10 +444,7 @@ pub const FetchTasklet = struct {
 
                 this.scheduled_response_buffer = .{
                     .allocator = bun.default_allocator,
-                    .list = .{
-                        .items = &.{},
-                        .capacity = 0,
-                    },
+                    .list = .{ .items = &.{}, .capacity = 0, .pointer_stability = .{} },
                 };
 
                 if (old == .Locked) {
@@ -914,10 +911,7 @@ pub const FetchTasklet = struct {
         if (scheduled_response_buffer.items.len > 0) {
             this.scheduled_response_buffer = .{
                 .allocator = bun.default_allocator,
-                .list = .{
-                    .items = &.{},
-                    .capacity = 0,
-                },
+                .list = .{ .items = &.{}, .capacity = 0, .pointer_stability = .{} },
             };
 
             return .{
@@ -986,10 +980,7 @@ pub const FetchTasklet = struct {
         };
         this.scheduled_response_buffer = .{
             .allocator = bun.default_allocator,
-            .list = .{
-                .items = &.{},
-                .capacity = 0,
-            },
+            .list = .{ .items = &.{}, .capacity = 0, .pointer_stability = .{} },
         };
 
         return response;
@@ -1103,17 +1094,11 @@ pub const FetchTasklet = struct {
             .mutex = .{},
             .scheduled_response_buffer = .{
                 .allocator = bun.default_allocator,
-                .list = .{
-                    .items = &.{},
-                    .capacity = 0,
-                },
+                .list = .{ .items = &.{}, .capacity = 0, .pointer_stability = .{} },
             },
             .response_buffer = MutableString{
                 .allocator = bun.default_allocator,
-                .list = .{
-                    .items = &.{},
-                    .capacity = 0,
-                },
+                .list = .{ .items = &.{}, .capacity = 0, .pointer_stability = .{} },
             },
             .http = try allocator.create(http.AsyncHTTP),
             .javascript_vm = jsc_vm,
@@ -1505,10 +1490,7 @@ pub const FetchTasklet = struct {
                 task.scheduled_response_buffer.deinit();
                 task.scheduled_response_buffer = .{
                     .allocator = bun.default_allocator,
-                    .list = .{
-                        .items = &.{},
-                        .capacity = 0,
-                    },
+                    .list = .{ .items = &.{}, .capacity = 0, .pointer_stability = .{} },
                 };
             }
             if (success and result.has_more) {

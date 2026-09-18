@@ -1,10 +1,6 @@
 const ByteStream = @This();
 
-buffer: std.array_list.Managed(u8) = .{
-    .allocator = bun.default_allocator,
-    .items = &.{},
-    .capacity = 0,
-},
+buffer: std.array_list.Managed(u8) = .{ .allocator = bun.default_allocator, .items = &.{}, .capacity = 0, .pointer_stability = .{} },
 has_received_last_chunk: bool = false,
 pending: streams.Result.Pending = .{ .result = .{ .done = {} } },
 done: bool = false,
@@ -411,11 +407,7 @@ pub fn drain(this: *@This()) bun.ByteList {
 pub fn toAnyBlob(this: *@This()) ?Blob.Any {
     if (this.has_received_last_chunk) {
         const buffer = this.buffer;
-        this.buffer = .{
-            .allocator = bun.default_allocator,
-            .items = &.{},
-            .capacity = 0,
-        };
+        this.buffer = .{ .allocator = bun.default_allocator, .items = &.{}, .capacity = 0, .pointer_stability = .{} };
         this.done = true;
         this.pending.result.deinit();
         this.pending.result = .{ .done = {} };

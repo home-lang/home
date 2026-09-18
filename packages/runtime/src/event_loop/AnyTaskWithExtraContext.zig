@@ -75,7 +75,7 @@ pub fn New(comptime Type: type, comptime ContextType: type, comptime Callback: a
 // callmod_inline mirrors upstream Bun. Will move to home_rt once the JSC
 // bridge lands (Phase 12.2).
 const builtin = @import("builtin");
-pub const callmod_inline: std.builtin.CallModifier = if (builtin.mode == .Debug) .auto else .always_inline;
+pub const callmod_inline: std.builtin.CallModifier = if (builtin.mode == .debug) .auto else .always_inline;
 
 const home_rt = @import("home");
 const std = @import("std");

@@ -757,7 +757,7 @@ pub const InodeCache = struct {
 // Reference Leak Detection (Debug Mode)
 // ============================================================================
 
-const debug_refcount = Basics.builtin.mode == .Debug;
+const debug_refcount = Basics.builtin.mode == .debug;
 
 pub const RefTracker = if (debug_refcount) struct {
     allocations: Basics.HashMap(*anyopaque, StackTrace, Basics.hash_map.AutoContext(*anyopaque), 80),
@@ -788,8 +788,7 @@ pub const RefTracker = if (debug_refcount) struct {
         while (it.next()) |entry| {
             const trace = entry.value_ptr.*;
             if (trace.refcount > 0) {
-                Basics.debug.print("LEAK: {s} at 0x{x} (refcount: {})\n",
-                    .{trace.type_name, @intFromPtr(entry.key_ptr.*), trace.refcount});
+                Basics.debug.print("LEAK: {s} at 0x{x} (refcount: {})\n", .{ trace.type_name, @intFromPtr(entry.key_ptr.*), trace.refcount });
                 leak_count += 1;
             }
         }

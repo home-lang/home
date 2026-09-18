@@ -1271,7 +1271,7 @@ pub const Program = struct {
             try sources.append(self.gpa, .{ .path = f.path, .compilation = compilation });
         }
         const classes = class_declarations.collect(self.gpa, self.resolver, sources.items) catch return error.OutOfMemory;
-        var out: std.ArrayListUnmanaged(ts_driver.ProgramExportedClass) = .{ .items = @constCast(classes), .capacity = classes.len };
+        var out: std.ArrayListUnmanaged(ts_driver.ProgramExportedClass) = .{ .items = @constCast(classes), .capacity = classes.len, .pointer_stability = .{} };
         errdefer freeProgramExportedClasses(self.gpa, out.items);
         var namespace_augmentations: std.ArrayListUnmanaged(ProgramNamespaceStaticAugmentation) = .empty;
         defer {
@@ -3484,7 +3484,7 @@ pub const Program = struct {
         var discovery_options = options;
         discovery_options.bind_only = true;
         while (true) {
-            if (parallel and builtin.mode != .Debug and self.files.items.len >= 16)
+            if (parallel and builtin.mode != .debug and self.files.items.len >= 16)
                 try self.compileAllParallel(discovery_options, workers)
             else
                 try self.compileAll(discovery_options);
@@ -3587,7 +3587,7 @@ pub const Program = struct {
             return added;
         }
         if (!options.bind_only) {
-            if (parallel and builtin.mode != .Debug and self.files.items.len >= 16)
+            if (parallel and builtin.mode != .debug and self.files.items.len >= 16)
                 try self.compileAllParallel(options, workers)
             else
                 try self.compileAll(options);

@@ -197,10 +197,7 @@ fn prepareCssAstsForChunkImpl(c: *LinkerContext, chunk: *Chunk, allocator: std.m
                             // reslice the copied header forward. This does
                             // not touch the backing array.
                             const tail = original_rules[prefix_end..];
-                            ast.rules.v = .{
-                                .items = tail,
-                                .capacity = ast.rules.v.capacity - (original_rules.len - tail.len),
-                            };
+                            ast.rules.v = .{ .items = tail, .capacity = ast.rules.v.capacity - (original_rules.len - tail.len), .pointer_stability = .{} };
                         } else {
                             // Interleaved case: allocate a fresh rules list
                             // so we don't mutate the shared backing array.

@@ -12,7 +12,7 @@ const linker_script = @import("linker_script.zig");
 
 pub const BuildConfig = struct {
     /// Optimization mode
-    optimize: std.builtin.OptimizeMode = .Debug,
+    optimize: std.builtin.OptimizeMode = .debug,
     /// Target architecture
     target: std.Target,
     /// Output executable path
@@ -95,7 +95,7 @@ pub const BuildPipeline = struct {
 
         // Phase 2: Link-time optimization (if enabled)
         var optimized_files = object_files;
-        if (self.config.lto_enabled and self.config.optimize != .Debug) {
+        if (self.config.lto_enabled and self.config.optimize != .debug) {
             if (self.config.verbose) {
                 std.debug.print("\n=== Phase 2: Link-Time Optimization ===\n", .{});
             }
@@ -247,8 +247,8 @@ pub const BuildPipeline = struct {
             .script_path = script_path,
             .output_path = self.config.output_path,
             .object_files = object_files,
-            .gc_sections = self.config.optimize != .Debug,
-            .strip = self.config.optimize == .ReleaseSmall,
+            .gc_sections = self.config.optimize != .debug,
+            .strip = self.config.optimize == .small,
             .verbose = self.config.verbose,
         };
 
@@ -371,7 +371,7 @@ pub const BuildProfile = struct {
     pub fn dev(allocator: std.mem.Allocator, sources: []const []const u8, output: []const u8) BuildConfig {
         _ = allocator;
         return .{
-            .optimize = .Debug,
+            .optimize = .debug,
             .target = @import("builtin").target,
             .output_path = output,
             .sources = sources,
@@ -384,7 +384,7 @@ pub const BuildProfile = struct {
     pub fn release(allocator: std.mem.Allocator, sources: []const []const u8, output: []const u8) BuildConfig {
         _ = allocator;
         return .{
-            .optimize = .ReleaseFast,
+            .optimize = .fast,
             .target = @import("builtin").target,
             .output_path = output,
             .sources = sources,
@@ -406,7 +406,7 @@ pub const BuildProfile = struct {
     pub fn releaseSmall(allocator: std.mem.Allocator, sources: []const []const u8, output: []const u8) BuildConfig {
         _ = allocator;
         return .{
-            .optimize = .ReleaseSmall,
+            .optimize = .small,
             .target = @import("builtin").target,
             .output_path = output,
             .sources = sources,
@@ -428,7 +428,7 @@ pub const BuildProfile = struct {
     pub fn armCortexM(allocator: std.mem.Allocator, sources: []const []const u8, output: []const u8) BuildConfig {
         _ = allocator;
         return .{
-            .optimize = .ReleaseSmall,
+            .optimize = .small,
             .target = std.Target{
                 .cpu = std.Target.Cpu{
                     .arch = .thumb,
@@ -455,7 +455,7 @@ pub const BuildProfile = struct {
     pub fn x86_64Kernel(allocator: std.mem.Allocator, sources: []const []const u8, output: []const u8) BuildConfig {
         _ = allocator;
         return .{
-            .optimize = .ReleaseFast,
+            .optimize = .fast,
             .target = std.Target{
                 .cpu = std.Target.Cpu{
                     .arch = .x86_64,
@@ -492,7 +492,7 @@ test "build pipeline creation" {
     var pipeline = try BuildPipeline.init(allocator, config);
     defer pipeline.deinit();
 
-    try std.testing.expectEqual(std.builtin.OptimizeMode.Debug, pipeline.config.optimize);
+    try std.testing.expectEqual(std.builtin.OptimizeMode.debug, pipeline.config.optimize);
     try std.testing.expect(!pipeline.config.lto_enabled);
 }
 
@@ -501,11 +501,11 @@ test "build profiles" {
     const sources = [_][]const u8{"main.home"};
 
     const dev = BuildProfile.dev(allocator, &sources, "dev_output");
-    try std.testing.expectEqual(std.builtin.OptimizeMode.Debug, dev.optimize);
+    try std.testing.expectEqual(std.builtin.OptimizeMode.debug, dev.optimize);
     try std.testing.expect(!dev.lto_enabled);
 
     const release = BuildProfile.release(allocator, &sources, "release_output");
-    try std.testing.expectEqual(std.builtin.OptimizeMode.ReleaseFast, release.optimize);
+    try std.testing.expectEqual(std.builtin.OptimizeMode.fast, release.optimize);
     try std.testing.expect(release.lto_enabled);
     try std.testing.expectEqual(lto.LtoLevel.Fat, release.lto_config.level);
 }

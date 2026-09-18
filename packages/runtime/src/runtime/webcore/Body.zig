@@ -586,13 +586,9 @@ pub const Value = union(Tag) {
 
                 return Body.Value{
                     .InternalBlob = .{
-                        .bytes = std.array_list.Managed(u8){
-                            .items = bun.default_allocator.dupe(u8, bytes) catch {
-                                return globalThis.throwValue(ZigString.static("Failed to clone ArrayBufferView").toErrorInstance(globalThis));
-                            },
-                            .capacity = bytes.len,
-                            .allocator = bun.default_allocator,
-                        },
+                        .bytes = std.array_list.Managed(u8){ .items = bun.default_allocator.dupe(u8, bytes) catch {
+                            return globalThis.throwValue(ZigString.static("Failed to clone ArrayBufferView").toErrorInstance(globalThis));
+                        }, .capacity = bytes.len, .allocator = bun.default_allocator, .pointer_stability = .{} },
                         .was_string = false,
                     },
                 };
@@ -1505,10 +1501,7 @@ pub const ValueBufferer = struct {
             .global = global,
             .stream_buffer = .{
                 .allocator = allocator,
-                .list = .{
-                    .items = &.{},
-                    .capacity = 0,
-                },
+                .list = .{ .items = &.{}, .capacity = 0, .pointer_stability = .{} },
             },
         };
         return this;

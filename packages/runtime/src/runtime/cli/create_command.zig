@@ -331,7 +331,7 @@ pub const CreateCommand = struct {
 
                 const file_buf = try ctx.allocator.alloc(u8, 16384);
 
-                var tarball_buf_list = std.ArrayListUnmanaged(u8){ .capacity = file_buf.len, .items = file_buf };
+                var tarball_buf_list = std.ArrayListUnmanaged(u8){ .capacity = file_buf.len, .items = file_buf, .pointer_stability = .{} };
                 var gunzip = try Zlib.ZlibReaderArrayList.init(tarball_bytes.list.items, &tarball_buf_list, ctx.allocator);
                 defer gunzip.deinit();
                 try gunzip.readAll(true);

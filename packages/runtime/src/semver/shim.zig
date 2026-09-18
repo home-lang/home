@@ -21,7 +21,7 @@ test "semver JSON formatting preserves quote options" {
 }
 
 pub const Environment = struct {
-    pub const isDebug = @import("builtin").mode == .Debug;
+    pub const isDebug = @import("builtin").mode == .debug;
     pub const allow_assert = isDebug;
 };
 

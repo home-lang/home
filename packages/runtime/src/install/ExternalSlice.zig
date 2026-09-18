@@ -142,7 +142,7 @@ test "ExternalStringMap defaults to empty name/value lists" {
 }
 
 const std = @import("std");
-const allow_assert = @import("builtin").mode == .Debug;
+const allow_assert = @import("builtin").mode == .debug;
 const PackageNameHash = @import("PackageID.zig").PackageNameHash;
 
 const Semver = @import("../semver/semver.zig");

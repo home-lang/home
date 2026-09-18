@@ -20,7 +20,7 @@ pub fn build(b: *std.Build) void {
     });
 
     // Enable SIMD optimizations for release builds
-    if (optimize != .Debug) {
+    if (optimize != .debug) {
         lib.root_module.addCMacro("ENABLE_SIMD", "1");
     }
 
@@ -34,7 +34,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    if (optimize != .Debug) {
+    if (optimize != .debug) {
         shared_lib.root_module.addCMacro("ENABLE_SIMD", "1");
     }
 
@@ -101,7 +101,7 @@ pub fn build(b: *std.Build) void {
         .name = "image-bench",
         .root_source_file = b.path("src/bench.zig"),
         .target = target,
-        .optimize = .ReleaseFast,
+        .optimize = .fast,
     });
 
     bench.root_module.addImport("image", image_module);

@@ -75,7 +75,7 @@ inline fn isSliceInBufferShim(slice: []const u8, buf: []const u8) bool {
 // Mirrors `home_rt.Environment.allow_assert` — enabled in Debug builds,
 // off in release modes. Avoids pulling the `home_rt` module so this leaf
 // has no module-conflict footprint when included through the package tree.
-const allow_assert = @import("builtin").mode == .Debug;
+const allow_assert = @import("builtin").mode == .debug;
 
 const string = []const u8;
 

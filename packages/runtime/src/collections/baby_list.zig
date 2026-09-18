@@ -568,10 +568,7 @@ pub fn BabyList(comptime Type: type) type {
         }
 
         fn list(this: Self) std.ArrayListUnmanaged(Type) {
-            return .{
-                .items = this.slice(),
-                .capacity = this.cap,
-            };
+            return .{ .items = this.slice(), .capacity = this.cap, .pointer_stability = .{} };
         }
 
         fn listManaged(this: *Self, allocator: std.mem.Allocator) std.array_list.Managed(Type) {

@@ -615,10 +615,7 @@ pub const HTMLRewriter = struct {
 
             this.bytes = .{
                 .allocator = bun.default_allocator,
-                .list = .{
-                    .items = &.{},
-                    .capacity = 0,
-                },
+                .list = .{ .items = &.{}, .capacity = 0, .pointer_stability = .{} },
             };
 
             prev_value.resolve(

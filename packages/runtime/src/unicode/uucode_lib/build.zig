@@ -200,7 +200,7 @@ pub fn build(b: *std.Build) void {
 
         // There's a bug where building tables in ReleaseFast doesn't work,
         // that I'll be investigating in a follow up commit.
-        .Debug,
+        .debug,
         tables_path_opt,
         build_config_path,
     );
@@ -216,7 +216,7 @@ pub fn build(b: *std.Build) void {
 
         // There's a bug where building tables in ReleaseFast doesn't work,
         // that I'll be investigating in a follow up commit.
-        .Debug,
+        .debug,
         null,
         b.path("src/build/test_build_config.zig"),
     );

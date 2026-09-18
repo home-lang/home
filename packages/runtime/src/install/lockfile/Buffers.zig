@@ -126,16 +126,14 @@ pub fn readArray(stream: *Stream, allocator: Allocator, comptime ArrayList: type
     const byte_len = end_pos - start_pos;
     stream.pos = end_pos;
 
-    if (byte_len == 0) return ArrayList{
-        .items = &[_]PointerType{},
-        .capacity = 0,
-    };
+    if (byte_len == 0) return ArrayList{ .items = &[_]PointerType{}, .capacity = 0, .pointer_stability = .{} };
 
     const misaligned = std.mem.bytesAsSlice(PointerType, stream.buffer[start_pos..end_pos]);
 
     return ArrayList{
         .items = try allocator.dupe(PointerType, @as([*]PointerType, @alignCast(misaligned.ptr))[0..misaligned.len]),
         .capacity = misaligned.len,
+        .pointer_stability = .{},
     };
 }
 

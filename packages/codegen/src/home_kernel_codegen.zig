@@ -74,7 +74,7 @@ fn moduleIdFromPath(allocator: std.mem.Allocator, path: []const u8) ![]const u8 
     // Resolve `.` and `..` first. An import writes `../mm/buddy.home`, and the
     // same module reached from two directories must yield the same prefix or
     // the caller and the definition disagree about the symbol's name.
-    var parts: std.ArrayList([]const u8) = .{ .items = &[_][]const u8{}, .capacity = 0 };
+    var parts: std.ArrayList([]const u8) = .{ .items = &[_][]const u8{}, .capacity = 0, .pointer_stability = .{} };
     defer parts.deinit(allocator);
     var it = std.mem.splitScalar(u8, path, '/');
     while (it.next()) |seg| {
@@ -194,17 +194,17 @@ fn sizedRegister(reg: []const u8, size: usize) []const u8 {
 /// moved with one `movq` regardless of the width the template asks for.
 fn fullRegister(reg: []const u8) []const u8 {
     const map = [_]struct { part: []const u8, full: []const u8 }{
-        .{ .part = "al", .full = "rax" },   .{ .part = "ax", .full = "rax" },
-        .{ .part = "eax", .full = "rax" },  .{ .part = "rax", .full = "rax" },
-        .{ .part = "bl", .full = "rbx" },   .{ .part = "bx", .full = "rbx" },
-        .{ .part = "ebx", .full = "rbx" },  .{ .part = "rbx", .full = "rbx" },
-        .{ .part = "cl", .full = "rcx" },   .{ .part = "cx", .full = "rcx" },
-        .{ .part = "ecx", .full = "rcx" },  .{ .part = "rcx", .full = "rcx" },
-        .{ .part = "dl", .full = "rdx" },   .{ .part = "dx", .full = "rdx" },
-        .{ .part = "edx", .full = "rdx" },  .{ .part = "rdx", .full = "rdx" },
-        .{ .part = "sil", .full = "rsi" },  .{ .part = "esi", .full = "rsi" },
-        .{ .part = "rsi", .full = "rsi" },  .{ .part = "dil", .full = "rdi" },
-        .{ .part = "edi", .full = "rdi" },  .{ .part = "rdi", .full = "rdi" },
+        .{ .part = "al", .full = "rax" },  .{ .part = "ax", .full = "rax" },
+        .{ .part = "eax", .full = "rax" }, .{ .part = "rax", .full = "rax" },
+        .{ .part = "bl", .full = "rbx" },  .{ .part = "bx", .full = "rbx" },
+        .{ .part = "ebx", .full = "rbx" }, .{ .part = "rbx", .full = "rbx" },
+        .{ .part = "cl", .full = "rcx" },  .{ .part = "cx", .full = "rcx" },
+        .{ .part = "ecx", .full = "rcx" }, .{ .part = "rcx", .full = "rcx" },
+        .{ .part = "dl", .full = "rdx" },  .{ .part = "dx", .full = "rdx" },
+        .{ .part = "edx", .full = "rdx" }, .{ .part = "rdx", .full = "rdx" },
+        .{ .part = "sil", .full = "rsi" }, .{ .part = "esi", .full = "rsi" },
+        .{ .part = "rsi", .full = "rsi" }, .{ .part = "dil", .full = "rdi" },
+        .{ .part = "edi", .full = "rdi" }, .{ .part = "rdi", .full = "rdi" },
     };
     for (map) |m| {
         if (std.mem.eql(u8, m.part, reg)) return m.full;
@@ -719,12 +719,12 @@ pub const HomeKernelCodegen = struct {
         result.allocator = allocator;
         result.symbol_table = symbol_table;
         result.module_resolver = module_resolver;
-        result.output = .{ .items = &[_]u8{}, .capacity = 0 };
+        result.output = .{ .items = &[_]u8{}, .capacity = 0, .pointer_stability = .{} };
         result.kernel_opts = kernel_codegen.KernelCodegenOptions{};
         result.arch = .x86_64;
         result.locals = std.StringHashMap(i32).init(allocator);
         result.stack_offset = -8; // Start at -8 from %rbp (first local variable)
-        result.string_literals = .{ .items = &[_]StringLiteral{}, .capacity = 0 };
+        result.string_literals = .{ .items = &[_]StringLiteral{}, .capacity = 0, .pointer_stability = .{} };
         result.next_label = 0;
         result.current_fn = "";
         result.loop_break = "";
@@ -736,7 +736,7 @@ pub const HomeKernelCodegen = struct {
         result.globals = std.StringHashMap(i64).init(allocator);
         result.at_top_level = true;
         result.global_vars = std.StringHashMap(GlobalVar).init(allocator);
-        result.global_order = .{ .items = &[_][]const u8{}, .capacity = 0 };
+        result.global_order = .{ .items = &[_][]const u8{}, .capacity = 0, .pointer_stability = .{} };
         result.assigned_names = std.StringHashMap(void).init(allocator);
         result.local_types = std.StringHashMap([]const u8).init(allocator);
         result.structs = std.StringHashMap(StructInfo).init(allocator);
@@ -749,7 +749,7 @@ pub const HomeKernelCodegen = struct {
         result.module_aliases = std.StringHashMap([]const u8).init(allocator);
         result.extern_fns = std.StringHashMap(void).init(allocator);
         result.type_aliases = std.StringHashMap([]const u8).init(allocator);
-        result.pending_structs = .{ .items = &[_]PendingStruct{}, .capacity = 0 };
+        result.pending_structs = .{ .items = &[_]PendingStruct{}, .capacity = 0, .pointer_stability = .{} };
         result.pointer_type_names = std.StringHashMap([]const u8).init(allocator);
         result.sret_slot = 0;
         result.current_return_type = "";
@@ -2290,10 +2290,10 @@ pub const HomeKernelCodegen = struct {
         // that such an expression leaves the struct's address in %rax — and
         // copied out of immediately, before that storage can go stale.
         if (self.isStorageType(type_name)) {
-            try self.emit().push(.acc);           // destination
+            try self.emit().push(.acc); // destination
             if (try self.emitAddress(value)) |_| {
-                try self.emit().movReg(.mem_src, .acc);   // source
-                try self.emit().pop(.mem_dst);            // destination
+                try self.emit().movReg(.mem_src, .acc); // source
+                try self.emit().pop(.mem_dst); // destination
             } else {
                 try self.generateExpr(value);
                 try self.emit().movReg(.mem_src, .acc);
@@ -3180,12 +3180,12 @@ pub const HomeKernelCodegen = struct {
                     try self.emit().push(.acc);
                     return 1;
                 };
-                try self.emit().push(.acc);           // save slice address
+                try self.emit().push(.acc); // save slice address
                 try self.emit().loadOffset(.acc, .acc, @intCast(SLICE_LEN_OFFSET));
                 try self.emit().movReg(.tmp, .acc);
                 try self.emit().pop(.acc);
-                try self.emit().push(.tmp);            // length
-                try self.emit().loadIndirect(.acc, .acc, 8, false);     // data pointer
+                try self.emit().push(.tmp); // length
+                try self.emit().loadIndirect(.acc, .acc, 8, false); // data pointer
                 try self.emit().push(.acc);
                 return 2;
             }
@@ -3219,10 +3219,25 @@ pub const HomeKernelCodegen = struct {
         // enough that a caller cannot write one form and expect the other to
         // work (home-lang/home#584).
         const SysOp = enum {
-            save_irq, restore_irq, timestamp, atomic_add, read_sysreg, write_sysreg,
-            read_sp, write_sp, invlpg, compiler_barrier, memory_barrier,
-            allow_user_access, forbid_user_access, user_access_allowed,
-            cas32, xchg32, add32, load32, store32,
+            save_irq,
+            restore_irq,
+            timestamp,
+            atomic_add,
+            read_sysreg,
+            write_sysreg,
+            read_sp,
+            write_sp,
+            invlpg,
+            compiler_barrier,
+            memory_barrier,
+            allow_user_access,
+            forbid_user_access,
+            user_access_allowed,
+            cas32,
+            xchg32,
+            add32,
+            load32,
+            store32,
         };
         var sys_op: SysOp = .timestamp;
         // What the CPU-state intrinsics do, named for the effect rather than
@@ -3233,12 +3248,25 @@ pub const HomeKernelCodegen = struct {
         var cpu_op: CpuOp = .nop;
         var barrier_kind: kernel_target.Barrier = .full;
 
-        if (std.mem.eql(u8, name, "outb")) { kind = .out; width = 1; }
-        else if (std.mem.eql(u8, name, "outw")) { kind = .out; width = 2; }
-        else if (std.mem.eql(u8, name, "outl")) { kind = .out; width = 4; }
-        else if (std.mem.eql(u8, name, "inb")) { kind = .in; width = 1; }
-        else if (std.mem.eql(u8, name, "inw")) { kind = .in; width = 2; }
-        else if (std.mem.eql(u8, name, "inl")) { kind = .in; width = 4; }
+        if (std.mem.eql(u8, name, "outb")) {
+            kind = .out;
+            width = 1;
+        } else if (std.mem.eql(u8, name, "outw")) {
+            kind = .out;
+            width = 2;
+        } else if (std.mem.eql(u8, name, "outl")) {
+            kind = .out;
+            width = 4;
+        } else if (std.mem.eql(u8, name, "inb")) {
+            kind = .in;
+            width = 1;
+        } else if (std.mem.eql(u8, name, "inw")) {
+            kind = .in;
+            width = 2;
+        } else if (std.mem.eql(u8, name, "inl")) {
+            kind = .in;
+            width = 4;
+        }
         // Architecture-neutral names, so kernel source can stop wrapping an
         // x86 mnemonic in inline assembly to say "halt" or "mask interrupts".
         // The x86 spellings below stay accepted, because the whole kernel tree
@@ -3248,48 +3276,126 @@ pub const HomeKernelCodegen = struct {
         // `cpu_pause` as Home functions, and a program's own definition wins
         // over an intrinsic — so a `cpu_halt` intrinsic would turn that
         // function's body into a call to itself.
-        else if (std.mem.eql(u8, name, "arch_halt")) { kind = .cpu; cpu_op = .halt; }
-        else if (std.mem.eql(u8, name, "arch_disable_interrupts")) { kind = .cpu; cpu_op = .disable_irq; }
-        else if (std.mem.eql(u8, name, "arch_enable_interrupts")) { kind = .cpu; cpu_op = .enable_irq; }
-        else if (std.mem.eql(u8, name, "arch_nop")) { kind = .cpu; cpu_op = .nop; }
-        else if (std.mem.eql(u8, name, "arch_spin_hint")) { kind = .cpu; cpu_op = .spin_hint; }
-        else if (std.mem.eql(u8, name, "arch_wait_event")) { kind = .cpu; cpu_op = .wait_event; }
+        else if (std.mem.eql(u8, name, "arch_halt")) {
+            kind = .cpu;
+            cpu_op = .halt;
+        } else if (std.mem.eql(u8, name, "arch_disable_interrupts")) {
+            kind = .cpu;
+            cpu_op = .disable_irq;
+        } else if (std.mem.eql(u8, name, "arch_enable_interrupts")) {
+            kind = .cpu;
+            cpu_op = .enable_irq;
+        } else if (std.mem.eql(u8, name, "arch_nop")) {
+            kind = .cpu;
+            cpu_op = .nop;
+        } else if (std.mem.eql(u8, name, "arch_spin_hint")) {
+            kind = .cpu;
+            cpu_op = .spin_hint;
+        } else if (std.mem.eql(u8, name, "arch_wait_event")) {
+            kind = .cpu;
+            cpu_op = .wait_event;
+        }
         // `arch_`-prefixed aliases for the MMIO intrinsics. A module that
         // exports its own `mmio_read32` shadows the bare name — a program's
         // definition wins over an intrinsic — so without these it could not
         // call the intrinsic from inside that function without recursing.
-        else if (std.mem.eql(u8, name, "arch_mmio_read8")) { kind = .mmio_read; width = 1; }
-        else if (std.mem.eql(u8, name, "arch_mmio_read16")) { kind = .mmio_read; width = 2; }
-        else if (std.mem.eql(u8, name, "arch_mmio_read32")) { kind = .mmio_read; width = 4; }
-        else if (std.mem.eql(u8, name, "arch_mmio_read64")) { kind = .mmio_read; width = 8; }
-        else if (std.mem.eql(u8, name, "arch_mmio_write8")) { kind = .mmio_write; width = 1; }
-        else if (std.mem.eql(u8, name, "arch_mmio_write16")) { kind = .mmio_write; width = 2; }
-        else if (std.mem.eql(u8, name, "arch_mmio_write32")) { kind = .mmio_write; width = 4; }
-        else if (std.mem.eql(u8, name, "arch_mmio_write64")) { kind = .mmio_write; width = 8; }
-        else if (std.mem.eql(u8, name, "arch_save_interrupts")) { kind = .sys; sys_op = .save_irq; }
-        else if (std.mem.eql(u8, name, "arch_restore_interrupts")) { kind = .sys; sys_op = .restore_irq; }
-        else if (std.mem.eql(u8, name, "arch_read_timestamp")) { kind = .sys; sys_op = .timestamp; }
-        else if (std.mem.eql(u8, name, "arch_atomic_add64")) { kind = .sys; sys_op = .atomic_add; }
-        else if (std.mem.eql(u8, name, "arch_read_sysreg")) { kind = .sys; sys_op = .read_sysreg; }
-        else if (std.mem.eql(u8, name, "arch_write_sysreg")) { kind = .sys; sys_op = .write_sysreg; }
-        else if (std.mem.eql(u8, name, "arch_read_stack_pointer")) { kind = .sys; sys_op = .read_sp; }
-        else if (std.mem.eql(u8, name, "arch_write_stack_pointer")) { kind = .sys; sys_op = .write_sp; }
-        else if (std.mem.eql(u8, name, "arch_invalidate_tlb_page")) { kind = .sys; sys_op = .invlpg; }
-        else if (std.mem.eql(u8, name, "arch_compiler_barrier")) { kind = .sys; sys_op = .compiler_barrier; }
-        else if (std.mem.eql(u8, name, "arch_memory_barrier")) { kind = .sys; sys_op = .memory_barrier; }
-        else if (std.mem.eql(u8, name, "arch_allow_user_access")) { kind = .sys; sys_op = .allow_user_access; }
-        else if (std.mem.eql(u8, name, "arch_forbid_user_access")) { kind = .sys; sys_op = .forbid_user_access; }
-        else if (std.mem.eql(u8, name, "arch_user_access_allowed")) { kind = .sys; sys_op = .user_access_allowed; }
-        else if (std.mem.eql(u8, name, "arch_atomic_cmpxchg32")) { kind = .sys; sys_op = .cas32; }
-        else if (std.mem.eql(u8, name, "arch_atomic_xchg32")) { kind = .sys; sys_op = .xchg32; }
-        else if (std.mem.eql(u8, name, "arch_atomic_add32")) { kind = .sys; sys_op = .add32; }
-        else if (std.mem.eql(u8, name, "arch_atomic_load32")) { kind = .sys; sys_op = .load32; }
-        else if (std.mem.eql(u8, name, "arch_atomic_store32")) { kind = .sys; sys_op = .store32; }
-        else if (std.mem.eql(u8, name, "hlt")) { kind = .cpu; cpu_op = .halt; }
-        else if (std.mem.eql(u8, name, "cli")) { kind = .cpu; cpu_op = .disable_irq; }
-        else if (std.mem.eql(u8, name, "sti")) { kind = .cpu; cpu_op = .enable_irq; }
-        else if (std.mem.eql(u8, name, "nop")) { kind = .cpu; cpu_op = .nop; }
-        else if (std.mem.eql(u8, name, "pause")) { kind = .cpu; cpu_op = .spin_hint; }
+        else if (std.mem.eql(u8, name, "arch_mmio_read8")) {
+            kind = .mmio_read;
+            width = 1;
+        } else if (std.mem.eql(u8, name, "arch_mmio_read16")) {
+            kind = .mmio_read;
+            width = 2;
+        } else if (std.mem.eql(u8, name, "arch_mmio_read32")) {
+            kind = .mmio_read;
+            width = 4;
+        } else if (std.mem.eql(u8, name, "arch_mmio_read64")) {
+            kind = .mmio_read;
+            width = 8;
+        } else if (std.mem.eql(u8, name, "arch_mmio_write8")) {
+            kind = .mmio_write;
+            width = 1;
+        } else if (std.mem.eql(u8, name, "arch_mmio_write16")) {
+            kind = .mmio_write;
+            width = 2;
+        } else if (std.mem.eql(u8, name, "arch_mmio_write32")) {
+            kind = .mmio_write;
+            width = 4;
+        } else if (std.mem.eql(u8, name, "arch_mmio_write64")) {
+            kind = .mmio_write;
+            width = 8;
+        } else if (std.mem.eql(u8, name, "arch_save_interrupts")) {
+            kind = .sys;
+            sys_op = .save_irq;
+        } else if (std.mem.eql(u8, name, "arch_restore_interrupts")) {
+            kind = .sys;
+            sys_op = .restore_irq;
+        } else if (std.mem.eql(u8, name, "arch_read_timestamp")) {
+            kind = .sys;
+            sys_op = .timestamp;
+        } else if (std.mem.eql(u8, name, "arch_atomic_add64")) {
+            kind = .sys;
+            sys_op = .atomic_add;
+        } else if (std.mem.eql(u8, name, "arch_read_sysreg")) {
+            kind = .sys;
+            sys_op = .read_sysreg;
+        } else if (std.mem.eql(u8, name, "arch_write_sysreg")) {
+            kind = .sys;
+            sys_op = .write_sysreg;
+        } else if (std.mem.eql(u8, name, "arch_read_stack_pointer")) {
+            kind = .sys;
+            sys_op = .read_sp;
+        } else if (std.mem.eql(u8, name, "arch_write_stack_pointer")) {
+            kind = .sys;
+            sys_op = .write_sp;
+        } else if (std.mem.eql(u8, name, "arch_invalidate_tlb_page")) {
+            kind = .sys;
+            sys_op = .invlpg;
+        } else if (std.mem.eql(u8, name, "arch_compiler_barrier")) {
+            kind = .sys;
+            sys_op = .compiler_barrier;
+        } else if (std.mem.eql(u8, name, "arch_memory_barrier")) {
+            kind = .sys;
+            sys_op = .memory_barrier;
+        } else if (std.mem.eql(u8, name, "arch_allow_user_access")) {
+            kind = .sys;
+            sys_op = .allow_user_access;
+        } else if (std.mem.eql(u8, name, "arch_forbid_user_access")) {
+            kind = .sys;
+            sys_op = .forbid_user_access;
+        } else if (std.mem.eql(u8, name, "arch_user_access_allowed")) {
+            kind = .sys;
+            sys_op = .user_access_allowed;
+        } else if (std.mem.eql(u8, name, "arch_atomic_cmpxchg32")) {
+            kind = .sys;
+            sys_op = .cas32;
+        } else if (std.mem.eql(u8, name, "arch_atomic_xchg32")) {
+            kind = .sys;
+            sys_op = .xchg32;
+        } else if (std.mem.eql(u8, name, "arch_atomic_add32")) {
+            kind = .sys;
+            sys_op = .add32;
+        } else if (std.mem.eql(u8, name, "arch_atomic_load32")) {
+            kind = .sys;
+            sys_op = .load32;
+        } else if (std.mem.eql(u8, name, "arch_atomic_store32")) {
+            kind = .sys;
+            sys_op = .store32;
+        } else if (std.mem.eql(u8, name, "hlt")) {
+            kind = .cpu;
+            cpu_op = .halt;
+        } else if (std.mem.eql(u8, name, "cli")) {
+            kind = .cpu;
+            cpu_op = .disable_irq;
+        } else if (std.mem.eql(u8, name, "sti")) {
+            kind = .cpu;
+            cpu_op = .enable_irq;
+        } else if (std.mem.eql(u8, name, "nop")) {
+            kind = .cpu;
+            cpu_op = .nop;
+        } else if (std.mem.eql(u8, name, "pause")) {
+            kind = .cpu;
+            cpu_op = .spin_hint;
+        }
         // Architecture-neutral spellings of the same five operations.
         //
         // The x86 names above are also the names the kernel tree gives its own
@@ -3298,28 +3404,65 @@ pub const HomeKernelCodegen = struct {
         // wrappers necessary today and what stops them from being written in
         // terms of the intrinsic they shadow. These names do not collide, so a
         // wrapper can call one and stop being inline assembly.
-        else if (std.mem.eql(u8, name, "cpu_halt")) { kind = .cpu; cpu_op = .halt; }
-        else if (std.mem.eql(u8, name, "cpu_disable_interrupts")) { kind = .cpu; cpu_op = .disable_irq; }
-        else if (std.mem.eql(u8, name, "cpu_enable_interrupts")) { kind = .cpu; cpu_op = .enable_irq; }
-        else if (std.mem.eql(u8, name, "cpu_nop")) { kind = .cpu; cpu_op = .nop; }
-        else if (std.mem.eql(u8, name, "cpu_spin_hint")) { kind = .cpu; cpu_op = .spin_hint; }
-        else if (std.mem.eql(u8, name, "mfence")) { kind = .barrier; barrier_kind = .full; }
+        else if (std.mem.eql(u8, name, "cpu_halt")) {
+            kind = .cpu;
+            cpu_op = .halt;
+        } else if (std.mem.eql(u8, name, "cpu_disable_interrupts")) {
+            kind = .cpu;
+            cpu_op = .disable_irq;
+        } else if (std.mem.eql(u8, name, "cpu_enable_interrupts")) {
+            kind = .cpu;
+            cpu_op = .enable_irq;
+        } else if (std.mem.eql(u8, name, "cpu_nop")) {
+            kind = .cpu;
+            cpu_op = .nop;
+        } else if (std.mem.eql(u8, name, "cpu_spin_hint")) {
+            kind = .cpu;
+            cpu_op = .spin_hint;
+        } else if (std.mem.eql(u8, name, "mfence")) {
+            kind = .barrier;
+            barrier_kind = .full;
+        }
         // Architecture-neutral barrier names (home-lang/home#584). The x86
         // spellings above stay accepted so existing kernel source keeps
         // building.
-        else if (std.mem.eql(u8, name, "barrier_full")) { kind = .barrier; barrier_kind = .full; }
-        else if (std.mem.eql(u8, name, "barrier_loads")) { kind = .barrier; barrier_kind = .loads; }
-        else if (std.mem.eql(u8, name, "barrier_stores")) { kind = .barrier; barrier_kind = .stores; }
-        else if (std.mem.eql(u8, name, "barrier_sync")) { kind = .barrier; barrier_kind = .isync; }
-        else if (std.mem.eql(u8, name, "mmio_read8")) { kind = .mmio_read; width = 1; }
-        else if (std.mem.eql(u8, name, "mmio_read16")) { kind = .mmio_read; width = 2; }
-        else if (std.mem.eql(u8, name, "mmio_read32")) { kind = .mmio_read; width = 4; }
-        else if (std.mem.eql(u8, name, "mmio_read64")) { kind = .mmio_read; width = 8; }
-        else if (std.mem.eql(u8, name, "mmio_write8")) { kind = .mmio_write; width = 1; }
-        else if (std.mem.eql(u8, name, "mmio_write16")) { kind = .mmio_write; width = 2; }
-        else if (std.mem.eql(u8, name, "mmio_write32")) { kind = .mmio_write; width = 4; }
-        else if (std.mem.eql(u8, name, "mmio_write64")) { kind = .mmio_write; width = 8; }
-        else return false;
+        else if (std.mem.eql(u8, name, "barrier_full")) {
+            kind = .barrier;
+            barrier_kind = .full;
+        } else if (std.mem.eql(u8, name, "barrier_loads")) {
+            kind = .barrier;
+            barrier_kind = .loads;
+        } else if (std.mem.eql(u8, name, "barrier_stores")) {
+            kind = .barrier;
+            barrier_kind = .stores;
+        } else if (std.mem.eql(u8, name, "barrier_sync")) {
+            kind = .barrier;
+            barrier_kind = .isync;
+        } else if (std.mem.eql(u8, name, "mmio_read8")) {
+            kind = .mmio_read;
+            width = 1;
+        } else if (std.mem.eql(u8, name, "mmio_read16")) {
+            kind = .mmio_read;
+            width = 2;
+        } else if (std.mem.eql(u8, name, "mmio_read32")) {
+            kind = .mmio_read;
+            width = 4;
+        } else if (std.mem.eql(u8, name, "mmio_read64")) {
+            kind = .mmio_read;
+            width = 8;
+        } else if (std.mem.eql(u8, name, "mmio_write8")) {
+            kind = .mmio_write;
+            width = 1;
+        } else if (std.mem.eql(u8, name, "mmio_write16")) {
+            kind = .mmio_write;
+            width = 2;
+        } else if (std.mem.eql(u8, name, "mmio_write32")) {
+            kind = .mmio_write;
+            width = 4;
+        } else if (std.mem.eql(u8, name, "mmio_write64")) {
+            kind = .mmio_write;
+            width = 8;
+        } else return false;
 
         switch (kind) {
             .cpu => {
@@ -3775,10 +3918,10 @@ pub const HomeKernelCodegen = struct {
         try self.generateAsFloat(binary.left);
         try self.emit().push(.acc);
         try self.generateAsFloat(binary.right);
-        try self.emit().floatFromBits();      // right -> float accumulator
-        try self.emit().floatAccToTmp();      // -> float temporary
+        try self.emit().floatFromBits(); // right -> float accumulator
+        try self.emit().floatAccToTmp(); // -> float temporary
         try self.emit().pop(.acc);
-        try self.emit().floatFromBits();      // left -> float accumulator
+        try self.emit().floatFromBits(); // left -> float accumulator
 
         if (op) |arith| {
             try self.emit().floatBinOp(arith);
@@ -4511,7 +4654,7 @@ pub const HomeKernelCodegen = struct {
                 const BodyLabel = struct { label: []const u8, clause_idx: usize };
                 // Unmanaged ArrayList: this Zig version takes the allocator
                 // per call rather than storing it.
-                var bodies: std.ArrayList(BodyLabel) = .{ .items = &[_]BodyLabel{}, .capacity = 0 };
+                var bodies: std.ArrayList(BodyLabel) = .{ .items = &[_]BodyLabel{}, .capacity = 0, .pointer_stability = .{} };
                 defer {
                     for (bodies.items) |b| self.allocator.free(b.label);
                     bodies.deinit(self.allocator);
@@ -5055,19 +5198,19 @@ pub const HomeKernelCodegen = struct {
                         // every neighbouring field.
                         if (try self.bitFieldOf(m)) |bf| {
                             _ = try self.emitAddress(m.object) orelse return;
-                            try self.emit().push(.acc);        // container address
+                            try self.emit().push(.acc); // container address
                             try self.generateExpr(assign.value);
                             const mask: u64 = if (bf.field.bit_width >= 64)
                                 std.math.maxInt(u64)
                             else
                                 (@as(u64, 1) << @intCast(bf.field.bit_width)) - 1;
                             try self.emit().movImmReg(.tmp, @intCast(@as(i64, @bitCast(mask))));
-                            try self.emit().binOp(.bit_and);   // value, truncated
+                            try self.emit().binOp(.bit_and); // value, truncated
                             if (bf.field.bit_offset > 0) {
                                 try self.emit().shiftImm(.shl, @intCast(bf.field.bit_offset));
                             }
                             try self.emit().movReg(.tmp2, .acc); // shifted value
-                            try self.emit().pop(.tmp3);         // container address
+                            try self.emit().pop(.tmp3); // container address
                             try self.emit().push(.tmp3);
                             try self.emit().movReg(.acc, .tmp3);
                             try self.emitLoadBacking(bf.container_size);
@@ -5076,8 +5219,8 @@ pub const HomeKernelCodegen = struct {
                             else
                                 mask << @intCast(bf.field.bit_offset);
                             try self.emit().movImmReg(.tmp, @intCast(@as(i64, @bitCast(~shifted_mask))));
-                            try self.emit().binOp(.bit_and);   // clear the range
-                            try self.emit().aluRegs(.bit_or, .acc, .tmp2);    // insert
+                            try self.emit().binOp(.bit_and); // clear the range
+                            try self.emit().aluRegs(.bit_or, .acc, .tmp2); // insert
                             try self.emit().pop(.tmp3);
                             _ = storeFor(bf.container_size) orelse {
                                 try self.print("    # ERROR: cannot store a bitfield container of {d} bytes\n", .{bf.container_size});
@@ -5165,7 +5308,7 @@ pub const HomeKernelCodegen = struct {
                             return;
                         }
                         try self.emit().zero(.acc);
-                        try self.emit().push(.acc);     // accumulator
+                        try self.emit().push(.acc); // accumulator
                         for (lit.fields) |fi| {
                             const field = blk: {
                                 for (info.fields) |f| {
@@ -5457,7 +5600,7 @@ pub const HomeKernelCodegen = struct {
     ) !void {
         // Build the full symbol name for FFI
         // e.g., "serial.init" becomes "basics_os_serial_init"
-        var ffi_name: std.ArrayList(u8) = .{ .items = &[_]u8{}, .capacity = 0 };
+        var ffi_name: std.ArrayList(u8) = .{ .items = &[_]u8{}, .capacity = 0, .pointer_stability = .{} };
         defer ffi_name.deinit(self.allocator);
 
         // Convert module path to C-compatible name

@@ -66,10 +66,7 @@ pub const S3HttpSimpleTask = struct {
     callback: Callback,
     response_buffer: bun.MutableString = .{
         .allocator = bun.default_allocator,
-        .list = .{
-            .items = &.{},
-            .capacity = 0,
-        },
+        .list = .{ .items = &.{}, .capacity = 0, .pointer_stability = .{} },
     },
     result: bun.http.HTTPClientResult = .{},
     concurrent_task: jsc.ConcurrentTask = .{},
@@ -307,10 +304,7 @@ pub const S3HttpSimpleTask = struct {
                         const body = this.response_buffer;
                         this.response_buffer = .{
                             .allocator = bun.default_allocator,
-                            .list = .{
-                                .items = &.{},
-                                .capacity = 0,
-                            },
+                            .list = .{ .items = &.{}, .capacity = 0, .pointer_stability = .{} },
                         };
                         try callback(.{
                             .success = .{

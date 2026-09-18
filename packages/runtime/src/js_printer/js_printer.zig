@@ -4170,7 +4170,7 @@ fn NewPrinter(
                     // and export that one instead
                     // This particular code segment does the transform inline by adding an extra pass over export clauses
                     // and then swapRemove'ing them as we go
-                    var array = std.ArrayListUnmanaged(js_ast.ClauseItem){ .items = s.items, .capacity = s.items.len };
+                    var array = std.ArrayListUnmanaged(js_ast.ClauseItem){ .items = s.items, .capacity = s.items.len, .pointer_stability = .{} };
                     {
                         var i: usize = 0;
                         while (i < array.items.len) {

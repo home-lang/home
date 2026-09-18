@@ -99,7 +99,7 @@ pub const OOM = error{OutOfMemory};
 /// don't pay for invariant checks. Use sparingly — invariants that
 /// must hold in production should `Global.crash()` instead.
 pub fn assert(ok: bool) void {
-    if (@import("builtin").mode == .Debug) {
+    if (@import("builtin").mode == .debug) {
         std.debug.assert(ok);
     }
 }

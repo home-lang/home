@@ -38,7 +38,7 @@
 //! When this file is updated, the new binary should be compiled and BinLinkingShim.VersionFlag.current should be updated.
 //!
 //! Questions about this file should be directed at @paperclover.
-const dbg = builtin.mode == .Debug;
+const dbg = builtin.mode == .debug;
 
 const is_standalone = @import("root") == @This();
 const bun = if (!is_standalone) @import("bun") else @compileError("cannot use 'bun' in standalone build of bun_shim_impl");
@@ -106,7 +106,7 @@ const k32 = struct {
 };
 
 fn debug(comptime fmt: []const u8, args: anytype) void {
-    comptime assert(builtin.mode == .Debug);
+    comptime assert(builtin.mode == .debug);
     if (!is_standalone) {
         bunDebugMessage(fmt, args);
     } else {
@@ -263,7 +263,7 @@ noinline fn failAndExitWithReason(reason: FailReason) noreturn {
             .ProcessParameters
             .hStdError,
     }) catch |e| {
-        if (builtin.mode == .Debug) {
+        if (builtin.mode == .debug) {
             std.debug.panic("Failed to write to stderr: {s}", .{@errorName(e)});
         }
     };

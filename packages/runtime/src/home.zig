@@ -16,8 +16,8 @@ pub const use_mimalloc = @import("build_options").use_mimalloc;
 
 pub const upstream_sha = "fd0b6f1a271fca0b8124b69f230b100f4d636af6";
 pub var start_time: i128 = 0;
-pub const callconv_inline: std.builtin.CallingConvention = if (builtin.mode == .Debug) .auto else .@"inline";
-pub const callmod_inline: std.builtin.CallModifier = if (builtin.mode == .Debug) .auto else .always_inline;
+pub const callconv_inline: std.builtin.CallingConvention = if (builtin.mode == .debug) .auto else .@"inline";
+pub const callmod_inline: std.builtin.CallModifier = if (builtin.mode == .debug) .auto else .always_inline;
 pub const HOST_NAME_MAX = if (builtin.os.tag == .windows) 256 else std.posix.HOST_NAME_MAX;
 
 pub fn splitAtMut(comptime T: type, items: []T, index: usize) struct { []T, []T } {

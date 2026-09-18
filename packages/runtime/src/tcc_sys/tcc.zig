@@ -96,7 +96,7 @@ pub const State = opaque {
         // setOutputType has side effects that are conditional on existing
         // options, so this must be called after setOptions
         if (comptime !validate_options) {
-            if (config.options) |options| state.setOptions(options) catch if (comptime @import("builtin").mode == .Debug) {
+            if (config.options) |options| state.setOptions(options) catch if (comptime @import("builtin").mode == .debug) {
                 @panic("Failed to set options");
             };
         }
@@ -239,7 +239,7 @@ pub const State = opaque {
 
     /// Set output type. MUST BE CALLED before any compilation
     pub fn setOutputType(s: *State, outputType: OutputFormat) Error!void {
-        if (tcc_set_output_type(s, @intFromEnum(outputType)) == -1) {
+        if (tcc_set_output_type(s, @backingInt(outputType)) == -1) {
             @branchHint(.unlikely);
             return error.InvalidOutputType;
         }
@@ -336,7 +336,7 @@ test "tcc extern symbol signatures compile" {
     _ = @typeName(@TypeOf(tcc_compile_string));
     _ = @typeName(@TypeOf(tcc_run));
     try std.testing.expectEqual(@as(c_int, 1), TCC_OUTPUT_MEMORY);
-    try std.testing.expectEqual(@as(c_int, 2), @intFromEnum(OutputFormat.Exe));
+    try std.testing.expectEqual(@as(c_int, 2), @backingInt(OutputFormat.Exe));
     // Ensure both error tags referenced by the wrappers exist in the union
     const ErrorSet = Error;
     _ = @errorName(@as(ErrorSet, error.OutputError));

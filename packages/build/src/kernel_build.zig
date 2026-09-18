@@ -48,7 +48,7 @@ pub const KernelBuildConfig = struct {
     pub fn default() KernelBuildConfig {
         return .{
             .arch = .x86_64,
-            .optimize = .ReleaseSafe,
+            .optimize = .safe,
             .debug = true,
             .kernel_base = 0xFFFFFFFF80000000,
             .entry_point = "_start",
