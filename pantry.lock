@@ -7,9 +7,9 @@
       "version": "18.3.1",
       "source": "npm"
     },
-    "ziglang.org@0.17.0-dev.1441+d5181a9c9": {
+    "ziglang.org@0.17.0-dev.2163+89ff10d56": {
       "name": "ziglang.org",
-      "version": "0.17.0-dev.1441+d5181a9c9",
+      "version": "0.17.0-dev.2163+89ff10d56",
       "source": "ziglang"
     }
   }
