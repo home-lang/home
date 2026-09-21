@@ -59,6 +59,28 @@ pub fn profile(file: File, executable: []const u8) Profile {
     return result;
 }
 
+/// Borrowed settings from services owned by the calling coordinator. Publishing
+/// a Docker socket requires readiness; this value does not start a service.
+pub const Services = struct {
+    remap_port: ?u16 = null,
+    docker_socket: ?[]const u8 = null,
+
+    pub fn apply(self: Services, allocator: std.mem.Allocator, env: *std.process.Environ.Map) !void {
+        if (self.remap_port) |port| {
+            if (port == 0) return error.InvalidRemapPort;
+            const url = try std.fmt.allocPrint(allocator, "http://localhost:{d}", .{port});
+            defer allocator.free(url);
+            // Preserve an explicitly inherited reporting setting, as the pinned
+            // runner does. Only the no-remap path forces reporting off.
+            try env.put("BUN_CRASH_REPORT_URL", url);
+        } else try env.put("BUN_ENABLE_CRASH_REPORTING", "0");
+        if (self.docker_socket) |socket| {
+            if (socket.len == 0) return error.InvalidDockerSocket;
+            try env.put("BUN_DOCKER_COORDINATOR", socket);
+        }
+    }
+};
+
 pub fn applyEnvironment(
     allocator: std.mem.Allocator,
     env: *std.process.Environ.Map,
@@ -66,11 +88,22 @@ pub fn applyEnvironment(
     temp_path: []const u8,
     bin_path: []const u8,
 ) !void {
+    return applyEnvironmentWithServices(allocator, env, selected, temp_path, bin_path, .{});
+}
+
+pub fn applyEnvironmentWithServices(
+    allocator: std.mem.Allocator,
+    env: *std.process.Environ.Map,
+    selected: Profile,
+    temp_path: []const u8,
+    bin_path: []const u8,
+    services: Services,
+) !void {
     inline for (.{ "TMPDIR", "BUN_TMPDIR", "TEST_TMPDIR", "BUN_INSTALL_CACHE_DIR" }) |key| try env.put(key, temp_path);
     inline for (.{ "BUN_FEATURE_FLAG_INTERNAL_FOR_TESTING", "BUN_DEBUG_QUIET_LOGS", "BUN_GARBAGE_COLLECTOR_LEVEL" }) |key| try env.put(key, "1");
     try env.put("BUN_JSC_randomIntegrityAuditRate", "1.0");
     try env.put("BUN_RUNTIME_TRANSPILER_CACHE_PATH", "0");
-    try env.put("BUN_ENABLE_CRASH_REPORTING", "0");
+    try services.apply(allocator, env);
     try env.put("FORCE_COLOR", if (selected.node_test) "0" else "1");
     if (selected.node_test) try env.put("NO_COLOR", "1") else if (selected.test_invocation) try env.put("GITHUB_ACTIONS", "true");
     if (selected.no_orphans) try env.put("BUN_FEATURE_FLAG_NO_ORPHANS", "1");
@@ -321,4 +354,24 @@ test "corpus launch setup preserves install and build contracts" {
         try applyEnvironment(allocator, &env, selected, "/setup/tmp", "/setup/bin");
         try std.testing.expectEqualStrings("inherited", env.get("GITHUB_ACTIONS").?);
     }
+}
+
+test "service context preserves the pinned remap and coordinator environment contract" {
+    const allocator = std.testing.allocator;
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    const selected = SetupOperation.install.profile();
+    try applyEnvironmentWithServices(allocator, &env, selected, "/tmp/owned", "/tmp/bin", .{ .remap_port = 12345, .docker_socket = "/tmp/ready.sock" });
+    try std.testing.expectEqualStrings("http://localhost:12345", env.get("BUN_CRASH_REPORT_URL").?);
+    try std.testing.expect(env.get("BUN_ENABLE_CRASH_REPORTING") == null);
+    try std.testing.expectEqualStrings("/tmp/ready.sock", env.get("BUN_DOCKER_COORDINATOR").?);
+    try env.put("BUN_ENABLE_CRASH_REPORTING", "0");
+    try applyEnvironmentWithServices(allocator, &env, selected, "/tmp/owned", "/tmp/bin", .{ .remap_port = 23456 });
+    try std.testing.expectEqualStrings("0", env.get("BUN_ENABLE_CRASH_REPORTING").?);
+    try std.testing.expectEqualStrings("http://localhost:23456", env.get("BUN_CRASH_REPORT_URL").?);
+    try applyEnvironment(allocator, &env, selected, "/tmp/owned", "/tmp/bin");
+    try std.testing.expectEqualStrings("0", env.get("BUN_ENABLE_CRASH_REPORTING").?);
+    try std.testing.expectEqualStrings("/tmp/ready.sock", env.get("BUN_DOCKER_COORDINATOR").?);
+    try std.testing.expectError(error.InvalidRemapPort, (Services{ .remap_port = 0 }).apply(allocator, &env));
+    try std.testing.expectError(error.InvalidDockerSocket, (Services{ .docker_socket = "" }).apply(allocator, &env));
 }

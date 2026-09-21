@@ -52,6 +52,7 @@ pub const RunOptions = struct {
     /// their explicitly requested files. The caller supplies pinned source
     /// bytes, and may only remove exclusions in its Home expectation source.
     selection: ?SelectionPolicy = null,
+    services: @import("corpus_launch.zig").Services = .{},
 };
 
 pub const SelectionPolicy = struct {
@@ -130,6 +131,7 @@ pub const Summary = struct {
     vendor_context: ?VendorExecutionContext = null,
     launch_is_ci: bool = true,
     launch_asan_step: bool = false,
+    launch_services: @import("corpus_launch.zig").Services = .{},
 
     pub fn deinit(self: *Summary, allocator: std.mem.Allocator) void {
         if (self.journal) |*journal| journal.deinit();
@@ -163,7 +165,7 @@ pub const Summary = struct {
 };
 
 fn beginSummary(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8, options: RunOptions) !Summary {
-    var summary = Summary{ .on_file = options.on_file, .launch_is_ci = if (options.selection) |policy| policy.context.is_ci else true, .launch_asan_step = if (options.selection) |policy| policy.asan_step else false };
+    var summary = Summary{ .on_file = options.on_file, .launch_services = options.services, .launch_is_ci = if (options.selection) |policy| policy.context.is_ci else true, .launch_asan_step = if (options.selection) |policy| policy.asan_step else false };
     if (options.persist_results or options.report_directory != null) {
         const env_path = try envVariableAlloc(allocator, "HOME_BUN_CORPUS_REPORT_DIR");
         defer if (env_path) |value| allocator.free(value);
@@ -977,6 +979,7 @@ fn runRelativeFile(
             .corpus_project_root = corpus_project_root,
             .junit_path = junit_path,
             .record = if (summary.journal) |*journal| .{ .journal = journal, .id = id, .mode = @tagName(mode), .source_sha256 = source_hash } else null,
+            .services = summary.launch_services,
             .corpus_file = .{ .relative_path = relative, .node_test = node_test, .test_runner = mode == .test_runner, .is_ci = summary.launch_is_ci, .asan_step = summary.launch_asan_step },
             .corpus_validation_root = if (summary.vendor_context) |vendor| vendor.corpus_project_root else null,
             .corpus_validation_relative_path = validation_relative,

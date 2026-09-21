@@ -4004,6 +4004,8 @@ fn printTestUsage() void {
         \\  --bun-corpus-native-subset <name>
         \\                          Run an explicit native Bun-corpus bootstrap subset
         \\  --bun-corpus-remap       Hold the original crash-remap service until stdin EOF
+        \\  --bun-corpus-checkout-vendor <name>  Check out and verify a vendor before primary setup
+        \\  --bun-corpus-install-vendor <name> <revision>  Install/build that verified checkout
         \\  --bun-corpus-prepare-vendor <name>  Clone, install, and build a pinned vendor
         \\  --bun-corpus-setup       Run the original root/test installs with durable outcomes
         \\  --bun-corpus-platform    Detect the native host and check expected CI platform
@@ -5492,7 +5494,7 @@ fn runBunCorpusRemap(allocator: std.mem.Allocator) !void {
     if (!try remap.finish()) return error.CorpusRemapFailed;
 }
 
-fn prepareBunCorpusVendor(allocator: std.mem.Allocator, name: []const u8) !void {
+fn prepareBunCorpusVendor(allocator: std.mem.Allocator, name: []const u8, options: home_test.corpus_vendor_prepare.Options) !void {
     const manifest_path = try std.fs.path.join(allocator, &.{ home_test.corpus.default_root, "vendor.json" });
     defer allocator.free(manifest_path);
     const source = try Io.Dir.cwd().readFileAlloc(g_io, manifest_path, allocator, .limited(1024 * 1024));
@@ -5501,7 +5503,7 @@ fn prepareBunCorpusVendor(allocator: std.mem.Allocator, name: []const u8) !void 
     defer parsed.deinit();
     for (parsed.value) |vendor| {
         if (!std.mem.eql(u8, vendor.package, name)) continue;
-        var summary = try home_test.corpus_vendor_prepare.prepare(allocator, g_io, std.fs.path.dirname(home_test.corpus.default_root).?, vendor, null);
+        var summary = try home_test.corpus_vendor_prepare.prepareWithOptions(allocator, g_io, std.fs.path.dirname(home_test.corpus.default_root).?, vendor, options);
         defer summary.deinit();
         std.debug.print("Vendor {s}: {d} preparation steps completed, {d} failed; zero corpus case credit\n", .{ name, summary.completed, summary.failed });
         if (!summary.successful()) return error.CorpusVendorPreparationFailed;
@@ -5571,6 +5573,16 @@ fn runPreparedBunVendor(allocator: std.mem.Allocator, name: []const u8, filters:
 }
 
 fn testCommand(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
+    for (args, 0..) |arg, index| {
+        if (std.mem.eql(u8, arg, "--bun-corpus-checkout-vendor")) {
+            if (index != 0 or args.len != 2) return error.ExpectedVendorCheckoutName;
+            return prepareBunCorpusVendor(allocator, args[1], .{ .phase = .checkout });
+        }
+        if (std.mem.eql(u8, arg, "--bun-corpus-install-vendor")) {
+            if (index != 0 or args.len != 3) return error.ExpectedVendorNameAndRevision;
+            return prepareBunCorpusVendor(allocator, args[1], .{ .phase = .install_build, .expected_revision = args[2] });
+        }
+    }
     for (args) |arg| if (std.mem.eql(u8, arg, "--bun-corpus-remap")) {
         if (args.len != 1) return error.UnexpectedRemapArguments;
         return runBunCorpusRemap(allocator);
@@ -5578,7 +5590,7 @@ fn testCommand(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
     for (args, 0..) |arg, index| {
         if (!std.mem.eql(u8, arg, "--bun-corpus-prepare-vendor")) continue;
         if (index != 0 or args.len != 2) return error.ExpectedVendorPreparationName;
-        return prepareBunCorpusVendor(allocator, args[1]);
+        return prepareBunCorpusVendor(allocator, args[1], .{});
     }
     for (args) |arg| if (std.mem.eql(u8, arg, "--bun-corpus-setup")) {
         if (args.len != 1) return error.UnexpectedSetupArguments;

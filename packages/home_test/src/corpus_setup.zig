@@ -11,6 +11,7 @@ pub const Input = struct { path: []const u8, sha256: []const u8 };
 const Manifest = struct { bun_pin: []const u8, files: []Input };
 pub const Options = struct {
     report_directory: ?[]const u8 = null,
+    services: @import("corpus_launch.zig").Services = .{},
     expected_platform: ?platform.Expected = null,
 };
 pub const Summary = struct {
@@ -97,7 +98,7 @@ pub fn runRootInstalls(allocator: Allocator, io: Io, project_root: []const u8, o
         const cwd = if (id == 0) try allocator.dupe(u8, root) else try std.fs.path.join(allocator, &.{ root, "test" });
         defer allocator.free(cwd);
         std.debug.print("[home-bun-setup] install {s}\n", .{cwd});
-        var result = try capture.runHomeCapturedWithOptions(allocator, "", &.{"install"}, .{ .corpus_project_root = cwd, .setup_operation = .install, .record = .{ .journal = &summary.journal, .id = id, .mode = "setup_install", .source_sha256 = hash[0..64].* } });
+        var result = try capture.runHomeCapturedWithOptions(allocator, "", &.{"install"}, .{ .corpus_project_root = cwd, .setup_operation = .install, .services = options.services, .record = .{ .journal = &summary.journal, .id = id, .mode = "setup_install", .source_sha256 = hash[0..64].* } });
         defer result.deinit(allocator);
         var unchanged = true;
         for (manifest.value.files) |input| if (!try inputMatches(allocator, io, root, input)) {

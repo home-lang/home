@@ -5880,6 +5880,7 @@ pub const HomeCapturedOptions = struct {
     corpus_project_root: ?[]const u8 = null,
     corpus_file: ?corpus_launch.File = null,
     setup_operation: ?corpus_launch.SetupOperation = null,
+    services: corpus_launch.Services = .{},
     corpus_validation_root: ?[]const u8 = null,
     corpus_validation_relative_path: ?[]const u8 = null,
     vendor_test: bool = false,
@@ -6046,7 +6047,7 @@ fn prepareHomeCapturedInvocation(
         const storage = options.storage orelse return error.MissingCorpusStorage;
         const runtime_path = try std.fmt.allocPrint(allocator, "{s}{c}{s}", .{ storage.bin_path, std.fs.path.delimiter, std.fs.path.dirname(executable) orelse "." });
         defer allocator.free(runtime_path);
-        try corpus_launch.applyEnvironment(allocator, &environ_map, value, storage.temp_path, runtime_path);
+        try corpus_launch.applyEnvironmentWithServices(allocator, &environ_map, value, storage.temp_path, runtime_path, options.services);
     }
     const timeout_arg = if (selected) |value| (if (value.test_timeout_ms) |ms| try std.fmt.allocPrint(allocator, "--timeout={d}", .{ms}) else null) else null;
     errdefer if (timeout_arg) |arg| allocator.free(arg);

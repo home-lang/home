@@ -140,6 +140,25 @@ test "native corpus remap keeps a ready native service owned until explicit comp
     var response = try capture.runHomeCaptured(allocator, "remap-client", &.{ "-e", request });
     defer response.deinit(allocator);
     try std.testing.expect(response.term.success() and !response.timed_out and response.output_complete);
+    // A real corpus child consumes the live remap endpoint through the same
+    // options the coordinator passes to primary and vendor execution.
+    try tmp.dir.createDirPath(io, "test");
+    try tmp.dir.writeFile(io, .{ .sub_path = "bunfig.toml", .data = "[test]\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "test/service-context.test.ts", .data =
+        \\import { test, expect } from 'bun:test';
+        \\test('live coordinator service context', async () => {
+        \\  expect(process.env.BUN_CRASH_REPORT_URL).toMatch(/^http:\/\/localhost:/);
+        \\  expect(await (await fetch(process.env.BUN_CRASH_REPORT_URL)).text()).toBe('ready');
+        \\  expect(process.env.BUN_DOCKER_COORDINATOR).toBe('/private/control/ready.sock');
+        \\});
+    });
+    const corpus_root = try std.fs.path.join(allocator, &.{ root, "test" });
+    defer allocator.free(corpus_root);
+    var corpus_result = try @import("corpus_runner.zig").runFileWithOptions(io, allocator, corpus_root, "service-context.test.ts", .{ .services = .{ .remap_port = remap.port().?, .docker_socket = "/private/control/ready.sock" } });
+    defer corpus_result.deinit(allocator);
+    if (corpus_result.failed_files != 0) std.debug.print("{s}\n", .{corpus_result.first_failure_message});
+    try std.testing.expectEqual(@as(usize, 1), corpus_result.passed);
+    try std.testing.expectEqual(@as(usize, 0), corpus_result.failed_files);
     try std.testing.expect(try remap.finish());
     try std.testing.expectError(error.FileNotFound, Io.Dir.cwd().access(io, remap.storage.path, .{}));
 }

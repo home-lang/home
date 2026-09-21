@@ -8,14 +8,26 @@ const launch = @import("corpus_launch.zig");
 const journal_module = @import("corpus_journal.zig");
 const build_options = @import("build_options");
 
+pub const Phase = enum { all, checkout, install_build };
+pub const Options = struct {
+    phase: Phase = .all,
+    /// The coordinator carries this revision from checkout/discovery across
+    /// primary setup. Installation must not silently consume another checkout.
+    expected_revision: ?[]const u8 = null,
+    services: launch.Services = .{},
+    report_directory: ?[]const u8 = null,
+};
+
 pub const Summary = struct {
     allocator: Allocator,
     journal: journal_module.Journal,
     revision: ?[]u8 = null,
     completed: usize = 0,
+    phase: Phase = .all,
     failed: usize = 0,
+    checkout_verified: bool = false,
     pub fn successful(self: Summary) bool {
-        return self.failed == 0 and self.completed == self.journal.selected and self.revision != null;
+        return self.failed == 0 and self.completed == self.journal.selected and self.revision != null and self.checkout_verified;
     }
     pub fn deinit(self: *Summary) void {
         if (self.revision) |revision| self.allocator.free(revision);
@@ -35,16 +47,25 @@ fn hashFile(io: Io, path: []const u8) ![64]u8 {
     return journal_module.hashFile(io, file);
 }
 fn finish(summary: *Summary) !void {
-    try summary.journal.finish(.{ .files = summary.completed, .passed = 0, .failed = 0, .skipped = 0, .todo = 0, .unsupported = 0, .failed_files = summary.failed, .process_checks_passed = 0, .preparation_steps_succeeded = summary.completed - summary.failed, .preparation_steps_failed = summary.failed, .vendor_revision = summary.revision, .vendor_prepared = summary.successful() });
+    try summary.journal.finish(.{ .files = summary.completed, .passed = 0, .failed = 0, .skipped = 0, .todo = 0, .unsupported = 0, .failed_files = summary.failed, .process_checks_passed = 0, .preparation_steps_succeeded = summary.completed - summary.failed, .preparation_steps_failed = summary.failed, .vendor_revision = summary.revision, .preparation_phase = @tagName(summary.phase), .vendor_checked_out = summary.checkout_verified, .vendor_prepared = summary.phase != .checkout and summary.successful() });
 }
 
 /// This explicit operation prepares one vendor. Full CI performs vendor
 /// checkout/discovery before primary installs and conditions later preparation
 /// on its selected files; this API does not claim that orchestration is done.
 pub fn prepare(allocator: Allocator, io: Io, project_root: []const u8, vendor: vendor_module.Vendor, report_directory: ?[]const u8) !Summary {
+    return prepareWithOptions(allocator, io, project_root, vendor, .{ .report_directory = report_directory });
+}
+
+pub fn prepareWithOptions(allocator: Allocator, io: Io, project_root: []const u8, vendor: vendor_module.Vendor, options: Options) !Summary {
     if (!build_options.enable_jsc) return error.NativeRuntimeRequired;
     if (!safeRelative(vendor.package) or vendor.repository.len == 0 or vendor.repository[0] == '-' or vendor.tag.len == 0 or vendor.tag[0] == '-') return error.InvalidVendorSpecification;
     if (!std.mem.eql(u8, vendor.manager(), "bun")) return error.UnsupportedVendorPackageManager;
+    if (options.phase == .install_build and options.expected_revision == null) return error.VendorCheckoutRevisionRequired;
+    if (options.expected_revision) |revision| {
+        if (revision.len != 40) return error.InvalidVendorRevision;
+        for (revision) |c| if (!std.ascii.isHex(c) or std.ascii.isUpper(c)) return error.InvalidVendorRevision;
+    }
     const root = try Io.Dir.cwd().realPathFileAlloc(io, project_root, allocator);
     defer allocator.free(root);
     const cwd = try std.fs.path.join(allocator, &.{ root, "vendor", vendor.package });
@@ -53,22 +74,27 @@ pub fn prepare(allocator: Allocator, io: Io, project_root: []const u8, vendor: v
         error.FileNotFound => false,
         else => return err,
     };
+    if (options.phase == .install_build and !present) return error.VendorCheckoutMissing;
     var env = try capture.inheritedEnvironmentMap(allocator);
     defer env.deinit();
     const inherited_report = env.get("HOME_BUN_CORPUS_REPORT_DIR");
-    const report = report_directory orelse if (inherited_report) |path| (if (path.len != 0) path else null) else null;
-    var summary = Summary{ .allocator = allocator, .journal = try journal_module.Journal.createForPurpose(allocator, io, report, root, .vendor_setup) };
+    const report = options.report_directory orelse if (inherited_report) |path| (if (path.len != 0) path else null) else null;
+    var summary = Summary{ .allocator = allocator, .phase = options.phase, .journal = try journal_module.Journal.createForPurpose(allocator, io, report, root, .vendor_setup) };
     errdefer summary.deinit();
     std.debug.print("[home-bun-vendor-setup] results: {s}\n", .{summary.journal.directory});
     const spec = try std.json.Stringify.valueAlloc(allocator, vendor, .{});
     defer allocator.free(spec);
     const spec_hash = journal_module.hashBytes(spec);
     const all_steps = [_]Step{ .clone, .fetch, .checkout, .head, .tag, .install, .build };
-    const steps = all_steps[@as(usize, if (present) 1 else 0)..];
+    const steps = switch (options.phase) {
+        .all => all_steps[@as(usize, if (present) 1 else 0)..],
+        .checkout => all_steps[@as(usize, if (present) 1 else 0)..5],
+        .install_build => all_steps[3..],
+    };
     var plan: std.ArrayList(struct { path: []const u8, timeout_ms: i64 }) = .empty;
     defer plan.deinit(allocator);
     for (steps) |step| try plan.append(allocator, .{ .path = @tagName(step), .timeout_ms = if (step == .build) 60_000 else 180_000 });
-    try summary.journal.append(.{ .event = "vendor_setup_plan", .contract = "bun-4982b91e-explicit-vendor-preparation", .vendor = vendor, .vendor_sha256 = @as([]const u8, &spec_hash), .clone_required = !present, .vendor_cwd = cwd, .steps = plan.items, .case_credit = 0 });
+    try summary.journal.append(.{ .event = "vendor_setup_plan", .contract = "bun-4982b91e-explicit-vendor-preparation", .vendor = vendor, .vendor_sha256 = @as([]const u8, &spec_hash), .phase = @tagName(options.phase), .expected_revision = options.expected_revision, .clone_required = !present, .vendor_cwd = cwd, .steps = plan.items, .case_credit = 0 });
     for (steps) |step| try summary.journal.select(@tagName(step));
     try Io.Dir.cwd().createDirPath(io, std.fs.path.dirname(cwd).?);
     const git = try launch.resolveExecutable(allocator, io, &env, "git");
@@ -89,7 +115,7 @@ pub fn prepare(allocator: Allocator, io: Io, project_root: []const u8, vendor: v
             try Io.Dir.cwd().access(io, test_path, .{});
             const package_hash = try hashFile(io, package_path);
             source_hash = package_hash;
-            result = try capture.runHomeCapturedWithOptions(allocator, "", if (step == .install) &.{"install"} else &.{ "run", "build" }, .{ .corpus_project_root = cwd, .setup_operation = if (step == .install) .install else .build, .record = .{ .journal = &summary.journal, .id = id, .mode = if (step == .install) "vendor_install" else "vendor_build", .source_sha256 = package_hash } });
+            result = try capture.runHomeCapturedWithOptions(allocator, "", if (step == .install) &.{"install"} else &.{ "run", "build" }, .{ .corpus_project_root = cwd, .setup_operation = if (step == .install) .install else .build, .services = options.services, .record = .{ .journal = &summary.journal, .id = id, .mode = if (step == .install) "vendor_install" else "vendor_build", .source_sha256 = package_hash } });
         } else {
             const argv: []const []const u8 = switch (step) {
                 .clone => &.{ git, "clone", "--depth", "1", "--single-branch", vendor.repository, cwd },
@@ -123,8 +149,12 @@ pub fn prepare(allocator: Allocator, io: Io, project_root: []const u8, vendor: v
             const revision = std.mem.trim(u8, result.stdout, " \t\r\n");
             if (revision.len != 40) return error.InvalidVendorRevision;
             for (revision) |c| if (!std.ascii.isHex(c) or std.ascii.isUpper(c)) return error.InvalidVendorRevision;
-            if (step == .head) summary.revision = try allocator.dupe(u8, revision) else {
+            if (step == .head) {
+                if (options.expected_revision) |expected| if (!std.mem.eql(u8, expected, revision)) return error.VendorCheckoutRevisionChanged;
+                summary.revision = try allocator.dupe(u8, revision);
+            } else {
                 if (!std.mem.eql(u8, revision, summary.revision.?)) return error.VendorCheckoutDoesNotMatchTag;
+                summary.checkout_verified = true;
                 try summary.journal.append(.{ .event = "vendor_checkout", .revision = revision, .tag = vendor.tag, .package_sha256 = @as([]const u8, &try hashFile(io, package_path)) });
             }
         }
@@ -175,4 +205,29 @@ test "native corpus vendor preparation clones the pinned tag and retains a build
         defer allocator.free(cache);
         try std.testing.expectError(error.FileNotFound, Io.Dir.cwd().access(io, cache, .{}));
     }
+    const phased_project = try std.fs.path.join(allocator, &.{ root, "phased-project" });
+    defer allocator.free(phased_project);
+    try Io.Dir.cwd().createDirPath(io, phased_project);
+    const checkout_report = try std.fs.path.join(allocator, &.{ root, "checkout-reports" });
+    defer allocator.free(checkout_report);
+    const install_report = try std.fs.path.join(allocator, &.{ root, "install-reports" });
+    defer allocator.free(install_report);
+    const vendor = vendor_module.Vendor{ .package = "private-vendor", .repository = repository, .tag = "v1" };
+    var checked = try prepareWithOptions(allocator, io, phased_project, vendor, .{ .phase = .checkout, .report_directory = checkout_report });
+    defer checked.deinit();
+    try std.testing.expect(checked.successful());
+    try std.testing.expectEqual(@as(usize, 5), checked.completed);
+    const installed_marker = try std.fs.path.join(allocator, &.{ phased_project, "vendor/private-vendor/install.marker" });
+    defer allocator.free(installed_marker);
+    try std.testing.expectError(error.FileNotFound, Io.Dir.cwd().access(io, installed_marker, .{}));
+    var installed = try prepareWithOptions(allocator, io, phased_project, vendor, .{ .phase = .install_build, .expected_revision = checked.revision.?, .report_directory = install_report });
+    defer installed.deinit();
+    try std.testing.expectEqual(@as(usize, 4), installed.completed);
+    try std.testing.expectEqual(@as(usize, 1), installed.failed);
+    try std.testing.expect(!installed.successful());
+    try std.testing.expectEqualStrings(checked.revision.?, installed.revision.?);
+    try Io.Dir.cwd().access(io, installed_marker, .{});
+    const changed_report = try std.fs.path.join(allocator, &.{ root, "changed-reports" });
+    defer allocator.free(changed_report);
+    try std.testing.expectError(error.VendorCheckoutRevisionChanged, prepareWithOptions(allocator, io, phased_project, vendor, .{ .phase = .install_build, .expected_revision = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", .report_directory = changed_report }));
 }

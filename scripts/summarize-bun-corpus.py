@@ -88,7 +88,17 @@ def summarize(directory):
                 vendor_setup = row
                 check(row.get('contract') == 'bun-4982b91e-explicit-vendor-preparation' and row.get('case_credit') == 0, 'invalid vendor preparation contract')
                 check(type(row.get('clone_required')) is bool, 'invalid vendor clone state')
-                steps = (['clone'] if row.get('clone_required') else []) + ['fetch', 'checkout', 'head', 'tag', 'install', 'build']
+                phase = row.get('phase', 'all')
+                check(phase in ('all', 'checkout', 'install_build'), 'invalid vendor preparation phase')
+                steps = (['clone'] if row.get('clone_required') else []) + ['fetch', 'checkout', 'head', 'tag']
+                if phase == 'install_build':
+                    check(row.get('clone_required') is False, 'installation cannot clone a replacement checkout')
+                    steps = ['head', 'tag']
+                if phase != 'checkout':
+                    steps += ['install', 'build']
+                revision = row.get('expected_revision')
+                if phase == 'install_build' or revision is not None:
+                    check(isinstance(revision, str) and len(revision) == 40 and all(c in '0123456789abcdef' for c in revision), 'missing or invalid expected vendor revision')
                 check(row.get('steps') == [dict(path=path, timeout_ms=60000 if path == 'build' else 180000) for path in steps], 'invalid vendor preparation steps')
                 vendor = row['vendor']
                 check(all(isinstance(vendor.get(key), str) and vendor[key] for key in ('package', 'repository', 'tag')), 'invalid vendor specification')
@@ -99,6 +109,8 @@ def summarize(directory):
                 check(purpose == 'vendor_setup' and vendor_setup is not None and checkout is None, 'invalid vendor checkout record')
                 checkout = row
                 check(row.get('tag') == vendor_setup['vendor']['tag'], 'vendor checkout tag mismatch')
+                if vendor_setup.get('expected_revision') is not None:
+                    check(row.get('revision') == vendor_setup['expected_revision'], 'vendor checkout changed across preparation phases')
                 for key, size in [('revision', 40), ('package_sha256', 64)]:
                     value = row.get(key)
                     check(isinstance(value, str) and len(value) == size and all(c in '0123456789abcdef' for c in value), 'invalid vendor checkout ' + key)
@@ -340,7 +352,13 @@ def summarize(directory):
                 check(valid_steps and [row.get('path') for row in selected.values()] == [row.get('path') for row in steps], 'vendor preparation selection mismatch')
             check(summary.get('preparation_steps_succeeded') == len(completed) - len(failures) and summary.get('preparation_steps_failed') == len(failures), 'vendor preparation counters disagree')
             check(isinstance(summary.get('vendor_prepared'), bool), 'missing vendor prepared outcome')
-            check(summary.get('vendor_prepared') == (checkout is not None and len(completed) == len(selected) and not failures), 'vendor prepared outcome disagrees with preparation')
+            phase = vendor_setup.get('phase', 'all') if vendor_setup else 'all'
+            check(summary.get('vendor_prepared') == (phase != 'checkout' and checkout is not None and len(completed) == len(selected) and not failures), 'vendor prepared outcome disagrees with preparation')
+            if vendor_setup and 'phase' in vendor_setup:
+                check(summary.get('preparation_phase') == phase, 'vendor phase summary disagrees with plan')
+                check(summary.get('vendor_checked_out') is (checkout is not None), 'vendor checkout outcome disagrees with evidence')
+            if checkout is not None:
+                check(summary.get('vendor_revision') == checkout.get('revision'), 'vendor revision summary mismatch')
             if summary.get('vendor_prepared'):
                 check(checkout is not None and summary.get('vendor_revision') == checkout.get('revision') and len(completed) == len(selected) and not failures, 'vendor prepared without complete verified checkout/install/build')
             for category in ('git', 'home'):

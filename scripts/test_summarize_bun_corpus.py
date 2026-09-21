@@ -284,6 +284,28 @@ class VendorPreparationValidation(unittest.TestCase):
         self.rows[-1]['summary'].update(failed_files=1,preparation_steps_succeeded=5,preparation_steps_failed=1,vendor_prepared=False)
         result=self.result();self.assertFalse(result['successful']);self.assertEqual(result['errors'],[]);self.assertEqual(result['failed_file_ids'],[5])
 
+    def phase_rows(self, phase):
+        names = ['fetch','checkout','head','tag'] if phase == 'checkout' else ['head','tag','install','build']
+        original_ids = [row['id'] for row in self.rows if row['event']=='selected' and row['path'] in names]
+        mapping = {old:new for new,old in enumerate(original_ids)}
+        self.rows = [row for row in self.rows if 'id' not in row or row['id'] in mapping]
+        for row in self.rows:
+            if 'id' in row:row['id']=mapping[row['id']]
+        plan=self.rows[1];plan['phase']=phase;plan['expected_revision']='d'*40 if phase=='install_build' else None
+        plan['steps']=[row for row in plan['steps'] if row['path'] in names]
+        final=self.rows[-1];final.update(selected=4,started=4,completed=4)
+        final['summary'].update(files=4,preparation_steps_succeeded=4,preparation_phase=phase,vendor_checked_out=True,vendor_prepared=phase!='checkout')
+
+    def test_checkout_phase_cannot_claim_installed_vendor(self):
+        self.phase_rows('checkout');result=self.result();self.assertTrue(result['successful'],result)
+        self.assertEqual(result['counts'],dict(passed=0,failed=0,skipped=0,todo=0))
+        self.rows[-1]['summary']['vendor_prepared']=True;self.assertFalse(self.result()['successful'])
+
+    def test_install_phase_requires_the_prior_checkout_revision(self):
+        self.phase_rows('install_build');result=self.result();self.assertTrue(result['successful'],result)
+        self.rows[1]['expected_revision']='e'*40;self.assertFalse(self.result()['successful'])
+        self.rows[1]['expected_revision']=None;self.assertFalse(self.result()['successful'])
+
 
 if __name__ == '__main__':
     unittest.main()
