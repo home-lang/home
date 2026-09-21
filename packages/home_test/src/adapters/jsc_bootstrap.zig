@@ -6971,6 +6971,28 @@ test "adapter label is stable" {
     try std.testing.expectEqualStrings("jsc-bootstrap", runner.Adapter.jsc_bootstrap.label());
 }
 
+test "reduced adapter rejects Node-API modules before dlopen" {
+    if (!@import("build_options").enable_jsc) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var runtime = try Runtime.init(allocator, "void 0;");
+    defer runtime.deinit();
+
+    const evaluation = try home_rt.jsc.evaluate.evaluateUtf8Detailed(
+        allocator,
+        runtime.engine.currentContext(),
+        "globalThis.__home_loadNativeNodeModule('/constructor-must-not-run.node');",
+        "home:napi-bootstrap-safety",
+        1,
+    );
+    defer evaluation.deinit(allocator);
+
+    try std.testing.expect(evaluation.exception != null);
+    try std.testing.expectEqualStrings(
+        "Native Node-API addons require the full Home runtime",
+        unsupportedExceptionReason(evaluation.exception_message).?,
+    );
+}
+
 test "captured spawn process-group cleanup is opt-in and bounded" {
     const generic_options = SpawnSyncCapturedOptions{
         .argv = &.{},

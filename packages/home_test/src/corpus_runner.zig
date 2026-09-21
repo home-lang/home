@@ -916,6 +916,24 @@ fn buildNativeCorpusArgs(
     return args;
 }
 
+fn findNativeCorpusConfig(
+    io: Io,
+    allocator: std.mem.Allocator,
+    corpus_project_root: []const u8,
+    node_test: bool,
+) !?[]u8 {
+    const path = try std.fs.path.join(allocator, &.{ corpus_project_root, if (node_test) "bunfig.node-test.toml" else "bunfig.toml" });
+    errdefer allocator.free(path);
+    Io.Dir.cwd().access(io, path, .{}) catch |err| switch (err) {
+        error.FileNotFound => {
+            allocator.free(path);
+            return null;
+        },
+        else => return err,
+    };
+    return path;
+}
+
 fn hasActiveScriptSource(source: []const u8) bool {
     var i: usize = 0;
     while (i < source.len) {
@@ -1136,7 +1154,7 @@ fn runRelativeFile(
         const absolute_corpus_path = try Io.Dir.cwd().realPathFileAlloc(io, corpus_path, allocator);
         defer allocator.free(absolute_corpus_path);
         const corpus_project_root = if (summary.vendor_context != null) absolute_corpus_path else std.fs.path.dirname(absolute_corpus_path) orelse return error.InvalidCorpusRoot;
-        const config_path = if (summary.vendor_context != null) null else try std.fs.path.join(allocator, &.{ corpus_project_root, if (node_test) "bunfig.node-test.toml" else "bunfig.toml" });
+        const config_path = if (summary.vendor_context != null) null else try findNativeCorpusConfig(io, allocator, corpus_project_root, node_test);
         defer if (config_path) |path| allocator.free(path);
         if (summary.vendor_context) |vendor| if (vendor.preload) |path| {
             try flags.values.ensureUnusedCapacity(allocator, 2);

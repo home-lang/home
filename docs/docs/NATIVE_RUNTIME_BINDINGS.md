@@ -86,7 +86,7 @@ Relevant regressions (run with `HOME_NATIVE_VM=1 zig-out/bin/home-debug run`):
 - `tests/runtime/native-napi-addon.test.mjs`: real modern/legacy addon initialization, callbacks, errors, and GC.
 - `tests/runtime/native-ffi-header-cache.test.mjs`: concurrent cold-cache compilation and exact embedded header contents.
 - `tests/runtime/native-napi-lifetime.test.mjs`: cleanup hooks and external/instance finalizers after `close()`, using both `cc()` and `dlopen()` in main and worker contexts.
-- `tests/runtime/native-napi-bootstrap-safety.test.mjs`: reduced-mode unsupported reporting without running constructors or returning fake exports, paired with real native addon execution.
+- `tests/runtime/native-napi-bootstrap-safety.test.mjs`: config-free corpus routing and explicit full-VM routing both initialize real modern and legacy addons. The `jsc_bootstrap` unit regression calls the reduced adapter directly and verifies that it rejects Node-API before `dlopen`.
 
 The exact upstream `js/bun/ffi/cc.test.ts` currently reports **8 passing tests, 10 upstream skips, 0 failures** natively. Skips are not passing feature coverage. Full Node-API and dependency-backed addon coverage remains tracked in [#459](https://github.com/home-lang/home/issues/459) and [#66](https://github.com/home-lang/home/issues/66).
 

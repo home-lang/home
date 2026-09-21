@@ -6,10 +6,12 @@ import { basename, join } from 'node:path'
 
 assert.match(basename(process.execPath), /^home(?:-debug)?(?:\.exe)?$/)
 const directory = mkdtempSync(join(tmpdir(), 'home-napi-bootstrap-safety-'))
-const reducedEnv = { ...process.env, NO_COLOR: '1' }
+const corpusEnv = { ...process.env, NO_COLOR: '1' }
 // Any nonempty override, including "0", enables these native paths.
-for (const name of ['HOME_NATIVE_VM', 'HOME_CORPUS_FULL_VM', 'HOME_NATIVE_RUN', 'HOME_BUN_TEST_EXECUTABLE']) delete reducedEnv[name]
-const nativeEnv = { ...reducedEnv, HOME_NATIVE_VM: '1', HOME_CORPUS_FULL_VM: '1' }
+for (const name of ['HOME_NATIVE_VM', 'HOME_CORPUS_FULL_VM', 'HOME_NATIVE_RUN', 'HOME_BUN_TEST_EXECUTABLE']) delete corpusEnv[name]
+// The corpus runner is native-only. Reduced-adapter rejection is exercised
+// directly by the jsc_bootstrap Zig regression rather than through this route.
+const nativeEnv = { ...corpusEnv, HOME_NATIVE_VM: '1', HOME_CORPUS_FULL_VM: '1' }
 function run(file, env) {
   const child = spawnSync(process.execPath, ['test', file], { env, encoding: 'utf8', timeout: 20000 })
   assert.equal(child.error, undefined)
@@ -65,23 +67,13 @@ napi_value napi_register_module_v1(napi_env env, napi_value exports) { return in
     assert.equal(compiler.error, undefined)
     assert.equal(compiler.signal, null)
     assert.equal(compiler.status, 0, compiler.stderr)
-    for (const mode of ['require', 'cached', 'direct']) {
-      writeFileSync(fixture, [
-        'const { test, expect } = require("bun:test");',
-        mode === 'cached' ? `globalThis.__home_native_node_modules_by_path[${JSON.stringify(binary)}] = { __home_napi_module: true, answer: 42 };` : '',
-        'test("native addon requires a real environment", () => {',
-        mode === 'direct' ? `  globalThis.__home_loadNativeNodeModule(${JSON.stringify(binary)});` : `  expect(require(${JSON.stringify(binary)}).answer).toBe(42);`,
-        '});',
-      ].join('\n'))
-      const reduced = run(fixture, { ...reducedEnv, HOME_NAPI_INIT_MARKER: marker })
-      assert.equal(reduced.status, 1, reduced.output)
-      assert.match(reduced.output, /tests passed: 0/)
-      assert.match(reduced.output, /tests failed: 0/)
-      assert.match(reduced.output, /tests unsupported: 1/)
-      assert.match(reduced.output, /Native Node-API addons require the full Home runtime/)
-      assert.equal(existsSync(marker), false, 'reduced adapter must reject before addon constructors run')
-    }
     writeFileSync(fixture, `const { test, expect } = require("bun:test"); test("native addon initializes", () => expect(require(${JSON.stringify(binary)}).answer).toBe(42));`)
+    const corpus = run(fixture, { ...corpusEnv, HOME_NAPI_INIT_MARKER: marker })
+    assert.equal(corpus.status, 0, corpus.output)
+    assert.match(corpus.output, /tests passed: 1/)
+    assert.match(corpus.output, /Ran 1 test across 1 file/)
+    assert.equal(existsSync(marker), true)
+    rmSync(marker)
     const native = run(fixture, { ...nativeEnv, HOME_NAPI_INIT_MARKER: marker })
     assert.equal(native.status, 0, native.output)
     assert.match(native.output, /1 pass/)
