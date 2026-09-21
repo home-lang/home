@@ -4003,6 +4003,7 @@ fn printTestUsage() void {
         \\  --home                  Run only Home integration tests
         \\  --bun-corpus-native-subset <name>
         \\                          Run an explicit native Bun-corpus bootstrap subset
+        \\  --bun-corpus-ci          Run the pinned selection/setup/service/vendor coordinator
         \\  --bun-corpus-remap       Hold the original crash-remap service until stdin EOF
         \\  --bun-corpus-checkout-vendor <name>  Check out and verify a vendor before primary setup
         \\  --bun-corpus-install-vendor <name> <revision>  Install/build that verified checkout
@@ -5520,6 +5521,33 @@ fn runBunCorpusSetup(allocator: std.mem.Allocator) !void {
     if (!summary.successful()) return error.CorpusSetupFailed;
 }
 
+fn runBunCorpusCoordinator(allocator: std.mem.Allocator) !void {
+    if (!build_options.enable_jsc) return error.NativeRuntimeRequired;
+    var environment = try home_test.adapters.jsc_bootstrap.inheritedEnvironmentMap(allocator);
+    defer environment.deinit();
+    const executable = try home_test.adapters.jsc_bootstrap.preferredHomeExecutablePathAlloc(allocator);
+    defer allocator.free(executable);
+    const project_root = std.fs.path.dirname(home_test.corpus.default_root).?;
+    var plan = try home_test.corpus_coordinator.prepare(allocator, g_io, project_root, executable, &environment, .{
+        .expected_platform = home_test.corpus_platform.Expected.fromEnvironment(&environment),
+        .include_vendors = home_test.corpus_platform.isCI(&environment),
+    });
+    defer plan.deinit();
+    var summary = try home_test.corpus_coordinator.run(allocator, g_io, &plan, .{ .on_file = emitNativeCorpusExecution });
+    defer summary.deinit();
+    std.debug.print("\nBun corpus coordinator: {s}\nresults: {s}\nprimary: {d} files, {d} passes, {d} failures\nvendors: {d} files, {d} passes, {d} failures\n", .{
+        if (summary.successful()) "PASS" else "FAIL",
+        summary.journal.directory,
+        summary.primary_files,
+        summary.primary_passed,
+        summary.primary_failed,
+        summary.vendor_files,
+        summary.vendor_passed,
+        summary.vendor_failed,
+    });
+    if (!summary.successful()) return error.CorpusCoordinatorFailed;
+}
+
 fn printBunCorpusPlatform(allocator: std.mem.Allocator) !void {
     var env = std.process.Environ.Map.init(allocator);
     defer env.deinit();
@@ -5573,6 +5601,10 @@ fn runPreparedBunVendor(allocator: std.mem.Allocator, name: []const u8, filters:
 }
 
 fn testCommand(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
+    for (args) |arg| if (std.mem.eql(u8, arg, "--bun-corpus-ci")) {
+        if (args.len != 1) return error.UnexpectedCorpusCoordinatorArguments;
+        return runBunCorpusCoordinator(allocator);
+    };
     for (args, 0..) |arg, index| {
         if (std.mem.eql(u8, arg, "--bun-corpus-checkout-vendor")) {
             if (index != 0 or args.len != 2) return error.ExpectedVendorCheckoutName;

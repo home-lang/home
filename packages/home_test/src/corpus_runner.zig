@@ -707,7 +707,9 @@ pub fn prepareVendorPlan(io: Io, allocator: std.mem.Allocator, project_root: []c
     const owned = arena.allocator();
     const vendor_json = try std.json.Stringify.valueAlloc(allocator, vendor, .{});
     defer allocator.free(vendor_json);
-    const owned_vendor = try std.json.parseFromSliceLeaky(corpus_vendor.Vendor, owned, vendor_json, .{});
+    // The default JSON mode borrows unescaped strings from vendor_json. This
+    // plan must survive after that temporary serialization is released.
+    const owned_vendor = try std.json.parseFromSliceLeaky(corpus_vendor.Vendor, owned, vendor_json, .{ .allocate = .alloc_always });
     const root = try Io.Dir.cwd().realPathFileAlloc(io, project_root, owned);
     const vendor_path = try std.fs.path.join(owned, &.{ root, "vendor", owned_vendor.package });
     const package_path = try std.fs.path.join(allocator, &.{ vendor_path, "package.json" });

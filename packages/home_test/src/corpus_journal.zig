@@ -28,7 +28,7 @@ pub const Journal = struct {
         return createForPurpose(allocator, io, requested, corpus_root, .corpus);
     }
 
-    pub const Purpose = enum { corpus, setup, vendor_setup, service };
+    pub const Purpose = enum { corpus, setup, vendor_setup, service, coordinator };
     pub fn createForPurpose(allocator: Allocator, io: Io, requested: ?[]const u8, corpus_root: []const u8, purpose: Purpose) !Journal {
         const relative = if (requested) |path| try allocator.dupe(u8, path) else blk: {
             try Io.Dir.cwd().createDirPath(io, "zig-out/bun-corpus-results");
