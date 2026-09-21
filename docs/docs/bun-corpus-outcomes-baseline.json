@@ -285,5 +285,142 @@
     "bind_error_follow_up": "https://github.com/home-lang/home/issues/726",
     "publication_first_checks": "Global *.gz ignore initially left archives untracked; explicit staging fixed it. Pickier reported one extra documentation blank line; corrected without changing runtime evidence.",
     "evidence": "docs/docs/bun-port-evidence/2026-09-08-native-services/manifest.json"
+  },
+  "ordered_vendor_phase_checkpoint": {
+    "kind": "separate native vendor phases and inherited service launch context",
+    "source": "64481fe09b7cdf144d2372b1caed1952edbc5cd8",
+    "source_before_build": "0d09d38cdec8b8d8ca053db4196c8091977195aa",
+    "home_sha256": "d74f86c7953200c0434f4e8a89894dd21626359c505935faf50b662e6d31be50",
+    "bun_pin": "4982b91e3702094330f3be3883354c52b8c01323",
+    "zig_version": "0.17.0-dev.2163+89ff10d56",
+    "zig_download_sha256": "9613b867f218a21be7760f714cfb3f18ce36fec85d2051f4c26362b495f2face",
+    "native_build_steps_passed": 23,
+    "native_harness_passed": 21,
+    "validator_controls_passed": 20,
+    "launch_units_passed": 7,
+    "service_units_passed": 4,
+    "private_phase_cli_outcomes": [
+      {
+        "name": "checkout",
+        "returncode": 0,
+        "validator_returncode": 0,
+        "completed": 5,
+        "counts": {
+          "passed": 0,
+          "failed": 0,
+          "skipped": 0,
+          "todo": 0
+        },
+        "unstarted": [],
+        "errors": []
+      },
+      {
+        "name": "changed-revision",
+        "returncode": 1,
+        "validator_returncode": 1,
+        "completed": 1,
+        "counts": {
+          "passed": 0,
+          "failed": 0,
+          "skipped": 0,
+          "todo": 0
+        },
+        "unstarted": [
+          {
+            "event": "selected",
+            "id": 1,
+            "path": "tag"
+          },
+          {
+            "event": "selected",
+            "id": 2,
+            "path": "install"
+          },
+          {
+            "event": "selected",
+            "id": 3,
+            "path": "build"
+          }
+        ],
+        "errors": [
+          "run did not finish",
+          "preparation or service cannot claim process checks",
+          "vendor preparation counters disagree",
+          "missing vendor prepared outcome",
+          "vendor prepared outcome disagrees with preparation",
+          "vendor phase summary disagrees with plan",
+          "vendor checkout outcome disagrees with evidence",
+          "preparation or service failed-file count mismatch"
+        ]
+      },
+      {
+        "name": "install-build",
+        "returncode": 0,
+        "validator_returncode": 0,
+        "completed": 4,
+        "counts": {
+          "passed": 0,
+          "failed": 0,
+          "skipped": 0,
+          "todo": 0
+        },
+        "unstarted": [],
+        "errors": []
+      }
+    ],
+    "fresh_vendor_phases": [
+      {
+        "phase": "checkout",
+        "returncode": 0,
+        "validator_returncode": 0,
+        "seconds": 3.7716095000000003,
+        "sources_match": true,
+        "completed": 5,
+        "node_modules_present": false,
+        "counts": {
+          "passed": 0,
+          "failed": 0,
+          "skipped": 0,
+          "todo": 0
+        }
+      },
+      {
+        "phase": "install-build",
+        "returncode": 0,
+        "validator_returncode": 0,
+        "seconds": 5.2491196250000005,
+        "sources_match": true,
+        "completed": 4,
+        "node_modules_present": true,
+        "counts": {
+          "passed": 0,
+          "failed": 0,
+          "skipped": 0,
+          "todo": 0
+        }
+      }
+    ],
+    "phase_and_service_case_credit": 0,
+    "real_remap_protocol_checks": 5,
+    "vendor_completed_files": 129,
+    "vendor_registered_cases": {
+      "passed": 1516,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    "vendor_attempts_this_build": 1,
+    "vendor_sources_unchanged": 283,
+    "vendor_original_excluded_file": "test/ws/connection.test.ts",
+    "removed_generated_bytes": 185906099,
+    "first_native_harness_outcome": {
+      "passed": 20,
+      "failed": 1,
+      "reason": "new private service-context fixture missing required bunfig.toml"
+    },
+    "full_ci_orchestration_complete": false,
+    "full_parity_complete": false,
+    "evidence": "docs/docs/bun-port-evidence/2026-09-20-ci-phases/manifest.json",
+    "restored_journals_verified": 7
   }
 }

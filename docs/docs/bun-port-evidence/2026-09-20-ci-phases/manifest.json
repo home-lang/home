@@ -1,0 +1,3402 @@
+{
+  "kind": "separate native vendor phases and inherited service launch context",
+  "source": "64481fe09b7cdf144d2372b1caed1952edbc5cd8",
+  "source_before_build": "0d09d38cdec8b8d8ca053db4196c8091977195aa",
+  "home_sha256": "d74f86c7953200c0434f4e8a89894dd21626359c505935faf50b662e6d31be50",
+  "bun_pin": "4982b91e3702094330f3be3883354c52b8c01323",
+  "zig_version": "0.17.0-dev.2163+89ff10d56",
+  "zig_download_sha256": "9613b867f218a21be7760f714cfb3f18ce36fec85d2051f4c26362b495f2face",
+  "native_build_steps_passed": 23,
+  "native_harness_passed": 21,
+  "validator_controls_passed": 20,
+  "launch_units_passed": 7,
+  "service_units_passed": 4,
+  "private_phase_cli_outcomes": [
+    {
+      "name": "checkout",
+      "returncode": 0,
+      "validator_returncode": 0,
+      "completed": 5,
+      "counts": {
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "unstarted": [],
+      "errors": []
+    },
+    {
+      "name": "changed-revision",
+      "returncode": 1,
+      "validator_returncode": 1,
+      "completed": 1,
+      "counts": {
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "unstarted": [
+        {
+          "event": "selected",
+          "id": 1,
+          "path": "tag"
+        },
+        {
+          "event": "selected",
+          "id": 2,
+          "path": "install"
+        },
+        {
+          "event": "selected",
+          "id": 3,
+          "path": "build"
+        }
+      ],
+      "errors": [
+        "run did not finish",
+        "preparation or service cannot claim process checks",
+        "vendor preparation counters disagree",
+        "missing vendor prepared outcome",
+        "vendor prepared outcome disagrees with preparation",
+        "vendor phase summary disagrees with plan",
+        "vendor checkout outcome disagrees with evidence",
+        "preparation or service failed-file count mismatch"
+      ]
+    },
+    {
+      "name": "install-build",
+      "returncode": 0,
+      "validator_returncode": 0,
+      "completed": 4,
+      "counts": {
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "unstarted": [],
+      "errors": []
+    }
+  ],
+  "fresh_vendor_phases": [
+    {
+      "phase": "checkout",
+      "returncode": 0,
+      "validator_returncode": 0,
+      "seconds": 3.7716095000000003,
+      "sources_match": true,
+      "completed": 5,
+      "node_modules_present": false,
+      "counts": {
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "todo": 0
+      }
+    },
+    {
+      "phase": "install-build",
+      "returncode": 0,
+      "validator_returncode": 0,
+      "seconds": 5.2491196250000005,
+      "sources_match": true,
+      "completed": 4,
+      "node_modules_present": true,
+      "counts": {
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "todo": 0
+      }
+    }
+  ],
+  "phase_and_service_case_credit": 0,
+  "real_remap_protocol_checks": 5,
+  "vendor_completed_files": 129,
+  "vendor_registered_cases": {
+    "passed": 1516,
+    "failed": 0,
+    "skipped": 0,
+    "todo": 0
+  },
+  "vendor_attempts_this_build": 1,
+  "vendor_sources_unchanged": 283,
+  "vendor_original_excluded_file": "test/ws/connection.test.ts",
+  "removed_generated_bytes": 185906099,
+  "first_native_harness_outcome": {
+    "passed": 20,
+    "failed": 1,
+    "reason": "new private service-context fixture missing required bunfig.toml"
+  },
+  "full_ci_orchestration_complete": false,
+  "full_parity_complete": false,
+  "files": [
+    {
+      "artifact": "000-jsc_bootstrap.zig.gz",
+      "source": "packages/home_test/src/adapters/jsc_bootstrap.zig",
+      "bytes": 362330,
+      "sha256": "e4c39ab38d6a2f969c245aec1d53d742c724d90e075b90d39941ce5fc10b6a4e"
+    },
+    {
+      "artifact": "001-corpus_journal.zig.gz",
+      "source": "packages/home_test/src/corpus_journal.zig",
+      "bytes": 19158,
+      "sha256": "348d803d78c9d6cb8ac4422bc0d612fd368474cd8a240c8b62ce6241a348a453"
+    },
+    {
+      "artifact": "002-corpus_launch.zig.gz",
+      "source": "packages/home_test/src/corpus_launch.zig",
+      "bytes": 20674,
+      "sha256": "06aa4fc8069bdc945d17c0fcf77feb2c5fc5379e82d88a6c384a3f5ea331beb4"
+    },
+    {
+      "artifact": "003-corpus_remap.zig.gz",
+      "source": "packages/home_test/src/corpus_remap.zig",
+      "bytes": 10464,
+      "sha256": "40b8c37e508a42d5919c833cf9ca5bc11b0b67e68e9436db6c6cd22345820f86"
+    },
+    {
+      "artifact": "004-corpus_runner.zig.gz",
+      "source": "packages/home_test/src/corpus_runner.zig",
+      "bytes": 98292,
+      "sha256": "ff4bcbc0d405dc822800ee21502060f35a72f224238d6252fff4d63ee204abd5"
+    },
+    {
+      "artifact": "005-corpus_setup.zig.gz",
+      "source": "packages/home_test/src/corpus_setup.zig",
+      "bytes": 12181,
+      "sha256": "e1441eb8e0eb982d6745295d867ce004e8caf257806e193855fb74531f235e53"
+    },
+    {
+      "artifact": "006-corpus_vendor_prepare.zig.gz",
+      "source": "packages/home_test/src/corpus_vendor_prepare.zig",
+      "bytes": 15638,
+      "sha256": "48fcbcbacccd5962a5eb14d8217baee2677bb839b420be0d6eb119c583e0b2a4"
+    },
+    {
+      "artifact": "007-summarize-bun-corpus.py.gz",
+      "source": "scripts/summarize-bun-corpus.py",
+      "bytes": 30172,
+      "sha256": "b11c54e8c311bbde04b5103f54be8fccf414d2ff36e8edccbe8a47993a54df46"
+    },
+    {
+      "artifact": "008-test_summarize_bun_corpus.py.gz",
+      "source": "scripts/test_summarize_bun_corpus.py",
+      "bytes": 20720,
+      "sha256": "773a2c544390304d7019f5b93fc6ac9d7a69a98224ffaa9ab81a709dbb7cded0"
+    },
+    {
+      "artifact": "009-main.zig.gz",
+      "source": "src/main.zig",
+      "bytes": 339401,
+      "sha256": "69f46c009e101cc8c27510d6385b306e8e42f79f13b77bf2fed8ecda54f08af3"
+    },
+    {
+      "artifact": "010-add-service-context.py.gz",
+      "source": "zig-out/bun-ci-20260920/add-service-context.py",
+      "bytes": 5338,
+      "sha256": "8fc215d731d442728b37e9fc835da8841fed46dfc85a33c1d25fe41a81538fc8"
+    },
+    {
+      "artifact": "011-archive.py.gz",
+      "source": "zig-out/bun-ci-20260920/archive.py",
+      "bytes": 3093,
+      "sha256": "f55bda20efcbbbd199bda1f9e88950c1ff00d40aab13f36e59fb8a3eadf80325"
+    },
+    {
+      "artifact": "012-archive.py.before-fixture-correction.gz",
+      "source": "zig-out/bun-ci-20260920/archive.py.before-fixture-correction",
+      "bytes": 2901,
+      "sha256": "192697b42a72fc0e87a6500fb18d1819bfc05e50b584259c60f57732def26d33"
+    },
+    {
+      "artifact": "013-batch-first.log.gz",
+      "source": "zig-out/bun-ci-20260920/batch-first.log",
+      "bytes": 546,
+      "sha256": "819b26d600324e6f51b5962ef1b3b0453ebd2f60e5c17431beb07f8c9704e3dd"
+    },
+    {
+      "artifact": "014-batch-fixture-corrected.log.gz",
+      "source": "zig-out/bun-ci-20260920/batch-fixture-corrected.log",
+      "bytes": 494,
+      "sha256": "73ad39ba24fd19abefbf994a04de1085acc5cc82463ea3199f6c142f2a25b049"
+    },
+    {
+      "artifact": "015-batch.json.gz",
+      "source": "zig-out/bun-ci-20260920/batch.json",
+      "bytes": 285,
+      "sha256": "481945896fea1ff137605d1a93050fbcc3f981ec70f805e9a698e377da64c0eb"
+    },
+    {
+      "artifact": "016-coordinator-next.md.gz",
+      "source": "zig-out/bun-ci-20260920/coordinator-next.md",
+      "bytes": 3572,
+      "sha256": "b1c857c1e428cf8e5de0bf5bf6fed20d8600177b0250ac9a24f0f6965b4c2f2e"
+    },
+    {
+      "artifact": "017-manifest.json.gz",
+      "source": "zig-out/bun-ci-20260920/corrected-source/manifest.json",
+      "bytes": 1438,
+      "sha256": "e7404b5c6b24f18ffad3fb02d50e101e55c8d9fb548a77906fc67745a3e30c77"
+    },
+    {
+      "artifact": "018-jsc_bootstrap.zig.gz",
+      "source": "zig-out/bun-ci-20260920/corrected-source/packages/home_test/src/adapters/jsc_bootstrap.zig",
+      "bytes": 362330,
+      "sha256": "e4c39ab38d6a2f969c245aec1d53d742c724d90e075b90d39941ce5fc10b6a4e"
+    },
+    {
+      "artifact": "019-corpus_journal.zig.gz",
+      "source": "zig-out/bun-ci-20260920/corrected-source/packages/home_test/src/corpus_journal.zig",
+      "bytes": 19158,
+      "sha256": "348d803d78c9d6cb8ac4422bc0d612fd368474cd8a240c8b62ce6241a348a453"
+    },
+    {
+      "artifact": "020-corpus_launch.zig.gz",
+      "source": "zig-out/bun-ci-20260920/corrected-source/packages/home_test/src/corpus_launch.zig",
+      "bytes": 20674,
+      "sha256": "06aa4fc8069bdc945d17c0fcf77feb2c5fc5379e82d88a6c384a3f5ea331beb4"
+    },
+    {
+      "artifact": "021-corpus_remap.zig.gz",
+      "source": "zig-out/bun-ci-20260920/corrected-source/packages/home_test/src/corpus_remap.zig",
+      "bytes": 10464,
+      "sha256": "40b8c37e508a42d5919c833cf9ca5bc11b0b67e68e9436db6c6cd22345820f86"
+    },
+    {
+      "artifact": "022-corpus_runner.zig.gz",
+      "source": "zig-out/bun-ci-20260920/corrected-source/packages/home_test/src/corpus_runner.zig",
+      "bytes": 98292,
+      "sha256": "ff4bcbc0d405dc822800ee21502060f35a72f224238d6252fff4d63ee204abd5"
+    },
+    {
+      "artifact": "023-corpus_setup.zig.gz",
+      "source": "zig-out/bun-ci-20260920/corrected-source/packages/home_test/src/corpus_setup.zig",
+      "bytes": 12181,
+      "sha256": "e1441eb8e0eb982d6745295d867ce004e8caf257806e193855fb74531f235e53"
+    },
+    {
+      "artifact": "024-corpus_vendor_prepare.zig.gz",
+      "source": "zig-out/bun-ci-20260920/corrected-source/packages/home_test/src/corpus_vendor_prepare.zig",
+      "bytes": 15638,
+      "sha256": "48fcbcbacccd5962a5eb14d8217baee2677bb839b420be0d6eb119c583e0b2a4"
+    },
+    {
+      "artifact": "025-summarize-bun-corpus.py.gz",
+      "source": "zig-out/bun-ci-20260920/corrected-source/scripts/summarize-bun-corpus.py",
+      "bytes": 30172,
+      "sha256": "b11c54e8c311bbde04b5103f54be8fccf414d2ff36e8edccbe8a47993a54df46"
+    },
+    {
+      "artifact": "026-test_summarize_bun_corpus.py.gz",
+      "source": "zig-out/bun-ci-20260920/corrected-source/scripts/test_summarize_bun_corpus.py",
+      "bytes": 20720,
+      "sha256": "773a2c544390304d7019f5b93fc6ac9d7a69a98224ffaa9ab81a709dbb7cded0"
+    },
+    {
+      "artifact": "027-main.zig.gz",
+      "source": "zig-out/bun-ci-20260920/corrected-source/src/main.zig",
+      "bytes": 339401,
+      "sha256": "69f46c009e101cc8c27510d6385b306e8e42f79f13b77bf2fed8ecda54f08af3"
+    },
+    {
+      "artifact": "028-diagnose-service-fixture.py.gz",
+      "source": "zig-out/bun-ci-20260920/diagnose-service-fixture.py",
+      "bytes": 1255,
+      "sha256": "b7b4e10116d2b2380de94ccb7a5097f10d99a79a6b94a9f60a0cd52f5960e003"
+    },
+    {
+      "artifact": "029-manifest.json.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/manifest.json",
+      "bytes": 31615,
+      "sha256": "3a66354195fee226cde74ad34b2bfb5ea9953fc836dc1acc760993cda041c3be"
+    },
+    {
+      "artifact": "030-000000.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000000.junit.xml",
+      "bytes": 3314,
+      "sha256": "57039c7bd72056eaabeafed897ea4530f97171552cf38fcd593dea8edbb3d4cb"
+    },
+    {
+      "artifact": "031-000000.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000000.stderr",
+      "bytes": 2203,
+      "sha256": "fb0cf9ac353b235b8c63a3f9a2706b7031fb0e56687313866ca80fda9b4f6938"
+    },
+    {
+      "artifact": "032-000000.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000000.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "033-000001.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000001.junit.xml",
+      "bytes": 990,
+      "sha256": "92ccdf2a8849efdfbd4a6f77d4bb71827df56baf0954125789c7933f621378e4"
+    },
+    {
+      "artifact": "034-000001.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000001.stderr",
+      "bytes": 490,
+      "sha256": "bdc7e8dcd9c31cdff49c2a8cd0fba537c2ff0a384745efca87df5b9e5df5dc86"
+    },
+    {
+      "artifact": "035-000001.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000001.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "036-000002.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000002.junit.xml",
+      "bytes": 2041,
+      "sha256": "f4cfda1d122c2387acfac8d1b1e5e006249b76f72e217e61b6169dcaa5daf762"
+    },
+    {
+      "artifact": "037-000002.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000002.stderr",
+      "bytes": 1183,
+      "sha256": "e963d1b77ba280f873ecb4046839e1f5ebe940d454a19f8fef9cbe4b07328c87"
+    },
+    {
+      "artifact": "038-000002.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000002.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "039-000003.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000003.junit.xml",
+      "bytes": 3687,
+      "sha256": "b12955a0952f6776389fd6a562ce6ab221d8e11dcb9019823d470cc68f38ff92"
+    },
+    {
+      "artifact": "040-000003.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000003.stderr",
+      "bytes": 2447,
+      "sha256": "abdaa7c63c573ce8c59313cb1ae01623c4222759c80596a6d55f3a3d3e32616a"
+    },
+    {
+      "artifact": "041-000003.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000003.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "042-000004.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000004.junit.xml",
+      "bytes": 2106,
+      "sha256": "6cde38891620771e8a2ba4ab24fc2594679dfef396848c9c99ccaf3182f15bf3"
+    },
+    {
+      "artifact": "043-000004.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000004.stderr",
+      "bytes": 1288,
+      "sha256": "1e15c5927ff1c7ac389479207a40bae0207021bc729b5f03ed6ce5f7037997d5"
+    },
+    {
+      "artifact": "044-000004.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000004.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "045-000005.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000005.junit.xml",
+      "bytes": 2526,
+      "sha256": "15b31632bcd4f4a5f1199427c729bf7f4067992a4ac5e373a63c2db5a2025107"
+    },
+    {
+      "artifact": "046-000005.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000005.stderr",
+      "bytes": 1583,
+      "sha256": "f0fd361d90a2c30d6e0a4b6ed8073fe85bad76b28d3192e956acdce78c3bd593"
+    },
+    {
+      "artifact": "047-000005.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000005.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "048-000006.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000006.junit.xml",
+      "bytes": 666,
+      "sha256": "05c7c772970a97cfa11cf291a4dd116e62d07ad13e9e1ee8f5b23f87adecfbd2"
+    },
+    {
+      "artifact": "049-000006.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000006.stderr",
+      "bytes": 288,
+      "sha256": "e853a07ecc16d8c8168260ec39f03afab95a6b362bfda9d354090bad0b6565fe"
+    },
+    {
+      "artifact": "050-000006.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000006.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "051-000007.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000007.junit.xml",
+      "bytes": 1805,
+      "sha256": "167a631fecf76134e08f48084b2f59dfbea96f857fc448023598816bdc3bd564"
+    },
+    {
+      "artifact": "052-000007.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000007.stderr",
+      "bytes": 1067,
+      "sha256": "220e7e9b99daa71fb2abd27b505dac47c4fa52f78083b764b1ca51d244c48849"
+    },
+    {
+      "artifact": "053-000007.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000007.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "054-000008.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000008.junit.xml",
+      "bytes": 1988,
+      "sha256": "97dc369d6ceda04948e017469d2d3e773fbf2471133ee3cb3a9c95b68a00c36e"
+    },
+    {
+      "artifact": "055-000008.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000008.stderr",
+      "bytes": 1204,
+      "sha256": "230a60f748d177081d6d7ddcfd49adc14719f85e5404196e6f43f0b69580f11b"
+    },
+    {
+      "artifact": "056-000008.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000008.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "057-000009.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000009.junit.xml",
+      "bytes": 3055,
+      "sha256": "1b241ec4eeb4cfbf503728b308ced1d24e91bbc334ec7b41d239eafa0d0da724"
+    },
+    {
+      "artifact": "058-000009.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000009.stderr",
+      "bytes": 1918,
+      "sha256": "d856a305cd5428df9309b927b2b8c51bfd613c18796baf5086c56fa9ceb5fe55"
+    },
+    {
+      "artifact": "059-000009.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000009.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "060-000010.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000010.junit.xml",
+      "bytes": 1311,
+      "sha256": "5d37d0fcff5b6da4218993ad1e58664bb35e2bfe94ea6ada9ead1b259f7cf34a"
+    },
+    {
+      "artifact": "061-000010.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000010.stderr",
+      "bytes": 709,
+      "sha256": "05af94ce4d682d4833be821d742191bdefd9e454691ccf503e10cc32f1a5c258"
+    },
+    {
+      "artifact": "062-000010.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000010.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "063-000011.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000011.junit.xml",
+      "bytes": 2207,
+      "sha256": "0e2088963f63aa925bdd5fd42c0dec9cfcff9e845114e481c6078f506dd13e53"
+    },
+    {
+      "artifact": "064-000011.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000011.stderr",
+      "bytes": 1442,
+      "sha256": "02aef95571a11c47455d634c8b0834f9661d8d884834b3a7eacc9c7ed5dda6d8"
+    },
+    {
+      "artifact": "065-000011.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000011.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "066-000012.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000012.junit.xml",
+      "bytes": 1373,
+      "sha256": "4e86c0f62ea159ebc087ae4a46c2c62fe799fa1fb68de81c957011a65f62bd33"
+    },
+    {
+      "artifact": "067-000012.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000012.stderr",
+      "bytes": 783,
+      "sha256": "1d3559c9b1c25d3516f758039a91cfddc7a5dd2733ec48f5a09d19884134087a"
+    },
+    {
+      "artifact": "068-000012.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000012.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "069-000013.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000013.junit.xml",
+      "bytes": 1540,
+      "sha256": "b931bba663ec35fc9b607b0d30a0e38baf6fe5f2d1cc6b70898a7b9ea0b2a293"
+    },
+    {
+      "artifact": "070-000013.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000013.stderr",
+      "bytes": 889,
+      "sha256": "38864f8e9e7d9ed85db1879f059d1ac2977424628498ceff5dedab16639b4adf"
+    },
+    {
+      "artifact": "071-000013.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000013.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "072-000014.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000014.junit.xml",
+      "bytes": 2304,
+      "sha256": "3dec5d6c857bcee88a04aebc5fe705a3f3e789a17f4f8db74a3604554cd7c2ac"
+    },
+    {
+      "artifact": "073-000014.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000014.stderr",
+      "bytes": 1454,
+      "sha256": "a4e3377f27c63860ef92cc9b9d927c05e198424da8352f7ba24470d1d56b67f8"
+    },
+    {
+      "artifact": "074-000014.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000014.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "075-000015.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000015.junit.xml",
+      "bytes": 704,
+      "sha256": "9479dfd2952e599fd72650d4ea7fef066dc77515cb46d99cc0e87c7a6d40132b"
+    },
+    {
+      "artifact": "076-000015.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000015.stderr",
+      "bytes": 299,
+      "sha256": "0bb9ff570d76224428cd600d78d5b797388770894387dde4201eac213e1a0064"
+    },
+    {
+      "artifact": "077-000015.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000015.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "078-000016.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000016.junit.xml",
+      "bytes": 786,
+      "sha256": "3b57e21ca452b4dc772ff22f25598c5f7ed12b6f73d51a71a171e09f911c9ad0"
+    },
+    {
+      "artifact": "079-000016.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000016.stderr",
+      "bytes": 355,
+      "sha256": "14d7c32c7928eec32d3eaaf540749eeb3ca14f89b4f529c2b69fbd685bf4ea81"
+    },
+    {
+      "artifact": "080-000016.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000016.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "081-000017.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000017.junit.xml",
+      "bytes": 1579,
+      "sha256": "c7204fdc844bb43e764221c1572d203ad17cbfa40778ab63015936f33a3949f4"
+    },
+    {
+      "artifact": "082-000017.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000017.stderr",
+      "bytes": 654,
+      "sha256": "40693da040fc5d36309c7338c27737ea14adca21c86c554c4e1800118969e719"
+    },
+    {
+      "artifact": "083-000017.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000017.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "084-000018.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000018.junit.xml",
+      "bytes": 5268,
+      "sha256": "50e95927ed58b8099f91f0037e05f7b7f6d42ea47561c1afa3c268d279f43730"
+    },
+    {
+      "artifact": "085-000018.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000018.stderr",
+      "bytes": 3481,
+      "sha256": "823b8145d735b1d67162d86de63e005991bad41cb4e571ffa71601aef8c8cbeb"
+    },
+    {
+      "artifact": "086-000018.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000018.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "087-000019.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000019.junit.xml",
+      "bytes": 4559,
+      "sha256": "ccd65a2fdf068dd944e6a26075dbd9dc2fe7e99a8babbaa9a6a900ce577f83df"
+    },
+    {
+      "artifact": "088-000019.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000019.stderr",
+      "bytes": 2952,
+      "sha256": "de476a541aab8a29cefb8855d17c55513bdf1414d737cddcf64c16875eb3ec17"
+    },
+    {
+      "artifact": "089-000019.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000019.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "090-000020.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000020.junit.xml",
+      "bytes": 1356,
+      "sha256": "22ff10a4c68788896d18b591cac0b69df179f7f553a6be51ef37a96aa15aeb23"
+    },
+    {
+      "artifact": "091-000020.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000020.stderr",
+      "bytes": 756,
+      "sha256": "5d810956634093b45a320a907bc2aab0d06c4f5bdb435f83f4b3772735adddfb"
+    },
+    {
+      "artifact": "092-000020.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000020.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "093-000021.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000021.junit.xml",
+      "bytes": 6600,
+      "sha256": "77866d9bb3eefe9996ef0827305049b8fa1be78e56b85b8c903496c8be9509d8"
+    },
+    {
+      "artifact": "094-000021.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000021.stderr",
+      "bytes": 4476,
+      "sha256": "2a1291acad1d4e2c18a1269a5dd849f9147eb564347b32d372f813eb9ba7d8a5"
+    },
+    {
+      "artifact": "095-000021.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000021.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "096-000022.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000022.junit.xml",
+      "bytes": 1407,
+      "sha256": "17f9e5d8f1776b9955f0b6ef3b30176dcb9baf499e77bcbce052725703fe0f17"
+    },
+    {
+      "artifact": "097-000022.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000022.stderr",
+      "bytes": 818,
+      "sha256": "ac8a2a5b107673c874c0a183e98d5d7f56596a6c52ad8b12fc78192ccf7b820c"
+    },
+    {
+      "artifact": "098-000022.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000022.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "099-000023.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000023.junit.xml",
+      "bytes": 3554,
+      "sha256": "92ef252669a0929448eff51325f1d478db23173fb4d6ea3c5a5f4caa07e232bb"
+    },
+    {
+      "artifact": "100-000023.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000023.stderr",
+      "bytes": 2317,
+      "sha256": "4ab4b11980911b2dc2acdbb8cb32fe245b6aa68b7dd3acf951228afa154ad4d0"
+    },
+    {
+      "artifact": "101-000023.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000023.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "102-000024.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000024.junit.xml",
+      "bytes": 2097,
+      "sha256": "9241a4c83c3690d23ffc72e0c3b0aa66876cad8cea75e87afe5cf5506ff9fb02"
+    },
+    {
+      "artifact": "103-000024.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000024.stderr",
+      "bytes": 1287,
+      "sha256": "c2e62259d088a2e107767de4bed9ae3bd015c07286514352b6c7eb1b3fdcd6e0"
+    },
+    {
+      "artifact": "104-000024.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000024.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "105-000025.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000025.junit.xml",
+      "bytes": 1323,
+      "sha256": "5bbd3b76c535335d56ab35fc8e7d4c9f57fe4df31393f4cb5bccefdfcd8be314"
+    },
+    {
+      "artifact": "106-000025.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000025.stderr",
+      "bytes": 696,
+      "sha256": "55112a3147c99a44442d05318ce483a00e97b9ec86a939d3c1b824f6cfd7e15b"
+    },
+    {
+      "artifact": "107-000025.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000025.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "108-000026.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000026.junit.xml",
+      "bytes": 3974,
+      "sha256": "2a3f858012e2fe40c85f00f5f721b934b7ec29683fa48f0eabeca65db258c654"
+    },
+    {
+      "artifact": "109-000026.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000026.stderr",
+      "bytes": 2639,
+      "sha256": "642dd3c4a6e88782d676a52b8c9c009e2da52f319d1b787b620a4248745c8e6f"
+    },
+    {
+      "artifact": "110-000026.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000026.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "111-000027.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000027.junit.xml",
+      "bytes": 1637,
+      "sha256": "0208e07fc23b868d7d78b0965fdd59d8afa226434c8eb004c356708be2a0f7b9"
+    },
+    {
+      "artifact": "112-000027.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000027.stderr",
+      "bytes": 996,
+      "sha256": "1445951da42647e3fcdea2ab81dc04ce7c34baa0668aad4b9461b1732934e0bc"
+    },
+    {
+      "artifact": "113-000027.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000027.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "114-000028.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000028.junit.xml",
+      "bytes": 831,
+      "sha256": "05bee4ba9d08edc1ecd1ac813061fd2184493fb4e705996b9b6e9c307e8f0aae"
+    },
+    {
+      "artifact": "115-000028.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000028.stderr",
+      "bytes": 396,
+      "sha256": "d7974c4e9e2250a2c2513a645f1a1566f4f66cc71001daaec78d0f2061cdc678"
+    },
+    {
+      "artifact": "116-000028.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000028.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "117-000029.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000029.junit.xml",
+      "bytes": 1097,
+      "sha256": "eaace6e939ed93ee04d22811747d7db2f91fc3282c00508cb6ebbc54281e3d46"
+    },
+    {
+      "artifact": "118-000029.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000029.stderr",
+      "bytes": 572,
+      "sha256": "652fe6f761d46a55de82a50588f336d8cc69bc752f17a31f053f8eebb59ef290"
+    },
+    {
+      "artifact": "119-000029.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000029.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "120-000030.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000030.junit.xml",
+      "bytes": 2436,
+      "sha256": "3b70c80c5dd819bc3e472a47c89c466f66db4f162bad8ad1fbddc9b62e5c9de9"
+    },
+    {
+      "artifact": "121-000030.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000030.stderr",
+      "bytes": 1534,
+      "sha256": "143e39e62e79647036a480032547e53c6971614430ba8ce243cd54534d175304"
+    },
+    {
+      "artifact": "122-000030.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000030.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "123-000031.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000031.junit.xml",
+      "bytes": 825,
+      "sha256": "4d3d5de38e3da32112215e49b647f181a98c706a6d96064bde84c7198a55285f"
+    },
+    {
+      "artifact": "124-000031.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000031.stderr",
+      "bytes": 415,
+      "sha256": "f4bb187cbe00fe659aea4cbc5a5ba6cb57965c80d69b966bdd2b34d0fdfa8030"
+    },
+    {
+      "artifact": "125-000031.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000031.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "126-000032.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000032.junit.xml",
+      "bytes": 2943,
+      "sha256": "fa0bf5ff1c198877edf923c22073731106fcd71c9665d38f30457f28aa390738"
+    },
+    {
+      "artifact": "127-000032.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000032.stderr",
+      "bytes": 1780,
+      "sha256": "5e884ce36d4dd620900ecfeffc761091649b7981578984cb26853ee7366fa516"
+    },
+    {
+      "artifact": "128-000032.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000032.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "129-000033.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000033.junit.xml",
+      "bytes": 1703,
+      "sha256": "d4c243aa94474be8e57e1b14ead88b33008ea73e5bf9492d0331b32129a131cb"
+    },
+    {
+      "artifact": "130-000033.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000033.stderr",
+      "bytes": 1008,
+      "sha256": "fd2e8cc1fcc0609940116114a5faa88e85f0bfcab281671cd70c11adeb46595a"
+    },
+    {
+      "artifact": "131-000033.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000033.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "132-000034.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000034.junit.xml",
+      "bytes": 2862,
+      "sha256": "81a8e56998fa1173d5932d34b7a598190dd877f251448d311dabec75c0b0a826"
+    },
+    {
+      "artifact": "133-000034.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000034.stderr",
+      "bytes": 1842,
+      "sha256": "0aa640940a7e09c126cfc7269db5cb357e72a56cc23f3829a4ef87ca0c855c9f"
+    },
+    {
+      "artifact": "134-000034.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000034.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "135-000035.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000035.junit.xml",
+      "bytes": 2657,
+      "sha256": "a4296b1d31adcfaf01cabb99339233a6e4d80197af55b0c563be71f7fe6816c5"
+    },
+    {
+      "artifact": "136-000035.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000035.stderr",
+      "bytes": 1648,
+      "sha256": "cac9f09318a3428bca92a747c665625c92899e644eb79cbdc0f96df92b570a93"
+    },
+    {
+      "artifact": "137-000035.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000035.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "138-000036.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000036.junit.xml",
+      "bytes": 733,
+      "sha256": "a598266517ff399d9b2e9c0994d521b3032960a7b206d7b07b753c142a85f597"
+    },
+    {
+      "artifact": "139-000036.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000036.stderr",
+      "bytes": 326,
+      "sha256": "d520614b166c6a12bb8a8996ea80a6ab41d1d1455cc1e879c54ed63757abc9d6"
+    },
+    {
+      "artifact": "140-000036.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000036.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "141-000037.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000037.junit.xml",
+      "bytes": 2214,
+      "sha256": "b1f4ad9f4cb256ba84067f8963e243af3e98e234f367b326b8f9c95e40352508"
+    },
+    {
+      "artifact": "142-000037.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000037.stderr",
+      "bytes": 1299,
+      "sha256": "c8d2667977ade17fac100e56f36aef67b808eaf71b54c6da45d422f1ff250494"
+    },
+    {
+      "artifact": "143-000037.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000037.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "144-000038.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000038.junit.xml",
+      "bytes": 874,
+      "sha256": "be7263eeb99d98f628f5674d5d94fbb0e91155141ca5c515b68dbb087ea59019"
+    },
+    {
+      "artifact": "145-000038.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000038.stderr",
+      "bytes": 397,
+      "sha256": "f6271844769e770409f24c7ae03166583320038b07004d70228c330ecc235bb3"
+    },
+    {
+      "artifact": "146-000038.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000038.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "147-000039.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000039.junit.xml",
+      "bytes": 3012,
+      "sha256": "991119df81519dfc16141099af1873687fbf4393031f14f3229cd623bea906f0"
+    },
+    {
+      "artifact": "148-000039.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000039.stderr",
+      "bytes": 1869,
+      "sha256": "bb2a4f44afaabdc145f767226a3ba5ecd7b89322afe6e1d45ecc6f25bb2e41bf"
+    },
+    {
+      "artifact": "149-000039.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000039.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "150-000040.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000040.junit.xml",
+      "bytes": 2199,
+      "sha256": "2f9e44b1814ba8a18d77c5362c463ad0fbc3f6473deb5d8f7eb42599626f9aa9"
+    },
+    {
+      "artifact": "151-000040.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000040.stderr",
+      "bytes": 1322,
+      "sha256": "029a5908ce574d70d15ee7be439a962d849167618d1a96782100ecda446e3f0c"
+    },
+    {
+      "artifact": "152-000040.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000040.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "153-000041.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000041.junit.xml",
+      "bytes": 5078,
+      "sha256": "cd0a9558d2ddda04dd9bf550aa984d57ada50a75e7805df3c87177b46d11c504"
+    },
+    {
+      "artifact": "154-000041.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000041.stderr",
+      "bytes": 3515,
+      "sha256": "b8370e693ea51d3964fcccb6c5e19e85e878d04af301d814924ba38508397dae"
+    },
+    {
+      "artifact": "155-000041.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000041.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "156-000042.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000042.junit.xml",
+      "bytes": 709,
+      "sha256": "0f931239315e9e4a05e66214ef6e3042dda13f7334ae8bde74ff650c6f922a3f"
+    },
+    {
+      "artifact": "157-000042.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000042.stderr",
+      "bytes": 295,
+      "sha256": "d91598fa123deb6c7245c2bed5f1b21b95d3b86a23a5f5c0311dbdaa93a980c0"
+    },
+    {
+      "artifact": "158-000042.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000042.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "159-000043.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000043.junit.xml",
+      "bytes": 1885,
+      "sha256": "10dd6574b028d2063d1ceda7b4bbe99d86c60df45ded8cb27b47db01d42ccb2f"
+    },
+    {
+      "artifact": "160-000043.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000043.stderr",
+      "bytes": 1106,
+      "sha256": "be7c8960e8ca07cad51fc3ed0866049f95b0b15e10b959a0e19ca86bae4d290b"
+    },
+    {
+      "artifact": "161-000043.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000043.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "162-000044.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000044.junit.xml",
+      "bytes": 1906,
+      "sha256": "8eb14a0b33051cda294ca663e438624fb182b239b2dfaf0e553c7d4bf38e436a"
+    },
+    {
+      "artifact": "163-000044.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000044.stderr",
+      "bytes": 1105,
+      "sha256": "5caa7694d1df580761fb93a32d21652b53f739a9a3baddb7c3786ecd12862794"
+    },
+    {
+      "artifact": "164-000044.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000044.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "165-000045.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000045.junit.xml",
+      "bytes": 3999,
+      "sha256": "c9fdc222341d0cd74fc77b3eca03b5636e726c8b27b7c263278afa0534ed5325"
+    },
+    {
+      "artifact": "166-000045.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000045.stderr",
+      "bytes": 2444,
+      "sha256": "014485470ab0ffaecd9ed5cf352e97134d088efe3a28ca6e81eaa3495279e9f2"
+    },
+    {
+      "artifact": "167-000045.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000045.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "168-000046.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000046.junit.xml",
+      "bytes": 3195,
+      "sha256": "09fe5685bd82e177c61fcb1028938572f2278b081b0fba645dd873686674143d"
+    },
+    {
+      "artifact": "169-000046.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000046.stderr",
+      "bytes": 1972,
+      "sha256": "67dab5f9aaab7117989b904e9312ea8d9ba9c40b7cd30736471942faad5c33bd"
+    },
+    {
+      "artifact": "170-000046.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000046.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "171-000047.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000047.junit.xml",
+      "bytes": 1381,
+      "sha256": "73c1f0f6f25ca5f09fe56525777c749845486cee4f1c1610edf068e5e190e576"
+    },
+    {
+      "artifact": "172-000047.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000047.stderr",
+      "bytes": 726,
+      "sha256": "977eb8486594606e89213b8ed0bd7df19a3cc9aff0ddd81d7f2a2c84fdf6f072"
+    },
+    {
+      "artifact": "173-000047.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000047.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "174-000048.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000048.junit.xml",
+      "bytes": 2400,
+      "sha256": "1713c7d3c4b4eb8c0598453397bd7b54b723889f7b44b060067d075cf397bb03"
+    },
+    {
+      "artifact": "175-000048.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000048.stderr",
+      "bytes": 1397,
+      "sha256": "e2488f0c683ffaf64024370a959be7cd49be6ef395ee33141148f7017a855d4b"
+    },
+    {
+      "artifact": "176-000048.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000048.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "177-000049.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000049.junit.xml",
+      "bytes": 4939,
+      "sha256": "4ebdeee495b641a212084353aa5628afa06684cc418d21d1bb1a8dc38856ce26"
+    },
+    {
+      "artifact": "178-000049.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000049.stderr",
+      "bytes": 3229,
+      "sha256": "0a7a2bf706d8fb9ad7d95abf2341631ed04a45f8d6ef3a388173b0f9cb680754"
+    },
+    {
+      "artifact": "179-000049.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000049.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "180-000050.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000050.junit.xml",
+      "bytes": 2918,
+      "sha256": "d1dd3799de80cdaa8d6d49de82a57b6e871a0d0a1d78bd4f5212b7e190db202e"
+    },
+    {
+      "artifact": "181-000050.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000050.stderr",
+      "bytes": 1731,
+      "sha256": "20a439822c0a7ce9f4d41ad06a60d441eace12af9cda38f7e660572852bd31e3"
+    },
+    {
+      "artifact": "182-000050.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000050.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "183-000051.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000051.junit.xml",
+      "bytes": 7335,
+      "sha256": "a492994fb166e22b4f0e40c324ac3b5a69fc4d32b6a2195599bdc980b7431538"
+    },
+    {
+      "artifact": "184-000051.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000051.stderr",
+      "bytes": 4905,
+      "sha256": "614c6f441a78c56a38fc022915f91c4078465c1d8f56e2ecaa4cf7734943e307"
+    },
+    {
+      "artifact": "185-000051.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000051.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "186-000052.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000052.junit.xml",
+      "bytes": 2544,
+      "sha256": "e7df3aab96b0174ec4df53f6638eb45407f9ef2ba7df6f5bad7e745816b8b1f8"
+    },
+    {
+      "artifact": "187-000052.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000052.stderr",
+      "bytes": 1600,
+      "sha256": "9f2d2578a75cfd3ca026d410c651f59a7489ef01c909bd95d98a862ba2c944b8"
+    },
+    {
+      "artifact": "188-000052.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000052.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "189-000053.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000053.junit.xml",
+      "bytes": 3215,
+      "sha256": "93bc4b801ecadc0adb8fc8f6b9149eeb9937df0c390b8e28a18141b8a764203b"
+    },
+    {
+      "artifact": "190-000053.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000053.stderr",
+      "bytes": 2067,
+      "sha256": "e1f337e1b9921fadb95af816eeabd95f0c781ce2254066d987df03358103bd15"
+    },
+    {
+      "artifact": "191-000053.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000053.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "192-000054.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000054.junit.xml",
+      "bytes": 4796,
+      "sha256": "e5070fa928917e35044fafa476677626861ea368bbcb79a38c014d9c246dec6b"
+    },
+    {
+      "artifact": "193-000054.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000054.stderr",
+      "bytes": 3118,
+      "sha256": "29a0e9e7b4b2ed7db4cb79e42fad7696be4acc3a498763089711d40cba7f81e0"
+    },
+    {
+      "artifact": "194-000054.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000054.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "195-000055.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000055.junit.xml",
+      "bytes": 1801,
+      "sha256": "4db7814dc78377160133381204d44bb2a1229b98f0fcc39281fa2bf0c933225e"
+    },
+    {
+      "artifact": "196-000055.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000055.stderr",
+      "bytes": 1089,
+      "sha256": "5c7f9205bbe5e8ab9acec7ddf06be33bc15e043abfd9442d19e16985b166803a"
+    },
+    {
+      "artifact": "197-000055.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000055.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "198-000056.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000056.junit.xml",
+      "bytes": 2671,
+      "sha256": "f7c7fbf735894afd8141be691248c102068bef74beb9033b7f4770ab2f9a7499"
+    },
+    {
+      "artifact": "199-000056.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000056.stderr",
+      "bytes": 1636,
+      "sha256": "3dd5cede85219e4c53a65140eea000eadf8f98154fcf340e918a8aefd2f01fc7"
+    },
+    {
+      "artifact": "200-000056.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000056.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "201-000057.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000057.junit.xml",
+      "bytes": 1013,
+      "sha256": "8416ac0fb0af10a022980a0914d70426c922db4810bbb1d06fba9934a10b8d7c"
+    },
+    {
+      "artifact": "202-000057.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000057.stderr",
+      "bytes": 485,
+      "sha256": "d8e810a5631fe024a3ee46b89e3927efc56982064bef8ad207c3f88ed4d1b225"
+    },
+    {
+      "artifact": "203-000057.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000057.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "204-000058.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000058.junit.xml",
+      "bytes": 656,
+      "sha256": "eaa913f81794d0deb539582d399467fcc004138e2efb68bbca09c7b6a8974b1a"
+    },
+    {
+      "artifact": "205-000058.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000058.stderr",
+      "bytes": 258,
+      "sha256": "7ddb8623e70af8357cd8ea70e4b449d438e59d51d32b83f6a3534a4431bdbf49"
+    },
+    {
+      "artifact": "206-000058.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000058.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "207-000059.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000059.junit.xml",
+      "bytes": 682,
+      "sha256": "a0ba70a575303bf68c266680b13794c710fcd2708b3cf186be7e9c9fc7aa3c52"
+    },
+    {
+      "artifact": "208-000059.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000059.stderr",
+      "bytes": 271,
+      "sha256": "01c2193b8bce713c7951c84734e25d1ec37f05c6a42c243f2eb8d7a582e1514a"
+    },
+    {
+      "artifact": "209-000059.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000059.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "210-000060.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000060.junit.xml",
+      "bytes": 1159,
+      "sha256": "dec44da2063ba6b280a4705e035b65968b28d31772084bfa76bf385b3fc62004"
+    },
+    {
+      "artifact": "211-000060.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000060.stderr",
+      "bytes": 607,
+      "sha256": "f2a27c5651505c75df9d894afc5e9839b28ec58777e43a2566d574041bffc1da"
+    },
+    {
+      "artifact": "212-000060.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000060.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "213-000061.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000061.junit.xml",
+      "bytes": 1615,
+      "sha256": "aee8980959220b660f7e145486f6d50854ef3ad95394bed385c19848a0055034"
+    },
+    {
+      "artifact": "214-000061.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000061.stderr",
+      "bytes": 916,
+      "sha256": "1db39c062274d6160f41b34862fe47f487f65c277a366e7450f2749f7640c823"
+    },
+    {
+      "artifact": "215-000061.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000061.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "216-000062.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000062.junit.xml",
+      "bytes": 1911,
+      "sha256": "49fa0acab2a18e4cc035171187797e7d4df8f48db6a7766646249a068f116c79"
+    },
+    {
+      "artifact": "217-000062.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000062.stderr",
+      "bytes": 1173,
+      "sha256": "7257dcb8cf65b0c611780e400b66e27c21eafda69b89d83b6a2c697284cb35e6"
+    },
+    {
+      "artifact": "218-000062.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000062.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "219-000063.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000063.junit.xml",
+      "bytes": 1168,
+      "sha256": "05a33a47bf30cb0b8dff847e0313ef7e0904e2912207760f614612f3af2fc0c1"
+    },
+    {
+      "artifact": "220-000063.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000063.stderr",
+      "bytes": 604,
+      "sha256": "f38cc70f0d7bc5098913aa42f7cccceccf7005179728e0d2032149c034dffa5e"
+    },
+    {
+      "artifact": "221-000063.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000063.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "222-000064.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000064.junit.xml",
+      "bytes": 1458,
+      "sha256": "476dad2058e3e6847c932c16c1dd7ffc91d753024ff97e6d6c406888c5039599"
+    },
+    {
+      "artifact": "223-000064.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000064.stderr",
+      "bytes": 838,
+      "sha256": "177747f22aea0901cb715edfed90787d190811c1dd5a0baf97244bca2f49fa5d"
+    },
+    {
+      "artifact": "224-000064.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000064.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "225-000065.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000065.junit.xml",
+      "bytes": 1703,
+      "sha256": "989034a856b831f6fbaf0d6c5fd8437b919cdfbedcaa35ddd4d6ea6d9c590e6e"
+    },
+    {
+      "artifact": "226-000065.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000065.stderr",
+      "bytes": 967,
+      "sha256": "da3bb3af9f058ad5508aa4a9c526297600b7bbe0fa0d8ceb0a53869d0073f5c0"
+    },
+    {
+      "artifact": "227-000065.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000065.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "228-000066.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000066.junit.xml",
+      "bytes": 4712,
+      "sha256": "6ac967ab23af206f030a846c278f52edf6cf33958c04df0a4e54d6a82158ab35"
+    },
+    {
+      "artifact": "229-000066.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000066.stderr",
+      "bytes": 3149,
+      "sha256": "4cb94bea36b9818fa2de03e3cab23d0cd1fd72064607e1a5006603094220a77f"
+    },
+    {
+      "artifact": "230-000066.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000066.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "231-000067.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000067.junit.xml",
+      "bytes": 3875,
+      "sha256": "556227fc08ff0fd257bb9a1bc676b118d118bead59fdfb91fea9bd1e007ac751"
+    },
+    {
+      "artifact": "232-000067.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000067.stderr",
+      "bytes": 2361,
+      "sha256": "4fbfc27f8fed528a1d60adb9acd8fe23e4a12cd4ccc231c0b62c2c9aa85d3c0d"
+    },
+    {
+      "artifact": "233-000067.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000067.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "234-000068.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000068.junit.xml",
+      "bytes": 2091,
+      "sha256": "bdddab4f940f6f2ff2d49255f547125f65fc3b9b55f4eed77d41dd4715962ec7"
+    },
+    {
+      "artifact": "235-000068.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000068.stderr",
+      "bytes": 1180,
+      "sha256": "ef858a3003b52e3953653ea8e96411b5fa06cafceaddd2c549ab855a2972ac71"
+    },
+    {
+      "artifact": "236-000068.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000068.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "237-000069.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000069.junit.xml",
+      "bytes": 2409,
+      "sha256": "15e0bfaf1e90e9e9d2baed28eef965740d2db7d5749694c564417d7a5f95edd9"
+    },
+    {
+      "artifact": "238-000069.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000069.stderr",
+      "bytes": 1433,
+      "sha256": "69c5bdb46ce84175dff293c17839ca1a367ac5eca0a01a991dd4cb49bd3a59a0"
+    },
+    {
+      "artifact": "239-000069.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000069.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "240-000070.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000070.junit.xml",
+      "bytes": 2244,
+      "sha256": "1cf99ea0628504d6367623685b4c13a7703eb6a5b677dbc2b33146a06f98e41c"
+    },
+    {
+      "artifact": "241-000070.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000070.stderr",
+      "bytes": 1288,
+      "sha256": "66ec580d23107382711671d5a83f2878df5aed0565a25713a745c606c7111ff5"
+    },
+    {
+      "artifact": "242-000070.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000070.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "243-000071.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000071.junit.xml",
+      "bytes": 3177,
+      "sha256": "a52c61c927f156b5b62a582ffb87fed6cade0d09c871f14527267a1a5ca9dafd"
+    },
+    {
+      "artifact": "244-000071.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000071.stderr",
+      "bytes": 2044,
+      "sha256": "594a5d210da243dbdf3eba456d047f4c28f08a7989f493f8fca8eed033575563"
+    },
+    {
+      "artifact": "245-000071.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000071.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "246-000072.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000072.junit.xml",
+      "bytes": 2972,
+      "sha256": "97b68c31e06e0d98dc61c05f12d80a7b4a2930e81fafa89b164e97087b389a16"
+    },
+    {
+      "artifact": "247-000072.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000072.stderr",
+      "bytes": 1948,
+      "sha256": "651aa5bcd15cb6d8394f5465774fd2d580e5f0f0d18a13a30764353fd24c3e6f"
+    },
+    {
+      "artifact": "248-000072.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000072.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "249-000073.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000073.junit.xml",
+      "bytes": 1860,
+      "sha256": "40156f2dd3f9f7c4f003ea52d0536a87274c9347323f6fbcece7731f327dd141"
+    },
+    {
+      "artifact": "250-000073.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000073.stderr",
+      "bytes": 1093,
+      "sha256": "9cc73cdbea3295f415dd0ef4871ca89605a6f94b8887adf4d3c565767faad3cf"
+    },
+    {
+      "artifact": "251-000073.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000073.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "252-000074.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000074.junit.xml",
+      "bytes": 4270,
+      "sha256": "3bb9eecb083b0f77f4a7ef430f4cc58d1293fa9cfa99d69c7deda9e2855004a0"
+    },
+    {
+      "artifact": "253-000074.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000074.stderr",
+      "bytes": 2952,
+      "sha256": "5456000711c2d41ba8856f5e258938194c6546fc871baa87f003b2dd4591744c"
+    },
+    {
+      "artifact": "254-000074.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000074.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "255-000075.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000075.junit.xml",
+      "bytes": 1411,
+      "sha256": "05964664ab26473523c7eb9aa4dcb331d48a03c5e97de185da07e29eaf822e8a"
+    },
+    {
+      "artifact": "256-000075.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000075.stderr",
+      "bytes": 723,
+      "sha256": "ae653973594108f2cbe35d0688ea90e7b22ae49153ad70b9cca4138db56ca25b"
+    },
+    {
+      "artifact": "257-000075.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000075.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "258-000076.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000076.junit.xml",
+      "bytes": 685,
+      "sha256": "690bcaa842d2173f698f6fdf1edf0d916bed87cfd2188f858a63a6ef00940f11"
+    },
+    {
+      "artifact": "259-000076.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000076.stderr",
+      "bytes": 1377,
+      "sha256": "6289dd0c32e667141b9d2645e75d82778212c9ec692007b78e0b7cc55c4a3534"
+    },
+    {
+      "artifact": "260-000076.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000076.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "261-000077.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000077.junit.xml",
+      "bytes": 1788,
+      "sha256": "7a0aa8791d2e7f34395f75305fed01b43203572a34fd4531a86ddf38bd8ef334"
+    },
+    {
+      "artifact": "262-000077.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000077.stderr",
+      "bytes": 1076,
+      "sha256": "0380618e28ea15bc3d35966fe4cbb00260ce7c5b80d01e78f923c83097cebb6c"
+    },
+    {
+      "artifact": "263-000077.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000077.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "264-000078.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000078.junit.xml",
+      "bytes": 1253,
+      "sha256": "d34b4ff22f231baee58481c2be60b2656a99b938ef20d1b00552090e36784d59"
+    },
+    {
+      "artifact": "265-000078.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000078.stderr",
+      "bytes": 638,
+      "sha256": "7d42e4c23e4e1efa2124c7b389de867f3a3e0d1dde73be403cbed320220476aa"
+    },
+    {
+      "artifact": "266-000078.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000078.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "267-000079.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000079.junit.xml",
+      "bytes": 4420,
+      "sha256": "2f272037bdfb66d268eccc85452847d3e830c3f55332f0f73a6c529542610b17"
+    },
+    {
+      "artifact": "268-000079.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000079.stderr",
+      "bytes": 2928,
+      "sha256": "247f920443cc18ea936026c64dfd33f17ca9e4f8dfafd9bb45fc34027014f4bf"
+    },
+    {
+      "artifact": "269-000079.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000079.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "270-000080.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000080.junit.xml",
+      "bytes": 2212,
+      "sha256": "4a937ce819c10a96528565ca9ff95c5edd362db421261d0043d17656eb391e14"
+    },
+    {
+      "artifact": "271-000080.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000080.stderr",
+      "bytes": 1301,
+      "sha256": "abb77a46b040d9bf0830d27e664b9dd5a9357fb7fed6572325a444a54dfe6cfc"
+    },
+    {
+      "artifact": "272-000080.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000080.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "273-000081.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000081.junit.xml",
+      "bytes": 1968,
+      "sha256": "98ed75f8aba85fc76432613650d64ed95c94e78948c80194af5693caabcb3961"
+    },
+    {
+      "artifact": "274-000081.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000081.stderr",
+      "bytes": 1125,
+      "sha256": "f86c654a40d02a61f9f69eadf67d1025b9130eb3b0d146d2fe6d6fdff3559cb7"
+    },
+    {
+      "artifact": "275-000081.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000081.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "276-000082.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000082.junit.xml",
+      "bytes": 2503,
+      "sha256": "d5d356eb7893745b22c88b72d9a0d4faf433e944bb8538f12e0a72e441db7b2f"
+    },
+    {
+      "artifact": "277-000082.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000082.stderr",
+      "bytes": 1526,
+      "sha256": "797bc12a1b880c457b72a57ecca7d63125f319e6b2c1886d3a31e9dbb8017417"
+    },
+    {
+      "artifact": "278-000082.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000082.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "279-000083.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000083.junit.xml",
+      "bytes": 774,
+      "sha256": "448e3a65b18eceb9ba9019451b5e81c036840b916dbd9d4e66fd2d19181f90f4"
+    },
+    {
+      "artifact": "280-000083.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000083.stderr",
+      "bytes": 343,
+      "sha256": "8d7fb45217b89d4b46f525d11f1cee75f12eeb7edb176d4eaae18ffc393d05a2"
+    },
+    {
+      "artifact": "281-000083.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000083.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "282-000084.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000084.junit.xml",
+      "bytes": 1445,
+      "sha256": "f14fc9ff6678569e04d79bca8146cbf9ab591cef637843345600ff53c4d9dbef"
+    },
+    {
+      "artifact": "283-000084.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000084.stderr",
+      "bytes": 818,
+      "sha256": "25c1ecc966468050507295bd13d6c81a56df9aa51377b2ba0e8aac2f43ecf183"
+    },
+    {
+      "artifact": "284-000084.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000084.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "285-000085.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000085.junit.xml",
+      "bytes": 3484,
+      "sha256": "5773e327ffa5851c6b850e53536bbd03a77446e9e5896b63c0d4c07ed9490a54"
+    },
+    {
+      "artifact": "286-000085.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000085.stderr",
+      "bytes": 2224,
+      "sha256": "76e63b72e907dc2d1e9ae67a7e4d26357b4057e4105db6b32e48bfd5094b197b"
+    },
+    {
+      "artifact": "287-000085.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000085.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "288-000086.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000086.junit.xml",
+      "bytes": 3301,
+      "sha256": "0c6a325ab092cee210b95b88a74bfa3ecf4cf5d9b8f76b01dc6ab530ee12a050"
+    },
+    {
+      "artifact": "289-000086.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000086.stderr",
+      "bytes": 2098,
+      "sha256": "ffe7a86b193d6bab1965e7ef31e330fac4c3837af3d8858d8e6eb3f1f1e87b08"
+    },
+    {
+      "artifact": "290-000086.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000086.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "291-000087.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000087.junit.xml",
+      "bytes": 1342,
+      "sha256": "59d8374bced39cd5f5643dd25baa4ce58e8c8f864a0c8c1dcd698c24d9d8e4ea"
+    },
+    {
+      "artifact": "292-000087.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000087.stderr",
+      "bytes": 671,
+      "sha256": "677b4ce6a5e6188430c70c95ceb2978319d68bde2556753ea6957c65af5a1bf9"
+    },
+    {
+      "artifact": "293-000087.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000087.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "294-000088.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000088.junit.xml",
+      "bytes": 1341,
+      "sha256": "4dc30a2774279b3ccd756d1adf241e023c387b86e32ed3ae6bbae47c5f66928d"
+    },
+    {
+      "artifact": "295-000088.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000088.stderr",
+      "bytes": 676,
+      "sha256": "3bfe52b4d7512be86f532ab577c63b215c341cf540f2a5ae19fe713abd2d016e"
+    },
+    {
+      "artifact": "296-000088.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000088.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "297-000089.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000089.junit.xml",
+      "bytes": 1369,
+      "sha256": "ab88ce050fcf181ba2be9e66f6ef0f4931934e77e17fe6f5862bc334ab256956"
+    },
+    {
+      "artifact": "298-000089.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000089.stderr",
+      "bytes": 688,
+      "sha256": "d260f82636b26ec57caa5d1ce620438d8031495844c9a172ae603ea468f05261"
+    },
+    {
+      "artifact": "299-000089.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000089.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "300-000090.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000090.junit.xml",
+      "bytes": 920,
+      "sha256": "0f04aa6a5edabd32155b14c31b953662d1441c3c4b4a8261e93c5134da4cad65"
+    },
+    {
+      "artifact": "301-000090.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000090.stderr",
+      "bytes": 386,
+      "sha256": "43c16c136473ab07cee39adee17e194ce0108664a4ba94ae24d03bf1fdd727d7"
+    },
+    {
+      "artifact": "302-000090.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000090.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "303-000091.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000091.junit.xml",
+      "bytes": 1551,
+      "sha256": "f40ea711a4f949fd0133f71175f05d15136c7a16c0cf61ddca11eab3a41b4fde"
+    },
+    {
+      "artifact": "304-000091.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000091.stderr",
+      "bytes": 852,
+      "sha256": "cf95adf72d300d4523b58572f036fc749fe0f28b5df382f2fef7a3d72cf1e8b6"
+    },
+    {
+      "artifact": "305-000091.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000091.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "306-000092.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000092.junit.xml",
+      "bytes": 980,
+      "sha256": "1b954b0b420e1fd01def8c5ed56e6be1c1e7156d5f5d27c452838e8c4d7eafaa"
+    },
+    {
+      "artifact": "307-000092.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000092.stderr",
+      "bytes": 482,
+      "sha256": "9190c3cc00f4edda1b54d5008f8116e0060e22a0b22408002d90d200fefc032c"
+    },
+    {
+      "artifact": "308-000092.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000092.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "309-000093.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000093.junit.xml",
+      "bytes": 951,
+      "sha256": "c0b5b1b88fe82ef7be77eea6499900d2571e8aaff0006fd93758b51ce688c2f0"
+    },
+    {
+      "artifact": "310-000093.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000093.stderr",
+      "bytes": 446,
+      "sha256": "122c8bb74c0c6d2aaaffe134be677d737214338779034fdeab422d3058d09af4"
+    },
+    {
+      "artifact": "311-000093.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000093.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "312-000094.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000094.junit.xml",
+      "bytes": 8621,
+      "sha256": "7f99df2c7128279408689af00ade653735ea4dbd78003f3d7e65eb30ed03ec65"
+    },
+    {
+      "artifact": "313-000094.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000094.stderr",
+      "bytes": 5524,
+      "sha256": "483a821990db2f67c5bfb5d0cf09075fde610883b87158f3a9d70d26b1c08355"
+    },
+    {
+      "artifact": "314-000094.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000094.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "315-000095.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000095.junit.xml",
+      "bytes": 1682,
+      "sha256": "18f16eca61eb0e285c5d7246cd76242734a2e9ce1bdf0dbe4b3f6ce696e8e2a5"
+    },
+    {
+      "artifact": "316-000095.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000095.stderr",
+      "bytes": 888,
+      "sha256": "feeea764f944fe4b94830d7d6be5983f38e439834148a6e47d0b83e868667fad"
+    },
+    {
+      "artifact": "317-000095.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000095.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "318-000096.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000096.junit.xml",
+      "bytes": 1055,
+      "sha256": "b388dd5e29735eb523e7805e04585a9a8672bafddadbbce72bf239d3da45227c"
+    },
+    {
+      "artifact": "319-000096.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000096.stderr",
+      "bytes": 492,
+      "sha256": "3881b2679ec048318d98272f8739d566509bfbdb39d8357f6b5ab0fb86635cc9"
+    },
+    {
+      "artifact": "320-000096.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000096.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "321-000097.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000097.junit.xml",
+      "bytes": 707,
+      "sha256": "fe7cad0c72464c693f5291498a976729abd2692d537fdde2e1af7b9db3939468"
+    },
+    {
+      "artifact": "322-000097.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000097.stderr",
+      "bytes": 267,
+      "sha256": "5b66e709bd3f2689034345d6af623726edaa579fc22511be63567141f2a4be88"
+    },
+    {
+      "artifact": "323-000097.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000097.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "324-000098.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000098.junit.xml",
+      "bytes": 1328,
+      "sha256": "590439877d34dab1f44ac79a1ae7a75b58b259bdb728035a3ba4d876b4d3907b"
+    },
+    {
+      "artifact": "325-000098.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000098.stderr",
+      "bytes": 678,
+      "sha256": "e829dec40fd86b9b77b81dc9c3da294fbd62230433cfc46eaa7971abda60037f"
+    },
+    {
+      "artifact": "326-000098.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000098.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "327-000099.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000099.stderr",
+      "bytes": 137,
+      "sha256": "2ef50783a53005811098a386eebf131b3aa88f0ddaa9ae0e653fa82cc38a9fdb"
+    },
+    {
+      "artifact": "328-000099.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000099.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "329-000100.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000100.junit.xml",
+      "bytes": 707,
+      "sha256": "2bf22021590d694611a5b47a3fe1d49f87071f80440e642db8031670cb3f4be2"
+    },
+    {
+      "artifact": "330-000100.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000100.stderr",
+      "bytes": 263,
+      "sha256": "41b24b53c92f2549c67d52772e9dc4e296fc871bf085db69eab9b27bcf70e818"
+    },
+    {
+      "artifact": "331-000100.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000100.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "332-000101.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000101.junit.xml",
+      "bytes": 729,
+      "sha256": "808d676ad21b686d2ae62c38ac42c9aac272e78165ae16869b756a54f6d91167"
+    },
+    {
+      "artifact": "333-000101.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000101.stderr",
+      "bytes": 283,
+      "sha256": "f6d33eab7be1c46acc1a4e4670ade71842d1a78c4f43c757428b7f01dd00f620"
+    },
+    {
+      "artifact": "334-000101.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000101.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "335-000102.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000102.junit.xml",
+      "bytes": 2629,
+      "sha256": "58f250b92f7372cd7f88f689047f38aff6ce8870af2423f059d5692407691507"
+    },
+    {
+      "artifact": "336-000102.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000102.stderr",
+      "bytes": 1692,
+      "sha256": "c51339f0b826095d5597f2b848eb9cdcd62a292c867ff50bb661d2e257448e02"
+    },
+    {
+      "artifact": "337-000102.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000102.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "338-000103.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000103.junit.xml",
+      "bytes": 2700,
+      "sha256": "0c22326ff4586438a022366ae1887253c6fc7d8d58da7cbc37cb3db5378baf2f"
+    },
+    {
+      "artifact": "339-000103.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000103.stderr",
+      "bytes": 1717,
+      "sha256": "903b5dc5bb92e382bc4e674225b13673a57d9f8e7e405cd309da5e90c7dce103"
+    },
+    {
+      "artifact": "340-000103.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000103.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "341-000104.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000104.junit.xml",
+      "bytes": 1929,
+      "sha256": "d87ddcede60cf73d9f7c83f4da37adcebd3b19da1e03f6ef7bf6a1adfcbf4e9a"
+    },
+    {
+      "artifact": "342-000104.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000104.stderr",
+      "bytes": 1136,
+      "sha256": "2bcd918f9b3ec755907eca68904fa6683a0d89a09628089ac615d07353f06be4"
+    },
+    {
+      "artifact": "343-000104.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000104.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "344-000105.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000105.junit.xml",
+      "bytes": 1870,
+      "sha256": "6501ee0c54ddb232c0627025760cc807a61ee1518f7d53cda990b2dcfa9abade"
+    },
+    {
+      "artifact": "345-000105.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000105.stderr",
+      "bytes": 1029,
+      "sha256": "2316293dab8414948ded55ac4776e42b146b52c17526ea43d89b76ba0179c8b6"
+    },
+    {
+      "artifact": "346-000105.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000105.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "347-000106.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000106.junit.xml",
+      "bytes": 1087,
+      "sha256": "4daeb65ab51d962bf4b90a2a9bbf988b0e5ef4d033b4a716b2a72b800c11558b"
+    },
+    {
+      "artifact": "348-000106.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000106.stderr",
+      "bytes": 553,
+      "sha256": "1c27133b6a23bd69fa09f717db4b775fcedd71b6957d34d0be26b06bf10a9df7"
+    },
+    {
+      "artifact": "349-000106.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000106.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "350-000107.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000107.junit.xml",
+      "bytes": 10800,
+      "sha256": "8000e8fd7369ffcce222c6a5162339abbba010b8fd1356094e640097e2e5449a"
+    },
+    {
+      "artifact": "351-000107.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000107.stderr",
+      "bytes": 6068,
+      "sha256": "f0027f2f12a56c1d1558d36d300e89ae35218c2ba5947e210a035ba4d6ab65b5"
+    },
+    {
+      "artifact": "352-000107.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000107.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "353-000108.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000108.junit.xml",
+      "bytes": 9624,
+      "sha256": "7aea3aa4f185bc5d73b5ed0d432a2648c6a2ca6ea21333629522a2ffe216e61f"
+    },
+    {
+      "artifact": "354-000108.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000108.stderr",
+      "bytes": 6631,
+      "sha256": "e79b1c79dd065c0bc9f2cb5dfbb83e77930259d97c4ce21364ef8201c82d51c6"
+    },
+    {
+      "artifact": "355-000108.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000108.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "356-000109.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000109.junit.xml",
+      "bytes": 4105,
+      "sha256": "15868597fc43d9405dc1d455cf51be30667fbbf05f230acee8245ae388d94558"
+    },
+    {
+      "artifact": "357-000109.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000109.stderr",
+      "bytes": 2723,
+      "sha256": "6feaac9811c1ccd60bdaf830746df0e4ce7c5e322c263191e3c92c79c67e8c33"
+    },
+    {
+      "artifact": "358-000109.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000109.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "359-000110.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000110.junit.xml",
+      "bytes": 995,
+      "sha256": "c0f52c89806a2f0a71ab893e70b90a1fc0b72e7e16b3cc5e0b19c37d222fe215"
+    },
+    {
+      "artifact": "360-000110.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000110.stderr",
+      "bytes": 487,
+      "sha256": "0a576179add38a470217bdb84227c996c2f13ff76d0ec3f7a057754df465473c"
+    },
+    {
+      "artifact": "361-000110.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000110.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "362-000111.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000111.junit.xml",
+      "bytes": 1585,
+      "sha256": "bdb38fbb30bbf7fe37f52b8d8f8beac518a145e2d4d804a17ad2aff670c60684"
+    },
+    {
+      "artifact": "363-000111.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000111.stderr",
+      "bytes": 891,
+      "sha256": "461653069931f4676211e9ce5429c6d6d5aeaaa3e8cca7a1dcbea526239eaea2"
+    },
+    {
+      "artifact": "364-000111.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000111.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "365-000112.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000112.junit.xml",
+      "bytes": 3215,
+      "sha256": "233acdd49b0c29148acc310707189f290aab81d5db540a56c5f2bcca3e6eaf74"
+    },
+    {
+      "artifact": "366-000112.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000112.stderr",
+      "bytes": 2025,
+      "sha256": "c22ee0c51ed74c601454be1ab59c1d327cc9c1a43f239c367dc8bbc588b7f2a9"
+    },
+    {
+      "artifact": "367-000112.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000112.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "368-000113.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000113.junit.xml",
+      "bytes": 4682,
+      "sha256": "f71f83a9cd09275eca800dae4fec257f66c8a0d7ba3a69b32cb2530e4699b097"
+    },
+    {
+      "artifact": "369-000113.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000113.stderr",
+      "bytes": 3196,
+      "sha256": "1274bbc5793e17561af33491f605cb7a1d94648d6ad9111d356934001a2ea69f"
+    },
+    {
+      "artifact": "370-000113.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000113.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "371-000114.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000114.junit.xml",
+      "bytes": 3192,
+      "sha256": "a590fb7af1a16b528961217b04262c1a7b65a484103feedcbe3004e6282469b0"
+    },
+    {
+      "artifact": "372-000114.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000114.stderr",
+      "bytes": 1883,
+      "sha256": "cafeacab4d3dbdde0729769b79c6a9f5016b642f360c575b2160c9a77fec83a7"
+    },
+    {
+      "artifact": "373-000114.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000114.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "374-000115.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000115.junit.xml",
+      "bytes": 9722,
+      "sha256": "41cd8a8585387c83f701bafe0feaa642549784a6d53ed5c3fef2e86a89d1b2b0"
+    },
+    {
+      "artifact": "375-000115.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000115.stderr",
+      "bytes": 6641,
+      "sha256": "610736badce2b15be9a2da66411648c3271e38781a3dc9fb03ccbccd81cfdafb"
+    },
+    {
+      "artifact": "376-000115.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000115.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "377-000116.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000116.junit.xml",
+      "bytes": 1301,
+      "sha256": "867c712fa4abd211f8ddfbeb7271dc35bc4377f620628e91c76336cbfd7c77e7"
+    },
+    {
+      "artifact": "378-000116.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000116.stderr",
+      "bytes": 676,
+      "sha256": "1c2b6db1f035071a3621643ceaa3d0959be94d7164d640a49f98769a4b2cdfb1"
+    },
+    {
+      "artifact": "379-000116.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000116.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "380-000117.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000117.junit.xml",
+      "bytes": 5181,
+      "sha256": "13238b4b4206373c0b35831d22068672955f1825f3f83b090965a5e4ef4d0f32"
+    },
+    {
+      "artifact": "381-000117.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000117.stderr",
+      "bytes": 3390,
+      "sha256": "c41288d1ba854b1fef9138b92585f1e54cc72a1b90ebfdb997b40fcd1ea0c5aa"
+    },
+    {
+      "artifact": "382-000117.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000117.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "383-000118.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000118.junit.xml",
+      "bytes": 3402,
+      "sha256": "4de14bed82a89f7f94ef046aca4e647062b04be0db514eed53fb83d508ab5e68"
+    },
+    {
+      "artifact": "384-000118.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000118.stderr",
+      "bytes": 2182,
+      "sha256": "d2bde8fb24c3c4a779b76b664b444e344d1b3727a8e1b97356f785a4cdbce3aa"
+    },
+    {
+      "artifact": "385-000118.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000118.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "386-000119.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000119.junit.xml",
+      "bytes": 1556,
+      "sha256": "816fcafca61ffb9803362fcf6400af0d2009cd782fe0d6978cdb7228a0612444"
+    },
+    {
+      "artifact": "387-000119.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000119.stderr",
+      "bytes": 872,
+      "sha256": "05dff74efd98e9e38cd00506390bcb7d95abbd5a857dac1857e86bd185593fdd"
+    },
+    {
+      "artifact": "388-000119.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000119.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "389-000120.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000120.junit.xml",
+      "bytes": 664,
+      "sha256": "ab33054ca4bdb4f0e3f7f44215e7e855d8f46c5f21261b2e1f062d5981be1853"
+    },
+    {
+      "artifact": "390-000120.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000120.stderr",
+      "bytes": 252,
+      "sha256": "49fd4d99749e599729a50f960f11910ae06721e10e3955abe5647eda38ab4b01"
+    },
+    {
+      "artifact": "391-000120.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000120.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "392-000121.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000121.junit.xml",
+      "bytes": 691,
+      "sha256": "db7a3f9a2bbaff57643581be43853ac1c385e8e940707644d8b5c92c9fe10327"
+    },
+    {
+      "artifact": "393-000121.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000121.stderr",
+      "bytes": 275,
+      "sha256": "db67630fa38a159c70eb19bc76eee27c7ebed4389142dd05dca2f90ed295a272"
+    },
+    {
+      "artifact": "394-000121.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000121.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "395-000122.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000122.junit.xml",
+      "bytes": 3753,
+      "sha256": "b85a59d03db58ff5c705899d6b7258036d17ffafc4f20a951763815f67ba3af2"
+    },
+    {
+      "artifact": "396-000122.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000122.stderr",
+      "bytes": 2494,
+      "sha256": "0b9719d30006ec0ae140bf1a388b85ad3a00ad4aca591d36a2c6b5522c8f912b"
+    },
+    {
+      "artifact": "397-000122.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000122.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "398-000123.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000123.junit.xml",
+      "bytes": 1160,
+      "sha256": "9d2e86fc3c392bd5b06e4938008d04214677bc85f262362caa23a851dc584833"
+    },
+    {
+      "artifact": "399-000123.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000123.stderr",
+      "bytes": 607,
+      "sha256": "d76e7b599527a3dc6e32837a52d2cce5c278d3d03c564fa8f5e21d7e1fade41f"
+    },
+    {
+      "artifact": "400-000123.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000123.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "401-000124.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000124.junit.xml",
+      "bytes": 3905,
+      "sha256": "f44444ad50551bfb91f28b98af3d5a5eb99c3c8d81289147cd1864e9562d4a57"
+    },
+    {
+      "artifact": "402-000124.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000124.stderr",
+      "bytes": 2449,
+      "sha256": "fbcd74d0fcf83dd27fa4dd01d19b89f1eb7bdb475681f852664f15dbbb4e8352"
+    },
+    {
+      "artifact": "403-000124.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000124.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "404-000125.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000125.junit.xml",
+      "bytes": 4271,
+      "sha256": "0e984e4ede3db1ad7ce3416f4e1b3f4db9c614c5d13ea7f7a7238da627149c7b"
+    },
+    {
+      "artifact": "405-000125.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000125.stderr",
+      "bytes": 2443,
+      "sha256": "ac716cca9b133e97309f9502e9c3a7857e62af61001a7fee2c4671d8ca4bd655"
+    },
+    {
+      "artifact": "406-000125.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000125.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "407-000126.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000126.junit.xml",
+      "bytes": 6020,
+      "sha256": "a670595ec998f31348ec4eb3307ac25aec3737391b705a58f8d0a25f05818dcd"
+    },
+    {
+      "artifact": "408-000126.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000126.stderr",
+      "bytes": 3589,
+      "sha256": "d47f108d5d2614a9133c844f9ccdf64306a38adfd144287e3c38162405970c44"
+    },
+    {
+      "artifact": "409-000126.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000126.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "410-000127.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000127.junit.xml",
+      "bytes": 6772,
+      "sha256": "7419d241e2c381f2b979da0ba2197e9660b460e977aa2fb892bdfe3b8f6c21d8"
+    },
+    {
+      "artifact": "411-000127.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000127.stderr",
+      "bytes": 4130,
+      "sha256": "a6bdc165e514bd853173cca27830ecc74dfa26604d8be278b0f695c4ddb3c587"
+    },
+    {
+      "artifact": "412-000127.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000127.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "413-000128.junit.xml.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000128.junit.xml",
+      "bytes": 1974,
+      "sha256": "f1b2357dcc1181b729b09aba075d77ab6e932e29b695abd716a49e6a94c1f5a8"
+    },
+    {
+      "artifact": "414-000128.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000128.stderr",
+      "bytes": 1190,
+      "sha256": "0af9e2a893c562516b7c63c9897119abc8e4bb43dd944b705cbf8fb7e6ef8dc7"
+    },
+    {
+      "artifact": "415-000128.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/000128.stdout",
+      "bytes": 47,
+      "sha256": "642fc15c20674b63f34f03fbd3072af7392eb9701dd3efabab3a802f8e2608b2"
+    },
+    {
+      "artifact": "416-events.jsonl.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/reports/events.jsonl",
+      "bytes": 458302,
+      "sha256": "900d08bba5d824ca77bb22c425da027f32d66490b3802e36487b76e013fa0354"
+    },
+    {
+      "artifact": "417-runner.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/runner.stderr",
+      "bytes": 229843,
+      "sha256": "2a2d19ef53bf69e2a7c895ba8f83c0e5c0f6f3f978786e1d1c3afab555502cb4"
+    },
+    {
+      "artifact": "418-runner.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/runner.stdout",
+      "bytes": 6063,
+      "sha256": "202411dbb689fc7ecad09524d10b515e315daf93672cf15d347d8765796784c6"
+    },
+    {
+      "artifact": "419-summary.json.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/summary.json",
+      "bytes": 241975,
+      "sha256": "ae2892b352002ef171315adcc7b11a95cf1c00258c57ca8ad2d9d253e986def0"
+    },
+    {
+      "artifact": "420-validator.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-execution/validator.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "artifact": "421-000000.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-phases/checkout-reports/000000.stderr",
+      "bytes": 181,
+      "sha256": "98b7e8c8cb5f99104b6fa726ef4a8de9d7c4d63fb0c77b63f16305547f97945a"
+    },
+    {
+      "artifact": "422-000000.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-phases/checkout-reports/000000.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "artifact": "423-000001.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-phases/checkout-reports/000001.stderr",
+      "bytes": 82,
+      "sha256": "9303a9c647777ef818cdaa32ceee191a6146ed178b6c23cfe7afcdfc17412f22"
+    },
+    {
+      "artifact": "424-000001.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-phases/checkout-reports/000001.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "artifact": "425-000002.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-phases/checkout-reports/000002.stderr",
+      "bytes": 605,
+      "sha256": "f5f3d8978f7537df6cff809409d513a5b10757c321ddb8822749b7a97a13eb88"
+    },
+    {
+      "artifact": "426-000002.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-phases/checkout-reports/000002.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "artifact": "427-000003.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-phases/checkout-reports/000003.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "artifact": "428-000003.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-phases/checkout-reports/000003.stdout",
+      "bytes": 41,
+      "sha256": "2f0f35b7505544a45ed4fe91b37427646af1992f9369c22ce026f1710be3a644"
+    },
+    {
+      "artifact": "429-000004.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-phases/checkout-reports/000004.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "artifact": "430-000004.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-phases/checkout-reports/000004.stdout",
+      "bytes": 41,
+      "sha256": "2f0f35b7505544a45ed4fe91b37427646af1992f9369c22ce026f1710be3a644"
+    },
+    {
+      "artifact": "431-events.jsonl.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-phases/checkout-reports/events.jsonl",
+      "bytes": 14814,
+      "sha256": "b874b3d266f3898fda7f83899966cc682cb001676a8eb3c218fa28839093f157"
+    },
+    {
+      "artifact": "432-checkout-summary.json.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-phases/checkout-summary.json",
+      "bytes": 2684,
+      "sha256": "deb00ec166a89ccf558b46668ab0a547f150ee4991b7c784a729eea8a54ee29f"
+    },
+    {
+      "artifact": "433-checkout.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-phases/checkout.stderr",
+      "bytes": 205,
+      "sha256": "b5574187d7afe3d91bc29426316527a40156cdb5b2b6a50ab7979fface70f7a0"
+    },
+    {
+      "artifact": "434-checkout.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-phases/checkout.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "artifact": "435-000000.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-phases/install-build-reports/000000.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "artifact": "436-000000.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-phases/install-build-reports/000000.stdout",
+      "bytes": 41,
+      "sha256": "2f0f35b7505544a45ed4fe91b37427646af1992f9369c22ce026f1710be3a644"
+    },
+    {
+      "artifact": "437-000001.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-phases/install-build-reports/000001.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "artifact": "438-000001.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-phases/install-build-reports/000001.stdout",
+      "bytes": 41,
+      "sha256": "2f0f35b7505544a45ed4fe91b37427646af1992f9369c22ce026f1710be3a644"
+    },
+    {
+      "artifact": "439-000002.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-phases/install-build-reports/000002.stderr",
+      "bytes": 77,
+      "sha256": "699dcaffb4c14b58385c34ec424f094ee65cce316a26456eedede18d6ac7e4c3"
+    },
+    {
+      "artifact": "440-000002.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-phases/install-build-reports/000002.stdout",
+      "bytes": 1415,
+      "sha256": "09c2b38b2bc451e789dc174d0a335e41eb1839674ba6a5871357234f29feb8ef"
+    },
+    {
+      "artifact": "441-000003.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-phases/install-build-reports/000003.stderr",
+      "bytes": 30,
+      "sha256": "3eb8b14c538a0616b10b83821eedd6eee3117144896a67fc01bb1c9d393676e8"
+    },
+    {
+      "artifact": "442-000003.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-phases/install-build-reports/000003.stdout",
+      "bytes": 5178,
+      "sha256": "7a871ec465c6334031fd3711f4adecbdb790b06f5aa20152b964a09c29ef05c2"
+    },
+    {
+      "artifact": "443-events.jsonl.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-phases/install-build-reports/events.jsonl",
+      "bytes": 13157,
+      "sha256": "89040a22bafcbb18fbb9b811c63cc642af6a82e39603c83997144321071b67eb"
+    },
+    {
+      "artifact": "444-install-build-summary.json.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-phases/install-build-summary.json",
+      "bytes": 2664,
+      "sha256": "bb14e697c8dfd86806a1a8ce153396da990feca5d044acb7d036baf2e8f6309c"
+    },
+    {
+      "artifact": "445-install-build.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-phases/install-build.stderr",
+      "bytes": 210,
+      "sha256": "b843400a4989860c6312162faa6f68842ad4be99334d932f86e43181b4816b74"
+    },
+    {
+      "artifact": "446-install-build.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-phases/install-build.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "artifact": "447-manifest.json.gz",
+      "source": "zig-out/bun-ci-20260920/elysia-phases/manifest.json",
+      "bytes": 58653,
+      "sha256": "7323f8245ae5e8d877192e7601bebe0a6df2bfb882b7cf70aca994eda27f90ca"
+    },
+    {
+      "artifact": "448-final-checks-corrected.log.gz",
+      "source": "zig-out/bun-ci-20260920/final-checks-corrected.log",
+      "bytes": 660,
+      "sha256": "bb88a103f8a1823c73293e761d778149ed16b97ceb3358e4a5bcd84e2599c143"
+    },
+    {
+      "artifact": "449-final-checks-first.log.gz",
+      "source": "zig-out/bun-ci-20260920/final-checks-first.log",
+      "bytes": 655,
+      "sha256": "4652b72d09ec3c2cc90449b4d41e54dc055091ec9bddb4afe17f97a0620c5e30"
+    },
+    {
+      "artifact": "450-final-checks.sh.gz",
+      "source": "zig-out/bun-ci-20260920/final-checks.sh",
+      "bytes": 1027,
+      "sha256": "dd837a0dd5823262ef9be15c0dea775ca1c8caff5718b514a5a3e20e4662c386"
+    },
+    {
+      "artifact": "451-first-failure.md.gz",
+      "source": "zig-out/bun-ci-20260920/first-failure.md",
+      "bytes": 570,
+      "sha256": "290e2c591887f7440a04c3ce21c1c49e27092ee1324ff80c929378e4fc5e7ce3"
+    },
+    {
+      "artifact": "452-manifest.json.gz",
+      "source": "zig-out/bun-ci-20260920/first-source/manifest.json",
+      "bytes": 1438,
+      "sha256": "f49537aad9d0eb59cd495900fc8dc89daa3745ae66a70ef21f0395a0631849db"
+    },
+    {
+      "artifact": "453-jsc_bootstrap.zig.gz",
+      "source": "zig-out/bun-ci-20260920/first-source/packages/home_test/src/adapters/jsc_bootstrap.zig",
+      "bytes": 362330,
+      "sha256": "e4c39ab38d6a2f969c245aec1d53d742c724d90e075b90d39941ce5fc10b6a4e"
+    },
+    {
+      "artifact": "454-corpus_journal.zig.gz",
+      "source": "zig-out/bun-ci-20260920/first-source/packages/home_test/src/corpus_journal.zig",
+      "bytes": 19158,
+      "sha256": "348d803d78c9d6cb8ac4422bc0d612fd368474cd8a240c8b62ce6241a348a453"
+    },
+    {
+      "artifact": "455-corpus_launch.zig.gz",
+      "source": "zig-out/bun-ci-20260920/first-source/packages/home_test/src/corpus_launch.zig",
+      "bytes": 20674,
+      "sha256": "06aa4fc8069bdc945d17c0fcf77feb2c5fc5379e82d88a6c384a3f5ea331beb4"
+    },
+    {
+      "artifact": "456-corpus_remap.zig.gz",
+      "source": "zig-out/bun-ci-20260920/first-source/packages/home_test/src/corpus_remap.zig",
+      "bytes": 10274,
+      "sha256": "c3c8fd53c03a77689d09dd0559c295646ce8b275bac9de8c6727138fb845ee21"
+    },
+    {
+      "artifact": "457-corpus_runner.zig.gz",
+      "source": "zig-out/bun-ci-20260920/first-source/packages/home_test/src/corpus_runner.zig",
+      "bytes": 98292,
+      "sha256": "ff4bcbc0d405dc822800ee21502060f35a72f224238d6252fff4d63ee204abd5"
+    },
+    {
+      "artifact": "458-corpus_setup.zig.gz",
+      "source": "zig-out/bun-ci-20260920/first-source/packages/home_test/src/corpus_setup.zig",
+      "bytes": 12181,
+      "sha256": "e1441eb8e0eb982d6745295d867ce004e8caf257806e193855fb74531f235e53"
+    },
+    {
+      "artifact": "459-corpus_vendor_prepare.zig.gz",
+      "source": "zig-out/bun-ci-20260920/first-source/packages/home_test/src/corpus_vendor_prepare.zig",
+      "bytes": 15638,
+      "sha256": "48fcbcbacccd5962a5eb14d8217baee2677bb839b420be0d6eb119c583e0b2a4"
+    },
+    {
+      "artifact": "460-summarize-bun-corpus.py.gz",
+      "source": "zig-out/bun-ci-20260920/first-source/scripts/summarize-bun-corpus.py",
+      "bytes": 30172,
+      "sha256": "b11c54e8c311bbde04b5103f54be8fccf414d2ff36e8edccbe8a47993a54df46"
+    },
+    {
+      "artifact": "461-test_summarize_bun_corpus.py.gz",
+      "source": "zig-out/bun-ci-20260920/first-source/scripts/test_summarize_bun_corpus.py",
+      "bytes": 20720,
+      "sha256": "773a2c544390304d7019f5b93fc6ac9d7a69a98224ffaa9ab81a709dbb7cded0"
+    },
+    {
+      "artifact": "462-main.zig.gz",
+      "source": "zig-out/bun-ci-20260920/first-source/src/main.zig",
+      "bytes": 339401,
+      "sha256": "69f46c009e101cc8c27510d6385b306e8e42f79f13b77bf2fed8ecda54f08af3"
+    },
+    {
+      "artifact": "463-install-pinned-zig.log.gz",
+      "source": "zig-out/bun-ci-20260920/install-pinned-zig.log",
+      "bytes": 1648,
+      "sha256": "3be7abb46e9c460340cd06eda82282f73b1b64ad784c1c42200e9177d080d49d"
+    },
+    {
+      "artifact": "464-install-pinned-zig.sh.gz",
+      "source": "zig-out/bun-ci-20260920/install-pinned-zig.sh",
+      "bytes": 567,
+      "sha256": "a438770d4d8c4c7cf69d72a2369f8607734577c45a2883c7ca66dbcbd99dd8e3"
+    },
+    {
+      "artifact": "465-issue66-before.json.gz",
+      "source": "zig-out/bun-ci-20260920/issue66-before.json",
+      "bytes": 59973,
+      "sha256": "32f501cd6aa121141733d3b7ce36db35ae37d8d8f50c5d4523a342052c161c8d"
+    },
+    {
+      "artifact": "466-issue724-before.json.gz",
+      "source": "zig-out/bun-ci-20260920/issue724-before.json",
+      "bytes": 22829,
+      "sha256": "fbb687cceeaa7c6823302026bf10ee9c77659061a2ac702a00d96f69959626db"
+    },
+    {
+      "artifact": "467-native-build-first.log.gz",
+      "source": "zig-out/bun-ci-20260920/native-build-first.log",
+      "bytes": 4694,
+      "sha256": "d0cdf7559f1a5809dd49fd2e2a9cd9c17b4abc1552cfd15d6aab58f87a124dc3"
+    },
+    {
+      "artifact": "468-native-build-fixture-corrected.log.gz",
+      "source": "zig-out/bun-ci-20260920/native-build-fixture-corrected.log",
+      "bytes": 4416,
+      "sha256": "c79cb29a709bd99634abea72d75358ac95544bcc105993f8b3ae0dedabcaad6b"
+    },
+    {
+      "artifact": "469-phase-cheap-first.log.gz",
+      "source": "zig-out/bun-ci-20260920/phase-cheap-first.log",
+      "bytes": 1341,
+      "sha256": "5edbb519e17d5479827af6f2ffe0c4debf20bc6b255bb237b4d1a2eb24f812a2"
+    },
+    {
+      "artifact": "470-000000.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/phase-cli/changed-revision-reports/000000.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "artifact": "471-000000.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/phase-cli/changed-revision-reports/000000.stdout",
+      "bytes": 41,
+      "sha256": "fde2d0ab95d1271c16e3b1f02045ff9cfbefc2aa3dbaae76bc1457e0186e3feb"
+    },
+    {
+      "artifact": "472-events.jsonl.gz",
+      "source": "zig-out/bun-ci-20260920/phase-cli/changed-revision-reports/events.jsonl",
+      "bytes": 3768,
+      "sha256": "2656cecd186c139f8e7fe127d7f378ec64a5065bb8c85131761c990315dba0ca"
+    },
+    {
+      "artifact": "473-changed-revision-summary.json.gz",
+      "source": "zig-out/bun-ci-20260920/phase-cli/changed-revision-summary.json",
+      "bytes": 2393,
+      "sha256": "818d1b35048f6c7bbd1d735ea6d010165b113f21899ba40e841e7b92ff3079f3"
+    },
+    {
+      "artifact": "474-changed-revision.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/phase-cli/changed-revision.stderr",
+      "bytes": 166,
+      "sha256": "ac241fba616589e3e080d41962cf5c5d7fa1a9649f00256c2d8033279d38ce2e"
+    },
+    {
+      "artifact": "475-changed-revision.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/phase-cli/changed-revision.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "artifact": "476-000000.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/phase-cli/checkout-reports/000000.stderr",
+      "bytes": 232,
+      "sha256": "e7d2ffd0a4bbe1d1c529097882c4166785d4e88d5d06cb7358ba89bb8c1f986b"
+    },
+    {
+      "artifact": "477-000000.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/phase-cli/checkout-reports/000000.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "artifact": "478-000001.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/phase-cli/checkout-reports/000001.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "artifact": "479-000001.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/phase-cli/checkout-reports/000001.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "artifact": "480-000002.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/phase-cli/checkout-reports/000002.stderr",
+      "bytes": 589,
+      "sha256": "0fac2c5fe306e597251a1ca639652f4eef8e7a2a1bc85dc13f4412a4f59f5294"
+    },
+    {
+      "artifact": "481-000002.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/phase-cli/checkout-reports/000002.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "artifact": "482-000003.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/phase-cli/checkout-reports/000003.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "artifact": "483-000003.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/phase-cli/checkout-reports/000003.stdout",
+      "bytes": 41,
+      "sha256": "fde2d0ab95d1271c16e3b1f02045ff9cfbefc2aa3dbaae76bc1457e0186e3feb"
+    },
+    {
+      "artifact": "484-000004.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/phase-cli/checkout-reports/000004.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "artifact": "485-000004.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/phase-cli/checkout-reports/000004.stdout",
+      "bytes": 41,
+      "sha256": "fde2d0ab95d1271c16e3b1f02045ff9cfbefc2aa3dbaae76bc1457e0186e3feb"
+    },
+    {
+      "artifact": "486-events.jsonl.gz",
+      "source": "zig-out/bun-ci-20260920/phase-cli/checkout-reports/events.jsonl",
+      "bytes": 14930,
+      "sha256": "bf214a5a735c6ed4ccbc669c51a9e0072e0eeca420c27ece9d50d5b29def6bf5"
+    },
+    {
+      "artifact": "487-checkout-summary.json.gz",
+      "source": "zig-out/bun-ci-20260920/phase-cli/checkout-summary.json",
+      "bytes": 2393,
+      "sha256": "d7e7d4f606aa4d3c5279e03421c07509a92f741bc7229bc94f524f2dc3287f10"
+    },
+    {
+      "artifact": "488-checkout.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/phase-cli/checkout.stderr",
+      "bytes": 208,
+      "sha256": "330fd587fe3425c22117e65d0afdb6612749d6d6a01af37b0555cbbf6e125308"
+    },
+    {
+      "artifact": "489-checkout.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/phase-cli/checkout.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "artifact": "490-git.log.gz",
+      "source": "zig-out/bun-ci-20260920/phase-cli/git.log",
+      "bytes": 409,
+      "sha256": "e86e55ce469061aec4e4d2bd16331964038a6397a509ddad1276801ba1bbcf92"
+    },
+    {
+      "artifact": "491-000000.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/phase-cli/install-build-reports/000000.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "artifact": "492-000000.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/phase-cli/install-build-reports/000000.stdout",
+      "bytes": 41,
+      "sha256": "fde2d0ab95d1271c16e3b1f02045ff9cfbefc2aa3dbaae76bc1457e0186e3feb"
+    },
+    {
+      "artifact": "493-000001.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/phase-cli/install-build-reports/000001.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "artifact": "494-000001.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/phase-cli/install-build-reports/000001.stdout",
+      "bytes": 41,
+      "sha256": "fde2d0ab95d1271c16e3b1f02045ff9cfbefc2aa3dbaae76bc1457e0186e3feb"
+    },
+    {
+      "artifact": "495-000002.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/phase-cli/install-build-reports/000002.stderr",
+      "bytes": 1163,
+      "sha256": "4c98ad4e63fc2a96bc3f161fce6e67a90892940c86ce58f6ca575523dd6e9786"
+    },
+    {
+      "artifact": "496-000002.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/phase-cli/install-build-reports/000002.stdout",
+      "bytes": 74,
+      "sha256": "30176f826b0632f1c08e54415ae9909244a73116d79c8f250e071c47860f1dea"
+    },
+    {
+      "artifact": "497-000003.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/phase-cli/install-build-reports/000003.stderr",
+      "bytes": 1124,
+      "sha256": "cbb790f64472fca2a4473e7870e4ca1e5a31125f1a12f2e38d5803f76708ec1c"
+    },
+    {
+      "artifact": "498-000003.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/phase-cli/install-build-reports/000003.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "artifact": "499-events.jsonl.gz",
+      "source": "zig-out/bun-ci-20260920/phase-cli/install-build-reports/events.jsonl",
+      "bytes": 13134,
+      "sha256": "887a19b793d6a53ed4142851b35d23762e9a08816c7b5c6645d435e473ba6e1e"
+    },
+    {
+      "artifact": "500-install-build-summary.json.gz",
+      "source": "zig-out/bun-ci-20260920/phase-cli/install-build-summary.json",
+      "bytes": 2373,
+      "sha256": "061232c89c975abba82f3335cf9278998049e0edf0ce7f9b18cbd948bb851ec7"
+    },
+    {
+      "artifact": "501-install-build.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/phase-cli/install-build.stderr",
+      "bytes": 213,
+      "sha256": "20c0353222f987baaf57693ffd753029cd40201de9fffeeb97055a052ca2a15d"
+    },
+    {
+      "artifact": "502-install-build.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/phase-cli/install-build.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "artifact": "503-manifest.json.gz",
+      "source": "zig-out/bun-ci-20260920/phase-cli/manifest.json",
+      "bytes": 1735,
+      "sha256": "f10967784369d278da6c66c74b93111444f0d188b79f56284031c0db520e1f76"
+    },
+    {
+      "artifact": "504-prepare-publication-text.py.gz",
+      "source": "zig-out/bun-ci-20260920/prepare-publication-text.py",
+      "bytes": 6016,
+      "sha256": "71a02e17909e70e7ee7a0cd9503f47b0820e847a5f1452eed7f412cbb114f2f5"
+    },
+    {
+      "artifact": "505-manifest.json.gz",
+      "source": "zig-out/bun-ci-20260920/remap-regression/manifest.json",
+      "bytes": 5450,
+      "sha256": "c0ef055496c4628227d6f3b66ea0b8bc5d475dc230b1889d58c20d70be9f4d54"
+    },
+    {
+      "artifact": "506-000000.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/remap-regression/reports/000000.stderr",
+      "bytes": 531,
+      "sha256": "20151cae5011fcefb9bb9d0aaceea6a9b4adec5db924c4acda4bc85786298887"
+    },
+    {
+      "artifact": "507-000000.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/remap-regression/reports/000000.stdout",
+      "bytes": 6,
+      "sha256": "69a88b6305f8a00f5e8efe12f3f4fcba0493e25af302eba1707c798557c8aa25"
+    },
+    {
+      "artifact": "508-events.jsonl.gz",
+      "source": "zig-out/bun-ci-20260920/remap-regression/reports/events.jsonl",
+      "bytes": 4040,
+      "sha256": "4ab2a38f0832170a88f94dd00d1d25c4d7650002e5318d85e4d3bd12e3a1c59c"
+    },
+    {
+      "artifact": "509-stderr.gz",
+      "source": "zig-out/bun-ci-20260920/remap-regression/stderr",
+      "bytes": 112,
+      "sha256": "c43a26e91383db96bb56f180dc07c28d6da662e74c005e856727ebdea63ae972"
+    },
+    {
+      "artifact": "510-stdout.gz",
+      "source": "zig-out/bun-ci-20260920/remap-regression/stdout",
+      "bytes": 6,
+      "sha256": "69a88b6305f8a00f5e8efe12f3f4fcba0493e25af302eba1707c798557c8aa25"
+    },
+    {
+      "artifact": "511-summary.json.gz",
+      "source": "zig-out/bun-ci-20260920/remap-regression/summary.json",
+      "bytes": 1569,
+      "sha256": "22130a52173a08052a95fc7d0942715d640380979287e1f65134bea0ae0edc69"
+    },
+    {
+      "artifact": "512-validator.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/remap-regression/validator.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "artifact": "513-service-fixture-diagnosis.log.gz",
+      "source": "zig-out/bun-ci-20260920/service-fixture-diagnosis.log",
+      "bytes": 1398,
+      "sha256": "8f736810d4a01734a04c03e244bcb359d7e52b9b41eb5c098d1486ca7d66ea64"
+    },
+    {
+      "artifact": "514-bunfig.toml.gz",
+      "source": "zig-out/bun-ci-20260920/service-fixture-diagnostic/bunfig.toml",
+      "bytes": 7,
+      "sha256": "675569345e86420149bb7a5e8f4f9732efdf15364bd1fe460b1d8adac9b28ad5"
+    },
+    {
+      "artifact": "515-manifest.json.gz",
+      "source": "zig-out/bun-ci-20260920/service-fixture-diagnostic/manifest.json",
+      "bytes": 1398,
+      "sha256": "8f736810d4a01734a04c03e244bcb359d7e52b9b41eb5c098d1486ca7d66ea64"
+    },
+    {
+      "artifact": "516-missing-config.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/service-fixture-diagnostic/missing-config.stderr",
+      "bytes": 166,
+      "sha256": "12494a082fb1fa6ff7ebb7ae3e685a3293a43aa3b630ec05b4a9350633d8b76c"
+    },
+    {
+      "artifact": "517-missing-config.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/service-fixture-diagnostic/missing-config.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "artifact": "518-present-config.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/service-fixture-diagnostic/present-config.stderr",
+      "bytes": 570,
+      "sha256": "501a6199acdb6ac9ad4d243386d6ab74c3871de584a5faebac9eacad84f3c8be"
+    },
+    {
+      "artifact": "519-present-config.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/service-fixture-diagnostic/present-config.stdout",
+      "bytes": 27,
+      "sha256": "c40f879ea9ed48a251cb7241affb9db626a1422a476e43f32d1230271e25dd5d"
+    },
+    {
+      "artifact": "520-service-context.test.ts.gz",
+      "source": "zig-out/bun-ci-20260920/service-fixture-diagnostic/service-context.test.ts",
+      "bytes": 344,
+      "sha256": "483b30b164a244fa86ef9492d025c89d9ff88b8bb60d807798c125f6ab321448"
+    },
+    {
+      "artifact": "521-with-url.stderr.gz",
+      "source": "zig-out/bun-ci-20260920/service-fixture-diagnostic/with-url.stderr",
+      "bytes": 802,
+      "sha256": "41e05f91a8e5cacfdbd2f40e4ac5daf05f9ba7877bf8e8b1963651cbda522cb0"
+    },
+    {
+      "artifact": "522-with-url.stdout.gz",
+      "source": "zig-out/bun-ci-20260920/service-fixture-diagnostic/with-url.stdout",
+      "bytes": 27,
+      "sha256": "c40f879ea9ed48a251cb7241affb9db626a1422a476e43f32d1230271e25dd5d"
+    },
+    {
+      "artifact": "523-split-vendor-phases.py.gz",
+      "source": "zig-out/bun-ci-20260920/split-vendor-phases.py",
+      "bytes": 5391,
+      "sha256": "0b095f0642515544233b254a99e34affd4f60c620a4ed6f0971680a7d1e51e8f"
+    },
+    {
+      "artifact": "524-update-issues.py.gz",
+      "source": "zig-out/bun-ci-20260920/update-issues.py",
+      "bytes": 1799,
+      "sha256": "94c5f8eab2c66a532f697965a4d271593fb64bcc873fecf3001ae3d3cc18dc20"
+    },
+    {
+      "artifact": "525-vendor-plan-corrected.json.gz",
+      "source": "zig-out/bun-ci-20260920/vendor-plan-corrected.json",
+      "bytes": 9665,
+      "sha256": "6bc0c08e2dd1b85ec457f1184494d484e741d5b3dafe450458072407bbc3e40d"
+    },
+    {
+      "artifact": "526-vendor-plan-first.json.gz",
+      "source": "zig-out/bun-ci-20260920/vendor-plan-first.json",
+      "bytes": 9665,
+      "sha256": "6bc0c08e2dd1b85ec457f1184494d484e741d5b3dafe450458072407bbc3e40d"
+    },
+    {
+      "artifact": "527-verify-batch.py.gz",
+      "source": "zig-out/bun-ci-20260920/verify-batch.py",
+      "bytes": 650,
+      "sha256": "8659ab3456703255278c86c200fe9fcbb11cf8d51e873512286a5088046bd19d"
+    },
+    {
+      "artifact": "528-verify-batch.py.before-fixture-correction.gz",
+      "source": "zig-out/bun-ci-20260920/verify-batch.py.before-fixture-correction",
+      "bytes": 638,
+      "sha256": "1faf0da03e3aa883b82f1883b8bcaf4cefc625e50eb5a9ad9a74d44912bd0e81"
+    },
+    {
+      "artifact": "529-verify-elysia-execution.py.gz",
+      "source": "zig-out/bun-ci-20260920/verify-elysia-execution.py",
+      "bytes": 4600,
+      "sha256": "15094ba40d0c3b2dd19580323e2c538ffd043e2ded00163061211f9726f8fb2f"
+    },
+    {
+      "artifact": "530-verify-elysia-execution.py.before-fixture-correction.gz",
+      "source": "zig-out/bun-ci-20260920/verify-elysia-execution.py.before-fixture-correction",
+      "bytes": 4588,
+      "sha256": "b3a9018d47bf5782ff6b88889ed88a380b9b488d8d8555e17110b64a39bb45c5"
+    },
+    {
+      "artifact": "531-verify-elysia-execution.py.log.gz",
+      "source": "zig-out/bun-ci-20260920/verify-elysia-execution.py.log",
+      "bytes": 1172,
+      "sha256": "4207dea714bc2c7b2768c01893162eed31e0e9cc72755fad685ef3939b469fa9"
+    },
+    {
+      "artifact": "532-verify-elysia-phases.py.gz",
+      "source": "zig-out/bun-ci-20260920/verify-elysia-phases.py",
+      "bytes": 3036,
+      "sha256": "f96944146f63aa258ed3cc5776aff558700b44d617a6fb31e46f907a8adcc27e"
+    },
+    {
+      "artifact": "533-verify-elysia-phases.py.before-fixture-correction.gz",
+      "source": "zig-out/bun-ci-20260920/verify-elysia-phases.py.before-fixture-correction",
+      "bytes": 3024,
+      "sha256": "25fade15de4b997838254236d3e4d899b6caa5cd85ee2843c8df29499321ed3f"
+    },
+    {
+      "artifact": "534-verify-elysia-phases.py.log.gz",
+      "source": "zig-out/bun-ci-20260920/verify-elysia-phases.py.log",
+      "bytes": 1031,
+      "sha256": "701062d4d43c7c7a3727350a583d2652a6e52a60ee6a5be4d6d4971727fefa5c"
+    },
+    {
+      "artifact": "535-verify-phase-cli.py.gz",
+      "source": "zig-out/bun-ci-20260920/verify-phase-cli.py",
+      "bytes": 3581,
+      "sha256": "02b82b95982ea7f1c218f91ab9dc6619cc0c8f95c9e9a2c3cf84a0bd6880e13d"
+    },
+    {
+      "artifact": "536-verify-phase-cli.py.before-fixture-correction.gz",
+      "source": "zig-out/bun-ci-20260920/verify-phase-cli.py.before-fixture-correction",
+      "bytes": 3569,
+      "sha256": "f418be0ac4960308aff1d276f3d78b138eb25c4bc52a334834b94a60fd196f90"
+    },
+    {
+      "artifact": "537-verify-phase-cli.py.log.gz",
+      "source": "zig-out/bun-ci-20260920/verify-phase-cli.py.log",
+      "bytes": 1735,
+      "sha256": "f10967784369d278da6c66c74b93111444f0d188b79f56284031c0db520e1f76"
+    },
+    {
+      "artifact": "538-verify-publication.py.gz",
+      "source": "zig-out/bun-ci-20260920/verify-publication.py",
+      "bytes": 2271,
+      "sha256": "16f2334510e71de34b5269c26621be0fc08e261abb4b46edf14992280190914d"
+    },
+    {
+      "artifact": "539-verify-remap-regression.py.gz",
+      "source": "zig-out/bun-ci-20260920/verify-remap-regression.py",
+      "bytes": 4993,
+      "sha256": "e7d3992e89c97746bb8afa238ff711b61a99ea1043b2ec6d7cf10bf4c7047713"
+    },
+    {
+      "artifact": "540-verify-remap-regression.py.before-fixture-correction.gz",
+      "source": "zig-out/bun-ci-20260920/verify-remap-regression.py.before-fixture-correction",
+      "bytes": 4981,
+      "sha256": "c8369a38fccd2ae2a67143b67fda62cde7eec6356434ce12c4c318279ff7b539"
+    },
+    {
+      "artifact": "541-verify-remap-regression.py.log.gz",
+      "source": "zig-out/bun-ci-20260920/verify-remap-regression.py.log",
+      "bytes": 1512,
+      "sha256": "23ededf496ee37957cc10df97758598935134cac46dc81040340ddfab5e824f4"
+    },
+    {
+      "artifact": "542-publication-verification.log.gz",
+      "source": "zig-out/bun-ci-20260920/publication-verification.log",
+      "bytes": 2382,
+      "sha256": "fc044cc54059ed0c91fbe991c4e3eca61c5010eedf89bfb8d1b947bc677551f5"
+    },
+    {
+      "artifact": "543-publication-lint-first.log.gz",
+      "source": "zig-out/bun-ci-20260920/publication-lint-first.log",
+      "bytes": 77,
+      "sha256": "9d28594ca8082656d4d4ba05f5c4cf0738e8146fdb9d342cafb03b07f8d733c4"
+    }
+  ],
+  "restored_journals_verified": 7
+}
