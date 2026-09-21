@@ -2682,6 +2682,7 @@ pub fn Parser(comptime enc: Encoding) type {
                 '\n' => {
 
                     // the first newline is always excluded from a literal
+                    self.newline();
                     self.inc(1);
 
                     if (self.next() == '\t') {
@@ -4084,8 +4085,15 @@ pub fn Parser(comptime enc: Encoding) type {
                         .block_out,
                         .block_in,
                         => {
+                            const indicator_indent = self.line_indent;
                             self.inc(1);
-                            break :next try self.scanLiteralScalar();
+                            var token = try self.scanLiteralScalar();
+                            // A block scalar belongs at the indentation of its
+                            // `|` header. Its content may be further indented,
+                            // but using that indentation for the token lets a
+                            // dedented header cross collection boundaries.
+                            token.indent = indicator_indent;
+                            break :next token;
                         },
                         .flow_in,
                         .flow_key,
@@ -4101,8 +4109,11 @@ pub fn Parser(comptime enc: Encoding) type {
                         .block_out,
                         .block_in,
                         => {
+                            const indicator_indent = self.line_indent;
                             self.inc(1);
-                            break :next try self.scanFoldedScalar();
+                            var token = try self.scanFoldedScalar();
+                            token.indent = indicator_indent;
+                            break :next token;
                         },
                         .flow_in,
                         .flow_key,
