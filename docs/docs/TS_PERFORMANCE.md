@@ -9067,6 +9067,86 @@ ReleaseSafe and ReleaseFast `home-tsc` builds, `zig fmt --check`, and
 `git diff --check`. The added test fails against `8c587f6fb`, which reports
 TS7006 at each of the three positions instead. No timing is claimed.
 
+### Indexed access over a type parameter stays deferred (untimed)
+
+Under [#548](https://github.com/home-lang/home/issues/548) and
+[#416](https://github.com/home-lang/home/issues/416). Zod declares
+`output<T> = T extends { _zod: { output: any } } ? T["_zod"]["output"] :
+unknown` and uses it inside generic internals such as
+`$ZodMapInternals<Key extends SomeType = $ZodType>`. When substitution
+replaced one type parameter with another, it resolved `Key["_zod"]` at once
+through `Key`'s constraint `SomeType`, whose internals declare no `output`.
+The result, `SomeType["_zod"]["output"]`, no longer mentioned `Key`, so the
+default argument supplied later could not repair it. The access never
+resolved, and a `$ZodMap` was rejected against a parameter of type
+`$ZodMap`, which prints identically.
+
+TypeScript's `getIndexedAccessType` keeps an access deferred while its
+object is generic (`isGenericObjectType`), and reaches the constraint only
+when a relation needs one. Home now does the same in four places:
+
+1. Substitution keeps `T[K]` deferred while the substituted object is still a
+   type parameter, a deferred access or conditional, or a mapped type over a
+   generic constraint.
+2. The relation engine relates a deferred `S[K]` source through its base
+   constraint, supplied by the checker's existing `indexedAccessBaseConstraint`.
+   An indexed-access target is left to the existing rules.
+3. A deferred conditional source whose union target no single member accepts
+   still reaches the rule that relates both of its branches.
+4. The checker's branch-by-branch approximation for a deferred conditional
+   argument first asks the engine, which matches two conditionals with
+   identical `extends` component-wise. Home can lower one declared,
+   constrained type parameter twice; when the target's check type is such a
+   copy of the source's, it is renamed back before that comparison.
+
+Rules 2–4 are what the old eager answer used to hide. With deferral alone
+(rule 1) the gate below removed the same 45 identities but added 2:
+`$ZodDiscriminatedUnion` failed its heritage check through an `optin`
+conditional over `Options[number]`, and `_catch` rejected `output<T>` against
+its own re-instantiation. Resolving concrete accesses inside the relation
+engine instead, before the cause was found, changed nothing. Relating `S[K]`
+to `T[J]` component-wise, as TypeScript does, was also measured and dropped:
+the engine is lenient toward type-parameter targets, so `Partial<T>[keyof T]`
+passed for `T[keyof T]` and a generic `NonNullable` assignment that both
+engines reject was accepted. Without it, a namespace-qualified call such as
+`util.initialize(catchValue)` with `catchValue: core.output<T>` and
+`T extends core.Ztype` reported a false TS2345 that `0d09d38cd` did not,
+because the call meets a second lowering of `T`; the renaming in rule 4
+closes that case instead.
+
+| Focused oracle (file:line:column:code) | TypeScript 6.0.3 | Native TypeScript 7.0.2 | ReleaseSafe Home | `0d09d38cd` |
+|---|---:|---:|---:|---:|
+| `h(x)` with `x: Zmap` into `Zmap` | — | **identical** | **identical** | TS2345 at 10:3 |
+| `const leaked: number = x._zod.out` | TS2322 at 11:7 | **identical** | **identical** | TS2322 at 11:7 |
+| `WrongInternals` pattern from `tag` | TS2430 at 20:11 | **identical** | **identical** | TS2430 at 20:11 |
+
+The TS2322 proves that `out` resolves to `unknown` rather than being
+silenced, and the TS2430 proves that the new constraint rule still rejects a
+member whose constraint does not fit.
+
+Against `0d09d38cd` on the 21-file Zod 4.5.2 `core` graph:
+
+| Zod 4.5.2 core, deferred indexed access | `0d09d38cd` | Home main | Change |
+|---|---:|---:|---:|
+| All diagnostics | 140 | **95** | **45 removed (32.1%); 0 added** |
+| Unique path/line/column/code identities | 135 | **90** | **45 removed; 0 added** |
+| Removed TS2345 | 44 | 3 | 27 `util.defineLazyInternal(inst, ...)`; 14 `handle*Result(..., inst, ...)`, `.then`, `.init`, and `transform` calls |
+| Removed TS2430 | 4 | 0 | `$ZodExactOptionalInternals`, `$ZodCodecDef`, `$ZodPreprocessInternals`, `$ZodPreprocess` |
+
+TypeScript 6.0.3 and native 7.0.2 report only the omitted `locales` module
+on this graph, so every removal is a false positive gone. One gap is
+unchanged: `const wrong: number = util.constantCatch(catchValue)` with
+`catchValue: core.output<T>` reports TS2322 in both engines and nothing in
+Home, before and after this change.
+
+The complete checker and Program targets pass (4,372 and 214 tests). The
+added checker test's source reports the false TS2345 at 10:3 under
+`0d09d38cd`'s `home-tsc`, and an extra TS2430 at 17:11 with rule 1 alone.
+The added Program test's source reports two TS2345 without rule 4's renaming,
+where `0d09d38cd` and both engines report none. The generic `NonNullable`
+checker test, which the dropped component-wise rule broke, passes. The #754
+and #751 write-context oracles are unchanged. No timing is claimed.
+
 ### Positive `instanceof` assignment fallthrough (untimed)
 
 Issue [#738](https://github.com/home-lang/home/issues/738), found while

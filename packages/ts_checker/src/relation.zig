@@ -315,6 +315,13 @@ pub const Engine = struct {
         resolve: *const fn (*anyopaque, TypeId) anyerror!TypeId,
     } = null,
     generic_instance_origins: ?*const std.AutoHashMapUnmanaged(TypeId, TypeId) = null,
+    /// Base constraint of a deferred indexed access `T[K]`: the same access
+    /// read on the constraint of `T`. Property lookup belongs to the
+    /// checker, which supplies it. Null when no constraint is known.
+    indexed_access_constraint: ?struct {
+        context: *anyopaque,
+        resolve: *const fn (*anyopaque, TypeId) anyerror!?TypeId,
+    } = null,
     /// When true, function-type parameters are checked
     /// contravariantly (sound — matches `strictFunctionTypes`).
     /// When false (TS default for method declarations), parameters
@@ -921,6 +928,20 @@ pub const Engine = struct {
             }
             return true;
         }
+        // A deferred `T[K]` source relates through its base constraint, as
+        // in TypeScript's `structuredTypeRelatedTo` for a type-variable
+        // source. It runs before the union-target split because the
+        // constraint may itself be a union that no single member accepts.
+        // An indexed-access target is left to the rules below: relating the
+        // two component-wise would inherit this engine's lenient
+        // type-parameter targets and accept `Partial<T>[K]` as `T[K]`.
+        if (sf.is_indexed_access and !tf.is_indexed_access) {
+            if (self.indexed_access_constraint) |hook| {
+                if (try hook.resolve(hook.context, source)) |constraint| {
+                    if (constraint != source and try self.isAssignableTo(constraint, target)) return true;
+                }
+            }
+        }
         // Union on the target: source must assign to *some* member.
         if (tf.is_union) {
             if (source == Primitive.boolean_t and self.unionContainsBooleanLiterals(target)) return true;
@@ -952,7 +973,10 @@ pub const Engine = struct {
             if (sf.is_object_type or sf.is_intersection) {
                 if (try self.typeRelatedToDiscriminatedType(source, target)) return true;
             }
-            return false;
+            // TypeScript does not stop here for an instantiable source. A
+            // deferred conditional still relates through its branches below,
+            // whose union no single target member may accept on its own.
+            if (!sf.is_conditional) return false;
         }
         if (sf.is_conditional and tf.is_conditional) {
             const source_conditional = self.interner.conditionalPayload(source);

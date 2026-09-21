@@ -11091,6 +11091,59 @@ test "Program: object literals written against imported Program types type their
     }
 }
 
+test "Program: a deferred imported conditional argument matches its own instantiation" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver };
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+
+    // zod 4.5.2 `_catch`: `core.output<T>` stays a deferred conditional
+    // because `T["_zod"]` is no longer read through `T`'s constraint. The
+    // namespace-qualified call lowers `f`'s `T` a second time, so the
+    // argument meets a conditional over a copy of its own parameter. The pair
+    // must relate as one conditional, not branch by branch against the whole
+    // target. The helper is named `initialize` because this harness resolves
+    // namespace members from a fixed list. TypeScript 6.0.3 and 7.0.2 report
+    // nothing here.
+    const core =
+        \\export type output<T> = T extends { _zod: { output: any } } ? T["_zod"]["output"] : unknown;
+        \\export interface Internals<O = unknown> { output: O }
+        \\export interface Ztype<O = unknown> { _zod: Internals<O> }
+    ;
+    const util =
+        \\export function initialize<T>(value: T): () => T {
+        \\  return () => value;
+        \\}
+    ;
+    const root =
+        \\import type * as core from "./core.js";
+        \\import * as util from "./util.js";
+        \\export function f<T extends core.Ztype>(catchValue: core.output<T>): unknown {
+        \\  const cb: (ctx: number) => unknown = util.initialize(catchValue);
+        \\  void cb;
+        \\  return util.initialize(catchValue);
+        \\}
+    ;
+    try vfs.addFile("/proj/core.ts", core);
+    try vfs.addFile("/proj/util.ts", util);
+    try vfs.addFile("/proj/a.ts", root);
+    _ = try p.add("/proj/core.ts", core);
+    _ = try p.add("/proj/util.ts", util);
+    const id = try p.add("/proj/a.ts", root);
+
+    try p.compileAll(.{
+        .no_emit = true,
+        .strict_flags = .{ .no_implicit_any = true, .strict_null_checks = true },
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    });
+    const compilation = p.fileById(id).compilation.?;
+    try expectCompilationLacksDiagnosticCode(compilation, 2345);
+    try T.expectEqual(@as(usize, 0), compilation.diagnostics.items.len);
+}
+
 test "Program: a failed imported declaration lowering keeps completed class projections" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();

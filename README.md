@@ -575,6 +575,16 @@ nested callbacks from the declaration they are written against:
 | Unique path/line/column/code identities | 141 | **135** | **6 removed; 0 added** |
 | Focused three-engine oracle | 3× TS7006 | **exact 3× TS2322 parity** | no TS7006 |
 
+An indexed access whose object is still a type parameter now stays deferred
+instead of being read through that parameter's constraint, and relations
+reach it through its constraint the way TypeScript does:
+
+| [Zod 4.5.2 deferred indexed-access audit](docs/docs/TS_PERFORMANCE.md#indexed-access-over-a-type-parameter-stays-deferred-untimed) | `0d09d38cd` | Home main | Change |
+|---|---:|---:|---:|
+| Core diagnostics (21-file shard) | 140 | **95** | **45 removed (32.1%); 0 added** |
+| Unique path/line/column/code identities | 135 | **90** | **41 TS2345 + 4 TS2430 removed; 0 added** |
+| Focused three-engine oracle | 1 false TS2345 | **exact TS2322 + TS2430 parity** | no TS2345 |
+
 Positive `instanceof` branches that replace their guarded value now join the
 assigned true path with the excluded false path at fallthrough:
 

@@ -6109,6 +6109,9 @@ pub const Checker = struct {
                 self.engine.generic_instance_origins = null;
             }
         }
+        if (self.engine.indexed_access_constraint) |hook| {
+            if (hook.context == @as(*anyopaque, @ptrCast(self))) self.engine.indexed_access_constraint = null;
+        }
         self.program_generic_defaults_active.deinit(self.gpa);
         self.program_schema_support.deinit(self.gpa);
         self.free_type_parameter_pending.deinit(self.gpa);
@@ -6462,6 +6465,7 @@ pub const Checker = struct {
         // a tuple-typed rest param into positional params when
         // comparing against a regular (non-rest) signature.
         self.engine.setRestSignatures(&self.rest_signatures);
+        self.engine.indexed_access_constraint = .{ .context = self, .resolve = indexedAccessConstraintForEngine };
         if (self.source) |src| try self.scanDirectives(src);
         try self.checkReferenceLibDirectives(root);
         try self.checkRemovedCompilerOptionDirectives(root);
@@ -94271,6 +94275,25 @@ pub const Checker = struct {
 
     fn deferredConditionalSourceAssignableToTarget(self: *Checker, source_t: TypeId, target_t: TypeId) CheckError!?bool {
         const c = self.interner.conditionalPayloadOrNull(source_t) orelse return null;
+        // Two conditionals with identical `extends` relate component-wise
+        // first, as in TypeScript's `structuredTypeRelatedTo`. The branch
+        // approximation below would compare each branch against the whole
+        // target and reject a conditional that differs only by instantiation.
+        if (self.interner.conditionalPayloadOrNull(target_t)) |target_c| {
+            if (self.engine.isAssignableTo(source_t, target_t) catch false) return true;
+            // One declared type parameter can be lowered twice, and a deferred
+            // `T["_zod"]` keeps each copy apart. Rename the target's copy back
+            // to the source's before comparing.
+            if (target_c.check_type != c.check_type and
+                self.duplicateConstrainedTypeParameter(c.check_type, target_c.check_type))
+            {
+                var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+                defer subs.deinit(self.gpa);
+                try subs.put(self.gpa, target_c.check_type, c.check_type);
+                const aligned = try self.substituteType(target_t, &subs);
+                if (aligned != target_t and (self.engine.isAssignableTo(source_t, aligned) catch false)) return true;
+            }
+        }
         if (try self.reduceConditionalSourceOverConstraint(source_t, c)) |reduced| {
             return try self.checkerAssignableTo(reduced, target_t);
         }
@@ -109204,6 +109227,17 @@ pub const Checker = struct {
         self.program_local_class_names_built = false;
         self.generic_instances.clearRetainingCapacity();
         self.generic_instance_origins.clearRetainingCapacity();
+    }
+
+    /// The relation engine's view of a deferred `T[K]`: the same access read
+    /// on the base constraint of `T`, as in TypeScript's
+    /// `getConstraintOfIndexedAccess`. Substitution keeps such an access
+    /// deferred, so a relation that needs its apparent type asks for it here.
+    fn indexedAccessConstraintForEngine(context: *anyopaque, t: TypeId) anyerror!?TypeId {
+        const self: *Checker = @ptrCast(@alignCast(context));
+        const constraint = (try self.indexedAccessBaseConstraint(t, 0)) orelse return null;
+        if (constraint == t or constraint >= self.interner.pool.typeCount()) return null;
+        return constraint;
     }
 
     fn resolveGenericTypeForEngine(context: *anyopaque, t: TypeId) anyerror!TypeId {
@@ -162554,6 +162588,30 @@ pub const Checker = struct {
         return result;
     }
 
+    /// TypeScript's `isGenericObjectType`: a type parameter, a deferred
+    /// indexed access or conditional, or a mapped type over a generic
+    /// constraint, directly or as a union or intersection member. Only the
+    /// top level decides. A concrete object whose members mention a type
+    /// parameter still has one declared type for each property.
+    fn typeIsGenericObjectType(self: *Checker, t: TypeId, depth: u8) bool {
+        if (depth >= 8) return true;
+        if (t < types.Primitive.first_dynamic or t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_type_parameter or flags.is_infer or flags.is_indexed_access or flags.is_conditional) return true;
+        if (flags.is_union or flags.is_intersection) {
+            const members = if (flags.is_union) self.interner.unionMembers(t) else self.interner.intersectionMembers(t);
+            for (members) |member| {
+                if (self.typeIsGenericObjectType(member, depth + 1)) return true;
+            }
+            return false;
+        }
+        if (flags.is_mapped) {
+            const mapped = self.interner.mappedPayloadOrNull(t) orelse return false;
+            return self.containsFreeTypeParameter(mapped.constraint);
+        }
+        return false;
+    }
+
     fn substituteTypeUncached(
         self: *Checker,
         t: TypeId,
@@ -163040,7 +163098,12 @@ pub const Checker = struct {
                         if (!self.containsThisTypeParameter(member_t)) return member_t;
                     }
                 }
-                if (!self.containsThisTypeParameter(new_obj)) {
+                // An object that is still generic stays deferred, as in
+                // TypeScript's `getIndexedAccessType`. Resolving it here
+                // would read the member through the type parameter's
+                // constraint, and that answer survives the later
+                // substitution of the real argument.
+                if (!self.containsThisTypeParameter(new_obj) and !self.typeIsGenericObjectType(new_obj, 0)) {
                     if (try self.resolveObjectIndexedAccessType(new_obj, new_idx)) |resolved| return resolved;
                 }
             }
@@ -176091,6 +176154,22 @@ pub const Checker = struct {
             return true;
         }
         return self.engine.isAssignableTo(constraint, param_t) catch false;
+    }
+
+    /// True when `a` and `b` are two lowerings of one declared, constrained
+    /// type parameter: the same name, an identical constraint, and the same
+    /// declaration wherever both record one. An unconstrained parameter never
+    /// qualifies, because its indexed accesses stayed deferred before
+    /// substitution kept them deferred, and a name alone cannot tell a copy
+    /// from a shadowing parameter.
+    fn duplicateConstrainedTypeParameter(self: *Checker, a: TypeId, b: TypeId) bool {
+        if (a == b or !self.sameTypeParameterName(a, b)) return false;
+        const a_decl = self.type_parameter_decl_nodes.get(self.resolvedTypeParameterPlaceholder(a));
+        const b_decl = self.type_parameter_decl_nodes.get(self.resolvedTypeParameterPlaceholder(b));
+        if (a_decl != null and b_decl != null and a_decl.? != b_decl.?) return false;
+        const a_constraint = self.typeParameterConstraint(a) orelse return false;
+        const b_constraint = self.typeParameterConstraint(b) orelse return false;
+        return a_constraint == b_constraint or (self.engine.isIdenticalTo(a_constraint, b_constraint) catch false);
     }
 
     fn sameTypeParameterName(self: *Checker, a: TypeId, b: TypeId) bool {
@@ -222026,6 +222105,45 @@ test "checker: indexed access generic defaults remain symbolic until instantiati
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.property_missing_required));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.object_literal_excess_property));
+}
+
+test "checker: indexed access over a type parameter defers past its constraint" {
+    // zod 4.5.2 core: `output<Key>` inside a defaulted `Zmap` read `Key["_zod"]`
+    // through the constraint `SomeType`, whose internals have no `output`,
+    // and `Zmap` was rejected against itself. Deferred, the same access must
+    // still relate through its constraint where it is a heritage member, and
+    // a conditional over it through its branches against a union target.
+    const s = try newSetup(
+        \\type output<T> = T extends { _zod: { output: any } } ? T["_zod"]["output"] : unknown;
+        \\interface Base { tag: string; pattern: RegExp | undefined; optin?: "optional" | undefined }
+        \\interface Internals<O = unknown> extends Base { output: O }
+        \\type SomeType = { _zod: Base };
+        \\interface Ztype { _zod: Internals<unknown> }
+        \\interface MI<Key extends SomeType = Ztype> { out: output<Key> }
+        \\interface Zmap<Key extends SomeType = Ztype> { _zod: MI<Key> }
+        \\declare function h(x: Zmap): void;
+        \\declare const x: Zmap;
+        \\h(x);
+        \\const leaked: number = x._zod.out;
+        \\type IsOptional<T extends SomeType> = T extends { _zod: { optin: "optional" } } ? true : false;
+        \\interface UnionInternals<T extends readonly SomeType[] = readonly Ztype[]> extends Base {
+        \\  pattern: T[number]["_zod"]["pattern"];
+        \\  optin: IsOptional<T[number]> extends false ? "optional" | undefined : "optional";
+        \\}
+        \\interface Union<Options extends readonly SomeType[] = readonly Ztype[]> extends Ztype {
+        \\  _zod: UnionInternals<Options> & { output: unknown };
+        \\}
+        \\interface WrongInternals<T extends readonly SomeType[] = readonly Ztype[]> extends Base {
+        \\  pattern: T[number]["_zod"]["tag"];
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.interface_incorrectly_extends));
+    try T.expectEqual(@as(usize, 2), s.checker.diagnostics.items.len);
 }
 
 test "checker: constrained type argument relates source constraint to target union" {
