@@ -2487,13 +2487,13 @@ pub fn NestedRuleParser(comptime T: type) type {
                         return .success;
                     },
                     .moz_document => {
-                        _ = switch (this.parseStyleBlock(input)) {
+                        const rules = switch (this.parseStyleBlock(input)) {
                             .err => |e| return .{ .err = e },
                             .result => |v| v,
                         };
                         this.rules.v.append(input.allocator(), .{
                             .moz_document = css_rules.document.MozDocumentRule(T.CustomAtRuleParser.AtRule){
-                                .rules = .{},
+                                .rules = rules,
                                 .loc = .{ .source_index = loc.source_index, .line = loc.line, .column = loc.column },
                             },
                         }) catch |err| bun.handleOom(err);

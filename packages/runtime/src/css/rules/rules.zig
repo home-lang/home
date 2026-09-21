@@ -95,7 +95,7 @@ pub fn CssRule(comptime Rule: type) type {
                 .counter_style => |x| x.toCss(dest),
                 .namespace => |x| x.toCss(dest),
                 .moz_document => |x| x.toCss(dest),
-                .nesting => {},
+                .nesting => |x| x.toCss(dest),
                 .viewport => |x| x.toCss(dest),
                 .custom_media => {},
                 .layer_statement => |x| x.toCss(dest),
