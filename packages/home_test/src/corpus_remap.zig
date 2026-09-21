@@ -125,7 +125,10 @@ test "native corpus remap keeps a ready native service owned until explicit comp
         \\assert.equal(fs.realpathSync(Bun.which('node')),fs.realpathSync(process.execPath));
         \\assert.equal(process.env.NO_COLOR,'1');
         \\assert.equal(process.env.BUN_DEBUG_QUIET_LOGS,'1');
-        \\const server=Bun.serve({port:0,fetch(){return new Response('ready')}});
+        \\const server=Bun.serve({port:0,fetch(req){
+        \\  if(new URL(req.url).pathname==='/traces') return Response.json([{remap:'owned-crash-trace'}]);
+        \\  return new Response('ready');
+        \\}});
         \\console.log(server.port);
     });
     const root = try tmp.dir.realPathFileAlloc(io, ".", allocator);
@@ -159,6 +162,17 @@ test "native corpus remap keeps a ready native service owned until explicit comp
     if (corpus_result.failed_files != 0) std.debug.print("{s}\n", .{corpus_result.first_failure_message});
     try std.testing.expectEqual(@as(usize, 1), corpus_result.passed);
     try std.testing.expectEqual(@as(usize, 0), corpus_result.failed_files);
+    try tmp.dir.writeFile(io, .{ .sub_path = "test/crash-context.test.ts", .data =
+        \\import { test, expect } from 'bun:test';
+        \\test('failure retrieves remapped crash reports', () => expect(1).toBe(2));
+    });
+    var crashed = try @import("corpus_runner.zig").runFileWithOptions(io, allocator, corpus_root, "crash-context.test.ts", .{ .services = .{ .remap_port = remap.port().? } });
+    defer crashed.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), crashed.failed_files);
+    try std.testing.expectEqual(@as(usize, 1), crashed.crash_reports);
+    try std.testing.expectEqual(@as(usize, 1), crashed.executions.items.len);
+    try std.testing.expect(std.mem.indexOf(u8, crashed.executions.items[0].crashes, "1 crashes reported during this test") != null);
+    try std.testing.expect(std.mem.indexOf(u8, crashed.executions.items[0].crashes, "owned-crash-trace") != null);
     try std.testing.expect(try remap.finish());
     try std.testing.expectError(error.FileNotFound, Io.Dir.cwd().access(io, remap.storage.path, .{}));
 }

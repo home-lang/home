@@ -16,6 +16,7 @@ pub const Options = struct {
     expected_revision: ?[]const u8 = null,
     services: launch.Services = .{},
     report_directory: ?[]const u8 = null,
+    core_tracker: ?*@import("corpus_crash.zig").CoreTracker = null,
 };
 
 pub const Summary = struct {
@@ -26,6 +27,9 @@ pub const Summary = struct {
     phase: Phase = .all,
     failed: usize = 0,
     checkout_verified: bool = false,
+    crash_reports: usize = 0,
+    core_files: usize = 0,
+    crash_fetch_failures: usize = 0,
     pub fn successful(self: Summary) bool {
         return self.failed == 0 and self.completed == self.journal.selected and self.revision != null and self.checkout_verified;
     }
@@ -47,7 +51,7 @@ fn hashFile(io: Io, path: []const u8) ![64]u8 {
     return journal_module.hashFile(io, file);
 }
 fn finish(summary: *Summary) !void {
-    try summary.journal.finish(.{ .files = summary.completed, .passed = 0, .failed = 0, .skipped = 0, .todo = 0, .unsupported = 0, .failed_files = summary.failed, .process_checks_passed = 0, .preparation_steps_succeeded = summary.completed - summary.failed, .preparation_steps_failed = summary.failed, .vendor_revision = summary.revision, .preparation_phase = @tagName(summary.phase), .vendor_checked_out = summary.checkout_verified, .vendor_prepared = summary.phase != .checkout and summary.successful() });
+    try summary.journal.finish(.{ .files = summary.completed, .passed = 0, .failed = 0, .skipped = 0, .todo = 0, .unsupported = 0, .failed_files = summary.failed, .process_checks_passed = 0, .preparation_steps_succeeded = summary.completed - summary.failed, .preparation_steps_failed = summary.failed, .vendor_revision = summary.revision, .preparation_phase = @tagName(summary.phase), .vendor_checked_out = summary.checkout_verified, .vendor_prepared = summary.phase != .checkout and summary.successful(), .crash_reports = summary.crash_reports, .core_files = summary.core_files, .crash_fetch_failures = summary.crash_fetch_failures });
 }
 
 /// This explicit operation prepares one vendor. Full CI performs vendor
@@ -115,7 +119,7 @@ pub fn prepareWithOptions(allocator: Allocator, io: Io, project_root: []const u8
             try Io.Dir.cwd().access(io, test_path, .{});
             const package_hash = try hashFile(io, package_path);
             source_hash = package_hash;
-            result = try capture.runHomeCapturedWithOptions(allocator, "", if (step == .install) &.{"install"} else &.{ "run", "build" }, .{ .corpus_project_root = cwd, .setup_operation = if (step == .install) .install else .build, .services = options.services, .record = .{ .journal = &summary.journal, .id = id, .mode = if (step == .install) "vendor_install" else "vendor_build", .source_sha256 = package_hash } });
+            result = try capture.runHomeCapturedWithOptions(allocator, "", if (step == .install) &.{"install"} else &.{ "run", "build" }, .{ .corpus_project_root = cwd, .setup_operation = if (step == .install) .install else .build, .services = options.services, .core_tracker = options.core_tracker, .record = .{ .journal = &summary.journal, .id = id, .mode = if (step == .install) "vendor_install" else "vendor_build", .source_sha256 = package_hash } });
         } else {
             const argv: []const []const u8 = switch (step) {
                 .clone => &.{ git, "clone", "--depth", "1", "--single-branch", vendor.repository, cwd },
@@ -130,6 +134,9 @@ pub fn prepareWithOptions(allocator: Allocator, io: Io, project_root: []const u8
             result = try capture.runToolCaptured(allocator, io, argv, working, 180_000);
         }
         defer result.deinit(allocator);
+        summary.crash_reports += result.crash_reports;
+        summary.core_files += result.core_files;
+        summary.crash_fetch_failures += @intFromBool(result.crash_fetch_failed);
         const source_unchanged = if (step == .install or step == .build) blk: {
             const after = hashFile(io, package_path) catch |err| switch (err) {
                 error.FileNotFound => break :blk false,
@@ -137,7 +144,7 @@ pub fn prepareWithOptions(allocator: Allocator, io: Io, project_root: []const u8
             };
             break :blk std.mem.eql(u8, &source_hash, &after);
         } else true;
-        const ok = result.term.success() and !result.timed_out and result.output_complete and source_unchanged;
+        const ok = result.term.success() and !result.timed_out and result.output_complete and source_unchanged and result.crash_reports == 0 and result.core_files == 0;
         _ = try summary.journal.complete(id, result.term, result.timed_out, result.stdout, result.stderr, .{ .passed = 0, .failed = 0, .skipped = 0, .todo = 0, .observed = false }, result.output_complete, source_unchanged, null, false);
         summary.completed += 1;
         if (!ok) {

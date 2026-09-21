@@ -7,6 +7,8 @@ const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const platform = @import("corpus_platform.zig");
+const capture = @import("adapters/jsc_bootstrap.zig");
+const crash_module = @import("corpus_crash.zig");
 const docker_module = @import("corpus_docker.zig");
 const journal_module = @import("corpus_journal.zig");
 const launch = @import("corpus_launch.zig");
@@ -30,6 +32,7 @@ pub const Plan = struct {
     primary: runner.PrimaryPlan,
     vendors: []const vendor_module.Vendor,
     vendor_filters: []const []const u8,
+    coredump_upload: bool,
 
     pub fn deinit(self: *Plan) void {
         self.primary.deinit();
@@ -69,6 +72,9 @@ pub const Summary = struct {
     phase_errors: usize = 0,
     remap_ready: bool = false,
     docker_ready: bool = false,
+    crash_reports: usize = 0,
+    core_files: usize = 0,
+    crash_fetch_failures: usize = 0,
 
     pub fn successful(self: Summary) bool {
         return self.setup_succeeded and self.primary_started and self.primary_files == self.primary_expected and self.primary_failed == 0 and self.primary_unsupported == 0 and self.primary_failed_files == 0 and self.vendor_files == self.vendor_expected and self.vendor_checkouts_failed == 0 and self.vendor_discoveries_failed == 0 and self.vendor_preparations_failed == 0 and self.vendor_failed == 0 and self.vendor_unsupported == 0 and self.vendor_failed_files == 0 and self.phase_errors == 0;
@@ -122,6 +128,9 @@ fn finishCoordinator(summary: *Summary) !void {
         .phase_errors = summary.phase_errors,
         .remap_ready = summary.remap_ready,
         .docker_ready = summary.docker_ready,
+        .crash_reports = summary.crash_reports,
+        .core_files = summary.core_files,
+        .crash_fetch_failures = summary.crash_fetch_failures,
         .successful = summary.successful(),
     });
 }
@@ -192,6 +201,14 @@ pub fn prepare(
         .primary = primary,
         .vendors = vendors,
         .vendor_filters = try cloneStrings(owned, options.selection.filters),
+        .coredump_upload = crash_module.coreDumpsApplicable(.{
+            .os = primary.policy.?.context.os,
+            .arch = primary.policy.?.context.arch,
+            .distro = primary.policy.?.context.distro,
+            .distro_version = primary.policy.?.context.distro_version,
+            .abi = primary.policy.?.context.abi,
+            .abi_version = primary.policy.?.context.abi_version,
+        }, std.mem.eql(u8, environment.get("BUILDKITE") orelse "", "true")),
     };
 }
 
@@ -227,6 +244,16 @@ pub fn run(allocator: Allocator, io: Io, plan: *Plan, options: RunOptions) !Summ
         .abi = policy.context.abi,
         .abi_version = policy.context.abi_version,
     };
+    var core_tracker: ?crash_module.CoreTracker = null;
+    defer if (core_tracker) |*tracker| tracker.deinit();
+    if (plan.coredump_upload) {
+        var core_env = try capture.inheritedEnvironmentMap(allocator);
+        defer core_env.deinit();
+        const core_executable = try launch.resolveExecutable(allocator, io, &core_env, policy.context.executable);
+        defer allocator.free(core_executable);
+        core_tracker = try crash_module.CoreTracker.start(allocator, io, plan.project_root, core_executable, capture.crashToolRunner());
+        try summary.journal.append(.{ .event = "coordinator_phase", .phase = "core_dumps", .applicable = true, .enabled = true, .directory = core_tracker.?.directory, .gdb_timeout_ms = 240_000 });
+    } else try summary.journal.append(.{ .event = "coordinator_phase", .phase = "core_dumps", .applicable = false, .enabled = false });
     var docker: ?docker_module.Coordinator = null;
     defer if (docker) |*service| service.deinit();
     if (docker_module.applicable(host, policy.context.is_ci)) {
@@ -313,6 +340,7 @@ pub fn run(allocator: Allocator, io: Io, plan: *Plan, options: RunOptions) !Summ
         .report_directory = setup_report,
         .services = servicesFor(if (docker) |*value| value else null, null),
         .expected_platform = policy.expected_platform,
+        .core_tracker = if (core_tracker) |*value| value else null,
     }) catch |err| blk: {
         summary.phase_errors += 1;
         try summary.journal.append(.{ .event = "coordinator_phase", .phase = "setup", .journal = setup_report, .error_name = @errorName(err), .successful = false });
@@ -321,6 +349,11 @@ pub fn run(allocator: Allocator, io: Io, plan: *Plan, options: RunOptions) !Summ
     defer if (setup) |*result| result.deinit();
     summary.setup_succeeded = if (setup) |result| result.successful() else false;
     if (setup) |*result| try summary.journal.append(.{ .event = "coordinator_phase", .phase = "setup", .journal = result.journal.directory, .successful = summary.setup_succeeded, .steps = result.steps, .succeeded = result.succeeded, .failed = result.failed, .inputs_unchanged = result.inputs_unchanged });
+    if (setup) |result| {
+        summary.crash_reports += result.crash_reports;
+        summary.core_files += result.core_files;
+        summary.crash_fetch_failures += result.crash_fetch_failures;
+    }
 
     var remap: ?remap_module.Remap = null;
     defer if (remap) |*service| service.deinit();
@@ -346,6 +379,7 @@ pub fn run(allocator: Allocator, io: Io, plan: *Plan, options: RunOptions) !Summ
             .on_file = options.on_file,
             .report_directory = primary_report,
             .services = servicesFor(if (docker) |*value| value else null, if (remap) |*value| value else null),
+            .core_tracker = if (core_tracker) |*value| value else null,
         }) catch |err| blk: {
             summary.phase_errors += 1;
             summary.primary_started = true;
@@ -362,6 +396,9 @@ pub fn run(allocator: Allocator, io: Io, plan: *Plan, options: RunOptions) !Summ
             summary.primary_todo = result.todo;
             summary.primary_unsupported = result.unsupported;
             summary.primary_failed_files = result.failed_files;
+            summary.crash_reports += result.crash_reports;
+            summary.core_files += result.core_files;
+            summary.crash_fetch_failures += result.crash_fetch_failures;
             try summary.journal.append(.{ .event = "coordinator_phase", .phase = "primary", .journal = result.journal.?.directory, .files = result.files, .passed = result.passed, .failed = result.failed, .skipped = result.skipped, .todo = result.todo, .unsupported = result.unsupported, .failed_files = result.failed_files });
         }
     } else try summary.journal.append(.{ .event = "coordinator_phase", .phase = "primary", .started = false, .reason = "setup-failed" });
@@ -379,6 +416,7 @@ pub fn run(allocator: Allocator, io: Io, plan: *Plan, options: RunOptions) !Summ
             .expected_revision = vendor_plan.checkout_revision,
             .services = servicesFor(if (docker) |*value| value else null, if (remap) |*value| value else null),
             .report_directory = install_report,
+            .core_tracker = if (core_tracker) |*value| value else null,
         }) catch |err| blk: {
             summary.phase_errors += 1;
             summary.vendor_preparations_failed += 1;
@@ -387,6 +425,9 @@ pub fn run(allocator: Allocator, io: Io, plan: *Plan, options: RunOptions) !Summ
         };
         defer if (install) |*result| result.deinit();
         if (install == null) continue;
+        summary.crash_reports += install.?.crash_reports;
+        summary.core_files += install.?.core_files;
+        summary.crash_fetch_failures += install.?.crash_fetch_failures;
         try summary.journal.append(.{ .event = "coordinator_phase", .phase = "vendor_install_build", .vendor = vendor_plan.vendor.package, .journal = install.?.journal.directory, .successful = install.?.successful(), .completed = install.?.completed, .failed = install.?.failed, .revision = install.?.revision });
         if (!install.?.successful()) {
             summary.vendor_preparations_failed += 1;
@@ -398,6 +439,7 @@ pub fn run(allocator: Allocator, io: Io, plan: *Plan, options: RunOptions) !Summ
             .on_file = options.on_file,
             .report_directory = vendor_report,
             .services = servicesFor(if (docker) |*value| value else null, if (remap) |*value| value else null),
+            .core_tracker = if (core_tracker) |*value| value else null,
         }) catch |err| blk: {
             summary.phase_errors += 1;
             try summary.journal.append(.{ .event = "coordinator_phase", .phase = "vendor", .vendor = vendor_plan.vendor.package, .journal = vendor_report, .started = true, .error_name = @errorName(err) });
@@ -412,6 +454,9 @@ pub fn run(allocator: Allocator, io: Io, plan: *Plan, options: RunOptions) !Summ
             summary.vendor_todo += result.todo;
             summary.vendor_unsupported += result.unsupported;
             summary.vendor_failed_files += result.failed_files;
+            summary.crash_reports += result.crash_reports;
+            summary.core_files += result.core_files;
+            summary.crash_fetch_failures += result.crash_fetch_failures;
             try summary.journal.append(.{ .event = "coordinator_phase", .phase = "vendor", .vendor = vendor_plan.vendor.package, .journal = result.journal.?.directory, .files = result.files, .passed = result.passed, .failed = result.failed, .skipped = result.skipped, .todo = result.todo, .unsupported = result.unsupported, .failed_files = result.failed_files });
         }
     }

@@ -33,12 +33,17 @@ pub const Subset = enum {
 pub const FileExecution = struct {
     relative_path: []const u8,
     mode: NativeCorpusMode,
+    pid: std.process.Child.Id,
     term: std.process.Child.Term,
     timed_out: bool,
     output_complete: bool,
     timeout_ms: i64,
     stdout: []const u8,
     stderr: []const u8,
+    crashes: []const u8,
+    crash_reports: usize,
+    core_files: usize,
+    crash_fetch_failed: bool,
 };
 
 pub const RunOptions = struct {
@@ -53,6 +58,7 @@ pub const RunOptions = struct {
     /// bytes, and may only remove exclusions in its Home expectation source.
     selection: ?SelectionPolicy = null,
     services: @import("corpus_launch.zig").Services = .{},
+    core_tracker: ?*@import("corpus_crash.zig").CoreTracker = null,
 };
 
 pub const SelectionPolicy = struct {
@@ -193,6 +199,9 @@ pub const Summary = struct {
     process_checks_passed: usize = 0,
     failed_files: usize = 0,
     skipped_files: usize = 0,
+    crash_reports: usize = 0,
+    core_files: usize = 0,
+    crash_fetch_failures: usize = 0,
     // Files that legitimately register zero tests (e.g. Bun's empty-file.test.ts
     // regression fixture, which is only a comment). These must not be treated as a
     // `no-tests-observed` failure even though they contribute no passed/failed/todo.
@@ -210,6 +219,7 @@ pub const Summary = struct {
     launch_is_ci: bool = true,
     launch_asan_step: bool = false,
     launch_services: @import("corpus_launch.zig").Services = .{},
+    core_tracker: ?*@import("corpus_crash.zig").CoreTracker = null,
 
     pub fn deinit(self: *Summary, allocator: std.mem.Allocator) void {
         if (self.journal) |*journal| journal.deinit();
@@ -223,6 +233,7 @@ pub const Summary = struct {
             allocator.free(execution.relative_path);
             allocator.free(execution.stdout);
             allocator.free(execution.stderr);
+            if (execution.crashes.len != 0) allocator.free(execution.crashes);
         }
         self.executions.deinit(allocator);
         self.executions = .empty;
@@ -243,7 +254,7 @@ pub const Summary = struct {
 };
 
 fn beginSummary(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8, options: RunOptions) !Summary {
-    var summary = Summary{ .on_file = options.on_file, .launch_services = options.services, .launch_is_ci = if (options.selection) |policy| policy.context.is_ci else true, .launch_asan_step = if (options.selection) |policy| policy.asan_step else false };
+    var summary = Summary{ .on_file = options.on_file, .launch_services = options.services, .core_tracker = options.core_tracker, .launch_is_ci = if (options.selection) |policy| policy.context.is_ci else true, .launch_asan_step = if (options.selection) |policy| policy.asan_step else false };
     if (options.persist_results or options.report_directory != null) {
         const env_path = try envVariableAlloc(allocator, "HOME_BUN_CORPUS_REPORT_DIR");
         defer if (env_path) |value| allocator.free(value);
@@ -266,6 +277,9 @@ fn finishSummary(summary: *Summary) !void {
         .process_checks_passed = summary.process_checks_passed,
         .skipped_files = summary.skipped_files,
         .comment_only_files = summary.allowed_empty_files,
+        .crash_reports = summary.crash_reports,
+        .core_files = summary.core_files,
+        .crash_fetch_failures = summary.crash_fetch_failures,
     });
 }
 
@@ -1064,6 +1078,7 @@ fn nativeCorpusFailureDiagnostic(
     timed_out: bool,
     stdout: []const u8,
     stderr: []const u8,
+    crashes: []const u8,
 ) ![]u8 {
     const outcome = if (timed_out)
         try std.fmt.allocPrint(allocator, "timed out after {d} milliseconds", .{timeout_ms})
@@ -1077,8 +1092,8 @@ fn nativeCorpusFailureDiagnostic(
 
     return std.fmt.allocPrint(
         allocator,
-        "native Home corpus process {s}\nstderr:\n{s}\nstdout:\n{s}",
-        .{ outcome, stderr, stdout },
+        "native Home corpus process {s}\nstderr:\n{s}\nstdout:\n{s}\ncrashes:\n{s}",
+        .{ outcome, stderr, stdout, crashes },
     );
 }
 
@@ -1150,18 +1165,27 @@ fn runRelativeFile(
             .corpus_validation_root = if (summary.vendor_context) |vendor| vendor.corpus_project_root else null,
             .corpus_validation_relative_path = validation_relative,
             .vendor_test = summary.vendor_context != null,
+            .core_tracker = summary.core_tracker,
         });
         defer native_run.deinit(allocator);
         const execution = FileExecution{
             .relative_path = relative,
             .mode = mode,
+            .pid = native_run.pid,
             .term = native_run.term,
             .timed_out = native_run.timed_out,
             .output_complete = native_run.output_complete,
             .timeout_ms = native_run.timeout_ms,
             .stdout = native_run.stdout,
             .stderr = native_run.stderr,
+            .crashes = native_run.crashes,
+            .crash_reports = native_run.crash_reports,
+            .core_files = native_run.core_files,
+            .crash_fetch_failed = native_run.crash_fetch_failed,
         };
+        summary.crash_reports += native_run.crash_reports;
+        summary.core_files += native_run.core_files;
+        summary.crash_fetch_failures += @intFromBool(native_run.crash_fetch_failed);
         const counts = nativeCorpusTestCounts(native_run.stdout, native_run.stderr);
         const after_source = Io.Dir.cwd().readFileAlloc(io, file_path, allocator, .limited(1024 * 1024)) catch null;
         defer if (after_source) |bytes| allocator.free(bytes);
@@ -1172,7 +1196,7 @@ fn runRelativeFile(
         if (summary.on_file) |on_file| try on_file(execution);
 
         if (summary.vendor_context == null and isNativeExpectedFailureCorpusFile(relative)) {
-            if (expected_failure_verified and source_unchanged and !missing_case_report) {
+            if (expected_failure_verified and source_unchanged and !missing_case_report and native_run.crash_reports == 0 and native_run.core_files == 0) {
                 summary.process_checks_passed += 1;
             } else {
                 file_result.passed = counts.passed;
@@ -1195,7 +1219,7 @@ fn runRelativeFile(
                 file_result.todo = counts.todo;
                 file_result.skipped = counts.skipped;
             }
-            if (!nativeCorpusProcessSucceeded(native_run.term, native_run.timed_out) or counts.failed != 0 or !source_unchanged or missing_case_report) {
+            if (!nativeCorpusProcessSucceeded(native_run.term, native_run.timed_out) or counts.failed != 0 or !source_unchanged or missing_case_report or native_run.crash_reports != 0 or native_run.core_files != 0) {
                 summary.failed_files += 1;
                 const diagnostic = if (!source_unchanged) try allocator.dupe(u8, "original corpus source changed during execution") else if (missing_case_report) try allocator.dupe(u8, "native JUnit report missing for registered test cases") else try nativeCorpusFailureDiagnostic(
                     allocator,
@@ -1204,6 +1228,7 @@ fn runRelativeFile(
                     native_run.timed_out,
                     native_run.stdout,
                     native_run.stderr,
+                    native_run.crashes,
                 );
                 defer allocator.free(diagnostic);
                 try recordFailure(allocator, summary, relative, diagnostic);
@@ -1230,6 +1255,7 @@ fn runRelativeFile(
             // buffers or dropping stderr from successful files.
             native_run.stdout = &.{};
             native_run.stderr = &.{};
+            native_run.crashes = &.{};
         }
         return;
     }

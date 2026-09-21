@@ -13,6 +13,7 @@ pub const Options = struct {
     report_directory: ?[]const u8 = null,
     services: @import("corpus_launch.zig").Services = .{},
     expected_platform: ?platform.Expected = null,
+    core_tracker: ?*@import("corpus_crash.zig").CoreTracker = null,
 };
 pub const Summary = struct {
     journal: journal_module.Journal,
@@ -20,6 +21,9 @@ pub const Summary = struct {
     succeeded: usize = 0,
     failed: usize = 0,
     inputs_unchanged: bool = true,
+    crash_reports: usize = 0,
+    core_files: usize = 0,
+    crash_fetch_failures: usize = 0,
     pub fn deinit(self: *Summary) void {
         self.journal.deinit();
     }
@@ -98,8 +102,11 @@ pub fn runRootInstalls(allocator: Allocator, io: Io, project_root: []const u8, o
         const cwd = if (id == 0) try allocator.dupe(u8, root) else try std.fs.path.join(allocator, &.{ root, "test" });
         defer allocator.free(cwd);
         std.debug.print("[home-bun-setup] install {s}\n", .{cwd});
-        var result = try capture.runHomeCapturedWithOptions(allocator, "", &.{"install"}, .{ .corpus_project_root = cwd, .setup_operation = .install, .services = options.services, .record = .{ .journal = &summary.journal, .id = id, .mode = "setup_install", .source_sha256 = hash[0..64].* } });
+        var result = try capture.runHomeCapturedWithOptions(allocator, "", &.{"install"}, .{ .corpus_project_root = cwd, .setup_operation = .install, .services = options.services, .core_tracker = options.core_tracker, .record = .{ .journal = &summary.journal, .id = id, .mode = "setup_install", .source_sha256 = hash[0..64].* } });
         defer result.deinit(allocator);
+        summary.crash_reports += result.crash_reports;
+        summary.core_files += result.core_files;
+        summary.crash_fetch_failures += @intFromBool(result.crash_fetch_failed);
         var unchanged = true;
         for (manifest.value.files) |input| if (!try inputMatches(allocator, io, root, input)) {
             unchanged = false;
@@ -110,11 +117,11 @@ pub fn runRootInstalls(allocator: Allocator, io: Io, project_root: []const u8, o
         // corpus test cases and must not be parsed into their pass counters.
         _ = try summary.journal.complete(id, result.term, result.timed_out, result.stdout, result.stderr, .{ .passed = @as(usize, 0), .failed = @as(usize, 0), .skipped = @as(usize, 0), .todo = @as(usize, 0), .observed = false }, result.output_complete, unchanged, null, false);
         summary.steps += 1;
-        if (result.term.success() and !result.timed_out and result.output_complete and unchanged) summary.succeeded += 1 else summary.failed += 1;
+        if (result.term.success() and !result.timed_out and result.output_complete and unchanged and result.crash_reports == 0 and result.core_files == 0) summary.succeeded += 1 else summary.failed += 1;
         // Pinned runTests attempts both root and test installs. A setup failure
         // prevents the later primary/service phases; it does not skip this loop.
     }
-    try summary.journal.finish(.{ .files = summary.steps, .passed = @as(usize, 0), .failed = @as(usize, 0), .skipped = @as(usize, 0), .todo = @as(usize, 0), .unsupported = @as(usize, 0), .failed_files = summary.failed, .process_checks_passed = @as(usize, 0), .setup_steps_succeeded = summary.succeeded, .setup_steps_failed = summary.failed, .inputs_unchanged = summary.inputs_unchanged });
+    try summary.journal.finish(.{ .files = summary.steps, .passed = @as(usize, 0), .failed = @as(usize, 0), .skipped = @as(usize, 0), .todo = @as(usize, 0), .unsupported = @as(usize, 0), .failed_files = summary.failed, .process_checks_passed = @as(usize, 0), .setup_steps_succeeded = summary.succeeded, .setup_steps_failed = summary.failed, .inputs_unchanged = summary.inputs_unchanged, .crash_reports = summary.crash_reports, .core_files = summary.core_files, .crash_fetch_failures = summary.crash_fetch_failures });
     return summary;
 }
 

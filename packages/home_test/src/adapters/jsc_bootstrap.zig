@@ -2,6 +2,7 @@ const std = @import("std");
 const home_rt = @import("home_rt");
 const runner = @import("../runner.zig");
 const corpus_child_wait = @import("../corpus_child_wait.zig");
+const corpus_crash = @import("../corpus_crash.zig");
 const corpus_launch = @import("../corpus_launch.zig");
 const corpus_journal = @import("../corpus_journal.zig");
 
@@ -5831,6 +5832,7 @@ const SpawnSyncCapturedOptions = struct {
 };
 
 const SpawnSyncCapturedResult = struct {
+    pid: std.process.Child.Id,
     term: std.process.Child.Term,
     stdout: []u8,
     stderr: []u8,
@@ -5840,15 +5842,21 @@ const SpawnSyncCapturedResult = struct {
 
 pub const HomeCapturedResult = struct {
     timeout_ms: i64 = home_corpus_child_timeout_ms,
+    pid: std.process.Child.Id,
     term: std.process.Child.Term,
     stdout: []u8,
     stderr: []u8,
     timed_out: bool,
     output_complete: bool,
+    crashes: []u8 = &.{},
+    crash_reports: usize = 0,
+    core_files: usize = 0,
+    crash_fetch_failed: bool = false,
 
     pub fn deinit(self: *HomeCapturedResult, allocator: std.mem.Allocator) void {
         allocator.free(self.stdout);
         allocator.free(self.stderr);
+        if (self.crashes.len != 0) allocator.free(self.crashes);
         self.* = undefined;
     }
 };
@@ -5887,6 +5895,7 @@ pub const HomeCapturedOptions = struct {
     vendor_serial_id: ?usize = null,
     junit_path: ?[]const u8 = null,
     record: ?corpus_journal.Invocation = null,
+    core_tracker: ?*corpus_crash.CoreTracker = null,
     // Owned by runHomeCapturedWithOptions for one invocation.
     storage: ?corpus_launch.Storage = null,
 };
@@ -5945,6 +5954,8 @@ pub fn runHomeCapturedWithOptions(
     };
     const timeout_ms = if (invocation.profile) |selected| selected.file_timeout_ms else home_corpus_child_timeout_ms;
     if (options.record) |record| try record.journal.start(record, invocation.argv, timeout_ms, options.corpus_project_root, &invocation.environ_map);
+    var core_before = if (options.core_tracker) |tracker| try tracker.snapshot() else null;
+    defer if (core_before) |*snapshot| snapshot.deinit();
     const captured = try runSpawnSyncCaptured(allocator, io, .{
         .argv = invocation.argv,
         .cwd = if (options.corpus_project_root) |path| .{ .path = path } else .inherit,
@@ -5954,14 +5965,53 @@ pub fn runHomeCapturedWithOptions(
     });
     errdefer allocator.free(captured.stdout);
     errdefer allocator.free(captured.stderr);
+    var crash_output = std.Io.Writer.Allocating.init(allocator);
+    errdefer crash_output.deinit();
+    var crash_reports: usize = 0;
+    var core_files: usize = 0;
+    var crash_fetch_failed = false;
+    if (options.core_tracker) |tracker| {
+        var diagnostics = try tracker.collect(&core_before.?, captured.pid, captured.term, runCrashTool);
+        defer diagnostics.deinit(allocator);
+        core_files = diagnostics.core_files;
+        try crash_output.writer.writeAll(diagnostics.text);
+    }
+    if (options.services.remap_port) |port| if (!captured.term.success()) {
+        var diagnostics = corpus_crash.fetchRemapTraces(allocator, io, port) catch |err| blk: {
+            crash_fetch_failed = true;
+            try crash_output.writer.print("failed to fetch traces: {s}\n", .{@errorName(err)});
+            break :blk null;
+        };
+        if (diagnostics) |*value| {
+            defer value.deinit(allocator);
+            crash_reports = value.traces;
+            try crash_output.writer.writeAll(value.text);
+        }
+    };
+    const crashes = try crash_output.toOwnedSlice();
+    errdefer if (crashes.len != 0) allocator.free(crashes);
+    if (options.record) |record| if (crashes.len != 0 or crash_reports != 0 or core_files != 0 or crash_fetch_failed) try record.journal.append(.{
+        .event = "crash_processing",
+        .id = record.id,
+        .pid = captured.pid,
+        .crash_reports = crash_reports,
+        .core_files = core_files,
+        .fetch_failed = crash_fetch_failed,
+        .diagnostic = crashes,
+    });
     if (storage) |owned| try owned.cleanup(io);
     return .{
+        .pid = captured.pid,
         .term = captured.term,
         .stdout = captured.stdout,
         .stderr = captured.stderr,
         .timed_out = captured.timed_out,
         .output_complete = captured.output_complete,
         .timeout_ms = timeout_ms,
+        .crashes = crashes,
+        .crash_reports = crash_reports,
+        .core_files = core_files,
+        .crash_fetch_failed = crash_fetch_failed,
     };
 }
 
@@ -6112,7 +6162,26 @@ pub fn runToolCaptured(allocator: std.mem.Allocator, io: Io, command: []const []
     defer allocator.free(argv);
     argv[0] = executable;
     const result = try runSpawnSyncCaptured(allocator, io, .{ .argv = argv, .cwd = .{ .path = cwd }, .environ_map = &env, .timeout_ms = timeout_ms, .kill_process_group = true });
-    return .{ .term = result.term, .stdout = result.stdout, .stderr = result.stderr, .timed_out = result.timed_out, .output_complete = result.output_complete, .timeout_ms = timeout_ms };
+    return .{ .pid = result.pid, .term = result.term, .stdout = result.stdout, .stderr = result.stderr, .timed_out = result.timed_out, .output_complete = result.output_complete, .timeout_ms = timeout_ms };
+}
+
+fn runCrashTool(allocator: std.mem.Allocator, io: Io, command: []const []const u8, cwd: []const u8, timeout_ms: i64) !corpus_crash.ToolResult {
+    var result = try runToolCaptured(allocator, io, command, cwd, timeout_ms);
+    defer result.deinit(allocator);
+    const transferred = corpus_crash.ToolResult{
+        .term = result.term,
+        .timed_out = result.timed_out,
+        .output_complete = result.output_complete,
+        .stdout = result.stdout,
+        .stderr = result.stderr,
+    };
+    result.stdout = &.{};
+    result.stderr = &.{};
+    return transferred;
+}
+
+pub fn crashToolRunner() corpus_crash.ToolRunner {
+    return runCrashTool;
 }
 
 fn runSpawnSyncCaptured(
@@ -6139,6 +6208,7 @@ fn runSpawnSyncCaptured(
         forceTerminateSpawnSyncChild(&child, use_process_group);
         child.kill(io);
     };
+    const pid = child.id.?;
 
     var multi_reader_buffer: Io.File.MultiReader.Buffer(2) = undefined;
     var multi_reader: Io.File.MultiReader = undefined;
@@ -6196,6 +6266,7 @@ fn runSpawnSyncCaptured(
     errdefer allocator.free(stderr);
 
     return .{
+        .pid = pid,
         .term = term,
         .stdout = stdout,
         .stderr = stderr,
