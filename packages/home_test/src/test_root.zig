@@ -15,6 +15,7 @@ test {
     // which a substring filter can exclude before their imports are analyzed.
     _ = home_test;
     _ = home_test.corpus;
+    _ = home_test.corpus_coordinator;
     _ = home_test.corpus_selection;
     _ = home_test.corpus_platform;
     _ = home_test.corpus_setup;

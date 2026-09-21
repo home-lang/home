@@ -66,6 +66,74 @@ pub const SelectionPolicy = struct {
     asan_step: bool = false,
 };
 
+fn cloneOptionalString(allocator: std.mem.Allocator, value: ?[]const u8) !?[]const u8 {
+    return if (value) |text| try allocator.dupe(u8, text) else null;
+}
+
+fn cloneStringList(allocator: std.mem.Allocator, values: []const []const u8) ![]const []const u8 {
+    const result = try allocator.alloc([]const u8, values.len);
+    for (values, result) |value, *owned| owned.* = try allocator.dupe(u8, value);
+    return result;
+}
+
+fn cloneSelectionPolicy(allocator: std.mem.Allocator, policy: SelectionPolicy) !SelectionPolicy {
+    return .{
+        .context = .{
+            .executable = try allocator.dupe(u8, policy.context.executable),
+            .os = try allocator.dupe(u8, policy.context.os),
+            .arch = try allocator.dupe(u8, policy.context.arch),
+            .distro = try cloneOptionalString(allocator, policy.context.distro),
+            .distro_version = try cloneOptionalString(allocator, policy.context.distro_version),
+            .abi = try cloneOptionalString(allocator, policy.context.abi),
+            .abi_version = try cloneOptionalString(allocator, policy.context.abi_version),
+            .is_ci = policy.context.is_ci,
+        },
+        .upstream_expectations = try allocator.dupe(u8, policy.upstream_expectations),
+        .home_expectations = try cloneOptionalString(allocator, policy.home_expectations),
+        .options = .{
+            .node_only = policy.options.node_only,
+            .includes = try cloneStringList(allocator, policy.options.includes),
+            .excludes = try cloneStringList(allocator, policy.options.excludes),
+            .filters = try cloneStringList(allocator, policy.options.filters),
+            .shard = policy.options.shard,
+            .max_shards = policy.options.max_shards,
+            .modified_tests = try cloneStringList(allocator, policy.options.modified_tests),
+        },
+        .detect_platform = policy.detect_platform,
+        .expected_platform = .{
+            .os = try cloneOptionalString(allocator, policy.expected_platform.os),
+            .arch = try cloneOptionalString(allocator, policy.expected_platform.arch),
+            .abi = try cloneOptionalString(allocator, policy.expected_platform.abi),
+            .distro = try cloneOptionalString(allocator, policy.expected_platform.distro),
+            .release = try cloneOptionalString(allocator, policy.expected_platform.release),
+        },
+        .asan_step = policy.asan_step,
+    };
+}
+
+/// An immutable primary selection prepared before setup and service startup.
+/// Every string and selection record is owned by the plan's arena, so callers
+/// can retain it across those phases without retaining CLI or environment data.
+pub const PrimaryPlan = struct {
+    arena: std.heap.ArenaAllocator,
+    corpus_path: []const u8,
+    policy: ?SelectionPolicy = null,
+    inventory: []const []const u8,
+    upstream_expectations: []const corpus_selection.Rule = &.{},
+    home_expectations: []const corpus_selection.Rule = &.{},
+    modifiers: []const []const u8 = &.{},
+    selected_indices: []const usize,
+    excluded: []const corpus_selection.Excluded = &.{},
+    additional_home_coverage: []const usize = &.{},
+    range_start: usize,
+    range_end: usize,
+
+    pub fn deinit(self: *PrimaryPlan) void {
+        self.arena.deinit();
+        self.* = undefined;
+    }
+};
+
 test "native corpus selection records exclusions and rejects Home-only skips" {
     if (!build_options.enable_jsc) return error.SkipZigTest;
     const allocator = std.testing.allocator;
@@ -81,10 +149,23 @@ test "native corpus selection records exclusions and rejects Home-only skips" {
     try tmp.dir.writeFile(io, .{ .sub_path = "test/excluded.test.js", .data = "throw new Error('excluded fixture must not execute');" });
     const root = try tmp.dir.realPathFileAlloc(io, "test", allocator);
     defer allocator.free(root);
-    var summary = try runGateWithOptions(io, allocator, root, .{
-        .persist_results = true,
-        .selection = .{ .context = .{ .executable = "home", .os = "darwin", .arch = "aarch64" }, .upstream_expectations = "test/excluded.test.js [ FAIL ] # upstream fixture rule" },
+    try std.testing.expectError(error.HomeOnlyCorpusExclusion, prepareGatePlan(io, allocator, root, .{
+        .context = .{ .executable = "home", .os = "darwin", .arch = "aarch64" },
+        .upstream_expectations = "",
+        .home_expectations = "test/pass.test.js [ SKIP ]",
+    }));
+    const expectations = try allocator.dupe(u8, "test/excluded.test.js [ FAIL ] # upstream fixture rule");
+    var plan = try prepareGatePlan(io, allocator, root, .{
+        .context = .{ .executable = "home", .os = "darwin", .arch = "aarch64" },
+        .upstream_expectations = expectations,
     });
+    defer plan.deinit();
+    allocator.free(expectations);
+    // The coordinator can hold the plan across setup without execution silently
+    // rediscovering a changed manifest or borrowing the caller's source bytes.
+    try tmp.dir.writeFile(io, .{ .sub_path = "test/BUN_TRACKED_FILES.txt", .data = "excluded.test.js\nlate.test.js\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "test/late.test.js", .data = "throw new Error('late file must not enter a prepared plan');" });
+    var summary = try runPreparedGatePlanWithOptions(io, allocator, &plan, .{ .persist_results = true });
     defer summary.deinit(allocator);
     try std.testing.expect(!summary.blocked);
     defer Io.Dir.cwd().deleteTree(io, summary.journal.?.directory) catch {};
@@ -98,9 +179,6 @@ test "native corpus selection records exclusions and rejects Home-only skips" {
     defer allocator.free(events);
     try std.testing.expect(std.mem.indexOf(u8, events, "\"event\":\"selection\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, events, "upstream fixture rule") != null);
-    try std.testing.expectError(error.HomeOnlyCorpusExclusion, runGateWithOptions(io, allocator, root, .{
-        .selection = .{ .context = .{ .executable = "home", .os = "darwin", .arch = "aarch64" }, .upstream_expectations = "", .home_expectations = "test/pass.test.js [ SKIP ]" },
-    }));
 }
 
 pub const Summary = struct {
@@ -275,91 +353,121 @@ pub fn runGate(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8) !S
     return runGateWithOptions(io, allocator, corpus_path, .{});
 }
 
-pub fn runGateWithOptions(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8, requested: RunOptions) !Summary {
-    var options = requested;
+pub fn prepareGatePlan(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8, requested: ?SelectionPolicy) !PrimaryPlan {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    errdefer arena.deinit();
+    const owned = arena.allocator();
+    const owned_path = try owned.dupe(u8, corpus_path);
+    var policy = if (requested) |value| try cloneSelectionPolicy(owned, value) else null;
     var detected: ?corpus_platform.Detected = null;
-    defer if (detected) |*owned| owned.deinit();
-    if (options.selection) |*policy| {
-        if (policy.detect_platform) {
+    defer if (detected) |*value| value.deinit();
+    if (policy) |*selected_policy| {
+        if (selected_policy.detect_platform) {
             detected = try corpus_platform.detect(allocator, io);
             const host = detected.?.host;
-            const checked = corpus_platform.check(host, policy.expected_platform);
+            const checked = corpus_platform.check(host, selected_policy.expected_platform);
             if (checked.len != 0) return error.CorpusPlatformMismatch;
-            inline for (.{ "os", "arch", "distro", "distro_version", "abi", "abi_version" }) |field| @field(policy.context, field) = @field(host, field);
+            selected_policy.context.os = try owned.dupe(u8, host.os);
+            selected_policy.context.arch = try owned.dupe(u8, host.arch);
+            selected_policy.context.distro = try cloneOptionalString(owned, host.distro);
+            selected_policy.context.distro_version = try cloneOptionalString(owned, host.distro_version);
+            selected_policy.context.abi = try cloneOptionalString(owned, host.abi);
+            selected_policy.context.abi_version = try cloneOptionalString(owned, host.abi_version);
         }
     }
-    const test_files = corpus.collectTrackedTestFiles(io, allocator, corpus_path) catch |err| switch (err) {
+    const inventory = try corpus.collectTrackedTestFiles(io, owned, owned_path);
+    var upstream: []const corpus_selection.Rule = &.{};
+    var home: []const corpus_selection.Rule = &.{};
+    var modifiers: []const []const u8 = &.{};
+    var selected_indices: []const usize = undefined;
+    var excluded: []const corpus_selection.Excluded = &.{};
+    var additional: []const usize = &.{};
+    if (policy) |selected_policy| {
+        upstream = try corpus_selection.parseExpectations(owned, selected_policy.upstream_expectations);
+        home = try corpus_selection.parseExpectations(owned, selected_policy.home_expectations orelse selected_policy.upstream_expectations);
+        modifiers = try selected_policy.context.modifiers(owned);
+        try corpus_selection.validateHomeExpectations(inventory, upstream, home, modifiers);
+        const selection = try corpus_selection.select(owned, inventory, selected_policy.context, home, selected_policy.options);
+        selected_indices = selection.selected;
+        excluded = selection.excluded;
+        var extra: std.ArrayList(usize) = .empty;
+        for (selection.selected) |index| {
+            if (corpus_selection.matchingRule(inventory[index], upstream, modifiers) != null) try extra.append(owned, index);
+        }
+        additional = try extra.toOwnedSlice(owned);
+    } else {
+        const all = try owned.alloc(usize, inventory.len);
+        for (all, 0..) |*index, value| index.* = value;
+        selected_indices = all;
+    }
+    const range = bunCorpusRange(selected_indices.len);
+    return .{
+        .arena = arena,
+        .corpus_path = owned_path,
+        .policy = policy,
+        .inventory = inventory,
+        .upstream_expectations = upstream,
+        .home_expectations = home,
+        .modifiers = modifiers,
+        .selected_indices = selected_indices,
+        .excluded = excluded,
+        .additional_home_coverage = additional,
+        .range_start = range.start,
+        .range_end = range.end,
+    };
+}
+
+pub fn runPreparedGatePlanWithOptions(io: Io, allocator: std.mem.Allocator, plan: *const PrimaryPlan, requested: RunOptions) !Summary {
+    if (requested.selection != null) return error.SelectionAlreadyPrepared;
+    if (!build_options.enable_jsc) return .{ .files = plan.inventory.len, .blocked = true, .reason = "jsc-disabled" };
+    var options = requested;
+    options.selection = plan.policy;
+    var summary = try beginSummary(io, allocator, plan.corpus_path, options);
+    errdefer summary.deinit(allocator);
+    if (summary.journal) |*journal| {
+        if (plan.policy) |policy| try journal.append(.{
+            .event = "selection",
+            .contract = "bun-4982b91e-primary",
+            .inventory = plan.inventory,
+            .context = policy.context,
+            .native_platform_detected = policy.detect_platform,
+            .expected_platform = policy.expected_platform,
+            .asan_step = policy.asan_step,
+            .modifiers = plan.modifiers,
+            .options = policy.options,
+            .upstream_expectations = plan.upstream_expectations,
+            .upstream_expectations_sha256 = @as([]const u8, &corpus_journal.hashBytes(policy.upstream_expectations)),
+            .home_expectations = plan.home_expectations,
+            .home_expectations_sha256 = @as([]const u8, &corpus_journal.hashBytes(policy.home_expectations orelse policy.upstream_expectations)),
+            .selected_indices = plan.selected_indices,
+            .excluded = plan.excluded,
+            .additional_home_coverage = plan.additional_home_coverage,
+            .range_start = plan.range_start,
+            .range_end = plan.range_end,
+        });
+        for (plan.selected_indices[plan.range_start..plan.range_end]) |inventory_index| try journal.select(plan.inventory[inventory_index]);
+    }
+    const show_progress = bunCorpusProgressEnabled();
+    for (plan.selected_indices[plan.range_start..plan.range_end], plan.range_start..) |inventory_index, ordinal| {
+        const relative = plan.inventory[inventory_index];
+        if (show_progress) {
+            std.debug.print("[home-bun-corpus] {d}/{d} {s}\n", .{ ordinal + 1, plan.selected_indices.len, relative });
+        }
+        try runIsolatedRelativeFile(io, allocator, plan.corpus_path, relative, &summary);
+    }
+    try finishSummary(&summary);
+    return summary;
+}
+
+pub fn runGateWithOptions(io: Io, allocator: std.mem.Allocator, corpus_path: []const u8, requested: RunOptions) !Summary {
+    var plan = prepareGatePlan(io, allocator, corpus_path, requested.selection) catch |err| switch (err) {
         error.FileNotFound => return .{ .blocked = true, .reason = "corpus-not-found" },
         else => return err,
     };
-    defer corpus.freeTestFiles(allocator, test_files);
-
-    if (!build_options.enable_jsc) {
-        return .{
-            .files = test_files.len,
-            .blocked = true,
-            .reason = "jsc-disabled",
-        };
-    }
-
-    var summary = try beginSummary(io, allocator, corpus_path, options);
-    errdefer summary.deinit(allocator);
-    const show_progress = bunCorpusProgressEnabled();
-    var planned: std.ArrayList([]const u8) = .empty;
-    defer planned.deinit(allocator);
-    if (options.selection) |policy| {
-        const upstream = try corpus_selection.parseExpectations(allocator, policy.upstream_expectations);
-        defer allocator.free(upstream);
-        const home = try corpus_selection.parseExpectations(allocator, policy.home_expectations orelse policy.upstream_expectations);
-        defer allocator.free(home);
-        const modifiers = try policy.context.modifiers(allocator);
-        defer corpus_selection.freeModifiers(allocator, modifiers);
-        try corpus_selection.validateHomeExpectations(test_files, upstream, home, modifiers);
-        const selection = try corpus_selection.select(allocator, test_files, policy.context, home, policy.options);
-        defer selection.deinit(allocator);
-        for (selection.selected) |index| try planned.append(allocator, test_files[index]);
-        const range = bunCorpusRange(planned.items.len);
-        if (summary.journal) |*journal| {
-            var extra: std.ArrayList(usize) = .empty;
-            defer extra.deinit(allocator);
-            for (selection.selected) |index| {
-                if (corpus_selection.matchingRule(test_files[index], upstream, modifiers) != null) try extra.append(allocator, index);
-            }
-            try journal.append(.{
-                .event = "selection",
-                .contract = "bun-4982b91e-primary",
-                .inventory = test_files,
-                .context = policy.context,
-                .native_platform_detected = policy.detect_platform,
-                .expected_platform = policy.expected_platform,
-                .asan_step = policy.asan_step,
-                .modifiers = modifiers,
-                .options = policy.options,
-                .upstream_expectations = upstream,
-                .upstream_expectations_sha256 = @as([]const u8, &corpus_journal.hashBytes(policy.upstream_expectations)),
-                .home_expectations = home,
-                .home_expectations_sha256 = @as([]const u8, &corpus_journal.hashBytes(policy.home_expectations orelse policy.upstream_expectations)),
-                .selected_indices = selection.selected,
-                .excluded = selection.excluded,
-                .additional_home_coverage = extra.items,
-                .range_start = range.start,
-                .range_end = range.end,
-            });
-        }
-    } else try planned.appendSlice(allocator, test_files);
-    const range = bunCorpusRange(planned.items.len);
-    if (summary.journal) |*journal| for (planned.items[range.start..range.end]) |relative| {
-        try journal.select(relative);
-    };
-    for (planned.items[range.start..range.end], range.start..) |relative, index| {
-        if (show_progress) {
-            std.debug.print("[home-bun-corpus] {d}/{d} {s}\n", .{ index + 1, planned.items.len, relative });
-        }
-        try runIsolatedRelativeFile(io, allocator, corpus_path, relative, &summary);
-    }
-
-    try finishSummary(&summary);
-    return summary;
+    defer plan.deinit();
+    var options = requested;
+    options.selection = null;
+    return runPreparedGatePlanWithOptions(io, allocator, &plan, options);
 }
 
 pub fn runDirectory(
@@ -527,13 +635,16 @@ test "native corpus prepared vendors use project configs, forced test mode and c
     defer allocator.free(root);
     const report = try std.fs.path.join(allocator, &.{ root, "configured-results" });
     defer allocator.free(report);
-    var configured = try runPreparedVendorWithOptions(io, allocator, root, .{
+    var configured_plan = try prepareVendorPlan(io, allocator, root, .{
         .package = "configured",
         .repository = "private-control",
         .tag = "fixture",
         .testExtensions = &.{"js"},
         .skipTests = .{ .bool = true },
-    }, .{ .run = .{ .report_directory = report } });
+    }, .{});
+    defer configured_plan.deinit();
+    try tmp.dir.writeFile(io, .{ .sub_path = "vendor/configured/test/late.test.js", .data = "throw new Error('late vendor file must not enter a prepared plan');" });
+    var configured = try runPreparedVendorPlanWithOptions(io, allocator, &configured_plan, .{ .report_directory = report });
     defer configured.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 2), configured.files);
     try std.testing.expectEqual(@as(usize, 1), configured.passed);
@@ -559,88 +670,141 @@ pub const VendorRunOptions = struct {
     checkout_revision: ?[]const u8 = null,
 };
 
-/// Execute a prepared vendor project. Installation/build belong to the outer
-/// CI coordinator; this entrypoint records that they were NOT performed here.
-pub fn runPreparedVendorWithOptions(io: Io, allocator: std.mem.Allocator, project_root: []const u8, vendor: corpus_vendor.Vendor, options: VendorRunOptions) !Summary {
-    if (!build_options.enable_jsc) return .{ .blocked = true, .reason = "jsc-disabled" };
+pub const VendorExclusion = struct {
+    index: usize,
+    reason: []const u8,
+    skip_pattern: ?[]const u8 = null,
+};
+
+/// Vendor discovery prepared after checkout and retained across root setup.
+/// Execution consumes these exact paths and exclusions without touching the
+/// directory tree again.
+pub const VendorPlan = struct {
+    arena: std.heap.ArenaAllocator,
+    project_root: []const u8,
+    vendor_path: []const u8,
+    vendor: corpus_vendor.Vendor,
+    filters: []const []const u8,
+    checkout_revision: ?[]const u8,
+    inventory: []const []const u8,
+    selected_indices: []const usize,
+    excluded: []const VendorExclusion,
+    preload: ?[]const u8,
+    range_start: usize,
+    range_end: usize,
+
+    pub fn deinit(self: *VendorPlan) void {
+        self.arena.deinit();
+        self.* = undefined;
+    }
+};
+
+pub fn prepareVendorPlan(io: Io, allocator: std.mem.Allocator, project_root: []const u8, vendor: corpus_vendor.Vendor, options: VendorRunOptions) !VendorPlan {
+    if (!build_options.enable_jsc) return error.NativeRuntimeRequired;
     if (options.run.selection != null) return error.PrimarySelectionNotApplicableToVendor;
-    const root = try Io.Dir.cwd().realPathFileAlloc(io, project_root, allocator);
-    defer allocator.free(root);
-    const vendor_path = try std.fs.path.join(allocator, &.{ root, "vendor", vendor.package });
-    defer allocator.free(vendor_path);
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    errdefer arena.deinit();
+    const owned = arena.allocator();
+    const vendor_json = try std.json.Stringify.valueAlloc(allocator, vendor, .{});
+    defer allocator.free(vendor_json);
+    const owned_vendor = try std.json.parseFromSliceLeaky(corpus_vendor.Vendor, owned, vendor_json, .{});
+    const root = try Io.Dir.cwd().realPathFileAlloc(io, project_root, owned);
+    const vendor_path = try std.fs.path.join(owned, &.{ root, "vendor", owned_vendor.package });
     const package_path = try std.fs.path.join(allocator, &.{ vendor_path, "package.json" });
     defer allocator.free(package_path);
     try Io.Dir.cwd().access(io, package_path, .{});
-    const test_path = try std.fs.path.join(allocator, &.{ vendor_path, vendor.testDirectory() });
-    defer allocator.free(test_path);
-    const entries = try corpus_vendor.collectEntries(allocator, io, test_path);
-    defer corpus.freeTestFiles(allocator, entries);
-    var filter = try corpus_vendor.Filter.init(allocator, vendor);
-    defer filter.deinit(allocator);
-    var inventory: std.ArrayList([]const u8) = .empty;
-    defer {
-        for (inventory.items) |path| allocator.free(path);
-        inventory.deinit(allocator);
+    if (options.checkout_revision) |expected| {
+        const actual = try corpus_vendor.preparedRevision(allocator, io, root, owned_vendor);
+        defer allocator.free(actual);
+        if (!std.mem.eql(u8, actual, expected)) return error.VendorCheckoutRevisionChanged;
     }
+    const test_path = try std.fs.path.join(allocator, &.{ vendor_path, owned_vendor.testDirectory() });
+    defer allocator.free(test_path);
+    const entries = try corpus_vendor.collectEntries(owned, io, test_path);
+    var filter = try corpus_vendor.Filter.init(allocator, owned_vendor);
+    defer filter.deinit(allocator);
+    const filters = try cloneStringList(owned, options.filters);
+    var inventory: std.ArrayList([]const u8) = .empty;
     var selected: std.ArrayList(usize) = .empty;
-    defer selected.deinit(allocator);
-    const Exclusion = struct { index: usize, reason: []const u8, skip_pattern: ?[]const u8 = null };
-    var excluded: std.ArrayList(Exclusion) = .empty;
-    defer excluded.deinit(allocator);
+    var excluded: std.ArrayList(VendorExclusion) = .empty;
     for (entries, 0..) |entry, index| {
-        const relative = try std.fs.path.join(allocator, &.{ vendor.testDirectory(), entry });
-        inventory.append(allocator, relative) catch |err| {
-            allocator.free(relative);
-            return err;
-        };
+        const relative = try std.fs.path.join(owned, &.{ owned_vendor.testDirectory(), entry });
+        try inventory.append(owned, relative);
         const absolute = try std.fs.path.join(allocator, &.{ vendor_path, relative });
         defer allocator.free(absolute);
-        const decision = filter.decide(entry, absolute, options.filters);
-        if (decision == .selected) try selected.append(allocator, index) else try excluded.append(allocator, .{
+        const decision = filter.decide(entry, absolute, filters);
+        if (decision == .selected) try selected.append(owned, index) else try excluded.append(owned, .{
             .index = index,
             .reason = @tagName(decision),
             .skip_pattern = if (decision == .skip_rule) decision.skip_rule else null,
         });
     }
-    const preload = if (!std.mem.eql(u8, vendor.runner(), "bun")) blk: {
-        const filename = try std.fmt.allocPrint(allocator, "{s}.ts", .{vendor.runner()});
+    const preload = if (!std.mem.eql(u8, owned_vendor.runner(), "bun")) blk: {
+        const filename = try std.fmt.allocPrint(allocator, "{s}.ts", .{owned_vendor.runner()});
         defer allocator.free(filename);
-        const path = try std.fs.path.join(allocator, &.{ root, "test", "runners", filename });
-        errdefer allocator.free(path);
+        const path = try std.fs.path.join(owned, &.{ root, "test", "runners", filename });
         try Io.Dir.cwd().access(io, path, .{});
         break :blk path;
     } else null;
-    defer if (preload) |path| allocator.free(path);
-    var summary = try beginSummary(io, allocator, vendor_path, options.run);
+    const selected_indices = try selected.toOwnedSlice(owned);
+    const range = bunCorpusRange(selected_indices.len);
+    return .{
+        .arena = arena,
+        .project_root = root,
+        .vendor_path = vendor_path,
+        .vendor = owned_vendor,
+        .filters = filters,
+        .checkout_revision = try cloneOptionalString(owned, options.checkout_revision),
+        .inventory = try inventory.toOwnedSlice(owned),
+        .selected_indices = selected_indices,
+        .excluded = try excluded.toOwnedSlice(owned),
+        .preload = preload,
+        .range_start = range.start,
+        .range_end = range.end,
+    };
+}
+
+/// Execute a prepared vendor project. Installation/build belong to the outer
+/// CI coordinator; this entrypoint records that they were NOT performed here.
+pub fn runPreparedVendorPlanWithOptions(io: Io, allocator: std.mem.Allocator, plan: *const VendorPlan, requested: RunOptions) !Summary {
+    if (!build_options.enable_jsc) return .{ .blocked = true, .reason = "jsc-disabled" };
+    if (requested.selection != null) return error.PrimarySelectionNotApplicableToVendor;
+    var summary = try beginSummary(io, allocator, plan.vendor_path, requested);
     errdefer summary.deinit(allocator);
-    summary.vendor_context = .{ .corpus_project_root = root, .preload = preload };
+    summary.vendor_context = .{ .corpus_project_root = plan.project_root, .preload = plan.preload };
     // Context borrows this call's paths and is only used during execution.
-    const range = bunCorpusRange(selected.items.len);
     if (summary.journal) |*journal| {
         try journal.append(.{
             .event = "selection",
             .contract = "bun-4982b91e-vendor",
-            .vendor = vendor,
-            .checkout_revision = options.checkout_revision,
+            .vendor = plan.vendor,
+            .checkout_revision = plan.checkout_revision,
             .setup_performed = false,
             .execution = "prepared-vendor",
-            .filters = options.filters,
-            .inventory = inventory.items,
-            .selected_indices = selected.items,
-            .excluded = excluded.items,
+            .filters = plan.filters,
+            .inventory = plan.inventory,
+            .selected_indices = plan.selected_indices,
+            .excluded = plan.excluded,
             .additional_home_coverage = @as([]const usize, &.{}),
-            .range_start = range.start,
-            .range_end = range.end,
+            .range_start = plan.range_start,
+            .range_end = plan.range_end,
         });
-        for (selected.items[range.start..range.end]) |index| try journal.select(inventory.items[index]);
+        for (plan.selected_indices[plan.range_start..plan.range_end]) |index| try journal.select(plan.inventory[index]);
     }
-    for (selected.items[range.start..range.end], range.start..) |index, ordinal| {
-        if (bunCorpusProgressEnabled()) std.debug.print("[home-bun-corpus] vendor {s} {d}/{d} {s}\n", .{ vendor.package, ordinal + 1, selected.items.len, inventory.items[index] });
-        try runIsolatedRelativeFile(io, allocator, vendor_path, inventory.items[index], &summary);
+    for (plan.selected_indices[plan.range_start..plan.range_end], plan.range_start..) |index, ordinal| {
+        if (bunCorpusProgressEnabled()) std.debug.print("[home-bun-corpus] vendor {s} {d}/{d} {s}\n", .{ plan.vendor.package, ordinal + 1, plan.selected_indices.len, plan.inventory[index] });
+        try runIsolatedRelativeFile(io, allocator, plan.vendor_path, plan.inventory[index], &summary);
     }
     try finishSummary(&summary);
     summary.vendor_context = null;
     return summary;
+}
+
+pub fn runPreparedVendorWithOptions(io: Io, allocator: std.mem.Allocator, project_root: []const u8, vendor: corpus_vendor.Vendor, options: VendorRunOptions) !Summary {
+    if (!build_options.enable_jsc) return .{ .blocked = true, .reason = "jsc-disabled" };
+    var plan = try prepareVendorPlan(io, allocator, project_root, vendor, options);
+    defer plan.deinit();
+    return runPreparedVendorPlanWithOptions(io, allocator, &plan, options.run);
 }
 
 pub fn runFilesWithOptions(io: Io, allocator: std.mem.Allocator, files: []const FileTarget, options: RunOptions) !Summary {

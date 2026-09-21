@@ -29,6 +29,14 @@ def main():
     if revision != pin:
         raise ValueError('corpus pin must be a full commit id')
     package_bytes = git('show', f'{pin}:package.json')
+    upstream_expectations = git('show', f'{pin}:test/expectations.txt')
+    upstream_expectations_path = destination / 'test/UPSTREAM_EXPECTATIONS.txt'
+    if args.check:
+        if (not upstream_expectations_path.is_file() or
+                upstream_expectations_path.read_bytes() != upstream_expectations):
+            raise ValueError('upstream expectations reference differs from pin')
+    else:
+        upstream_expectations_path.write_bytes(upstream_expectations)
     package = json.loads(package_bytes)
     workspaces = package['workspaces']
     if not isinstance(workspaces, list):

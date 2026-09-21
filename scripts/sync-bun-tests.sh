@@ -56,8 +56,18 @@ rsync -a --delete \
   --filter='protect /BUN_TRACKED_FILES.txt' \
   --filter='protect /FILTERED_FILES.txt' \
   --filter='protect /MATERIALIZED_FILES.txt' \
+  --filter='protect /UPSTREAM_EXPECTATIONS.txt' \
+  --exclude='/expectations.txt' \
   --filter='protect /js/node/test/fixtures/wpt/***' \
   "${SOURCE_DIR}/" "${DEST}/"
+
+# Home may remove an upstream exclusion to run additional coverage, but it may
+# never add one. Seed the Home copy on a fresh mirror; subsequent syncs preserve
+# its audited removals. sync-bun-test-setup.py records and verifies the exact
+# pinned source separately so native planning needs no developer checkout.
+if [[ ! -f "${DEST}/expectations.txt" ]]; then
+  cp "${SOURCE_DIR}/expectations.txt" "${DEST}/expectations.txt"
+fi
 
 printf '%s\n' "${EXPECTED_SHA}" > "${DEST}/UPSTREAM_SHA.txt"
 git -C "${BUN_REPO}" -c core.quotePath=false ls-tree -r --name-only "${EXPECTED_SHA}" test/ \

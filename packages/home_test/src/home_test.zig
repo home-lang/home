@@ -127,6 +127,7 @@
 const std = @import("std");
 
 pub const corpus = @import("corpus.zig");
+pub const corpus_coordinator = @import("corpus_coordinator.zig");
 pub const corpus_remap = @import("corpus_remap.zig");
 pub const corpus_service = @import("corpus_service.zig");
 pub const corpus_vendor_prepare = @import("corpus_vendor_prepare.zig");
