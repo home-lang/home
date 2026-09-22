@@ -602,6 +602,16 @@ Four unrelated causes of a property being reported missing were fixed together:
 | Unique path/line/column/code identities | 79 | **59** | **18 TS2339 + 2 TS7006 removed; 0 added** |
 | TS2339 left on the shard | 20 | **2** | closure narrowing and `.constructor`'s members (tracked separately) |
 
+Every callback Zod core reported as implicitly `any` had a receiver or
+callee Home typed `any`; each is fixed by giving that value its real type:
+
+| [Zod 4.5.2 implicit-any audit](docs/docs/TS_PERFORMANCE.md#callbacks-reported-as-implicit-any-untimed) | `832f68544` | Home main | Change |
+|---|---:|---:|---:|
+| Core diagnostics (21-file shard) | 59 | **46** | **13 removed (22.0%); 0 added** |
+| Unique path/line/column/code identities | 59 | **46** | **7 TS7006 + 4 TS7031 + 2 TS2554 removed; 0 added** |
+| TS7031 left on the shard | 4 | **0** | — |
+| TS7006 left on the shard | 12 | **5** | imported values Home still types `any` (#765, #763, #764) |
+
 Positive `instanceof` branches that replace their guarded value now join the
 assigned true path with the excluded false path at fallthrough:
 

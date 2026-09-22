@@ -9225,6 +9225,77 @@ names inside functions nested in expressions (which the binder does not
 scope), parameter scope changes below ES2020, and the missing TS2440 beside
 a top-level declaration. No timing is claimed.
 
+### Callbacks reported as implicit any (untimed)
+
+Under [#758](https://github.com/home-lang/home/issues/758),
+[#548](https://github.com/home-lang/home/issues/548) and
+[#416](https://github.com/home-lang/home/issues/416). After `832f68544` the
+21-file Zod 4.5.2 `core` shard carried 12 TS7006 "Parameter 'x' implicitly
+has an 'any' type" and 4 TS7031 "Binding element 'x' implicitly has an
+'any' type", none of which TypeScript 6.0.3 or native 7.0.2 reports, plus
+2 TS2554 from the same built-in declarations. Every one comes from a
+receiver or callee that Home typed `any`: TypeScript reports TS7006 for a
+callback contextually typed by `any` too, so each fix gives the value its
+real type rather than suppressing the diagnostic. Three land here:
+
+1. **The `Promise` statics returned `any`** (9 sites: `util.ts:365`,
+   `schemas.ts:2425`, `:2507`, `:3725`, `:4841`, and the destructured
+   `Promise.all([left, right])` pairs at `schemas.ts:2721` and `:3359`).
+   Home's built-in `Promise` value models `resolve`, `all`, `race` and
+   `any` as `(any) => any`, so `.then` had no contextual parameter type.
+   They now return the structural `Promise<T>` their lib signatures
+   describe: elements are awaited (`MaybeAsync<T> = T | Promise<T>`
+   included, since `Awaited` distributes over a union), an array literal or
+   tuple argument infers a tuple as the `readonly unknown[] | []`
+   constraint makes TypeScript infer one, an array infers `Awaited<E>[]`,
+   and inferred literals widen. A call that has a contextual type keeps the
+   old fallback: TypeScript infers from that type back into the arguments,
+   so `const p: Promise<"a"> = Promise.resolve("a")` keeps `"a"` and
+   `const r: [A, B][] = await Promise.all(xs.map(async …))` turns the
+   callback's array literal into tuples. Home cannot replay that, and
+   guessing would add false errors.
+2. **`Array.from` dropped its `mapfn`** (`compile.ts:1802`, one TS7006 and
+   one TS2554). The built-in took a single argument, so
+   `Array.from(values, (value) => …)` was both an arity error and an
+   uncontextualized callback. The lib overloads' optional `mapfn` and
+   `thisArg` are declared now. `Object.create`'s optional property map is
+   declared for the same reason (`util.ts:325`, one TS2554).
+3. **The `Object.defineProperty` descriptor was `any`** (`util.ts:313`).
+   TypeScript's third parameter is `PropertyDescriptor & ThisType<any>`,
+   and it is `set?(v: any): void` that types `set(v)`. Declaring it exposed
+   two Home-specific traps. `internObjectType` does not deduplicate, so the
+   `ThisType<any>` marker the checker registers must be the very one the
+   descriptor carries; `LibCache` now holds it. And tsc declares
+   `interface ThisType<T> {}` — an empty interface — so a marker must
+   impose no structural obligation: the relation engine skips markers when
+   an intersection target otherwise demands every member, which is the rule
+   the excess-property check already applied. Without that, every
+   descriptor value reported a false TS2345.
+
+Three causes are tracked separately, all of them a value Home types `any`
+for a reason outside this cluster: a generic function referenced before its
+declaration resolves to `any`
+([#765](https://github.com/home-lang/home/issues/765), `api.ts:1696`); an
+imported value whose declared type cannot be transferred is dropped
+entirely ([#763](https://github.com/home-lang/home/issues/763),
+`api.ts:1732` and `:1745`); and `Record`/`Pick` in a cross-file signature,
+plus a mapped type over `any`, collapse `util.normalizeParams`
+([#764](https://github.com/home-lang/home/issues/764), `api.ts:1784` and
+`:1785`, which also drive the sibling TS2411s).
+
+Known gap kept visible: Home still reports nothing for a descriptor member
+of the wrong type (`{ enumerable: 1 }` is TS2322 in tsgo).
+
+Measured on the unchanged shard against the `832f68544` baseline, with the
+checker suite at 4,376 tests and the Program suite at 215:
+
+| Zod 4.5.2 implicit-any audit | `832f68544` | Home main | Change |
+|---|---:|---:|---:|
+| Core diagnostics (21-file shard) | 59 | **46** | **13 removed (22.0%); 0 added** |
+| Unique path/line/column/code identities | 59 | **46** | **7 TS7006 + 4 TS7031 + 2 TS2554 removed; 0 added** |
+| TS7031 left on the shard | 4 | **0** | — |
+| TS7006 left on the shard | 12 | **5** | #765, #763, #764 |
+
 ### Properties reported missing that exist (untimed)
 
 Under [#548](https://github.com/home-lang/home/issues/548) and
