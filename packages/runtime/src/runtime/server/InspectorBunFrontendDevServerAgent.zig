@@ -8,15 +8,11 @@
 //! Inspector and registered on the `VirtualMachine.debugger`; when the
 //! Inspector isn't attached `handle` is null and every method is a no-op.
 //!
-//! Home divergence: upstream re-exports a `Bun__InspectorBunFrontendDevServerAgent__setEnabled`
-//! C entrypoint that pokes `jsc.VirtualMachine.get().debugger.frontend_dev_server_agent.handle`.
-//! `home_rt.jsc.VirtualMachine` / `jsc.Debugger` are not yet ported (Phase 12.2),
-//! so the export is held back until the debugger substrate lands. The handle
-//! field is otherwise wired identically to upstream — Phase 12.2 just adds
-//! the public setter back. `bun.bake.DevServer.RouteBundle.Index`, the
-//! `ConsoleLogKind` enum, and `jsc.Debugger.DebuggerId` are stubbed locally
-//! with the same `GenericIndex(i32, …)` / `enum(u8)` shape as upstream so
-//! the public method signatures match byte-for-byte.
+//! Like upstream, `Bun__InspectorBunFrontendDevServerAgent__setEnabled` stores
+//! the Inspector's handle on `jsc.VirtualMachine.get().debugger`.
+//! `bun.bake.DevServer.RouteBundle.Index`, the `ConsoleLogKind` enum, and
+//! `jsc.Debugger.DebuggerId` are still declared locally with the same shapes
+//! as upstream so the public method signatures match byte-for-byte.
 
 // `bun.String` C ABI stub. Real layout `{tag: u8, _padding: 7 bytes, impl: *anyopaque}`;
 // re-attaches when `home_rt.jsc.BunString` lands in Phase 12.2.
@@ -164,15 +160,17 @@ pub const FrontendDevServerAgent = struct {
         }
     }
 
-    // NOTE: Upstream re-exports `Bun__InspectorBunFrontendDevServerAgent__setEnabled`
-    // which pokes `jsc.VirtualMachine.get().debugger.frontend_dev_server_agent.handle`.
-    // `VirtualMachine` / `Debugger` are not yet ported (Phase 12.2); the
-    // export re-attaches when they land.
+    export fn Bun__InspectorBunFrontendDevServerAgent__setEnabled(agent: ?*InspectorBunFrontendDevServerAgentHandle) void {
+        if (jsc.VirtualMachine.get().debugger) |*debugger| {
+            debugger.frontend_dev_server_agent.handle = agent;
+        }
+    }
 };
 
 pub const BunFrontendDevServerAgent = FrontendDevServerAgent;
 
 const std = @import("std");
+const jsc = @import("home").jsc;
 
 test "FrontendDevServerAgent: starts disabled when handle is null" {
     var agent: FrontendDevServerAgent = .{};
