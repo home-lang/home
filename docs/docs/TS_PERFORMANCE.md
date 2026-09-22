@@ -9236,7 +9236,7 @@ has an 'any' type" and 4 TS7031 "Binding element 'x' implicitly has an
 2 TS2554 from the same built-in declarations. Every one comes from a
 receiver or callee that Home typed `any`: TypeScript reports TS7006 for a
 callback contextually typed by `any` too, so each fix gives the value its
-real type rather than suppressing the diagnostic. Three land here:
+real type rather than suppressing the diagnostic. Four land here:
 
 1. **The `Promise` statics returned `any`** (9 sites: `util.ts:365`,
    `schemas.ts:2425`, `:2507`, `:3725`, `:4841`, and the destructured
@@ -9271,12 +9271,25 @@ real type rather than suppressing the diagnostic. Three land here:
    an intersection target otherwise demands every member, which is the rule
    the excess-property check already applied. Without that, every
    descriptor value reported a false TS2345.
+4. **A later generic function declaration provided no callback context**
+   (`api.ts:1696`). `_superRefine<T>` calls `_check<T>((payload) => ...)`
+   before `_check<O>` is checked, and the value lookup deliberately declined
+   to build a generic signature inside the caller's type-parameter scope.
+   The call now reads the selected parameter annotation as context only,
+   binding explicit type arguments, simple value-parameter inferences,
+   defaults and constraints for that query. It does not publish or cache an
+   early callee type. That boundary matters for Program types: two broader
+   candidates were rejected because they froze signatures before their local
+   declaration dependencies were checked or cached transferred conditional
+   payloads in the wrong compilation, producing 65 checker failures and a
+   bounds panic on the Zod graph. The contextual query keeps the ordinary
+   declaration-order check authoritative and leaves complete forward value
+   and overload resolution tracked in
+   [#765](https://github.com/home-lang/home/issues/765).
 
-Three causes are tracked separately, all of them a value Home types `any`
-for a reason outside this cluster: a generic function referenced before its
-declaration resolves to `any`
-([#765](https://github.com/home-lang/home/issues/765), `api.ts:1696`); an
-imported value whose declared type cannot be transferred is dropped
+Two remaining causes are tracked separately, both values Home types `any`
+for a reason outside this cluster: an imported value whose declared type
+cannot be transferred is dropped
 entirely ([#763](https://github.com/home-lang/home/issues/763),
 `api.ts:1732` and `:1745`); and `Record`/`Pick` in a cross-file signature,
 plus a mapped type over `any`, collapse `util.normalizeParams`
@@ -9287,14 +9300,14 @@ Known gap kept visible: Home still reports nothing for a descriptor member
 of the wrong type (`{ enumerable: 1 }` is TS2322 in tsgo).
 
 Measured on the unchanged shard against the `832f68544` baseline, with the
-checker suite at 4,376 tests and the Program suite at 215:
+checker suite at 4,379 tests and the Program suite at 216:
 
 | Zod 4.5.2 implicit-any audit | `832f68544` | Home main | Change |
 |---|---:|---:|---:|
-| Core diagnostics (21-file shard) | 59 | **46** | **13 removed (22.0%); 0 added** |
-| Unique path/line/column/code identities | 59 | **46** | **7 TS7006 + 4 TS7031 + 2 TS2554 removed; 0 added** |
+| Core diagnostics (21-file shard) | 59 | **45** | **14 removed (23.7%); 0 added** |
+| Unique path/line/column/code identities | 59 | **45** | **8 TS7006 + 4 TS7031 + 2 TS2554 removed; 0 added** |
 | TS7031 left on the shard | 4 | **0** | — |
-| TS7006 left on the shard | 12 | **5** | #765, #763, #764 |
+| TS7006 left on the shard | 12 | **4** | #763, #764 |
 
 ### Properties reported missing that exist (untimed)
 

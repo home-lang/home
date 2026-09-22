@@ -10595,6 +10595,47 @@ test "Program: qualified imported leaves retain contextual callback signatures" 
     for (compilation.diagnostics.items) |diagnostic| try T.expectEqual(@as(u32, 2322), diagnostic.code);
 }
 
+test "Program: forward generic calls read imported callback annotations contextually" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver };
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+
+    const schemas =
+        \\export interface Payload<T> { value: T; }
+        \\export type CheckFn<T> = (payload: Payload<T>) => void;
+    ;
+    const api =
+        \\import type * as schemas from "./schemas.js";
+        \\export function use<T>(value: T): void {
+        \\  later<T>((payload) => {
+        \\    const exact: T = payload.value;
+        \\    const wrong: number = payload.value;
+        \\    void exact; void wrong; void value;
+        \\  });
+        \\}
+        \\export function later<O>(callback: schemas.CheckFn<O>): void {}
+    ;
+    try vfs.addFile("/proj/schemas.ts", schemas);
+    try vfs.addFile("/proj/api.ts", api);
+    _ = try p.add("/proj/schemas.ts", schemas);
+    const api_id = try p.add("/proj/api.ts", api);
+
+    try p.compileAll(.{
+        .no_emit = true,
+        .strict_flags = .{ .no_implicit_any = true, .strict_null_checks = true },
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    });
+    const compilation = p.fileById(api_id).compilation.?;
+    try expectCompilationLacksDiagnosticCode(compilation, 7006);
+    try T.expectEqual(@as(usize, 1), compilation.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 2322), compilation.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, @intCast(std.mem.indexOf(u8, api, "wrong").?)), compilation.diagnostics.items[0].pos);
+}
+
 /// The four-module #688 oracle, verbatim: a generic parse callback whose
 /// constraint names a type imported through a namespace, reading issue arrays
 /// typed by a qualified distributive alias. TypeScript 6.0 reports exactly the

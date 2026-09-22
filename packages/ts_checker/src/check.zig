@@ -30970,8 +30970,11 @@ pub const Checker = struct {
                 }
                 if (callee_t == types.Primitive.none or callee_t >= self.interner.pool.typeCount()) return null;
                 if (self.callUsesNonArrayReceiverForArrayCallback(c.callee)) return null;
-                const sig = (self.contextualSignatureForCall(parent, callee_t, args) catch null) orelse return null;
-                target_t = (self.contextualCallArgumentType(sig, c.callee, args, idx) catch null) orelse return null;
+                if (self.contextualSignatureForCall(parent, callee_t, args) catch null) |sig| {
+                    target_t = (self.contextualCallArgumentType(sig, c.callee, args, idx) catch null) orelse return null;
+                } else {
+                    target_t = (self.contextualForwardFunctionArgumentType(parent, c.callee, args, idx) catch null) orelse return null;
+                }
             },
             else => return null,
         }
@@ -31131,8 +31134,10 @@ pub const Checker = struct {
                     callee_t = self.checkExpression(c.callee) catch types.Primitive.none;
                 }
                 if (callee_t == types.Primitive.none or callee_t >= self.interner.pool.typeCount()) return null;
-                const sig = (self.contextualSignatureForCall(parent, callee_t, args) catch null) orelse return null;
-                return self.contextualCallArgumentType(sig, c.callee, args, idx) catch null;
+                if (self.contextualSignatureForCall(parent, callee_t, args) catch null) |sig| {
+                    return self.contextualCallArgumentType(sig, c.callee, args, idx) catch null;
+                }
+                return self.contextualForwardFunctionArgumentType(parent, c.callee, args, idx) catch null;
             },
             .object_property => {
                 const property = hir_mod.objectPropertyOf(self.hir, parent);
@@ -31148,6 +31153,105 @@ pub const Checker = struct {
             },
             else => return null,
         }
+    }
+
+    /// Read a callback target directly from an as-yet unchecked generic
+    /// function declaration. This query is contextual only: it must not cache
+    /// the declaration's signature while an earlier caller's scopes are
+    /// active. Explicit type arguments, simple value-parameter inferences,
+    /// defaults and constraints bind the declaration's type parameters for
+    /// the duration of the annotation lowering.
+    fn contextualForwardFunctionArgumentType(
+        self: *Checker,
+        call_node: NodeId,
+        callee_node: NodeId,
+        args: []const NodeId,
+        arg_index: usize,
+    ) CheckError!?TypeId {
+        if (self.hir.kindOf(callee_node) != .identifier) return null;
+        const name = hir_mod.identifierOf(self.hir, callee_node).name;
+        const declaration = self.findFunctionDeclForNameNearNode(callee_node, name) orelse return null;
+        if (self.hir.typeOf(declaration) != types.Primitive.none) return null;
+        const type_parameters = hir_mod.fnTypeParams(self.hir, declaration);
+        if (type_parameters.len == 0) return null;
+
+        var parameter_node = hir_mod.none_node_id;
+        var value_index: usize = 0;
+        for (hir_mod.fnParams(self.hir, declaration)) |candidate| {
+            if (self.isThisParameter(candidate)) continue;
+            if (value_index == arg_index) {
+                parameter_node = candidate;
+                break;
+            }
+            value_index += 1;
+        }
+        if (parameter_node == hir_mod.none_node_id) return null;
+        const parameter = hir_mod.parameterOf(self.hir, parameter_node);
+        if (parameter.type_annotation == hir_mod.none_node_id) return null;
+
+        try self.pushNarrowScope();
+        defer self.popNarrowScope();
+        const type_arguments = hir_mod.callTypeArgs(self.hir, call_node);
+        for (type_parameters, 0..) |type_parameter_node, index| {
+            if (self.hir.kindOf(type_parameter_node) != .type_parameter) continue;
+            const type_parameter = hir_mod.typeParameterOf(self.hir, type_parameter_node);
+            var argument_t = if (index < type_arguments.len)
+                try self.lowererLowerWithTypeParams(type_arguments[index])
+            else
+                types.Primitive.none;
+            if (argument_t == types.Primitive.none) {
+                argument_t = try self.inferForwardFunctionTypeArgument(
+                    declaration,
+                    type_parameter.name,
+                    args,
+                    arg_index,
+                );
+            }
+            if (argument_t == types.Primitive.none and type_parameter.default != hir_mod.none_node_id) {
+                argument_t = try self.lowererLowerWithTypeParams(type_parameter.default);
+            }
+            if (argument_t == types.Primitive.none and type_parameter.constraint != hir_mod.none_node_id) {
+                argument_t = try self.lowererLowerWithTypeParams(type_parameter.constraint);
+            }
+            if (argument_t == types.Primitive.none) argument_t = types.Primitive.unknown;
+            try self.recordNarrow(type_parameter.name, argument_t);
+        }
+
+        const diagnostic_start = self.diagnostics.items.len;
+        defer self.diagnostics.shrinkRetainingCapacity(diagnostic_start);
+        const target = (try self.programContextualExportedType(parameter.type_annotation)) orelse
+            try self.lowererLowerWithTypeParams(parameter.type_annotation);
+        if (target == types.Primitive.none or target == types.Primitive.any) return null;
+        return target;
+    }
+
+    fn inferForwardFunctionTypeArgument(
+        self: *Checker,
+        declaration: NodeId,
+        type_parameter_name: hir_mod.StringId,
+        args: []const NodeId,
+        contextual_arg_index: usize,
+    ) CheckError!TypeId {
+        var value_index: usize = 0;
+        for (hir_mod.fnParams(self.hir, declaration)) |parameter_node| {
+            if (self.isThisParameter(parameter_node)) continue;
+            defer value_index += 1;
+            if (value_index == contextual_arg_index or value_index >= args.len) continue;
+            const parameter = hir_mod.parameterOf(self.hir, parameter_node);
+            if (parameter.type_annotation == hir_mod.none_node_id or
+                self.hir.kindOf(parameter.type_annotation) != .type_ref)
+            {
+                continue;
+            }
+            const reference = hir_mod.typeRefOf(self.hir, parameter.type_annotation);
+            if (reference.qualifier_len != 0 or reference.args_len != 0 or reference.name != type_parameter_name) continue;
+            const argument_node = args[value_index];
+            const argument_kind = self.hir.kindOf(argument_node);
+            if (argument_kind == .fn_decl or argument_kind == .fn_expr or argument_kind == .arrow_fn) continue;
+            const cached = self.hir.typeOf(argument_node);
+            return if (cached != types.Primitive.none) cached else try self.checkExpression(argument_node);
+        }
+        return types.Primitive.none;
     }
 
     fn contextualThisTypeForCallArgument(
@@ -279559,4 +279663,50 @@ test "checker: parity 1401 non-strict union indexes validate every constituent" 
         TsCodes.type_cannot_be_used_as_index,
         "Type 'string[]' cannot be used as an index type.",
     ));
+}
+
+test "checker: forward generic declarations contextually type explicit callbacks" {
+    const s = try newSetup(
+        \\function use<T>(value: T): T {
+        \\  return later<T>((payload) => payload)(value);
+        \\}
+        \\function later<U>(transform: (payload: U) => U): (value: U) => U {
+        \\  return transform;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.parameter_implicitly_any));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.untyped_function_type_args));
+}
+
+test "checker: forward generic contextual queries do not capture caller binders" {
+    const s = try newSetup(
+        \\type T = { tag: string };
+        \\function f<T>(): void {
+        \\  g({ tag: "x" }, (value) => value.tag);
+        \\}
+        \\function g<U>(value: U, callback: (value: U) => void): void {}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.parameter_implicitly_any));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+}
+
+test "checker: forward generic declarations infer callback context from value arguments" {
+    const s = try newSetup(
+        \\function use(): void {
+        \\  later(1, (value) => value.toFixed());
+        \\}
+        \\function later<U>(sample: U, callback: (value: U) => void): void {}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.parameter_implicitly_any));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
