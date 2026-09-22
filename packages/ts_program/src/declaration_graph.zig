@@ -108,8 +108,17 @@ pub fn collect(gpa: std.mem.Allocator, resolver: *resolver_mod.Resolver, sources
                     .projection_only = !entry.value_ptr.*,
                 });
             } else {
-                if (!entry.value_ptr.*) continue;
-                try values.append(arena, .{ .target_path = sources[binding.source].path, .export_name = binding.name, .kind = if (declaration.is_function) .function else .variable, .declaration = declaration });
+                // Parse-diagnostic files publish only the closed literal
+                // recovery surface below. An unsupported declaration from a
+                // malformed statement is not trustworthy projection metadata.
+                if (!entry.value_ptr.* and sources[binding.source].compilation.has_syntactic_parse_diagnostics) continue;
+                try values.append(arena, .{
+                    .target_path = sources[binding.source].path,
+                    .export_name = binding.name,
+                    .kind = if (declaration.is_function) .function else .variable,
+                    .declaration = declaration,
+                    .projection_only = !entry.value_ptr.*,
+                });
             }
         }
     }

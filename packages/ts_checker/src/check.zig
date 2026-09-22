@@ -619,6 +619,10 @@ pub const ProgramExportedValue = struct {
     parameters: []const ProgramTypeReference = &.{},
     result: ProgramTypeReference = .{},
     declaration: ?*const ProgramClassSchema.Declaration = null,
+    /// The declared value type contains a leaf that cannot be transferred
+    /// losslessly. Keep its declaration for contextual member projection,
+    /// but never publish the approximate whole value as an ordinary type.
+    projection_only: bool = false,
 };
 
 pub const ProgramExportedType = struct {
@@ -31096,10 +31100,14 @@ pub const Checker = struct {
             .assignment => {
                 const a = hir_mod.assignmentOf(self.hir, parent);
                 if (a.value != expr_node or a.target == hir_mod.none_node_id) return null;
-                return if (self.hir.kindOf(a.target) == .identifier)
+                const target_t = if (self.hir.kindOf(a.target) == .identifier)
                     self.typeOfIdentifierDeclared(a.target)
                 else
                     self.hir.typeOf(a.target);
+                if (target_t == types.Primitive.none or target_t == types.Primitive.any or target_t == types.Primitive.unknown) {
+                    return (self.programContextualProjectedExpressionType(a.target, 0) catch null) orelse target_t;
+                }
+                return target_t;
             },
             .binary_op => {
                 const b = hir_mod.binopOf(self.hir, parent);
@@ -108335,6 +108343,7 @@ pub const Checker = struct {
     }
 
     fn programExportedValueType(self: *Checker, value: ProgramExportedValue) CheckError!?TypeId {
+        if (value.projection_only) return null;
         if (value.declaration) |declaration| {
             const definition_id = self.programGenericDefinition(declaration) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
@@ -108352,6 +108361,77 @@ pub const Checker = struct {
                 const result = try self.programTypeReferenceType(value.result);
                 break :blk self.interner.internSignature(params.items, result, false) catch return error.OutOfMemory;
             },
+        };
+    }
+
+    /// Resolve a value import whose complete declared type is not safe to
+    /// publish. The resulting type exists only long enough to provide context
+    /// for a member assignment; ordinary reads and relations keep seeing
+    /// `any`, so unsupported leaves cannot become false-positive checks.
+    fn programContextualProjectionOnlyValueType(
+        self: *Checker,
+        expression: NodeId,
+    ) CheckError!?TypeId {
+        if (expression == hir_mod.none_node_id or self.hir.kindOf(expression) != .member_access) return null;
+        const member = hir_mod.memberOf(self.hir, expression);
+        if (member.object == hir_mod.none_node_id or self.hir.kindOf(member.object) != .identifier) return null;
+        const root_name = hir_mod.identifierOf(self.hir, member.object).name;
+        const import_info = (try self.localImportModuleInfo(root_name, expression)) orelse return null;
+        if (import_info.exported_root != null) return null;
+
+        var matched: ?ProgramExportedValue = null;
+        for (self.program_exported_values) |value| {
+            if (!value.projection_only or value.declaration == null) continue;
+            if (!std.mem.eql(u8, value.export_name, self.string_interner.get(member.name))) continue;
+            if (!try self.programImportTargetsPath(
+                import_info.import_node,
+                self.string_interner.get(import_info.specifier),
+                value.target_path,
+            )) continue;
+            if (matched != null) return null;
+            matched = value;
+        }
+        const value = matched orelse return null;
+        const declaration = try self.contextualProgramDeclaration(value.declaration.?);
+        return self.programContextualDeclarationReference(declaration, &.{}) catch |err| switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            error.UnsupportedProgramType => null,
+        };
+    }
+
+    /// Follow an unannotated local back to a projection-only imported
+    /// constructor and project only the member chain requested by a
+    /// contextual assignment. No projected type is installed on the HIR.
+    fn programContextualProjectedExpressionType(
+        self: *Checker,
+        expression: NodeId,
+        depth: u8,
+    ) CheckError!?TypeId {
+        if (expression == hir_mod.none_node_id or depth >= 8) return null;
+        return switch (self.hir.kindOf(expression)) {
+            .identifier => blk: {
+                const name_node = self.visibleUnannotatedVariableIdentifierNode(expression) orelse break :blk null;
+                const declaration = self.hir.parentOf(name_node);
+                if (declaration == hir_mod.none_node_id) break :blk null;
+                const kind = self.hir.kindOf(declaration);
+                if (kind != .var_decl and kind != .let_decl and kind != .const_decl) break :blk null;
+                const initializer = hir_mod.varDeclOf(self.hir, declaration).init;
+                if (initializer == hir_mod.none_node_id) break :blk null;
+                break :blk try self.programContextualProjectedExpressionType(initializer, depth + 1);
+            },
+            .new_expr => blk: {
+                const call = hir_mod.callOf(self.hir, expression);
+                const callee_t = (try self.programContextualProjectionOnlyValueType(call.callee)) orelse break :blk null;
+                const signature = self.firstConstructSignatureType(callee_t) orelse break :blk null;
+                break :blk self.interner.signatureReturn(signature);
+            },
+            .member_access => blk: {
+                const member = hir_mod.memberOf(self.hir, expression);
+                const receiver_t = (try self.programContextualProjectedExpressionType(member.object, depth + 1)) orelse break :blk null;
+                break :blk (try self.programContextualOriginMemberType(receiver_t, member.name)) orelse
+                    (try self.lookupObjectMember(receiver_t, member.name));
+            },
+            else => null,
         };
     }
 

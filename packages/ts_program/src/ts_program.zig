@@ -5362,7 +5362,7 @@ test "Program: literal exports survive unrelated parse diagnostics" {
     try T.expectEqualStrings("~tag", graph.values[0].declaration.?.body.?.string);
 }
 
-test "Program: unsupported graphs are retained only for explicit projections" {
+test "Program: unsupported value graphs are retained as projection-only metadata" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();
     var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
@@ -5374,7 +5374,9 @@ test "Program: unsupported graphs are retained only for explicit projections" {
     try program.prepareFiles(.{ .bind_only = true });
     var graph = try program.collectProgramDeclarations();
     defer graph.deinit();
-    try T.expectEqual(@as(usize, 0), graph.values.len);
+    try T.expectEqual(@as(usize, 1), graph.values.len);
+    try T.expectEqualStrings("make", graph.values[0].export_name);
+    try T.expect(graph.values[0].projection_only);
     try T.expectEqual(@as(usize, 1), graph.types.len);
     try T.expectEqualStrings("Box", graph.types[0].export_name);
     try T.expect(graph.types[0].projection_only);
@@ -13795,4 +13797,55 @@ test "Program: a local value does not hide the global type namespace" {
     try program.compileAll(.{ .no_emit = true, .strict = true });
     const app = program.fileById(app_id).compilation.?;
     try T.expectEqual(@as(usize, 0), app.diagnostics.items.len);
+}
+
+test "Program: projection-only imported constructors type member assignment callbacks" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver };
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    const core =
+        \\export interface Constructor<T> { new (def: unknown): T; }
+    ;
+    const checks =
+        \\import type * as core from "./core.js";
+        \\export interface Schema { tag: string; }
+        \\export interface Internals {
+        \\  onattach: ((schema: Schema) => void)[];
+        \\  unsupported: typeof KEY;
+        \\}
+        \\export interface Check { _zod: Internals; }
+        \\export declare const KEY: core.Constructor<Check>;
+    ;
+    const api =
+        \\import * as checks from "./checks.js";
+        \\const ch = new checks.KEY({});
+        \\ch._zod.onattach = [
+        \\  (inst) => {
+        \\    const wrong: number = inst;
+        \\    void wrong;
+        \\  },
+        \\];
+    ;
+    try vfs.addFile("/proj/core.ts", core);
+    try vfs.addFile("/proj/checks.ts", checks);
+    try vfs.addFile("/proj/api.ts", api);
+    _ = try program.add("/proj/core.ts", core);
+    _ = try program.add("/proj/checks.ts", checks);
+    const api_id = try program.add("/proj/api.ts", api);
+
+    try program.compileAll(.{
+        .no_emit = true,
+        .strict_flags = .{ .no_implicit_any = true, .strict_null_checks = true },
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    });
+    const compilation = program.fileById(api_id).compilation.?;
+    try expectCompilationLacksDiagnosticCode(compilation, 7006);
+    try T.expectEqual(@as(usize, 1), compilation.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 2322), compilation.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, @intCast(std.mem.indexOf(u8, api, "wrong").?)), compilation.diagnostics.items[0].pos);
 }

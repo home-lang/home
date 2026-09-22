@@ -9236,7 +9236,7 @@ has an 'any' type" and 4 TS7031 "Binding element 'x' implicitly has an
 2 TS2554 from the same built-in declarations. Every one comes from a
 receiver or callee that Home typed `any`: TypeScript reports TS7006 for a
 callback contextually typed by `any` too, so each fix gives the value its
-real type rather than suppressing the diagnostic. Four land here:
+real type rather than suppressing the diagnostic. Five land here:
 
 1. **The `Promise` statics returned `any`** (9 sites: `util.ts:365`,
    `schemas.ts:2425`, `:2507`, `:3725`, `:4841`, and the destructured
@@ -9286,13 +9286,24 @@ real type rather than suppressing the diagnostic. Four land here:
    declaration-order check authoritative and leaves complete forward value
    and overload resolution tracked in
    [#765](https://github.com/home-lang/home/issues/765).
+5. **An unsupported imported value declaration was discarded**
+   (`api.ts:1732` and `:1745`). `checks.$ZodCheck` is declared as
+   `core.$constructor<$ZodCheck<any>>`, but the instance graph reaches
+   leaves such as `Set<string>`, `Record<string, unknown>`, `typeof version`,
+   polymorphic `this`, and cycles that cannot be transferred losslessly.
+   Publishing that approximate constructor as a normal value was measured
+   and rejected earlier: it added 38 Zod diagnostics. The declaration graph
+   now retains unsupported values as projection-only metadata. When an
+   assignment value needs context, the checker can follow an unannotated
+   local back through `new checks.$ZodCheck(...)` and project only the
+   requested member chain (`_zod.onattach`). The constructor, instance and
+   assignment target remain `any` to ordinary reads and relations, so the
+   approximation cannot reject code. Malformed source files still publish
+   only their independently safe literal recovery surface. This completes
+   [#763](https://github.com/home-lang/home/issues/763).
 
-Two remaining causes are tracked separately, both values Home types `any`
-for a reason outside this cluster: an imported value whose declared type
-cannot be transferred is dropped
-entirely ([#763](https://github.com/home-lang/home/issues/763),
-`api.ts:1732` and `:1745`); and `Record`/`Pick` in a cross-file signature,
-plus a mapped type over `any`, collapse `util.normalizeParams`
+The remaining cause is tracked separately: `Record`/`Pick` in a cross-file
+signature, plus a mapped type over `any`, collapse `util.normalizeParams`
 ([#764](https://github.com/home-lang/home/issues/764), `api.ts:1784` and
 `:1785`, which also drive the sibling TS2411s).
 
@@ -9300,14 +9311,14 @@ Known gap kept visible: Home still reports nothing for a descriptor member
 of the wrong type (`{ enumerable: 1 }` is TS2322 in tsgo).
 
 Measured on the unchanged shard against the `832f68544` baseline, with the
-checker suite at 4,379 tests and the Program suite at 216:
+checker suite at 4,379 tests and the Program suite at 217:
 
 | Zod 4.5.2 implicit-any audit | `832f68544` | Home main | Change |
 |---|---:|---:|---:|
-| Core diagnostics (21-file shard) | 59 | **45** | **14 removed (23.7%); 0 added** |
-| Unique path/line/column/code identities | 59 | **45** | **8 TS7006 + 4 TS7031 + 2 TS2554 removed; 0 added** |
+| Core diagnostics (21-file shard) | 59 | **43** | **16 removed (27.1%); 0 added** |
+| Unique path/line/column/code identities | 59 | **43** | **10 TS7006 + 4 TS7031 + 2 TS2554 removed; 0 added** |
 | TS7031 left on the shard | 4 | **0** | — |
-| TS7006 left on the shard | 12 | **4** | #763, #764 |
+| TS7006 left on the shard | 12 | **2** | #764 |
 
 ### Properties reported missing that exist (untimed)
 
