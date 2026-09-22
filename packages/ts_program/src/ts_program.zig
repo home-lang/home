@@ -11144,6 +11144,73 @@ test "Program: a deferred imported conditional argument matches its own instanti
     try T.expectEqual(@as(usize, 0), compilation.diagnostics.items.len);
 }
 
+test "Program: a member of an imported base with an untransferable type still exists" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver };
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+
+    // zod 4.5.2 `$ZodURLInternals` inherits `check` and `onattach` from
+    // `checks.$ZodCheckStringFormatInternals`, whose graph reaches a `Set`,
+    // which a Program declaration cannot carry. The members were reported
+    // missing (TS2339) and their callbacks untyped (TS7006). They exist;
+    // only their exact types are unavailable. A member the base does not
+    // declare is still missing, and a transferable member still checks.
+    // TypeScript 6.0.3 and 7.0.2 report exactly the TS2322 and the TS2339.
+    const checks =
+        \\export interface Base<T> {
+        \\  def: { check: string };
+        \\  check(payload: Set<T>): void;
+        \\  onattach: ((s: Set<string>) => void)[];
+        \\  plain: T;
+        \\}
+        \\export interface Format extends Base<string> {
+        \\  issc: "x";
+        \\}
+    ;
+    const schemas =
+        \\import type * as checks from "./checks.js";
+        \\export interface Own { bag: 1 }
+        \\export interface FormatInternals<F extends string = string> extends Own, checks.Format {
+        \\  def: { check: string; format: F };
+        \\}
+        \\export interface UrlInternals extends FormatInternals<"url"> {}
+        \\declare const z: UrlInternals;
+        \\z.check = (payload) => { void payload; };
+        \\z.onattach.push((s) => { void s; });
+        \\const plain: string = z.plain;
+        \\const wrong: number = z.plain;
+        \\z.missing;
+        \\void plain; void wrong;
+    ;
+    try vfs.addFile("/proj/checks.ts", checks);
+    try vfs.addFile("/proj/schemas.ts", schemas);
+    _ = try p.add("/proj/checks.ts", checks);
+    const id = try p.add("/proj/schemas.ts", schemas);
+
+    try p.compileAll(.{
+        .no_emit = true,
+        .strict_flags = .{ .no_implicit_any = true, .strict_null_checks = true },
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    });
+    const compilation = p.fileById(id).compilation.?;
+    try expectCompilationLacksDiagnosticCode(compilation, 7006);
+    try T.expectEqual(@as(usize, 2), compilation.diagnostics.items.len);
+    var saw_missing = false;
+    var saw_wrong = false;
+    for (compilation.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == 2339) {
+            saw_missing = true;
+            try T.expect(std.mem.indexOf(u8, diagnostic.message, "'missing'") != null);
+        }
+        if (diagnostic.code == 2322) saw_wrong = true;
+    }
+    try T.expect(saw_missing and saw_wrong);
+}
+
 test "Program: a failed imported declaration lowering keeps completed class projections" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();

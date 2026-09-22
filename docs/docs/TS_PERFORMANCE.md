@@ -9225,6 +9225,81 @@ names inside functions nested in expressions (which the binder does not
 scope), parameter scope changes below ES2020, and the missing TS2440 beside
 a top-level declaration. No timing is claimed.
 
+### Properties reported missing that exist (untimed)
+
+Under [#548](https://github.com/home-lang/home/issues/548) and
+[#416](https://github.com/home-lang/home/issues/416). After `95e2f20ba` the
+21-file Zod 4.5.2 `core` shard still carried 20 TS2339 "Property 'x' does
+not exist on type 'T'", none of which TypeScript 6.0.3 or native 7.0.2
+reports. They had six independent causes, each isolated to a minimal
+repro checked against both engines. Four are fixed here:
+
+1. **Members of an imported base whose type cannot be transferred** (10
+   sites: `inst._zod.check` and `inst._zod.onattach` in the string-format,
+   IPv6, CIDRv6, Base64, credit-card, JWT, custom, and ISO date-time
+   constructors). `$Zod*Internals` inherits them through
+   `checks.$ZodCheckStringFormatInternals`, whose graph reaches a `Set` and
+   `Pick`, which a Program declaration cannot carry. A member whose exact
+   type failed to lower was treated as undeclared. TypeScript finds a
+   property by its declared name whatever its type, so the member is now
+   read through the contextual projection, whose untransferable leaves are
+   `any`, and as `any` only when even that fails. A member the base does
+   not declare is still missing. The two TS7006 on the callbacks written
+   into `check` and `onattach` go with it.
+2. **A negative optional-chain discriminant narrowed to `never`** (4 sites).
+   `params?.message !== undefined` over an `any` local and
+   `ctx?.direction === "backward"`'s false branch over an intersection
+   parameter removed the receiver entirely. TypeScript's discriminant
+   narrowing applies only when the reference's declared type is a union (or
+   a type parameter constrained to one), so any other receiver is left as
+   it is. On a union it still filters the current type, including a single
+   member left by earlier narrowing, which can reach `never`; an
+   intersection member is judged by its discriminant, and a member without
+   the property is kept.
+3. **`NonNullable` over a nested deferred access** (2 sites, `InferInput`
+   and `InferOutput` in `standard-schema.ts`). `NonNullable<Schema["~standard"]["types"]>["input"]`
+   could not find the constraint of a two-level access; it now walks every
+   level, as `indexedAccessBaseConstraint` already does. A key the
+   constraint does not declare is still rejected.
+4. **`any` did not absorb a union** (2 sites, `const { libraryOptions,
+   target } = params ?? {}`). `??`, `||`, `&&`, and a const conditional
+   initializer now reduce a union containing `any` to `any`, as TypeScript's
+   `getUnionType` does. `unknown ?? {}` is unchanged.
+
+Two are tracked separately. `(val) => fnOrRegex.test(val)` in the false
+branch of `typeof fnOrRegex === "function"` needs narrowing to cross into a
+closure for a parameter that is never reassigned (TypeScript 5.4's
+preserved narrowing), a broad change to closure checking. And
+`inst.constructor.name` needs the inherited `.constructor` to be
+TypeScript's global `Function` type: giving its stand-in the `Function`
+members was measured and dropped, because Home does not relate function and
+constructor types to `Function` structurally, so `c.constructor === String`
+and `this.constructor as new () => C` became false TS2367 and TS2352.
+
+Each fix went through an adversarial review: two parity hunters and a code
+reader over the diff, each finding re-run against both engines by a
+skeptic. It confirmed the `.constructor` regression above, three narrowing
+regressions in the first discriminant rule (a union narrowed to one member
+no longer reaching `never`, intersection members kept whole, and a type
+parameter constrained to a union left unnarrowed), a base referenced with
+the wrong number of type arguments inheriting members it should not, and an
+unbounded recursion in the new constraint walk. All are fixed and in the
+tests. Three differences that `95e2f20ba` also had are left: an overloaded
+base method collapses to its first overload, an inherited member loses its
+optional and readonly modifiers, and a conditional or `keyof` over an
+untransferable leaf is evaluated over `any`.
+
+Against `95e2f20ba` on the same shard:
+
+| Zod 4.5.2 core, missing properties | `95e2f20ba` | Home main | Change |
+|---|---:|---:|---:|
+| All diagnostics | 79 | **59** | **20 removed (25.3%); 0 added** |
+| Unique path/line/column/code identities | 79 | **59** | **20 removed; 0 added** |
+| Removed identities | — | 18 TS2339, 2 TS7006 | `core/schemas.ts` ×12, `core/util.ts:562–563` ×3, `core/compile.ts:138`, `core/standard-schema.ts:27, 30`, `core/to-json-schema.ts:845` ×2 |
+
+Both engines report only the omitted `locales` module on this graph, so
+every removal is a false positive gone. No timing is claimed.
+
 ### Positive `instanceof` assignment fallthrough (untimed)
 
 Issue [#738](https://github.com/home-lang/home/issues/738), found while

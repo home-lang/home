@@ -5462,6 +5462,8 @@ pub const Checker = struct {
     generic_instances: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
     generic_instance_origins: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty,
     generic_expansion_active: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
+    /// Re-entry depth of `nonNullableBaseConstraint`'s nested-access walk.
+    non_nullable_constraint_depth: u8 = 0,
     program_generic_defaults_active: std.AutoHashMapUnmanaged(*const ProgramClassSchema.Declaration, void) = .empty,
     program_schema_support: std.AutoHashMapUnmanaged(*const ProgramClassSchema.Schema, bool) = .empty,
     program_module_namespace_types: std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId) = .empty,
@@ -93990,7 +93992,15 @@ pub const Checker = struct {
         }
         if (flags.is_indexed_access) {
             const ia = self.indexedAccessPayloadOrNull(base_t) orelse return null;
-            const resolved = (try self.resolveObjectIndexedAccessType(ia.object, ia.index)) orelse return null;
+            // A nested access such as `T["p"]["types"]` has an object that is
+            // itself deferred; its base constraint walks every level. The walk
+            // can reach this function again through a `NonNullable`
+            // constraint, so it is bounded.
+            if (self.non_nullable_constraint_depth >= 8) return null;
+            self.non_nullable_constraint_depth += 1;
+            defer self.non_nullable_constraint_depth -= 1;
+            const resolved = (try self.resolveObjectIndexedAccessType(ia.object, ia.index)) orelse
+                (try self.indexedAccessBaseConstraint(base_t, 0)) orelse return null;
             const reduced = try self.subtractNullUndefined(resolved);
             return if (reduced == base_t) null else reduced;
         }
@@ -95424,6 +95434,8 @@ pub const Checker = struct {
                     if (else_fallback != types.Primitive.none) else_fallback else fallback,
                 );
                 if (then_t == else_t) break :blk then_t;
+                // `any` absorbs the other branch, as in `internConditionalUnion`.
+                if (self.unionContainsAny(then_t) or self.unionContainsAny(else_t)) break :blk types.Primitive.any;
                 break :blk try self.internUnionReducingStringSubtypes(&.{ then_t, else_t });
             },
             else => fallback,
@@ -108848,6 +108860,68 @@ pub const Checker = struct {
         return null;
     }
 
+    /// Whether the Program declaration named by a qualified heritage clause
+    /// declares `member_name`, directly or through the bases in its body,
+    /// judged by name alone.
+    fn programQualifiedDeclarationDeclaresMember(
+        self: *Checker,
+        type_node: NodeId,
+        member_name: hir_mod.StringId,
+    ) CheckError!bool {
+        const declaration = (try self.programDeclarationForQualifiedInterfaceRef(type_node)) orelse return false;
+        var active: std.AutoHashMapUnmanaged(*const ProgramClassSchema.Declaration, void) = .empty;
+        defer active.deinit(self.gpa);
+        return self.programDeclarationDeclaresMember(declaration, self.string_interner.get(member_name), &active);
+    }
+
+    fn programDeclarationDeclaresMember(
+        self: *Checker,
+        declaration: *const ProgramClassSchema.Declaration,
+        member_name: []const u8,
+        active: *std.AutoHashMapUnmanaged(*const ProgramClassSchema.Declaration, void),
+    ) CheckError!bool {
+        if (active.contains(declaration)) return false;
+        try active.put(self.gpa, declaration, {});
+        defer _ = active.remove(declaration);
+        const body = declaration.body orelse return false;
+        return self.programExpressionDeclaresMember(body, member_name, active);
+    }
+
+    fn programExpressionDeclaresMember(
+        self: *Checker,
+        expression: *const ProgramClassSchema.Expression,
+        member_name: []const u8,
+        active: *std.AutoHashMapUnmanaged(*const ProgramClassSchema.Declaration, void),
+    ) CheckError!bool {
+        switch (expression.*) {
+            .object => |members| {
+                for (members) |member| if (std.mem.eql(u8, member.name, member_name)) return true;
+            },
+            .indexed_object => |object| {
+                for (object.members) |member| if (std.mem.eql(u8, member.name, member_name)) return true;
+            },
+            .intersection => |parts| {
+                for (parts) |part| if (try self.programExpressionDeclaresMember(part, member_name, active)) return true;
+            },
+            .reference => |reference| {
+                if (reference.arguments.len > reference.declaration.parameters.len) return false;
+                return self.programDeclarationDeclaresMember(reference.declaration, member_name, active);
+            },
+            else => {},
+        }
+        return false;
+    }
+
+    fn programQualifiedHeritageArityMatches(self: *Checker, type_node: NodeId) CheckError!bool {
+        const declaration = (try self.programDeclarationForQualifiedInterfaceRef(type_node)) orelse return false;
+        const supplied = hir_mod.typeRefArgs(self.hir, type_node).len;
+        if (supplied > declaration.parameters.len) return false;
+        for (declaration.parameters[supplied..]) |parameter| {
+            if (parameter.default == null) return false;
+        }
+        return true;
+    }
+
     fn programInheritedMemberType(
         self: *Checker,
         receiver_t: TypeId,
@@ -108964,6 +109038,17 @@ pub const Checker = struct {
         const extends = hir_mod.interfaceExtends(self.hir, declaration);
         for (extends) |extends_node| {
             if (try self.programQualifiedInterfaceMemberType(extends_node, member_name, &substitutions)) |member_t| return member_t;
+            // The base declares the member but its type cannot be transferred
+            // exactly (a `Set` or `Pick` somewhere below it). TypeScript still
+            // finds the property by name, so read it through the contextual
+            // projection, whose untransferable leaves are `any`, and never as
+            // absent (TS2339).
+            // A heritage reference with the wrong number of type arguments is
+            // an error type in TypeScript and contributes no members.
+            if (try self.programQualifiedHeritageArityMatches(extends_node)) {
+                if (try self.programContextualQualifiedInterfaceMemberType(extends_node, member_name, &substitutions)) |member_t| return member_t;
+                if (try self.programQualifiedDeclarationDeclaresMember(extends_node, member_name)) return types.Primitive.any;
+            }
             const raw_parent_t = self.lowererLowerWithTypeParams(extends_node) catch continue;
             const parent_t = self.substituteType(raw_parent_t, &substitutions) catch raw_parent_t;
             if (self.interner.objectMember(parent_t, member_name)) |member_t| return member_t;
@@ -132927,13 +133012,14 @@ pub const Checker = struct {
             .member_access => {
                 const key = self.identifierRootedMemberKey(m.object) orelse return;
                 const static_t = (try self.identifierRootedMemberStaticType(m.object)) orelse return;
-                const narrowed = try self.negativeOptionalDiscriminatedNarrowResult(static_t, m.name, lit_t, optional_undefined_matches);
+                const narrowed = try self.negativeOptionalDiscriminatedNarrowResult(static_t, static_t, m.name, lit_t, optional_undefined_matches);
                 if (narrowed != static_t) try self.recordMemberNarrow(key, narrowed);
             },
             .identifier => {
                 const obj_id = hir_mod.identifierOf(self.hir, m.object);
                 const static_t = self.typeOfIdentifier(m.object);
-                const narrowed = try self.negativeOptionalDiscriminatedNarrowResult(static_t, m.name, lit_t, optional_undefined_matches);
+                const declared_t = self.typeOfIdentifierDeclared(m.object);
+                const narrowed = try self.negativeOptionalDiscriminatedNarrowResult(static_t, declared_t, m.name, lit_t, optional_undefined_matches);
                 if (narrowed != static_t) try self.recordNarrow(obj_id.name, narrowed);
             },
             else => {},
@@ -132943,15 +133029,28 @@ pub const Checker = struct {
     fn negativeOptionalDiscriminatedNarrowResult(
         self: *Checker,
         static_t: TypeId,
+        declared_t: TypeId,
         prop_name: hir_mod.StringId,
         lit_t: TypeId,
         optional_undefined_matches: bool,
     ) CheckError!TypeId {
         if (static_t >= self.interner.pool.typeCount()) return static_t;
-        const flags = self.interner.pool.flagsOf(static_t);
-        const single_buf = [_]TypeId{static_t};
-        const source_members: []const TypeId = if (flags.is_union)
-            self.interner.unionMembers(static_t)
+        // Discriminant narrowing applies only to a reference whose declared
+        // type is a union, or a type parameter constrained to one
+        // (TypeScript's `getDiscriminantPropertyAccess`). An `any` receiver,
+        // a single object, or an intersection keeps its type; the optional
+        // chain's own nullish removal happens elsewhere.
+        if (!self.typeIsDiscriminableUnion(declared_t)) return static_t;
+        // Filter the current type, which earlier narrowing may already have
+        // reduced to one member of the union.
+        const source_t = if (self.isBareTypeParameter(static_t))
+            self.typeParameterBaseConstraint(static_t) orelse static_t
+        else
+            static_t;
+        const single_buf = [_]TypeId{source_t};
+        const source_members: []const TypeId = if (source_t < self.interner.pool.typeCount() and
+            self.interner.pool.flagsOf(source_t).is_union)
+            self.interner.unionMembers(source_t)
         else
             single_buf[0..];
         const members = try self.gpa.dupe(TypeId, source_members);
@@ -132960,25 +133059,44 @@ pub const Checker = struct {
         defer keep.deinit(self.gpa);
         for (members) |variant| {
             const variant_flags = self.interner.pool.flagsOf(variant);
-            if (!variant_flags.is_object_type) {
+            if (variant_flags.is_null or variant_flags.is_undefined) {
                 // A nullish receiver short-circuits to `undefined`; retain it
                 // exactly when that value makes the comparison fail.
-                if ((variant_flags.is_null or variant_flags.is_undefined) and !optional_undefined_matches) {
-                    try keep.append(self.gpa, variant);
-                }
+                if (!optional_undefined_matches) try keep.append(self.gpa, variant);
                 continue;
             }
-            const info = self.interner.objectMemberInfo(variant, prop_name) orelse {
-                try keep.append(self.gpa, variant);
-                continue;
-            };
-            var definitely_matches = self.engine.isAssignableTo(info.type, lit_t) catch false;
-            if (info.is_optional and !optional_undefined_matches) definitely_matches = false;
+            var definitely_matches = false;
+            if (variant_flags.is_object_type) {
+                if (self.interner.objectMemberInfo(variant, prop_name)) |info| {
+                    definitely_matches = self.engine.isAssignableTo(info.type, lit_t) catch false;
+                    if (info.is_optional and !optional_undefined_matches) definitely_matches = false;
+                }
+            } else {
+                // An intersection or type parameter is judged through the
+                // members it resolves to; one without the property is not
+                // provably the compared value and is kept (`filterType`).
+                const base = if (self.isBareTypeParameter(variant))
+                    self.typeParameterBaseConstraint(variant) orelse variant
+                else
+                    variant;
+                const candidate = self.resolveGenericType(base) catch base;
+                if (try self.lookupObjectMember(candidate, prop_name)) |disc_t| {
+                    definitely_matches = self.engine.isAssignableTo(disc_t, lit_t) catch false;
+                }
+            }
             if (!definitely_matches) try keep.append(self.gpa, variant);
         }
         if (keep.items.len == 0) return types.Primitive.never;
         if (keep.items.len == 1) return keep.items[0];
         return self.interner.internUnion(keep.items) catch return error.OutOfMemory;
+    }
+
+    fn typeIsDiscriminableUnion(self: *Checker, t: TypeId) bool {
+        if (t >= self.interner.pool.typeCount()) return false;
+        if (self.interner.pool.flagsOf(t).is_union) return true;
+        if (!self.isBareTypeParameter(t)) return false;
+        const constraint = self.typeParameterBaseConstraint(t) orelse return false;
+        return constraint < self.interner.pool.typeCount() and self.interner.pool.flagsOf(constraint).is_union;
     }
 
     /// Narrow a reference `object` by its discriminant property `prop`
@@ -157799,7 +157917,7 @@ pub const Checker = struct {
                 try self.report(l.lhs, TsCodes.nullish_rhs_unreachable, "Right operand of ?? is unreachable because the left operand is never nullish.");
             }
             const lhs_non_null = self.subtractNullUndefined(lhs) catch lhs;
-            return self.interner.internUnion(&.{ lhs_non_null, rhs }) catch error.OutOfMemory;
+            return self.internExpressionUnion(&.{ lhs_non_null, rhs });
         }
         try self.reportVoidTruthiness(l.lhs, lhs);
         const report_syntactic_truthiness = !self.virtualSectionIsJsLike(l.lhs) or
@@ -157873,7 +157991,18 @@ pub const Checker = struct {
         if (l.op == .@"or" and !self.logicalTypeCanBeFalsy(literal_lhs)) return lhs_result;
         if (lhs_result == types.Primitive.never) return rhs_result;
         if (rhs_result == types.Primitive.never) return lhs_result;
-        return self.interner.internUnion(&.{ lhs_result, rhs_result }) catch error.OutOfMemory;
+        return self.internExpressionUnion(&.{ lhs_result, rhs_result });
+    }
+
+    /// The union a `??`, `||`, or `&&` expression produces. As in
+    /// TypeScript's `getUnionType`, a member that is `any` absorbs the rest,
+    /// so `params ?? {}` over an `any` parameter stays `any` and its
+    /// destructured properties exist.
+    fn internExpressionUnion(self: *Checker, members: []const TypeId) CheckError!TypeId {
+        for (members) |member| {
+            if (self.unionContainsAny(member)) return types.Primitive.any;
+        }
+        return self.interner.internUnion(members) catch error.OutOfMemory;
     }
 
     fn reportVoidTruthiness(self: *Checker, node: NodeId, t: TypeId) CheckError!void {
@@ -203448,6 +203577,45 @@ test "checker: import type binding cannot be used as a value" {
         if (d.code == TsCodes.type_only_import_used_as_value) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: property reads zod core reported missing still resolve" {
+    // Three zod 4.5.2 core shapes reported TS2339. A negative optional-chain
+    // discriminant narrowed an `any` local and an intersection parameter to
+    // `never` (lines 1, 3); `NonNullable` over a two-level deferred access
+    // could not find its constraint (5); and `any ?? {}` stayed `any | {}`
+    // (7). Discriminant narrowing must still work on real unions: a union
+    // already narrowed to one member reaches `never` (10, 11), an
+    // intersection member is judged by its discriminant (12), and a type
+    // parameter narrows through its union constraint (13). Lines 6 and 8
+    // must stay errors: a key the constraint does not declare (TypeScript
+    // reports TS2536 there) and `unknown ?? {}`.
+    const s = try newSetup(
+        \\export function b1(p: unknown) { const params: any = p; if (params?.message !== undefined) { if (params?.error !== undefined) throw new Error("x"); params.error = params.message; } return params; }
+        \\interface Ctx { readonly async?: boolean; direction?: "forward" | "backward"; skipChecks?: boolean }
+        \\export function b2(ctx?: Ctx & { tag?: 1 }) { return ctx?.async || ctx?.direction === "backward" || ctx?.skipChecks; }
+        \\interface Types { input: string } interface P { types?: Types } interface S { p: P }
+        \\export type C1<T extends S> = NonNullable<T["p"]["types"]>["input"];
+        \\export type C2<T extends S> = NonNullable<T["p"]["types"]>["bogus"];
+        \\export const e1 = (params?: any) => { const { libraryOptions, target } = params ?? {}; return [libraryOptions, target]; };
+        \\export const e2 = (u: unknown) => { const { z } = u ?? {}; return z; };
+        \\type OA = { k: "a"; x: 1 }; type OB = { k: "b"; y: 2 }; declare function never(x: never): never;
+        \\export function n1(v: OA | OB | undefined) { if (v === undefined) return 0; if (v?.k === "a") return 1; if (v?.k === "b") return 2; return never(v); }
+        \\export function n2(v: OA | OB) { if (v?.k === "a") return; if (v?.k !== "b") { const n: never = v; return n; } return v.y; }
+        \\export function n3(v: ({ k: "a" } & { x: 1 }) | OB) { if (v?.k !== "a") { return v.y; } return 0; }
+        \\export function n4<T extends OA | OB>(v: T) { if (v?.k !== "a") { return v.y; } return 0; }
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 2), s.checker.diagnostics.items.len);
+    for (s.checker.diagnostics.items) |diagnostic| {
+        try T.expect(std.mem.indexOf(u8, diagnostic.message, "type 'never'") == null);
+        try T.expect(std.mem.indexOf(u8, diagnostic.message, "'any | {}'") == null);
+        try T.expect(std.mem.indexOf(u8, diagnostic.message, "'input'") == null);
+        try T.expect(std.mem.indexOf(u8, diagnostic.message, "'y'") == null);
+    }
 }
 
 test "checker: a local value binding shadows a type-only import" {

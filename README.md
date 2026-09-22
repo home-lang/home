@@ -588,11 +588,19 @@ reach it through its constraint the way TypeScript does:
 A local value binding that shadows a type-only import is now resolved before
 the import, so using it is no longer reported as a type-only value use:
 
-| [Zod 4.5.2 shadowed type-only import audit](docs/docs/TS_PERFORMANCE.md#a-local-binding-shadows-a-type-only-import-untimed) | `41d59384a` | Home main | Change |
+| [Zod 4.5.2 shadowed type-only import audit](docs/docs/TS_PERFORMANCE.md#a-local-binding-shadows-a-type-only-import-untimed) | `41d59384a` | `95e2f20ba` | Change |
 |---|---:|---:|---:|
 | Core diagnostics (21-file shard) | 95 | **79** | **16 TS1361 removed (16.8%); 0 added** |
 | Unique path/line/column/code identities | 90 | **79** | **11 TS1361 removed; 0 added** |
 | Focused three-engine oracle | 29× TS1361 at 23 positions | **exact 13× TS1361 parity** | once per use |
+
+Four unrelated causes of a property being reported missing were fixed together:
+
+| [Zod 4.5.2 missing-property audit](docs/docs/TS_PERFORMANCE.md#properties-reported-missing-that-exist-untimed) | `95e2f20ba` | Home main | Change |
+|---|---:|---:|---:|
+| Core diagnostics (21-file shard) | 79 | **59** | **20 removed (25.3%); 0 added** |
+| Unique path/line/column/code identities | 79 | **59** | **18 TS2339 + 2 TS7006 removed; 0 added** |
+| TS2339 left on the shard | 20 | **2** | closure narrowing and `.constructor`'s members (tracked separately) |
 
 Positive `instanceof` branches that replace their guarded value now join the
 assigned true path with the excluded false path at fallthrough:
