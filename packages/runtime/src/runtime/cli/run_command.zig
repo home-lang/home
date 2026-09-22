@@ -1767,7 +1767,11 @@ pub const RunCommand = struct {
         };
         if (direct_file) return false;
         var bundle: transpiler.Transpiler = undefined;
-        const root = try configureEnvForRunWithOptions(ctx, &bundle, null, true, false, .{ .load_tsconfig_json = false });
+        // This preflight may fall through to the native VM. Both resolvers use
+        // the legacy process-global DirInfo cache, so entries created here must
+        // include tsconfig metadata; otherwise the VM sees the cached directory
+        // but can never discover baseUrl, paths, or inherited compiler options.
+        const root = try configureEnvForRunWithOptions(ctx, &bundle, null, true, false, .{ .load_tsconfig_json = true });
         if (target_name.len == 0) {
             printHelp(root.enclosing_package_json);
             return true;

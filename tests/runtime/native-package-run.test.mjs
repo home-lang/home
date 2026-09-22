@@ -44,9 +44,30 @@ try {
     failpost: 'echo main-ran', postfailpost: 'exit 19',
     echo: 'echo package-script', 'named.sh': 'echo named-shell-script',
     'collision.js': 'echo collision-script', 'script-only.js': 'echo fallback-script', 'unreadable.js': 'echo readable-script',
+    'paths-collision.ts': 'echo paths-script',
     copy: 'cat', empty: '',
   }
   writeFileSync(join(directory, 'package.json'), JSON.stringify({ name: 'native-run-fixture', version: '2.3.4', scripts }))
+  const tsconfigDirectory = join(directory, 'tsconfig-entry')
+  mkdirSync(join(tsconfigDirectory, 'lib', 'leaf'), { recursive: true })
+  writeFileSync(join(tsconfigDirectory, 'tsconfig.base2.json'), JSON.stringify({
+    compilerOptions: { paths: { '@base/*': ['./lib/base/*'] } },
+  }))
+  writeFileSync(join(tsconfigDirectory, 'tsconfig.base1.json'), JSON.stringify({
+    extends: './tsconfig.base2.json', compilerOptions: { jsx: 'react-jsx' },
+  }))
+  writeFileSync(join(tsconfigDirectory, 'tsconfig.json'), JSON.stringify({
+    extends: './tsconfig.base1.json', compilerOptions: { paths: { '@leaf/*': ['./lib/leaf/*'] } },
+  }))
+  writeFileSync(join(tsconfigDirectory, 'lib', 'leaf', 'thing.ts'), 'export const who = "leaf";')
+  const pathsEntry = 'import { who } from "@leaf/thing"; console.log(who);'
+  writeFileSync(join(tsconfigDirectory, 'paths-entry.ts'), pathsEntry)
+  writeFileSync(join(tsconfigDirectory, 'paths-collision.ts'), pathsEntry)
+  for (const prefix of [[], ['run']]) {
+    assert.equal(success([...prefix, 'paths-entry.ts'], { cwd: tsconfigDirectory }).stdout, 'leaf\n')
+  }
+  assert.equal(success(['paths-collision.ts'], { cwd: tsconfigDirectory }).stdout, 'leaf\n')
+  assert.equal(success(['run', 'paths-collision.ts'], { cwd: tsconfigDirectory }).stdout, 'paths-script\n')
   const args = ['space value', '', 'quote"value', "single'quote", '$HOME', '$(echo injected)', ';echo injected', '*', 'line\nbreak', '你好', '--flag']
   for (const prefix of [['--bun', 'run'], ['run', '--bun'], ['run', '--bun', '--shell=bun']]) {
     const result = success([...prefix, 'check', ...args])
