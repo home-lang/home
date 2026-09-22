@@ -228,7 +228,14 @@ const Stringifier = struct {
                     this.array_item_counter += 1;
                 },
                 .prop_value => |*prop_value| {
-                    const name_entry = try this.prop_names.getOrPut(prop_value.prop_name.byteSlice());
+                    // Unsafe property names use the shared `valueN` namespace.
+                    // Literal names that look generated are unsafe too, so a
+                    // property can never collide with an emitted fallback.
+                    const key = if (canUsePropNameAsAnchor(prop_value.prop_name))
+                        prop_value.prop_name.byteSlice()
+                    else
+                        "value";
+                    const name_entry = try this.prop_names.getOrPut(key);
                     if (name_entry.found_existing) {
                         name_entry.value_ptr.* += 1;
                     } else {
@@ -357,7 +364,7 @@ const Stringifier = struct {
                     this.builder.append(.usize, anchor.name.array_item);
                 },
                 .prop_value => |prop_value| {
-                    if (prop_value.prop_name.length() == 0) {
+                    if (!canUsePropNameAsAnchor(prop_value.prop_name)) {
                         this.builder.append(.latin1, "value");
                         this.builder.append(.usize, prop_value.counter);
                     } else {
@@ -910,6 +917,48 @@ const Stringifier = struct {
             (a == 'I' and b == 'N' and c == 'F');
     }
 };
+
+/// Anchor names cannot be quoted or escaped. Reuse a property name only when
+/// every character is unambiguously valid and it cannot overlap a generated
+/// `valueN`, `itemN`, or `rootN` name.
+fn canUsePropNameAsAnchor(str: String) bool {
+    if (str.length() == 0) return false;
+
+    for (0..str.length()) |i| {
+        switch (str.charAt(i)) {
+            '0'...'9',
+            'A'...'Z',
+            'a'...'z',
+            '-',
+            '.',
+            '_',
+            => {},
+            else => return false,
+        }
+    }
+
+    return !matchesGeneratedAnchorName(str);
+}
+
+fn matchesGeneratedAnchorName(str: String) bool {
+    const prefixes = [_][]const u8{ "value", "item", "root" };
+
+    next_prefix: for (prefixes) |prefix| {
+        if (str.length() <= prefix.len) continue;
+
+        for (prefix, 0..) |byte, i| {
+            if (str.charAt(i) != byte) continue :next_prefix;
+        }
+
+        for (prefix.len..str.length()) |i| {
+            if (str.charAt(i) < '0' or str.charAt(i) > '9') continue :next_prefix;
+        }
+
+        return true;
+    }
+
+    return false;
+}
 
 pub fn parse(
     global: *jsc.JSGlobalObject,
