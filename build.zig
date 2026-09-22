@@ -153,6 +153,8 @@ const native_skip_paths = [_][]const u8{
     "unified/UnifiedSource-src_jsc_bindings_webcore-4.cpp.o", // contains Home-owned MessagePortPipe
     "unified/UnifiedSource-src_jsc_bindings_webcore-5.cpp.o", // contains Home-owned Worker
     "unified/UnifiedSource-src_uws_sys-0.cpp.o", // contains Home-owned uWS parser and C ABI
+    "unified/UnifiedSource-src_jsc_bindings_node_crypto-0.cpp.o", // contains Home-owned Node crypto
+    "unified/UnifiedSource-src_jsc_bindings_node_crypto-1.cpp.o", // contains Home-owned Node crypto key objects
 };
 
 fn shouldLinkBunObject(path: []const u8) bool {
@@ -232,6 +234,8 @@ fn linkBunNative(b: *std.Build, m: *std.Build.Module, target: std.Build.Resolved
     m.addObjectFile(native_bindings.jsMessagePortObject(b, bun_obj_root));
     m.addObjectFile(native_bindings.jsAbortSignalObject(b, bun_obj_root));
     m.addObjectFile(native_bindings.uwsObject(b, bun_obj_root));
+    m.addObjectFile(native_bindings.cryptoObject0(b, bun_obj_root));
+    m.addObjectFile(native_bindings.cryptoObject1(b, bun_obj_root));
 
     var walker = dir.walk(b.allocator) catch return true;
     defer walker.deinit();

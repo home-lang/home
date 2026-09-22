@@ -356,11 +356,28 @@ JSC_DEFINE_HOST_FUNCTION(jsVerifyProtoFuncVerify, (JSGlobalObject * globalObject
     const auto& keyPtr = keyObject.asymmetricKey();
 
     // Get RSA padding mode and salt length if applicable
-    int32_t padding = getPadding(globalObject, scope, options, keyPtr);
+    auto requestedPadding = getIntOption(globalObject, scope, options, "padding"_s);
     RETURN_IF_EXCEPTION(scope, {});
+    int32_t padding = requestedPadding.value_or(keyObject.isRsaPss() ? RSA_PKCS1_PSS_PADDING : keyPtr.getDefaultSignPadding());
 
     std::optional<int> saltLen = getSaltLength(globalObject, scope, options);
     RETURN_IF_EXCEPTION(scope, {});
+
+    if (keyObject.isRsaPss()) {
+        const auto metadata = keyObject.data()->rsaPssMetadata();
+        if (metadata && metadata->digest && thisObject->m_mdCtx.getDigest() != metadata->digest.get()) {
+            throwError(globalObject, scope, ErrorCode::ERR_OSSL_EVP_INVALID_DIGEST, "digest not allowed"_s);
+            return {};
+        }
+        if (padding != RSA_PKCS1_PSS_PADDING) {
+            throwError(globalObject, scope, ErrorCode::ERR_INVALID_ARG_VALUE, "RSA-PSS keys require RSA_PKCS1_PSS_PADDING"_s);
+            return {};
+        }
+        if (saltLen && metadata && metadata->minimumSaltLength >= 0 && *saltLen < metadata->minimumSaltLength) {
+            throwError(globalObject, scope, ErrorCode::ERR_INVALID_ARG_VALUE, "pss saltlen too small"_s);
+            return {};
+        }
+    }
 
     // Get DSA signature encoding format
     DSASigEnc dsaSigEnc = getDSASigEnc(globalObject, scope, options);
@@ -404,6 +421,12 @@ JSC_DEFINE_HOST_FUNCTION(jsVerifyProtoFuncVerify, (JSGlobalObject * globalObject
             throwCryptoError(globalObject, scope, ERR_peek_error(), "Failed to set RSA padding"_s);
             return {};
         }
+        const auto metadata = keyObject.data()->rsaPssMetadata();
+        if (metadata && metadata->mgf1Digest
+            && !pkctx.setRsaMgf1Md(metadata->mgf1Digest)) {
+            throwCryptoError(globalObject, scope, ERR_peek_error(), "Failed to set RSA MGF1 digest"_s);
+            return {};
+        }
     }
 
     // Set signature MD from the digest context
@@ -421,17 +444,20 @@ JSC_DEFINE_HOST_FUNCTION(jsVerifyProtoFuncVerify, (JSGlobalObject * globalObject
     if (dsaSigEnc == DSASigEnc::P1363 && keyPtr.isSigVariant()) {
         WTF::Vector<uint8_t> derBuffer;
 
-        if (convertP1363ToDER(sigBuf, keyPtr, derBuffer)) {
-            // Conversion succeeded, perform verification with the converted signature
-            ncrypto::Buffer<const uint8_t> derSigBuf {
-                .data = derBuffer.begin(),
-                .len = derBuffer.size(),
-            };
-
-            bool result = pkctx.verify(derSigBuf, data);
-            return JSValue::encode(jsBoolean(result));
+        // If the signature cannot be converted to DER (e.g. its length is not
+        // 2 * bytesOfRS), fail verification instead of reinterpreting the raw
+        // bytes as a DER signature, matching Node.js.
+        if (!convertP1363ToDER(sigBuf, keyPtr, derBuffer)) {
+            return JSValue::encode(jsBoolean(false));
         }
-        // If conversion failed, fall through to use the original signature
+
+        ncrypto::Buffer<const uint8_t> derSigBuf {
+            .data = derBuffer.begin(),
+            .len = derBuffer.size(),
+        };
+
+        bool result = pkctx.verify(derSigBuf, data);
+        return JSValue::encode(jsBoolean(result));
     }
 
     // Perform verification with the original signature

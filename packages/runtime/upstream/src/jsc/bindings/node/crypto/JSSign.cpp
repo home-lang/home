@@ -291,15 +291,31 @@ JSC_DEFINE_HOST_FUNCTION(jsSignProtoFuncUpdate, (JSC::JSGlobalObject * globalObj
     return Bun::ERR::INVALID_ARG_TYPE(scope, globalObject, "data"_s, "string or an instance of Buffer, TypedArray, or DataView"_s, data);
 }
 
-JSUint8Array* signWithKey(JSC::JSGlobalObject* lexicalGlobalObject, JSSign* thisObject, const ncrypto::EVPKeyPointer& pkey, DSASigEnc dsa_sig_enc, int padding, std::optional<int> salt_len)
+JSUint8Array* signWithKey(JSC::JSGlobalObject* lexicalGlobalObject, JSSign* thisObject, const KeyObject& keyObject, DSASigEnc dsa_sig_enc, int padding, std::optional<int> salt_len)
 {
     JSC::VM& vm = lexicalGlobalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
+    const auto& pkey = keyObject.asymmetricKey();
 
     // Check if the context is initialized
     if (!thisObject->m_mdCtx) {
         throwTypeError(lexicalGlobalObject, scope, "Sign.prototype.sign cannot be called before Sign.prototype.init"_s);
         return nullptr;
+    }
+    if (keyObject.isRsaPss()) {
+        const auto metadata = keyObject.data()->rsaPssMetadata();
+        if (metadata && metadata->digest && thisObject->m_mdCtx.getDigest() != metadata->digest.get()) {
+            throwError(lexicalGlobalObject, scope, ErrorCode::ERR_OSSL_EVP_INVALID_DIGEST, "digest not allowed"_s);
+            return nullptr;
+        }
+        if (padding != RSA_PKCS1_PSS_PADDING) {
+            throwError(lexicalGlobalObject, scope, ErrorCode::ERR_INVALID_ARG_VALUE, "RSA-PSS keys require RSA_PKCS1_PSS_PADDING"_s);
+            return nullptr;
+        }
+        if (salt_len && metadata && metadata->minimumSaltLength >= 0 && *salt_len < metadata->minimumSaltLength) {
+            throwError(lexicalGlobalObject, scope, ErrorCode::ERR_INVALID_ARG_VALUE, "pss saltlen too small"_s);
+            return nullptr;
+        }
     }
 
     // Move mdCtx out of JSSign object
@@ -344,6 +360,13 @@ JSUint8Array* signWithKey(JSC::JSGlobalObject* lexicalGlobalObject, JSSign* this
 
         if (!ncrypto::EVPKeyCtxPointer::setRsaPadding(pkctx.get(), padding, effective_salt_len)) {
             throwCryptoError(lexicalGlobalObject, scope, ERR_peek_error(), "Failed to set RSA padding"_s);
+            return nullptr;
+        }
+
+        const auto metadata = keyObject.data()->rsaPssMetadata();
+        if (metadata && metadata->mgf1Digest
+            && !pkctx.setRsaMgf1Md(metadata->mgf1Digest)) {
+            throwCryptoError(lexicalGlobalObject, scope, ERR_peek_error(), "Failed to set RSA MGF1 digest"_s);
             return nullptr;
         }
     }
@@ -431,7 +454,7 @@ JSC_DEFINE_HOST_FUNCTION(jsSignProtoFuncSign, (JSC::JSGlobalObject * lexicalGlob
     RETURN_IF_EXCEPTION(scope, {});
 
     // Get RSA padding mode and salt length if applicable
-    int32_t padding = getPadding(lexicalGlobalObject, scope, options, {});
+    auto requestedPadding = getIntOption(lexicalGlobalObject, scope, options, "padding"_s);
     RETURN_IF_EXCEPTION(scope, {});
 
     std::optional<int> saltLen = getSaltLength(lexicalGlobalObject, scope, options);
@@ -462,8 +485,10 @@ JSC_DEFINE_HOST_FUNCTION(jsSignProtoFuncSign, (JSC::JSGlobalObject * lexicalGlob
 
     const ncrypto::EVPKeyPointer& keyPtr = keyObject.asymmetricKey();
 
+    int32_t padding = requestedPadding.value_or(keyObject.isRsaPss() ? RSA_PKCS1_PSS_PADDING : keyPtr.getDefaultSignPadding());
+
     // Use the signWithKey function to perform the signing operation
-    JSUint8Array* signature = signWithKey(lexicalGlobalObject, thisObject, keyPtr, dsaSigEnc, padding, saltLen);
+    JSUint8Array* signature = signWithKey(lexicalGlobalObject, thisObject, keyObject, dsaSigEnc, padding, saltLen);
     EXCEPTION_ASSERT(!!signature == !scope.exception());
     RETURN_IF_EXCEPTION(scope, {});
 

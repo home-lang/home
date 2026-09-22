@@ -116,6 +116,8 @@ public:
     inline WebCore::CryptoKeyType& type() { return m_type; }
     const WTF::Vector<uint8_t>& symmetricKey() const { return m_data->symmetricKey; }
     const ncrypto::EVPKeyPointer& asymmetricKey() const { return m_data->asymmetricKey; }
+    int asymmetricKeyId() const { return isRsaPss() ? EVP_PKEY_RSA_PSS : m_data->asymmetricKey.id(); }
+    bool isRsaPss() const { return m_data->asymmetricKey.id() == EVP_PKEY_RSA_PSS || m_data->rsaPssMetadata().has_value(); }
     RefPtr<KeyObjectData> data() const { return m_data; }
 
 private:

@@ -243,7 +243,7 @@ JSC::JSValue KeyObject::exportJwkSecretKey(JSC::JSGlobalObject* lexicalGlobalObj
 
 JSC::JSValue KeyObject::exportJwkAsymmetricKey(JSC::JSGlobalObject* globalObject, JSC::ThrowScope& scope, CryptoKeyType exportType, bool handleRsaPss)
 {
-    switch (m_data->asymmetricKey.id()) {
+    switch (asymmetricKeyId()) {
     case EVP_PKEY_RSA_PSS: {
         if (handleRsaPss) {
             return exportJwkRsaKey(globalObject, scope, exportType);
@@ -320,6 +320,11 @@ JSC::JSValue KeyObject::exportPublic(JSC::JSGlobalObject* lexicalGlobalObject, J
         return exportJwk(lexicalGlobalObject, scope, CryptoKeyType::Public, false);
     }
 
+    if (isRsaPss() && config.type == ncrypto::EVPKeyPointer::PKEncodingType::PKCS1) {
+        ERR::CRYPTO_INCOMPATIBLE_KEY_OPTIONS(scope, lexicalGlobalObject, "pkcs1"_s, "can only be used for RSA keys"_s);
+        return {};
+    }
+
     const ncrypto::EVPKeyPointer& pkey = m_data->asymmetricKey;
     auto res = pkey.writePublicKey(config);
     if (!res) {
@@ -346,6 +351,11 @@ JSValue KeyObject::exportPrivate(JSGlobalObject* lexicalGlobalObject, ThrowScope
 
     if (config.format == ncrypto::EVPKeyPointer::PKFormatType::JWK) {
         return exportJwk(lexicalGlobalObject, scope, CryptoKeyType::Private, false);
+    }
+
+    if (isRsaPss() && config.type == ncrypto::EVPKeyPointer::PKEncodingType::PKCS1) {
+        ERR::CRYPTO_INCOMPATIBLE_KEY_OPTIONS(scope, lexicalGlobalObject, "pkcs1"_s, "can only be used for RSA keys"_s);
+        return {};
     }
 
     const ncrypto::EVPKeyPointer& pkey = m_data->asymmetricKey;
@@ -462,7 +472,7 @@ JSValue KeyObject::asymmetricKeyType(JSGlobalObject* globalObject)
         return jsUndefined();
     }
 
-    switch (m_data->asymmetricKey.id()) {
+    switch (asymmetricKeyId()) {
     case EVP_PKEY_RSA:
         return jsNontrivialString(vm, "rsa"_s);
     case EVP_PKEY_RSA_PSS:
@@ -570,7 +580,7 @@ JSObject* KeyObject::asymmetricKeyDetails(JSGlobalObject* globalObject, ThrowSco
         return result;
     }
 
-    switch (m_data->asymmetricKey.id()) {
+    switch (asymmetricKeyId()) {
     case EVP_PKEY_RSA:
     case EVP_PKEY_RSA_PSS:
         getRsaKeyDetails(globalObject, scope, result);

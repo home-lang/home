@@ -129,6 +129,13 @@ void SignJobCtx::runTask(JSGlobalObject* globalObject)
             m_opensslError = ERR_get_error();
             return;
         }
+
+        const auto metadata = m_keyData->rsaPssMetadata();
+        if (metadata && metadata->mgf1Digest
+            && EVP_PKEY_CTX_set_rsa_mgf1_md(*ctx, metadata->mgf1Digest.get()) <= 0) {
+            m_opensslError = ERR_get_error();
+            return;
+        }
     }
 
     switch (m_mode) {
@@ -403,8 +410,28 @@ std::optional<SignJobCtx> SignJobCtx::fromJS(JSGlobalObject* globalObject, Throw
         // as null since these algorithms perform their own hashing internally and
         // don't require a separate digest algorithm.
         if (keyObject.asymmetricKey().isRsaVariant()) {
-            digest = Digest::FromName("SHA256"_s);
+            const auto metadata = keyObject.data()->rsaPssMetadata();
+            digest = metadata && metadata->digest
+                ? metadata->digest
+                : Digest::FromName("SHA256"_s);
         }
+    }
+
+    if (keyObject.isRsaPss()) {
+        const auto metadata = keyObject.data()->rsaPssMetadata();
+        if (metadata && metadata->digest && digest.get() != metadata->digest.get()) {
+            throwError(globalObject, scope, ErrorCode::ERR_OSSL_EVP_INVALID_DIGEST, "digest not allowed"_s);
+            return {};
+        }
+        if (padding && *padding != RSA_PKCS1_PSS_PADDING) {
+            ERR::INVALID_ARG_VALUE(scope, globalObject, "options.padding"_s, jsNumber(*padding), "must be RSA_PKCS1_PSS_PADDING for RSA-PSS keys"_s);
+            return {};
+        }
+        if (pssSaltLength && metadata && metadata->minimumSaltLength >= 0 && *pssSaltLength < metadata->minimumSaltLength) {
+            ERR::INVALID_ARG_VALUE(scope, globalObject, "options.saltLength"_s, jsNumber(*pssSaltLength), "is too small for this RSA-PSS key"_s);
+            return {};
+        }
+        padding = RSA_PKCS1_PSS_PADDING;
     }
 
     if (mode == Mode::Verify) {

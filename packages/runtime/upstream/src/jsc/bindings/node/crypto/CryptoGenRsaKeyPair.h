@@ -48,13 +48,14 @@ public:
 
     void deinit();
     ncrypto::EVPKeyCtxPointer setup();
+    void runTask(JSC::JSGlobalObject* globalObject, ncrypto::EVPKeyCtxPointer& ctx);
     static std::optional<RsaKeyPairJobCtx> fromJS(JSC::JSGlobalObject* globalObject, JSC::ThrowScope& scope, const JSC::GCOwnedDataScope<WTF::StringView>& typeView, JSC::JSValue optionsValue, const KeyEncodingConfig& config);
 
     RsaKeyVariant m_variant;
     uint32_t m_modulusLength;
     uint32_t m_exponent;
 
-    int32_t m_saltLength;
+    int32_t m_saltLength = -1;
     ncrypto::Digest m_md = nullptr;
     ncrypto::Digest m_mgfMd = nullptr;
 };

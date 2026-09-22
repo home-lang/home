@@ -18,6 +18,8 @@ var cached_worker_scope_object: ?std.Build.LazyPath = null;
 var cached_js_message_port_object: ?std.Build.LazyPath = null;
 var cached_js_abort_signal_object: ?std.Build.LazyPath = null;
 var cached_uws_object: ?std.Build.LazyPath = null;
+var cached_crypto_object_0: ?std.Build.LazyPath = null;
+var cached_crypto_object_1: ?std.Build.LazyPath = null;
 var cached_native_modules: ?std.Build.LazyPath = null;
 
 /// Rebuild the Home-owned process binding with the headers and ABI flags that
@@ -126,6 +128,33 @@ pub fn uwsObject(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
     const source = b.path("packages/runtime/upstream/src/uws_sys/HomeUws.cpp");
     const object = compileObject(b, object_root, "UnifiedSource-src_uws_sys-0.cpp", source);
     cached_uws_object = object;
+    return object;
+}
+
+/// Compile Node crypto from Home's mirrored source. The native runtime links
+/// Bun's object graph, so source changes here are otherwise inert unless the
+/// matching upstream unity objects are replaced as a complete pair.
+pub fn cryptoObject0(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
+    if (cached_crypto_object_0) |object| return object;
+    const object = compileObject(
+        b,
+        object_root,
+        "UnifiedSource-src_jsc_bindings_node_crypto-0.cpp",
+        b.path("packages/runtime/src/native/node_crypto_unified_0.cpp"),
+    );
+    cached_crypto_object_0 = object;
+    return object;
+}
+
+pub fn cryptoObject1(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
+    if (cached_crypto_object_1) |object| return object;
+    const object = compileObject(
+        b,
+        object_root,
+        "UnifiedSource-src_jsc_bindings_node_crypto-1.cpp",
+        b.path("packages/runtime/src/native/node_crypto_unified_1.cpp"),
+    );
+    cached_crypto_object_1 = object;
     return object;
 }
 
@@ -274,8 +303,9 @@ fn compileObject(b: *std.Build, object_root: []const u8, basename: []const u8, s
     // Copy only the implementation into the build cache. Its quoted includes
     // must resolve against the ABI-matched upstream header set, not another
     // version of those headers beside Home's mirrored source.
-    const compile = b.addSystemCommand(&.{command.arguments[0]});
-    compile.addFileInput(.{ .cwd_relative = command.arguments[0] });
+    const compiler = nativeCompiler(b, build_root, command.arguments[0]);
+    const compile = b.addSystemCommand(&.{compiler});
+    compile.addFileInput(.{ .cwd_relative = compiler });
     compile.setName(b.fmt("compile Home {s} binding", .{basename}));
     compile.setCwd(.{ .cwd_relative = command.directory });
     compile.addFileInput(.{ .cwd_relative = database_path });
@@ -326,6 +356,18 @@ fn compileObject(b: *std.Build, object_root: []const u8, basename: []const u8, s
     compile.addArgs(&.{ "-MD", "-MF" });
     _ = compile.addDepFileOutputArg2(b.fmt("{s}.d", .{basename}), .{ .make_absolute = true });
     return object;
+}
+
+fn nativeCompiler(b: *std.Build, build_root: []const u8, fallback: []const u8) []const u8 {
+    // Bun's compile database can record /usr/bin/clang++ even when its object
+    // graph and PCH were produced by the pinned LLVM toolchain in pantry. A
+    // different C++ compiler can disagree on ABI details for non-trivial return
+    // values crossing between Home-owned and Bun-owned objects.
+    const bun_root = std.fs.path.dirname(std.fs.path.dirname(build_root) orelse return fallback) orelse return fallback;
+    const candidate = b.fmt("{s}/pantry/llvm.org/v21.1.8/bin/clang++", .{bun_root});
+    const io = std.Io.Threaded.global_single_threaded.io();
+    std.Io.Dir.cwd().access(io, candidate, .{}) catch return fallback;
+    return candidate;
 }
 
 fn findCommand(commands: []const CompileCommand, basename: []const u8) ?CompileCommand {

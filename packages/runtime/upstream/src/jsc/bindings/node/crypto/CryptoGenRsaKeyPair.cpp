@@ -53,7 +53,10 @@ void RsaKeyPairJob::createAndSchedule(JSGlobalObject* globalObject, RsaKeyPairJo
 
 ncrypto::EVPKeyCtxPointer RsaKeyPairJobCtx::setup()
 {
-    ncrypto::EVPKeyCtxPointer ctx = ncrypto::EVPKeyCtxPointer::NewFromID(m_variant == RsaKeyVariant::RSA_PSS ? EVP_PKEY_RSA_PSS : EVP_PKEY_RSA);
+    // BoringSSL does not implement key generation for EVP_PKEY_RSA_PSS. The
+    // key material is ordinary RSA; the PSS-only algorithm and its optional
+    // restrictions are retained in KeyObjectData after generation.
+    ncrypto::EVPKeyCtxPointer ctx = ncrypto::EVPKeyCtxPointer::NewFromID(EVP_PKEY_RSA);
     if (!ctx || !ctx.initForKeygen() || !ctx.setRsaKeygenBits(m_modulusLength)) {
         m_opensslError = ERR_get_error();
         return {};
@@ -67,34 +70,18 @@ ncrypto::EVPKeyCtxPointer RsaKeyPairJobCtx::setup()
         }
     }
 
-    if (m_variant == RsaKeyVariant::RSA_PSS) {
-        if (m_md && !ctx.setRsaPssKeygenMd(m_md)) {
-            m_opensslError = ERR_get_error();
-            return {};
-        }
+    return ctx;
+}
 
-        auto& mgf1Md = m_mgfMd;
-        if (!mgf1Md && m_md) {
-            mgf1Md = m_md;
-        }
-
-        if (mgf1Md && !ctx.setRsaPssKeygenMgf1Md(mgf1Md)) {
-            m_opensslError = ERR_get_error();
-            return {};
-        }
-
-        int saltLength = m_saltLength;
-        if (saltLength < 0 && m_md) {
-            saltLength = m_md.size();
-        }
-
-        if (saltLength >= 0 && !ctx.setRsaPssSaltlen(saltLength)) {
-            m_opensslError = ERR_get_error();
-            return {};
-        }
+void RsaKeyPairJobCtx::runTask(JSGlobalObject* globalObject, ncrypto::EVPKeyCtxPointer& ctx)
+{
+    KeyPairJobCtx::runTask(globalObject, ctx);
+    if (m_variant != RsaKeyVariant::RSA_PSS || !m_keyObj.data()) {
+        return;
     }
 
-    return ctx;
+    int32_t minimumSaltLength = m_saltLength >= 0 ? m_saltLength : (m_md ? static_cast<int32_t>(m_md.size()) : -1);
+    m_keyObj.data()->setRsaPssMetadata(m_md, m_mgfMd ? m_mgfMd : m_md, minimumSaltLength);
 }
 
 std::optional<RsaKeyPairJobCtx> RsaKeyPairJobCtx::fromJS(JSC::JSGlobalObject* globalObject, JSC::ThrowScope& scope, const JSC::GCOwnedDataScope<WTF::StringView>& typeView, JSC::JSValue optionsValue, const KeyEncodingConfig& encodingConfig)
