@@ -534,6 +534,13 @@ pub const Source = struct {
         pub fn isStdinNull() bool {
             return false;
         }
+
+        /// Faithful to upstream `bun_core/output.zig` `Source.Stdio.restore`:
+        /// put the terminal back in cooked mode before the process is replaced
+        /// or exits.
+        pub fn restore() void {
+            core_output.Source.Stdio.restore();
+        }
     };
 
     pub fn colorDepth() ColorDepth {

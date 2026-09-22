@@ -723,7 +723,162 @@ pub fn exitThread() noreturn {
     std.c.pthread_exit(null);
 }
 
-pub fn reloadProcess(_: anytype, _: anytype, _: anytype) void {}
+var __reload_in_progress__ = std.atomic.Value(bool).init(false);
+threadlocal var __reload_in_progress__on_current_thread = false;
+pub fn isProcessReloadInProgressOnAnotherThread() bool {
+    return __reload_in_progress__.load(.monotonic) and !__reload_in_progress__on_current_thread;
+}
+
+extern "c" fn nanosleep(req: *const std.c.timespec, rem: ?*std.c.timespec) c_int;
+
+pub noinline fn maybeHandlePanicDuringProcessReload() void {
+    if (isProcessReloadInProgressOnAnotherThread()) {
+        Output.flush();
+        if (comptime Environment.isDebug) {
+            Output.debugWarn("panic() called during process reload, ignoring\n", .{});
+        }
+
+        exitThread();
+    }
+
+    // This shouldn't be reachable, but it can technically be because
+    // pthread_exit is a request and not guaranteed.
+    if (isProcessReloadInProgressOnAnotherThread()) {
+        while (true) {
+            std.atomic.spinLoopHint();
+
+            if (comptime Environment.isPosix) {
+                _ = nanosleep(&.{ .sec = 1, .nsec = 0 }, null);
+            }
+        }
+    }
+}
+
+extern "c" fn on_before_reload_process_linux() void;
+
+/// Reload Bun's process. This clones envp, argv, and gets the current
+/// executable path.
+///
+/// On posix, this overwrites the current process with the new process using
+/// `execve`. On Windows, we dont have this API, instead relying on a dummy
+/// parent process that we can signal via a special exit code.
+///
+/// Must be able to allocate memory. `malloc` is not signal safe, but it's
+/// best-effort. Not much we can do if it fails.
+///
+/// Note that this function is called during the crash handler, in which it is
+/// passed true to `may_return`. If failure occurs, one line of standard error
+/// is printed and then this returns void. If `may_return == false`, then a
+/// panic will occur on failure. The crash handler will not schedule two reloads
+/// at once.
+pub fn reloadProcess(
+    allocator: std.mem.Allocator,
+    clear_terminal: bool,
+    comptime may_return: bool,
+) if (may_return) void else noreturn {
+    __reload_in_progress__.store(true, .monotonic);
+    __reload_in_progress__on_current_thread = true;
+
+    if (clear_terminal) {
+        Output.flush();
+        Output.disableBuffering();
+        Output.resetTerminalAll();
+    }
+
+    Output.Source.Stdio.restore();
+
+    if (comptime Environment.isWindows) {
+        // on windows we assume that we have a parent process that is monitoring us and will restart us if we exit with a magic exit code
+        // see becomeWatcherManager
+        const rc = windows.TerminateProcess(std.os.windows.GetCurrentProcess(), windows.watcher_reload_exit);
+        if (rc == 0) {
+            const err = windows.GetLastError();
+            if (may_return) {
+                Output.errGeneric("Failed to reload process: {s}", .{@tagName(err)});
+                return;
+            }
+            Output.panic("Error while reloading process: {s}", .{@tagName(err)});
+        } else {
+            if (may_return) {
+                Output.errGeneric("Failed to reload process", .{});
+                return;
+            }
+            Output.panic("Unexpected error while reloading process\n", .{});
+        }
+    }
+
+    const dupe_argv = allocator.allocSentinel(?[*:0]const u8, argv.len, null) catch unreachable;
+    for (argv, dupe_argv) |src, *dest| {
+        dest.* = (dupeZ(allocator, u8, src) catch unreachable).ptr;
+    }
+
+    const environ_slice = std.mem.span(std.c.environ);
+    const environ = allocator.allocSentinel(?[*:0]const u8, environ_slice.len, null) catch unreachable;
+    for (environ_slice, environ) |src, *dest| {
+        if (src == null) {
+            dest.* = null;
+        } else {
+            dest.* = (dupeZ(allocator, u8, sliceTo(src.?, 0)) catch unreachable).ptr;
+        }
+    }
+
+    // we must clone selfExePath incase the argv[0] was not an absolute path (what appears in the terminal)
+    const exec_path = (selfExePath() catch unreachable).ptr;
+
+    // we clone argv so that the memory address isn't the same as the libc one
+    const newargv = @as([*:null]?[*:0]const u8, @ptrCast(dupe_argv.ptr));
+
+    // we clone envp so that the memory address of environment variables isn't the same as the libc one
+    const envp = @as([*:null]?[*:0]const u8, @ptrCast(environ.ptr));
+
+    // macOS doesn't have CLOEXEC, so we must go through posix_spawn
+    if (comptime Environment.isMac) {
+        var actions = spawn.Actions.init() catch unreachable;
+        actions.inherit(FD.stdin().native()) catch unreachable;
+        actions.inherit(FD.stdout().native()) catch unreachable;
+        actions.inherit(FD.stderr().native()) catch unreachable;
+
+        var attrs = spawn.Attr.init() catch unreachable;
+        attrs.resetSignals() catch {};
+
+        attrs.set(
+            @intCast(c.POSIX_SPAWN_CLOEXEC_DEFAULT |
+                // Apple Extension: If this bit is set, rather
+                // than returning to the caller, posix_spawn(2)
+                // and posix_spawnp(2) will behave as a more
+                // featureful execve(2).
+                c.POSIX_SPAWN_SETEXEC |
+                c.POSIX_SPAWN_SETSIGDEF | c.POSIX_SPAWN_SETSIGMASK),
+        ) catch unreachable;
+        switch (spawn.spawnZ(exec_path, actions, attrs, @as([*:null]?[*:0]const u8, @ptrCast(newargv)), @as([*:null]?[*:0]const u8, @ptrCast(envp)))) {
+            .err => |err| {
+                if (may_return) {
+                    Output.errGeneric("Failed to reload process: {s}", .{@tagName(err.getErrno())});
+                    return;
+                }
+                Output.panic("Unexpected error while reloading: {d} {s}", .{ err.errno, @tagName(err.getErrno()) });
+            },
+            .result => {
+                if (may_return) {
+                    Output.errGeneric("Failed to reload process", .{});
+                    return;
+                }
+                Output.panic("Unexpected error while reloading: posix_spawn returned a result", .{});
+            },
+        }
+    } else if (comptime Environment.isPosix) {
+        if (comptime Environment.isLinux or Environment.isFreeBSD) on_before_reload_process_linux();
+        const rc = std.c.execve(exec_path, newargv, envp);
+        const err = sys.getErrno(rc);
+        if (may_return) {
+            Output.errGeneric("Failed to reload process: {s}", .{@tagName(err)});
+            return;
+        }
+        Output.panic("Unexpected error while reloading: {s}", .{@tagName(err)});
+    } else {
+        @compileError("unsupported platform for reloadProcess");
+    }
+}
 pub inline fn markPosixOnly() if (Environment.isPosix) void else noreturn {
     if (comptime !Environment.isPosix) unreachable;
 }

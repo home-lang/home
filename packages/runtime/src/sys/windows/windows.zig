@@ -3681,6 +3681,8 @@ const watcherChildEnv: [:0]const u16 = bun.strings.toUTF16Literal("_BUN_WATCHER_
 // this was randomly generated - we need to avoid using a common exit code that might be used by the script itself
 pub const watcher_reload_exit: DWORD = 3224497970;
 
+pub extern "kernel32" fn TerminateProcess(hProcess: HANDLE, uExitCode: UINT) callconv(.winapi) BOOL;
+
 pub const spawn = @import("../../runtime/api/bun/spawn.zig").PosixSpawn;
 
 pub fn isWatcherChild() bool {
