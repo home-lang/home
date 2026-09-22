@@ -1273,12 +1273,12 @@ pub const PackCommand = struct {
             }
         }
         defer if (comptime !for_publish) ctx.allocator.free(package_name);
-        if (package_name.len == 0) return error.InvalidPackageName;
+        if (package_name.len == 0 or hasUnsafeTarballFilenamePart(package_name)) return error.InvalidPackageName;
 
         var package_version_expr: Expr = json.root.get("version") orelse return error.MissingPackageVersion;
         var package_version = try package_version_expr.asStringCloned(ctx.allocator) orelse return error.InvalidPackageVersion;
         defer if (comptime !for_publish) ctx.allocator.free(package_version);
-        if (package_version.len == 0) return error.InvalidPackageVersion;
+        if (package_version.len == 0 or hasUnsafeTarballFilenamePart(package_version)) return error.InvalidPackageVersion;
 
         if (comptime for_publish) {
             if (json.root.get("private")) |private| {
@@ -1464,11 +1464,11 @@ pub const PackCommand = struct {
             // scripts (e.g. prepublishOnly, prepack) may have modified them.
             package_name_expr = json.root.get("name") orelse return error.MissingPackageName;
             package_name = try package_name_expr.asStringCloned(ctx.allocator) orelse return error.InvalidPackageName;
-            if (package_name.len == 0) return error.InvalidPackageName;
+            if (package_name.len == 0 or hasUnsafeTarballFilenamePart(package_name)) return error.InvalidPackageName;
 
             package_version_expr = json.root.get("version") orelse return error.MissingPackageVersion;
             package_version = try package_version_expr.asStringCloned(ctx.allocator) orelse return error.InvalidPackageVersion;
-            if (package_version.len == 0) return error.InvalidPackageVersion;
+            if (package_version.len == 0 or hasUnsafeTarballFilenamePart(package_version)) return error.InvalidPackageVersion;
         }
 
         // Create the edited package.json content after lifecycle scripts have run
@@ -1857,13 +1857,13 @@ pub const PackCommand = struct {
         var integrity: sha.SHA512.Digest = undefined;
 
         const tarball_bytes = tarball_bytes: {
-                const tarball_file = switch (bun.sys.openA(abs_tarball_dest, bun.O.RDONLY, 0)) {
-                    .err => |err| {
-                        Output.err(err, "failed to open tarball: \"{s}\"", .{abs_tarball_dest});
-                        Global.crash();
-                    },
-                    .result => |fd| File.from(fd),
-                };
+            const tarball_file = switch (bun.sys.openA(abs_tarball_dest, bun.O.RDONLY, 0)) {
+                .err => |err| {
+                    Output.err(err, "failed to open tarball: \"{s}\"", .{abs_tarball_dest});
+                    Global.crash();
+                },
+                .result => |fd| File.from(fd),
+            };
             defer tarball_file.close();
 
             var sha1 = sha.SHA1.init();
@@ -1988,6 +1988,17 @@ pub const PackCommand = struct {
                 .normalized_pkg_info = normalized_pkg_info,
             };
         }
+    }
+
+    /// The tarball filename is derived from package.json's name and version.
+    /// Keep unusual but harmless names while rejecting path components and
+    /// characters that can steer the filename outside its destination.
+    fn hasUnsafeTarballFilenamePart(value: []const u8) bool {
+        var components = std.mem.splitScalar(u8, value, '/');
+        while (components.next()) |component| {
+            if (strings.eql(component, ".") or strings.eql(component, "..")) return true;
+        }
+        return strings.containsAny(value, "\\:\x00");
     }
 
     fn tarballDestination(
@@ -2583,7 +2594,6 @@ pub const PackCommand = struct {
         pack_list: if (is_dry_run) *PackQueue else PackList,
         package_json_len: usize,
     ) void {
-
         if (ctx.manager.options.log_level == .silent or ctx.manager.options.log_level == .quiet) return;
         const packed_fmt = "<r><b><cyan>packed<r> {f} {s}";
 
@@ -2697,9 +2707,12 @@ pub const bindings = struct {
         const tarball_path = tarball_path_str.toUTF8(bun.default_allocator);
         defer tarball_path.deinit();
 
-        const tarball_file = File.from(std.fs.cwd().openFile(tarball_path.slice(), .{}) catch |err| {
+        const tarball_path_z = bun.dupeZ(bun.default_allocator, u8, tarball_path.slice()) catch bun.outOfMemory();
+        defer bun.default_allocator.free(tarball_path_z);
+        const tarball_fd = bun.sys.open(tarball_path_z, bun.O.RDONLY, 0).unwrap() catch |err| {
             return global.throw("failed to open tarball file \"{s}\": {s}", .{ tarball_path.slice(), @errorName(err) });
-        });
+        };
+        const tarball_file = File.from(tarball_fd);
         defer tarball_file.close();
 
         const tarball = tarball_file.readToEnd(bun.default_allocator).unwrap() catch |err| {
@@ -2835,7 +2848,7 @@ pub const bindings = struct {
             else => {},
         }
 
-        const entries = try JSArray.createEmpty(global, entries_info.items.len);
+        const entries = JSArray.createEmpty(global, entries_info.items.len);
 
         for (entries_info.items, 0..) |entry, i| {
             const obj = JSValue.createEmptyObject(global, 0);

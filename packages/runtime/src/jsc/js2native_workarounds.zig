@@ -65,6 +65,7 @@ const PatchTestingAPIs = @import("../patch_jsc/testing.zig").TestingAPIs;
 const css_internals = @import("../css_jsc/css_internals.zig");
 const FrameworkRouter = @import("../runtime/bake/FrameworkRouter.zig");
 const DevServer = @import("../runtime/bake/DevServer.zig");
+const pack_command = @import("../runtime/cli/pack_command.zig");
 const upgrade_command = @import("../runtime/cli/upgrade_command.zig");
 
 /// Real Zig dispatch for `$.braces(...)`. The pinned-obj C++ wrapper
@@ -307,6 +308,11 @@ comptime {
     @export(&host_fn.toJSHostFn(PatchTestingAPIs.makeDiff), .{ .name = "JS2Zig___src_patch_patch_zig__TestingAPIs_makeDiff" });
     @export(&host_fn.toJSHostFn(PatchTestingAPIs.apply), .{ .name = "JS2Zig___src_patch_patch_zig__TestingAPIs_apply" });
     @export(&host_fn.toJSHostFn(PatchTestingAPIs.parse), .{ .name = "JS2Zig___src_patch_patch_zig__TestingAPIs_parse" });
+
+    // ---- pack tarball TestingAPI (bun:internal-for-testing readTarball) --
+    // The pack corpus inspects the real archive through this host function.
+    // The no-op export returned globalThis, leaving entries and digests absent.
+    @export(&host_fn.toJSHostFn(pack_command.bindings.jsReadTarball), .{ .name = "JS2Zig___src_runtime_cli_pack_command_zig__bindings_jsReadTarball" });
 
     // ---- css_internals TestingAPIs (bun:internal-for-testing cssInternals) --
     @export(&host_fn.toJSHostFn(css_internals.minifyTest), .{ .name = "JS2Zig___src_css_jsc_css_internals_zig__minifyTest" });

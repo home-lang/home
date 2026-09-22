@@ -138,7 +138,8 @@ comptime {
         // lower the limit, so they never threw the OOM they assert on).
         "JS2Zig___src_runtime_api_bun_subprocess_zig__TestingAPIs_injectStdioReadError",
         // patch TestingAPIs now have real exports in js2native_workarounds.zig.
-        "JS2Zig___src_runtime_cli_pack_command_zig__bindings_jsReadTarball",
+        // pack readTarball now has its real host-function export in
+        // jsc/js2native_workarounds.zig.
         // upgrade_test_helpers now has its real lazy binding in
         // jsc/js2native_workarounds.zig.
         // getBunServerAllClosedPromise now has a real export in js2native_workarounds.zig.

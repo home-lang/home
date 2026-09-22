@@ -6438,7 +6438,8 @@ pub fn main(init: std.process.Init) !void {
             try home_rt.cli.WhyCommand.execStandalone(ctx, args[3..]);
             return;
         }
-        if (std.mem.eql(u8, args[2], "trust") or
+        if (std.mem.eql(u8, args[2], "pack") or
+            std.mem.eql(u8, args[2], "trust") or
             std.mem.eql(u8, args[2], "untrusted") or
             std.mem.eql(u8, args[2], "default-trusted"))
         {
