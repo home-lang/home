@@ -2600,6 +2600,7 @@ pub const cli = struct {
     pub const PackageManagerCommand = @import("runtime/cli/package_manager_command.zig").PackageManagerCommand;
     pub const PublishCommand = @import("runtime/cli/publish_command.zig").PublishCommand;
     pub const PackCommand = @import("runtime/cli/pack_command.zig").PackCommand;
+    pub const UpgradeCommand = @import("runtime/cli/upgrade_command.zig").UpgradeCommand;
     pub const Arguments = @import("runtime/cli/Arguments.zig");
     // Faithful to upstream `cli/cli.zig:5`: process-title override slot.
     pub var Bun__Node__ProcessTitle: ?[]const u8 = null;

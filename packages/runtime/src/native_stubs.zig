@@ -139,7 +139,8 @@ comptime {
         "JS2Zig___src_runtime_api_bun_subprocess_zig__TestingAPIs_injectStdioReadError",
         // patch TestingAPIs now have real exports in js2native_workarounds.zig.
         "JS2Zig___src_runtime_cli_pack_command_zig__bindings_jsReadTarball",
-        "JS2Zig___src_runtime_cli_upgrade_command_zig__upgrade_js_bindings_generate_workaround",
+        // upgrade_test_helpers now has its real lazy binding in
+        // jsc/js2native_workarounds.zig.
         // getBunServerAllClosedPromise now has a real export in js2native_workarounds.zig.
         // shell TestingAPIs (shellLex/shellParse/disabledOnThisPlatform) now
         // have real exports in jsc/js2native_workarounds.zig — the noops made

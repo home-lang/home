@@ -10,6 +10,7 @@ const Environment = @import("environment.zig");
 
 pub const percentEncodeWrite = @import("string/immutable.zig").percentEncodeWrite;
 pub const ANSIIterator = @import("string/immutable.zig").ANSIIterator;
+pub const containsAny = @import("string/immutable.zig").containsAny;
 
 pub fn indexOfAnyT(comptime T: type, haystack: []const T, needles: []const T) ?usize {
     for (haystack, 0..) |value, offset| {

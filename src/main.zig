@@ -6323,8 +6323,25 @@ pub fn main(init: std.process.Init) !void {
         try execPantryCommand(allocator, "remove", args[2..]);
         return;
     }
-    if (std.mem.eql(u8, command, "update") or std.mem.eql(u8, command, "upgrade")) {
+    if (std.mem.eql(u8, command, "update")) {
         try execPantryCommand(allocator, "update", args[2..]);
+        return;
+    }
+    if (std.mem.eql(u8, command, "upgrade")) {
+        if (comptime build_options.enable_jsc) {
+            for (args[2..]) |arg| {
+                if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+                    home_rt.cli.Command.Tag.printHelp(.UpgradeCommand, true);
+                    home_rt.Output.flush();
+                    return;
+                }
+            }
+            const runtime_allocator = home_rt.default_allocator;
+            const ctx = try home_rt.cli.Cli.initContext(runtime_allocator, .UpgradeCommand);
+            try home_rt.cli.UpgradeCommand.exec(ctx);
+        } else {
+            failJavaScriptCoreDisabled(command);
+        }
         return;
     }
     if (std.mem.eql(u8, command, "outdated")) {

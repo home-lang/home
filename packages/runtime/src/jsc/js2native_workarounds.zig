@@ -65,6 +65,7 @@ const PatchTestingAPIs = @import("../patch_jsc/testing.zig").TestingAPIs;
 const css_internals = @import("../css_jsc/css_internals.zig");
 const FrameworkRouter = @import("../runtime/bake/FrameworkRouter.zig");
 const DevServer = @import("../runtime/bake/DevServer.zig");
+const upgrade_command = @import("../runtime/cli/upgrade_command.zig");
 
 /// Real Zig dispatch for `$.braces(...)`. The pinned-obj C++ wrapper
 /// `bindgen_BunObject_jsBraces` marshals JS args, then calls this. native_stubs
@@ -333,6 +334,10 @@ comptime {
     // bun:internal-for-testing.npm_manifest_test_helpers. The no-op returned
     // globalThis, leaving parseManifest undefined in the real install harness.
     @export(&lazy(npm_jsc.ManifestBindings.generate), .{ .name = "JS2Zig___src_install_npm_zig__PackageManifest_bindings_generate_workaround" });
+    // Bun's upgrade corpus calls these helpers on every platform. They hold an
+    // exclusive temp-directory handle on Windows and are intentional no-ops on
+    // POSIX; the no-op symbol stub returned no object at all on either platform.
+    @export(&lazy(upgrade_command.upgrade_js_bindings.generate), .{ .name = "JS2Zig___src_runtime_cli_upgrade_command_zig__upgrade_js_bindings_generate_workaround" });
     @export(&lazyErr(node_os.createNodeOsBinding), .{ .name = "JS2Zig___src_runtime_node_node_os_zig__createNodeOsBinding_workaround" });
     // Bake's internal test API. The generated bun:internal-for-testing module
     // resolves this as a lazy binding; a no-op here made
