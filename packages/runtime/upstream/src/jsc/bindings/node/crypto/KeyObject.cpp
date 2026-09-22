@@ -16,6 +16,18 @@
 #include "CryptoGenKeyPair.h"
 #include "JSBuffer.h"
 #include "BunString.h"
+#include <openssl/bytestring.h>
+#include <openssl/pem.h>
+#include <openssl/pkcs8.h>
+#include <openssl/rand.h>
+
+namespace bssl {
+
+int pkcs8_pbe_decrypt(uint8_t**, size_t*, CBS*, const char*, size_t, const uint8_t*, size_t);
+int pkcs12_pbe_encrypt_init(CBB*, EVP_CIPHER_CTX*, int, const EVP_CIPHER*, uint32_t,
+    const char*, size_t, const uint8_t*, size_t);
+
+}
 
 namespace Bun {
 
@@ -23,6 +35,494 @@ using namespace Bun;
 using namespace JSC;
 using namespace ncrypto;
 using namespace WebCore;
+
+namespace {
+
+enum class RsaPssParseStatus : uint8_t {
+    NotRsaPss,
+    Invalid,
+    Success,
+};
+
+struct RsaPssParseResult {
+    RsaPssParseStatus status { RsaPssParseStatus::NotRsaPss };
+    RefPtr<KeyObjectData> keyData;
+};
+
+bool parseDigestAlgorithm(CBS* input, ncrypto::Digest& digest)
+{
+    CBS algorithm;
+    CBS oid;
+    if (!CBS_get_asn1(input, &algorithm, CBS_ASN1_SEQUENCE)
+        || !CBS_get_asn1(&algorithm, &oid, CBS_ASN1_OBJECT)) {
+        return false;
+    }
+
+    const EVP_MD* md = EVP_get_digestbynid(OBJ_cbs2nid(&oid));
+    if (!md) {
+        return false;
+    }
+
+    if (CBS_len(&algorithm) > 0) {
+        CBS nullValue;
+        if (!CBS_get_asn1(&algorithm, &nullValue, CBS_ASN1_NULL)
+            || CBS_len(&nullValue) != 0) {
+            return false;
+        }
+    }
+
+    if (CBS_len(&algorithm) != 0) {
+        return false;
+    }
+
+    digest = md;
+    return true;
+}
+
+bool parseRsaPssParameters(CBS* parameters, RsaPssMetadata& metadata)
+{
+    metadata.digest = ncrypto::Digest::SHA1();
+    metadata.mgf1Digest = ncrypto::Digest::SHA1();
+    metadata.minimumSaltLength = 20;
+
+    CBS wrapper;
+    int present = 0;
+    if (!CBS_get_optional_asn1(parameters, &wrapper, &present,
+            CBS_ASN1_CONSTRUCTED | CBS_ASN1_CONTEXT_SPECIFIC | 0)) {
+        return false;
+    }
+    if (present && (!parseDigestAlgorithm(&wrapper, metadata.digest) || CBS_len(&wrapper) != 0)) {
+        return false;
+    }
+
+    if (!CBS_get_optional_asn1(parameters, &wrapper, &present,
+            CBS_ASN1_CONSTRUCTED | CBS_ASN1_CONTEXT_SPECIFIC | 1)) {
+        return false;
+    }
+    if (present) {
+        CBS maskAlgorithm;
+        CBS oid;
+        if (!CBS_get_asn1(&wrapper, &maskAlgorithm, CBS_ASN1_SEQUENCE)
+            || !CBS_get_asn1(&maskAlgorithm, &oid, CBS_ASN1_OBJECT)
+            || OBJ_cbs2nid(&oid) != NID_mgf1
+            || !parseDigestAlgorithm(&maskAlgorithm, metadata.mgf1Digest)
+            || CBS_len(&maskAlgorithm) != 0
+            || CBS_len(&wrapper) != 0) {
+            return false;
+        }
+    }
+
+    uint64_t saltLength = 20;
+    if (!CBS_get_optional_asn1_uint64(parameters, &saltLength,
+            CBS_ASN1_CONSTRUCTED | CBS_ASN1_CONTEXT_SPECIFIC | 2, 20)
+        || saltLength > INT32_MAX) {
+        return false;
+    }
+    metadata.minimumSaltLength = static_cast<int32_t>(saltLength);
+
+    uint64_t trailerField = 1;
+    if (!CBS_get_optional_asn1_uint64(parameters, &trailerField,
+            CBS_ASN1_CONSTRUCTED | CBS_ASN1_CONTEXT_SPECIFIC | 3, 1)
+        || trailerField != 1) {
+        return false;
+    }
+
+    return CBS_len(parameters) == 0;
+}
+
+RsaPssParseStatus parseRsaPssAlgorithm(CBS* input, RsaPssMetadata& metadata)
+{
+    CBS algorithm;
+    CBS oid;
+    if (!CBS_get_asn1(input, &algorithm, CBS_ASN1_SEQUENCE)
+        || !CBS_get_asn1(&algorithm, &oid, CBS_ASN1_OBJECT)) {
+        return RsaPssParseStatus::NotRsaPss;
+    }
+    if (OBJ_cbs2nid(&oid) != NID_rsassaPss) {
+        return RsaPssParseStatus::NotRsaPss;
+    }
+
+    if (CBS_len(&algorithm) == 0) {
+        metadata = {};
+        return RsaPssParseStatus::Success;
+    }
+
+    CBS parameters;
+    if (!CBS_get_asn1(&algorithm, &parameters, CBS_ASN1_SEQUENCE)
+        || CBS_len(&algorithm) != 0
+        || !parseRsaPssParameters(&parameters, metadata)) {
+        return RsaPssParseStatus::Invalid;
+    }
+    return RsaPssParseStatus::Success;
+}
+
+RsaPssParseResult parseRsaPssDer(std::span<const uint8_t> der, bool isPrivate)
+{
+    CBS input;
+    CBS keySequence;
+    CBS_init(&input, der.data(), der.size());
+    if (!CBS_get_asn1(&input, &keySequence, CBS_ASN1_SEQUENCE) || CBS_len(&input) != 0) {
+        return {};
+    }
+
+    if (isPrivate) {
+        uint64_t version = 0;
+        if (!CBS_get_asn1_uint64(&keySequence, &version) || version != 0) {
+            return {};
+        }
+    }
+
+    RsaPssMetadata metadata;
+    const auto algorithmStatus = parseRsaPssAlgorithm(&keySequence, metadata);
+    if (algorithmStatus != RsaPssParseStatus::Success) {
+        return { .status = algorithmStatus };
+    }
+
+    CBS encodedKey;
+    if (isPrivate) {
+        if (!CBS_get_asn1(&keySequence, &encodedKey, CBS_ASN1_OCTETSTRING)) {
+            return { .status = RsaPssParseStatus::Invalid };
+        }
+    } else {
+        if (!CBS_get_asn1(&keySequence, &encodedKey, CBS_ASN1_BITSTRING)) {
+            return { .status = RsaPssParseStatus::Invalid };
+        }
+        uint8_t padding = 0;
+        if (!CBS_get_u8(&encodedKey, &padding) || padding != 0) {
+            return { .status = RsaPssParseStatus::Invalid };
+        }
+    }
+
+    if (CBS_len(&keySequence) != 0) {
+        return { .status = RsaPssParseStatus::Invalid };
+    }
+
+    ncrypto::RSAPointer rsa(isPrivate
+            ? RSA_private_key_from_bytes(CBS_data(&encodedKey), CBS_len(&encodedKey))
+            : RSA_public_key_from_bytes(CBS_data(&encodedKey), CBS_len(&encodedKey)));
+    auto key = ncrypto::EVPKeyPointer::NewRSA(WTF::move(rsa));
+    if (!key) {
+        return { .status = RsaPssParseStatus::Invalid };
+    }
+
+    auto keyData = KeyObjectData::create(WTF::move(key));
+    keyData->setRsaPssMetadata(metadata.digest, metadata.mgf1Digest, metadata.minimumSaltLength);
+    return { .status = RsaPssParseStatus::Success, .keyData = WTF::move(keyData) };
+}
+
+ncrypto::DataPointer decryptPkcs8(
+    std::span<const uint8_t> encrypted,
+    const ncrypto::EVPKeyPointer::PrivateKeyEncodingConfig& config)
+{
+    if (!config.passphrase) {
+        return {};
+    }
+
+    CBS input;
+    CBS encryptedKey;
+    CBS algorithm;
+    CBS ciphertext;
+    CBS_init(&input, encrypted.data(), encrypted.size());
+    if (!CBS_get_asn1(&input, &encryptedKey, CBS_ASN1_SEQUENCE)
+        || !CBS_get_asn1(&encryptedKey, &algorithm, CBS_ASN1_SEQUENCE)
+        || !CBS_get_asn1(&encryptedKey, &ciphertext, CBS_ASN1_OCTETSTRING)
+        || CBS_len(&encryptedKey) != 0
+        || CBS_len(&input) != 0) {
+        return {};
+    }
+
+    const char* passphrase = static_cast<const char*>(config.passphrase->get());
+    uint8_t* decoded = nullptr;
+    size_t decodedLength = 0;
+    if (!bssl::pkcs8_pbe_decrypt(&decoded, &decodedLength, &algorithm,
+            passphrase, config.passphrase->size(), CBS_data(&ciphertext), CBS_len(&ciphertext))) {
+        return {};
+    }
+    return ncrypto::DataPointer(decoded, decodedLength);
+}
+
+ncrypto::DataPointer encryptPkcs8(
+    std::span<const uint8_t> plaintext,
+    const EVP_CIPHER* cipher,
+    const ncrypto::DataPointer& passphrase)
+{
+    constexpr size_t saltLength = 16;
+    uint8_t salt[saltLength];
+    if (!RAND_bytes(salt, sizeof(salt))) {
+        return {};
+    }
+
+    auto cipherContext = ncrypto::CipherCtxPointer::New();
+    if (!cipherContext) {
+        return {};
+    }
+
+    CBB output;
+    if (!CBB_init(&output, plaintext.size() + 128)) {
+        return {};
+    }
+
+    const char* password = static_cast<const char*>(passphrase.get());
+    CBB encryptedKey;
+    CBB ciphertext;
+    uint8_t* ciphertextData = nullptr;
+    size_t ciphertextLength = 0;
+    size_t finalLength = 0;
+    if (!CBB_add_asn1(&output, &encryptedKey, CBS_ASN1_SEQUENCE)
+        || !bssl::pkcs12_pbe_encrypt_init(&encryptedKey, cipherContext.get(), -1, cipher,
+            PKCS12_DEFAULT_ITER, password, passphrase.size(), salt, sizeof(salt))) {
+        CBB_cleanup(&output);
+        return {};
+    }
+
+    const size_t maximumLength = plaintext.size() + EVP_CIPHER_CTX_block_size(cipherContext.get());
+    const bool ok = maximumLength >= plaintext.size()
+        && CBB_add_asn1(&encryptedKey, &ciphertext, CBS_ASN1_OCTETSTRING)
+        && CBB_reserve(&ciphertext, &ciphertextData, maximumLength)
+        && EVP_CipherUpdate_ex(cipherContext.get(), ciphertextData, &ciphertextLength, maximumLength,
+            plaintext.data(), plaintext.size())
+        && EVP_CipherFinal_ex2(cipherContext.get(), ciphertextData + ciphertextLength, &finalLength,
+            maximumLength - ciphertextLength)
+        && CBB_did_write(&ciphertext, ciphertextLength + finalLength)
+        && CBB_flush(&output);
+
+    uint8_t* encoded = nullptr;
+    size_t encodedLength = 0;
+    if (!ok || !CBB_finish(&output, &encoded, &encodedLength)) {
+        CBB_cleanup(&output);
+        return {};
+    }
+    return ncrypto::DataPointer(encoded, encodedLength);
+}
+
+RsaPssParseResult tryParseRsaPssKey(
+    const ncrypto::EVPKeyPointer::PrivateKeyEncodingConfig& config,
+    const ncrypto::Buffer<const uint8_t>& buffer,
+    bool requirePrivate)
+{
+    if (config.format == ncrypto::EVPKeyPointer::PKFormatType::DER) {
+        if (config.type == ncrypto::EVPKeyPointer::PKEncodingType::SPKI) {
+            if (requirePrivate) {
+                return { .status = RsaPssParseStatus::Invalid };
+            }
+            return parseRsaPssDer({ buffer.data, buffer.len }, false);
+        }
+        if (config.type == ncrypto::EVPKeyPointer::PKEncodingType::PKCS8) {
+            auto result = parseRsaPssDer({ buffer.data, buffer.len }, true);
+            if (result.status != RsaPssParseStatus::NotRsaPss) {
+                return result;
+            }
+            auto decrypted = decryptPkcs8({ buffer.data, buffer.len }, config);
+            return decrypted ? parseRsaPssDer(decrypted.span(), true) : result;
+        }
+        return {};
+    }
+
+    if (config.format != ncrypto::EVPKeyPointer::PKFormatType::PEM) {
+        return {};
+    }
+
+    auto bio = ncrypto::BIOPointer::New(buffer.data, buffer.len);
+    if (!bio) {
+        return { .status = RsaPssParseStatus::Invalid };
+    }
+
+    char* name = nullptr;
+    char* header = nullptr;
+    uint8_t* data = nullptr;
+    long length = 0;
+    if (!PEM_read_bio(bio.get(), &name, &header, &data, &length)) {
+        return {};
+    }
+
+    const bool isPrivate = strcmp(name, PEM_STRING_PKCS8INF) == 0;
+    const bool isEncryptedPrivate = strcmp(name, PEM_STRING_PKCS8) == 0;
+    const bool isPublic = strcmp(name, PEM_STRING_PUBLIC) == 0;
+    OPENSSL_free(name);
+    OPENSSL_free(header);
+    ncrypto::DataPointer decoded(data, length);
+    if (!isPrivate && !isEncryptedPrivate && !isPublic) {
+        return {};
+    }
+    if (requirePrivate && isPublic) {
+        return { .status = RsaPssParseStatus::Invalid };
+    }
+
+    if (isEncryptedPrivate) {
+        auto decrypted = decryptPkcs8(decoded.span(), config);
+        return decrypted ? parseRsaPssDer(decrypted.span(), true) : RsaPssParseResult {};
+    }
+    return parseRsaPssDer(decoded.span(), isPrivate);
+}
+
+bool addOid(CBB* output, int nid)
+{
+    const ASN1_OBJECT* object = OBJ_nid2obj(nid);
+    return object
+        && CBB_add_asn1_element(output, CBS_ASN1_OBJECT, OBJ_get0_data(object), OBJ_length(object));
+}
+
+bool addDigestAlgorithm(CBB* output, ncrypto::Digest digest)
+{
+    CBB algorithm;
+    CBB nullValue;
+    return digest
+        && CBB_add_asn1(output, &algorithm, CBS_ASN1_SEQUENCE)
+        && addOid(&algorithm, EVP_MD_type(digest.get()))
+        && CBB_add_asn1(&algorithm, &nullValue, CBS_ASN1_NULL)
+        && CBB_flush(output);
+}
+
+bool addRsaPssAlgorithm(CBB* output, const RsaPssMetadata& metadata)
+{
+    CBB algorithm;
+    if (!CBB_add_asn1(output, &algorithm, CBS_ASN1_SEQUENCE)
+        || !addOid(&algorithm, NID_rsassaPss)) {
+        return false;
+    }
+
+    // An absent parameters field means the key is unrestricted. Explicit
+    // SHA-1/MGF1-SHA-1/salt-20 restrictions encode as an empty sequence
+    // because those are the RFC 4055 defaults.
+    if (!metadata.digest) {
+        return CBB_flush(output);
+    }
+
+    CBB parameters;
+    if (!CBB_add_asn1(&algorithm, &parameters, CBS_ASN1_SEQUENCE)) {
+        return false;
+    }
+
+    if (EVP_MD_type(metadata.digest.get()) != NID_sha1) {
+        CBB hashWrapper;
+        if (!CBB_add_asn1(&parameters, &hashWrapper,
+                CBS_ASN1_CONSTRUCTED | CBS_ASN1_CONTEXT_SPECIFIC | 0)
+            || !addDigestAlgorithm(&hashWrapper, metadata.digest)) {
+            return false;
+        }
+    }
+
+    if (metadata.mgf1Digest && EVP_MD_type(metadata.mgf1Digest.get()) != NID_sha1) {
+        CBB maskWrapper;
+        CBB maskAlgorithm;
+        if (!CBB_add_asn1(&parameters, &maskWrapper,
+                CBS_ASN1_CONSTRUCTED | CBS_ASN1_CONTEXT_SPECIFIC | 1)
+            || !CBB_add_asn1(&maskWrapper, &maskAlgorithm, CBS_ASN1_SEQUENCE)
+            || !addOid(&maskAlgorithm, NID_mgf1)
+            || !addDigestAlgorithm(&maskAlgorithm, metadata.mgf1Digest)) {
+            return false;
+        }
+    }
+
+    if (metadata.minimumSaltLength >= 0 && metadata.minimumSaltLength != 20) {
+        CBB saltWrapper;
+        if (!CBB_add_asn1(&parameters, &saltWrapper,
+                CBS_ASN1_CONSTRUCTED | CBS_ASN1_CONTEXT_SPECIFIC | 2)
+            || !CBB_add_asn1_uint64(&saltWrapper, metadata.minimumSaltLength)) {
+            return false;
+        }
+    }
+
+    return CBB_flush(output);
+}
+
+ncrypto::DataPointer encodeRsaPssKey(const KeyObjectData& keyData, bool isPrivate)
+{
+    const RSA* rsa = EVP_PKEY_get0_RSA(keyData.asymmetricKey.get());
+    const auto metadata = keyData.rsaPssMetadata();
+    if (!rsa || !metadata) {
+        return {};
+    }
+
+    uint8_t* rawKey = nullptr;
+    const int rawKeyLength = isPrivate
+        ? i2d_RSAPrivateKey(rsa, &rawKey)
+        : i2d_RSAPublicKey(rsa, &rawKey);
+    if (rawKeyLength <= 0) {
+        return {};
+    }
+    ncrypto::DataPointer rawKeyData(rawKey, rawKeyLength);
+
+    CBB output;
+    if (!CBB_init(&output, static_cast<size_t>(rawKeyLength) + 128)) {
+        return {};
+    }
+
+    CBB keySequence;
+    bool ok = CBB_add_asn1(&output, &keySequence, CBS_ASN1_SEQUENCE);
+    if (isPrivate) {
+        ok = ok && CBB_add_asn1_uint64(&keySequence, 0);
+    }
+    ok = ok && addRsaPssAlgorithm(&keySequence, *metadata);
+
+    if (isPrivate) {
+        ok = ok && CBB_add_asn1_octet_string(&keySequence, rawKeyData.get<const uint8_t>(), rawKeyData.size());
+    } else {
+        CBB bitString;
+        ok = ok
+            && CBB_add_asn1(&keySequence, &bitString, CBS_ASN1_BITSTRING)
+            && CBB_add_u8(&bitString, 0)
+            && CBB_add_bytes(&bitString, static_cast<const uint8_t*>(rawKeyData.get()), rawKeyData.size());
+    }
+
+    uint8_t* encoded = nullptr;
+    size_t encodedLength = 0;
+    if (!ok || !CBB_finish(&output, &encoded, &encodedLength)) {
+        CBB_cleanup(&output);
+        return {};
+    }
+    return ncrypto::DataPointer(encoded, encodedLength);
+}
+
+ncrypto::BIOPointer writeRsaPssPublicKey(
+    const KeyObjectData& keyData,
+    const ncrypto::EVPKeyPointer::PublicKeyEncodingConfig& config)
+{
+    auto encoded = encodeRsaPssKey(keyData, false);
+    auto bio = ncrypto::BIOPointer::NewMem();
+    if (!encoded || !bio) {
+        return {};
+    }
+
+    const int result = config.format == ncrypto::EVPKeyPointer::PKFormatType::PEM
+        ? PEM_write_bio(bio.get(), PEM_STRING_PUBLIC, "", static_cast<const uint8_t*>(encoded.get()), encoded.size())
+        : BIO_write(bio.get(), encoded.get(), encoded.size());
+    return result > 0 ? WTF::move(bio) : ncrypto::BIOPointer {};
+}
+
+ncrypto::BIOPointer writeRsaPssPrivateKey(
+    const KeyObjectData& keyData,
+    const ncrypto::EVPKeyPointer::PrivateKeyEncodingConfig& config)
+{
+    auto encoded = encodeRsaPssKey(keyData, true);
+    if (!encoded) {
+        return {};
+    }
+
+    const char* pemName = PEM_STRING_PKCS8INF;
+    if (config.cipher) {
+        if (!config.passphrase) {
+            return {};
+        }
+        auto encrypted = encryptPkcs8(encoded.span(), config.cipher, *config.passphrase);
+        if (!encrypted) {
+            return {};
+        }
+        encoded = WTF::move(encrypted);
+        pemName = PEM_STRING_PKCS8;
+    }
+
+    auto bio = ncrypto::BIOPointer::NewMem();
+    if (!bio) {
+        return {};
+    }
+    const int result = config.format == ncrypto::EVPKeyPointer::PKFormatType::PEM
+        ? PEM_write_bio(bio.get(), pemName, "", static_cast<const uint8_t*>(encoded.get()), encoded.size())
+        : BIO_write(bio.get(), encoded.get(), encoded.size());
+    return result > 0 ? WTF::move(bio) : ncrypto::BIOPointer {};
+}
+
+} // namespace
 
 JSValue encodeBignum(JSGlobalObject* globalObject, ThrowScope& scope, const BIGNUM* bn, int size)
 {
@@ -325,6 +825,15 @@ JSC::JSValue KeyObject::exportPublic(JSC::JSGlobalObject* lexicalGlobalObject, J
         return {};
     }
 
+    if (isRsaPss()) {
+        auto bio = writeRsaPssPublicKey(*m_data, config);
+        if (!bio) {
+            throwCryptoError(lexicalGlobalObject, scope, ERR_peek_error(), "Failed to encode RSA-PSS public key"_s);
+            return {};
+        }
+        return toJS(lexicalGlobalObject, scope, bio, config);
+    }
+
     const ncrypto::EVPKeyPointer& pkey = m_data->asymmetricKey;
     auto res = pkey.writePublicKey(config);
     if (!res) {
@@ -356,6 +865,15 @@ JSValue KeyObject::exportPrivate(JSGlobalObject* lexicalGlobalObject, ThrowScope
     if (isRsaPss() && config.type == ncrypto::EVPKeyPointer::PKEncodingType::PKCS1) {
         ERR::CRYPTO_INCOMPATIBLE_KEY_OPTIONS(scope, lexicalGlobalObject, "pkcs1"_s, "can only be used for RSA keys"_s);
         return {};
+    }
+
+    if (isRsaPss()) {
+        auto bio = writeRsaPssPrivateKey(*m_data, config);
+        if (!bio) {
+            throwCryptoError(lexicalGlobalObject, scope, ERR_peek_error(), "Failed to encode RSA-PSS private key"_s);
+            return {};
+        }
+        return toJS(lexicalGlobalObject, scope, bio, config);
     }
 
     const ncrypto::EVPKeyPointer& pkey = m_data->asymmetricKey;
@@ -523,6 +1041,21 @@ void KeyObject::getRsaKeyDetails(JSGlobalObject* globalObject, ThrowScope& scope
     }
 
     result->putDirect(vm, Identifier::fromString(vm, "publicExponent"_s), publicExponent);
+
+    if (auto metadata = m_data->rsaPssMetadata(); metadata && metadata->digest) {
+        auto digestName = String::fromLatin1(OBJ_nid2sn(EVP_MD_type(metadata->digest.get()))).convertToASCIILowercase();
+        result->putDirect(vm, Identifier::fromString(vm, "hashAlgorithm"_s), jsString(vm, digestName));
+
+        if (metadata->mgf1Digest) {
+            auto mgf1DigestName = String::fromLatin1(OBJ_nid2sn(EVP_MD_type(metadata->mgf1Digest.get()))).convertToASCIILowercase();
+            result->putDirect(vm, Identifier::fromString(vm, "mgf1HashAlgorithm"_s), jsString(vm, mgf1DigestName));
+        }
+
+        if (metadata->minimumSaltLength >= 0) {
+            result->putDirect(vm, Identifier::fromString(vm, "saltLength"_s), jsNumber(metadata->minimumSaltLength));
+        }
+        return;
+    }
 
     if (pkey.id() == EVP_PKEY_RSA_PSS) {
         auto maybeParams = rsa.getPssParams();
@@ -1085,6 +1618,15 @@ KeyObject KeyObject::getPublicOrPrivateKey(
             KeyEncodingContext::Input);
         RETURN_IF_EXCEPTION(scope, {});
 
+        auto rsaPssResult = tryParseRsaPssKey(config, buf, true);
+        if (rsaPssResult.status == RsaPssParseStatus::Success) {
+            return create(CryptoKeyType::Private, WTF::move(rsaPssResult.keyData));
+        }
+        if (rsaPssResult.status == RsaPssParseStatus::Invalid) {
+            throwCryptoError(globalObject, scope, ERR_peek_error(), "Failed to read RSA-PSS private key"_s);
+            return {};
+        }
+
         auto res = EVPKeyPointer::TryParsePrivateKey(config, buf);
         if (res) {
             return create(CryptoKeyType::Private, WTF::move(res.value));
@@ -1112,6 +1654,15 @@ KeyObject KeyObject::getPublicOrPrivateKey(
         WTF::move(passphrase),
         KeyEncodingContext::Input);
     RETURN_IF_EXCEPTION(scope, {});
+
+    auto rsaPssResult = tryParseRsaPssKey(config, buf, false);
+    if (rsaPssResult.status == RsaPssParseStatus::Success) {
+        return create(CryptoKeyType::Public, WTF::move(rsaPssResult.keyData));
+    }
+    if (rsaPssResult.status == RsaPssParseStatus::Invalid) {
+        throwCryptoError(globalObject, scope, ERR_peek_error(), "Failed to read RSA-PSS key"_s);
+        return {};
+    }
 
     if (config.format == EVPKeyPointer::PKFormatType::PEM) {
         auto publicRes = EVPKeyPointer::TryParsePublicKeyPEM(buf);
