@@ -2475,10 +2475,20 @@ pub const Printer = struct {
             if (f.flags.is_generator and !downlevel_generator and !downlevel_async_gen) try self.write("*");
             if (native_async) try self.write(" ");
             if (f.name != hir_mod.none_node_id) {
-                // A method name can be a string key (`class C { "a-b"() {} }`),
-                // which the parser stores as an identifier holding the raw text;
-                // quote it when it isn't a valid identifier so it stays valid JS.
-                try self.printObjectKey(f.name);
+                // ECMAScript private names are declarations, not string
+                // property keys. At native-private targets preserve the `#`
+                // token verbatim; quoting it creates a public `"#name"`
+                // member and leaves every private reference undeclared.
+                if (self.options.es_target.supportsNativePrivateFields() and
+                    self.privateFieldName(f.name) != null)
+                {
+                    try self.printExpression(f.name);
+                } else {
+                    // A method name can be a string key (`class C { "a-b"() {} }`),
+                    // which the parser stores as an identifier holding the raw text;
+                    // quote it when it isn't a valid identifier so it stays valid JS.
+                    try self.printObjectKey(f.name);
+                }
             }
         }
         try self.write("(");
@@ -16168,18 +16178,26 @@ test "emit: private field with no initializer doesn't synthesize ctor at es2019"
     try T.expect(std.mem.indexOf(u8, out, "_Foo_x.set") == null);
 }
 
-test "emit: private method `#m()` preserved at es2022+" {
-    // Private methods are class-body `fn_decl` members whose name
-    // starts with `#`. At ES2022+ we emit them verbatim — no
-    // lowering. (Sub-ES2022 lowering of private *methods* is not
-    // implemented in v0; the WeakMap path covers fields only.)
+test "emit: native private methods and accessors retain declaration names" {
     const out = try emitWithOpts(
-        "class Foo { #m() { return 1; } call() { return this.#m(); } }",
+        "class Foo { #m() { return 1; } get #x() { return 2; } set #x(v: number) {} static #sm() { return 3; } static get #sx() { return 4; } static set #sx(v: number) {} call() { return this.#m() + this.#x; } static call() { return this.#sm() + this.#sx; } }",
         .{ .es_target = .es2022 },
     );
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "#m()") != null);
+    try T.expect(std.mem.indexOf(u8, out, "get #x()") != null);
+    try T.expect(std.mem.indexOf(u8, out, "set #x(v)") != null);
+    try T.expect(std.mem.indexOf(u8, out, "static #sm()") != null);
+    try T.expect(std.mem.indexOf(u8, out, "static get #sx()") != null);
+    try T.expect(std.mem.indexOf(u8, out, "static set #sx(v)") != null);
     try T.expect(std.mem.indexOf(u8, out, "this.#m()") != null);
+    try T.expect(std.mem.indexOf(u8, out, "this.#x") != null);
+    try T.expect(std.mem.indexOf(u8, out, "this.#sm()") != null);
+    try T.expect(std.mem.indexOf(u8, out, "this.#sx") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"#m\"") == null);
+    try T.expect(std.mem.indexOf(u8, out, "\"#x\"") == null);
+    try T.expect(std.mem.indexOf(u8, out, "\"#sm\"") == null);
+    try T.expect(std.mem.indexOf(u8, out, "\"#sx\"") == null);
     try T.expect(std.mem.indexOf(u8, out, "WeakMap") == null);
 }
 
