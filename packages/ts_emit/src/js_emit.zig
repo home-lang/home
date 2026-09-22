@@ -8588,7 +8588,19 @@ pub const Printer = struct {
             .element_access => try self.printElement(node),
             .array_literal => try self.printArrayLiteral(node),
             .object_literal => try self.printObjectLiteral(node),
-            .fn_decl, .fn_expr, .arrow_fn => try self.printFnDecl(node),
+            .fn_decl, .fn_expr => try self.printFnDecl(node),
+            .arrow_fn => {
+                // Arrow functions bind at assignment precedence. Without
+                // grouping in a tighter context, `(() => value)()` becomes
+                // `() => value()` and changes which expression is called.
+                // The same rule preserves member, optional-call, unary, and
+                // conditional operands while keeping assignment RHS arrows
+                // unparenthesized.
+                const wrap = level.gte(.assign);
+                if (wrap) try self.write("(");
+                try self.printFnDecl(node);
+                if (wrap) try self.write(")");
+            },
             .class_decl, .class_expr => try self.printClassDecl(node),
             .jsx_element, .jsx_self_closing => try self.printJsxElement(node),
             .jsx_fragment => try self.printJsxFragment(node),
@@ -9633,7 +9645,9 @@ pub const Printer = struct {
     /// `` tag`s0${v0}s1…` `` form (tsc / Bun keep tagged templates native).
     /// arg 0 is the cooked-strings array; args 1.. are the substitutions.
     fn printTaggedTemplate(self: *Printer, node: NodeId, p: hir_mod.CallPayload) !void {
-        try self.printExpression(p.callee);
+        // A tag is a call target. Preserve the grouping of loose expressions
+        // such as `((parts) => parts[0])` before appending the template.
+        try self.printExpr(p.callee, .postfix);
         try self.write("`");
         const args = hir_mod.callArgs(self.hir, node);
         if (args.len > 0 and self.hir.kindOf(args[0]) == .array_literal) {
@@ -15475,6 +15489,47 @@ test "emit: async arrow" {
     const out = try emit("let f = async (x) => x;");
     defer T.allocator.free(out);
     try T.expect(std.mem.indexOf(u8, out, "async (x) => x") != null);
+}
+
+test "emit: arrow operands retain grouping at tighter precedence" {
+    const out = try emitWithOpts(
+        "const call = (() => 1)();" ++
+            " const member = (() => 2).name;" ++
+            " const optional = (() => 3)?.();" ++
+            " const typed = ((() => 4) as () => number)();" ++
+            " const conditional = (() => true) ? 5 : 6;" ++
+            " const unary = typeof (() => 7);" ++
+            " const plain = () => 8;" ++
+            " const asyncCall = (async () => 9)();" ++
+            " const nested = ((x: number) => () => x)(10)();" ++
+            " const generic = (<T>(x: T) => x)(11);" ++
+            " new (() => 12)();" ++
+            " const tagged = ((parts: string[]) => parts[0])`ok`;",
+        .{ .es_target = .es2022 },
+    );
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "const call = (() => 1)();") != null);
+    try T.expect(std.mem.indexOf(u8, out, "const member = (() => 2).name;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "const optional = (() => 3)?.();") != null);
+    try T.expect(std.mem.indexOf(u8, out, "const typed = (() => 4)();") != null);
+    try T.expect(std.mem.indexOf(u8, out, "const conditional = (() => true) ? 5 : 6;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "const unary = typeof (() => 7);") != null);
+    try T.expect(std.mem.indexOf(u8, out, "const plain = () => 8;") != null);
+    try T.expect(std.mem.indexOf(u8, out, "const asyncCall = (async () => 9)();") != null);
+    try T.expect(std.mem.indexOf(u8, out, "const nested = ((x) => () => x)(10)();") != null);
+    try T.expect(std.mem.indexOf(u8, out, "const generic = ((x) => x)(11);") != null);
+    try T.expect(std.mem.indexOf(u8, out, "new (() => 12)();") != null);
+    try T.expect(std.mem.indexOf(u8, out, "const tagged = ((parts) => parts[0])`ok`;") != null);
+}
+
+test "emit: arrow returning JSX retains immediate-call grouping" {
+    const out = try emitJsx("const element = (() => <span value={13} />)();", .{});
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(
+        u8,
+        out,
+        "const element = (() => React.createElement(\"span\", { value: 13 }))();",
+    ) != null);
 }
 
 test "emit: class with decorator emits __decorate helper" {
