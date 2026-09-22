@@ -1053,6 +1053,21 @@ pub fn serve(globalObject: *jsc.JSGlobalObject, callframe: *jsc.CallFrame) bun.J
                         server.onReloadFromZig(&config, globalObject);
                         return server.js_value.tryGet() orelse .js_undefined;
                     },
+                    @field(@TypeOf(entry.tag()), @typeName(jsc.API.DebugHTTPServer)) => {
+                        var server: *jsc.API.DebugHTTPServer = entry.as(jsc.API.DebugHTTPServer);
+                        server.onReloadFromZig(&config, globalObject);
+                        return server.js_value.tryGet() orelse .js_undefined;
+                    },
+                    @field(@TypeOf(entry.tag()), @typeName(jsc.API.DebugHTTPSServer)) => {
+                        var server: *jsc.API.DebugHTTPSServer = entry.as(jsc.API.DebugHTTPSServer);
+                        server.onReloadFromZig(&config, globalObject);
+                        return server.js_value.tryGet() orelse .js_undefined;
+                    },
+                    @field(@TypeOf(entry.tag()), @typeName(jsc.API.HTTPSServer)) => {
+                        var server: *jsc.API.HTTPSServer = entry.as(jsc.API.HTTPSServer);
+                        server.onReloadFromZig(&config, globalObject);
+                        return server.js_value.tryGet() orelse .js_undefined;
+                    },
                     else => {},
                 }
             }

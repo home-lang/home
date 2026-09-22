@@ -134,7 +134,6 @@ pub fn onMessage(s: *HmrSocket, ws: AnyWebSocket, msg: []const u8, opcode: uws.O
             var response: [5]u8 = .{MessageId.set_url_response.char()} ++ std.mem.toBytes(rbi.get());
 
             _ = ws.send(&response, .binary, false, true);
-            s.notifyInspectorClientNavigation(pattern, rbi.toOptional());
         },
         .testing_batch_events => switch (s.dev.testing_batch_events) {
             .disabled => {
@@ -268,21 +267,6 @@ pub fn onClose(s: *HmrSocket, ws: AnyWebSocket, exit_code: i32, message: []const
     s.referenced_source_maps.deinit(s.dev.allocator());
     bun.debugAssert(s.dev.active_websocket_connections.remove(s));
     s.dev.allocator().destroy(s);
-}
-
-fn notifyInspectorClientNavigation(s: *const HmrSocket, pattern: []const u8, rbi: RouteBundle.Index.Optional) void {
-    if (s.inspector_connection_id > -1) {
-        if (s.dev.inspector()) |agent| {
-            var pattern_str = bun.String.init(pattern);
-            defer pattern_str.deref();
-            agent.notifyClientNavigated(
-                s.dev.inspector_server_id,
-                s.inspector_connection_id,
-                &pattern_str,
-                rbi.unwrap(),
-            );
-        }
-    }
 }
 
 const std = @import("std");
