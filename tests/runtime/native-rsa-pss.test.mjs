@@ -3,6 +3,7 @@ import {
   constants,
   createPrivateKey,
   createPublicKey,
+  createSecretKey,
   createSign,
   createVerify,
   generateKeyPair,
@@ -13,6 +14,7 @@ import {
 import { readFileSync } from 'node:fs'
 import { basename } from 'node:path'
 import { promisify } from 'node:util'
+import { Worker } from 'node:worker_threads'
 
 assert.match(basename(process.execPath), /^home(?:-debug)?(?:\.exe)?$/)
 
@@ -116,11 +118,24 @@ function checkRoundTrips({ privateKey, publicKey }, digest, keyDetails) {
   }
 }
 
+function checkStructuredClones({ privateKey, publicKey }, digest) {
+  for (const key of [privateKey, publicKey]) {
+    const clone = structuredClone(key)
+    assert.equal(clone.type, key.type)
+    assert.equal(clone.asymmetricKeyType, 'rsa-pss')
+    assert.deepEqual(clone.asymmetricKeyDetails, key.asymmetricKeyDetails)
+    if (clone.type === 'private') {
+      assert.equal(verify(digest, message, publicKey, sign(digest, message, clone)), true)
+    }
+  }
+}
+
 const unrestricted = generateKeyPairSync('rsa-pss', { modulusLength: 2048, publicExponent: 65537 })
 checkPair(unrestricted)
 const unrestrictedSpki = unrestricted.publicKey.export({ format: 'der', type: 'spki' })
 assert.notEqual(unrestrictedSpki.indexOf(Buffer.from('300b06092a864886f70d01010a', 'hex')), -1)
 checkRoundTrips(unrestricted, 'sha256', expectedDetails)
+checkStructuredClones(unrestricted, 'sha256')
 
 const restricted = generateKeyPairSync('rsa-pss', {
   modulusLength: 2048,
@@ -141,6 +156,7 @@ checkRoundTrips(restricted, 'sha256', {
   mgf1HashAlgorithm: 'sha256',
   saltLength: 16,
 })
+checkStructuredClones(restricted, 'sha256')
 assert.throws(() => sign('sha1', message, restricted.privateKey), /digest not allowed/)
 assert.throws(() => sign('sha256', message, { key: restricted.privateKey, saltLength: 8 }), /pss saltlen too small|too small for this RSA-PSS key/)
 const wrongDigestSigner = createSign('sha1')
@@ -149,6 +165,38 @@ assert.throws(() => wrongDigestSigner.sign(restricted.privateKey), /digest not a
 const wrongDigestVerifier = createVerify('sha1')
 wrongDigestVerifier.update(message)
 assert.throws(() => wrongDigestVerifier.verify(restricted.publicKey, Buffer.alloc(256)), /digest not allowed/)
+
+const workerResult = await new Promise((resolve, reject) => {
+  const worker = new Worker(`
+    const { parentPort, workerData } = require('node:worker_threads');
+    const { sign } = require('node:crypto');
+    parentPort.postMessage({
+      type: workerData.asymmetricKeyType,
+      details: workerData.asymmetricKeyDetails,
+      signature: sign('sha256', Buffer.from(${JSON.stringify(message.toString())}), workerData),
+    });
+  `, {
+    eval: true,
+    workerData: restricted.privateKey,
+  })
+  worker.once('message', resolve)
+  worker.once('error', reject)
+})
+assert.equal(workerResult.type, 'rsa-pss')
+assert.deepEqual(workerResult.details, restricted.privateKey.asymmetricKeyDetails)
+assert.equal(verify('sha256', message, restricted.publicKey, workerResult.signature), true)
+
+const ordinaryRsa = generateKeyPairSync('rsa', { modulusLength: 1024 })
+const clonedOrdinaryPrivate = structuredClone(ordinaryRsa.privateKey)
+const clonedOrdinaryPublic = structuredClone(ordinaryRsa.publicKey)
+assert.equal(clonedOrdinaryPrivate.asymmetricKeyType, 'rsa')
+assert.equal(clonedOrdinaryPublic.asymmetricKeyType, 'rsa')
+assert.equal(
+  verify('sha256', message, clonedOrdinaryPublic, sign('sha256', message, clonedOrdinaryPrivate)),
+  true,
+)
+const secretKey = createSecretKey(Buffer.from('structured clone secret'))
+assert.deepEqual(structuredClone(secretKey).export(), secretKey.export())
 
 const asyncPair = await promisify(generateKeyPair)('rsa-pss', {
   modulusLength: 2048,
@@ -202,6 +250,7 @@ checkPair(
   importedDetails,
 )
 checkRoundTrips(importedPemPair, 'sha512', importedDetails)
+checkStructuredClones(importedPemPair, 'sha512')
 checkPair(
   {
     privateKey: createPrivateKey({ key: pemToDer(restrictedPrivatePem), format: 'der', type: 'pkcs8' }),

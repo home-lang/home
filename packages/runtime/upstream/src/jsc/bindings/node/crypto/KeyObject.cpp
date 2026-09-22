@@ -571,6 +571,67 @@ ncrypto::BIOPointer writeRsaPssPrivateKey(
 
 } // namespace
 
+ncrypto::BIOPointer serializeKeyObjectForStructuredClone(const KeyObject& keyObject)
+{
+    if (keyObject.type() == CryptoKeyType::Secret) {
+        return {};
+    }
+
+    if (keyObject.isRsaPss()) {
+        if (keyObject.type() == CryptoKeyType::Public) {
+            ncrypto::EVPKeyPointer::PublicKeyEncodingConfig config {};
+            config.format = ncrypto::EVPKeyPointer::PKFormatType::PEM;
+            config.type = ncrypto::EVPKeyPointer::PKEncodingType::SPKI;
+            return writeRsaPssPublicKey(*keyObject.data(), config);
+        }
+
+        ncrypto::EVPKeyPointer::PrivateKeyEncodingConfig config {};
+        config.format = ncrypto::EVPKeyPointer::PKFormatType::PEM;
+        config.type = ncrypto::EVPKeyPointer::PKEncodingType::PKCS8;
+        return writeRsaPssPrivateKey(*keyObject.data(), config);
+    }
+
+    auto bio = ncrypto::BIOPointer::NewMem();
+    if (!bio) {
+        return {};
+    }
+    const int result = keyObject.type() == CryptoKeyType::Public
+        ? PEM_write_bio_PUBKEY(bio.get(), keyObject.asymmetricKey().get())
+        : PEM_write_bio_PrivateKey(bio.get(), keyObject.asymmetricKey().get(), nullptr, nullptr, 0, nullptr, nullptr);
+    return result > 0 ? WTF::move(bio) : ncrypto::BIOPointer {};
+}
+
+KeyObject deserializeKeyObjectForStructuredClone(CryptoKeyType keyType, std::span<const uint8_t> pem)
+{
+    if (keyType == CryptoKeyType::Secret) {
+        return {};
+    }
+
+    auto config = ncrypto::EVPKeyPointer::PrivateKeyEncodingConfig {};
+    config.format = ncrypto::EVPKeyPointer::PKFormatType::PEM;
+    config.type = ncrypto::EVPKeyPointer::PKEncodingType::PKCS8;
+    auto buffer = ncrypto::Buffer<const uint8_t> {
+        .data = pem.data(),
+        .len = pem.size(),
+    };
+
+    auto rsaPssResult = tryParseRsaPssKey(config, buffer, keyType == CryptoKeyType::Private);
+    if (rsaPssResult.status == RsaPssParseStatus::Success) {
+        return KeyObject::create(keyType, WTF::move(rsaPssResult.keyData));
+    }
+    if (rsaPssResult.status == RsaPssParseStatus::Invalid) {
+        return {};
+    }
+
+    if (keyType == CryptoKeyType::Public) {
+        auto result = ncrypto::EVPKeyPointer::TryParsePublicKeyPEM(buffer);
+        return result ? KeyObject::create(keyType, WTF::move(result.value)) : KeyObject {};
+    }
+
+    auto result = ncrypto::EVPKeyPointer::TryParsePrivateKey(config, buffer);
+    return result ? KeyObject::create(keyType, WTF::move(result.value)) : KeyObject {};
+}
+
 JSValue encodeBignum(JSGlobalObject* globalObject, ThrowScope& scope, const BIGNUM* bn, int size)
 {
     auto buf = ncrypto::BignumPointer::EncodePadded(bn, size);

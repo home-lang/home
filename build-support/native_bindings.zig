@@ -20,6 +20,7 @@ var cached_js_abort_signal_object: ?std.Build.LazyPath = null;
 var cached_uws_object: ?std.Build.LazyPath = null;
 var cached_crypto_object_0: ?std.Build.LazyPath = null;
 var cached_crypto_object_1: ?std.Build.LazyPath = null;
+var cached_serialized_script_value_object: ?std.Build.LazyPath = null;
 var cached_native_modules: ?std.Build.LazyPath = null;
 
 /// Rebuild the Home-owned process binding with the headers and ABI flags that
@@ -155,6 +156,20 @@ pub fn cryptoObject1(b: *std.Build, object_root: []const u8) std.Build.LazyPath 
         b.path("packages/runtime/src/native/node_crypto_unified_1.cpp"),
     );
     cached_crypto_object_1 = object;
+    return object;
+}
+
+/// Compile structured cloning from Home so native KeyObject serialization can
+/// preserve key types that the pinned BoringSSL EVP decoder cannot represent.
+pub fn serializedScriptValueObject(b: *std.Build, object_root: []const u8) std.Build.LazyPath {
+    if (cached_serialized_script_value_object) |object| return object;
+    const files = b.addWriteFiles();
+    const source = files.addCopyFile(
+        b.path("packages/runtime/upstream/src/jsc/bindings/webcore/SerializedScriptValue.cpp"),
+        "SerializedScriptValue.cpp",
+    );
+    const object = compileObject(b, object_root, "SerializedScriptValue.cpp", source);
+    cached_serialized_script_value_object = object;
     return object;
 }
 
