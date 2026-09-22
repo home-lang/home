@@ -888,8 +888,12 @@ fn nativeCorpusMode(relative: []const u8) NativeCorpusMode {
 }
 
 fn nativeCorpusModeForSource(relative: []const u8, source: []const u8) NativeCorpusMode {
+    // Some cross-runtime fixtures deliberately use a non-`.test` filename but
+    // register their cases through node:test. They still require test-runner
+    // mode; script mode rejects describe/test registration before execution.
+    if (std.mem.indexOf(u8, source, "node:test") != null) return .test_runner;
     if (corpus.isNodeTestFile(relative)) {
-        if (std.mem.indexOf(u8, relative, "needs-test") != null or std.mem.indexOf(u8, source, "node:test") != null) return .test_runner;
+        if (std.mem.indexOf(u8, relative, "needs-test") != null) return .test_runner;
         inline for (.{ "test-fs-append-file-flush.js", "test-fs-write-file-flush.js", "test-fs-write-stream-flush.js" }) |name| {
             if (std.mem.eql(u8, relative, "js/node/test/parallel/" ++ name)) return .test_runner;
         }
@@ -1698,6 +1702,7 @@ test "native corpus execution covers the entire pinned inventory" {
     try std.testing.expectEqual(NativeCorpusMode.script, nativeCorpusModeForSource("js/node/cluster/test-worker-no-exit-http.ts", "throw new Error();"));
     try std.testing.expectEqual(NativeCorpusMode.script, nativeCorpusModeForSource("js/node/test/parallel/test-buffer-isencoding.js", "require('assert').ok(true);"));
     try std.testing.expectEqual(NativeCorpusMode.test_runner, nativeCorpusModeForSource("js/node/test/parallel/test-module-isBuiltin.js", "assert(isBuiltin('node:test'));"));
+    try std.testing.expectEqual(NativeCorpusMode.test_runner, nativeCorpusModeForSource("js/node/http/node-http-connect.node.mts", "import { describe, test } from 'node:test';"));
     try std.testing.expect(!hasActiveScriptSource("/* disabled */\n// test('none', () => {});\n"));
     try std.testing.expect(hasActiveScriptSource("/* active */ require('assert').ok(true);"));
 }
