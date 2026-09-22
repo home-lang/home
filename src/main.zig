@@ -4846,6 +4846,13 @@ fn isJsLikeTestProject(args: []const [:0]const u8) bool {
     return false;
 }
 
+fn argsForceHomeTestRunner(args: []const [:0]const u8) bool {
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "--home") or std.mem.eql(u8, arg, "--zig")) return true;
+    }
+    return false;
+}
+
 const bun_corpus_marker = "packages/runtime/test/test";
 const bun_corpus_marker_child = "packages/runtime/test/test/";
 const bun_corpus_marker_embedded_child = "/packages/runtime/test/test/";
@@ -5026,6 +5033,15 @@ fn failBunCorpusSubsetArg(reason: []const u8, value: []const u8) noreturn {
 test "bun corpus target parser skips subset flag values" {
     const args = [_][:0]const u8{ "--bun-corpus-native-subset", "packages/runtime/test/test" };
     try std.testing.expect(argTargetsBunCorpus(&args) == null);
+}
+
+test "explicit Home test-runner flags override native VM dispatch" {
+    const ordinary = [_][:0]const u8{"packages/runtime/test/test/example.test.js"};
+    const home = [_][:0]const u8{ "packages/runtime/test/test/example.test.js", "--home" };
+    const zig = [_][:0]const u8{ "--zig", "packages/runtime/test/test/example.test.js" };
+    try std.testing.expect(!argsForceHomeTestRunner(&ordinary));
+    try std.testing.expect(argsForceHomeTestRunner(&home));
+    try std.testing.expect(argsForceHomeTestRunner(&zig));
 }
 
 test "ported Bun corpus matrices requiring runtime services use the full native VM" {
@@ -5658,11 +5674,11 @@ fn testCommand(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
         }
     }
 
-    // Experimental: route bun-corpus files through the FULL native VM
-    // (TestCommand.exec → real globals + module loader) instead of the
-    // shim-based corpus runner, so corpus tests get Home's real Buffer/fs/etc.
-    // Gated while validated against the corpus baseline.
-    if (build_options.enable_jsc and envFlagSet("HOME_NATIVE_VM") and envFlagSet("HOME_CORPUS_FULL_VM")) {
+    // An explicit native-VM request applies to corpus paths too. This check
+    // must precede the corpus adapter: Bun tests often spawn `bun test` with a
+    // non-`.test` fixture path, and the child must retain test-runner mode
+    // instead of being reclassified as a plain script by filename.
+    if (build_options.enable_jsc and envFlagSet("HOME_NATIVE_VM") and !argsForceHomeTestRunner(args)) {
         runTestsViaVM(allocator, args) catch |err| {
             std.debug.print("{s}error:{s} native test run failed: {s}\n", .{ Color.Red.code(), Color.Reset.code(), @errorName(err) });
             std.process.exit(1);
@@ -5708,14 +5724,7 @@ fn testCommand(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
     // has test files but no package.json. `--home` or `--zig` overrides force
     // the native Home/Zig runner.
     if ((build_options.enable_jsc and envFlagSet("HOME_NATIVE_VM")) or isJsLikeTestProject(args)) {
-        var force_native = false;
-        for (args) |a| {
-            if (std.mem.eql(u8, a, "--home") or std.mem.eql(u8, a, "--zig")) {
-                force_native = true;
-                break;
-            }
-        }
-        if (!force_native) {
+        if (!argsForceHomeTestRunner(args)) {
             // Native bun:test runner: run through Home's own TestCommand.exec
             // (Jest runner + full VM + module loader: describe/test/expect/
             // lifecycle/snapshots all work). This is the default whenever JSC is
