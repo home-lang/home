@@ -29,6 +29,53 @@ int pkcs12_pbe_encrypt_init(CBB*, EVP_CIPHER_CTX*, int, const EVP_CIPHER*, uint3
 
 }
 
+namespace {
+
+void freeRsaPssMetadata(void*, void* pointer, CRYPTO_EX_DATA*, int, long, void*)
+{
+    delete static_cast<Bun::RsaPssMetadata*>(pointer);
+}
+
+int rsaPssMetadataIndex()
+{
+    static const int index = RSA_get_ex_new_index(0, nullptr, nullptr, nullptr, freeRsaPssMetadata);
+    RELEASE_ASSERT(index >= 0);
+    return index;
+}
+
+}
+
+void KeyObjectData::setRsaPssMetadata(ncrypto::Digest digest, ncrypto::Digest mgf1Digest, int32_t minimumSaltLength)
+{
+    RSA* rsa = EVP_PKEY_get0_RSA(asymmetricKey.get());
+    RELEASE_ASSERT(rsa);
+
+    const int index = rsaPssMetadataIndex();
+    auto* previous = static_cast<Bun::RsaPssMetadata*>(RSA_get_ex_data(rsa, index));
+    auto metadata = std::make_unique<Bun::RsaPssMetadata>(Bun::RsaPssMetadata {
+        .digest = digest,
+        .mgf1Digest = mgf1Digest,
+        .minimumSaltLength = minimumSaltLength,
+    });
+    RELEASE_ASSERT(RSA_set_ex_data(rsa, index, metadata.get()));
+    metadata.release();
+    delete previous;
+}
+
+std::optional<Bun::RsaPssMetadata> KeyObjectData::rsaPssMetadata() const
+{
+    RSA* rsa = EVP_PKEY_get0_RSA(asymmetricKey.get());
+    if (!rsa) {
+        return std::nullopt;
+    }
+
+    auto* metadata = static_cast<Bun::RsaPssMetadata*>(RSA_get_ex_data(rsa, rsaPssMetadataIndex()));
+    if (!metadata) {
+        return std::nullopt;
+    }
+    return *metadata;
+}
+
 namespace Bun {
 
 using namespace Bun;
