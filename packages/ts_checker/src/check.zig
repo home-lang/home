@@ -5464,6 +5464,9 @@ pub const Checker = struct {
     generic_expansion_active: std.AutoHashMapUnmanaged(TypeId, void) = .empty,
     /// Re-entry depth of `nonNullableBaseConstraint`'s nested-access walk.
     non_nullable_constraint_depth: u8 = 0,
+    /// The built-in `Promise` value. Object types are not deduplicated, so
+    /// it is built once and calls on the unshadowed global match its id.
+    promise_global_t: TypeId = types.Primitive.none,
     program_generic_defaults_active: std.AutoHashMapUnmanaged(*const ProgramClassSchema.Declaration, void) = .empty,
     program_schema_support: std.AutoHashMapUnmanaged(*const ProgramClassSchema.Schema, bool) = .empty,
     program_module_namespace_types: std.AutoHashMapUnmanaged(hir_mod.StringId, TypeId) = .empty,
@@ -113209,6 +113212,9 @@ pub const Checker = struct {
                 if (try self.builtinObjectAssignCallType(c.callee, args, arg_types.items)) |assign_t| {
                     break :blk try self.optionalChainResult(assign_t, call_is_optional_chain);
                 }
+                if (try self.builtinPromiseStaticCallType(node, c.callee, args, arg_types.items)) |promise_t| {
+                    break :blk try self.optionalChainResult(promise_t, call_is_optional_chain);
+                }
                 try self.checkRewriteRelativeImportCall(node, c.callee, args);
                 try self.checkBareRequireCallImport(c.callee, args);
                 if (try self.virtualCommonJsRequireCallType(c.callee, args)) |require_t| {
@@ -138154,6 +138160,7 @@ pub const Checker = struct {
     }
 
     fn promiseGlobalType(self: *Checker) CheckError!TypeId {
+        if (self.promise_global_t != types.Primitive.none) return self.promise_global_t;
         const any_t = types.Primitive.any;
         // Mix instance and static members until `Promise<T>` constructor
         // instantiation is wired. `instanceof Promise` derives its structural
@@ -138178,7 +138185,8 @@ pub const Checker = struct {
             // `(): any` until tuple-of-named-fields landing is wired.
             .{ .name = self.string_interner.intern("withResolvers") catch return error.OutOfMemory, .type = sig_zero, .is_optional = false, .is_readonly = false, .is_method = true },
         };
-        return self.interner.internObjectType(&m) catch return error.OutOfMemory;
+        self.promise_global_t = self.interner.internObjectType(&m) catch return error.OutOfMemory;
+        return self.promise_global_t;
     }
 
     // ---- Intl namespace (ECMA-402) ---------------------------------
@@ -143461,6 +143469,131 @@ pub const Checker = struct {
         if (!accepts_empty) return types.Primitive.any;
         if (args.len > 4) return types.Primitive.any;
         return try self.objectAssignIntersection(arg_types);
+    }
+
+    /// Model the generic `Promise` statics from lib.es2015.promise:
+    ///
+    ///   resolve(): Promise<void>
+    ///   resolve<T>(value: T): Promise<Awaited<T>>
+    ///   all<T extends readonly unknown[] | []>(values: T): Promise<{ -readonly [P in keyof T]: Awaited<T[P]> }>
+    ///   race<T extends readonly unknown[] | []>(values: T): Promise<Awaited<T[number]>>
+    ///   any<T extends readonly unknown[] | []>(values: T): Promise<Awaited<T[number]>>
+    ///
+    /// The global's structural members are `any`-typed arity fallbacks, so a
+    /// `.then` callback on their result had no contextual parameter type.
+    /// Calls on the unshadowed global compute the result here. The `| []`
+    /// constraint makes an array literal argument infer a tuple, and inferred
+    /// literals widen. A call with a contextual type keeps the fallback:
+    /// TypeScript infers from that type into the arguments (a declared
+    /// `Promise<"a">` keeps `"a"`, a declared tuple array turns an async
+    /// callback's array literal into tuples), which Home cannot replay.
+    fn builtinPromiseStaticCallType(
+        self: *Checker,
+        node: NodeId,
+        callee: NodeId,
+        args: []const NodeId,
+        arg_types: []const TypeId,
+    ) CheckError!?TypeId {
+        if (args.len > 1 or args.len != arg_types.len) return null;
+        if (self.hir.kindOf(callee) != .member_access) return null;
+        const member = hir_mod.memberOf(self.hir, callee);
+        if (self.hir.kindOf(member.object) != .identifier) return null;
+        const object_id = hir_mod.identifierOf(self.hir, member.object);
+        if (!std.mem.eql(u8, self.string_interner.get(object_id.name), "Promise")) return null;
+        const receiver_t = self.hir.typeOf(member.object);
+        if (receiver_t != try self.promiseGlobalType()) return null;
+        for (args) |arg| {
+            if (self.hir.kindOf(arg) == .spread) return null;
+        }
+
+        const name = self.string_interner.get(member.name);
+        const is_resolve = std.mem.eql(u8, name, "resolve");
+        const is_all = std.mem.eql(u8, name, "all");
+        const is_race = std.mem.eql(u8, name, "race") or std.mem.eql(u8, name, "any");
+        if (!is_resolve and !is_all and !is_race) return null;
+        if (args.len == 0) {
+            if (!is_resolve) return null;
+            return try self.buildStructuralPromise(types.Primitive.void_t);
+        }
+
+        if (self.promiseStaticCallHasContextualType(node)) return null;
+        const arg_t = arg_types[0];
+        if (is_resolve) {
+            return try self.buildStructuralPromise(self.evalAwaited(self.widenLiteralType(arg_t)));
+        }
+        if (arg_t == types.Primitive.any) {
+            const payload_t = if (is_all)
+                self.interner.internArrayType(self.string_interner, types.Primitive.any) catch return error.OutOfMemory
+            else
+                types.Primitive.any;
+            return try self.buildStructuralPromise(payload_t);
+        }
+
+        var elements: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer elements.deinit(self.gpa);
+        var is_tuple = true;
+        if (self.hir.kindOf(args[0]) == .array_literal) {
+            for (hir_mod.arrayLiteralElements(self.hir, args[0])) |element| {
+                if (element == hir_mod.none_node_id or self.hir.kindOf(element) == .spread) return null;
+                const element_t = self.hir.typeOf(element);
+                if (element_t == types.Primitive.none) return null;
+                try elements.append(self.gpa, element_t);
+            }
+        } else if (self.isActualTupleType(arg_t)) {
+            // Optional and rest elements have no fixed length; leave them to
+            // the fallback rather than flattening them to an array.
+            if (self.tuple_trailing_rest_types.contains(arg_t)) return null;
+            const len = self.fixedTupleLength(arg_t) orelse return null;
+            for (0..@intCast(len)) |i| {
+                const element_t = self.tupleElementType(arg_t, i);
+                if (element_t == types.Primitive.none) return null;
+                try elements.append(self.gpa, element_t);
+            }
+        } else {
+            if (arg_t < types.Primitive.first_dynamic or arg_t >= self.interner.pool.typeCount()) return null;
+            const flags = self.interner.pool.flagsOf(arg_t);
+            if (flags.is_union or flags.is_intersection or flags.is_type_parameter or !flags.is_object_type) return null;
+            const element_t = self.interner.objectNumberIndex(arg_t);
+            if (element_t == types.Primitive.none) return null;
+            try elements.append(self.gpa, element_t);
+            is_tuple = false;
+        }
+
+        for (elements.items) |*element_t| {
+            element_t.* = self.evalAwaited(self.widenLiteralType(element_t.*));
+        }
+        if (is_race) {
+            if (elements.items.len == 0) return try self.buildStructuralPromise(types.Primitive.never);
+            const payload_t = self.interner.internUnion(elements.items) catch return error.OutOfMemory;
+            return try self.buildStructuralPromise(payload_t);
+        }
+        if (!is_tuple) {
+            const array_t = self.interner.internArrayType(self.string_interner, elements.items[0]) catch return error.OutOfMemory;
+            return try self.buildStructuralPromise(array_t);
+        }
+        return try self.buildStructuralPromise(try self.internTupleFromTypes(elements.items, false));
+    }
+
+    fn promiseStaticCallHasContextualType(self: *Checker, node: NodeId) bool {
+        var expr = node;
+        while (true) {
+            const parent = self.hir.parentOf(expr);
+            if (parent == hir_mod.none_node_id) return false;
+            switch (self.hir.kindOf(parent)) {
+                .await_expr, .logical_op => expr = parent,
+                .conditional => {
+                    if (hir_mod.conditionalOf(self.hir, parent).cond == expr) return false;
+                    expr = parent;
+                },
+                else => break,
+            }
+        }
+        const target_t = self.contextualTargetTypeForExpression(expr) orelse
+            self.enclosingReturnTargetType(expr) orelse
+            return false;
+        return target_t != types.Primitive.none and
+            target_t != types.Primitive.any and
+            target_t != types.Primitive.unknown;
     }
 
     fn objectAssignTargetSatisfies(self: *Checker, target_t: TypeId, constraint_t: TypeId) CheckError!bool {
@@ -203604,6 +203737,37 @@ test "checker: property reads zod core reported missing still resolve" {
         try T.expect(std.mem.indexOf(u8, diagnostic.message, "'input'") == null);
         try T.expect(std.mem.indexOf(u8, diagnostic.message, "'y'") == null);
     }
+}
+
+test "checker: Promise statics type their results for then callbacks" {
+    // zod 4.5.2 core chains `.then` onto `Promise.all(...)` and
+    // `Promise.resolve(...)`. The built-in `Promise` value returned `any`
+    // from both, so every callback parameter reported TS7006 or TS7031.
+    // TypeScript awaits each element, infers a tuple from an array literal,
+    // and widens literals (lines 4-8 stay clean). Line 9 proves the payload
+    // is real: `l` is `number`, so the annotation is a TS2322. Under a
+    // contextual type (10) TypeScript infers from the target, which Home
+    // cannot replay, so the call keeps its fallback and stays clean.
+    const s = try newSetup(
+        \\declare const p: Promise<string> | string;
+        \\declare const xs: (number | Promise<number>)[];
+        \\declare const a: Promise<number>; declare const b: string | Promise<boolean>; declare const c: boolean;
+        \\export const r1 = Promise.all(xs).then((results) => results.length);
+        \\export const r2 = Promise.all([a, b]).then(([l, r]) => [l, r]);
+        \\export const r3 = Promise.resolve(p).then((inner) => inner.length);
+        \\export const r4 = Promise.race([a, b]).then((v) => v);
+        \\export const r5 = (c ? a : Promise.resolve(3)).then((output) => output);
+        \\export const r6 = Promise.all([a, b]).then(([l]) => { const s: string = l; return s; });
+        \\export const r7: Promise<"x"> = Promise.resolve("x");
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.parameter_implicitly_any));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.binding_element_implicitly_any));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 1), s.checker.diagnostics.items.len);
+    try T.expect(std.mem.indexOf(u8, s.checker.diagnostics.items[0].message, "'number'") != null);
 }
 
 test "checker: built-in Object and Array statics keep their lib parameters" {
