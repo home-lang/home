@@ -1,6 +1,13 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+
+// Apple's libicucore exports stable, unversioned entry points. The WebKit SDK
+// headers carry upstream ICU's versioned rename macros, so disable renaming
+// before including them to match the library that this target links.
+#if defined(__APPLE__)
+#define U_DISABLE_RENAMING 1
+#endif
 #include <unicode/uidna.h>
 
 namespace WTF {
