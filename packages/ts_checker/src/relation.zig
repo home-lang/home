@@ -346,6 +346,12 @@ pub const Engine = struct {
     /// to a reference of `Checker.rest_signatures` so the engine sees
     /// real-time updates.
     rest_signatures: ?*const std.AutoHashMapUnmanaged(TypeId, void) = null,
+    /// `ThisType<T>` markers registered by the checker. tsc declares
+    /// `interface ThisType<T> {}`, so a marker imposes no structural
+    /// obligation: `PropertyDescriptor & ThisType<any>` accepts exactly what
+    /// `PropertyDescriptor` accepts. Set to a reference of
+    /// `Checker.this_type_markers` so the engine sees real-time updates.
+    this_type_markers: ?*const std.AutoHashMapUnmanaged(TypeId, TypeId) = null,
     /// Apparent uppercase `Object` instance types registered by the
     /// checker. Values inherit this surface implicitly: absent target
     /// members are supplied by Object.prototype, while explicit source
@@ -387,6 +393,15 @@ pub const Engine = struct {
 
     pub fn setRestSignatures(self: *Engine, rs: *const std.AutoHashMapUnmanaged(TypeId, void)) void {
         self.rest_signatures = rs;
+    }
+
+    pub fn setThisTypeMarkers(self: *Engine, markers: *const std.AutoHashMapUnmanaged(TypeId, TypeId)) void {
+        self.this_type_markers = markers;
+    }
+
+    fn isThisTypeMarker(self: *const Engine, t: TypeId) bool {
+        const markers = self.this_type_markers orelse return false;
+        return markers.contains(t);
     }
 
     pub fn registerUpperObjectTarget(self: *Engine, t: TypeId) !void {
@@ -1067,6 +1082,9 @@ pub const Engine = struct {
             const snapshot = try self.interner.gpa.dupe(TypeId, members);
             defer self.interner.gpa.free(snapshot);
             for (snapshot) |m| {
+                // An empty `ThisType<T>` marker carries the contextual `this`
+                // and never constrains the value itself.
+                if (self.isThisTypeMarker(m)) continue;
                 if (!try self.isAssignableTo(source, m)) return false;
             }
             return true;

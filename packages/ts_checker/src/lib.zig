@@ -42,6 +42,10 @@ pub const LibCache = struct {
     /// `Object` global — `keys / values / entries / assign`. Built
     /// once on first access.
     object_global: TypeId = types.Primitive.none,
+    /// The `ThisType<any>` marker inside `Object.defineProperty`'s
+    /// descriptor parameter. Object types are not deduplicated, so the
+    /// checker registers this exact id as a marker.
+    object_descriptor_this_marker: TypeId = types.Primitive.none,
     /// `Array` global — static helpers such as `isArray`.
     array_global: TypeId = types.Primitive.none,
     /// `Math` global — `PI`, `E`, `abs`, `floor`, etc. Built once on
@@ -665,6 +669,40 @@ pub fn arrayProto(
 /// shape carrying `keys / values / entries / assign / create` plus
 /// `Object.prototype` for common borrowed-method patterns such as
 /// `Object.prototype.hasOwnProperty.call(...)`.
+/// The checker's `ThisType<T>` encoding: an optional readonly marker member
+/// that the checker's `this_type_markers` maps back to `T`. Each call makes a
+/// new type, which the caller must register as a marker.
+pub fn thisTypeMarker(
+    ti: *interner_mod.Interner,
+    sint: *string_interner.Interner,
+    this_t: TypeId,
+) !TypeId {
+    return ti.internObjectType(&[_]types.ObjectMember{.{
+        .name = try sint.intern("__home_this_type"),
+        .type = this_t,
+        .is_optional = true,
+        .is_readonly = true,
+        .is_method = false,
+    }});
+}
+
+/// lib.es5 `PropertyDescriptor`. Its `get` and `set` members give the
+/// accessors of a descriptor literal their contextual signatures.
+fn propertyDescriptorType(ti: *interner_mod.Interner, sint: *string_interner.Interner) !TypeId {
+    const any_t = types.Primitive.any;
+    const boolean_t = types.Primitive.boolean_t;
+    const sig_get = try ti.internSignature(&[_]TypeId{}, any_t, false);
+    const sig_set = try ti.internSignature(&[_]TypeId{any_t}, types.Primitive.void_t, false);
+    return ti.internObjectType(&[_]types.ObjectMember{
+        .{ .name = try sint.intern("configurable"), .type = boolean_t, .is_optional = true, .is_readonly = false, .is_method = false },
+        .{ .name = try sint.intern("enumerable"), .type = boolean_t, .is_optional = true, .is_readonly = false, .is_method = false },
+        .{ .name = try sint.intern("value"), .type = any_t, .is_optional = true, .is_readonly = false, .is_method = false },
+        .{ .name = try sint.intern("writable"), .type = boolean_t, .is_optional = true, .is_readonly = false, .is_method = false },
+        .{ .name = try sint.intern("get"), .type = sig_get, .is_optional = true, .is_readonly = false, .is_method = true },
+        .{ .name = try sint.intern("set"), .type = sig_set, .is_optional = true, .is_readonly = false, .is_method = true },
+    });
+}
+
 pub fn objectGlobal(
     cache: *LibCache,
     ti: *interner_mod.Interner,
@@ -701,10 +739,17 @@ pub fn objectGlobal(
     const sig_assign3 = try ti.internSignature(&[_]TypeId{ any_t, any_t, any_t }, any_t, false);
     const sig_assign4 = try ti.internSignature(&[_]TypeId{ any_t, any_t, any_t, any_t }, any_t, false);
     const sig_assign = try ti.internIntersection(&[_]TypeId{ sig_assign2, sig_assign3, sig_assign4 });
-    // `Object.defineProperty(o, key, descriptor): any`.
-    const sig_define_property = try ti.internSignature(&[_]TypeId{ any_t, any_t, any_t }, any_t, false);
-    // `Object.create(o): any`.
-    const sig_create = try ti.internSignature(&[_]TypeId{any_t}, any_t, false);
+    // `Object.defineProperty(o, key, attributes: PropertyDescriptor & ThisType<any>): any`.
+    cache.object_descriptor_this_marker = try thisTypeMarker(ti, sint, any_t);
+    const descriptor_attributes_t = try ti.internIntersection(&[_]TypeId{
+        try propertyDescriptorType(ti, sint),
+        cache.object_descriptor_this_marker,
+    });
+    const sig_define_property = try ti.internSignature(&[_]TypeId{ any_t, any_t, descriptor_attributes_t }, any_t, false);
+    // `Object.create(o, properties?): any` — lib.es5 declares both the
+    // one-argument and the property-descriptor-map overloads.
+    const optional_properties_t = try ti.internUnion(&[_]TypeId{ any_t, types.Primitive.undefined_t });
+    const sig_create = try ti.internSignature(&[_]TypeId{ any_t, optional_properties_t }, any_t, false);
     const sig_has_own_property = try ti.internSignature(&[_]TypeId{property_key_t}, boolean_t, false);
     const sig_to_string = try ti.internSignature(&[_]TypeId{}, string_t, false);
     // `Object.getOwnPropertyNames(o): string[]`.
@@ -806,7 +851,15 @@ pub fn arrayGlobal(
     // without spurious TS2339. Inference at the call site falls back
     // to `any[]` which is enough for fixtures that pipe the result
     // back into a generic param (e.g. neverInference.ts: `f2(Array.from([0]), …)`).
-    const sig_from = try ti.internSignature(&[_]TypeId{any_t}, any_arr, false);
+    // `from` keeps the optional `mapfn` and `thisArg` of the lib overloads
+    // so `Array.from(set, (value) => ...)` neither trips TS2554 nor leaves
+    // the callback parameter without a contextual type.
+    const number_t = types.Primitive.number_t;
+    const undefined_t = types.Primitive.undefined_t;
+    const sig_map_fn = try ti.internSignature(&[_]TypeId{ any_t, number_t }, any_t, false);
+    const optional_map_fn = try ti.internUnion(&[_]TypeId{ sig_map_fn, undefined_t });
+    const optional_any = try ti.internUnion(&[_]TypeId{ any_t, undefined_t });
+    const sig_from = try ti.internSignature(&[_]TypeId{ any_t, optional_map_fn, optional_any }, any_arr, false);
     const sig_of = try ti.internSignature(&[_]TypeId{any_t}, any_arr, false);
     const m = [_]types.ObjectMember{
         .{ .name = try sint.intern("__call"), .type = sig_array_call, .is_optional = false, .is_readonly = false, .is_method = true },

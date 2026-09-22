@@ -6468,6 +6468,7 @@ pub const Checker = struct {
         // comparing against a regular (non-rest) signature.
         self.engine.setRestSignatures(&self.rest_signatures);
         self.engine.indexed_access_constraint = .{ .context = self, .resolve = indexedAccessConstraintForEngine };
+        self.engine.setThisTypeMarkers(&self.this_type_markers);
         if (self.source) |src| try self.scanDirectives(src);
         try self.checkReferenceLibDirectives(root);
         try self.checkRemovedCompilerOptionDirectives(root);
@@ -78106,15 +78107,7 @@ pub const Checker = struct {
                         if (std.mem.eql(u8, name_str, "ThisType")) {
                             const args = hir_mod.typeRefArgs(self.hir, type_node);
                             const constraint = try self.lowererLowerWithTypeParams(args[0]);
-                            const marker_name = self.string_interner.intern("__home_this_type") catch return error.OutOfMemory;
-                            const marker_members = [_]types.ObjectMember{.{
-                                .name = marker_name,
-                                .type = constraint,
-                                .is_optional = true,
-                                .is_readonly = true,
-                                .is_method = false,
-                            }};
-                            const marker_t = self.interner.internObjectType(&marker_members) catch return error.OutOfMemory;
+                            const marker_t = lib.thisTypeMarker(self.interner, self.string_interner, constraint) catch return error.OutOfMemory;
                             try self.this_type_markers.put(self.gpa, marker_t, constraint);
                             return marker_t;
                         }
@@ -110388,14 +110381,7 @@ pub const Checker = struct {
             },
             .this_type => |operand| {
                 const constraint = try self.lowerProgramExpression(operand, declaration, args);
-                const marker_name = self.string_interner.intern("__home_this_type") catch return error.OutOfMemory;
-                const marker_t = self.interner.internObjectType(&.{.{
-                    .name = marker_name,
-                    .type = constraint,
-                    .is_optional = true,
-                    .is_readonly = true,
-                    .is_method = false,
-                }}) catch return error.OutOfMemory;
+                const marker_t = lib.thisTypeMarker(self.interner, self.string_interner, constraint) catch return error.OutOfMemory;
                 try self.this_type_markers.put(self.gpa, marker_t, constraint);
                 return marker_t;
             },
@@ -136129,6 +136115,8 @@ pub const Checker = struct {
         // (full lib.d.ts wiring is a follow-up).
         if (std.mem.eql(u8, name_str, "Object")) {
             if (lib.objectGlobal(&self.lib_cache, self.interner, self.string_interner)) |og| {
+                // `Object.defineProperty`'s descriptor carries `ThisType<any>`.
+                self.this_type_markers.put(self.gpa, self.lib_cache.object_descriptor_this_marker, types.Primitive.any) catch {};
                 return og;
             } else |_| {}
         }
@@ -203616,6 +203604,39 @@ test "checker: property reads zod core reported missing still resolve" {
         try T.expect(std.mem.indexOf(u8, diagnostic.message, "'input'") == null);
         try T.expect(std.mem.indexOf(u8, diagnostic.message, "'y'") == null);
     }
+}
+
+test "checker: built-in Object and Array statics keep their lib parameters" {
+    // `Array.from` takes an optional `mapfn` (zod's compile.ts reported
+    // TS2554 and TS7006 on `Array.from(values, (value) => ...)`),
+    // `Object.create` takes an optional property map, and the
+    // `Object.defineProperty` descriptor is `PropertyDescriptor &
+    // ThisType<any>`, which types `set(v)` and makes `this` `any` inside the
+    // accessors. The marker carries only that contextual `this`, so a
+    // descriptor value still relates to `PropertyDescriptor` alone.
+    // TypeScript 7.0.2 reports nothing here either. Known gap: Home does not
+    // yet report a descriptor member of the wrong type (`{ enumerable: 1 }`
+    // is TS2322 in tsgo).
+    const s = try newSetup(
+        \\declare const values: Set<string>;
+        \\export const m = Array.from(values, (value, index) => index);
+        \\export const o = (obj: object) => Object.create(Object.getPrototypeOf(obj), Object.getOwnPropertyDescriptors(obj));
+        \\export function lazy(object: object, key: string) {
+        \\  Object.defineProperty(object, key, { get() { return this.cached; }, set(v) { Object.defineProperty(object, key, { value: v }); }, configurable: true });
+        \\}
+        \\export function lazyProp(proto: object, key: string, enumerable: boolean) {
+        \\  const desc = { configurable: true, writable: true, enumerable, value: undefined as unknown };
+        \\  Object.defineProperty(proto, key, desc);
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.parameter_implicitly_any));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.expected_n_arguments));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
 }
 
 test "checker: a local value binding shadows a type-only import" {
