@@ -480,15 +480,18 @@ pub fn selfExePath() ![:0]u8 {
 pub const Instant = struct {
     timestamp: u64,
 
+    fn clockNanos() u64 {
+        const clock_io = std.Io.Threaded.global_single_threaded.io();
+        return @intCast(@max(std.Io.Clock.awake.now(clock_io).nanoseconds, 0));
+    }
+
     pub fn now() error{}!Instant {
-        var ts: std.c.timespec = undefined;
-        _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
-        return .{ .timestamp = @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec)) };
+        return .{ .timestamp = clockNanos() };
     }
 
     /// Elapsed nanoseconds since `earlier` (mirrors `std.time.Instant.since`).
     pub fn since(self: Instant, earlier: Instant) u64 {
-        return self.timestamp - earlier.timestamp;
+        return self.timestamp -| earlier.timestamp;
     }
 
     pub fn read(self: Instant) u64 {
@@ -772,7 +775,7 @@ pub const DefaultAllocator = allocators.Default;
 
 /// Faithful re-implementation of the (now-removed in Zig 0.17.0-dev.263)
 /// `std.time.Timer`: a monotonic, anti-rollback nanosecond stopwatch. Backed by
-/// `clock_gettime(CLOCK_MONOTONIC)`. Exposes the same `start`/`read`/`lap`/`reset`
+/// Zig's cross-platform awake clock. Exposes the same `start`/`read`/`lap`/`reset`
 /// surface upstream callers (`bun.http`'s `HTTPThread.timer`) rely on.
 pub const Timer = struct {
     started: u64,
@@ -781,10 +784,8 @@ pub const Timer = struct {
     pub const Error = error{TimerUnsupported};
 
     fn clockNanos() u64 {
-        var ts: std.posix.timespec = undefined;
-        // CLOCK.MONOTONIC is always available on the posix targets Home builds.
-        _ = std.c.clock_gettime(std.posix.CLOCK.MONOTONIC, &ts);
-        return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
+        const clock_io = std.Io.Threaded.global_single_threaded.io();
+        return @intCast(@max(std.Io.Clock.awake.now(clock_io).nanoseconds, 0));
     }
 
     pub fn start() Timer.Error!Timer {

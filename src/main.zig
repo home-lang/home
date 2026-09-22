@@ -5702,10 +5702,12 @@ fn testCommand(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
         .unknown_value => |value| failBunCorpusSubsetArg("unknown-subset", value),
     }
 
-    // Phase 12 routing: if the cwd looks like a JS/TS project, delegate
-    // `home test` to the bun-compatible runtime path. `--home` or `--zig`
-    // overrides forces the native Home/Zig runner.
-    if (isJsLikeTestProject(args)) {
+    // Phase 12 routing: an explicit native-VM request or a JS/TS project uses
+    // the bun-compatible runtime path. The environment flag must also cover a
+    // pathless `home test --isolate` launched inside a temporary fixture that
+    // has test files but no package.json. `--home` or `--zig` overrides force
+    // the native Home/Zig runner.
+    if ((build_options.enable_jsc and envFlagSet("HOME_NATIVE_VM")) or isJsLikeTestProject(args)) {
         var force_native = false;
         for (args) |a| {
             if (std.mem.eql(u8, a, "--home") or std.mem.eql(u8, a, "--zig")) {
