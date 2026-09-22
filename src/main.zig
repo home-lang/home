@@ -1834,6 +1834,12 @@ const VmRunState = struct {
 
         if (this.expose_gc) Home__JSGlobalObject__addGc(vm.global);
 
+        switch (vm.hot_reload) {
+            .hot => home_rt.jsc.hot_reloader.HotReloader.enableHotModuleReloading(vm, this.entry_path),
+            .watch => home_rt.jsc.hot_reloader.WatchReloader.enableHotModuleReloading(vm, this.entry_path),
+            else => {},
+        }
+
         if (vm.loadEntryPoint(this.entry_path)) |promise| {
             // Preloads have finished loading. Remove only our generated file,
             // including rejected-entry paths which exit without running defers.
@@ -1860,6 +1866,20 @@ const VmRunState = struct {
             home_rt.Output.flush();
             vm.onExit();
             vm.globalExit();
+        }
+
+        if (vm.isWatcherEnabled()) {
+            vm.reportExceptionInHotReloadedModuleIfNeeded();
+            while (true) {
+                while (vm.isEventLoopAlive()) {
+                    vm.tick();
+                    vm.reportExceptionInHotReloadedModuleIfNeeded();
+                    vm.eventLoop().autoTickActive();
+                }
+                vm.onBeforeExit();
+                vm.reportExceptionInHotReloadedModuleIfNeeded();
+                vm.eventLoop().tickPossiblyForever();
+            }
         }
 
         // Drain async work (timers, pending microtasks, TLA) to completion.
@@ -2056,6 +2076,30 @@ fn runFileViaVM(allocator: std.mem.Allocator, file_path: []const u8, extra_args:
     return runFileViaVMOpts(allocator, file_path, extra_args, false, null, false, null);
 }
 
+fn escapeForJsString(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
+    var needs_escape = false;
+    for (input) |char| {
+        if (char == '\\' or char == '"' or char == '\n' or char == '\r' or char == '\t') {
+            needs_escape = true;
+            break;
+        }
+    }
+    if (!needs_escape) return allocator.dupe(u8, input);
+
+    var result: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer result.deinit(allocator);
+    try result.ensureTotalCapacity(allocator, input.len + 16);
+    for (input) |char| switch (char) {
+        '\\' => try result.appendSlice(allocator, "\\\\"),
+        '"' => try result.appendSlice(allocator, "\\\""),
+        '\n' => try result.appendSlice(allocator, "\\n"),
+        '\r' => try result.appendSlice(allocator, "\\r"),
+        '\t' => try result.appendSlice(allocator, "\\t"),
+        else => try result.append(allocator, char),
+    };
+    return result.toOwnedSlice(allocator);
+}
+
 const NativeStandaloneModuleGraph = if (build_options.enable_jsc) home_rt.StandaloneModuleGraph else void;
 
 fn runStandaloneViaVM(graph: *NativeStandaloneModuleGraph, extra_args: []const [:0]const u8) !void {
@@ -2115,6 +2159,8 @@ fn runFileViaVMOpts(
         file_path
     else
         std.fs.path.join(allocator, &.{ cwd, file_path }) catch file_path;
+    var vm_entry_path = abs_path;
+    var synthetic_eval_entry = eval_source_text != null;
 
     // Faithful to Run.boot: JSC (WTF + Options + heap size-class tables) must be
     // initialized exactly once before any VM is created. Skipping this makes
@@ -2131,7 +2177,7 @@ fn runFileViaVMOpts(
     var arena = home_rt.MimallocArena.init();
 
     var args = ctx.args;
-    args.disable_hmr = true;
+    args.disable_hmr = ctx.debug.hot_reload == .none;
     args.target = home_rt.schema.api.Target.bun;
     // Preserve Home's existing repeated/comma-separated condition support.
     var conditions: std.ArrayListUnmanaged([]const u8) = .empty;
@@ -2180,6 +2226,7 @@ fn runFileViaVMOpts(
             .log = ctx.log,
             .graph = graph,
             .is_main_thread = true,
+            .store_fd = ctx.debug.hot_reload != .none,
             .smol = ctx.runtime_options.smol,
             .debugger = ctx.runtime_options.debugger,
             .dns_result_order = home_rt.api.dns.Resolver.Order.fromStringOrDie(ctx.runtime_options.dns_result_order),
@@ -2190,6 +2237,7 @@ fn runFileViaVMOpts(
             .args = args,
             .log = ctx.log,
             .is_main_thread = true,
+            .store_fd = ctx.debug.hot_reload != .none,
             .eval = print_result,
             .smol = ctx.runtime_options.smol,
             .debugger = ctx.runtime_options.debugger,
@@ -2208,6 +2256,26 @@ fn runFileViaVMOpts(
         eval_source.* = home_rt.logger.Source.initPathString(abs_path, source_text);
         vm.module_loader.eval_source = eval_source;
         if (print_result) b.options.dead_code_elimination = false;
+    } else if (ctx.runtime_options.cron_title.len > 0 and ctx.runtime_options.cron_period.len > 0) {
+        // Match Bun's Run.boot cron execution mode. The registered OS job
+        // launches `run --cron-title=... --cron-period=... <module>`; execute a
+        // synthetic eval module that imports that entry and awaits its
+        // default.scheduled handler before the process exits.
+        const escaped_path = try escapeForJsString(allocator, abs_path);
+        const escaped_period = try escapeForJsString(allocator, ctx.runtime_options.cron_period);
+        const cron_script = try std.fmt.allocPrint(allocator,
+            \\const mod = await import("{s}");
+            \\const scheduled = (mod.default || mod).scheduled;
+            \\if (typeof scheduled !== "function") throw new Error("Module does not export default.scheduled()");
+            \\const controller = {{ cron: "{s}", type: "scheduled", scheduledTime: Date.now() }};
+            \\await scheduled(controller);
+        , .{ escaped_path, escaped_period });
+        const eval_path = try std.fs.path.join(allocator, &.{ cwd, "[eval]" });
+        const eval_source = try allocator.create(home_rt.logger.Source);
+        eval_source.* = home_rt.logger.Source.initPathString(eval_path, cron_script);
+        vm.module_loader.eval_source = eval_source;
+        vm_entry_path = eval_path;
+        synthetic_eval_entry = true;
     }
 
     // `process.argv` is built as [execPath, scriptPath, ...vm.argv]; vm.argv holds
@@ -2261,6 +2329,7 @@ fn runFileViaVMOpts(
     home_rt.http.AsyncHTTP.preconnectFromCli(ctx.runtime_options.preconnect);
     vm.loadExtraEnvAndSourceCodePrinter();
     vm.is_main_thread = true;
+    vm.hot_reload = ctx.debug.hot_reload;
     home_rt.jsc.VirtualMachine.is_main_thread_vm = true;
 
     if (vm.transpiler.env.get("TZ")) |tz| {
@@ -2275,12 +2344,12 @@ fn runFileViaVMOpts(
     vm.main_is_html_entrypoint = b.options.loader(std.fs.path.extension(abs_path)) == .html;
     // Synthetic eval entries are omitted from process.argv, matching
     // `bun -e` (argv = [exe, ...userArgs], no script path).
-    vm.main_is_eval_entry = eval_source_text != null;
+    vm.main_is_eval_entry = synthetic_eval_entry;
 
     // Hand control to JSC under the API lock; start() loads + runs the entry.
     VmRunState.instance = .{
         .vm = vm,
-        .entry_path = abs_path,
+        .entry_path = vm_entry_path,
         .print_result = print_result,
         .expose_gc = ctx.runtime_options.expose_gc,
         .owned_preload_path = owned_preload_path,
