@@ -6375,6 +6375,7 @@ pub fn main(init: std.process.Init) !void {
             } else {
                 try home_rt.cli.PackCommand.execStandalone(ctx, args[2..]);
             }
+            home_rt.Output.flush();
         } else {
             if (std.mem.eql(u8, command, "publish")) {
                 try execPantryCommand(allocator, "publish", args[2..]);

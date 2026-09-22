@@ -14,7 +14,7 @@ the local status after the import rewrite.
 | `list-of-yarn-commands.zig` | 70 | 1 | **clean** | `home_rt.ComptimeStringMap` ✓ |
 | `colon_list_type.zig` | 62 | 6 | **clean (parked loaders)** | `home_rt.options.Loader`, `home_rt.schema.api.Loader` paths parked until Loader vocabulary ports |
 | `discord_command.zig` | 10 | 1 | **clean (parked opener)** | `open.openURL` parked until spawn + JSC.EventLoopHandle land; fallback URL print path tested |
-| `ci_info.zig` | 27 | 4 | **clean (parked codegen)** | codegen-generated `ci_info` table and `home_rt.once` parked; env-var fallback shape tested |
+| `ci_info.zig` | 27 | 4 | **ported** | complete generated CI-provider table checked in; `home_rt.once` memoization remains unnecessary at CLI startup |
 | `shell_completions.zig` | 75 | 2 | **clean (parked embeds)** | completion embeds parked as empty literals until generated completion files port |
 | `filter_arg.zig` | 285 | 15 | **clean** | workspace package glob/filter helper; `FilterSet` covered with inline tests |
 | `add_command.zig` | 11 | 2 | **clean** | thin `PackageManager.updatePackageJSONAndInstallCatchError(.add)` wrapper |

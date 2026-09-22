@@ -7165,12 +7165,12 @@ test "home_rt: runtime cli.yarn_commands surface is exported" {
     try std.testing.expect(!runtime_cli.list_of_yarn_commands.all_yarn_commands.has("not-a-yarn-command"));
 }
 
-test "home_rt: runtime cli parked helper surfaces compile" {
+test "home_rt: runtime cli helper surfaces compile" {
     const runtime_cli = runtime.cli;
     const npm_client: runtime_cli.NPMClient = .{ .bin = "bun", .tag = .bun };
     try std.testing.expectEqualStrings("bun", npm_client.bin);
     try std.testing.expectEqual(runtime_cli.NPMClient.Tag.bun, npm_client.tag);
-    try std.testing.expectEqual(@as(?[]const u8, null), runtime_cli.ci_info.detectCIName());
+    _ = runtime_cli.ci_info.detectCIName();
     try std.testing.expectEqual(runtime_cli.shell_completions.Shell.zsh, runtime_cli.shell_completions.Shell.fromEnv([]const u8, "/bin/zsh"));
     try std.testing.expect(@hasDecl(runtime_cli.discord_command, "DiscordCommand"));
     try std.testing.expect(@hasDecl(runtime_cli.filter_arg, "FilterSet"));
