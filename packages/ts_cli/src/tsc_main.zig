@@ -3123,7 +3123,7 @@ pub fn main(init: std.process.Init) !void {
         ts_driver.optionsFromConfig(c)
     else
         .{};
-    applyCommandLineCompileOptions(&compile_opts, opts);
+    ts_cli.applyCompileOptions(&compile_opts, opts);
     var resolver_adapter = CheckerResolverAdapter.init(gpa, &resolver);
     defer resolver_adapter.deinit();
     compile_opts.external_resolver = .{
@@ -4119,12 +4119,6 @@ fn shouldCheckPositionalConfig(opts: ts_cli.Options) bool {
     return opts.project == null and opts.files.len > 0 and !opts.ignore_config;
 }
 
-fn applyCommandLineCompileOptions(compile_opts: *ts_driver.CompileOptions, opts: ts_cli.Options) void {
-    compile_opts.strict = opts.strict;
-    compile_opts.no_emit = compile_opts.no_emit or opts.no_emit;
-    compile_opts.skip_lib_check = opts.skip_lib_check orelse compile_opts.skip_lib_check;
-}
-
 /// Resolve the path to a tsconfig.json. With an explicit `--project`
 /// (file or directory), use it directly. Otherwise walk upward from
 /// cwd looking for the nearest `tsconfig.json`. Returns a freshly
@@ -4205,15 +4199,15 @@ test "tsc_main: ignoreConfig only suppresses config discovery beside positional 
 
 test "tsc_main: command-line skipLibCheck overrides config in both directions" {
     var compile_opts: ts_driver.CompileOptions = .{ .skip_lib_check = false };
-    applyCommandLineCompileOptions(&compile_opts, .{ .skip_lib_check = true });
+    ts_cli.applyCompileOptions(&compile_opts, .{ .skip_lib_check = true });
     try std.testing.expect(compile_opts.skip_lib_check);
 
     compile_opts.skip_lib_check = true;
-    applyCommandLineCompileOptions(&compile_opts, .{ .skip_lib_check = false });
+    ts_cli.applyCompileOptions(&compile_opts, .{ .skip_lib_check = false });
     try std.testing.expect(!compile_opts.skip_lib_check);
 
     compile_opts.skip_lib_check = true;
-    applyCommandLineCompileOptions(&compile_opts, .{});
+    ts_cli.applyCompileOptions(&compile_opts, .{});
     try std.testing.expect(compile_opts.skip_lib_check);
 }
 

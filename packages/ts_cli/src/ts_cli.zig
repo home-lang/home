@@ -129,6 +129,25 @@ pub const Options = struct {
     declaration_map: ?bool = null,
 };
 
+/// Apply command-line compiler options after loading tsconfig. Command-line
+/// values win, and each resolved option updates every compiler phase through
+/// the driver's shared option mappers.
+pub fn applyCompileOptions(compile_opts: *ts_driver.CompileOptions, opts: Options) void {
+    compile_opts.strict = opts.strict;
+    compile_opts.no_emit = compile_opts.no_emit or opts.no_emit;
+    compile_opts.skip_lib_check = opts.skip_lib_check orelse compile_opts.skip_lib_check;
+    if (opts.target) |value| {
+        if (tsconfig_mod.Target.fromString(value)) |target| {
+            ts_driver.applyTargetOption(compile_opts, target);
+        }
+    }
+    if (opts.jsx) |value| {
+        if (tsconfig_mod.Jsx.fromString(value)) |jsx| {
+            ts_driver.applyJsxOption(compile_opts, jsx);
+        }
+    }
+}
+
 pub const ParseError = error{
     OutOfMemory,
     UnknownFlag,
@@ -1414,6 +1433,56 @@ test "parseArgs: --target / --module / --outDir / --jsx" {
     try T.expectEqualStrings("esnext", opts.module.?);
     try T.expectEqualStrings("dist", opts.out_dir.?);
     try T.expectEqualStrings("react-jsx", opts.jsx.?);
+}
+
+test "CLI options: target and jsx reach checking and emit" {
+    const argv = [_][]const u8{ "--target", "es2022", "--jsx", "react" };
+    const cli_opts = try parseArgs(T.allocator, &argv);
+    defer T.allocator.free(cli_opts.files);
+
+    var compile_opts: ts_driver.CompileOptions = .{};
+    applyCompileOptions(&compile_opts, cli_opts);
+    var compilation = try ts_driver.compileSource(
+        T.allocator,
+        \\declare var React: any;
+        \\declare namespace JSX { interface IntrinsicElements { span: {}; } }
+        \\class Box { #value = 1; read() { return this.#value; } }
+        \\const element = <span />;
+        ,
+        compile_opts,
+    );
+    defer {
+        compilation.deinit();
+        T.allocator.destroy(compilation);
+    }
+
+    for (compilation.diagnostics.items) |diagnostic| {
+        try T.expect(diagnostic.code != 18028);
+        try T.expect(diagnostic.code != 17004);
+    }
+    try T.expect(std.mem.indexOf(u8, compilation.js, "#value = 1") != null);
+    try T.expect(std.mem.indexOf(u8, compilation.js, "React.createElement(\"span\", null)") != null);
+}
+
+test "CLI options: target and jsx override tsconfig coherently" {
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    const config = try tsconfig_mod.parseString(
+        T.allocator,
+        arena.allocator(),
+        \\{ "compilerOptions": { "target": "es5", "jsx": "preserve" } }
+    );
+    var compile_opts = ts_driver.optionsFromConfig(&config);
+    try T.expect(!compile_opts.syntax_target_es2015);
+    try T.expectEqual(.es5, compile_opts.emit.es_target);
+    try T.expect(compile_opts.jsx_preserve_option);
+    applyCompileOptions(&compile_opts, .{ .target = "es2022", .jsx = "react" });
+
+    try T.expect(compile_opts.syntax_target_es2015);
+    try T.expectEqual(.es2022, compile_opts.emit.es_target);
+    try T.expect(compile_opts.jsx_option_present);
+    try T.expect(!compile_opts.jsx_preserve_option);
+    try T.expectEqual(.classic, compile_opts.emit.jsx_runtime);
 }
 
 test "parseArgs: --pretty and --no-pretty" {

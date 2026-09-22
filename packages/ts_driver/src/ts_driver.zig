@@ -1796,18 +1796,7 @@ pub fn optionsFromConfig(cfg: *const tsconfig_mod.TsConfig) CompileOptions {
     var opts: CompileOptions = .{};
     opts.pub_tsconfig = cfg;
     if (cfg.compiler_options.jsx) |jsx| {
-        opts.jsx_option_present = true;
-        // Any jsx mode implies the source is .tsx.
-        switch (jsx) {
-            .preserve, .react, .react_jsx, .react_jsxdev, .react_native => opts.is_tsx = true,
-        }
-        // Map tsconfig's JSX setting onto the emitter's runtime mode.
-        opts.emit.jsx_runtime = switch (jsx) {
-            .react => .classic,
-            .react_jsx => .automatic,
-            .react_jsxdev => .automatic_dev,
-            .preserve, .react_native => .preserve,
-        };
+        applyJsxOption(&opts, jsx);
     }
     if (cfg.compiler_options.jsx_factory) |fac| {
         opts.emit.jsx_factory = fac;
@@ -1816,23 +1805,7 @@ pub fn optionsFromConfig(cfg: *const tsconfig_mod.TsConfig) CompileOptions {
         opts.emit.jsx_fragment_factory = frag;
     }
     if (cfg.compiler_options.target) |t| {
-        opts.emit.es_target = switch (t) {
-            .es3, .es5 => .es5,
-            .es2015 => .es2015,
-            .es2016 => .es2016,
-            .es2017 => .es2017,
-            .es2018 => .es2018,
-            .es2019 => .es2019,
-            .es2020 => .es2020,
-            .es2021 => .es2021,
-            .es2022 => .es2022,
-            .es2023 => .es2023,
-            .es2024, .es2025, .esnext => .esnext,
-        };
-        opts.syntax_target_es2015 = switch (t) {
-            .es3, .es5 => false,
-            else => true,
-        };
+        applyTargetOption(&opts, t);
     }
     if (cfg.compiler_options.module) |m| {
         opts.emit.module_kind = switch (m) {
@@ -1862,6 +1835,42 @@ pub fn optionsFromConfig(cfg: *const tsconfig_mod.TsConfig) CompileOptions {
         opts.compiler_type_reference_names = names;
     }
     return opts;
+}
+
+/// Apply one resolved JSX option to every compiler phase that consumes it.
+/// CLI and tsconfig callers share this path so parsing, checking, and emit
+/// cannot observe different effective modes.
+pub fn applyJsxOption(opts: *CompileOptions, jsx: tsconfig_mod.Jsx) void {
+    opts.jsx_option_present = true;
+    opts.is_tsx = true;
+    opts.jsx_preserve_option = jsx == .preserve;
+    opts.emit.jsx_runtime = switch (jsx) {
+        .react => .classic,
+        .react_jsx => .automatic,
+        .react_jsxdev => .automatic_dev,
+        .preserve, .react_native => .preserve,
+    };
+}
+
+/// Apply one resolved language target to syntax checks and JavaScript emit.
+pub fn applyTargetOption(opts: *CompileOptions, target: tsconfig_mod.Target) void {
+    opts.emit.es_target = switch (target) {
+        .es3, .es5 => .es5,
+        .es2015 => .es2015,
+        .es2016 => .es2016,
+        .es2017 => .es2017,
+        .es2018 => .es2018,
+        .es2019 => .es2019,
+        .es2020 => .es2020,
+        .es2021 => .es2021,
+        .es2022 => .es2022,
+        .es2023 => .es2023,
+        .es2024, .es2025, .esnext => .esnext,
+    };
+    opts.syntax_target_es2015 = switch (target) {
+        .es3, .es5 => false,
+        else => true,
+    };
 }
 
 pub const CompileError = error{
