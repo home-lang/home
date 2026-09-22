@@ -1776,9 +1776,9 @@ const VmRunState = struct {
     var instance: VmRunState = undefined;
 
     /// Runs under the API lock (invoked via OpaqueWrap from holdAPILock). Mirrors
-    /// the non-watch, non-eval branch of `Run.start` (bun.js.zig:310-560): load the
-    /// entry point as a module, report a rejected top-level promise, then drain the
-    /// event loop until no async work remains, and tear down. globalExit is noreturn.
+    /// `Run.start` (bun.js.zig:310-560): load the entry point as a module, report a
+    /// rejected top-level promise, keep watched entries available for recovery, or
+    /// drain the event loop until no async work remains. globalExit is noreturn.
     /// After a run that left an unhandled error (an uncaught throw, an unhandled
     /// rejection, or a `reportError`), Bun prints a `\nBun v<version> (<os>
     /// <arch>)` footer to stderr. The bun.js.zig `Run.start` does this via
@@ -1848,9 +1848,16 @@ const VmRunState = struct {
                 const handled = vm.uncaughtException(vm.global, promise.result(vm.global.vm()), true);
                 promise.setHandled();
                 vm.pending_internal_promise_reported_at = vm.hot_reload_counter;
-                // A user handler may recover, schedule async work, or choose
-                // its own exitCode. Only an unhandled entry failure is fatal.
-                if (!handled) {
+                // A watched entry must remain alive after its initial
+                // evaluation rejects so editing the file can recover it.
+                // Match Run.start: register the main file before sleeping on
+                // the watcher, regardless of whether user code handled the
+                // rejection.
+                if (vm.hot_reload != .none or handled) {
+                    vm.addMainToWatcherIfNeeded();
+                    vm.eventLoop().tick();
+                    vm.eventLoop().tickPossiblyForever();
+                } else {
                     vm.exit_handler.exit_code = 1;
                     home_rt.Output.flush();
                     printUnhandledFooterIfNeeded(vm);
@@ -1861,7 +1868,12 @@ const VmRunState = struct {
             _ = promise.result(vm.global.vm());
         } else |err| {
             this.cleanupOwnedPreload();
-            std.debug.print("{s}error:{s} loading '{s}': {s}\n", .{ Color.Red.code(), Color.Reset.code(), this.entry_path, @errorName(err) });
+            if (vm.log.msgs.items.len > 0) {
+                vm.log.print(home_rt.Output.errorWriterBuffered()) catch {};
+                vm.log.msgs.items.len = 0;
+            } else {
+                home_rt.Output.prettyErrorln("Error occurred loading entry point: {s}", .{@errorName(err)});
+            }
             vm.exit_handler.exit_code = 1;
             home_rt.Output.flush();
             vm.onExit();

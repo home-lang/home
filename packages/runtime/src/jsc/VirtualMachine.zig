@@ -4137,8 +4137,21 @@ pub fn resolveSourceMapping(
     return this.source_mappings.resolveMapping(path, line, column, source_handling) orelse {
         if (this.standalone_module_graph) |graph| {
             const file = graph.find(path) orelse return null;
-            _ = file;
-            return null;
+            const map = file.sourcemap.load() orelse return null;
+
+            map.ref();
+
+            this.source_mappings.putValue(path, SavedSourceMap.Value.init(map)) catch
+                bun.outOfMemory();
+
+            const mapping = map.findMapping(line, column) orelse
+                return null;
+
+            return .{
+                .mapping = mapping,
+                .source_map = map,
+                .prefetched_source_code = null,
+            };
         }
 
         return null;
