@@ -55099,6 +55099,7 @@ pub const Checker = struct {
         if (self.isTypeOnlyValueUseInAmbientClassHeritage(extends_expr)) return;
         const id = hir_mod.identifierOf(self.hir, extends_expr);
         const import_decl = self.typeOnlyImportLocalDecl(id.name, extends_expr) orelse return;
+        if (self.valueNameShadowsImport(id.name, extends_expr)) return;
         if (self.diagnosticExists(extends_expr, TsCodes.type_only_import_used_as_value)) return;
         const name = self.string_interner.get(id.name);
         const related_message = try std.fmt.allocPrint(
@@ -65102,24 +65103,208 @@ pub const Checker = struct {
         return false;
     }
 
+    /// True when a value binding declares `name` for `anchor` before name
+    /// resolution reaches the file's imports. TypeScript walks the locals of
+    /// every enclosing block, function, and namespace outward, so a local
+    /// that shadows a type-only import makes the use a value, not a TS1361.
+    ///
+    /// Binder scopes only say where a symbol is stored, not where it is
+    /// visible: a catch variable is stored for the whole `try`, a case
+    /// clause's `let` in the enclosing block, a static block's `var` and
+    /// every member in the class. Each declaration is therefore judged by
+    /// its own visibility (`declarationVisibleAt`).
+    fn valueNameShadowsImport(self: *Checker, name: hir_mod.StringId, anchor: NodeId) bool {
+        if (self.module) |module| {
+            for (module.scopes.items) |scope| {
+                if (scope == module.root) continue;
+                switch (scope.kind) {
+                    .interface, .type_params => continue,
+                    else => {},
+                }
+                const symbol = scope.values.get(name) orelse continue;
+                if (!self.nodeIsAncestorOf(scope.introducing_node, anchor)) continue;
+                // Class members are reached through `this`, never by a bare name.
+                if (symbol.flags.is_property or symbol.flags.is_method or symbol.flags.is_constructor) continue;
+                for (symbol.decls.items) |decl| {
+                    if (self.declarationVisibleAt(decl, anchor)) return true;
+                }
+            }
+        }
+        if (self.findVisibleSameNameValueBinding(anchor, name) != null) return true;
+        var child = anchor;
+        var parent = self.hir.parentOf(anchor);
+        while (parent != hir_mod.none_node_id) : ({
+            child = parent;
+            parent = self.hir.parentOf(parent);
+        }) {
+            const kind = self.hir.kindOf(parent);
+            if (kind != .fn_decl and kind != .fn_expr and kind != .arrow_fn) continue;
+            const function = hir_mod.fnDeclOf(self.hir, parent);
+            // A named function expression sees its own name everywhere inside
+            // it. A method's name is a member and is not such a binding.
+            if (kind == .fn_expr and !self.functionIsMember(parent) and
+                function.name != hir_mod.none_node_id and child != function.name and
+                self.hir.kindOf(function.name) == .identifier and
+                hir_mod.identifierOf(self.hir, function.name).name == name) return true;
+            // Decorators and a computed name are resolved outside the function.
+            const in_function = (function.body != hir_mod.none_node_id and self.nodeIsAncestorOf(function.body, anchor)) or
+                self.nodeInFunctionParameters(parent, anchor);
+            if (in_function and self.functionParametersDeclareName(parent, name)) return true;
+        }
+        return false;
+    }
+
+    /// Whether the value declared by `decl` is visible at `anchor`, following
+    /// TypeScript's block-scope containers: a block, `for` head, case block,
+    /// catch clause, function, namespace, or class static block. A `var`
+    /// belongs to the nearest function-like container instead of its block. A
+    /// parameter initializer sees the function's parameters and body function
+    /// declarations, but not its body variables.
+    fn declarationVisibleAt(self: *Checker, decl: NodeId, anchor: NodeId) bool {
+        if (decl == hir_mod.none_node_id or decl >= self.hir.nodeCount()) return false;
+        const decl_kind = self.hir.kindOf(decl);
+        // A named function or class expression binds its name inside itself.
+        if (decl_kind == .fn_expr or decl_kind == .class_expr) return self.nodeIsAncestorOf(decl, anchor);
+        // A method's own name is a member, not a binding inside it.
+        if (decl_kind == .fn_expr and self.functionIsMember(decl)) return false;
+        // A namespace with no runtime member has no value meaning.
+        if (decl_kind == .namespace_decl and !self.namespaceIsInstantiated(decl, 0)) return false;
+        if (decl_kind == .module_decl) return false;
+        const variable = self.declarationVariableKind(decl);
+        var child = decl;
+        var cur = self.hir.parentOf(decl);
+        while (cur != hir_mod.none_node_id) : ({
+            child = cur;
+            cur = self.hir.parentOf(cur);
+        }) {
+            switch (self.hir.kindOf(cur)) {
+                .try_stmt => {
+                    const t = hir_mod.tryOf(self.hir, cur);
+                    if (t.catch_param != hir_mod.none_node_id and
+                        (child == t.catch_param or self.nodeIsAncestorOf(t.catch_param, decl)))
+                    {
+                        return self.nodeIsAncestorOf(t.catch_param, anchor) or
+                            (t.catch_block != hir_mod.none_node_id and self.nodeIsAncestorOf(t.catch_block, anchor));
+                    }
+                },
+                .fn_decl, .fn_expr, .arrow_fn => {
+                    const body = hir_mod.fnDeclOf(self.hir, cur).body;
+                    if (body != hir_mod.none_node_id and self.nodeIsAncestorOf(body, anchor)) return true;
+                    // From a parameter initializer: the parameters and body
+                    // function declarations. A body variable is hidden, and
+                    // so is a body class or enum, whose type meaning keeps it
+                    // out of the parameter list.
+                    if (self.nodeInFunctionParameters(cur, anchor)) {
+                        return variable == .none and decl_kind != .class_decl and decl_kind != .enum_decl;
+                    }
+                    return false;
+                },
+                .block_stmt => {
+                    const owner = self.hir.parentOf(cur);
+                    const owner_kind = if (owner != hir_mod.none_node_id) self.hir.kindOf(owner) else .block_stmt;
+                    // A function body is decided by the function itself.
+                    if ((owner_kind == .fn_decl or owner_kind == .fn_expr or owner_kind == .arrow_fn) and
+                        hir_mod.fnDeclOf(self.hir, owner).body == cur) continue;
+                    // A class static block is a variable environment of its own.
+                    if (owner_kind == .class_decl or owner_kind == .class_expr) return self.nodeIsAncestorOf(cur, anchor);
+                    if (variable != .function_scoped) return self.nodeIsAncestorOf(cur, anchor);
+                },
+                .switch_stmt => if (variable != .function_scoped) {
+                    const discriminant = hir_mod.switchOf(self.hir, cur).discriminant;
+                    return self.nodeIsAncestorOf(cur, anchor) and
+                        (discriminant == hir_mod.none_node_id or !self.nodeIsAncestorOf(discriminant, anchor));
+                },
+                .for_stmt, .for_in_stmt, .for_of_stmt => if (variable != .function_scoped) {
+                    return self.nodeIsAncestorOf(cur, anchor);
+                },
+                .namespace_decl, .module_decl => return self.nodeIsAncestorOf(cur, anchor),
+                // Reaching a class outside any method or static block means a member.
+                .class_decl, .class_expr => return false,
+                else => {},
+            }
+        }
+        return true;
+    }
+
+    const DeclarationVariableKind = enum { none, function_scoped, block_scoped };
+
+    /// `var` (function-scoped) or `let`/`const` (block-scoped) when `decl`
+    /// is, or is bound by, a variable declaration; `.none` for a parameter,
+    /// catch variable, function, class, enum, namespace, or import.
+    fn declarationVariableKind(self: *Checker, decl: NodeId) DeclarationVariableKind {
+        var cur = decl;
+        var depth: u8 = 0;
+        while (cur != hir_mod.none_node_id and depth < 16) : ({
+            cur = self.hir.parentOf(cur);
+            depth += 1;
+        }) {
+            switch (self.hir.kindOf(cur)) {
+                .var_decl => return .function_scoped,
+                .let_decl, .const_decl => return .block_scoped,
+                .parameter, .try_stmt, .fn_decl, .fn_expr, .arrow_fn, .class_decl, .class_expr, .enum_decl, .namespace_decl, .module_decl, .import_decl, .block_stmt, .for_stmt, .for_in_stmt, .for_of_stmt, .switch_stmt, .switch_case => return .none,
+                else => {},
+            }
+        }
+        return .none;
+    }
+
+    /// Whether `node` is in `function`'s parameter list. A parameter
+    /// decorator is not: TypeScript resolves it from the class.
+    fn nodeInFunctionParameters(self: *Checker, function: NodeId, node: NodeId) bool {
+        for (hir_mod.fnParams(self.hir, function)) |param| {
+            if (!self.nodeIsAncestorOf(param, node)) continue;
+            var cur = node;
+            while (cur != param and cur != hir_mod.none_node_id) : (cur = self.hir.parentOf(cur)) {
+                if (self.hir.kindOf(cur) == .decorator) return false;
+            }
+            return true;
+        }
+        return false;
+    }
+
+    /// A class or object-literal method, accessor, or constructor, whose
+    /// name is a member rather than a binding visible inside its body.
+    fn functionIsMember(self: *Checker, function: NodeId) bool {
+        const flags = hir_mod.fnDeclOf(self.hir, function).flags;
+        return flags.is_method or flags.is_getter or flags.is_setter or flags.is_constructor;
+    }
+
+    /// TypeScript's `getModuleInstanceState`: a namespace has a runtime value
+    /// unless its body holds only interfaces, type aliases, import aliases
+    /// that are not exported, type-only exports, and namespaces that are
+    /// themselves types only. Any other statement instantiates it.
+    fn namespaceIsInstantiated(self: *Checker, ns: NodeId, depth: u8) bool {
+        if (depth >= 16 or self.hir.kindOf(ns) != .namespace_decl) return true;
+        for (hir_mod.namespaceBody(self.hir, ns)) |member| {
+            var inner = member;
+            var exported = false;
+            if (self.hir.kindOf(inner) == .export_decl) {
+                const ex = hir_mod.exportOf(self.hir, inner);
+                if (ex.is_type_only) continue;
+                if (ex.decl == hir_mod.none_node_id) return true;
+                inner = ex.decl;
+                exported = true;
+            }
+            switch (self.hir.kindOf(inner)) {
+                .interface_decl, .type_alias_decl => continue,
+                .import_decl => {
+                    const import = hir_mod.importOf(self.hir, inner);
+                    if (!exported and !import.is_export) continue;
+                    return true;
+                },
+                .namespace_decl => if (self.namespaceIsInstantiated(inner, depth + 1)) return true,
+                else => return true,
+            }
+        }
+        return false;
+    }
+
     fn externalTypeOnlyOriginKind(self: *Checker, name: hir_mod.StringId, anchor: NodeId) TypeOnlyOriginKind {
         if (self.sourceHasVirtualFilenameSections()) return .none;
         const import = self.plainNamedImport(name, anchor) orelse return .none;
         // The module-level alias's cached restriction does not apply to a
         // nearer value binding. Check scope before consulting the name cache.
-        if (self.module) |module| {
-            for (module.scopes.items) |scope| {
-                if (scope != module.root and scope.values.contains(name) and
-                    self.nodeIsAncestorOf(scope.introducing_node, anchor)) return .none;
-            }
-        }
-        if (self.findVisibleSameNameValueBinding(anchor, name) != null) return .none;
-        var parent = self.hir.parentOf(anchor);
-        while (parent != hir_mod.none_node_id) : (parent = self.hir.parentOf(parent)) {
-            const kind = self.hir.kindOf(parent);
-            if ((kind == .fn_decl or kind == .fn_expr or kind == .arrow_fn) and
-                self.functionParametersDeclareName(parent, name)) return .none;
-        }
+        if (self.valueNameShadowsImport(name, anchor)) return .none;
         if (self.cross_module_type_only_export_cache.get(name)) |cached| return cached;
         const spec = self.string_interner.get(import.module);
         const imported_text = self.string_interner.get(import.imported);
@@ -134326,6 +134511,10 @@ pub const Checker = struct {
             }
         } else if (sk == .import_decl) {
             if (self.importDeclBindsLocal(decl, id.name)) {
+                // The lexical walk missed a nearer binding (a `var` in a nested
+                // block, a use before its declaration); the import is not the
+                // symbol this name resolves to.
+                if (self.valueNameShadowsImport(id.name, node)) return types.Primitive.any;
                 if (self.moduleNamespaceTypeForLocalImport(id.name, node) catch null) |ns_t| return ns_t;
                 if (self.virtualImportTypeForLocal(id.name, node) catch null) |import_t| return import_t;
                 if (try self.programExportedClassTypeForImportBinding(decl, id.name, node)) |class_t| return class_t;
@@ -135046,9 +135235,12 @@ pub const Checker = struct {
         if (!self.isDeclNameSlot(node) and !self.identifierIsExportEqualsTarget(node) and
             !self.nodeHasAncestorKind(node, .typeof_type) and !self.isComputedKeyInAmbientClassMember(node) and
             !self.isTypeOnlyValueUseInAmbientClassHeritage(node) and
-            !self.isBuiltinName(id.name) and self.typeOnlyImportLocal(id.name, node))
+            !self.isBuiltinName(id.name) and self.typeOnlyImportLocal(id.name, node) and
+            !self.valueNameShadowsImport(id.name, node))
         {
             if (self.typeOnlyValueUseCoveredByVerbatimDefaultExport(node)) return types.Primitive.any;
+            // Narrowing re-reads an identifier; TypeScript reports each use once.
+            if (self.diagnosticExists(node, TsCodes.type_only_import_used_as_value)) return types.Primitive.any;
             const msg = std.fmt.allocPrint(
                 self.diag_arena.allocator(),
                 "'{s}' cannot be used as a value because it was imported using 'import type'.",
@@ -135071,9 +135263,11 @@ pub const Checker = struct {
         if (!self.isDeclNameSlot(node) and !self.nodeHasAncestorKind(node, .typeof_type) and
             !self.isComputedKeyInAmbientClassMember(node) and
             !self.isTypeOnlyValueUseInAmbientClassHeritage(node) and
-            ((self.crossModuleTypeOnlyImportOrigin(id.name, node) catch null) != null or
+            (((self.crossModuleTypeOnlyImportOrigin(id.name, node) catch null) != null and
+                !self.valueNameShadowsImport(id.name, node)) or
                 external_type_only_origin == .import_type))
         {
+            if (self.diagnosticExists(node, TsCodes.type_only_import_used_as_value)) return types.Primitive.any;
             const msg = std.fmt.allocPrint(
                 self.diag_arena.allocator(),
                 "'{s}' cannot be used as a value because it was imported using 'import type'.",
@@ -135092,8 +135286,12 @@ pub const Checker = struct {
             !self.nodeHasAncestorKind(node, .typeof_type) and !self.isComputedKeyInAmbientClassMember(node) and
             !self.isTypeOnlyValueUseInAmbientClassHeritage(node) and
             !self.typeOnlyValueUseCoveredByVerbatimDefaultExport(node) and
-            (if (self.sourceHasVirtualFilenameSections()) self.nameIsCrossModuleTypeOnlyExport(id.name, node) else external_type_only_origin == .export_type))
+            (if (self.sourceHasVirtualFilenameSections())
+                self.nameIsCrossModuleTypeOnlyExport(id.name, node) and !self.valueNameShadowsImport(id.name, node)
+            else
+                external_type_only_origin == .export_type))
         {
+            if (self.diagnosticExists(node, TsCodes.type_only_export_used_as_value)) return types.Primitive.any;
             const msg = std.fmt.allocPrint(
                 self.diag_arena.allocator(),
                 "'{s}' cannot be used as a value because it was exported using 'export type'.",
@@ -135382,6 +135580,7 @@ pub const Checker = struct {
                         }
                     } else if (sk == .import_decl) {
                         if (self.importDeclBindsLocal(s, id.name)) {
+                            if (self.valueNameShadowsImport(id.name, node)) return types.Primitive.any;
                             if (self.moduleNamespaceTypeForLocalImport(id.name, node) catch null) |ns_t| return ns_t;
                             if (self.virtualImportTypeForLocal(id.name, node) catch null) |import_t| return import_t;
                             return types.Primitive.any;
@@ -135494,9 +135693,10 @@ pub const Checker = struct {
             }
         }
 
-        if (self.moduleNamespaceTypeForLocalImport(id.name, node) catch null) |ns_t| return ns_t;
-        if (self.virtualImportTypeForLocal(id.name, node) catch null) |import_t| return import_t;
-        if (self.virtualDefaultImportTypeForLocal(id.name, node) catch null) |import_t| return import_t;
+        const local_import_t = (self.moduleNamespaceTypeForLocalImport(id.name, node) catch null) orelse
+            (self.virtualImportTypeForLocal(id.name, node) catch null) orelse
+            (self.virtualDefaultImportTypeForLocal(id.name, node) catch null);
+        if (local_import_t) |import_value_t| return if (self.valueNameShadowsImport(id.name, node)) types.Primitive.any else import_value_t;
         if (self.globalAugmentedValueType(id.name, node) catch null) |global_t| return global_t;
         if (!self.isDeclNameSlot(node)) {
             if (self.umdGlobalNamespaceValueType(id.name, node) catch null) |umd_t| return umd_t;
@@ -203248,6 +203448,58 @@ test "checker: import type binding cannot be used as a value" {
         if (d.code == TsCodes.type_only_import_used_as_value) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: a local value binding shadows a type-only import" {
+    // zod 4.5.2 core writes `const checks = currDef.checks` and
+    // `const schemas: Record<...> = {}` beside `import type * as checks` and
+    // `import type * as schemas`. Name resolution reaches the local first, so
+    // lines 3-6, 12, 16-18, and 20 (a namespace instantiated by a statement)
+    // are ordinary values. The rest are type-only value uses: no local (7,
+    // 11), a local in a closed block (8), a parameter initializer, which sees
+    // neither body variables (9) nor a body class (21), a class member (10),
+    // the try and finally beside a catch variable (13), after a case clause's
+    // const (14), a namespace with no runtime member (15), and inside a method
+    // or accessor that only shares the name (19).
+    // The binder stores several of those bindings in a wider scope than they
+    // are visible in, so this runs with its module attached. TypeScript 6.0.3
+    // and 7.0.2 report exactly these thirteen, once each.
+    const b = try newBoundSetup(
+        \\// @module: commonjs
+        \\// @Filename: dep.ts
+        \\export interface Foo { n: number }
+        \\// @Filename: index.ts
+        \\import type * as checks from './dep';
+        \\declare function g(v: unknown): void;
+        \\export function a(d: any) { const checks = d.x; return checks && checks.length > 0; }
+        \\export function b() { const checks: Record<string, number> = {}; g(checks); checks.k = 1; return { checks }; }
+        \\export function c(checks: number[]) { return checks.length; }
+        \\export function e() { const checks = { k: 1 }; checks.k = 2; }
+        \\export function k() { return checks; }
+        \\export function q() { { const checks = 1; void checks; } return checks; }
+        \\export function p(x: unknown = checks) { const checks = 1; return [x, checks]; }
+        \\export class C { checks = 1; m() { return checks; } }
+        \\export const z = checks && checks;
+        \\export function w() { const checks = class {}; return class extends checks {}; }
+        \\export function t() { try { void checks; } catch (checks) { void checks; } finally { void checks; } }
+        \\export function s(x: number) { switch (x) { case 1: const checks = 1; return checks; } return checks; }
+        \\export namespace N { namespace checks { export type T = number } export const r = checks; }
+        \\export class S { static { var checks = 1; void checks; } }
+        \\export const nf = function checks(v: unknown = checks) { return v; };
+        \\export function h(d: any) { if (d) { var checks = d.x; } return checks.length; }
+        \\export class K1 { checks() { return checks; } get v() { return checks; } }
+        \\export namespace N2 { namespace checks { g(1); } export const r = checks; }
+        \\export function pc(a: unknown = checks) { class checks {} return a; }
+    );
+    defer destroyBoundSetup(b);
+    const s = b.base;
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 13), checkerCountCode(s, TsCodes.type_only_import_used_as_value));
+    try T.expectEqual(@as(usize, 13), s.checker.diagnostics.items.len);
+    for (s.checker.diagnostics.items, 0..) |diagnostic, i| {
+        for (s.checker.diagnostics.items[i + 1 ..]) |other| try T.expect(other.node != diagnostic.node);
+    }
 }
 
 test "checker: class extends reports a named type-only import value use" {

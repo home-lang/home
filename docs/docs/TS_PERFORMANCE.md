@@ -9147,6 +9147,84 @@ where `0d09d38cd` and both engines report none. The generic `NonNullable`
 checker test, which the dropped component-wise rule broke, passes. The #754
 and #751 write-context oracles are unchanged. No timing is claimed.
 
+### A local binding shadows a type-only import (untimed)
+
+Under [#548](https://github.com/home-lang/home/issues/548) and
+[#416](https://github.com/home-lang/home/issues/416). Zod's `core/util.ts`
+imports `import type * as checks` and then writes `const checks =
+currDef.checks; const hasChecks = checks && checks.length > 0;` inside
+`pick`, `omit`, `extend`, and `partial`. `core/json-schema-processors.ts`
+does the same with `const schemas: Record<...> = {}` beside
+`import type * as schemas`. Home reported every use of the local as TS1361,
+"cannot be used as a value because it was imported using 'import type'".
+
+TypeScript resolves an identifier by walking the value-meaning locals of each
+enclosing block, function, and namespace outward, so a local that shadows the
+import is found first and is an ordinary value. Home instead decided TS1361
+by matching the name against the file's top-level imports, before its own
+lexical lookup ran. Only a local that had already recorded a flow narrowing
+escaped, which is why an annotated object, an `any`-typed initializer, a
+parameter, or a property write was reported and a plainly typed read was not.
+
+Every TS1361 and TS1362 path now asks one shared question first: is a value
+binding of that name visible at the use from a nearer scope than the imports?
+The binder's scopes say where a symbol is stored, which is wider than where
+it is visible: a catch variable is stored for the whole `try`, a case
+clause's `let` in the enclosing block, a static block's `var` and every
+member in the class. Each declaration is therefore judged by TypeScript's
+own containers: a block, `for` head, case block, catch clause, function,
+namespace, or class static block, with `var` belonging to the nearest
+function-like container. Class members never shadow a bare name, and neither
+does a method's own name inside its body. A namespace has a value only when
+some statement in it is not a type (TypeScript's `getModuleInstanceState`).
+A parameter initializer sees the function's parameters and body function
+declarations but not its body variables, classes, or enums, and a parameter
+decorator is resolved outside the method. A named function expression sees
+its own name. When the
+lexical walk misses such a binding, the use no longer falls back to the
+import's namespace type. The check that already guarded external type-only
+origins now shares this one; its inline walk also counted class scopes. A
+genuine type-only value use is reported once per identifier for TS1361 and
+TS1362, where narrowing used to re-read the identifier and report it again.
+
+A first version decided shadowing from binder scope membership alone. An
+adversarial review with three independent lenses, each finding checked by a
+skeptic against both engines, confirmed that it hid real TS1361s in a `try`
+or `finally` beside a catch variable, after a case clause's `const`, and for
+a type-only namespace inside a namespace. A second round re-ran every
+confirmed finding against the reworked check (16 fixed, 9 already wrong the
+same way before this change, 4 improved) and a fresh hunter found three more
+that the rework itself introduced: a method named like the import, a
+namespace made a value by a statement, and a body class seen from a parameter
+initializer. All of those cases are in the test below.
+
+| Focused oracle (line:column) | TypeScript 6.0.3 | Native TypeScript 7.0.2 | ReleaseSafe Home | `41d59384a` |
+|---|---:|---:|---:|---:|
+| Shadowed: `any`, `Record`, and object locals, a parameter, a class expression, a static-block `var`, a named function expression, a nested-block `var`, a namespace instantiated by a statement (lines 3–6, 12, 16–18, 20) | — | **identical** | **identical** | 13× TS1361 at 10 positions |
+| Not shadowed: no local, a closed block, a parameter initializer against a body variable or class, a class member, module level, `try`/`finally` beside `catch`, after a case clause, a type-only namespace, a method or accessor sharing the name (lines 7–11, 13–15, 19, 21) | 13× TS1361 at 7:30, 8:65, 9:32, 10:43, 11:18, 11:28, 13:34, 13:91, 14:95, 15:83, 19:37, 19:64, 21:33 | **identical** | **identical** | 13 positions, 3 reported twice |
+
+Against `41d59384a` on the 21-file Zod 4.5.2 `core` graph:
+
+| Zod 4.5.2 core, shadowed type-only imports | `41d59384a` | Home main | Change |
+|---|---:|---:|---:|
+| All diagnostics | 95 | **79** | **16 removed (16.8%); 0 added** |
+| Unique path/line/column/code identities | 90 | **79** | **11 removed; 0 added** |
+| Removed identities | — | 11 TS1361 | `core/util.ts:645`, `675`, `706`, `771` (2 each); `core/json-schema-processors.ts:724:18`, `729:7`, `734:14` |
+
+TypeScript 6.0.3 and native 7.0.2 report only the omitted `locales` module
+on this graph, so each removal is a false positive gone; the 5 further raw
+diagnostics were duplicates of the same identities.
+
+The complete checker and Program targets pass (4,373 and 214 tests). The
+added checker test binds the file, so the per-declaration visibility rules
+run exactly as `home-tsc` runs them. The earlier oracles for the indexed-access
+change, #754, and #751 are unchanged. Several gaps that were already wrong
+the same way are left for later: a type parameter or merged namespace export
+named like the import, a use after a `for (let ...)` loop or a typeof guard,
+names inside functions nested in expressions (which the binder does not
+scope), parameter scope changes below ES2020, and the missing TS2440 beside
+a top-level declaration. No timing is claimed.
+
 ### Positive `instanceof` assignment fallthrough (untimed)
 
 Issue [#738](https://github.com/home-lang/home/issues/738), found while

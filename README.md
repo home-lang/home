@@ -579,11 +579,20 @@ An indexed access whose object is still a type parameter now stays deferred
 instead of being read through that parameter's constraint, and relations
 reach it through its constraint the way TypeScript does:
 
-| [Zod 4.5.2 deferred indexed-access audit](docs/docs/TS_PERFORMANCE.md#indexed-access-over-a-type-parameter-stays-deferred-untimed) | `0d09d38cd` | Home main | Change |
+| [Zod 4.5.2 deferred indexed-access audit](docs/docs/TS_PERFORMANCE.md#indexed-access-over-a-type-parameter-stays-deferred-untimed) | `0d09d38cd` | `41d59384a` | Change |
 |---|---:|---:|---:|
 | Core diagnostics (21-file shard) | 140 | **95** | **45 removed (32.1%); 0 added** |
 | Unique path/line/column/code identities | 135 | **90** | **41 TS2345 + 4 TS2430 removed; 0 added** |
 | Focused three-engine oracle | 1 false TS2345 | **exact TS2322 + TS2430 parity** | no TS2345 |
+
+A local value binding that shadows a type-only import is now resolved before
+the import, so using it is no longer reported as a type-only value use:
+
+| [Zod 4.5.2 shadowed type-only import audit](docs/docs/TS_PERFORMANCE.md#a-local-binding-shadows-a-type-only-import-untimed) | `41d59384a` | Home main | Change |
+|---|---:|---:|---:|
+| Core diagnostics (21-file shard) | 95 | **79** | **16 TS1361 removed (16.8%); 0 added** |
+| Unique path/line/column/code identities | 90 | **79** | **11 TS1361 removed; 0 added** |
+| Focused three-engine oracle | 29× TS1361 at 23 positions | **exact 13× TS1361 parity** | once per use |
 
 Positive `instanceof` branches that replace their guarded value now join the
 assigned true path with the excluded false path at fallthrough:
