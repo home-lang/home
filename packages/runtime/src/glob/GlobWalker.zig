@@ -916,8 +916,10 @@ pub fn GlobWalker_(
                                             dir.dir_path[0..dir.dir_path.len],
                                             entry_name,
                                         };
-                                        const entry_start: u32 = @intCast(if (dir.dir_path.len == 0) 0 else dir.dir_path.len + 1);
                                         const subdir_entry_name = try this.walker.join(subdir_parts);
+                                        // Measured on the joined path: the join may
+                                        // normalize a cwd like `dir////`.
+                                        const entry_start: u32 = @intCast(subdir_entry_name.len - std.fs.path.basename(subdir_entry_name).len);
 
                                         try this.walker.workbuf.append(
                                             this.walker.arena.allocator(),
@@ -979,8 +981,8 @@ pub fn GlobWalker_(
                                                     dir.dir_path[0..dir.dir_path.len],
                                                     entry_name,
                                                 };
-                                                const entry_start: u32 = @intCast(if (dir.dir_path.len == 0) 0 else dir.dir_path.len + 1);
                                                 const subdir_entry_name = try this.walker.join(subdir_parts);
+                                                const entry_start: u32 = @intCast(subdir_entry_name.len - std.fs.path.basename(subdir_entry_name).len);
                                                 try this.walker.workbuf.append(
                                                     this.walker.arena.allocator(),
                                                     WorkItem.newSymlink(subdir_entry_name, active, entry_start),
