@@ -6547,7 +6547,11 @@ pub const Checker = struct {
         {
             try self.pushNarrowScope();
             defer self.popNarrowScope();
-            for (stmts) |s| try self.checkStatement(s);
+            for (stmts) |s| {
+                try self.checkStatement(s);
+                try self.applyAssertionFlow(s);
+                try self.applyLogicalAssignmentFlow(s);
+            }
         }
         try self.reportLegacyImportOptionAssertions(root);
         try self.checkCommonJsWholeExportDeclarationPrivacy();
@@ -20641,6 +20645,41 @@ pub const Checker = struct {
             if (k != .fn_decl and k != .fn_expr) continue;
             if (self.hir.typeOf(s) != types.Primitive.none) continue;
             try self.checkFnSignatureOnlyNoBody(s);
+        }
+    }
+
+    fn ensureForwardOverloadSet(
+        self: *Checker,
+        callee_node: NodeId,
+        name: hir_mod.StringId,
+    ) CheckError!void {
+        if (self.overloads.get(name)) |overload_list| {
+            if (overload_list.items.len > 1) return;
+        }
+        const root = self.rootBlockFor(callee_node);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return;
+        const stmts = hir_mod.blockStmts(self.hir, root);
+        var matching_count: usize = 0;
+        var bodyless_count: usize = 0;
+        for (stmts) |raw| {
+            const declaration = self.unwrapExportDecl(raw);
+            if (declaration == hir_mod.none_node_id or self.hir.kindOf(declaration) != .fn_decl) continue;
+            const function = hir_mod.fnDeclOf(self.hir, declaration);
+            if (function.name == hir_mod.none_node_id or self.hir.kindOf(function.name) != .identifier or
+                hir_mod.identifierOf(self.hir, function.name).name != name) continue;
+            matching_count += 1;
+            if (function.body == hir_mod.none_node_id) bodyless_count += 1;
+        }
+        if (matching_count < 2 or bodyless_count == 0) return;
+        for (stmts) |raw| {
+            const declaration = self.unwrapExportDecl(raw);
+            if (declaration == hir_mod.none_node_id or self.hir.kindOf(declaration) != .fn_decl) continue;
+            const function = hir_mod.fnDeclOf(self.hir, declaration);
+            if (function.name == hir_mod.none_node_id or self.hir.kindOf(function.name) != .identifier or
+                hir_mod.identifierOf(self.hir, function.name).name != name) continue;
+            if (self.hir.typeOf(declaration) == types.Primitive.none) {
+                try self.checkFnSignatureOnlyNoBody(declaration);
+            }
         }
     }
 
@@ -113660,6 +113699,7 @@ pub const Checker = struct {
                 // assignable to the corresponding param type.
                 if (self.hir.kindOf(c.callee) == .identifier) {
                     const callee_name = hir_mod.identifierOf(self.hir, c.callee).name;
+                    try self.ensureForwardOverloadSet(c.callee, callee_name);
                     if (self.overloads.get(callee_name)) |overload_list| {
                         if (overload_list.items.len > 1) {
                             const has_impl = self.overload_has_implementation.contains(callee_name);
@@ -130594,20 +130634,87 @@ pub const Checker = struct {
     ///
     /// The older lowered `target = target <op> value` shape remains
     /// supported for HIR produced by external callers.
+    fn memberLogicalAssignmentFlowType(
+        self: *Checker,
+        current: TypeId,
+        value_node: NodeId,
+        value_t: TypeId,
+        result_t: TypeId,
+        op: hir_mod.LogicalOp,
+    ) CheckError!TypeId {
+        if (op != .nullish) return result_t;
+        const non_nullish = self.subtractNullUndefined(current) catch current;
+        if (non_nullish == types.Primitive.none or non_nullish == types.Primitive.never) return result_t;
+        const literal_ok = try self.literalExpressionAssignableToTarget(value_node, non_nullish);
+        const array_ok = self.hir.kindOf(value_node) == .array_literal and
+            try self.arrayLiteralAssignableToTargetInner(value_node, non_nullish, false);
+        const object_ok = self.hir.kindOf(value_node) == .object_literal and
+            (self.objectLiteralAssignableToTarget(value_node, value_t, non_nullish) catch false);
+        if (literal_ok or array_ok or object_ok or try self.checkerAssignableTo(value_t, non_nullish)) {
+            return non_nullish;
+        }
+        return self.interner.internUnion(&.{ non_nullish, result_t }) catch return error.OutOfMemory;
+    }
+
     fn applyLogicalAssignmentFlow(self: *Checker, stmt: NodeId) !void {
         if (self.hir.kindOf(stmt) != .assignment) return;
         const a = hir_mod.assignmentOf(self.hir, stmt);
-        if (self.hir.kindOf(a.target) != .identifier) return;
-        const target_id = hir_mod.identifierOf(self.hir, a.target);
+        const target_kind = self.hir.kindOf(a.target);
         if (a.op == .logical_or or a.op == .nullish_coalesce) {
             var result_t = self.hir.typeOf(stmt);
             if (result_t == types.Primitive.none) result_t = try self.checkExpression(stmt);
-            if (result_t != types.Primitive.none) try self.recordNarrow(target_id.name, result_t);
+            if (result_t == types.Primitive.none) return;
+            if (target_kind == .identifier) {
+                try self.recordNarrow(hir_mod.identifierOf(self.hir, a.target).name, result_t);
+            } else if (target_kind == .member_access or target_kind == .element_access) {
+                const target = (try self.memberNarrowTargetFromAccess(a.target)) orelse return;
+                var value_t = self.hir.typeOf(a.value);
+                if (value_t == types.Primitive.none) value_t = try self.checkExpression(a.value);
+                const flow_t = try self.memberLogicalAssignmentFlowType(
+                    target.current,
+                    a.value,
+                    value_t,
+                    result_t,
+                    if (a.op == .nullish_coalesce) .nullish else .@"or",
+                );
+                try self.recordMemberNarrow(target.key, flow_t);
+            }
             return;
         }
         if (a.op != null) return;
         if (self.hir.kindOf(a.value) != .logical_op) return;
         const l = hir_mod.logicalOf(self.hir, a.value);
+        if (target_kind == .member_access or target_kind == .element_access) {
+            const target = (try self.memberNarrowTargetFromAccess(a.target)) orelse return;
+            const lhs = (try self.memberNarrowTargetFromAccess(l.lhs)) orelse return;
+            if (target.key.obj_name != lhs.key.obj_name or target.key.prop_name != lhs.key.prop_name) return;
+            const result_t = switch (l.op) {
+                .nullish => blk: {
+                    const value_t = self.hir.typeOf(a.value);
+                    var rhs_t = self.hir.typeOf(l.rhs);
+                    if (rhs_t == types.Primitive.none) rhs_t = try self.checkExpression(l.rhs);
+                    break :blk try self.memberLogicalAssignmentFlowType(
+                        target.current,
+                        l.rhs,
+                        rhs_t,
+                        value_t,
+                        .nullish,
+                    );
+                },
+                .@"or" => blk: {
+                    const lhs_t = self.hir.typeOf(l.lhs);
+                    const rhs_t = self.hir.typeOf(l.rhs);
+                    if (lhs_t == types.Primitive.none or rhs_t == types.Primitive.none) return;
+                    const lhs_non_null = self.subtractNullUndefined(lhs_t) catch lhs_t;
+                    break :blk self.interner.internUnion(&.{ lhs_non_null, rhs_t }) catch return;
+                },
+                .@"and" => return,
+            };
+            if (result_t != types.Primitive.none) try self.recordMemberNarrow(target.key, result_t);
+            return;
+        }
+        if (target_kind != .identifier) return;
+        const target_id = hir_mod.identifierOf(self.hir, a.target);
         // Only act when the operator's lhs is the same identifier as
         // the assignment target ÃÂ¢ÃÂÃÂ that's the lowered `x = x ?? rhs`
         // shape produced by `parseLogicalAssign`.
@@ -280185,4 +280292,38 @@ test "checker: object parameter defaults and Function standard fields follow the
     const collection_function = collection_only.checker.lowerBuiltinObjectType("Function").?;
     const collection_name = try collection_only.sint.intern("name");
     try T.expect(collection_only.ti.objectMember(collection_function, collection_name) == null);
+}
+
+test "checker: top-level forward calls see every overload signature" {
+    const s = try newSetup(
+        \\const before = generate(1, 2, 3, 4, true);
+        \\function generate(a: number, b: number, c: number, d: number): string;
+        \\function generate(a: number, b: number, c: number, d: number, needsValue: boolean): string | null;
+        \\function generate(a: number, b: number, c: number, d: number, needsValue = true): string | null {
+        \\  return needsValue ? "ok" : null;
+        \\}
+        \\const after = generate(1, 2, 3, 4, false);
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.expected_n_arguments));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.no_overload_matches));
+}
+
+test "checker: nullish member assignment narrows the following member read" {
+    const s = try newSetup(
+        \\interface State { values?: Set<object>; message?: string }
+        \\declare const state: State;
+        \\state.values ??= new Set();
+        \\state.values.add({});
+        \\state.message ??= "ready";
+        \\const exact: string = state.message;
+        \\const wrong: number = state.message;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.object_possibly_undefined_18048));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
 }
