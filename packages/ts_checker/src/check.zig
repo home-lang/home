@@ -37634,10 +37634,13 @@ pub const Checker = struct {
                 const literal_ok = try self.literalExpressionAssignableToTarget(pp.default_value, declared_param_t);
                 const array_literal_ok = self.hir.kindOf(pp.default_value) == .array_literal and
                     try self.arrayLiteralAssignableToTargetInner(pp.default_value, declared_param_t, false);
+                const object_literal_ok = self.hir.kindOf(pp.default_value) == .object_literal and
+                    (self.objectLiteralAssignableToTarget(pp.default_value, default_t, declared_param_t) catch false);
                 const loose_nullish_ok = !self.strict_flags.strict_null_checks and
                     (default_t == types.Primitive.null_t or default_t == types.Primitive.undefined_t);
                 if (!literal_ok and
                     !array_literal_ok and
+                    !object_literal_ok and
                     !loose_nullish_ok and
                     (self.typeParameterAssignmentNeedsInstantiationCheck(default_t, declared_param_t) or
                         !(self.engine.isAssignableTo(default_t, declared_param_t) catch true)))
@@ -84279,6 +84282,47 @@ pub const Checker = struct {
         return self.interner.internObjectTypeWithIndex(&members, types.Primitive.none, element_t) catch types.Primitive.unknown;
     }
 
+    fn populateFunctionStandardMembers(
+        self: *Checker,
+        members: []types.ObjectMember,
+        start: usize,
+    ) CheckError!usize {
+        members[start] = .{
+            .name = self.string_interner.intern("length") catch return error.OutOfMemory,
+            .type = types.Primitive.number_t,
+            .is_optional = false,
+            .is_readonly = true,
+            .is_method = false,
+        };
+        members[start + 1] = .{
+            .name = self.string_interner.intern("prototype") catch return error.OutOfMemory,
+            .type = types.Primitive.any,
+            .is_optional = false,
+            .is_readonly = false,
+            .is_method = false,
+        };
+        var len = start + 2;
+        if (!self.effectiveLibraryExcludes("es2015")) {
+            members[len] = .{
+                .name = self.string_interner.intern("name") catch return error.OutOfMemory,
+                .type = types.Primitive.string_t,
+                .is_optional = false,
+                .is_readonly = true,
+                .is_method = false,
+            };
+            len += 1;
+        }
+        return len;
+    }
+
+    fn builtinFunctionObjectType(self: *Checker, callable: *const [2]types.ObjectMember) TypeId {
+        var members: [5]types.ObjectMember = undefined;
+        members[0] = callable[0];
+        members[1] = callable[1];
+        const len = self.populateFunctionStandardMembers(&members, 2) catch return types.Primitive.unknown;
+        return self.interner.internObjectType(members[0..len]) catch types.Primitive.unknown;
+    }
+
     fn lowerBuiltinObjectTypeRaw(self: *Checker, name: []const u8) ?TypeId {
         if (std.mem.eql(u8, name, "Element") or std.mem.eql(u8, name, "HTMLElement")) {
             if (self.sourceLibDirectiveExcludesDomElement()) return null;
@@ -84490,7 +84534,7 @@ pub const Checker = struct {
         }
         if (std.mem.eql(u8, name, "Function")) {
             if (self.builtin_function_members) |*members| {
-                return self.interner.internObjectType(members) catch types.Primitive.unknown;
+                return self.builtinFunctionObjectType(members);
             }
             const any_array = self.interner.internArrayType(self.string_interner, types.Primitive.any) catch
                 return types.Primitive.unknown;
@@ -84516,7 +84560,8 @@ pub const Checker = struct {
                     .is_method = true,
                 },
             };
-            const result = self.interner.internObjectType(&members) catch return types.Primitive.unknown;
+            const result = self.builtinFunctionObjectType(&members);
+            if (result == types.Primitive.unknown) return result;
             self.builtin_function_members = members;
             return result;
         }
@@ -87343,7 +87388,7 @@ pub const Checker = struct {
                     try self.reportTypeNotAssignable(target_node, source_t, target_t, "Type is not assignable to target type.");
                     return;
                 }
-                if (!(self.engine.isAssignableTo(source_t, target_t) catch true)) {
+                if (!(try self.checkerAssignableTo(source_t, target_t))) {
                     if (try self.tryReportSinglePropertyMissing(target_node, source_node, source_t, target_t)) return;
                     try self.reportTypeNotAssignable(target_node, source_t, target_t, "Type is not assignable to target type.");
                 } else if (self.hir.kindOf(target_node) == .identifier and
@@ -104223,7 +104268,9 @@ pub const Checker = struct {
     }
 
     fn syntheticFunctionObjectType(self: *Checker) CheckError!TypeId {
-        const t = self.interner.internObjectType(&.{}) catch return error.OutOfMemory;
+        var members: [3]types.ObjectMember = undefined;
+        const len = try self.populateFunctionStandardMembers(&members, 0);
+        const t = self.interner.internObjectType(members[0..len]) catch return error.OutOfMemory;
         try self.alias_display_names.put(self.gpa, t, "Function");
         return t;
     }
@@ -137643,6 +137690,37 @@ pub const Checker = struct {
         return true;
     }
 
+    fn effectiveLibraryExcludes(self: *Checker, required: []const u8) bool {
+        if (self.sourceHasNoLibTrueDirective()) return true;
+        if (self.sourceMarkerPosition("@lib") != null) return self.sourceLibDirectiveExcludes(required);
+        if (self.configured_no_lib) return true;
+        if (self.configured_libs) |libs| {
+            for (libs) |lib_name| {
+                if (configuredLibraryCoversRequired(lib_name, required)) return false;
+            }
+            return true;
+        }
+        if (self.configured_target_lib_tier) |tier| {
+            const required_rank = libTierRank(required) orelse return false;
+            return tier < required_rank;
+        }
+        return self.sourceTargetExcludesLib(required);
+    }
+
+    fn configuredLibraryCoversRequired(name: []const u8, required: []const u8) bool {
+        if (std.ascii.eqlIgnoreCase(name, "esnext")) return true;
+        // `Function.name` is declared by the ES2015 core fragment. Other
+        // ES2015 fragments (for example `ES2015.Collection`) do not pull it
+        // in when compilerOptions.lib is explicit.
+        if (std.mem.eql(u8, required, "es2015") and std.ascii.eqlIgnoreCase(name, "es2015.core")) return true;
+        const required_rank = libTierRank(required) orelse return false;
+        var buffer: [32]u8 = undefined;
+        if (name.len > buffer.len) return false;
+        const normalized = std.ascii.lowerString(buffer[0..name.len], name);
+        const selected_rank = libTierRank(normalized) orelse return false;
+        return selected_rank >= required_rank;
+    }
+
     fn libraryNameIncludesGenerator(name: []const u8, is_async: bool) bool {
         if (std.ascii.eqlIgnoreCase(name, "esnext")) return true;
         if (is_async) {
@@ -137780,6 +137858,7 @@ pub const Checker = struct {
         if (std.mem.eql(u8, required, "es2022")) return 2022;
         if (std.mem.eql(u8, required, "es2023")) return 2023;
         if (std.mem.eql(u8, required, "es2024")) return 2024;
+        if (std.mem.eql(u8, required, "es2025")) return 2025;
         return null;
     }
 
@@ -280056,4 +280135,54 @@ test "checker: default library exposes generator error constructor and base64 gl
     try target_es5.checker.checkSourceFile(target_es5.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(target_es5, TsCodes.cannot_find_name));
     try T.expectEqual(@as(usize, 1), checkerCountCode(target_es5, TsCodes.cannot_find_name_target_library));
+}
+
+test "checker: object parameter defaults and Function standard fields follow the active library" {
+    const source =
+        \\function withDefault(value: Record<string, unknown> = {}) {}
+        \\function withFunctions(value: Record<string, (x: number) => string> = {}) {}
+        \\function withUnion(value: string | { message?: string } = {}) {}
+        \\function badDefault(value: Record<string, string> = { bad: 1 }) {}
+        \\interface HasConstructor {}
+        \\declare const value: HasConstructor;
+        \\const nameOk: string = value.constructor.name;
+        \\const lengthOk: number = value.constructor.length;
+        \\const prototypeOk: unknown = value.constructor.prototype;
+    ;
+    const modern = try newSetup(source);
+    defer destroySetup(modern);
+    modern.checker.setStrictFlags(.{ .strict_null_checks = true });
+    modern.checker.setConfiguredLibraries(&.{ "ES2020", "DOM" }, false);
+    try modern.checker.checkSourceFile(modern.root);
+    const modern_function = modern.checker.lowerBuiltinObjectType("Function").?;
+    const modern_name = try modern.sint.intern("name");
+    const modern_length = try modern.sint.intern("length");
+    const modern_prototype = try modern.sint.intern("prototype");
+    try T.expectEqual(types.Primitive.string_t, modern.ti.objectMember(modern_function, modern_name).?);
+    try T.expectEqual(types.Primitive.number_t, modern.ti.objectMember(modern_function, modern_length).?);
+    try T.expectEqual(types.Primitive.any, modern.ti.objectMember(modern_function, modern_prototype).?);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(modern, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(modern, TsCodes.property_does_not_exist));
+
+    const es5 = try newSetup(source);
+    defer destroySetup(es5);
+    es5.checker.setStrictFlags(.{ .strict_null_checks = true });
+    es5.checker.setConfiguredLibraries(&.{"ES5"}, false);
+    try es5.checker.checkSourceFile(es5.root);
+    const es5_function = es5.checker.lowerBuiltinObjectType("Function").?;
+    const es5_name = try es5.sint.intern("name");
+    const es5_length = try es5.sint.intern("length");
+    const es5_prototype = try es5.sint.intern("prototype");
+    try T.expect(es5.ti.objectMember(es5_function, es5_name) == null);
+    try T.expectEqual(types.Primitive.number_t, es5.ti.objectMember(es5_function, es5_length).?);
+    try T.expectEqual(types.Primitive.any, es5.ti.objectMember(es5_function, es5_prototype).?);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(es5, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(es5, TsCodes.property_does_not_exist));
+
+    const collection_only = try newSetup("const value = 1;");
+    defer destroySetup(collection_only);
+    collection_only.checker.setConfiguredLibraries(&.{"ES2015.Collection"}, false);
+    const collection_function = collection_only.checker.lowerBuiltinObjectType("Function").?;
+    const collection_name = try collection_only.sint.intern("name");
+    try T.expect(collection_only.ti.objectMember(collection_function, collection_name) == null);
 }
