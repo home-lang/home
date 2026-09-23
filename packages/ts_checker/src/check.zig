@@ -78132,6 +78132,15 @@ pub const Checker = struct {
                             const key_t = try self.lowererLowerWithTypeParams(args[0]);
                             const value_t = try self.lowererLowerWithTypeParams(args[1]);
                             try self.checkBuiltinPropertyKeyConstraint(args[0], key_t);
+                            // TypeScript treats `any` in Record's key slot as
+                            // the string-key domain. Keep the value type: an
+                            // `any` result would erase conditional branches
+                            // such as `T extends Record<any, V>`.
+                            if (self.typeIsAnyLike(key_t)) {
+                                const record_t = self.interner.internObjectTypeWithIndexAndSymbol(&.{}, value_t, types.Primitive.none, types.Primitive.none) catch return error.OutOfMemory;
+                                try self.registerAliasDisplayName(record_t, r.name, &.{ key_t, value_t });
+                                return record_t;
+                            }
                             if (key_t == types.Primitive.string_t) {
                                 const record_t = self.interner.internObjectTypeWithIndexAndSymbol(&.{}, value_t, types.Primitive.none, types.Primitive.none) catch return error.OutOfMemory;
                                 try self.registerAliasDisplayName(record_t, r.name, &.{ key_t, value_t });
@@ -85467,7 +85476,8 @@ pub const Checker = struct {
         key_text: []const u8,
     ) CheckError!TypeId {
         const key_name = self.string_interner.intern(key_text) catch return error.OutOfMemory;
-        return self.lowerMappedPropertyValue(node, m, type_param_name, index_t, key_name, 1);
+        const value_t = try self.lowerMappedPropertyValue(node, m, type_param_name, index_t, key_name, 1);
+        return (try self.resolveExactIndexedAccessForArgument(value_t, 0)) orelse value_t;
     }
 
     fn typeContainsBroadKey(self: *Checker, t: TypeId, broad_key: TypeId) bool {
@@ -179777,7 +179787,12 @@ pub const Checker = struct {
             var key_subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
             defer key_subs.deinit(self.gpa);
             try key_subs.put(self.gpa, key_parameter, key_lit);
-            return self.substituteType(m.template, &key_subs) catch m.template;
+            const substituted = self.substituteType(m.template, &key_subs) catch m.template;
+            // Homomorphic aliases instantiated with `any` retain their
+            // deferred `any[K]` template until a concrete property is read.
+            // Substitution supplies K here; reduce the completed indexed
+            // access before it can leak into index-signature relations.
+            return (try self.resolveExactIndexedAccessForArgument(substituted, 0)) orelse substituted;
         }
         return m.template;
     }
@@ -279789,4 +279804,36 @@ test "checker: forward generic declarations infer callback context from value ar
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.parameter_implicitly_any));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+}
+
+test "checker: Record with any keys retains its value index" {
+    const s = try newSetup(
+        \\declare const values: Record<any, string>;
+        \\const exact: string = values.key;
+        \\const wrong: number = values.key;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+}
+
+test "checker: homomorphic mapped aliases over any reduce indexed templates" {
+    const s = try newSetup(
+        \\type Identity<T> = T;
+        \\type Flatten<T> = Identity<{ [K in keyof T]: T[K] }>;
+        \\interface Params extends Flatten<any> { truthy?: string[]; }
+        \\declare const params: Params;
+        \\(params.truthy ?? []).map((value) => {
+        \\  const wrong: number = value;
+        \\  void wrong;
+        \\});
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true, .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_not_assignable_to_index_type));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.parameter_implicitly_any));
 }
