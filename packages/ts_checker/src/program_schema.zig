@@ -238,7 +238,11 @@ pub const Schema = struct {
                     }
                 },
                 .record => |record| {
-                    if (allow_readonly_record and record.readonly) {
+                    const key_is_any = switch (record.key.*) {
+                        .primitive => |primitive| primitive == types.Primitive.any,
+                        else => false,
+                    };
+                    if ((allow_readonly_record and record.readonly) or key_is_any) {
                         try pending.append(gpa, record.key);
                         try pending.append(gpa, record.value);
                     } else if (!allow_opaque) {
@@ -246,7 +250,7 @@ pub const Schema = struct {
                     }
                 },
                 .utility => |utility| {
-                    if (utility.kind != .extract and utility.kind != .exclude and !allow_opaque) return false;
+                    if (utility.kind != .extract and utility.kind != .exclude and utility.kind != .pick and utility.kind != .omit and !allow_opaque) return false;
                     try pending.append(gpa, utility.source);
                     if (utility.keys) |keys| try pending.append(gpa, keys);
                 },

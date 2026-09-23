@@ -98433,13 +98433,13 @@ pub const Checker = struct {
         if (kind == .pick) {
             const key_t = try self.lowererLowerWithTypeParams(args[1]);
             try self.checkBuiltinPickKeyConstraint(args[1], args[0], key_t, source_t);
+        } else if (kind == .omit) {
+            const key_t = try self.lowererLowerWithTypeParams(args[1]);
+            try self.checkBuiltinPropertyKeyConstraint(args[1], key_t);
         }
         if ((kind == .partial or kind == .required or kind == .readonly) and source_t < self.interner.pool.typeCount()) {
             const source_flags = self.interner.pool.flagsOf(source_t);
-            if (source_flags.is_type_parameter or
-                ((source_flags.is_union or source_flags.is_intersection) and
-                    self.containsFreeTypeParameter(source_t)))
-            {
+            if (!source_flags.is_mapped and self.containsFreeTypeParameter(source_t)) {
                 const key_name = self.string_interner.intern("__home_mapped_key") catch return error.OutOfMemory;
                 const key_tp = self.interner.internFreshTypeParameterWithFlags(
                     key_name,
@@ -98473,20 +98473,24 @@ pub const Checker = struct {
                 return mapped_t;
             }
         }
-        if (kind == .pick and source_t < self.interner.pool.typeCount()) {
-            const source_flags = self.interner.pool.flagsOf(source_t);
-            if (source_flags.is_type_parameter) {
+        if ((kind == .pick or kind == .omit) and source_t < self.interner.pool.typeCount()) {
+            if (self.containsFreeTypeParameter(source_t)) {
                 const key_t = try self.lowererLowerWithTypeParams(args[1]);
                 const key_name = self.string_interner.intern("__home_mapped_key") catch return error.OutOfMemory;
+                const source_keys = self.interner.internKeyof(source_t) catch return error.OutOfMemory;
+                const mapped_keys = if (kind == .omit)
+                    try self.evalConditional(source_keys, key_t, types.Primitive.never, source_keys, false)
+                else
+                    key_t;
                 const key_tp = self.interner.internFreshTypeParameterWithFlags(
                     key_name,
-                    key_t,
+                    mapped_keys,
                     types.Primitive.none,
                     .bivariant,
                     false,
                 ) catch return error.OutOfMemory;
                 const template = self.interner.internIndexedAccess(source_t, key_tp) catch return error.OutOfMemory;
-                const mapped_t = self.interner.internMapped(key_t, template, .none, .none) catch return error.OutOfMemory;
+                const mapped_t = self.interner.internMapped(mapped_keys, template, .none, .none) catch return error.OutOfMemory;
                 try self.registerAliasDisplayName(mapped_t, r.name, &.{ source_t, key_t });
                 return mapped_t;
             }
@@ -110929,6 +110933,127 @@ pub const Checker = struct {
         ));
     }
 
+    fn lowerProgramMappedUtility(
+        self: *Checker,
+        kind: ProgramClassSchema.UtilityKind,
+        source_t: TypeId,
+        key_t: TypeId,
+    ) ProgramTypeError!TypeId {
+        if (source_t >= self.interner.pool.typeCount()) return error.UnsupportedProgramType;
+        const source_flags = self.interner.pool.flagsOf(source_t);
+        const modifier_utility = kind == .partial or kind == .required or kind == .readonly;
+        const keyed_utility = kind == .pick or kind == .omit;
+        if (!modifier_utility and !keyed_utility) return error.UnsupportedProgramType;
+
+        if (modifier_utility and source_flags.is_mapped) {
+            const mapped = self.interner.mappedPayload(source_t);
+            return self.interner.internMappedWithParameter(
+                mapped.constraint,
+                mapped.template,
+                mapped.key_parameter,
+                if (kind == .readonly) .add else mapped.readonly,
+                switch (kind) {
+                    .partial => .add,
+                    .required => .remove,
+                    else => mapped.optional,
+                },
+            ) catch return error.OutOfMemory;
+        }
+
+        if ((modifier_utility and self.containsFreeTypeParameter(source_t)) or
+            (keyed_utility and (self.containsFreeTypeParameter(source_t) or self.containsFreeTypeParameter(key_t))))
+        {
+            const source_keys = self.interner.internKeyof(source_t) catch return error.OutOfMemory;
+            const mapped_keys = switch (kind) {
+                .pick => key_t,
+                .omit => try self.evalConditional(source_keys, key_t, types.Primitive.never, source_keys, false),
+                else => source_keys,
+            };
+            const key_name = self.string_interner.intern("__home_program_mapped_key") catch return error.OutOfMemory;
+            const mapped_key = self.interner.internFreshTypeParameterWithFlags(
+                key_name,
+                mapped_keys,
+                types.Primitive.none,
+                .bivariant,
+                false,
+            ) catch return error.OutOfMemory;
+            return self.interner.internMappedWithParameter(
+                mapped_keys,
+                self.interner.internIndexedAccess(source_t, mapped_key) catch return error.OutOfMemory,
+                mapped_key,
+                if (kind == .readonly) .add else .none,
+                switch (kind) {
+                    .partial => .add,
+                    .required => .remove,
+                    else => .none,
+                },
+            ) catch return error.OutOfMemory;
+        }
+
+        if (!source_flags.is_object_type) return error.UnsupportedProgramType;
+        var selected_keys: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        defer selected_keys.deinit(self.gpa);
+        if (keyed_utility) {
+            var keys: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+            defer keys.deinit(self.gpa);
+            if (!self.collectStringLiteralKeys(key_t, &keys)) return error.UnsupportedProgramType;
+            for (keys.items) |key| try selected_keys.put(self.gpa, key, {});
+        }
+
+        var source_members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer source_members.deinit(self.gpa);
+        if (source_flags.is_intersection) {
+            for (self.interner.intersectionMembers(source_t)) |constituent| {
+                if (constituent >= self.interner.pool.typeCount()) continue;
+                const constituent_flags = self.interner.pool.flagsOf(constituent);
+                if (!constituent_flags.is_object_type or constituent_flags.is_intersection) continue;
+                for (self.interner.objectMembers(constituent)) |member| {
+                    var seen = false;
+                    for (source_members.items) |existing| if (existing.name == member.name) {
+                        seen = true;
+                        break;
+                    };
+                    if (seen) continue;
+                    var combined = self.mappedSourceMemberInfo(source_t, member.name) orelse member;
+                    combined.type = (try self.lookupObjectMember(source_t, member.name)) orelse combined.type;
+                    try source_members.append(self.gpa, combined);
+                }
+            }
+        } else {
+            try source_members.appendSlice(self.gpa, self.interner.objectMembers(source_t));
+        }
+
+        var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
+        defer members.deinit(self.gpa);
+        for (source_members.items) |member| {
+            if (kind == .pick and !selected_keys.contains(member.name)) continue;
+            if (kind == .omit and selected_keys.contains(member.name)) continue;
+            const optional = switch (kind) {
+                .partial => true,
+                .required => false,
+                else => member.is_optional,
+            };
+            try members.append(self.gpa, .{
+                .name = member.name,
+                .type = try self.mappedPropertyValueWithOptionality(member.type, optional, member.is_optional),
+                .is_optional = optional,
+                .is_readonly = if (kind == .readonly) true else member.is_readonly,
+                .is_method = member.is_method,
+                .visibility = member.visibility,
+                .decl_node = member.decl_node,
+                .declaration_origin = member.declaration_origin,
+            });
+        }
+        const result = self.interner.internObjectTypeWithIndexAndSymbol(
+            members.items,
+            if (keyed_utility) types.Primitive.none else self.interner.objectStringIndex(source_t),
+            if (keyed_utility) types.Primitive.none else self.interner.objectNumberIndex(source_t),
+            if (keyed_utility) types.Primitive.none else self.interner.objectSymbolIndex(source_t),
+        ) catch return error.OutOfMemory;
+        if (kind == .readonly) try self.readonly_index_types.put(self.gpa, result, {});
+        return result;
+    }
+
     fn lowerProgramExpression(self: *Checker, expression: *const ProgramClassSchema.Expression, declaration: *const ProgramClassSchema.Declaration, args: []const TypeId) ProgramTypeError!TypeId {
         switch (expression.*) {
             .unsupported => return if (declaration.contextual_only) types.Primitive.any else error.UnsupportedProgramType,
@@ -110986,6 +111111,16 @@ pub const Checker = struct {
                 if (declaration.contextual_only and !declaration.contextual_projection) return types.Primitive.any;
                 const key_t = try self.lowerProgramExpression(record.key, declaration, args);
                 const value_t = try self.lowerProgramExpression(record.value, declaration, args);
+                if (self.typeIsAnyLike(key_t)) {
+                    const result = try self.interner.internObjectTypeWithIndexAndSymbol(
+                        &.{},
+                        value_t,
+                        types.Primitive.none,
+                        types.Primitive.none,
+                    );
+                    if (record.readonly) try self.readonly_index_types.put(self.gpa, result, {});
+                    return result;
+                }
                 var singleton = [_]TypeId{key_t};
                 const keys = if (key_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(key_t).is_union)
                     self.interner.unionMembers(key_t)
@@ -111037,7 +111172,14 @@ pub const Checker = struct {
                         true,
                     );
                 },
-                .partial, .required, .readonly, .pick, .omit => return error.UnsupportedProgramType,
+                .partial, .required, .readonly, .pick, .omit => {
+                    const source_t = try self.resolveGenericType(try self.lowerProgramExpression(utility.source, declaration, args));
+                    const key_t = if (utility.keys) |keys|
+                        try self.lowerProgramExpression(keys, declaration, args)
+                    else
+                        types.Primitive.never;
+                    return self.lowerProgramMappedUtility(utility.kind, source_t, key_t);
+                },
             },
             .tuple => |elements| {
                 for (elements) |element| if (element.rest) {
@@ -164070,6 +164212,10 @@ pub const Checker = struct {
         }
         const constraint = try self.substituteType(m.constraint, subs);
         const template = try self.substituteType(m.template, subs);
+        const deferred_key_tp = if (raw_key_tp != types.Primitive.none)
+            try self.substituteType(raw_key_tp, subs)
+        else
+            types.Primitive.none;
         if (constraint == types.Primitive.never) {
             const empty = self.interner.internObjectType(&.{}) catch return error.OutOfMemory;
             return try self.finishSubstitutedMappedType(mapped_t, empty, subs);
@@ -164116,7 +164262,7 @@ pub const Checker = struct {
             }
         }
         if (can_materialize) {
-            const key_tp = raw_key_tp;
+            const key_tp = deferred_key_tp;
             var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
             defer members.deinit(self.gpa);
             for (keys.items) |key| {
@@ -164125,19 +164271,13 @@ pub const Checker = struct {
                 const key_lit = self.interner.internStringLiteral(key) catch return error.OutOfMemory;
                 var key_subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
                 defer key_subs.deinit(self.gpa);
-                // Compose the outer alias substitutions with K -> key and
-                // specialize the original template in one memoized walk.
-                var outer_subs = subs.iterator();
-                while (outer_subs.next()) |entry| {
-                    try key_subs.put(self.gpa, entry.key_ptr.*, entry.value_ptr.*);
-                }
                 if (key_tp != types.Primitive.none) try key_subs.put(self.gpa, key_tp, key_lit);
                 var value_t = (if (self.isBuiltinMappedKeyTypeParameter(key_tp) and source_obj != types.Primitive.none)
                     try self.resolveObjectIndexedAccessType(source_obj, key_lit)
                 else
                     null) orelse
                     (if (key_tp != types.Primitive.none)
-                        try self.substituteTypeWithFreshMemo(m.template, &key_subs)
+                        try self.substituteTypeWithFreshMemo(template, &key_subs)
                     else
                         template);
                 const source_member = self.mappedSourceMemberInfo(source_obj, key);
@@ -164177,12 +164317,8 @@ pub const Checker = struct {
                     }
                     var number_subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
                     defer number_subs.deinit(self.gpa);
-                    var outer_subs = subs.iterator();
-                    while (outer_subs.next()) |entry| {
-                        try number_subs.put(self.gpa, entry.key_ptr.*, entry.value_ptr.*);
-                    }
                     try number_subs.put(self.gpa, key_tp, types.Primitive.number_t);
-                    break :blk try self.substituteTypeWithFreshMemo(m.template, &number_subs);
+                    break :blk try self.substituteTypeWithFreshMemo(template, &number_subs);
                 } else types.Primitive.none;
                 const result = self.interner.internObjectTypeWithIndexAndSymbol(
                     members.items,
@@ -164196,21 +164332,22 @@ pub const Checker = struct {
             const result = self.interner.internObjectType(members.items) catch return error.OutOfMemory;
             return try self.finishSubstitutedMappedType(mapped_t, result, subs);
         }
-        if (raw_key_tp != types.Primitive.none and
+        if (deferred_key_tp != types.Primitive.none and
+            !self.containsFreeTypeParameter(constraint) and
             (self.typeContainsBroadKey(constraint, types.Primitive.string_t) or
                 self.typeContainsBroadKey(constraint, types.Primitive.number_t) or
                 self.typeContainsBroadKey(constraint, types.Primitive.symbol_t)))
         {
             const string_idx = if (self.typeContainsBroadKey(constraint, types.Primitive.string_t))
-                try self.substituteMappedIndexTemplate(template, raw_key_tp, types.Primitive.string_t)
+                try self.substituteMappedIndexTemplate(template, deferred_key_tp, types.Primitive.string_t)
             else
                 types.Primitive.none;
             const number_idx = if (self.typeContainsBroadKey(constraint, types.Primitive.number_t))
-                try self.substituteMappedIndexTemplate(template, raw_key_tp, types.Primitive.number_t)
+                try self.substituteMappedIndexTemplate(template, deferred_key_tp, types.Primitive.number_t)
             else
                 types.Primitive.none;
             const symbol_idx = if (self.typeContainsBroadKey(constraint, types.Primitive.symbol_t))
-                try self.substituteMappedIndexTemplate(template, raw_key_tp, types.Primitive.symbol_t)
+                try self.substituteMappedIndexTemplate(template, deferred_key_tp, types.Primitive.symbol_t)
             else
                 types.Primitive.none;
             const result = self.interner.internObjectTypeWithIndexAndSymbol(
@@ -164224,7 +164361,7 @@ pub const Checker = struct {
         const result = self.interner.internMappedWithParameter(
             constraint,
             template,
-            raw_key_tp,
+            deferred_key_tp,
             m.readonly,
             m.optional,
         ) catch return error.OutOfMemory;
@@ -164345,7 +164482,8 @@ pub const Checker = struct {
     ) CheckError!TypeId {
         var element_t = try self.substituteType(mapped.template, subs);
         if (key_tp != types.Primitive.none) {
-            element_t = try self.substituteMappedIndexTemplate(element_t, key_tp, types.Primitive.number_t);
+            const deferred_key_tp = try self.substituteType(key_tp, subs);
+            element_t = try self.substituteMappedIndexTemplate(element_t, deferred_key_tp, types.Primitive.number_t);
         }
         if (self.strict_flags.strict_null_checks) {
             element_t = switch (mapped.optional) {
@@ -164919,6 +165057,9 @@ pub const Checker = struct {
                 new_operand == types.Primitive.void_t)
             {
                 return types.Primitive.never;
+            }
+            if (self.containsFreeTypeParameter(new_operand)) {
+                return self.interner.internKeyof(new_operand) catch return t;
             }
             var key_names: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
             defer key_names.deinit(self.gpa);
@@ -204849,6 +204990,221 @@ test "checker: source-owned factory defaults substitute earlier arguments withou
     try T.expectEqual(types.Primitive.number_t, s.ti.objectNumberIndex(subs.get(declared[1]).?));
 }
 
+test "checker: source-owned mapped utilities preserve selected members" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+
+    const truthy_name = try s.sint.intern("truthy");
+    const error_name = try s.sint.intern("error");
+    const string_array = try s.ti.internArrayType(&s.sint, types.Primitive.string_t);
+    const params_t = try s.ti.internObjectType(&.{
+        .{
+            .name = truthy_name,
+            .type = string_array,
+            .is_optional = true,
+            .is_readonly = false,
+            .is_method = false,
+        },
+        .{
+            .name = error_name,
+            .type = types.Primitive.string_t,
+            .is_optional = true,
+            .is_readonly = false,
+            .is_method = false,
+        },
+    });
+    const error_key = try s.ti.internStringLiteral(error_name);
+    const omitted_t = try s.checker.lowerProgramMappedUtility(.omit, params_t, error_key);
+    const truthy_t = (try s.checker.lookupObjectMember(omitted_t, truthy_name)).?;
+    const present_truthy_t = try s.checker.subtractUndefined(truthy_t);
+    try T.expectEqual(types.Primitive.string_t, s.ti.objectNumberIndex(present_truthy_t));
+    try T.expectEqual(@as(?TypeId, null), try s.checker.lookupObjectMember(omitted_t, error_name));
+
+    var omit_parameters = [_]ProgramClassSchema.Parameter{
+        .{ .name = "T" },
+        .{ .name = "K" },
+    };
+    const source_parameter: ProgramClassSchema.Expression = .{ .parameter = &omit_parameters[0] };
+    const key_parameter: ProgramClassSchema.Expression = .{ .parameter = &omit_parameters[1] };
+    const source_keys: ProgramClassSchema.Expression = .{ .keyof = &source_parameter };
+    const remaining_keys: ProgramClassSchema.Expression = .{ .utility = .{
+        .kind = .exclude,
+        .source = &source_keys,
+        .keys = &key_parameter,
+    } };
+    const custom_omit: ProgramClassSchema.Expression = .{ .utility = .{
+        .kind = .pick,
+        .source = &source_parameter,
+        .keys = &remaining_keys,
+    } };
+    const custom_omit_declaration: ProgramClassSchema.Declaration = .{
+        .path = "/utility.ts",
+        .position = 1,
+        .name = "Omit",
+        .parameters = &omit_parameters,
+        .body = &custom_omit,
+    };
+    const custom_omitted_t = try s.checker.instantiateProgramDeclaration(
+        &custom_omit_declaration,
+        &.{ params_t, error_key },
+        &.{},
+    );
+    const custom_truthy_t = (try s.checker.lookupObjectMember(custom_omitted_t, truthy_name)).?;
+    const custom_present_truthy_t = try s.checker.subtractUndefined(custom_truthy_t);
+    try T.expectEqual(types.Primitive.string_t, s.ti.objectNumberIndex(custom_present_truthy_t));
+    try T.expectEqual(@as(?TypeId, null), try s.checker.lookupObjectMember(custom_omitted_t, error_name));
+
+    const deferred_source = try s.ti.internFreshTypeParameterWithVariance(
+        try s.sint.intern("Deferred"),
+        types.Primitive.unknown,
+        types.Primitive.none,
+        .bivariant,
+    );
+    const deferred_omit_t = try s.checker.instantiateProgramDeclaration(
+        &custom_omit_declaration,
+        &.{ deferred_source, error_key },
+        &.{},
+    );
+    var deferred_subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+    defer deferred_subs.deinit(T.allocator);
+    try deferred_subs.put(T.allocator, deferred_source, params_t);
+    const substituted_omit_t = try s.checker.substituteType(deferred_omit_t, &deferred_subs);
+    const substituted_truthy_t = (try s.checker.lookupObjectMember(substituted_omit_t, truthy_name)).?;
+    const substituted_present_truthy_t = try s.checker.subtractUndefined(substituted_truthy_t);
+    try T.expectEqual(types.Primitive.string_t, s.ti.objectNumberIndex(substituted_present_truthy_t));
+    try T.expectEqual(@as(?TypeId, null), try s.checker.lookupObjectMember(substituted_omit_t, error_name));
+
+    const flatten_keys = try s.ti.internKeyof(deferred_omit_t);
+    const flatten_key = try s.ti.internFreshTypeParameterWithVariance(
+        try s.sint.intern("FlattenKey"),
+        flatten_keys,
+        types.Primitive.none,
+        .bivariant,
+    );
+    const deferred_flatten_t = try s.ti.internMappedWithParameter(
+        flatten_keys,
+        try s.ti.internIndexedAccess(deferred_omit_t, flatten_key),
+        flatten_key,
+        .none,
+        .none,
+    );
+    const substituted_flatten_t = try s.checker.substituteType(deferred_flatten_t, &deferred_subs);
+    const flattened_truthy_t = (try s.checker.lookupObjectMember(substituted_flatten_t, truthy_name)).?;
+    const flattened_present_truthy_t = try s.checker.subtractUndefined(flattened_truthy_t);
+    try T.expectEqual(types.Primitive.string_t, s.ti.objectNumberIndex(flattened_present_truthy_t));
+    try T.expectEqual(@as(?TypeId, null), try s.checker.lookupObjectMember(substituted_flatten_t, error_name));
+
+    var identity_parameters = [_]ProgramClassSchema.Parameter{.{ .name = "T" }};
+    const identity_parameter: ProgramClassSchema.Expression = .{ .parameter = &identity_parameters[0] };
+    const identity_declaration: ProgramClassSchema.Declaration = .{
+        .path = "/utility.ts",
+        .position = 2,
+        .name = "Identity",
+        .parameters = &identity_parameters,
+        .body = &identity_parameter,
+    };
+    var flatten_parameters = [_]ProgramClassSchema.Parameter{.{ .name = "T" }};
+    var flatten_mapped_parameter: ProgramClassSchema.Parameter = .{ .name = "K" };
+    const flatten_source: ProgramClassSchema.Expression = .{ .parameter = &flatten_parameters[0] };
+    const flatten_program_keys: ProgramClassSchema.Expression = .{ .keyof = &flatten_source };
+    const flatten_program_key: ProgramClassSchema.Expression = .{ .parameter = &flatten_mapped_parameter };
+    const flatten_program_value: ProgramClassSchema.Expression = .{ .indexed_access = .{
+        .object = &flatten_source,
+        .index = &flatten_program_key,
+    } };
+    const flatten_program_mapped: ProgramClassSchema.Expression = .{ .mapped = .{
+        .parameter = &flatten_mapped_parameter,
+        .constraint = &flatten_program_keys,
+        .template = &flatten_program_value,
+        .readonly = 0,
+        .optional = 0,
+    } };
+    const flatten_identity: ProgramClassSchema.Expression = .{ .reference = .{
+        .declaration = &identity_declaration,
+        .arguments = &.{&flatten_program_mapped},
+    } };
+    const flatten_declaration: ProgramClassSchema.Declaration = .{
+        .path = "/utility.ts",
+        .position = 3,
+        .name = "Flatten",
+        .parameters = &flatten_parameters,
+        .body = &flatten_identity,
+    };
+    const deferred_program_flatten_t = try s.checker.instantiateProgramDeclaration(
+        &flatten_declaration,
+        &.{deferred_omit_t},
+        &.{},
+    );
+    const substituted_program_flatten_t = try s.checker.substituteType(deferred_program_flatten_t, &deferred_subs);
+    const program_flattened_truthy_t = (try s.checker.lookupObjectMember(substituted_program_flatten_t, truthy_name)).?;
+    const program_flattened_present_truthy_t = try s.checker.subtractUndefined(program_flattened_truthy_t);
+    try T.expectEqual(types.Primitive.string_t, s.ti.objectNumberIndex(program_flattened_present_truthy_t));
+    try T.expectEqual(@as(?TypeId, null), try s.checker.lookupObjectMember(substituted_program_flatten_t, error_name));
+
+    var normalize_parameters = [_]ProgramClassSchema.Parameter{.{ .name = "T" }};
+    const normalize_source: ProgramClassSchema.Expression = .{ .parameter = &normalize_parameters[0] };
+    const any_expression: ProgramClassSchema.Expression = .{ .primitive = types.Primitive.any };
+    const record_any_expression: ProgramClassSchema.Expression = .{ .record = .{
+        .key = &any_expression,
+        .value = &any_expression,
+    } };
+    const error_expression: ProgramClassSchema.Expression = .{ .string = "error" };
+    const normalize_omit: ProgramClassSchema.Expression = .{ .reference = .{
+        .declaration = &custom_omit_declaration,
+        .arguments = &.{ &normalize_source, &error_expression },
+    } };
+    const normalize_flatten: ProgramClassSchema.Expression = .{ .reference = .{
+        .declaration = &flatten_declaration,
+        .arguments = &.{&normalize_omit},
+    } };
+    const never_expression: ProgramClassSchema.Expression = .{ .primitive = types.Primitive.never };
+    const normalize_body: ProgramClassSchema.Expression = .{ .conditional = .{
+        .check = &normalize_source,
+        .extends_type = &record_any_expression,
+        .true_branch = &normalize_flatten,
+        .false_branch = &never_expression,
+    } };
+    const normalize_declaration: ProgramClassSchema.Declaration = .{
+        .path = "/utility.ts",
+        .position = 4,
+        .name = "Normalize",
+        .parameters = &normalize_parameters,
+        .body = &normalize_body,
+    };
+    const normalized_object_t = try s.checker.instantiateProgramDeclaration(
+        &normalize_declaration,
+        &.{params_t},
+        &.{},
+    );
+    const normalized_object_truthy_t = (try s.checker.lookupObjectMember(normalized_object_t, truthy_name)).?;
+    const normalized_object_present_truthy_t = try s.checker.subtractUndefined(normalized_object_truthy_t);
+    try T.expectEqual(types.Primitive.string_t, s.ti.objectNumberIndex(normalized_object_present_truthy_t));
+    const normalize_input = try s.ti.internUnion(&.{ types.Primitive.string_t, params_t });
+    const normalized_t = try s.checker.instantiateProgramDeclaration(
+        &normalize_declaration,
+        &.{normalize_input},
+        &.{},
+    );
+    const normalized_truthy_t = (try s.checker.lookupObjectMember(normalized_t, truthy_name)).?;
+    const normalized_present_truthy_t = try s.checker.subtractUndefined(normalized_truthy_t);
+    try T.expectEqual(types.Primitive.string_t, s.ti.objectNumberIndex(normalized_present_truthy_t));
+    try T.expectEqual(@as(?TypeId, null), try s.checker.lookupObjectMember(normalized_t, error_name));
+
+    const partial_t = try s.checker.lowerProgramMappedUtility(.partial, params_t, types.Primitive.never);
+    try T.expect(s.ti.objectMemberInfo(partial_t, truthy_name).?.is_optional);
+
+    const any_t: ProgramClassSchema.Expression = .{ .primitive = types.Primitive.any };
+    const record_any: ProgramClassSchema.Expression = .{ .record = .{ .key = &any_t, .value = &any_t } };
+    const declaration: ProgramClassSchema.Declaration = .{
+        .path = "/utility.ts",
+        .position = 0,
+        .name = "AnyRecord",
+        .body = &record_any,
+    };
+    const record_t = try s.checker.instantiateProgramDeclaration(&declaration, &.{}, &.{});
+    try T.expectEqual(types.Primitive.any, s.ti.objectStringIndex(record_t));
+}
+
 test "checker: source-owned rest tuple signatures retain their call boundary" {
     const s = try newSetup("");
     defer destroySetup(s);
@@ -233682,6 +234038,35 @@ test "checker: explicit type-only imports stay in type space through utility ali
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.value_used_as_type_did_you_mean_typeof));
+}
+
+test "checker: conditional Normalize preserves members through generic Omit" {
+    const s = try newSetup(
+        \\type Identity<T> = T;
+        \\type Flatten<T> = Identity<{ [K in keyof T]: T[K] }>;
+        \\type Normalize<T> = T extends undefined
+        \\  ? never
+        \\  : T extends Record<any, any>
+        \\    ? Flatten<{ [K in keyof Omit<T, "error" | "message">]: T[K] }>
+        \\    : never;
+        \\declare function normalize<T>(value: T): Normalize<T>;
+        \\interface Params { truthy?: string[]; error?: string | (() => string); }
+        \\function use(value?: string | Params) {
+        \\  const params = normalize(value);
+        \\  const truthy = params.truthy ?? ["yes"];
+        \\  truthy.map((item) => item.toLowerCase());
+        \\  truthy.map((item) => { const bad: number = item; return bad; });
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{
+        .no_implicit_any = true,
+        .strict_null_checks = true,
+    });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.parameter_implicitly_any));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_cannot_be_used_as_index));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: stable computed element access guards retain their narrowed type" {
@@ -281122,6 +281507,152 @@ test "checker: parity 1251 mapped key binders defer generic indexed access" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_cannot_be_used_to_index_type));
+}
+
+test "checker: mapped string constraints stay symbolic until key substitution" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+
+    const outer_key = try s.ti.internFreshTypeParameterWithVariance(
+        try s.sint.intern("K"),
+        types.Primitive.string_t,
+        types.Primitive.none,
+        .bivariant,
+    );
+    const mapped_key = try s.ti.internFreshTypeParameterWithVariance(
+        try s.sint.intern("P"),
+        outer_key,
+        types.Primitive.none,
+        .bivariant,
+    );
+    const mapped = try s.ti.internMappedWithParameter(
+        outer_key,
+        types.Primitive.number_t,
+        mapped_key,
+        .none,
+        .none,
+    );
+    const deferred_key = try s.ti.internFreshTypeParameterWithVariance(
+        try s.sint.intern("Q"),
+        types.Primitive.string_t,
+        types.Primitive.none,
+        .bivariant,
+    );
+    var generic_subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+    defer generic_subs.deinit(T.allocator);
+    try generic_subs.put(T.allocator, outer_key, deferred_key);
+    const deferred = try s.checker.substituteType(mapped, &generic_subs);
+    try T.expect(s.ti.pool.flagsOf(deferred).is_mapped);
+    try T.expectEqual(types.Primitive.none, s.ti.objectStringIndex(deferred));
+
+    const field_name = try s.sint.intern("field");
+    var concrete_subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+    defer concrete_subs.deinit(T.allocator);
+    try concrete_subs.put(T.allocator, deferred_key, try s.ti.internStringLiteral(field_name));
+    const concrete = try s.checker.substituteType(deferred, &concrete_subs);
+    try T.expectEqual(types.Primitive.number_t, s.ti.objectMember(concrete, field_name).?);
+}
+
+test "checker: substituted mapped templates retain their rebuilt key binder" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+
+    const source_param = try s.ti.internFreshTypeParameterWithVariance(
+        try s.sint.intern("T"),
+        types.Primitive.unknown,
+        types.Primitive.none,
+        .bivariant,
+    );
+    const source_keys = try s.ti.internKeyof(source_param);
+    const mapped_key = try s.ti.internFreshTypeParameterWithVariance(
+        try s.sint.intern("K"),
+        source_keys,
+        types.Primitive.none,
+        .bivariant,
+    );
+    const mapped = try s.ti.internMappedWithParameter(
+        source_keys,
+        try s.ti.internIndexedAccess(source_param, mapped_key),
+        mapped_key,
+        .none,
+        .none,
+    );
+    const deferred_source = try s.ti.internFreshTypeParameterWithVariance(
+        try s.sint.intern("U"),
+        types.Primitive.unknown,
+        types.Primitive.none,
+        .bivariant,
+    );
+    var generic_subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+    defer generic_subs.deinit(T.allocator);
+    try generic_subs.put(T.allocator, source_param, deferred_source);
+    const deferred = try s.checker.substituteType(mapped, &generic_subs);
+    const deferred_mapped = s.ti.mappedPayload(deferred);
+    const deferred_indexed = s.checker.indexedAccessPayloadOrNull(deferred_mapped.template).?;
+    try T.expectEqual(deferred_mapped.key_parameter, deferred_indexed.index);
+
+    const field_name = try s.sint.intern("field");
+    const concrete_source = try s.ti.internObjectType(&.{.{
+        .name = field_name,
+        .type = types.Primitive.string_t,
+        .is_optional = false,
+        .is_readonly = false,
+        .is_method = false,
+    }});
+    var concrete_subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+    defer concrete_subs.deinit(T.allocator);
+    try concrete_subs.put(T.allocator, deferred_source, concrete_source);
+    const concrete = try s.checker.substituteType(deferred, &concrete_subs);
+    try T.expectEqual(types.Primitive.string_t, s.ti.objectMember(concrete, field_name).?);
+}
+
+test "checker: keyof substituted generic intersections waits for concrete members" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+
+    const source_param = try s.ti.internFreshTypeParameterWithVariance(
+        try s.sint.intern("T"),
+        types.Primitive.unknown,
+        types.Primitive.none,
+        .bivariant,
+    );
+    const deferred_param = try s.ti.internFreshTypeParameterWithVariance(
+        try s.sint.intern("U"),
+        types.Primitive.unknown,
+        types.Primitive.none,
+        .bivariant,
+    );
+    const known_name = try s.sint.intern("known");
+    const known_object = try s.ti.internObjectType(&.{.{
+        .name = known_name,
+        .type = types.Primitive.string_t,
+        .is_optional = false,
+        .is_readonly = false,
+        .is_method = false,
+    }});
+    const open_intersection = try s.ti.internIntersection(&.{ deferred_param, known_object });
+    var open_subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+    defer open_subs.deinit(T.allocator);
+    try open_subs.put(T.allocator, source_param, open_intersection);
+    const deferred_keys = try s.checker.substituteType(try s.ti.internKeyof(source_param), &open_subs);
+    try T.expect(s.ti.pool.flagsOf(deferred_keys).is_keyof);
+
+    const field_name = try s.sint.intern("field");
+    const field_object = try s.ti.internObjectType(&.{.{
+        .name = field_name,
+        .type = types.Primitive.number_t,
+        .is_optional = false,
+        .is_readonly = false,
+        .is_method = false,
+    }});
+    var concrete_subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+    defer concrete_subs.deinit(T.allocator);
+    try concrete_subs.put(T.allocator, deferred_param, field_object);
+    const concrete_keys = try s.checker.substituteType(deferred_keys, &concrete_subs);
+    var names: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+    defer names.deinit(T.allocator);
+    try T.expect(s.checker.collectStringLiteralKeys(concrete_keys, &names));
+    try T.expectEqual(@as(usize, 2), names.items.len);
 }
 
 test "checker: parity 1351 quoted enum forward references do not recurse" {
