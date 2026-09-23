@@ -131132,6 +131132,18 @@ pub const Checker = struct {
             if (std.mem.eql(u8, rhs_name, "Promise")) {
                 return try self.buildStructuralPromise(types.Primitive.any);
             }
+            if (std.mem.eql(u8, rhs_name, "Map")) {
+                return try self.builtinMapInstanceType(types.Primitive.any, types.Primitive.any);
+            }
+            if (std.mem.eql(u8, rhs_name, "Set")) {
+                return try self.builtinSetInstanceType(types.Primitive.any);
+            }
+            if (std.mem.eql(u8, rhs_name, "WeakMap")) {
+                return try self.builtinWeakMapInstanceType(types.Primitive.any, types.Primitive.any);
+            }
+            if (std.mem.eql(u8, rhs_name, "WeakSet")) {
+                return try self.builtinWeakSetInstanceType(types.Primitive.any);
+            }
             if (std.mem.eql(u8, rhs_name, "RegExp") or
                 std.mem.eql(u8, rhs_name, "Date") or
                 std.mem.eql(u8, rhs_name, "Error"))
@@ -134188,6 +134200,14 @@ pub const Checker = struct {
             const constraint = self.typeParameterConstraint(static_t) orelse return null;
             if (constraint == static_t) return null;
             return try self.discriminatedNarrowResult(constraint, prop_name, lit_t, positive);
+        }
+        // A property comparison only discriminates a single object when the
+        // declared property itself is a unit type.  Broad properties such as
+        // `Array.length: number` overlap a literal comparison but do not turn
+        // the receiver into `never` on the opposite branch.
+        if (!flags.is_union) {
+            const discriminant_t = (try self.lookupObjectMember(static_t, prop_name)) orelse return null;
+            if (!self.isUnitDiscriminantType(discriminant_t)) return null;
         }
         const single_buf = [_]TypeId{static_t};
         const members: []const TypeId = if (flags.is_union)
@@ -232812,6 +232832,38 @@ test "checker: typeof object guard partitions stable member unions" {
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
     try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.property_does_not_exist));
+}
+
+test "checker: instanceof collection guards retain iterable instance types" {
+    const s = try newSetup(
+        \\function useMap(value: unknown) {
+        \\    if (!(value instanceof Map)) return;
+        \\    for (const [key, item] of value) { key; item; }
+        \\    const exact: Map<any, any> = value;
+        \\}
+        \\function useSet(value: unknown) {
+        \\    if (!(value instanceof Set)) return;
+        \\    for (const item of value) item;
+        \\    const exact: Set<any> = value;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.yield_star_not_iterable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: array length fallthrough retains the iterable receiver" {
+    const s = try newSetup(
+        \\function useOptions(def: { options: string[] }) {
+        \\    if (def.options.length === 0) return;
+        \\    for (const option of def.options) option.toUpperCase();
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.yield_star_not_iterable));
 }
 
 test "checker: stable computed element access guards retain their narrowed type" {
