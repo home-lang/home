@@ -5132,6 +5132,9 @@ pub const Checker = struct {
     /// post-processing runs and the diagnostics list is left as-is.
     source: ?[]const u8 = null,
     source_facts: SourceFacts = .{},
+    configured_libs: ?[]const []const u8 = null,
+    configured_no_lib: bool = false,
+    configured_target_lib_tier: ?u16 = null,
     /// Exact raw substring positions, shared by feature prefilters and
     /// directive parsers. Rebuilt whenever the attached source changes.
     source_markers: ?source_markers_mod.Index = null,
@@ -5701,6 +5704,18 @@ pub const Checker = struct {
         self.strict_flags_explicit = true;
         self.engine.setStrictFunctionTypes(flags.strict_function_types);
         self.engine.setStrictNullChecks(flags.strict_null_checks);
+    }
+
+    /// Attach the effective `compilerOptions.lib` / `noLib` selection.
+    /// The slices are borrowed from the tsconfig and must outlive the checker.
+    pub fn setConfiguredLibraries(self: *Checker, libs: ?[]const []const u8, no_lib: bool) void {
+        self.configured_libs = libs;
+        self.configured_no_lib = no_lib;
+        self.source_facts.lib_directive_excludes_dom_element = null;
+    }
+
+    pub fn setConfiguredTargetLibTier(self: *Checker, tier: u16) void {
+        self.configured_target_lib_tier = tier;
     }
 
     /// Opt into emitting `.suggestion`-category implicit-any
@@ -77915,6 +77930,13 @@ pub const Checker = struct {
                     if (try self.umdGlobalTypeForName(r.name, type_node)) |t| return t;
                     if (try self.importedReferenceLibTypeForLocal(r.name, type_node)) |t| return t;
                     if (try self.resolveForwardClassInstanceType(type_node, r.name)) |t| return t;
+                    if (std.mem.eql(u8, name_str, "Generator") or std.mem.eql(u8, name_str, "AsyncGenerator")) {
+                        const is_async = std.mem.eql(u8, name_str, "AsyncGenerator");
+                        if (self.sourceOrConfiguredLibExcludesGenerator(is_async)) {
+                            try self.reportUnavailableGeneratorType(type_node, r.name, is_async);
+                            return types.Primitive.any;
+                        }
+                    }
                     if (std.mem.eql(u8, name_str, "Object")) {
                         if (self.lowerBuiltinObjectType(name_str)) |t| return t;
                     }
@@ -78077,6 +78099,11 @@ pub const Checker = struct {
                             for (args_extra) |a_node| _ = try self.lowererLowerWithTypeParams(a_node);
                         }
                         if (std.mem.eql(u8, name_str, "Generator") or std.mem.eql(u8, name_str, "AsyncGenerator")) {
+                            const is_async = std.mem.eql(u8, name_str, "AsyncGenerator");
+                            if (self.sourceOrConfiguredLibExcludesGenerator(is_async)) {
+                                try self.reportUnavailableGeneratorType(type_node, r.name, is_async);
+                                return types.Primitive.any;
+                            }
                             const args = hir_mod.typeRefArgs(self.hir, type_node);
                             const yield_t = if (args.len >= 1)
                                 try self.lowererLowerWithTypeParams(args[0])
@@ -78085,12 +78112,12 @@ pub const Checker = struct {
                             const return_t = if (args.len >= 2)
                                 try self.lowererLowerWithTypeParams(args[1])
                             else
-                                types.Primitive.void_t;
+                                types.Primitive.any;
                             const next_t = if (args.len >= 3)
                                 try self.lowererLowerWithTypeParams(args[2])
                             else
-                                types.Primitive.unknown;
-                            return try self.synthesizeGeneratorTypeFull(yield_t, return_t, next_t, std.mem.eql(u8, name_str, "AsyncGenerator"));
+                                types.Primitive.any;
+                            return try self.synthesizeGeneratorTypeFull(yield_t, return_t, next_t, is_async);
                         }
                         if ((std.mem.eql(u8, name_str, "Map") or std.mem.eql(u8, name_str, "ReadonlyMap")) and r.args_len == 2) {
                             const args = hir_mod.typeRefArgs(self.hir, type_node);
@@ -84186,9 +84213,23 @@ pub const Checker = struct {
     }
 
     fn lowerProgramBuiltinReference(self: *Checker, name: []const u8, args: []const TypeId) CheckError!?TypeId {
-        if (args.len != 1) return null;
-        if (std.mem.eql(u8, name, "Promise")) return try self.buildStructuralPromise(args[0]);
-        if (std.mem.eql(u8, name, "PromiseLike")) return try self.buildStructuralPromiseLike(args[0]);
+        if (std.mem.eql(u8, name, "Promise")) {
+            if (args.len != 1) return null;
+            return try self.buildStructuralPromise(args[0]);
+        }
+        if (std.mem.eql(u8, name, "PromiseLike")) {
+            if (args.len != 1) return null;
+            return try self.buildStructuralPromiseLike(args[0]);
+        }
+        if (std.mem.eql(u8, name, "Generator") or std.mem.eql(u8, name, "AsyncGenerator")) {
+            if (args.len > 3) return null;
+            return try self.synthesizeGeneratorTypeFull(
+                if (args.len >= 1) args[0] else types.Primitive.unknown,
+                if (args.len >= 2) args[1] else types.Primitive.any,
+                if (args.len >= 3) args[2] else types.Primitive.any,
+                std.mem.eql(u8, name, "AsyncGenerator"),
+            );
+        }
         return null;
     }
 
@@ -84551,6 +84592,17 @@ pub const Checker = struct {
                 .{ .name = self.string_interner.intern("cause") catch return types.Primitive.unknown, .type = any_t, .is_optional = true, .is_readonly = false, .is_method = false },
             };
             return self.interner.internObjectType(&members) catch types.Primitive.unknown;
+        }
+        if (std.mem.eql(u8, name, "ErrorConstructor")) {
+            return self.errorConstructorGlobalType() catch types.Primitive.unknown;
+        }
+        if (std.mem.eql(u8, name, "Generator") or std.mem.eql(u8, name, "AsyncGenerator")) {
+            return self.synthesizeGeneratorTypeFull(
+                types.Primitive.unknown,
+                types.Primitive.any,
+                types.Primitive.any,
+                std.mem.eql(u8, name, "AsyncGenerator"),
+            ) catch types.Primitive.unknown;
         }
         if (std.mem.eql(u8, name, "Node")) {
             const node_t = self.interner.internObjectType(&.{}) catch return types.Primitive.unknown;
@@ -136306,6 +136358,13 @@ pub const Checker = struct {
         if (self.program_global_value_types.len > 0 and !self.isDeclNameSlot(node)) {
             if (self.programGlobalValueType(id.name)) |t| return t;
         }
+        if (!self.isDeclNameSlot(node) and
+            (std.mem.eql(u8, name_str, "atob") or std.mem.eql(u8, name_str, "btoa")) and
+            self.sourceLibDirectiveExcludesBase64Globals())
+        {
+            self.reportCannotFindNameOnce(node, id.name) catch {};
+            return types.Primitive.any;
+        }
 
         // Lib globals ÃÂ¢ÃÂÃÂ `Object` carries the keys/values/entries/
         // assign namespace. `NaN` / `Infinity` are number-typed values.
@@ -137573,22 +137632,117 @@ pub const Checker = struct {
         return true;
     }
 
+    fn configuredLibrariesExcludeAll(self: *const Checker, accepted: []const []const u8) ?bool {
+        if (self.configured_no_lib) return true;
+        const libs = self.configured_libs orelse return null;
+        for (libs) |lib_name| {
+            for (accepted) |candidate| {
+                if (std.ascii.eqlIgnoreCase(lib_name, candidate)) return false;
+            }
+        }
+        return true;
+    }
+
+    fn libraryNameIncludesGenerator(name: []const u8, is_async: bool) bool {
+        if (std.ascii.eqlIgnoreCase(name, "esnext")) return true;
+        if (is_async) {
+            if (std.ascii.eqlIgnoreCase(name, "es2018.asyncgenerator")) return true;
+            inline for (.{ "es2018", "es2019", "es2020", "es2021", "es2022", "es2023", "es2024", "es2025" }) |tier| {
+                if (std.ascii.eqlIgnoreCase(name, tier)) return true;
+            }
+            return false;
+        }
+        if (std.ascii.eqlIgnoreCase(name, "es2015.generator")) return true;
+        inline for (.{ "es6", "es2015", "es2016", "es2017", "es2018", "es2019", "es2020", "es2021", "es2022", "es2023", "es2024", "es2025" }) |tier| {
+            if (std.ascii.eqlIgnoreCase(name, tier)) return true;
+        }
+        return false;
+    }
+
+    fn sourceOrConfiguredLibExcludesGenerator(self: *Checker, is_async: bool) bool {
+        if (self.sourceHasNoLibTrueDirective()) return true;
+        const reference_names: []const []const u8 = if (is_async)
+            &.{ "es2018.asyncgenerator", "es2018", "es2019", "es2020", "es2021", "es2022", "es2023", "es2024", "es2025", "esnext" }
+        else
+            &.{ "es2015.generator", "es6", "es2015", "es2016", "es2017", "es2018", "es2019", "es2020", "es2021", "es2022", "es2023", "es2024", "es2025", "esnext" };
+        for (reference_names) |lib_name| {
+            if (self.sourceHasReferenceLibDirective(lib_name)) return false;
+        }
+        if (self.source) |src| {
+            if (self.sourceMarkerPosition("@lib")) |lib_pos| {
+                const line_end = std.mem.indexOfScalarPos(u8, src, lib_pos, '\n') orelse src.len;
+                const raw_line = std.mem.trim(u8, src[lib_pos..line_end], " \t\r");
+                const colon = std.mem.indexOfScalar(u8, raw_line, ':') orelse return true;
+                var libs = std.mem.splitScalar(u8, raw_line[colon + 1 ..], ',');
+                while (libs.next()) |raw_lib| {
+                    if (libraryNameIncludesGenerator(std.mem.trim(u8, raw_lib, " \t\r"), is_async)) return false;
+                }
+                return true;
+            }
+        }
+        if (self.configured_no_lib) return true;
+        if (self.configured_libs) |libs| {
+            for (libs) |lib_name| {
+                if (libraryNameIncludesGenerator(lib_name, is_async)) return false;
+            }
+            return true;
+        }
+        if (self.configured_target_lib_tier) |tier| {
+            const required: u16 = if (is_async) 2018 else 2015;
+            return tier < required;
+        }
+        return false;
+    }
+
+    fn reportUnavailableGeneratorType(self: *Checker, node: NodeId, name: hir_mod.StringId, is_async: bool) CheckError!void {
+        if (is_async) {
+            try self.reportCannotFindNameTargetLibrary(node, name, "es2018");
+        } else {
+            try self.reportCannotFindNameOnce(node, name);
+        }
+    }
+
     fn sourceLibDirectiveExcludesDomElement(self: *Checker) bool {
         if (self.source_facts.lib_directive_excludes_dom_element) |cached| return cached;
         const result = result: {
             if (self.sourceHasNoLibTrueDirective()) break :result true;
             if (self.sourceHasReferenceLibDirective("dom")) break :result false;
-            const src = self.source orelse break :result false;
-            const lib_pos = self.sourceMarkerPosition("@lib") orelse break :result false;
-            const line_end = std.mem.indexOfScalarPos(u8, src, lib_pos, '\n') orelse src.len;
-            var buf: [256]u8 = undefined;
-            const raw_line = std.mem.trim(u8, src[lib_pos..line_end], " \t\r");
-            const n = @min(raw_line.len, buf.len);
-            const line = std.ascii.lowerString(buf[0..n], raw_line[0..n]);
-            break :result std.mem.indexOf(u8, line, "dom") == null;
+            if (self.source) |src| {
+                if (self.sourceMarkerPosition("@lib")) |lib_pos| {
+                    const line_end = std.mem.indexOfScalarPos(u8, src, lib_pos, '\n') orelse src.len;
+                    var buf: [256]u8 = undefined;
+                    const raw_line = std.mem.trim(u8, src[lib_pos..line_end], " \t\r");
+                    const n = @min(raw_line.len, buf.len);
+                    const line = std.ascii.lowerString(buf[0..n], raw_line[0..n]);
+                    break :result std.mem.indexOf(u8, line, "dom") == null;
+                }
+            }
+            break :result self.configuredLibrariesExcludeAll(&.{"dom"}) orelse false;
         };
         self.source_facts.lib_directive_excludes_dom_element = result;
         return result;
+    }
+
+    fn sourceLibDirectiveExcludesBase64Globals(self: *Checker) bool {
+        if (self.sourceHasNoLibTrueDirective()) return true;
+        if (self.sourceHasReferenceLibDirective("dom") or self.sourceHasReferenceLibDirective("webworker")) return false;
+        if (self.source) |src| {
+            if (self.sourceMarkerPosition("@lib")) |lib_pos| {
+                const line_end = std.mem.indexOfScalarPos(u8, src, lib_pos, '\n') orelse src.len;
+                var buf: [256]u8 = undefined;
+                const raw_line = std.mem.trim(u8, src[lib_pos..line_end], " \t\r");
+                const n = @min(raw_line.len, buf.len);
+                const line = std.ascii.lowerString(buf[0..n], raw_line[0..n]);
+                const colon = std.mem.indexOfScalar(u8, line, ':') orelse return true;
+                var libs = std.mem.splitScalar(u8, line[colon + 1 ..], ',');
+                while (libs.next()) |raw_lib| {
+                    const selected_lib = std.mem.trim(u8, raw_lib, " \t\r");
+                    if (std.mem.eql(u8, selected_lib, "dom") or std.mem.eql(u8, selected_lib, "webworker")) return false;
+                }
+                return true;
+            }
+        }
+        return self.configuredLibrariesExcludeAll(&.{ "dom", "webworker" }) orelse false;
     }
 
     /// True if a lib-gated builtin (e.g. `SharedArrayBuffer`) is
@@ -137818,22 +137972,22 @@ pub const Checker = struct {
                         "eval",                       "parseInt",
             "parseFloat",                   "isNaN",                      "isFinite",
             "encodeURI",                    "decodeURI",                  "encodeURIComponent",
-            "decodeURIComponent",
+            "decodeURIComponent",           "atob",                       "btoa",
             // Timers / scheduling.
-                      "setTimeout",                 "clearTimeout",
-            "setInterval",                  "clearInterval",              "setImmediate",
-            "clearImmediate",               "queueMicrotask",
+            "setTimeout",                   "clearTimeout",               "setInterval",
+            "clearInterval",                "setImmediate",               "clearImmediate",
+            "queueMicrotask",
             // Node.js / CommonJS.
-                        "process",
-            "Buffer",                       "require",                    "module",
-            "exports",                      "__dirname",                  "__filename",
+                          "process",                    "Buffer",
+            "require",                      "module",                     "exports",
+            "__dirname",                    "__filename",
             // Dynamic `import("ÃÂ¢ÃÂÃÂ¦")` parses the keyword as an
             // identifier callee ÃÂ¢ÃÂÃÂ exempt it from TS2304.
-            "import",
+                            "import",
             // Common ambient names emitted by the parser for
             // module / class shapes that don't have full
             // resolution wired up yet.
-                                  "super",
+            "super",
         };
     }
 
@@ -142191,7 +142345,7 @@ pub const Checker = struct {
             // { cause })`. Modeled `any` since the runtime accepts
             // any value.
             .{ .name = self.string_interner.intern("cause") catch return error.OutOfMemory, .type = any_t, .is_optional = true, .is_readonly = false, .is_method = false },
-            .{ .name = self.string_interner.intern("prototype") catch return error.OutOfMemory, .type = any_t, .is_optional = false, .is_readonly = false, .is_method = false },
+            .{ .name = self.string_interner.intern("prototype") catch return error.OutOfMemory, .type = error_t, .is_optional = false, .is_readonly = true, .is_method = false },
             .{ .name = self.string_interner.intern("captureStackTrace") catch return error.OutOfMemory, .type = try self.seedAnySig2(types.Primitive.void_t), .is_optional = true, .is_readonly = false, .is_method = true },
             .{ .name = self.string_interner.intern("__call") catch return error.OutOfMemory, .type = call_sig, .is_optional = false, .is_readonly = false, .is_method = true },
             .{ .name = self.string_interner.intern("__construct") catch return error.OutOfMemory, .type = construct_sig, .is_optional = false, .is_readonly = false, .is_method = true },
@@ -279836,4 +279990,70 @@ test "checker: homomorphic mapped aliases over any reduce indexed templates" {
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_not_assignable_to_index_type));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.parameter_implicitly_any));
+}
+
+test "checker: default library exposes generator error constructor and base64 globals" {
+    const s = try newSetup(
+        \\type BuiltIn = Generator | ErrorConstructor;
+        \\const decode: string = atob("YQ==");
+        \\const encode: string = btoa("a");
+        \\const wrongDecode: number = atob("YQ==");
+        \\const wrongEncode: number = btoa("a");
+        \\declare const generator: Generator;
+        \\declare const asyncGenerator: AsyncGenerator;
+        \\const errorCtor: ErrorConstructor = Error;
+        \\const made: Error = new errorCtor("x");
+        \\const wrongGenerator: Generator = 1;
+        \\const wrongErrorCtor: ErrorConstructor = 1;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.cannot_find_name_did_you_mean));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.cannot_find_name_dom_library));
+
+    const no_dom = try newSetup(
+        \\const decode = atob("YQ==");
+        \\const encode = btoa("a");
+        \\type G = Generator;
+        \\type E = ErrorConstructor;
+    );
+    defer destroySetup(no_dom);
+    no_dom.checker.setConfiguredLibraries(&.{"ES2020"}, false);
+    try no_dom.checker.checkSourceFile(no_dom.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(no_dom, TsCodes.cannot_find_name_dom_library));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(no_dom, TsCodes.cannot_find_name));
+
+    const webworker = try newSetup(
+        \\const decode: string = atob("YQ==");
+        \\const encode: string = btoa("a");
+    );
+    defer destroySetup(webworker);
+    webworker.checker.setConfiguredLibraries(&.{ "ES2020", "WebWorker" }, false);
+    try webworker.checker.checkSourceFile(webworker.root);
+    try T.expectEqual(@as(usize, 0), webworker.checker.diagnostics.items.len);
+
+    const es5 = try newSetup(
+        \\type G = Generator;
+        \\type A = AsyncGenerator;
+        \\declare const generic: Generator<number>;
+        \\type E = ErrorConstructor;
+    );
+    defer destroySetup(es5);
+    es5.checker.setConfiguredLibraries(&.{"ES5"}, false);
+    try es5.checker.checkSourceFile(es5.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(es5, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(es5, TsCodes.cannot_find_name_target_library));
+
+    const target_es5 = try newSetup(
+        \\type G = Generator;
+        \\type A = AsyncGenerator;
+    );
+    defer destroySetup(target_es5);
+    target_es5.checker.setConfiguredTargetLibTier(5);
+    try target_es5.checker.checkSourceFile(target_es5.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(target_es5, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(target_es5, TsCodes.cannot_find_name_target_library));
 }

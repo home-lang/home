@@ -1530,6 +1530,29 @@ test "class schema: parameterized built-ins retain their arguments" {
     try T.expect(try result.isSupported(T.allocator));
 }
 
+test "class schema: generator and error constructor built-ins retain canonical identities" {
+    const graph = try TestGraph.init(&.{.{ .path = "/owner.ts", .text =
+        \\export interface Remote<T> {
+        \\  bare: Generator;
+        \\  generated: Generator<T>;
+        \\  asyncGenerated: AsyncGenerator<T, string>;
+        \\  error: ErrorConstructor;
+        \\}
+    }});
+    defer graph.deinit();
+    const result = try graph.class(0, "Remote");
+    defer result.deinit(T.allocator);
+    const members = result.declaration.body.?.object;
+    try T.expectEqualStrings("Generator", members[0].type.builtin_object);
+    try T.expectEqualStrings("Generator", members[1].type.builtin_reference.name);
+    try T.expectEqual(@as(usize, 1), members[1].type.builtin_reference.arguments.len);
+    try T.expect(members[1].type.builtin_reference.arguments[0].parameter == &result.declaration.parameters[0]);
+    try T.expectEqualStrings("AsyncGenerator", members[2].type.builtin_reference.name);
+    try T.expectEqual(@as(usize, 2), members[2].type.builtin_reference.arguments.len);
+    try T.expectEqualStrings("ErrorConstructor", members[3].type.builtin_object);
+    try T.expect(try result.isSupported(T.allocator));
+}
+
 test "class schema: local Array aliases are not replaced by builtin array shapes" {
     const graph = try TestGraph.init(&.{.{ .path = "/owner.ts", .text = "type Array<X> = { item: X }; export declare class Box<T> { value: Array<T>; }" }});
     defer graph.deinit();

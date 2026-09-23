@@ -2388,6 +2388,22 @@ pub fn checkPreparedSource(c: *Compilation, options: CompileOptions) CompileErro
     checker.setPackageTypeModule(options.package_type_module);
     if (options.pub_tsconfig) |cfg| {
         if (cfg.compiler_options.module) |m| checker.setModuleKind(@tagName(m));
+        checker.setConfiguredLibraries(cfg.compiler_options.lib, cfg.compiler_options.no_lib orelse false);
+        checker.setConfiguredTargetLibTier(switch (cfg.compiler_options.target orelse .es5) {
+            .es3, .es5 => 5,
+            .es2015 => 2015,
+            .es2016 => 2016,
+            .es2017 => 2017,
+            .es2018 => 2018,
+            .es2019 => 2019,
+            .es2020 => 2020,
+            .es2021 => 2021,
+            .es2022 => 2022,
+            .es2023 => 2023,
+            .es2024 => 2024,
+            .es2025 => 2025,
+            .esnext => std.math.maxInt(u16),
+        });
     }
     // Translate strictness flags. `strict: true` implies every
     // individual strict-family flag in TS; options.strict is the CLI
