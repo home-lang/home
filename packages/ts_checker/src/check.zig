@@ -114615,7 +114615,13 @@ pub const Checker = struct {
                         obj_t = types.Primitive.any;
                     }
                 } else {
-                    obj_t = try self.checkExpression(m.object);
+                    obj_t = if (self.hir.kindOf(m.object) == .identifier)
+                        self.stableCapturedCallSiteNarrow(
+                            m.object,
+                            hir_mod.identifierOf(self.hir, m.object).name,
+                        ) orelse try self.checkExpression(m.object)
+                    else
+                        try self.checkExpression(m.object);
                     if (self.hir.kindOf(m.object) == .identifier) {
                         const object_id = hir_mod.identifierOf(self.hir, m.object);
                         if (self.enclosingCatchBindingType(m.object, object_id.name)) |catch_t| {
@@ -125914,6 +125920,28 @@ pub const Checker = struct {
         return null;
     }
 
+    /// A callback may retain a branch narrow for an outer binding when that
+    /// binding is never assigned in the owning function. Mutable captures
+    /// fall back to their declared type because the callback can run after a
+    /// later write.
+    fn stableCapturedCallSiteNarrow(self: *Checker, node: NodeId, name: hir_mod.StringId) ?TypeId {
+        if (self.narrow_lookup_floor == 0) return null;
+        const narrowed = self.lookupCallSiteNarrow(name) orelse return null;
+        const inner_function = self.enclosingFunctionLike(node) orelse return null;
+        const conditional_node = self.hir.parentOf(inner_function);
+        if (conditional_node == hir_mod.none_node_id or self.hir.kindOf(conditional_node) != .conditional) return null;
+        const conditional = hir_mod.conditionalOf(self.hir, conditional_node);
+        if (conditional.then_branch != inner_function and conditional.else_branch != inner_function) return null;
+        const comparison = (self.typeofComparison(conditional.cond) catch null) orelse return null;
+        if (comparison.name != name) return null;
+        const outer_function = self.enclosingFunctionLike(inner_function) orelse return null;
+        var names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        defer names.deinit(self.gpa);
+        names.put(self.gpa, name, {}) catch return null;
+        if (self.functionAssignsAnyDependentName(outer_function, &names)) return null;
+        return narrowed;
+    }
+
     fn lookupCallSiteMemberNarrow(self: *Checker, key: MemberKey) ?TypeId {
         var i = @min(self.narrow_lookup_floor, self.member_narrow_scopes.items.len);
         while (i > 0) {
@@ -125949,6 +125977,21 @@ pub const Checker = struct {
             },
             else => null,
         };
+    }
+
+    fn identifierIsDestructuringDeclarationInitializer(self: *Checker, node: NodeId) bool {
+        var current = self.hir.parentOf(node);
+        while (current != hir_mod.none_node_id) : (current = self.hir.parentOf(current)) {
+            const kind = self.hir.kindOf(current);
+            if (kind == .var_decl or kind == .let_decl or kind == .const_decl) {
+                const variable = hir_mod.varDeclOf(self.hir, current);
+                if (variable.init == hir_mod.none_node_id or !self.nodeIsAncestorOf(variable.init, node)) return false;
+                const name_kind = self.hir.kindOf(variable.name);
+                return name_kind == .array_pattern or name_kind == .object_pattern;
+            }
+            if (kind == .fn_decl or kind == .fn_expr or kind == .arrow_fn) return false;
+        }
+        return false;
     }
 
     fn typeOfIdentifierDeclared(self: *Checker, node: NodeId) TypeId {
@@ -130818,6 +130861,35 @@ pub const Checker = struct {
         return try self.internConditionalUnion(&.{ lhs, rhs });
     }
 
+    /// Apply the part of a condition's guard that affects one identifier to
+    /// an incoming branch flow without mutating the active narrow scopes.
+    /// This distinguishes `if (!value)`'s initialized branch from its
+    /// already-defined fallthrough branch during assignment joins.
+    fn guardedIdentifierFlowForCondition(
+        self: *Checker,
+        condition: NodeId,
+        name: hir_mod.StringId,
+        incoming: ?TypeId,
+        when_true: bool,
+    ) CheckError!?TypeId {
+        const current = incoming orelse return null;
+        return switch (self.hir.kindOf(condition)) {
+            .identifier => blk: {
+                if (hir_mod.identifierOf(self.hir, condition).name != name) break :blk current;
+                break :blk if (when_true)
+                    self.nonNullishAccessType(current) catch current
+                else
+                    try self.logicalAndFalsyType(current);
+            },
+            .unary_op => blk: {
+                const unary = hir_mod.unaryOf(self.hir, condition);
+                if (unary.op != .not) break :blk current;
+                break :blk try self.guardedIdentifierFlowForCondition(unary.operand, name, current, !when_true);
+            },
+            else => current,
+        };
+    }
+
     /// Compute the flow type of one already-declared identifier after a
     /// conditional statement.  `null` means the path transfers control, so
     /// it is excluded from the join.  Missing `else` branches retain the
@@ -130883,20 +130955,32 @@ pub const Checker = struct {
             .if_stmt => blk: {
                 const conditional = hir_mod.ifOf(self.hir, node);
                 const static_cond = self.staticBoolCondition(conditional.cond);
+                const then_incoming = try self.guardedIdentifierFlowForCondition(
+                    conditional.cond,
+                    name,
+                    incoming,
+                    true,
+                );
+                const else_incoming = try self.guardedIdentifierFlowForCondition(
+                    conditional.cond,
+                    name,
+                    incoming,
+                    false,
+                );
                 if (static_cond == .true) {
-                    break :blk try self.conditionalIdentifierFlowAfterStatement(conditional.then_branch, name, incoming);
+                    break :blk try self.conditionalIdentifierFlowAfterStatement(conditional.then_branch, name, then_incoming);
                 }
                 if (static_cond == .false) {
                     break :blk if (conditional.else_branch == hir_mod.none_node_id)
-                        incoming
+                        else_incoming
                     else
-                        try self.conditionalIdentifierFlowAfterStatement(conditional.else_branch, name, incoming);
+                        try self.conditionalIdentifierFlowAfterStatement(conditional.else_branch, name, else_incoming);
                 }
-                const then_flow = try self.conditionalIdentifierFlowAfterStatement(conditional.then_branch, name, incoming);
+                const then_flow = try self.conditionalIdentifierFlowAfterStatement(conditional.then_branch, name, then_incoming);
                 const else_flow = if (conditional.else_branch == hir_mod.none_node_id)
-                    incoming
+                    else_incoming
                 else
-                    try self.conditionalIdentifierFlowAfterStatement(conditional.else_branch, name, incoming);
+                    try self.conditionalIdentifierFlowAfterStatement(conditional.else_branch, name, else_incoming);
                 break :blk try self.joinReachableIdentifierFlows(then_flow, else_flow);
             },
             .return_stmt, .throw_stmt, .break_stmt, .continue_stmt => null,
@@ -135745,6 +135829,32 @@ pub const Checker = struct {
                 return t;
             }
         }
+        // A destructuring declaration checks its initializer while its own
+        // binding pattern is active. Resolve an earlier simple local directly
+        // before falling through to the unresolved-name path; the pattern
+        // must not hide a sibling such as `const parts = ...` in
+        // `const [head] = parts`.
+        if (!self.isDeclNameSlot(node) and self.identifierIsDestructuringDeclarationInitializer(node)) {
+            if (self.findLocalValueDeclBeforeExpression(node, id.name)) |decl| {
+                if (self.resolveValueDeclInStmt(decl, node, id) catch null) |local_t| return local_t;
+                if (!self.resolving_value_types.contains(id.name)) {
+                    self.resolving_value_types.put(self.gpa, id.name, {}) catch return types.Primitive.any;
+                    defer _ = self.resolving_value_types.remove(id.name);
+                    const variable = hir_mod.varDeclOf(self.hir, decl);
+                    if (variable.init != hir_mod.none_node_id) {
+                        const initializer_t = self.checkExpression(variable.init) catch return types.Primitive.any;
+                        self.hir.setType(decl, initializer_t);
+                        if (variable.name != hir_mod.none_node_id) self.hir.setType(variable.name, initializer_t);
+                    }
+                    if (self.resolveValueDeclInStmt(decl, node, id) catch null) |local_t| return local_t;
+                }
+                // The name is definitely declared before this use. If a
+                // recursive inference cycle still leaves its type pending,
+                // preserve the binding as provisional `any` instead of
+                // emitting a false TS2304.
+                return types.Primitive.any;
+            }
+        }
         if (self.resolving_value_types.contains(id.name)) {
             if (!self.isDeclNameSlot(node)) {
                 if (self.visibleActiveAnnotatedIdentifierType(node)) |declared_t| return declared_t;
@@ -136289,6 +136399,17 @@ pub const Checker = struct {
                             if (vid.name == id.name) {
                                 const t = self.hir.typeOf(fr.target);
                                 if (t != types.Primitive.none) return t;
+                            }
+                        } else if (v.name != hir_mod.none_node_id) {
+                            const name_kind = self.hir.kindOf(v.name);
+                            if (name_kind == .object_pattern or name_kind == .array_pattern) {
+                                const container_t = if (self.hir.typeOf(fr.target) != types.Primitive.none)
+                                    self.hir.typeOf(fr.target)
+                                else
+                                    types.Primitive.any;
+                                if (self.typeOfPatternBinding(v.name, container_t, id.name)) |binding_t| {
+                                    return binding_t;
+                                }
                             }
                         }
                     } else if (tk == .identifier) {
@@ -232864,6 +232985,77 @@ test "checker: array length fallthrough retains the iterable receiver" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.yield_star_not_iterable));
+}
+
+test "checker: destructuring initializers resolve earlier local arrays" {
+    const s = try newSetup(
+        \\function pair(value: string) {
+        \\    const parts = value.split("/");
+        \\    const [address, prefix] = parts;
+        \\    return address + prefix;
+        \\}
+        \\function triple(value: string) {
+        \\    try {
+        \\        const tokens = value.split(".");
+        \\        if (tokens.length !== 3) return "";
+        \\        const [header] = tokens;
+        \\        return header;
+        \\    } catch { return ""; }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.cannot_find_name_did_you_mean));
+}
+
+test "checker: guarded initialization joins the already-defined branch" {
+    const s = try newSetup(
+        \\function initialize(map: Map<string, number> | undefined) {
+        \\    if (!map) {
+        \\        map = new Map();
+        \\        map.set("created", 1);
+        \\    }
+        \\    return map.get("created");
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.object_possibly_undefined_18048));
+}
+
+test "checker: destructured loop bindings remain visible in callbacks" {
+    const s = try newSetup(
+        \\function captured(input: Map<string, number>) {
+        \\    for (const [key, value] of input) {
+        \\        Promise.resolve(value).then(() => key.length);
+        \\    }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.cannot_find_name));
+}
+
+test "checker: stable captured branch narrows are retained" {
+    const s = try newSetup(
+        \\function select(fnOrRegex: ((arg: string) => unknown) | RegExp) {
+        \\    return typeof fnOrRegex === "function"
+        \\        ? fnOrRegex
+        \\        : (value: string) => fnOrRegex.test(value);
+        \\}
+        \\function mutable(value: string | { size: number }) {
+        \\    if (typeof value !== "string") {
+        \\        const read = () => value.size;
+        \\        value = "changed";
+        \\        return read;
+        \\    }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
 
 test "checker: stable computed element access guards retain their narrowed type" {
