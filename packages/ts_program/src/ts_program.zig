@@ -10516,6 +10516,90 @@ test "Program: function schemas preserve readonly Record inputs and array result
     try expectCompilationHasDiagnosticCode(compilation, 2345);
 }
 
+test "Program: imported Normalize returns preserve filtered source members" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver };
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+
+    const util =
+        \\export type Identity<T> = T;
+        \\export type Flatten<T> = Identity<{ [K in keyof T]: T[K] }>;
+        \\export type EmptyToNever<T> = keyof T extends never ? never : T;
+        \\export type Normalize<T> = T extends undefined
+        \\  ? never
+        \\  : T extends Record<any, any>
+        \\    ? Flatten<
+        \\        { [K in keyof Omit<T, "error" | "message">]: T[K] } &
+        \\        ("error" extends keyof T ? { error?: Exclude<T["error"], string> } : unknown)
+        \\      >
+        \\    : never;
+        \\export declare function normalizeParams<T>(value: T): Normalize<T>;
+    ;
+    const consumer =
+        \\import { normalizeParams, type EmptyToNever, type Flatten } from "./util.js";
+        \\interface TypeDef {
+        \\  type: "string" | "boolean" | "pipe";
+        \\  error?: ((issue: unknown) => string) | undefined;
+        \\  checks?: unknown[];
+        \\}
+        \\type TypeParams = Flatten<
+        \\  Partial<
+        \\    EmptyToNever<
+        \\      Omit<TypeDef, "type" | "checks" | "error"> & {
+        \\        error?: string | undefined;
+        \\        message?: string | undefined;
+        \\      }
+        \\    >
+        \\  >
+        \\>;
+        \\interface Params extends TypeParams {
+        \\  truthy?: string[];
+        \\  falsy?: string[];
+        \\  case?: "sensitive" | "insensitive";
+        \\}
+        \\export function stringbool(value?: string | Params) {
+        \\  const params = normalizeParams(value);
+        \\  let truthy = params.truthy ?? ["true"];
+        \\  let falsy = params.falsy ?? ["false"];
+        \\  if (params.case !== "sensitive") {
+        \\    truthy = truthy.map((entry) => {
+        \\      const wrong: number = entry;
+        \\      void wrong;
+        \\      return entry.toLowerCase();
+        \\    });
+        \\    falsy = falsy.map((entry) => {
+        \\      const wrong: number = entry;
+        \\      void wrong;
+        \\      return entry.toLowerCase();
+        \\    });
+        \\  }
+        \\  return [truthy, falsy, params.error];
+        \\}
+    ;
+    try vfs.addFile("/proj/util.ts", util);
+    try vfs.addFile("/proj/consumer.ts", consumer);
+    _ = try p.add("/proj/util.ts", util);
+    const consumer_id = try p.add("/proj/consumer.ts", consumer);
+
+    try p.compileAll(.{
+        .no_emit = true,
+        .strict_flags = .{ .no_implicit_any = true, .strict_null_checks = true },
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    });
+    const compilation = p.fileById(consumer_id).compilation.?;
+    if (compilation.diagnostics.items.len != 2) for (compilation.diagnostics.items) |diagnostic| {
+        std.debug.print("Normalize diagnostic TS{d}: {s}\n", .{ diagnostic.code, diagnostic.message });
+    };
+    try expectCompilationLacksDiagnosticCode(compilation, 2411);
+    try expectCompilationLacksDiagnosticCode(compilation, 7006);
+    try T.expectEqual(@as(usize, 2), compilation.diagnostics.items.len);
+    for (compilation.diagnostics.items) |diagnostic| try T.expectEqual(@as(u32, 2322), diagnostic.code);
+}
+
 test "Program: local Record aliases do not use the built-in function schema" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();

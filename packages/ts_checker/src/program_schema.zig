@@ -39,6 +39,11 @@ pub const Reference = struct {
     /// Its target may contain source-owned utility machinery that is not
     /// admissible as the importing file's general-purpose type.
     contextual_projection: bool = false,
+    /// Resolve individual readable members from the source declaration on
+    /// demand. This is used for filtered homomorphic return types whose whole
+    /// mapped/conditional object must not be materialized across checker
+    /// pools.
+    contextual_deferred_read: bool = false,
     /// Proven source expression whose complete readable-key surface survives
     /// this contextual utility projection.
     contextual_read: ?*const Expression = null,

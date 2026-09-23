@@ -579,6 +579,7 @@ const ProgramDeclarationContext = struct {
 const ProgramContextualTypeOrigin = struct {
     declaration: *const ProgramClassSchema.Declaration,
     args: []const TypeId,
+    deferred_read: bool = false,
     next: ?*const ProgramContextualTypeOrigin = null,
 };
 const ProgramTypeError = CheckError || error{UnsupportedProgramType};
@@ -587,6 +588,20 @@ const ProgramProjectionBinding = union(enum) {
     type_id: TypeId,
     expression: *const ProgramClassSchema.Expression,
 };
+
+const ProgramDeferredReadContext = struct {
+    bindings: std.AutoHashMapUnmanaged(*const ProgramClassSchema.Parameter, ProgramDeferredReadBinding) = .empty,
+};
+
+const ProgramDeferredReadBinding = union(enum) {
+    type_id: TypeId,
+    expression: struct {
+        value: *const ProgramClassSchema.Expression,
+        context: *const ProgramDeferredReadContext,
+    },
+};
+
+const max_program_deferred_read_depth: u8 = 96;
 
 pub const ProgramMemberVisibility = enum {
     public,
@@ -32035,6 +32050,25 @@ pub const Checker = struct {
             if (parameter != &ref.declaration.parameters[index]) return false;
         }
         return true;
+    }
+
+    fn programExpressionsNameSameParameter(
+        left: *const ProgramClassSchema.Expression,
+        right: *const ProgramClassSchema.Expression,
+    ) bool {
+        return left == right or
+            (left.* == .parameter and right.* == .parameter and left.parameter == right.parameter);
+    }
+
+    fn programHomomorphicMappedIdentitySource(mapped: ProgramClassSchema.Mapped) ?*const ProgramClassSchema.Expression {
+        if (mapped.readonly != 0 or mapped.optional != 0 or mapped.constraint.* != .keyof) return null;
+        const source = mapped.constraint.keyof;
+        if (mapped.template.* != .indexed_access) return null;
+        const indexed = mapped.template.indexed_access;
+        if (!programExpressionsNameSameParameter(indexed.object, source) or
+            indexed.index.* != .parameter or indexed.index.parameter != mapped.parameter)
+            return null;
+        return source;
     }
 
     fn firstConstructSignatureType(self: *Checker, t: TypeId) ?TypeId {
@@ -109166,6 +109200,415 @@ pub const Checker = struct {
         return self.programExpressionInheritedMemberType(body, declaration, args, member_name, active, contextual);
     }
 
+    fn programDeferredDeclarationMemberType(
+        self: *Checker,
+        declaration: *const ProgramClassSchema.Declaration,
+        args: []const TypeId,
+        member_name: hir_mod.StringId,
+    ) CheckError!?TypeId {
+        if (args.len != declaration.parameters.len) return null;
+        var context: ProgramDeferredReadContext = .{};
+        defer context.bindings.deinit(self.gpa);
+        for (declaration.parameters, args) |*parameter, argument| {
+            try context.bindings.put(self.gpa, parameter, .{ .type_id = argument });
+        }
+        var active: std.AutoHashMapUnmanaged(*const ProgramClassSchema.Declaration, void) = .empty;
+        defer active.deinit(self.gpa);
+        try active.put(self.gpa, declaration, {});
+        return self.programDeferredExpressionMemberType(
+            declaration.body orelse return null,
+            &context,
+            member_name,
+            &active,
+            0,
+        );
+    }
+
+    fn copyProgramDeferredReadContext(
+        self: *Checker,
+        target: *ProgramDeferredReadContext,
+        source: *const ProgramDeferredReadContext,
+    ) CheckError!void {
+        var iterator = source.bindings.iterator();
+        while (iterator.next()) |entry| try target.bindings.put(self.gpa, entry.key_ptr.*, entry.value_ptr.*);
+    }
+
+    fn programDeferredReferenceContext(
+        self: *Checker,
+        reference: ProgramClassSchema.Reference,
+        parent: *const ProgramDeferredReadContext,
+        nested: *ProgramDeferredReadContext,
+    ) CheckError!bool {
+        if (reference.arguments.len > reference.declaration.parameters.len) return false;
+        for (reference.arguments, reference.declaration.parameters[0..reference.arguments.len]) |argument, *parameter| {
+            try nested.bindings.put(self.gpa, parameter, .{ .expression = .{ .value = argument, .context = parent } });
+        }
+        for (reference.declaration.parameters[reference.arguments.len..]) |*parameter| {
+            const default = parameter.default orelse return false;
+            try nested.bindings.put(self.gpa, parameter, .{ .expression = .{ .value = default, .context = nested } });
+        }
+        return true;
+    }
+
+    fn programDeferredParameterType(
+        self: *Checker,
+        parameter: *const ProgramClassSchema.Parameter,
+        context: *const ProgramDeferredReadContext,
+        active: *std.AutoHashMapUnmanaged(*const ProgramClassSchema.Declaration, void),
+        depth: u8,
+    ) ProgramTypeError!TypeId {
+        const binding = context.bindings.get(parameter) orelse return self.programExpressionParameter(parameter);
+        return switch (binding) {
+            .type_id => |type_id| type_id,
+            .expression => |bound| self.programDeferredLowerExpression(bound.value, bound.context, active, depth + 1),
+        };
+    }
+
+    fn programDeferredTypeMember(
+        self: *Checker,
+        raw_type: TypeId,
+        member_name: hir_mod.StringId,
+        depth: u8,
+    ) CheckError!?TypeId {
+        if (depth > max_program_deferred_read_depth) return null;
+        const type_id = self.resolveGenericType(raw_type) catch raw_type;
+        if (type_id >= self.interner.pool.typeCount()) return null;
+        const flags = self.interner.pool.flagsOf(type_id);
+        if (flags.is_never) return null;
+        if (flags.is_union or flags.is_intersection) {
+            const raw_members = if (flags.is_union) self.interner.unionMembers(type_id) else self.interner.intersectionMembers(type_id);
+            const members = try self.gpa.dupe(TypeId, raw_members);
+            defer self.gpa.free(members);
+            var projected: std.ArrayListUnmanaged(TypeId) = .empty;
+            defer projected.deinit(self.gpa);
+            for (members) |member| {
+                const member_flags = if (member < self.interner.pool.typeCount()) self.interner.pool.flagsOf(member) else continue;
+                if (member_flags.is_never) continue;
+                const value = (try self.programDeferredTypeMember(member, member_name, depth + 1)) orelse {
+                    if (flags.is_union) return null;
+                    continue;
+                };
+                try projected.append(self.gpa, value);
+            }
+            if (projected.items.len == 0) return null;
+            if (projected.items.len == 1) return projected.items[0];
+            return if (flags.is_union)
+                self.interner.internUnion(projected.items) catch error.OutOfMemory
+            else
+                self.interner.internIntersection(projected.items) catch error.OutOfMemory;
+        }
+        return self.lookupObjectMember(type_id, member_name);
+    }
+
+    fn programDeferredConditionalMemberType(
+        self: *Checker,
+        conditional: ProgramClassSchema.Conditional,
+        context: *const ProgramDeferredReadContext,
+        member_name: hir_mod.StringId,
+        active: *std.AutoHashMapUnmanaged(*const ProgramClassSchema.Declaration, void),
+        depth: u8,
+    ) CheckError!?TypeId {
+        if (conditional.check.* == .parameter) {
+            const parameter = conditional.check.parameter;
+            const check_t = self.programDeferredParameterType(parameter, context, active, depth + 1) catch return null;
+            if (check_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(check_t).is_union) {
+                const raw_members = self.interner.unionMembers(check_t);
+                const members = try self.gpa.dupe(TypeId, raw_members);
+                defer self.gpa.free(members);
+                var projected: std.ArrayListUnmanaged(TypeId) = .empty;
+                defer projected.deinit(self.gpa);
+                for (members) |member| {
+                    var narrowed: ProgramDeferredReadContext = .{};
+                    defer narrowed.bindings.deinit(self.gpa);
+                    try self.copyProgramDeferredReadContext(&narrowed, context);
+                    try narrowed.bindings.put(self.gpa, parameter, .{ .type_id = member });
+                    const extends_t = self.programDeferredLowerExpression(conditional.extends_type, &narrowed, active, depth + 1) catch continue;
+                    const branch = if (self.engine.isAssignableTo(member, extends_t) catch false)
+                        conditional.true_branch
+                    else
+                        conditional.false_branch;
+                    if (try self.programDeferredExpressionMemberType(branch, &narrowed, member_name, active, depth + 1)) |value|
+                        try projected.append(self.gpa, value);
+                }
+                if (projected.items.len == 0) return null;
+                if (projected.items.len == 1) return projected.items[0];
+                return self.interner.internUnion(projected.items) catch error.OutOfMemory;
+            }
+        }
+        const check_t = self.programDeferredLowerExpression(conditional.check, context, active, depth + 1) catch return null;
+        const extends_t = self.programDeferredLowerExpression(conditional.extends_type, context, active, depth + 1) catch return null;
+        const branch = if (self.engine.isAssignableTo(check_t, extends_t) catch false)
+            conditional.true_branch
+        else
+            conditional.false_branch;
+        return self.programDeferredExpressionMemberType(branch, context, member_name, active, depth + 1);
+    }
+
+    fn programDeferredExpressionMemberType(
+        self: *Checker,
+        expression: *const ProgramClassSchema.Expression,
+        context: *const ProgramDeferredReadContext,
+        member_name: hir_mod.StringId,
+        active: *std.AutoHashMapUnmanaged(*const ProgramClassSchema.Declaration, void),
+        depth: u8,
+    ) CheckError!?TypeId {
+        if (depth > max_program_deferred_read_depth) return null;
+        switch (expression.*) {
+            .parameter => |parameter| {
+                const binding = context.bindings.get(parameter) orelse {
+                    const type_id = self.programExpressionParameter(parameter) catch return null;
+                    return self.programDeferredTypeMember(type_id, member_name, depth + 1);
+                };
+                return switch (binding) {
+                    .type_id => |type_id| self.programDeferredTypeMember(type_id, member_name, depth + 1),
+                    .expression => |bound| self.programDeferredExpressionMemberType(
+                        bound.value,
+                        bound.context,
+                        member_name,
+                        active,
+                        depth + 1,
+                    ),
+                };
+            },
+            .object => |members| {
+                for (members) |member| {
+                    if (!std.mem.eql(u8, member.name, self.string_interner.get(member_name))) continue;
+                    var member_t = self.programDeferredLowerExpression(member.type, context, active, depth + 1) catch return null;
+                    if (member.optional and !self.typeIncludesUndefined(member_t))
+                        member_t = try self.interner.internUnion(&.{ member_t, types.Primitive.undefined_t });
+                    return member_t;
+                }
+            },
+            .indexed_object => |object| {
+                for (object.members) |member| {
+                    if (!std.mem.eql(u8, member.name, self.string_interner.get(member_name))) continue;
+                    var member_t = self.programDeferredLowerExpression(member.type, context, active, depth + 1) catch return null;
+                    if (member.optional and !self.typeIncludesUndefined(member_t))
+                        member_t = try self.interner.internUnion(&.{ member_t, types.Primitive.undefined_t });
+                    return member_t;
+                }
+                for (object.indices) |index| {
+                    const key_t = self.programDeferredLowerExpression(index.key, context, active, depth + 1) catch continue;
+                    if (try self.stringLiteralAssignableToType(member_name, key_t))
+                        return self.programDeferredLowerExpression(index.value, context, active, depth + 1) catch null;
+                }
+            },
+            .record => |record| {
+                const key_t = self.programDeferredLowerExpression(record.key, context, active, depth + 1) catch return null;
+                if (key_t == types.Primitive.any or try self.stringLiteralAssignableToType(member_name, key_t))
+                    return self.programDeferredLowerExpression(record.value, context, active, depth + 1) catch null;
+            },
+            .intersection => |parts| {
+                var projected: std.ArrayListUnmanaged(TypeId) = .empty;
+                defer projected.deinit(self.gpa);
+                for (parts) |part| if (try self.programDeferredExpressionMemberType(part, context, member_name, active, depth + 1)) |value| {
+                    try projected.append(self.gpa, value);
+                };
+                if (projected.items.len == 0) return null;
+                if (projected.items.len == 1) return projected.items[0];
+                return self.interner.internIntersection(projected.items) catch error.OutOfMemory;
+            },
+            .union_type => |parts| {
+                var projected: std.ArrayListUnmanaged(TypeId) = .empty;
+                defer projected.deinit(self.gpa);
+                for (parts) |part| {
+                    const value = (try self.programDeferredExpressionMemberType(part, context, member_name, active, depth + 1)) orelse return null;
+                    try projected.append(self.gpa, value);
+                }
+                if (projected.items.len == 0) return null;
+                if (projected.items.len == 1) return projected.items[0];
+                return self.interner.internUnion(projected.items) catch error.OutOfMemory;
+            },
+            .reference => |reference| {
+                if (active.contains(reference.declaration)) return null;
+                var nested: ProgramDeferredReadContext = .{};
+                defer nested.bindings.deinit(self.gpa);
+                if (!try self.programDeferredReferenceContext(reference, context, &nested)) return null;
+                try active.put(self.gpa, reference.declaration, {});
+                defer _ = active.remove(reference.declaration);
+                return self.programDeferredExpressionMemberType(
+                    reference.declaration.body orelse return null,
+                    &nested,
+                    member_name,
+                    active,
+                    depth + 1,
+                );
+            },
+            .conditional => |conditional| return self.programDeferredConditionalMemberType(conditional, context, member_name, active, depth + 1),
+            .mapped => |mapped| {
+                const accepts = if (mapped.constraint.* == .keyof)
+                    (try self.programDeferredExpressionMemberType(mapped.constraint.keyof, context, member_name, active, depth + 1)) != null
+                else blk: {
+                    const constraint_t = self.programDeferredLowerExpression(mapped.constraint, context, active, depth + 1) catch break :blk false;
+                    break :blk try self.mappedConstraintAcceptsPropertyName(constraint_t, member_name);
+                };
+                if (!accepts) return null;
+                var nested: ProgramDeferredReadContext = .{};
+                defer nested.bindings.deinit(self.gpa);
+                try self.copyProgramDeferredReadContext(&nested, context);
+                const key_t = self.interner.internStringLiteral(member_name) catch return error.OutOfMemory;
+                try nested.bindings.put(self.gpa, mapped.parameter, .{ .type_id = key_t });
+                var value = self.programDeferredLowerExpression(mapped.template, &nested, active, depth + 1) catch return null;
+                if (mapped.optional == 1 and !self.typeIncludesUndefined(value))
+                    value = try self.interner.internUnion(&.{ value, types.Primitive.undefined_t });
+                return value;
+            },
+            .utility => |utility| {
+                if (utility.kind == .pick or utility.kind == .omit) {
+                    const keys_t = self.programDeferredLowerExpression(utility.keys orelse return null, context, active, depth + 1) catch return null;
+                    const selected = try self.mappedConstraintAcceptsPropertyName(keys_t, member_name);
+                    if ((utility.kind == .pick and !selected) or (utility.kind == .omit and selected)) return null;
+                }
+                var value = (try self.programDeferredExpressionMemberType(utility.source, context, member_name, active, depth + 1)) orelse return null;
+                if (utility.kind == .partial and !self.typeIncludesUndefined(value))
+                    value = try self.interner.internUnion(&.{ value, types.Primitive.undefined_t });
+                return value;
+            },
+            else => {
+                const type_id = self.programDeferredLowerExpression(expression, context, active, depth + 1) catch return null;
+                return self.programDeferredTypeMember(type_id, member_name, depth + 1);
+            },
+        }
+        return null;
+    }
+
+    fn programDeferredLowerConditional(
+        self: *Checker,
+        conditional: ProgramClassSchema.Conditional,
+        context: *const ProgramDeferredReadContext,
+        active: *std.AutoHashMapUnmanaged(*const ProgramClassSchema.Declaration, void),
+        depth: u8,
+    ) ProgramTypeError!TypeId {
+        if (conditional.check.* == .parameter) {
+            const parameter = conditional.check.parameter;
+            const check_t = try self.programDeferredParameterType(parameter, context, active, depth + 1);
+            if (check_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(check_t).is_union) {
+                const raw_members = self.interner.unionMembers(check_t);
+                const members = try self.gpa.dupe(TypeId, raw_members);
+                defer self.gpa.free(members);
+                var results: std.ArrayListUnmanaged(TypeId) = .empty;
+                defer results.deinit(self.gpa);
+                for (members) |member| {
+                    var narrowed: ProgramDeferredReadContext = .{};
+                    defer narrowed.bindings.deinit(self.gpa);
+                    try self.copyProgramDeferredReadContext(&narrowed, context);
+                    try narrowed.bindings.put(self.gpa, parameter, .{ .type_id = member });
+                    const extends_t = try self.programDeferredLowerExpression(conditional.extends_type, &narrowed, active, depth + 1);
+                    const branch = if (self.engine.isAssignableTo(member, extends_t) catch false)
+                        conditional.true_branch
+                    else
+                        conditional.false_branch;
+                    try results.append(self.gpa, try self.programDeferredLowerExpression(branch, &narrowed, active, depth + 1));
+                }
+                return self.interner.internUnion(results.items);
+            }
+        }
+        const check_t = try self.programDeferredLowerExpression(conditional.check, context, active, depth + 1);
+        const extends_t = try self.programDeferredLowerExpression(conditional.extends_type, context, active, depth + 1);
+        return self.programDeferredLowerExpression(
+            if (self.engine.isAssignableTo(check_t, extends_t) catch false) conditional.true_branch else conditional.false_branch,
+            context,
+            active,
+            depth + 1,
+        );
+    }
+
+    fn programDeferredLowerExpression(
+        self: *Checker,
+        expression: *const ProgramClassSchema.Expression,
+        context: *const ProgramDeferredReadContext,
+        active: *std.AutoHashMapUnmanaged(*const ProgramClassSchema.Declaration, void),
+        depth: u8,
+    ) ProgramTypeError!TypeId {
+        if (depth > max_program_deferred_read_depth) return error.UnsupportedProgramType;
+        return switch (expression.*) {
+            .primitive => |type_id| type_id,
+            .opaque_leaf, .unsupported => types.Primitive.any,
+            .builtin_object => |name| self.lowerBuiltinObjectType(name) orelse types.Primitive.any,
+            .parameter => |parameter| self.programDeferredParameterType(parameter, context, active, depth + 1),
+            .string => |value| self.interner.internStringLiteral(self.string_interner.intern(value) catch return error.OutOfMemory) catch return error.OutOfMemory,
+            .number => |value| self.interner.internNumberLiteral(value) catch return error.OutOfMemory,
+            .boolean => |value| self.interner.internBooleanLiteral(value),
+            .array => |element| self.interner.internArrayType(self.string_interner, try self.programDeferredLowerExpression(element, context, active, depth + 1)) catch return error.OutOfMemory,
+            .readonly_array => |element| self.internReadonlyArrayType(try self.programDeferredLowerExpression(element, context, active, depth + 1)),
+            .union_type, .intersection => |members| blk: {
+                const values = try self.gpa.alloc(TypeId, members.len);
+                defer self.gpa.free(values);
+                for (members, values) |member, *value| value.* = try self.programDeferredLowerExpression(member, context, active, depth + 1);
+                break :blk if (expression.* == .union_type) try self.interner.internUnion(values) else try self.interner.internIntersection(values);
+            },
+            .object => |members| blk: {
+                const values = try self.gpa.alloc(types.ObjectMember, members.len);
+                defer self.gpa.free(values);
+                for (members, values) |member, *value| {
+                    var member_t = try self.programDeferredLowerExpression(member.type, context, active, depth + 1);
+                    if (member.optional and !self.typeIncludesUndefined(member_t))
+                        member_t = try self.interner.internUnion(&.{ member_t, types.Primitive.undefined_t });
+                    value.* = .{
+                        .name = self.string_interner.intern(member.name) catch return error.OutOfMemory,
+                        .type = member_t,
+                        .is_optional = member.optional,
+                        .is_readonly = member.readonly,
+                        .is_method = member.method,
+                        .visibility = member.visibility,
+                    };
+                }
+                break :blk try self.interner.internObjectType(values);
+            },
+            .record => |record| blk: {
+                const key_t = try self.programDeferredLowerExpression(record.key, context, active, depth + 1);
+                const value_t = try self.programDeferredLowerExpression(record.value, context, active, depth + 1);
+                break :blk try self.interner.internObjectTypeWithIndexAndSymbol(
+                    &.{},
+                    if (key_t == types.Primitive.any or key_t == types.Primitive.string_t) value_t else types.Primitive.none,
+                    if (key_t == types.Primitive.number_t) value_t else types.Primitive.none,
+                    if (key_t == types.Primitive.symbol_t) value_t else types.Primitive.none,
+                );
+            },
+            .reference => |reference| blk: {
+                if (active.contains(reference.declaration)) return error.UnsupportedProgramType;
+                var nested: ProgramDeferredReadContext = .{};
+                defer nested.bindings.deinit(self.gpa);
+                if (!try self.programDeferredReferenceContext(reference, context, &nested)) return error.UnsupportedProgramType;
+                try active.put(self.gpa, reference.declaration, {});
+                defer _ = active.remove(reference.declaration);
+                break :blk try self.programDeferredLowerExpression(reference.declaration.body orelse return error.UnsupportedProgramType, &nested, active, depth + 1);
+            },
+            .indexed_access => |indexed| blk: {
+                const index_t = try self.programDeferredLowerExpression(indexed.index, context, active, depth + 1);
+                if (self.stringLiteralValueFromType(index_t)) |key| {
+                    break :blk (try self.programDeferredExpressionMemberType(indexed.object, context, key, active, depth + 1)) orelse types.Primitive.any;
+                }
+                const object_t = try self.programDeferredLowerExpression(indexed.object, context, active, depth + 1);
+                const symbolic = self.interner.internIndexedAccess(object_t, index_t) catch return error.OutOfMemory;
+                break :blk (try self.resolveExactIndexedAccessForArgument(symbolic, 0)) orelse symbolic;
+            },
+            .keyof => |operand| self.interner.internKeyof(try self.programDeferredLowerExpression(operand, context, active, depth + 1)) catch return error.OutOfMemory,
+            .conditional => |conditional| self.programDeferredLowerConditional(conditional, context, active, depth + 1),
+            .utility => |utility| blk: {
+                if (utility.kind != .extract and utility.kind != .exclude) return error.UnsupportedProgramType;
+                const source_t = try self.programDeferredLowerExpression(utility.source, context, active, depth + 1);
+                const target_t = try self.programDeferredLowerExpression(utility.keys orelse return error.UnsupportedProgramType, context, active, depth + 1);
+                break :blk try self.evalConditionalWithDistribution(
+                    source_t,
+                    target_t,
+                    if (utility.kind == .extract) source_t else types.Primitive.never,
+                    if (utility.kind == .extract) types.Primitive.never else source_t,
+                    false,
+                    true,
+                );
+            },
+            .builtin_reference => |reference| blk: {
+                const values = try self.gpa.alloc(TypeId, reference.arguments.len);
+                defer self.gpa.free(values);
+                for (reference.arguments, values) |argument, *value| value.* = try self.programDeferredLowerExpression(argument, context, active, depth + 1);
+                break :blk (try self.lowerProgramBuiltinReference(reference.name, values)) orelse types.Primitive.any;
+            },
+            .this_type => |operand| self.programDeferredLowerExpression(operand, context, active, depth + 1),
+            else => error.UnsupportedProgramType,
+        };
+    }
+
     fn programExpressionInheritedMemberType(
         self: *Checker,
         expression: *const ProgramClassSchema.Expression,
@@ -110119,7 +110562,35 @@ pub const Checker = struct {
         }
         const body = declaration.body orelse return error.UnsupportedProgramType;
         const result = try self.lowerProgramExpression(body, declaration, args);
-        try self.recordProgramContextualTypeOrigin(result, declaration, args);
+        try self.recordProgramContextualTypeOrigin(result, declaration, args, false);
+        return result;
+    }
+
+    fn programContextualDeferredReference(
+        self: *Checker,
+        declaration: *const ProgramClassSchema.Declaration,
+        supplied: []const TypeId,
+    ) ProgramTypeError!TypeId {
+        if (supplied.len > declaration.parameters.len) return error.UnsupportedProgramType;
+        const args = try self.gpa.alloc(TypeId, declaration.parameters.len);
+        defer self.gpa.free(args);
+        @memset(args, types.Primitive.unknown);
+        @memcpy(args[0..supplied.len], supplied);
+        for (declaration.parameters[supplied.len..], supplied.len..) |parameter, index| {
+            const default = parameter.default orelse return error.UnsupportedProgramType;
+            args[index] = try self.lowerProgramExpression(default, declaration, args);
+        }
+        // Keep the ordinary value permissive while assigning this call a
+        // checker-local identity. Requested reads are resolved from the
+        // source declaration and concrete arguments instead of publishing a
+        // generic mapped/conditional object across checker pools.
+        const result = try self.interner.internObjectTypeWithIndexAndSymbol(
+            &.{},
+            types.Primitive.any,
+            types.Primitive.any,
+            types.Primitive.any,
+        );
+        try self.recordProgramContextualTypeOrigin(result, declaration, args, true);
         return result;
     }
 
@@ -110128,18 +110599,20 @@ pub const Checker = struct {
         type_id: TypeId,
         declaration: *const ProgramClassSchema.Declaration,
         args: []const TypeId,
+        deferred_read: bool,
     ) CheckError!void {
         if (type_id < types.Primitive.first_dynamic or
             type_id >= self.interner.pool.typeCount()) return;
         var current = self.program_contextual_type_origins.get(type_id);
         while (current) |origin| : (current = origin.next) {
-            if (origin.declaration == declaration and std.mem.eql(TypeId, origin.args, args)) return;
+            if (origin.declaration == declaration and origin.deferred_read == deferred_read and std.mem.eql(TypeId, origin.args, args)) return;
         }
         const origin = try self.diag_arena.allocator().create(ProgramContextualTypeOrigin);
         const owned_args = try self.diag_arena.allocator().dupe(TypeId, args);
         origin.* = .{
             .declaration = declaration,
             .args = owned_args,
+            .deferred_read = deferred_read,
             .next = self.program_contextual_type_origins.get(type_id),
         };
         try self.program_contextual_type_origins.put(self.gpa, type_id, origin);
@@ -110155,13 +110628,16 @@ pub const Checker = struct {
         while (current) |origin| : (current = origin.next) {
             var active: std.AutoHashMapUnmanaged(*const ProgramClassSchema.Declaration, void) = .empty;
             defer active.deinit(self.gpa);
-            const member_t = (try self.programDeclarationInheritedMemberType(
-                origin.declaration,
-                origin.args,
-                member_name,
-                &active,
-                true,
-            )) orelse return null;
+            const member_t = (if (origin.deferred_read)
+                try self.programDeferredDeclarationMemberType(origin.declaration, origin.args, member_name)
+            else
+                try self.programDeclarationInheritedMemberType(
+                    origin.declaration,
+                    origin.args,
+                    member_name,
+                    &active,
+                    true,
+                )) orelse return null;
             if (result) |prior| {
                 if (prior != member_t and !(self.engine.isIdenticalTo(prior, member_t) catch false)) return null;
             } else {
@@ -110169,6 +110645,12 @@ pub const Checker = struct {
             }
         }
         return result;
+    }
+
+    fn programContextualTypeHasDeferredOrigin(self: *const Checker, type_id: TypeId) bool {
+        var current = self.program_contextual_type_origins.get(type_id);
+        while (current) |origin| : (current = origin.next) if (origin.deferred_read) return true;
+        return false;
     }
 
     fn programExpressionHasDeclarationLeaf(expression: *const ProgramClassSchema.Expression) bool {
@@ -110666,6 +111148,15 @@ pub const Checker = struct {
                     if (self.program_contextual_class_receivers.get(ref.declaration)) |receiver_t| return receiver_t;
                 }
                 const contextual_projection = ref.contextual_projection or declaration.contextual_projection;
+                if (ref.contextual_projection and ref.contextual_deferred_read) {
+                    const values = try self.gpa.alloc(TypeId, ref.arguments.len);
+                    defer self.gpa.free(values);
+                    for (ref.arguments, values) |arg, *out| out.* = try self.lowerProgramExpression(arg, declaration, args);
+                    return self.programContextualDeferredReference(
+                        try self.contextualProgramDeclaration(ref.declaration),
+                        values,
+                    );
+                }
                 if (ref.contextual_projection) if (ref.contextual_read) |read| {
                     const optional_keys_t = if (ref.contextual_read_optional_keys) |keys|
                         try self.lowerProgramExpression(keys, declaration, args)
@@ -110722,6 +111213,8 @@ pub const Checker = struct {
                 ) catch return error.OutOfMemory;
             },
             .mapped => |mapped| {
+                if (programHomomorphicMappedIdentitySource(mapped)) |source|
+                    return self.lowerProgramExpression(source, declaration, args);
                 const parameter_t = try self.programExpressionParameter(mapped.parameter);
                 const constraint_t = try self.resolveGenericType(try self.lowerProgramExpression(mapped.constraint, declaration, args));
                 if (parameter_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(parameter_t).is_type_parameter) {
@@ -115150,14 +115643,16 @@ pub const Checker = struct {
                         break :blk try self.optionalChainResult(t, member_is_optional_chain);
                     }
                 }
-                const direct_member = (try self.schemaStaticProjectionForKey(obj_t, m.name, 0)) orelse
+                var direct_member = (try self.schemaStaticProjectionForKey(obj_t, m.name, 0)) orelse
                     (try self.lookupObjectMember(obj_t, m.name));
                 if (!self.isInAssignmentTargetChain(node) and
                     (direct_member == null or direct_member.? == types.Primitive.any))
                 {
                     if (try self.programContextualOriginMemberType(access_obj_t, m.name)) |projected| {
-                        if (projected != types.Primitive.any)
+                        if (projected != types.Primitive.any) {
                             try self.program_contextual_member_projections.put(self.gpa, node, projected);
+                            if (self.programContextualTypeHasDeferredOrigin(access_obj_t)) direct_member = projected;
+                        }
                     }
                 }
                 const member = direct_member orelse
@@ -163920,10 +164415,33 @@ pub const Checker = struct {
         }
         const defer_before = self.instantiation_defer_events;
         const result = try self.substituteTypeUncached(t, subs);
+        try self.propagateProgramContextualOrigins(t, result, subs);
         if (memo_eligible and self.instantiation_defer_events == defer_before) {
             self.subst_memo.put(self.gpa, t, result) catch {};
         }
         return result;
+    }
+
+    fn propagateProgramContextualOrigins(
+        self: *Checker,
+        source: TypeId,
+        result: TypeId,
+        subs: *const std.AutoHashMapUnmanaged(TypeId, TypeId),
+    ) CheckError!void {
+        var current = self.program_contextual_type_origins.get(source);
+        while (current) |origin| : (current = origin.next) {
+            const args = try self.gpa.alloc(TypeId, origin.args.len);
+            defer self.gpa.free(args);
+            for (origin.args, args) |argument, *substituted| {
+                substituted.* = try self.substituteType(argument, subs);
+            }
+            try self.recordProgramContextualTypeOrigin(
+                result,
+                origin.declaration,
+                args,
+                origin.deferred_read,
+            );
+        }
     }
 
     /// TypeScript's `isGenericObjectType`: a type parameter, a deferred

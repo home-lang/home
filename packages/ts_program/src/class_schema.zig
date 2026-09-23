@@ -60,6 +60,7 @@ pub const Builder = struct {
         keys: ?*const schema.Expression = null,
         mode: ReadMode = .all,
         transformed: bool = false,
+        deferred: bool = false,
         optional_keys: ?*const schema.Expression = null,
         optional_all: bool = false,
         string_index: ?*const schema.Expression = null,
@@ -114,17 +115,22 @@ pub const Builder = struct {
         return current;
     }
 
-    fn contextualMappedCopiesSource(mapped: schema.Mapped) bool {
+    fn contextualMappedCopiesSource(
+        mapped: schema.Mapped,
+        source: *const schema.Expression,
+        projected_source: *const schema.Expression,
+        bindings: []const ReadBinding,
+    ) bool {
         if (mapped.constraint.* != .keyof) return false;
-        const source = mapped.constraint.keyof;
         return switch (mapped.template.*) {
-            .indexed_access => |indexed| contextualReadExpressionsEqual(indexed.object, source) and
+            .indexed_access => |indexed| (contextualReadExpressionsEqual(contextualReadArgument(indexed.object, bindings), source) or
+                contextualReadExpressionsEqual(indexed.object, projected_source)) and
                 indexed.index.* == .parameter and indexed.index.parameter == mapped.parameter,
             .union_type => |members| blk: {
                 var found = false;
                 for (members) |member| switch (member.*) {
                     .primitive => |primitive| if (primitive != Primitive.undefined_t) break :blk false,
-                    else => if (contextualMappedTemplateCopiesSource(member, source, mapped.parameter)) {
+                    else => if (contextualMappedTemplateCopiesSource(member, source, projected_source, mapped.parameter, bindings)) {
                         if (found) break :blk false;
                         found = true;
                     } else break :blk false,
@@ -143,10 +149,13 @@ pub const Builder = struct {
     fn contextualMappedTemplateCopiesSource(
         expr: *const schema.Expression,
         source: *const schema.Expression,
+        projected_source: *const schema.Expression,
         parameter: *const schema.Parameter,
+        bindings: []const ReadBinding,
     ) bool {
         return switch (expr.*) {
-            .indexed_access => |indexed| contextualReadExpressionsEqual(indexed.object, source) and
+            .indexed_access => |indexed| (contextualReadExpressionsEqual(contextualReadArgument(indexed.object, bindings), source) or
+                contextualReadExpressionsEqual(indexed.object, projected_source)) and
                 indexed.index.* == .parameter and indexed.index.parameter == parameter,
             else => false,
         };
@@ -186,6 +195,18 @@ pub const Builder = struct {
                 return self.contextualReadCoverage(reference.declaration.body.?, nested, active);
             },
             .conditional => |conditional| {
+                if (conditional.true_branch.* == .primitive and conditional.true_branch.primitive == Primitive.never) {
+                    var coverage = (try self.contextualReadCoverage(conditional.false_branch, bindings, active)) orelse return null;
+                    coverage.transformed = true;
+                    coverage.deferred = true;
+                    return coverage;
+                }
+                if (conditional.false_branch.* == .primitive and conditional.false_branch.primitive == Primitive.never) {
+                    var coverage = (try self.contextualReadCoverage(conditional.true_branch, bindings, active)) orelse return null;
+                    coverage.transformed = true;
+                    coverage.deferred = true;
+                    return coverage;
+                }
                 if (conditional.extends_type.* != .primitive or
                     (conditional.extends_type.primitive != Primitive.any and
                         conditional.extends_type.primitive != Primitive.unknown)) return null;
@@ -194,9 +215,12 @@ pub const Builder = struct {
                 return coverage;
             },
             .mapped => |mapped| {
-                if (!contextualMappedCopiesSource(mapped)) return null;
-                const source = contextualReadArgument(mapped.constraint.keyof, bindings);
+                if (mapped.constraint.* != .keyof) return null;
+                const raw_source = mapped.constraint.keyof;
+                const source = contextualReadArgument(raw_source, bindings);
                 var coverage = (try self.contextualReadCoverage(source, bindings, active)) orelse ReadCoverage{ .source = source };
+                if (!contextualMappedCopiesSource(mapped, source, coverage.source, bindings)) return null;
+                if (!contextualReadExpressionsEqual(source, coverage.source)) coverage.deferred = true;
                 coverage.transformed = true;
                 if (mapped.optional == 1) coverage.optional_all = true;
                 return coverage;
@@ -294,6 +318,11 @@ pub const Builder = struct {
                         };
                     }
                 };
+                if (result == null) if (omitted) |omit| {
+                    var deferred = omit;
+                    deferred.deferred = true;
+                    result = deferred;
+                };
                 if (result) |*coverage| {
                     coverage.string_index = string_index orelse coverage.string_index;
                     return coverage.*;
@@ -323,7 +352,7 @@ pub const Builder = struct {
         defer active.deinit(self.gpa);
         try active.put(self.gpa, reference.declaration, {});
         const coverage = (try self.contextualReadCoverage(reference.declaration.body.?, bindings, &active)) orelse return null;
-        return if (coverage.mode == .all and coverage.transformed) coverage else null;
+        return if (coverage.transformed and (coverage.mode == .all or coverage.deferred)) coverage else null;
     }
 
     fn contextualShallowStructuralReferenceSupported(self: *Builder, reference: schema.Reference) !bool {
@@ -819,10 +848,27 @@ pub const Builder = struct {
                 .is_asserts = value.is_asserts,
             };
         } else null;
-        const result_type = if (predicate) |value|
+        var result_type = if (predicate) |value|
             try self.expression(.{ .primitive = if (value.is_asserts) Primitive.void_t else Primitive.boolean_t })
         else
             try self.lowerTransferable(function_context, result);
+        if (result_type.* == .reference) {
+            const reference = result_type.reference;
+            if (try self.contextualReadProjection(reference)) |read| if (read.deferred) {
+                context.declaration.contextual_only = true;
+                result_type = try self.expression(.{ .reference = .{
+                    .declaration = reference.declaration,
+                    .arguments = reference.arguments,
+                    .projection_only = reference.projection_only,
+                    .contextual_projection = true,
+                    .contextual_deferred_read = true,
+                    .contextual_read = read.source,
+                    .contextual_read_optional_keys = read.optional_keys,
+                    .contextual_read_optional_all = read.optional_all,
+                    .contextual_read_string_index = read.string_index,
+                } });
+            };
+        }
         return self.expression(.{ .function = .{
             .type_parameters = type_parameters,
             .parameters = try params.toOwnedSlice(self.arena),
@@ -1431,6 +1477,33 @@ test "class schema: callable utility projections retain a proven read surface" {
     try T.expectEqual(type_count, owner.type_interner.pool.typeCount());
     try T.expectEqual(diagnostics, owner.diagnostics.items.len);
     try T.expect(!owner.checked_types_ready);
+}
+
+test "class schema: normalize return projections retain filtered source reads" {
+    const graph = try TestGraph.init(&.{.{ .path = "/owner.ts", .text =
+        \\type Identity<T> = T;
+        \\type Flatten<T> = Identity<{ [K in keyof T]: T[K] }>;
+        \\type Normalize<T> = T extends undefined
+        \\  ? never
+        \\  : T extends Record<any, any>
+        \\    ? Flatten<
+        \\        { [K in keyof Omit<T, "error" | "message">]: T[K] } &
+        \\        ("error" extends keyof T ? { error?: Exclude<T["error"], string> } : unknown)
+        \\      >
+        \\    : never;
+        \\export declare function normalizeParams<T>(value: T): Normalize<T>;
+    }});
+    defer graph.deinit();
+
+    const result = try graph.class(0, "normalizeParams");
+    defer result.deinit(T.allocator);
+    const return_type = result.declaration.body.?.function.result;
+    try T.expect(return_type.* == .reference);
+    const normalized = return_type.reference;
+    try T.expect(normalized.contextual_projection);
+    try T.expect(normalized.contextual_deferred_read);
+    try T.expect(normalized.contextual_read != null);
+    try T.expect(try result.isSupported(T.allocator));
 }
 
 test "class schema: homomorphic callable aliases retain imported union reads" {
