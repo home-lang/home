@@ -1214,13 +1214,52 @@ pub const Builder = struct {
         return symbol;
     }
 
+    fn scopedNamespaceSymbol(self: *Builder, source: usize, node: hir.NodeId, name: hir.StringId) ?*binder.Symbol {
+        const c = self.sources[source].compilation;
+        var current = node;
+        var scope = c.module.root;
+        while (current != 0) : (current = c.hir.parentOf(current)) {
+            var found = false;
+            for (c.module.scopes.items) |candidate| if (candidate.introducing_node == current) {
+                scope = candidate;
+                found = true;
+                break;
+            };
+            if (found) break;
+        }
+        var current_scope: ?*binder.Scope = scope;
+        while (current_scope) |candidate| : (current_scope = candidate.parent) {
+            if (candidate.namespaces.get(name)) |symbol| return symbol;
+        }
+        return null;
+    }
+
     fn resolveQualified(self: *Builder, source: usize, node: hir.NodeId, ref: hir.TypeRefPayload) error{OutOfMemory}!Resolution {
         const c = self.sources[source].compilation;
         const qualifiers = hir.typeRefQualifier(&c.hir, node);
         if (qualifiers.len != 1 or c.hir.kindOf(qualifiers[0]) != .identifier) return .unsupported;
         const namespace_name = hir.identifierOf(&c.hir, qualifiers[0]).name;
         const bound = self.scopedSymbol(source, qualifiers[0], namespace_name) orelse return .unsupported;
-        if (!bound.flags.is_import) return .unsupported;
+        if (!bound.flags.is_import) {
+            const namespace_bound = self.scopedNamespaceSymbol(source, qualifiers[0], namespace_name) orelse return .unsupported;
+            var matched: ?hir.NodeId = null;
+            for (namespace_bound.decls.items) |declaration_node| {
+                if (declaration_node == hir.none_node_id or c.hir.kindOf(declaration_node) != .namespace_decl) continue;
+                for (hir.namespaceBody(&c.hir, declaration_node)) |raw| {
+                    // Only exported namespace members have meaning through a
+                    // qualified reference outside their declaration block.
+                    if (c.hir.kindOf(raw) != .export_decl) continue;
+                    const candidate = hir.exportOf(&c.hir, raw).decl;
+                    if (!declarationHasName(c, candidate, ref.name)) continue;
+                    if (matched != null and matched.? != candidate) return .unsupported;
+                    matched = candidate;
+                }
+            }
+            return if (matched) |declaration_node|
+                .{ .declaration = .{ .source = source, .node = declaration_node } }
+            else
+                .unsupported;
+        }
         for (hir.blockStmts(&c.hir, c.root)) |statement| {
             if (c.hir.kindOf(statement) != .import_decl) continue;
             const import = hir.importOf(&c.hir, statement);

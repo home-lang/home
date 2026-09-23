@@ -642,6 +642,11 @@ pub const ProgramExportedValue = struct {
 
 pub const ProgramExportedType = struct {
     target_path: []const u8,
+    /// Dot-separated exported namespace path within `target_path`. Empty for
+    /// an ordinary top-level export. Keeping this on the exact declaration
+    /// graph prevents `Root.Member` from being flattened into a shallow
+    /// source-text approximation.
+    namespace_path: []const u8 = "",
     export_name: []const u8,
     declaration: *const ProgramClassSchema.Declaration,
     contextual_only: bool = false,
@@ -80529,7 +80534,27 @@ pub const Checker = struct {
             if (try self.programExportedClassInstanceTypeForImportPath(import_info.import_node, import_info.specifier, leaf_name, type_node)) |t| return t;
             if (try self.programExportedTypeForImportPath(import_info.import_node, import_info.specifier, leaf_name, type_node)) |t| return t;
         }
-        var exported_t = try self.virtualRelativeModuleExportType(type_node, import_info.specifier, namespace_path, leaf_name);
+        const program_entry = try self.programExportedTypeEntryForImportNamespacePath(
+            import_info.import_node,
+            import_info.specifier,
+            namespace_path,
+            leaf_name,
+        );
+        // Projection-only declarations deliberately do not become approximate
+        // whole objects in the receiving checker. Their members remain
+        // available to contextual reads/writes through the source declaration,
+        // while unrelated structural relations keep the established
+        // permissive placeholder.
+        if (program_entry) |entry| {
+            if (entry.contextual_only or entry.projection_only) return types.Primitive.any;
+        }
+        var exported_t: ?TypeId = if (program_entry) |entry|
+            try self.programDeclarationTypeReference(entry.declaration, type_node)
+        else
+            null;
+        if (exported_t == null) {
+            exported_t = try self.virtualRelativeModuleExportType(type_node, import_info.specifier, namespace_path, leaf_name);
+        }
         const spec = self.string_interner.get(import_info.specifier);
         if (exported_t == null and std.mem.startsWith(u8, spec, ".")) {
             exported_t = try self.programRelativeModuleInterfaceExportType(
@@ -81034,6 +81059,38 @@ pub const Checker = struct {
             return result;
         }
         return null;
+    }
+
+    fn programExportedTypeEntryForImportNamespacePath(
+        self: *Checker,
+        import_node: NodeId,
+        specifier: hir_mod.StringId,
+        namespace_path: []const hir_mod.StringId,
+        leaf_name: hir_mod.StringId,
+    ) CheckError!?ProgramExportedType {
+        if (namespace_path.len == 0) return null;
+        const leaf_text = self.string_interner.get(leaf_name);
+        var matched: ?ProgramExportedType = null;
+        for (self.program_exported_types) |entry| {
+            if (!std.mem.eql(u8, entry.export_name, leaf_text) or
+                !self.programNamespacePathMatches(namespace_path, entry.namespace_path))
+            {
+                continue;
+            }
+            if (!try self.programImportTargetsPath(
+                import_node,
+                self.string_interner.get(specifier),
+                entry.target_path,
+            )) continue;
+            if (matched) |existing| {
+                if (existing.declaration != entry.declaration or
+                    existing.contextual_only != entry.contextual_only or
+                    existing.projection_only != entry.projection_only) return null;
+                continue;
+            }
+            matched = entry;
+        }
+        return matched;
     }
 
     fn programNamespacePathMatches(
@@ -108654,9 +108711,15 @@ pub const Checker = struct {
     fn programExportedTypeForLocal(self: *Checker, name: hir_mod.StringId, anchor: NodeId) CheckError!?TypeId {
         if (self.program_exported_types.len == 0 or self.nameHasEnclosingTypeParameter(name, anchor)) return null;
         if (self.findVisibleNamedTypeDecl(anchor, name)) |local| {
+            const namespace_path = [_]hir_mod.StringId{name};
+            // A local interface/namespace merge already has one native symbol
+            // environment. Re-importing its own Program schema would split the
+            // type and namespace halves across checker pools and lose local
+            // indexed-access facts. Program transfer is only for consumers.
+            if (self.findVisibleNamespaceByPath(anchor, &namespace_path) != null) return null;
             const position = self.hir.spanOf(local).start;
             for (self.program_exported_types) |entry| {
-                if (entry.contextual_only or entry.projection_only) continue;
+                if (entry.namespace_path.len != 0 or entry.contextual_only or entry.projection_only) continue;
                 if (entry.declaration.position == position and std.mem.eql(u8, entry.declaration.path, self.importer_path))
                     return self.programDeclarationTypeReference(entry.declaration, anchor);
             }
@@ -108684,7 +108747,7 @@ pub const Checker = struct {
 
     fn programExportedTypeForImportPath(self: *Checker, import_node: NodeId, specifier: hir_mod.StringId, name: hir_mod.StringId, anchor: NodeId) CheckError!?TypeId {
         for (self.program_exported_types) |entry| {
-            if (entry.contextual_only or entry.projection_only) continue;
+            if (entry.namespace_path.len != 0 or entry.contextual_only or entry.projection_only) continue;
             if (!std.mem.eql(u8, entry.export_name, self.string_interner.get(name))) continue;
             if (!try self.programImportTargetsPath(import_node, self.string_interner.get(specifier), entry.target_path)) continue;
             return self.programDeclarationTypeReference(entry.declaration, anchor);
@@ -108845,9 +108908,19 @@ pub const Checker = struct {
         if (self.hir.kindOf(qualifiers[0]) != .identifier) return null;
         const root_name = hir_mod.identifierOf(self.hir, qualifiers[0]).name;
         const import_info = (try self.localImportModuleInfo(root_name, type_node)) orelse return null;
-        if (import_info.exported_root != null) return null;
+        if (import_info.exported_root) |exported_root| {
+            const namespace_path = [_]hir_mod.StringId{exported_root};
+            const entry = (try self.programExportedTypeEntryForImportNamespacePath(
+                import_info.import_node,
+                import_info.specifier,
+                &namespace_path,
+                reference.name,
+            )) orelse return null;
+            return entry.declaration;
+        }
         var matched: ?*const ProgramClassSchema.Declaration = null;
         for (self.program_exported_types) |entry| {
+            if (entry.namespace_path.len != 0) continue;
             if (!std.mem.eql(u8, entry.export_name, self.string_interner.get(reference.name))) continue;
             if (!try self.programImportTargetsPath(import_info.import_node, self.string_interner.get(import_info.specifier), entry.target_path)) continue;
             if (matched) |existing| {
@@ -108873,6 +108946,7 @@ pub const Checker = struct {
         if (import_info.exported_root != null) return null;
         var matched: ?*const ProgramClassSchema.Declaration = null;
         for (self.program_exported_types) |entry| {
+            if (entry.namespace_path.len != 0) continue;
             if (!std.mem.eql(u8, entry.export_name, self.string_interner.get(reference.name))) continue;
             if (!try self.programImportTargetsPath(import_info.import_node, self.string_interner.get(import_info.specifier), entry.target_path)) continue;
             if (matched) |existing| {
@@ -108906,6 +108980,7 @@ pub const Checker = struct {
                 if (item.local != reference.name) continue;
                 var matched: ?*const ProgramClassSchema.Declaration = null;
                 for (self.program_exported_types) |entry| {
+                    if (entry.namespace_path.len != 0) continue;
                     if (!std.mem.eql(u8, entry.export_name, self.string_interner.get(item.imported))) continue;
                     if (!try self.programImportTargetsPath(statement, self.string_interner.get(import.module), entry.target_path)) continue;
                     if (matched) |existing| {
@@ -109948,9 +110023,11 @@ pub const Checker = struct {
         }
         if (self.nameHasEnclosingTypeParameter(reference.name, type_node)) return null;
         if (self.findVisibleNamedTypeDecl(type_node, reference.name)) |local| {
+            const namespace_path = [_]hir_mod.StringId{reference.name};
+            if (self.findVisibleNamespaceByPath(type_node, &namespace_path) != null) return null;
             const position = self.hir.spanOf(local).start;
             for (self.program_exported_types) |entry| {
-                if (entry.projection_only or !entry.contextual_only) continue;
+                if (entry.namespace_path.len != 0 or entry.projection_only or !entry.contextual_only) continue;
                 if (entry.declaration.position != position or
                     !std.mem.eql(u8, entry.declaration.path, self.importer_path)) continue;
                 return self.programContextualExportedDeclarationType(entry.declaration, type_node);
@@ -110028,7 +110105,7 @@ pub const Checker = struct {
         const info = (try self.localImportModuleInfo(root_name, constraint_node)) orelse return lowered;
         if (info.exported_root != null) return lowered;
         for (self.program_exported_types) |entry| {
-            if (!entry.projection_only) continue;
+            if (entry.namespace_path.len != 0 or !entry.projection_only) continue;
             if (!std.mem.eql(u8, entry.export_name, self.string_interner.get(r.name))) continue;
             if (!try self.programImportTargetsPath(info.import_node, self.string_interner.get(info.specifier), entry.target_path)) continue;
             if (try self.programContextualExportedDeclarationType(entry.declaration, constraint_node)) |t| return t;
@@ -110044,7 +110121,7 @@ pub const Checker = struct {
         anchor: NodeId,
     ) CheckError!?TypeId {
         for (self.program_exported_types) |entry| {
-            if (entry.projection_only or !entry.contextual_only or !std.mem.eql(u8, entry.export_name, self.string_interner.get(name))) continue;
+            if (entry.namespace_path.len != 0 or entry.projection_only or !entry.contextual_only or !std.mem.eql(u8, entry.export_name, self.string_interner.get(name))) continue;
             if (!try self.programImportTargetsPath(import_node, self.string_interner.get(specifier), entry.target_path)) continue;
             return self.programContextualExportedDeclarationType(entry.declaration, anchor);
         }
@@ -114021,7 +114098,8 @@ pub const Checker = struct {
                 }
                 const raw_callee_t = try self.checkExpression(c.callee);
                 const callee_is_zero_arg_getter_access = self.callExprCalleeIsZeroArgGetterAccess(node, c.callee);
-                const call_is_optional_chain = c.optional or self.expressionIsOptionalChain(c.callee);
+                const call_is_optional_chain = self.expressionIsOptionalChain(c.callee) or
+                    (c.optional and self.typeIsPossiblyNullishStrict(raw_callee_t));
                 var callee_t = if (call_is_optional_chain or
                     (self.strict_flags.strict_null_checks and
                         !self.typeIsAnyLike(raw_callee_t) and
@@ -115345,7 +115423,9 @@ pub const Checker = struct {
                 if (try self.reportPrivateIdentifierOutsideClassBody(node, m.object, obj_t, m.name)) {
                     break :blk types.Primitive.any;
                 }
-                const member_is_optional_chain = m.optional or self.expressionIsOptionalChain(m.object);
+                const member_has_optional_syntax = m.optional or self.expressionIsOptionalChain(m.object);
+                const member_is_optional_chain = self.expressionIsOptionalChain(m.object) or
+                    (m.optional and self.typeIsPossiblyNullishStrict(obj_t));
                 const is_instanceof_fallthrough_receiver = try self.identifierHasInstanceofFallthroughJoin(m.object);
                 if (!member_is_optional_chain and self.thisIsUndefinedInExternalModuleArrow(m.object)) {
                     if (!self.diagnosticExists(m.object, TsCodes.object_possibly_undefined)) {
@@ -116003,7 +116083,7 @@ pub const Checker = struct {
                         direct_string_idx
                     else
                         (try self.effectiveStringIndexType(access_obj_t)) orelse types.Primitive.none;
-                    if (self.memberNameIsEcmaPrivate(m.name) and !member_is_optional_chain) {
+                    if (self.memberNameIsEcmaPrivate(m.name) and !member_has_optional_syntax) {
                         if (try self.reportUncheckedJsUndeclaredPrivateName(node, m.name)) {
                             break :blk types.Primitive.any;
                         }
@@ -116186,7 +116266,7 @@ pub const Checker = struct {
                     // identifiers"), which is the only error tsc emits here —
                     // suppress the redundant TS2339. Pins
                     // privateNameUncheckedJsOptionalChain.
-                    if (member_is_optional_chain and self.memberNameIsEcmaPrivate(m.name)) {
+                    if (member_has_optional_syntax and self.memberNameIsEcmaPrivate(m.name)) {
                         break :blk types.Primitive.any;
                     }
                     if (self.suppressTypeParameterLeakBoxDataAccess(access_obj_t, m.name)) {
@@ -116268,7 +116348,6 @@ pub const Checker = struct {
             },
             .element_access => blk: {
                 const e = hir_mod.elementOf(self.hir, node);
-                const element_is_optional_chain = e.optional or self.expressionIsOptionalChain(e.object);
                 const raw_obj_t: TypeId = blk_obj: {
                     if (self.nodeIsSuperReference(e.object)) {
                         if (self.superReferenceInEs5ObjectLiteralMember(e.object)) {
@@ -116314,6 +116393,8 @@ pub const Checker = struct {
                     break :blk_obj try self.checkExpression(e.object);
                 };
                 const resolved_raw_obj_t = self.resolvedRecursiveInterfaceType(raw_obj_t);
+                const element_is_optional_chain = self.expressionIsOptionalChain(e.object) or
+                    (e.optional and self.typeIsPossiblyNullishStrict(resolved_raw_obj_t));
                 const obj_t = if (element_is_optional_chain)
                     self.nonNullishAccessType(resolved_raw_obj_t) catch resolved_raw_obj_t
                 else if (self.strict_flags.strict_null_checks and
@@ -159039,6 +159120,8 @@ pub const Checker = struct {
                     break :blk types.Primitive.any;
                 }
                 if (self.typeMaybeNumericLike(lhs_eff) and self.typeMaybeNumericLike(rhs_eff)) {
+                    if (self.typeIsBigIntLike(lhs_eff) and self.typeIsBigIntLike(rhs_eff))
+                        break :blk types.Primitive.bigint_t;
                     break :blk types.Primitive.number_t;
                 }
                 if (!self.typeIsAnyLike(lhs_eff) and !self.typeIsAnyLike(rhs_eff)) {
@@ -159084,6 +159167,8 @@ pub const Checker = struct {
                 if (b.op == .pow and self.typeIsBigIntLike(lhs) and self.typeIsBigIntLike(rhs) and self.targetExplicitlyBelowEs2016()) {
                     try self.report(node, TsCodes.bigint_exponentiation_below_es2016, "Exponentiation cannot be performed on 'bigint' values unless the 'target' option is set to 'es2016' or later.");
                 }
+                if (self.typeIsBigIntLike(lhs) and self.typeIsBigIntLike(rhs))
+                    break :blk types.Primitive.bigint_t;
                 break :blk types.Primitive.number_t;
             },
             .bit_and, .bit_or, .bit_xor, .shl, .shr, .shr_unsigned => blk: {
@@ -220370,32 +220455,23 @@ test "checker: native logical assignments narrow statements, RHS, and truthy bra
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.object_possibly_undefined_18048));
 }
 
-test "checker: optional chaining widens the result with undefined" {
+test "checker: optional chaining adds undefined only for a nullish receiver" {
     const s = try newSetup(
         \\interface Box { value: number; }
-        \\function f(b: Box): number { return b?.value; }
+        \\interface Indexed { [key: string]: number; }
+        \\function direct(b: Box): number { return b?.value; }
+        \\function narrowed(b: Box | undefined): number {
+        \\  if (!b) return 0;
+        \\  return b?.value;
+        \\}
+        \\function element(b: Indexed): number { return b?.["value"]; }
+        \\function call(f: () => number): number { return f?.(); }
+        \\function nullable(b: Box | undefined): number | undefined { return b?.value; }
     );
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
-    // The return value should be `number | undefined` (broader
-    // than the function's declared `number` return ÃÂ¢ÃÂÃÂ we don't
-    // assert on the diagnostic since that's the assignability
-    // story; instead we check the inner expression's type.)
-    const stmts = hir_mod.blockStmts(&s.hir, s.root);
-    const f = hir_mod.fnDeclOf(&s.hir, stmts[1]);
-    const body = hir_mod.blockStmts(&s.hir, f.body);
-    const ret_p = hir_mod.returnOf(&s.hir, body[0]);
-    const t = s.hir.typeOf(ret_p.value);
-    try T.expect(s.ti.pool.flagsOf(t).is_union);
-    var has_num = false;
-    var has_undef = false;
-    for (s.ti.unionMembers(t)) |m| {
-        if (m == types.Primitive.number_t) has_num = true;
-        if (m == types.Primitive.undefined_t) has_undef = true;
-    }
-    try T.expect(has_num);
-    try T.expect(has_undef);
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
 }
 
 test "checker: private access after optional property reports possibly undefined receiver" {
@@ -268683,6 +268759,28 @@ test "checker: TS2736 stays silent for other bigint unary operators" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.unary_plus_bigint_operand));
+}
+
+test "checker: bigint arithmetic preserves the bigint result domain" {
+    const s = try newSetup(
+        \\declare const left: bigint;
+        \\declare const right: bigint;
+        \\const sum: bigint = left + right;
+        \\const difference: bigint = left - right;
+        \\const product: bigint = left * right;
+        \\const quotient: bigint = left / right;
+        \\const remainder: bigint = left % right;
+        \\const power: bigint = left ** right;
+        \\const equal: boolean = remainder === BigInt(0);
+        \\const wrong: number = left % right;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), s.checker.diagnostics.items.len);
+    try T.expectEqual(@as(u32, TsCodes.type_not_assignable), s.checker.diagnostics.items[0].code);
+    try T.expect(std.mem.indexOf(u8, s.checker.diagnostics.items[0].message, "bigint") != null);
+    try T.expect(std.mem.indexOf(u8, s.checker.diagnostics.items[0].message, "number") != null);
 }
 
 test "checker: TS1268 rejects bigint index signatures" {

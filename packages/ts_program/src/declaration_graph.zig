@@ -33,6 +33,84 @@ pub const Graph = struct {
     }
 };
 
+fn declarationName(c: *const driver.Compilation, node: hir.NodeId) ?[]const u8 {
+    const name_node = switch (c.hir.kindOf(node)) {
+        .interface_decl => hir.interfaceOf(&c.hir, node).name,
+        .type_alias_decl => hir.typeAliasOf(&c.hir, node).name,
+        else => return null,
+    };
+    if (name_node == hir.none_node_id or c.hir.kindOf(name_node) != .identifier) return null;
+    return c.interner.get(hir.identifierOf(&c.hir, name_node).name);
+}
+
+fn appendNamespaceTypeRoute(
+    gpa: std.mem.Allocator,
+    arena: std.mem.Allocator,
+    builder: *schemas.Builder,
+    supported: *std.AutoHashMapUnmanaged(*const driver.ProgramClassSchema.Declaration, bool),
+    source_index: usize,
+    source: Source,
+    namespace_node: hir.NodeId,
+    target_path: []const u8,
+    namespace_path: []const u8,
+    types: *std.ArrayListUnmanaged(driver.ProgramExportedType),
+) !void {
+    const c = source.compilation;
+    for (hir.namespaceBody(&c.hir, namespace_node)) |raw| {
+        if (c.hir.kindOf(raw) != .export_decl) continue;
+        const member = hir.exportOf(&c.hir, raw).decl;
+        if (member == hir.none_node_id) continue;
+        switch (c.hir.kindOf(member)) {
+            .interface_decl, .type_alias_decl => {
+                const name = declarationName(c, member) orelse continue;
+                const declaration = try builder.declaration(.{ .source = source_index, .node = member });
+                const support = try supported.getOrPut(arena, declaration);
+                if (!support.found_existing) {
+                    support.value_ptr.* = try driver.ProgramClassSchema.Schema.declarationSupported(declaration, gpa);
+                }
+                var duplicate = false;
+                for (types.items) |existing| {
+                    if (existing.declaration == declaration and
+                        std.mem.eql(u8, existing.target_path, target_path) and
+                        std.mem.eql(u8, existing.namespace_path, namespace_path) and
+                        std.mem.eql(u8, existing.export_name, name))
+                    {
+                        duplicate = true;
+                        break;
+                    }
+                }
+                if (!duplicate) try types.append(arena, .{
+                    .target_path = target_path,
+                    .namespace_path = namespace_path,
+                    .export_name = name,
+                    .declaration = declaration,
+                    .contextual_only = declaration.contextual_only,
+                    .projection_only = !support.value_ptr.*,
+                });
+            },
+            .namespace_decl => {
+                const nested = hir.namespaceOf(&c.hir, member);
+                if (nested.name == hir.none_node_id or c.hir.kindOf(nested.name) != .identifier) continue;
+                const nested_name = c.interner.get(hir.identifierOf(&c.hir, nested.name).name);
+                const nested_path = try std.fmt.allocPrint(arena, "{s}.{s}", .{ namespace_path, nested_name });
+                try appendNamespaceTypeRoute(
+                    gpa,
+                    arena,
+                    builder,
+                    supported,
+                    source_index,
+                    source,
+                    member,
+                    target_path,
+                    nested_path,
+                    types,
+                );
+            },
+            else => {},
+        }
+    }
+}
+
 pub fn collect(gpa: std.mem.Allocator, resolver: *resolver_mod.Resolver, sources: []const Source) !Graph {
     var result = Graph.init(gpa);
     errdefer result.deinit();
@@ -119,6 +197,47 @@ pub fn collect(gpa: std.mem.Allocator, resolver: *resolver_mod.Resolver, sources
                     .declaration = declaration,
                     .projection_only = !entry.value_ptr.*,
                 });
+            }
+        }
+    }
+    // A merged interface/namespace exports its nested types through the root
+    // namespace binding. Route those exact source-owned declarations through
+    // every direct or export-star target already proven unambiguous above.
+    // This keeps `import type { Root }; Root.Member` on the same lossless
+    // declaration graph as ordinary top-level imports.
+    // `types` grows while nested declarations are appended, so retain a
+    // stable snapshot of the proven top-level routes instead of iterating a
+    // slice that an ArrayList reallocation could invalidate.
+    const routed_types = try arena.dupe(driver.ProgramExportedType, types.items);
+    for (sources, 0..) |source, source_index| {
+        const c = source.compilation;
+        if (c.root == hir.none_node_id or c.hir.kindOf(c.root) != .block_stmt) continue;
+        for (hir.blockStmts(&c.hir, c.root)) |raw| {
+            if (c.hir.kindOf(raw) != .export_decl) continue;
+            const namespace_node = hir.exportOf(&c.hir, raw).decl;
+            if (namespace_node == hir.none_node_id or c.hir.kindOf(namespace_node) != .namespace_decl) continue;
+            const namespace = hir.namespaceOf(&c.hir, namespace_node);
+            if (namespace.name == hir.none_node_id or c.hir.kindOf(namespace.name) != .identifier) continue;
+            const namespace_name = c.interner.get(hir.identifierOf(&c.hir, namespace.name).name);
+            for (routed_types) |route| {
+                if (route.namespace_path.len != 0 or
+                    !std.mem.eql(u8, route.declaration.path, source.path) or
+                    !std.mem.eql(u8, route.declaration.name, namespace_name))
+                {
+                    continue;
+                }
+                try appendNamespaceTypeRoute(
+                    gpa,
+                    arena,
+                    &builder,
+                    &supported,
+                    source_index,
+                    source,
+                    namespace_node,
+                    route.target_path,
+                    route.export_name,
+                    &types,
+                );
             }
         }
     }

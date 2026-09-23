@@ -10235,6 +10235,132 @@ test "Program: imported indexed-access key domains specialize nested handlers" {
     try expectCompilationHasDiagnosticCode(compilation, 2339);
 }
 
+test "Program: named merged namespaces retain nested interface graphs" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver };
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+
+    const standard =
+        \\export interface StandardTypedV1<Input = unknown, Output = Input> {
+        \\  readonly standard: StandardTypedV1.Props<Input, Output>;
+        \\}
+        \\export declare namespace StandardTypedV1 {
+        \\  export interface Props<Input = unknown, Output = Input> {
+        \\    readonly vendor: string;
+        \\    readonly version: 1;
+        \\    readonly types?: Types<Input, Output> | undefined;
+        \\  }
+        \\  export interface Types<Input = unknown, Output = Input> {
+        \\    readonly input: Input;
+        \\    readonly output: Output;
+        \\  }
+        \\}
+        \\export interface StandardSchema<Input = unknown, Output = Input> {
+        \\  readonly standard: StandardSchema.Props<Input, Output>;
+        \\}
+        \\export declare namespace StandardSchema {
+        \\  export interface Props<Input = unknown, Output = Input> extends StandardTypedV1.Props<Input, Output> {
+        \\    readonly validate: (value: unknown, options?: Options | undefined) => Result<Output> | Promise<Result<Output>>;
+        \\    readonly vendor: string;
+        \\    readonly version: 1;
+        \\  }
+        \\  export type Result<Output> = SuccessResult<Output> | FailureResult;
+        \\  export interface SuccessResult<Output> { readonly value: Output; readonly issues?: undefined; }
+        \\  export interface FailureResult { readonly issues: ReadonlyArray<Issue>; }
+        \\  export interface Issue {
+        \\    readonly message: string;
+        \\    readonly path?: ReadonlyArray<PropertyKey | PathSegment> | undefined;
+        \\  }
+        \\  export interface PathSegment { readonly key: PropertyKey; }
+        \\  export interface Options { readonly libraryOptions?: Record<string, unknown> | undefined; }
+        \\}
+    ;
+    const barrel =
+        \\export * from "./standard.js";
+    ;
+    const consumer_direct =
+        \\import type { StandardSchema } from "./standard.js";
+        \\type SafeResult<T> =
+        \\  | { success: true; data: T; error?: never }
+        \\  | { success: false; data?: never; error: { issues: readonly { message: string }[] } };
+        \\declare function safeParse(value: unknown): SafeResult<unknown>;
+        \\declare function safeParseAsync(value: unknown): Promise<SafeResult<unknown>>;
+        \\const toResult = (result: SafeResult<unknown>) =>
+        \\  result.success ? { value: result.data } : { issues: result.error?.issues };
+        \\export function props(): StandardSchema.Props<unknown, unknown> {
+        \\  return {
+        \\    validate: (value: unknown) => {
+        \\      try { return toResult(safeParse(value)); }
+        \\      catch { return safeParseAsync(value).then(toResult); }
+        \\    },
+        \\    vendor: "home",
+        \\    version: 1 as const,
+        \\  };
+        \\}
+    ;
+    const consumer_star =
+        \\import type { StandardSchema } from "./barrel.js";
+        \\type SafeResult<T> =
+        \\  | { success: true; data: T; error?: never }
+        \\  | { success: false; data?: never; error: { issues: readonly { message: string }[] } };
+        \\declare function safeParse(value: unknown): SafeResult<unknown>;
+        \\declare function safeParseAsync(value: unknown): Promise<SafeResult<unknown>>;
+        \\const toResult = (result: SafeResult<unknown>) =>
+        \\  result.success ? { value: result.data } : { issues: result.error?.issues };
+        \\export function props(): StandardSchema.Props<unknown, unknown> {
+        \\  return {
+        \\    validate: (value: unknown) => {
+        \\      try { return toResult(safeParse(value)); }
+        \\      catch { return safeParseAsync(value).then(toResult); }
+        \\    },
+        \\    vendor: "home",
+        \\    version: 1 as const,
+        \\  };
+        \\}
+    ;
+    try vfs.addFile("/proj/standard.ts", standard);
+    try vfs.addFile("/proj/barrel.ts", barrel);
+    try vfs.addFile("/proj/direct.ts", consumer_direct);
+    try vfs.addFile("/proj/star.ts", consumer_star);
+    const standard_id = try p.add("/proj/standard.ts", standard);
+    const barrel_id = try p.add("/proj/barrel.ts", barrel);
+    const direct_id = try p.add("/proj/direct.ts", consumer_direct);
+    const star_id = try p.add("/proj/star.ts", consumer_star);
+
+    try p.compileAll(.{
+        .no_emit = true,
+        .strict_flags = .{ .no_implicit_any = true, .strict_null_checks = true },
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    });
+    var declarations = try p.collectProgramDeclarationsForChecking();
+    defer declarations.deinit();
+    var direct_props_projection = false;
+    var star_props_projection = false;
+    for (declarations.types) |entry| {
+        if (!std.mem.eql(u8, entry.namespace_path, "StandardSchema") or
+            !std.mem.eql(u8, entry.export_name, "Props") or !entry.projection_only) continue;
+        if (std.mem.eql(u8, entry.target_path, "/proj/standard.ts")) direct_props_projection = true;
+        if (std.mem.eql(u8, entry.target_path, "/proj/barrel.ts")) star_props_projection = true;
+    }
+    try T.expect(direct_props_projection);
+    try T.expect(star_props_projection);
+    for ([_]FileId{ standard_id, barrel_id }) |id| {
+        const compilation = p.fileById(id).compilation.?;
+        try T.expectEqual(@as(usize, 0), compilation.diagnostics.items.len);
+        try expectCompilationLacksDiagnosticCode(compilation, 2339);
+    }
+    for ([_]FileId{ direct_id, star_id }) |id| {
+        const compilation = p.fileById(id).compilation.?;
+        try T.expectEqual(@as(usize, 0), compilation.diagnostics.items.len);
+        try expectCompilationLacksDiagnosticCode(compilation, 2741);
+        try expectCompilationLacksDiagnosticCode(compilation, 7006);
+    }
+}
+
 test "Program: namespace-qualified handler graphs retain contextual types" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();
