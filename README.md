@@ -621,6 +621,16 @@ assigned true path with the excluded false path at fallthrough:
 | False TS7006 | 0 | 0 | **0** |
 | Zod 4.5.2 core diagnostics versus `origin/main` | — | — | **150 → 150; 0 added/removed** |
 
+Imported `Normalize<T>` results now keep filtered mapped and conditional
+members as demand-driven reads instead of publishing an approximate whole
+type across checker pools:
+
+| [Zod 4.5.2 deferred-Normalize audit](docs/docs/TS_PERFORMANCE.md#deferred-imported-normalize-member-reads-untimed) | `e32642e0f` | #764 `6f26046fe` | Change |
+|---|---:|---:|---:|
+| Core diagnostics (21-file shard) | 13 | **8** | **3 TS2411 + 2 TS7006 removed; 0 added** |
+| Unique path/line/column/code identities | 13 | **8** | **5 removed; 0 added** |
+| Focused Home oracle | 3 TS2411 + 2 TS7006 | **clean** | matches clean TypeScript 6.0.3 and native 7.0.2 controls |
+
 TypeScript 6.0.3 reports zero diagnostics on this graph. Home still reports
 348, so Zod remains outside the cross-compiler timing table until Home also
 reaches zero diagnostics.

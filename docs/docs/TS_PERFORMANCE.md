@@ -9433,6 +9433,63 @@ zig build home-tsc -Doptimize=ReleaseSafe -Dhome-tsc-strip=true
 ./zig-out/bin/home-tsc -p /path/to/zod-4.5.2/tsconfig.core.json
 ```
 
+### Deferred imported Normalize member reads (untimed)
+
+Issue [#764](https://github.com/home-lang/home/issues/764), under
+[#548](https://github.com/home-lang/home/issues/548), completes the remaining
+`normalizeParams` callback gap without admitting its mapped and conditional
+declaration graph as an ordinary cross-file value type. The Program schema
+marks only proven filtered function results for deferred reads. The receiving
+checker gives each result a checker-local identity and resolves only the
+member requested by the consumer from the source declaration and concrete
+type arguments. Homomorphic `{ [K in keyof T]: T[K] }` identities reduce to
+their source after instantiation. No source name, diagnostic code, Zod path,
+or benchmark-only branch participates in the rule.
+
+This keeps unsupported declaration machinery out of foreign checker pools,
+which is the ownership boundary violated by the earlier candidate that
+crashed the parallel Zod graph. Substitution propagates the declaration
+origin and concrete arguments, while reads through unions, intersections,
+`Pick`, `Omit`, `Partial`, mapped keys, indexed accesses, and distributive
+conditionals lower only the requested leaf. The placeholder remains
+permissive for unrelated whole-type relations; it is not treated as the
+materialized mapped object.
+
+The unchanged two-file reduction was run against JavaScript TypeScript 6.0.3,
+native TypeScript 7.0.2, and stripped ReleaseSafe and ReleaseFast Home. Both
+controls and both Home builds emit zero diagnostics. A permanent Program test
+adds two deliberately invalid callback assignments and requires exactly two
+TS2322 diagnostics while forbidding TS2411 and TS7006.
+
+| Zod 4.5.2 core, deferred Normalize reads | Parent `e32642e0f` | #764 `6f26046fe` | Change |
+|---|---:|---:|---:|
+| Diagnostics | 13 | **8** | **5 removed; 0 added** |
+| Unique path/line/column/code identities | 13 | **8** | **3 TS2411 + 2 TS7006 removed; 0 added** |
+| Focused valid oracle | 3 TS2411 + 2 TS7006 | **clean** | exact clean three-engine parity |
+| Program suite | 218 before new controls | **220/220** | two positive/negative regressions added |
+| Checker suite | — | **4,395/4,395** | full suite passes |
+
+The ReleaseSafe Zod gate completed four serial runs with byte-identical
+normalized identity sets (SHA-256
+`1e17af71d03b553a5f036464f6fc787dc2b6540936085ce1ac5d3d25fabd918b`),
+then ReleaseFast reproduced the same set. The parent identity hash was
+`815ad7a8b5bcc5a0a161840cb59bdff9e46db4cca97f6ad9385b028e969176e8`;
+the set difference is exactly `core/api.ts:1760:3`, `:1761:3`, and `:1767:3`
+TS2411 plus `:1784:36` and `:1785:34` TS7006. ReleaseSafe and ReleaseFast
+builds passed under the fixed 3,840 MB guard at 2,766 MB and 2,866 MB peak,
+respectively. The Zod runs peaked between 1,396 MB and 1,516 MB in
+ReleaseSafe and at 560 MB in ReleaseFast. This checkpoint makes no timing
+claim.
+
+```sh
+zig build test -Dfilter=ts_program --summary failures
+zig build test -Dfilter=ts_checker --summary failures
+zig build home-tsc -Doptimize=ReleaseSafe -j1 -Dhome-tsc-strip=true
+zig build home-tsc -Doptimize=ReleaseFast -j1 -Dhome-tsc-strip=true
+./zig-out/bin/home-tsc -p /path/to/normalize-reduction/tsconfig.json
+~/.cache/home-ts-parity/tools/gate751.sh ./zig-out/bin/home-tsc /private/tmp/home-764
+```
+
 ### Typed cross-file global ownership and cyclic provenance (untimed)
 
 Issue [#480](https://github.com/home-lang/home/issues/480), under
