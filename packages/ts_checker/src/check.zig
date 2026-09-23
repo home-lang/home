@@ -31013,6 +31013,27 @@ pub const Checker = struct {
             },
             .call_expr, .new_expr => {
                 const c = hir_mod.callOf(self.hir, parent);
+                // A directly-invoked function expression inherits the call
+                // expression's result context as its return context:
+                //
+                //   const ranges: Record<K, [number, number]> =
+                //     (() => ({ a: [0, 1] }))();
+                //
+                // The call is the initializer, while the arrow is its callee,
+                // so the normal callback-argument path below cannot see the
+                // target.  Model the result context as a return-only signature;
+                // direct-IIFE parameters are independently inferred from the
+                // call arguments by `iifeParameterTypeFromCallArgument`.
+                if (c.callee == fn_node and self.hir.kindOf(parent) == .call_expr) {
+                    const return_t = self.contextualTargetTypeForExpression(parent) orelse return null;
+                    if (return_t == types.Primitive.none or
+                        return_t == types.Primitive.any or
+                        return_t == types.Primitive.unknown)
+                    {
+                        return null;
+                    }
+                    return self.interner.internSignature(&.{}, return_t, false) catch null;
+                }
                 const args = hir_mod.callArgs(self.hir, parent);
                 var arg_index: ?usize = null;
                 for (args, 0..) |arg, i| {
@@ -77972,6 +77993,14 @@ pub const Checker = struct {
                     if (try self.importedTypeRefForLocal(r.name, type_node)) |t| return t;
                     if (try self.umdGlobalTypeForName(r.name, type_node)) |t| return t;
                     if (try self.importedReferenceLibTypeForLocal(r.name, type_node)) |t| return t;
+                    // The syntax declaration itself is authoritative about
+                    // symbol space. If a cyclic or otherwise unsupported
+                    // program projection cannot materialize the exported
+                    // type, an explicit `import { type T }` still cannot be
+                    // reclassified as a value merely because a value-space
+                    // fallback is visible. Recover as `any`, as for other
+                    // unresolved imported types, without issuing TS2749.
+                    if (self.typeOnlyImportLocal(r.name, type_node)) return types.Primitive.any;
                     if (try self.resolveForwardClassInstanceType(type_node, r.name)) |t| return t;
                     if (std.mem.eql(u8, name_str, "Generator") or std.mem.eql(u8, name_str, "AsyncGenerator")) {
                         const is_async = std.mem.eql(u8, name_str, "AsyncGenerator");
@@ -116680,6 +116709,17 @@ pub const Checker = struct {
                     (try self.freshObjectReturnUnion(elem_types.items)) orelse try self.inferArrayLiteralElementType(elem_types.items)
                 else
                     try self.inferArrayLiteralElementType(elem_types.items);
+                // A contextually typed array literal adopts a compatible
+                // tuple target. This matters in nested positions such as an
+                // object member returned by an IIFE: retaining `T[]` there
+                // loses the fixed length before the outer object is related.
+                if (self.arrayLiteralIsDirectIifeResultMember(node)) if (self.contextualTargetTypeForExpression(node)) |target_t| {
+                    if (self.isActualTupleType(target_t) and
+                        try self.arrayLiteralAssignableToTupleTarget(node, target_t, false))
+                    {
+                        break :blk target_t;
+                    }
+                };
                 // Build the standard Array<T> shape ÃÂ¢ÃÂÃÂ `length:
                 // number` plus `[i: number]: T`. Lets `arr[0]`
                 // and `arr.length` resolve through the existing
@@ -145283,6 +145323,11 @@ pub const Checker = struct {
         for (self.diagnostics.items) |d| {
             if (d.node == node and d.code == TsCodes.value_used_as_type_did_you_mean_typeof) return;
         }
+        // An explicit type-only import has type-space meaning by syntax,
+        // even when cross-module projection of the exported declaration
+        // recovers to `any`. TS2749 is specifically for value-only symbols;
+        // runtime uses of this binding remain covered by TS1361.
+        if (self.typeOnlyImportLocal(name, node)) return;
         // A named import supplied by an explicitly referenced declaration
         // library has already established a type-space meaning. External
         // module metadata can expose the same symbol's runtime side first.
@@ -150716,6 +150761,22 @@ pub const Checker = struct {
                 else => return false,
             }
         }
+    }
+
+    fn arrayLiteralIsDirectIifeResultMember(self: *Checker, node: NodeId) bool {
+        const property = self.hir.parentOf(node);
+        if (property == hir_mod.none_node_id or self.hir.kindOf(property) != .object_property) return false;
+        if (hir_mod.objectPropertyOf(self.hir, property).value != node) return false;
+        const object = self.hir.parentOf(property);
+        if (object == hir_mod.none_node_id or self.hir.kindOf(object) != .object_literal) return false;
+        const function = self.hir.parentOf(object);
+        if (function == hir_mod.none_node_id) return false;
+        const function_kind = self.hir.kindOf(function);
+        if (function_kind != .arrow_fn and function_kind != .fn_expr and function_kind != .fn_decl) return false;
+        if (hir_mod.fnDeclOf(self.hir, function).body != object) return false;
+        const call = self.hir.parentOf(function);
+        if (call == hir_mod.none_node_id or self.hir.kindOf(call) != .call_expr) return false;
+        return hir_mod.callOf(self.hir, call).callee == function;
     }
 
     /// Phase 4 #11 ÃÂ¢ÃÂÃÂ when an object literal is the return value of a
@@ -233056,6 +233117,53 @@ test "checker: stable captured branch narrows are retained" {
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
+}
+
+test "checker: direct IIFE result context preserves tuple members" {
+    const accepted = try newSetup(
+        \\type Key = "low" | "high";
+        \\const ranges: Record<Key, [number, number]> = (() => ({
+        \\  low: [0, 1],
+        \\  high: [2, 3],
+        \\}))();
+    );
+    defer destroySetup(accepted);
+    try accepted.checker.checkSourceFile(accepted.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(accepted, TsCodes.type_not_assignable));
+
+    const rejected = try newSetup(
+        \\type Key = "low" | "high";
+        \\const ranges: Record<Key, [number, number]> = (() => ({
+        \\  low: [0],
+        \\  high: [2, 3],
+        \\}))();
+    );
+    defer destroySetup(rejected);
+    try rejected.checker.checkSourceFile(rejected.root);
+    try T.expect(checkerCountCode(rejected, TsCodes.type_not_assignable) > 0);
+}
+
+test "checker: explicit type-only imports stay in type space through utility aliases" {
+    const s = try newSetup(
+        \\// @module: nodenext
+        \\// @filename: source.ts
+        \\export interface GeneratorParams {
+        \\  cycles?: "ref" | "throw";
+        \\  reused?: "ref" | "inline";
+        \\  external?: object;
+        \\}
+        \\export function initialize(): void;
+        \\// @filename: consumer.ts
+        \\import { initialize, type GeneratorParams } from "./source.js";
+        \\type EmitParams = Pick<GeneratorParams, "cycles" | "reused" | "external">;
+        \\class Generator {}
+        \\const params: EmitParams = {};
+        \\initialize();
+        \\void params; void Generator;
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.value_used_as_type_did_you_mean_typeof));
 }
 
 test "checker: stable computed element access guards retain their narrowed type" {
