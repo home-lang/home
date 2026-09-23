@@ -9879,7 +9879,7 @@ pub const Checker = struct {
                     }
                     self.popNarrowScope();
                     if (static_cond == .unknown) {
-                        try self.applyExhaustiveBranchAssignmentFlow(i.then_branch, i.else_branch);
+                        try self.applyConditionalIdentifierAssignmentFlow(node);
                     } else {
                         try self.applyFlowNarrowSnapshot(&reachable_flow);
                     }
@@ -9890,6 +9890,7 @@ pub const Checker = struct {
                     try self.applyInstanceofAssignmentFlow(i.cond, i.then_branch);
                     try self.applyNegatedInstanceofAssignmentFlow(i.cond, i.then_branch);
                     try self.applyInstanceofFallthroughJoin(i.cond);
+                    try self.applyConditionalIdentifierAssignmentFlow(node);
                 }
             },
             .while_stmt => {
@@ -130768,23 +130769,167 @@ pub const Checker = struct {
         try self.recordNarrow(name, assigned_t);
     }
 
-    fn applyExhaustiveBranchAssignmentFlow(
+    fn collectConditionalAssignedIdentifiers(
         self: *Checker,
-        then_branch: NodeId,
-        else_branch: NodeId,
-    ) !void {
-        const name = self.lastExhaustiveAssignmentCandidate(then_branch) orelse return;
-        const then_t = (try self.definiteNonNullAssignmentType(then_branch, name)) orelse return;
-        const else_t = (try self.definiteNonNullAssignmentType(else_branch, name)) orelse return;
-        const joined = if (then_t == else_t)
-            then_t
-        else if (then_t == types.Primitive.any or else_t == types.Primitive.any)
-            types.Primitive.any
-        else if (then_t == types.Primitive.unknown or else_t == types.Primitive.unknown)
-            types.Primitive.unknown
-        else
-            try self.interner.internUnion(&.{ then_t, else_t });
-        try self.recordNarrow(name, joined);
+        node: NodeId,
+        flow_root: NodeId,
+        names: *std.AutoHashMapUnmanaged(hir_mod.StringId, void),
+    ) CheckError!void {
+        if (node == hir_mod.none_node_id) return;
+        switch (self.hir.kindOf(node)) {
+            .assignment => {
+                const assignment = hir_mod.assignmentOf(self.hir, node);
+                if (assignment.op != null or self.hir.kindOf(assignment.target) != .identifier) return;
+                const id = hir_mod.identifierOf(self.hir, assignment.target);
+                // A binding introduced inside the conditional belongs to
+                // that branch and must not become an outer flow fact.  A
+                // declaration before the conditional is the stable slot the
+                // join is allowed to update.
+                if (self.findLocalValueDeclBeforeExpression(assignment.target, id.name)) |decl| {
+                    const root_span = self.hir.spanOf(flow_root);
+                    const decl_span = self.hir.spanOf(decl);
+                    if (decl_span.start >= root_span.start and decl_span.end <= root_span.end) return;
+                }
+                try names.put(self.gpa, id.name, {});
+            },
+            .block_stmt => for (hir_mod.blockStmts(self.hir, node)) |statement| {
+                try self.collectConditionalAssignedIdentifiers(statement, flow_root, names);
+            },
+            .if_stmt => {
+                const conditional = hir_mod.ifOf(self.hir, node);
+                try self.collectConditionalAssignedIdentifiers(conditional.then_branch, flow_root, names);
+                try self.collectConditionalAssignedIdentifiers(conditional.else_branch, flow_root, names);
+            },
+            .while_stmt => try self.collectConditionalAssignedIdentifiers(hir_mod.whileOf(self.hir, node).body, flow_root, names),
+            .do_while_stmt => try self.collectConditionalAssignedIdentifiers(hir_mod.doWhileOf(self.hir, node).body, flow_root, names),
+            .for_stmt => try self.collectConditionalAssignedIdentifiers(hir_mod.forStmtOf(self.hir, node).body, flow_root, names),
+            .for_in_stmt, .for_of_stmt => try self.collectConditionalAssignedIdentifiers(hir_mod.forInOf(self.hir, node).body, flow_root, names),
+            // Assignments in a nested function/class run in a different
+            // control-flow graph and cannot affect the current join.
+            .fn_decl, .fn_expr, .arrow_fn, .class_decl, .class_expr => {},
+            else => {},
+        }
+    }
+
+    fn joinReachableIdentifierFlows(self: *Checker, left: ?TypeId, right: ?TypeId) CheckError!?TypeId {
+        const lhs = left orelse return right;
+        const rhs = right orelse return left;
+        if (lhs == rhs or (self.engine.isIdenticalTo(lhs, rhs) catch false)) return lhs;
+        return try self.internConditionalUnion(&.{ lhs, rhs });
+    }
+
+    /// Compute the flow type of one already-declared identifier after a
+    /// conditional statement.  `null` means the path transfers control, so
+    /// it is excluded from the join.  Missing `else` branches retain the
+    /// incoming type, while nested conditionals recursively join every
+    /// reachable assignment.
+    fn conditionalIdentifierFlowAfterStatement(
+        self: *Checker,
+        node: NodeId,
+        name: hir_mod.StringId,
+        incoming: ?TypeId,
+    ) CheckError!?TypeId {
+        if (node == hir_mod.none_node_id) return incoming;
+        return switch (self.hir.kindOf(node)) {
+            .assignment => blk: {
+                const assignment = hir_mod.assignmentOf(self.hir, node);
+                if (assignment.op != null or
+                    self.hir.kindOf(assignment.target) != .identifier or
+                    hir_mod.identifierOf(self.hir, assignment.target).name != name)
+                {
+                    break :blk incoming;
+                }
+                // The checked assignment expression carries contextual
+                // generic inference from its target (`bucket = new Map()`
+                // becomes the bucket's Map<K, V>, rather than the raw
+                // zero-argument constructor fallback).  Use it as the flow
+                // fallback and only consult the bare RHS when the assignment
+                // has not been checked yet.
+                var value_t = self.hir.typeOf(node);
+                if (value_t == types.Primitive.none) value_t = self.hir.typeOf(assignment.value);
+                if (value_t == types.Primitive.none) value_t = try self.checkExpression(assignment.value);
+                const raw_flow = try self.flowTypeForAssignmentValue(assignment.value, value_t);
+                const declared_t = self.typeOfIdentifierDeclared(assignment.target);
+                const preserve_contextual_constructor = self.hir.kindOf(assignment.value) == .new_expr and
+                    self.typeIsPossiblyNullishStrict(declared_t);
+                if (declared_t != types.Primitive.none and
+                    (preserve_contextual_constructor or
+                        !(try self.assignmentFlowValueFitsTarget(raw_flow, declared_t))) and
+                    !self.diagnosticExists(node, TsCodes.type_not_assignable) and
+                    !self.diagnosticExists(assignment.target, TsCodes.type_not_assignable) and
+                    !self.diagnosticExists(assignment.value, TsCodes.type_not_assignable) and
+                    !self.typeIsPossiblyNullishStrict(value_t))
+                {
+                    // Contextually accepted generic constructors can retain a
+                    // raw, under-instantiated result on the RHS node.  Flow
+                    // follows the successfully checked declared slot instead:
+                    // after `bucket = new Map()` a `Map<K, V> | undefined`
+                    // slot is `Map<K, V>`, never the constructor's raw shape.
+                    const assigned_declared_t = self.subtractNullUndefined(declared_t) catch declared_t;
+                    if (assigned_declared_t != types.Primitive.none and assigned_declared_t != types.Primitive.never) {
+                        break :blk assigned_declared_t;
+                    }
+                }
+                break :blk raw_flow;
+            },
+            .block_stmt => blk: {
+                var flow = incoming;
+                for (hir_mod.blockStmts(self.hir, node)) |statement| {
+                    flow = try self.conditionalIdentifierFlowAfterStatement(statement, name, flow);
+                    if (flow == null) break;
+                }
+                break :blk flow;
+            },
+            .if_stmt => blk: {
+                const conditional = hir_mod.ifOf(self.hir, node);
+                const static_cond = self.staticBoolCondition(conditional.cond);
+                if (static_cond == .true) {
+                    break :blk try self.conditionalIdentifierFlowAfterStatement(conditional.then_branch, name, incoming);
+                }
+                if (static_cond == .false) {
+                    break :blk if (conditional.else_branch == hir_mod.none_node_id)
+                        incoming
+                    else
+                        try self.conditionalIdentifierFlowAfterStatement(conditional.else_branch, name, incoming);
+                }
+                const then_flow = try self.conditionalIdentifierFlowAfterStatement(conditional.then_branch, name, incoming);
+                const else_flow = if (conditional.else_branch == hir_mod.none_node_id)
+                    incoming
+                else
+                    try self.conditionalIdentifierFlowAfterStatement(conditional.else_branch, name, incoming);
+                break :blk try self.joinReachableIdentifierFlows(then_flow, else_flow);
+            },
+            .return_stmt, .throw_stmt, .break_stmt, .continue_stmt => null,
+            .while_stmt, .for_stmt, .for_in_stmt, .for_of_stmt => blk: {
+                const body = switch (self.hir.kindOf(node)) {
+                    .while_stmt => hir_mod.whileOf(self.hir, node).body,
+                    .for_stmt => hir_mod.forStmtOf(self.hir, node).body,
+                    .for_in_stmt, .for_of_stmt => hir_mod.forInOf(self.hir, node).body,
+                    else => unreachable,
+                };
+                const body_flow = try self.conditionalIdentifierFlowAfterStatement(body, name, incoming);
+                break :blk try self.joinReachableIdentifierFlows(incoming, body_flow);
+            },
+            .do_while_stmt => try self.conditionalIdentifierFlowAfterStatement(hir_mod.doWhileOf(self.hir, node).body, name, incoming),
+            else => incoming,
+        };
+    }
+
+    fn applyConditionalIdentifierAssignmentFlow(self: *Checker, node: NodeId) CheckError!void {
+        var names: std.AutoHashMapUnmanaged(hir_mod.StringId, void) = .empty;
+        defer names.deinit(self.gpa);
+        try self.collectConditionalAssignedIdentifiers(node, node, &names);
+
+        var iterator = names.keyIterator();
+        while (iterator.next()) |name_ptr| {
+            const name = name_ptr.*;
+            const incoming = self.lookupNarrow(name) orelse
+                (try self.typeOfVisibleNameNoDiag(node, name)) orelse
+                continue;
+            const flowed = (try self.conditionalIdentifierFlowAfterStatement(node, name, incoming)) orelse continue;
+            if (flowed == types.Primitive.none or flowed == types.Primitive.unknown) continue;
+            try self.recordNarrow(name, flowed);
+        }
     }
 
     fn lastExhaustiveAssignmentCandidate(self: *Checker, node: NodeId) ?hir_mod.StringId {
@@ -158572,7 +158717,14 @@ pub const Checker = struct {
                 try self.report(l.lhs, TsCodes.nullish_rhs_unreachable, "Right operand of ?? is unreachable because the left operand is never nullish.");
             }
             const lhs_non_null = self.subtractNullUndefined(lhs) catch lhs;
-            return self.internExpressionUnion(&.{ lhs_non_null, rhs });
+            // The fallback branch participates in the expression as a fresh
+            // literal.  Keeping that literal is what lets an optional literal
+            // union stay closed: `("a" | "b" | undefined) ?? "a"` is
+            // `"a" | "b"`, not `string | "a" | "b"`.  The surrounding
+            // declaration/context can still widen the completed expression
+            // when appropriate.
+            const rhs_result = try self.expressionLiteralType(l.rhs, rhs);
+            return self.internExpressionUnion(&.{ lhs_non_null, rhs_result });
         }
         try self.reportVoidTruthiness(l.lhs, lhs);
         const report_syntactic_truthiness = !self.virtualSectionIsJsLike(l.lhs) or
@@ -200199,6 +200351,51 @@ test "checker: logical-or preserves string literal operands" {
         try T.expect(d.code != TsCodes.type_not_assignable);
         try T.expect(d.code != TsCodes.instanceof_left_type);
     }
+}
+
+test "checker: nullish coalescing preserves a literal fallback" {
+    const s = try newSetup(
+        \\interface Params { target?: "draft" | "legacy"; mode?: "throw" | "skip" }
+        \\interface Context { target: "draft" | "legacy"; mode: "throw" | "skip" }
+        \\declare const params: Params;
+        \\const context: Context = {
+        \\    target: params.target ?? "draft",
+        \\    mode: (params.mode as Context["mode"]) ?? "throw",
+        \\};
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: conditional assignments join reachable literal flows" {
+    const s = try newSetup(
+        \\function partial(cond: boolean, tag: string, flag: boolean) {
+        \\    let mode: "none" | "left" | "right" = "none";
+        \\    if (cond) {
+        \\        if (tag === "skip") {
+        \\            tag.toUpperCase();
+        \\        } else if ((tag === "unknown" || tag === "any") && !flag) {
+        \\            mode = "left";
+        \\        } else {
+        \\            mode = "right";
+        \\        }
+        \\    }
+        \\    if (mode === "right") mode.toUpperCase();
+        \\    if (mode === "none") mode.toUpperCase();
+        \\}
+        \\function exits(cond: boolean) {
+        \\    let mode: "none" | "right" = "none";
+        \\    if (cond) mode = "right";
+        \\    else return;
+        \\    if (mode === "none") mode.toUpperCase();
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.no_overlap_comparison));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: string and template literal types compare cooked text" {
