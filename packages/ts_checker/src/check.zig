@@ -107397,8 +107397,11 @@ pub const Checker = struct {
     }
 
     fn predicateTargetIsFunctionObject(self: *Checker, target: TypeId) bool {
-        const function_t = self.lowerBuiltinObjectType("Function") orelse return false;
-        return target == function_t;
+        // Built-in object lowering creates a fresh structural TypeId each
+        // time. Compare the recorded identity, not two allocations of the
+        // same Function recipe, when preserving `any` through typeof guards.
+        const name = self.builtin_object_names.get(target) orelse return false;
+        return std.mem.eql(u8, name, "Function");
     }
 
     fn predicateTargetNodeIsBareName(self: *Checker, node: NodeId, name: []const u8) bool {
@@ -107655,7 +107658,10 @@ pub const Checker = struct {
         if (current == types.Primitive.never) return types.Primitive.never;
         if (current == target) return target;
         if (self.typeIsAnyLike(current)) {
-            if (self.predicateTargetIsFunctionObject(target)) return current;
+            // TypeScript preserves `any` under a typeof-function guard, but
+            // narrows `unknown` to Function. They share this fast path; only
+            // the former may keep its unconstrained type.
+            if (self.typeIsAny(current) and self.predicateTargetIsFunctionObject(target)) return current;
             return target;
         }
         if (self.typeIsAnyLike(target)) return current;
@@ -177746,6 +177752,40 @@ pub const Checker = struct {
                 return try self.contextualFunctionReturnAssignable(source_ret, target_ret);
             }
         }
+        // An open rest-array source accepts each fixed argument the target
+        // supplies. Compare those arguments to the element type, not to the
+        // array parameter as a whole. Finite/variadic tuple rests keep the
+        // tuple-shape paths above and the ordinary relation below.
+        if (self.rest_signatures.contains(source_t) and
+            !self.rest_signatures.contains(target_t) and
+            source_params.len > 0)
+        {
+            const rest_t = source_params[source_params.len - 1];
+            if (rest_t < self.interner.pool.typeCount() and
+                !self.interner.pool.flagsOf(rest_t).is_tuple)
+            {
+                const element_t = self.interner.objectNumberIndex(rest_t);
+                if (element_t != types.Primitive.none) {
+                    if (self.signatureMinRequiredArgs(source_t, source_params) > target_params.len) return false;
+                    // Recursive relations may intern types and relocate the
+                    // shared parameter pool, so keep both lists stable.
+                    const source_fixed = try self.gpa.dupe(TypeId, source_params[0 .. source_params.len - 1]);
+                    defer self.gpa.free(source_fixed);
+                    const target_fixed = try self.gpa.dupe(TypeId, target_params);
+                    defer self.gpa.free(target_fixed);
+                    const shared = @min(source_fixed.len, target_fixed.len);
+                    for (source_fixed[0..shared], target_fixed[0..shared]) |source_param, target_param| {
+                        if (!try self.contextualTargetParamAssignableToSource(target_param, source_param)) return false;
+                    }
+                    for (target_fixed[shared..]) |target_param| {
+                        if (!try self.contextualTargetParamAssignableToSource(target_param, element_t)) return false;
+                    }
+                    const source_ret = self.interner.signatureReturn(source_t) orelse types.Primitive.void_t;
+                    const target_ret = self.interner.signatureReturn(target_t) orelse types.Primitive.void_t;
+                    return try self.contextualFunctionReturnAssignable(source_ret, target_ret);
+                }
+            }
+        }
         if (self.rest_signatures.contains(target_t) and target_params.len > 0) {
             if (self.rest_signatures.contains(source_t) and source_params.len > 0) {
                 const source_fixed = source_params.len - 1;
@@ -210785,6 +210825,37 @@ test "checker: method assignment compares explicit this parameter" {
     try T.expect(found);
 }
 
+test "checker: rest-array source accepts fixed object parameters without erasing errors" {
+    const source =
+        \\interface Receiver { call(value: { name: string }): number; }
+        \\declare let anyRest: Receiver;
+        \\anyRest.call = (...values: any[]): number => values.length;
+        \\declare let unknownRest: Receiver;
+        \\unknownRest.call = (...values: unknown[]): number => values.length;
+        \\declare let narrowRest: Receiver;
+        \\narrowRest.call = (...values: string[]): number => values.length;
+        \\declare let wrongReturn: Receiver;
+        \\wrongReturn.call = (...values: any[]): string => "wrong";
+        \\declare let tooManyRequired: Receiver;
+        \\tooManyRequired.call = (name: string, value: { name: string }, ...tail: any[]): number => 0;
+    ;
+    const b = try newBoundSetup(source);
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{ .strict_null_checks = true, .strict_function_types = true });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 3), checkerCountCode(b.base, TsCodes.type_not_assignable));
+    for ([_][]const u8{ "narrowRest.call", "wrongReturn.call", "tooManyRequired.call" }) |marker| {
+        const start: u32 = @intCast(std.mem.indexOf(u8, source, marker).?);
+        var found = false;
+        for (b.base.checker.diagnostics.items) |diagnostic| {
+            if (diagnostic.code != TsCodes.type_not_assignable) continue;
+            const pos = diagnostic.pos orelse b.base.hir.spanOf(diagnostic.node).start;
+            if (pos >= start and pos <= start + @as(u32, @intCast(marker.len))) found = true;
+        }
+        try T.expect(found);
+    }
+}
+
 test "checker: method assignment compares polymorphic this parameter under non-strict" {
     const s = try newSetup(
         \\class C { n: number; explicitThis(this: this, m: number): number { return this.n + m; } }
@@ -232330,7 +232401,7 @@ test "checker: ArrayBuffer.isView narrows to the ArrayBufferView lib type" {
 
 test "checker: typeof x === \"function\" narrows x in then-branch" {
     const s = try newSetup(
-        \\function f(x: any) {
+        \\function f(x: unknown) {
         \\  if (typeof x === "function") {
         \\    let fn = x;
         \\  }
@@ -232348,6 +232419,31 @@ test "checker: typeof x === \"function\" narrows x in then-branch" {
     const v_decl = then_stmts[0];
     const v_init = hir_mod.varDeclOf(&s.hir, v_decl).init;
     try T.expect(s.checker.objectHasCallOrConstructSignature(s.hir.typeOf(v_init)));
+}
+
+test "checker: typeof function preserves any properties but not broad Function calls" {
+    const b = try newBoundSetup(
+        \\declare function accept<F extends (...args: never[]) => unknown>(value: F): void;
+        \\declare const anyBox: { value: any };
+        \\declare const unknownBox: { value: unknown };
+        \\declare const broad: Function;
+        \\if (typeof anyBox.value === "function") {
+        \\  const stillAny: number = anyBox.value;
+        \\  accept(anyBox.value);
+        \\  void stillAny;
+        \\}
+        \\if (typeof unknownBox.value === "function") {
+        \\  const wrong: number = unknownBox.value;
+        \\  accept(unknownBox.value);
+        \\  void wrong;
+        \\}
+        \\accept(broad);
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(b.base, TsCodes.argument_type_mismatch));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.type_not_assignable));
 }
 
 test "checker: typeof undeclared name does not narrow later member access" {

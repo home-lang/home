@@ -9553,6 +9553,58 @@ zig build -j1 home-tsc -Doptimize=ReleaseSafe -Dhome-tsc-strip=true
 ~/.cache/home-ts-parity/tools/gate751.sh ./zig-out/bin/home-tsc /private/tmp/home-775-777-final-releasesafe
 ```
 
+### Function guards and rest-array callback assignment (untimed)
+
+Under the Zod admission tracker [#548](https://github.com/home-lang/home/issues/548),
+this checkpoint compares the unchanged, frozen Zod 4.5.2 21-file core proxy
+against TypeScript 6.0.3, native TypeScript 7.0.2, and Home. It is a
+correctness result, not a performance claim. The two TypeScript controls
+report only `core/index.ts:11:26 TS2307`: the reduced proxy excludes the
+referenced `../locales/index.js`. That shared proxy-boundary diagnostic is
+not a Home compiler defect and is not hidden by changing the corpus.
+
+Home had compared the `typeof`-function predicate's target against a newly
+allocated `Function` type ID. Since built-in lowering creates a fresh ID on
+each call, the comparison never matched, and an `any`-typed callback value
+was incorrectly narrowed to the broad `Function` type. The checker now
+compares the recorded built-in name and preserves `any`; `unknown` still
+narrows to `Function`. Separately, a source signature with an open
+`...args: E[]` now compares each fixed target argument to `E`, rather than
+to the entire array. Tuple-rest, minimum-arity, and return-type checks are
+retained. These are general type rules, with no Zod-specific branch.
+
+| Frozen core diagnostic identities | Before | After | Delta |
+|---|---:|---:|---|
+| Total | 6 | **4** | 2 removed; 0 added |
+| Home-only | 5 | **3** | false TS2345 at `core/schemas.ts:4772:45` and `:4774:40` removed |
+| Shared proxy-boundary TS2307 | 1 | 1 | unchanged |
+
+The exact normalized after-set is `core/index.ts:11:26 TS2307`,
+`core/schemas.ts:4779:5 TS2322`, `core/schemas.ts:4879:19 TS2741`, and
+`core/visit.ts:34:21 TS2571` (SHA-256
+`b76cec6192d95acc99611c9c40610a1e5e7f7dc20b931d3340ad7b0a166b9631`).
+The rest-array correction passes a standalone generic-overload reduction but
+does **not** remove the richer Zod assignment at `:4779`; that identity
+remains open. Likewise, the remaining TS2741 and TS2571 are not claimed
+fixed.
+
+Pinned TypeScript 6.0.3 and native 7.0.2 controls agree on the positive and
+negative probes: `any` remains callable under a function guard while
+`unknown` and `Function` are rejected where a constrained callback is
+required; an `any[]` or `unknown[]` rest-source signature accepts a fixed
+object parameter, whereas a `string[]` source, wrong return, and excess
+required arguments remain errors. Home matches those exact diagnostics after
+the changes. A cross-file Program test checks the guarded callback through
+an imported constructor and preserves the two intentional TS2345 errors.
+
+The full checker suite passed **4,403/4,403** and the Program suite passed
+**223/223**. A stripped ReleaseSafe `home-tsc` build passed at a 2,648 MB
+peak; the frozen core gate passed at 1,249 MB. Each heavy run was serialized
+under the fixed 3,840 MB process-tree memory ceiling. The unmodified
+106-file Zod graph and timing comparison remain outside admission until
+the Home-only identities are resolved; the 21-file proxy result must not be
+presented as a full-graph benchmark.
+
 ### Typed cross-file global ownership and cyclic provenance (untimed)
 
 Issue [#480](https://github.com/home-lang/home/issues/480), under

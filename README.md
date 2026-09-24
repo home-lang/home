@@ -640,9 +640,22 @@ retain their exact type domains and callable contracts across Program owners:
 | Program suite (#777) | 218/220 | **222/222** | 2 origin regressions fixed; 2 permanent controls added |
 | Zod identities after #777 | 6 | **6** | byte-identical; 0 added/removed |
 
-TypeScript 6.0.3 reports zero diagnostics on this graph. Home still reports
-348, so Zod remains outside the cross-compiler timing table until Home also
-reaches zero diagnostics.
+The next untimed [function-guard and rest-array parity checkpoint](docs/docs/TS_PERFORMANCE.md#function-guards-and-rest-array-callback-assignment-untimed)
+uses the unchanged 21-file Zod 4.5.2 core proxy:
+
+| Core proxy identity set | Before | After | Admission |
+|---|---:|---:|---|
+| All diagnostics | 6 | **4** | 2 false TS2345 removed; 0 added |
+| Home-only diagnostics | 5 | **3** | full Zod graph and timing still pending |
+
+The fourth remaining identity, TS2307, is shared by both pinned TypeScript
+controls because the reduced proxy omits `../locales/index.js`.
+
+On the separate full 106-file Zod graph, TypeScript 6.0.3 reports zero
+diagnostics while the last recorded Home full-graph result was 348. The new
+core-proxy checkpoint above does not update that full-graph count. Zod remains
+outside the cross-compiler timing table until Home reaches zero diagnostics
+on the full graph.
 
 The latest optimization admissions preserve that contextual snapshot while
 recording both accepted and rejected probes:

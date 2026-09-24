@@ -14133,3 +14133,62 @@ test "Program: projection-only imported constructors type member assignment call
     try T.expectEqual(@as(u32, 2322), compilation.diagnostics.items[0].code);
     try T.expectEqual(@as(u32, @intCast(std.mem.indexOf(u8, api, "wrong").?)), compilation.diagnostics.items[0].pos);
 }
+
+test "Program: imported callback typeof guard preserves any and rejects Function" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver };
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    const core =
+        \\export interface Payload<T = unknown> { value: T; }
+        \\export interface Internals { parse: (payload: Payload<any>) => Payload; }
+        \\export interface Box {
+        \\  _zod: Internals;
+        \\  implement<F extends (...args: never[]) => unknown>(func: F): F;
+        \\}
+        \\export interface Constructor<T extends Box> { new (): T; }
+        \\export declare function createCtor<T extends Box>(initializer: (inst: T) => void): Constructor<T>;
+    ;
+    const app =
+        \\import { createCtor } from "./core.js";
+        \\import type { Box, Constructor } from "./core.js";
+        \\export const BoxConstructor: Constructor<Box> = createCtor((inst) => {
+        \\  inst._zod.parse = (payload) => {
+        \\    if (typeof payload.value !== "function") return payload;
+        \\    payload.value = inst.implement(payload.value);
+        \\    return payload;
+        \\  };
+        \\});
+        \\declare const broad: Function;
+        \\declare const box: Box;
+        \\box.implement(broad);
+        \\declare const unknownBox: { value: unknown };
+        \\if (typeof unknownBox.value === "function") box.implement(unknownBox.value);
+    ;
+    try vfs.addFile("/proj/core.ts", core);
+    try vfs.addFile("/proj/app.ts", app);
+    _ = try program.add("/proj/core.ts", core);
+    const app_id = try program.add("/proj/app.ts", app);
+
+    try program.compileAll(.{
+        .no_emit = true,
+        .strict_flags = .{ .no_implicit_any = true, .strict_null_checks = true, .strict_function_types = true },
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    });
+    const compilation = program.fileById(app_id).compilation.?;
+    try T.expectEqual(@as(usize, 2), compilation.diagnostics.items.len);
+    for ([_][]const u8{ "box.implement(broad)", "box.implement(unknownBox.value)" }) |call| {
+        const start: u32 = @intCast(std.mem.indexOf(u8, app, call).?);
+        var found = false;
+        for (compilation.diagnostics.items) |diagnostic| {
+            if (diagnostic.code != 2345) continue;
+            const pos = diagnostic.pos;
+            if (pos >= start and pos <= start + @as(u32, @intCast(call.len))) found = true;
+        }
+        try T.expect(found);
+    }
+}
