@@ -14193,6 +14193,91 @@ test "Program: imported callback typeof guard preserves any and rejects Function
     }
 }
 
+test "Program: contextual visitor preserves imported finite keys and member chains" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver };
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    const schema =
+        \\export declare const KEY: unique symbol;
+        \\export interface TypeDef { type: "a" | "b"; opaque: typeof KEY; }
+        \\export interface BaseInternals { def: TypeDef; opaque: typeof KEY; }
+        \\export interface Internals<O = unknown, I = unknown> extends BaseInternals {
+        \\  output: O;
+        \\  input: I;
+        \\}
+        \\export interface Type<
+        \\  O = unknown,
+        \\  I = unknown,
+        \\  T extends Internals<O, I> = Internals<O, I>,
+        \\> {
+        \\  _zod: T;
+        \\  opaque: typeof KEY;
+        \\}
+        \\export type SomeType = Type;
+    ;
+    const visit =
+        \\import * as schemas from "./schema.js";
+        \\type AnySchema = schemas.Type;
+        \\type Kind = schemas.TypeDef["type"];
+        \\type SchemaOfKind<K extends Kind> = [Extract<schemas.Type, { _zod: { def: { type: K } } }>] extends [never]
+        \\  ? AnySchema
+        \\  : Extract<schemas.Type, { _zod: { def: { type: K } } }>;
+        \\type VisitFn = (node: AnySchema, rewritten: boolean) => AnySchema;
+        \\type VisitHandlers = { [K in Kind]?: (node: SchemaOfKind<K>, rewritten: boolean) => AnySchema };
+        \\export function visit(schema: schemas.SomeType, fn: VisitFn): AnySchema;
+        \\export function visit(schema: schemas.SomeType, handlers: VisitHandlers): AnySchema;
+        \\export function visit(schema: schemas.SomeType, fnOrHandlers: VisitFn | VisitHandlers): AnySchema {
+        \\  const fn: VisitFn = typeof fnOrHandlers === "function"
+        \\    ? fnOrHandlers
+        \\    : (node, rewritten) => {
+        \\        const handler = (fnOrHandlers as VisitHandlers)[node._zod.def.type] as VisitFn | undefined;
+        \\        return handler ? handler(node, rewritten) : node;
+        \\      };
+        \\  return fn(schema, false);
+        \\}
+        \\const validKind: Kind = "a";
+        \\const invalidKind: Kind = "c";
+        \\declare const validSchema: AnySchema;
+        \\const validHandlers: VisitHandlers = { a: (node) => node };
+        \\const invalidHandlerKey: VisitHandlers = { c: () => validSchema };
+        \\void validKind;
+        \\void invalidKind;
+        \\void validHandlers;
+        \\void invalidHandlerKey;
+    ;
+    try vfs.addFile("/proj/schema.ts", schema);
+    try vfs.addFile("/proj/visit.ts", visit);
+    _ = try program.add("/proj/schema.ts", schema);
+    const visit_id = try program.add("/proj/visit.ts", visit);
+
+    try program.compileAll(.{
+        .no_emit = true,
+        .strict_flags = .{ .no_implicit_any = true, .strict_null_checks = true, .strict_function_types = true },
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    });
+    const compilation = program.fileById(visit_id).compilation.?;
+    try expectCompilationLacksDiagnosticCode(compilation, 2571);
+    try expectCompilationLacksDiagnosticCode(compilation, 7053);
+    try T.expectEqual(@as(usize, 2), compilation.diagnostics.items.len);
+    for ([_]struct { marker: []const u8, code: u32 }{
+        .{ .marker = "invalidKind", .code = 2322 },
+        .{ .marker = "invalidHandlerKey", .code = 2353 },
+    }) |expected| {
+        const start: u32 = @intCast(std.mem.indexOf(u8, visit, expected.marker).?);
+        var found = false;
+        for (compilation.diagnostics.items) |diagnostic| {
+            if (diagnostic.code != expected.code) continue;
+            if (diagnostic.pos >= start and diagnostic.pos <= start + expected.marker.len + 32) found = true;
+        }
+        try T.expect(found);
+    }
+}
+
 test "Program: contextual imported constructor callback retains indexed getter errors" {
     const SourceExportResolver = struct {
         resolver: *ts_resolver.Resolver,

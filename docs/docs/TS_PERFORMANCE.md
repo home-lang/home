@@ -9683,6 +9683,39 @@ This is an **untimed** correctness result, not a 106-file Zod admission or
 performance claim. The full graph and fair timing comparison remain gated on
 the unresolved Home-only diagnostics and complete consumer controls.
 
+### Contextual visitor keys and source-owned member chains (untimed)
+
+Issue [#821](https://github.com/home-lang/home/issues/821), under the Zod
+admission tracker [#548](https://github.com/home-lang/home/issues/548), covers
+the final Home-only diagnostic in the unchanged 21-file core proxy. Two
+independent precision losses combined in `core/visit.ts`: the finite
+string-literal union behind `$ZodTypeDef["type"]` degraded to `any`, and the
+unannotated visitor callback lost the source occurrence of its `VisitFn`
+contract when another structurally identical signature shared its TypeId.
+
+Home now admits only independently representable finite string-literal
+members from projection-only imported declarations. Object-valued indexed
+members remain excluded, so an approximate imported object never becomes a
+general assignment target. For contextual callbacks nested in conditional or
+comma expressions, member chains are projected from the explicitly typed
+variable's source annotation. Default generic arguments are instantiated
+against the contextual declaration owner, preserving nested source-owned
+members without publishing intermediate object approximations.
+
+| Exact 21-file Zod 4.5.2 core proxy | Previous main | Candidate | Delta |
+|---|---:|---:|---|
+| Diagnostic identities | 2 | **1** | `core/visit.ts:34:21 TS2571` removed; 0 added |
+| Home-only identities | 1 | **0** | the proxy has no remaining Home-only diagnostic |
+| Shared proxy-boundary TS2307 | 1 | 1 | `core/index.ts:11:26`, also reported by both pinned controls |
+
+The permanent two-file Program regression uses an opaque imported type with
+three defaulted generic parameters, a finite mapped handler key set, and the
+same conditional visitor construction. It accepts the valid handler and
+member-chain lookup, rejects an invalid kind with TS2322, rejects an unknown
+handler key with TS2353, and forbids TS2571/TS7053. This checkpoint remains
+untimed; the unmodified 106-file graph and consumer gates are the next
+admission stage before any Zod performance claim.
+
 ### Typed cross-file global ownership and cyclic provenance (untimed)
 
 Issue [#480](https://github.com/home-lang/home/issues/480), under

@@ -31607,9 +31607,10 @@ pub const Checker = struct {
             else
                 self.lowererLowerWithTypeParams(effective_node) catch return null;
         }
+        const default_owner = try self.contextualProgramDeclaration(declaration);
         for (declaration.parameters[argument_nodes.len..], argument_nodes.len..) |parameter, index| {
             const default = parameter.default orelse return null;
-            arguments[index] = self.lowerProgramExpression(default, declaration, arguments) catch return null;
+            arguments[index] = self.lowerProgramExpression(default, default_owner, arguments) catch return null;
         }
         var active: std.AutoHashMapUnmanaged(*const ProgramClassSchema.Declaration, void) = .empty;
         defer active.deinit(self.gpa);
@@ -31637,9 +31638,23 @@ pub const Checker = struct {
             return self.contextualProgramQualifiedMemberFromTypeNode(type_node, bindings, member_name);
         }
         const declaration = self.findVisibleNamedTypeDecl(type_node, reference.name) orelse return null;
-        if (self.hir.kindOf(declaration) != .interface_decl or active.contains(declaration)) return null;
+        if (active.contains(declaration)) return null;
         try active.put(self.gpa, declaration, {});
         defer _ = active.remove(declaration);
+
+        if (self.hir.kindOf(declaration) == .type_alias_decl) {
+            const alias = hir_mod.typeAliasOf(self.hir, declaration);
+            const parameter_nodes = self.hir.childSlice(alias.type_params_start, alias.type_params_len);
+            const argument_nodes = hir_mod.typeRefArgs(self.hir, type_node);
+            // Alias substitution needs node ownership rather than an
+            // approximate lowered TypeId. Start with the lossless zero-arity
+            // case used by contextual callback aliases; generic aliases keep
+            // their existing lowering path until their argument nodes can be
+            // substituted without publishing an opaque declaration.
+            if (parameter_nodes.len != 0 or argument_nodes.len != 0) return null;
+            return self.contextualProjectedMemberFromTypeNode(alias.aliased, bindings, member_name, active);
+        }
+        if (self.hir.kindOf(declaration) != .interface_decl) return null;
 
         const interface = hir_mod.interfaceOf(self.hir, declaration);
         const parameter_nodes = self.hir.childSlice(interface.type_params_start, interface.type_params_len);
@@ -72796,7 +72811,8 @@ pub const Checker = struct {
                 defer if (alias_name) |an| {
                     _ = self.alias_lower_in_progress.remove(an);
                 };
-                break :blk try self.lowererLowerWithTypeParams(ta.aliased);
+                break :blk (try self.programExactFiniteStringIndexedAliasType(ta.aliased)) orelse
+                    try self.lowererLowerWithTypeParams(ta.aliased);
             };
             if (recursive_placeholder != types.Primitive.none) {
                 const payload_idx = self.interner.pool.payloadOf(recursive_placeholder);
@@ -109021,6 +109037,108 @@ pub const Checker = struct {
     /// with type parameters bound to the written type arguments
     /// (`holder: Holder<schemas.Schema>` makes `holder.schema` name
     /// `schemas.Schema`).
+    fn contextualParameterWrittenTypeNode(
+        self: *Checker,
+        binding_name: NodeId,
+    ) CheckError!?NodeId {
+        if (binding_name == hir_mod.none_node_id or self.hir.kindOf(binding_name) != .identifier) return null;
+        const parameter_node = self.hir.parentOf(binding_name);
+        if (parameter_node == hir_mod.none_node_id or self.hir.kindOf(parameter_node) != .parameter) return null;
+        const function_node = self.hir.parentOf(parameter_node);
+        if (function_node == hir_mod.none_node_id) return null;
+        const function_kind = self.hir.kindOf(function_node);
+        if (function_kind != .fn_decl and function_kind != .fn_expr and function_kind != .arrow_fn) return null;
+        const parameter_index = self.functionValueParameterIndex(function_node, parameter_node) orelse return null;
+
+        var child = function_node;
+        var parent = self.hir.parentOf(child);
+        while (parent != hir_mod.none_node_id) {
+            switch (self.hir.kindOf(parent)) {
+                .conditional => {
+                    const conditional = hir_mod.conditionalOf(self.hir, parent);
+                    if (conditional.then_branch != child and conditional.else_branch != child) return null;
+                },
+                .binary_op => {
+                    const binary = hir_mod.binopOf(self.hir, parent);
+                    if (binary.op != .comma or binary.rhs != child) return null;
+                },
+                .var_decl, .let_decl, .const_decl => {
+                    const variable = hir_mod.varDeclOf(self.hir, parent);
+                    if (variable.init != child or variable.type_annotation == hir_mod.none_node_id) return null;
+                    const target_node = self.resolveContextualTypeAliasNode(parent, variable.type_annotation) orelse return null;
+                    if (self.hir.kindOf(target_node) != .fn_type) return null;
+                    const target = hir_mod.fnTypeOf(self.hir, target_node);
+                    var value_index: usize = 0;
+                    for (self.hir.childSlice(target.params_start, target.params_len)) |target_param_node| {
+                        if (self.hir.kindOf(target_param_node) != .parameter or self.isThisParameter(target_param_node)) continue;
+                        if (value_index == parameter_index) {
+                            const target_param = hir_mod.parameterOf(self.hir, target_param_node);
+                            return if (target_param.type_annotation == hir_mod.none_node_id) null else target_param.type_annotation;
+                        }
+                        value_index += 1;
+                    }
+                    return null;
+                },
+                else => return null,
+            }
+            child = parent;
+            parent = self.hir.parentOf(parent);
+        }
+        return null;
+    }
+
+    /// Resolve an explicit member chain rooted at an unannotated callback
+    /// parameter from the written contextual function type. This keeps the
+    /// source occurrence (and therefore its alias) intact even when the
+    /// structural signature TypeId is shared with another declaration.
+    fn programContextualParameterMemberChainType(
+        self: *Checker,
+        member_node: NodeId,
+    ) CheckError!?TypeId {
+        if (member_node == hir_mod.none_node_id or self.hir.kindOf(member_node) != .member_access) return null;
+        var root = member_node;
+        while (self.hir.kindOf(root) == .member_access) {
+            root = hir_mod.memberOf(self.hir, root).object;
+        }
+        if (self.hir.kindOf(root) != .identifier) return null;
+        const binding = self.visibleUnannotatedVariableIdentifierNode(root) orelse return null;
+        const type_node = (try self.contextualParameterWrittenTypeNode(binding)) orelse return null;
+
+        var names: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+        defer names.deinit(self.gpa);
+        var cursor = member_node;
+        while (self.hir.kindOf(cursor) == .member_access) {
+            const member = hir_mod.memberOf(self.hir, cursor);
+            try names.append(self.gpa, member.name);
+            cursor = member.object;
+        }
+
+        var projected: ContextualProjectedType = .{ .node = type_node };
+        var active: std.AutoHashMapUnmanaged(NodeId, void) = .empty;
+        defer active.deinit(self.gpa);
+        var index = names.items.len;
+        while (index > 0) {
+            index -= 1;
+            projected = switch (projected) {
+                .node => |node| (try self.contextualProjectedMemberFromTypeNode(
+                    node,
+                    &.{},
+                    names.items[index],
+                    &active,
+                )) orelse return null,
+                .type => |type_id| .{ .type = (try self.programContextualOriginMemberType(type_id, names.items[index])) orelse
+                    (try self.lookupObjectMember(type_id, names.items[index])) orelse return null },
+            };
+        }
+        return switch (projected) {
+            .type => |type_id| if (type_id == types.Primitive.any) null else type_id,
+            .node => |node| blk: {
+                const type_id = self.lowererLowerWithTypeParams(node) catch break :blk null;
+                break :blk if (type_id == types.Primitive.any) null else type_id;
+            },
+        };
+    }
+
     fn programReceiverDeclaredTypeNode(self: *Checker, expression: NodeId, depth: u8) CheckError!?NodeId {
         if (expression == hir_mod.none_node_id or depth >= 8) return null;
         switch (self.hir.kindOf(expression)) {
@@ -109983,6 +110101,50 @@ pub const Checker = struct {
         const name = self.string_interner.get(member_name);
         for (members) |member| if (std.mem.eql(u8, member.name, name)) return member;
         return null;
+    }
+
+    fn typeIsFiniteStringLiteralSet(self: *Checker, type_id: TypeId) bool {
+        if (type_id >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(type_id);
+        if (!flags.is_union) return flags.is_literal and flags.is_string and !flags.is_intersection;
+        const members = self.interner.unionMembers(type_id);
+        if (members.len == 0) return false;
+        for (members) |member| {
+            if (member >= self.interner.pool.typeCount()) return false;
+            const member_flags = self.interner.pool.flagsOf(member);
+            if (!member_flags.is_literal or !member_flags.is_string or
+                member_flags.is_union or member_flags.is_intersection) return false;
+        }
+        return true;
+    }
+
+    /// Recover only an independently representable finite string-literal
+    /// member from a projection-only imported declaration. This is narrow
+    /// enough for mapped-key aliases (`Defs["type"]`) while deliberately
+    /// excluding object-valued members: lowering those in isolation would
+    /// publish an approximate object and change unrelated relation checks.
+    fn programExactFiniteStringIndexedAliasType(
+        self: *Checker,
+        type_node: NodeId,
+    ) CheckError!?TypeId {
+        if (type_node == hir_mod.none_node_id or self.hir.kindOf(type_node) != .indexed_access_type) return null;
+        const indexed = hir_mod.indexedAccessTypeOf(self.hir, type_node);
+        if (indexed.object == hir_mod.none_node_id or self.hir.kindOf(indexed.object) != .type_ref) return null;
+        const object_ref = hir_mod.typeRefOf(self.hir, indexed.object);
+        if (object_ref.args_len != 0) return null;
+        const index_node = if (self.hir.kindOf(indexed.index) == .type_literal)
+            hir_mod.literalTypeOf(self.hir, indexed.index).literal
+        else
+            indexed.index;
+        if (index_node == hir_mod.none_node_id or self.hir.kindOf(index_node) != .literal_string) return null;
+        const member_name = hir_mod.literalStringOf(self.hir, index_node).value;
+        const declaration = (try self.programDeclarationForQualifiedInterfaceRef(indexed.object)) orelse
+            (try self.programDeclarationForNamedImportRef(indexed.object)) orelse return null;
+        if (declaration.parameters.len != 0) return null;
+        const member = self.programDeclarationOwnMember(declaration, member_name) orelse return null;
+        if (member.optional or !try ProgramClassSchema.Schema.expressionSupported(member.type, self.gpa)) return null;
+        const projected = self.lowerProgramExpression(member.type, declaration, &.{}) catch return null;
+        return if (self.typeIsFiniteStringLiteralSet(projected)) projected else null;
     }
 
     fn lowerProgramProjectedArray(
@@ -115407,6 +115569,13 @@ pub const Checker = struct {
                 }
                 obj_t = self.resolvedRecursiveInterfaceType(obj_t);
                 _ = self.program_contextual_member_projections.remove(node);
+                if ((obj_t == types.Primitive.any or obj_t == types.Primitive.unknown) and
+                    !self.isInAssignmentTargetChain(node))
+                {
+                    if (try self.programContextualParameterMemberChainType(node)) |member_t| {
+                        break :blk try self.optionalChainResult(member_t, m.optional or self.expressionIsOptionalChain(m.object));
+                    }
+                }
                 if (obj_t == types.Primitive.any) {
                     if (try self.programQualifiedAssertionMemberType(m.object, m.name)) |member_t| {
                         break :blk try self.optionalChainResult(member_t, m.optional or self.expressionIsOptionalChain(m.object));

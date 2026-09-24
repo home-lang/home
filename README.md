@@ -302,6 +302,7 @@ The latest untimed correctness gate is reported separately from performance:
 | [Polymorphic mapped receiver controls](docs/docs/TS_PERFORMANCE.md#polymorphic-mapped-receiver-context) | TS2339 + TS2322 | TS2339 + TS2322 | TS2339 + TS2322 |
 | [Zod 4.5.2 core overload audit](docs/docs/TS_PERFORMANCE.md#open-rest-generic-overload-assignability-untimed) | 1 shared proxy-boundary diagnostic | 1 shared proxy-boundary diagnostic | 4 → **3** identities; 1 Home-only false error removed, 0 added (untimed 21-file proxy) |
 | [Contextual constructor/getter audit](docs/docs/TS_PERFORMANCE.md#contextual-generic-constructor-and-indexed-getter-inference-untimed) | 2× TS2322 on invalid getters | 2× TS2322 on invalid getters | **2× TS2322**; frozen core 3 → **2** identities, 0 added (untimed) |
+| [Contextual visitor-key audit](docs/docs/TS_PERFORMANCE.md#contextual-visitor-keys-and-source-owned-member-chains-untimed) | TS2322 + TS2353 controls | TS2322 + TS2353 controls | frozen core 2 → **1** identity; **0 Home-only**, 0 added (untimed) |
 
 The same-parent ReleaseFast audit on the pinned 106-file Zod 4.5.2 graph is
 reported separately from the admitted synthetic suite:
