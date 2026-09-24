@@ -636,7 +636,7 @@ retain their exact type domains and callable contracts across Program owners:
 
 | [Bigint, merged-namespace, and mapped-contract audit](docs/docs/TS_PERFORMANCE.md#bigint-arithmetic-merged-namespaces-and-mapped-key-contracts-untimed) | Control | Home main | Change |
 |---|---:|---:|---:|
-| Zod 4.5.2 core identities (#775/#776) | 8 | **6** | 2 false TS2339 removed; 0 added |
+| Zod 4.5.2 core identities (#775/#776) | 8 | **6** | false TS2367 + TS2741 removed; 0 added |
 | Program suite (#777) | 218/220 | **222/222** | 2 origin regressions fixed; 2 permanent controls added |
 | Zod identities after #777 | 6 | **6** | byte-identical; 0 added/removed |
 

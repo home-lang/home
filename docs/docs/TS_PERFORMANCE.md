@@ -9505,8 +9505,8 @@ bigint-like, adds `undefined` for optional access only when the receiver is
 possibly nullish, and transfers exported nested declarations from merged
 interface/namespace symbols through their exact namespace path. The preserved
 Zod 4.5.2 core gate moved from eight identities to six: the only removals were
-the two false TS2339 reports at `core/standard-schema.ts:27:102` and
-`:30:103`; no identity was added.
+the false TS2367 at `core/checks.ts:194:52` and false TS2741 at
+`core/schemas.ts:339:3`; no identity was added.
 
 Commit [`f9548c289`](https://github.com/home-lang/home/commit/f9548c289f1ecf653f8f54722c1869739d04a265)
 then repairs mapped-type substitution. A deferred mapped type now rebuilds its
