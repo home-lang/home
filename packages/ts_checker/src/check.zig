@@ -164296,11 +164296,26 @@ pub const Checker = struct {
             }
         }
         const constraint = try self.substituteType(m.constraint, subs);
-        const template = try self.substituteType(m.template, subs);
         const deferred_key_tp = if (raw_key_tp != types.Primitive.none)
             try self.substituteType(raw_key_tp, subs)
         else
             types.Primitive.none;
+        const template = if (raw_key_tp != types.Primitive.none) blk: {
+            // A deferred mapped type owns one rebuilt key binder. Substitute
+            // outer parameters and remap the original key to that exact binder
+            // in the same walk, so indexed and conditional templates cannot
+            // retain a disconnected copy. Concrete materialization below still
+            // specializes the original template with outer substitutions and
+            // K -> property in one operation.
+            var template_subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
+            defer template_subs.deinit(self.gpa);
+            var outer = subs.iterator();
+            while (outer.next()) |entry| {
+                try template_subs.put(self.gpa, entry.key_ptr.*, entry.value_ptr.*);
+            }
+            try template_subs.put(self.gpa, raw_key_tp, deferred_key_tp);
+            break :blk try self.substituteTypeWithFreshMemo(m.template, &template_subs);
+        } else try self.substituteType(m.template, subs);
         if (constraint == types.Primitive.never) {
             const empty = self.interner.internObjectType(&.{}) catch return error.OutOfMemory;
             return try self.finishSubstitutedMappedType(mapped_t, empty, subs);
@@ -164347,7 +164362,7 @@ pub const Checker = struct {
             }
         }
         if (can_materialize) {
-            const key_tp = deferred_key_tp;
+            const key_tp = raw_key_tp;
             var members: std.ArrayListUnmanaged(types.ObjectMember) = .empty;
             defer members.deinit(self.gpa);
             for (keys.items) |key| {
@@ -164356,13 +164371,19 @@ pub const Checker = struct {
                 const key_lit = self.interner.internStringLiteral(key) catch return error.OutOfMemory;
                 var key_subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
                 defer key_subs.deinit(self.gpa);
+                // Compose the outer alias substitutions with K -> key and
+                // specialize the original template in one memoized walk.
+                var outer_subs = subs.iterator();
+                while (outer_subs.next()) |entry| {
+                    try key_subs.put(self.gpa, entry.key_ptr.*, entry.value_ptr.*);
+                }
                 if (key_tp != types.Primitive.none) try key_subs.put(self.gpa, key_tp, key_lit);
                 var value_t = (if (self.isBuiltinMappedKeyTypeParameter(key_tp) and source_obj != types.Primitive.none)
                     try self.resolveObjectIndexedAccessType(source_obj, key_lit)
                 else
                     null) orelse
                     (if (key_tp != types.Primitive.none)
-                        try self.substituteTypeWithFreshMemo(template, &key_subs)
+                        try self.substituteTypeWithFreshMemo(m.template, &key_subs)
                     else
                         template);
                 const source_member = self.mappedSourceMemberInfo(source_obj, key);
@@ -164402,8 +164423,12 @@ pub const Checker = struct {
                     }
                     var number_subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
                     defer number_subs.deinit(self.gpa);
+                    var outer_subs = subs.iterator();
+                    while (outer_subs.next()) |entry| {
+                        try number_subs.put(self.gpa, entry.key_ptr.*, entry.value_ptr.*);
+                    }
                     try number_subs.put(self.gpa, key_tp, types.Primitive.number_t);
-                    break :blk try self.substituteTypeWithFreshMemo(template, &number_subs);
+                    break :blk try self.substituteTypeWithFreshMemo(m.template, &number_subs);
                 } else types.Primitive.none;
                 const result = self.interner.internObjectTypeWithIndexAndSymbol(
                     members.items,
@@ -165143,8 +165168,19 @@ pub const Checker = struct {
             {
                 return types.Primitive.never;
             }
-            if (self.containsFreeTypeParameter(new_operand)) {
-                return self.interner.internKeyof(new_operand) catch return t;
+            if (new_operand < self.interner.pool.typeCount()) {
+                const operand_flags = self.interner.pool.flagsOf(new_operand);
+                // `keyof (Fixed & T)` and its union counterpart are open until
+                // T is substituted; collecting only today's concrete members
+                // permanently loses T's future keys. A lone constrained type
+                // parameter is different: its constraint is the key domain
+                // TypeScript uses for mapped contextual members, so deferring
+                // every free parameter here erases their callable contracts.
+                if ((operand_flags.is_union or operand_flags.is_intersection) and
+                    self.containsFreeTypeParameter(new_operand))
+                {
+                    return self.interner.internKeyof(new_operand) catch return t;
+                }
             }
             var key_names: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
             defer key_names.deinit(self.gpa);

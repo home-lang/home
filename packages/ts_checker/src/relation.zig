@@ -1725,6 +1725,11 @@ pub const Engine = struct {
     }
 
     fn substituteTpDeep(self: *Engine, t: TypeId, map: []const TpPair) anyerror!TypeId {
+        // With no substitutions there is nothing to rewrite. Rebuilding a
+        // composite type here is not an identity operation: unions and
+        // intersections may carry declaration-scoped identity and relation
+        // metadata that a fresh interned node does not inherit.
+        if (map.len == 0) return t;
         return self.substituteTpDeepLimit(t, map, 0);
     }
 

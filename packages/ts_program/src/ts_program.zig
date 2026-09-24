@@ -12367,6 +12367,80 @@ test "Program: generic nested member assignments contextually type callbacks" {
     try T.expectEqual(@as(usize, 1), invalid_compilation.diagnostics.items.len);
 }
 
+test "Program: asserted interface method assignments retain callable targets" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var checker_resolver = NamespaceImportTestResolver{ .resolver = &resolver };
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+
+    const errors =
+        \\export interface IssueBase { readonly code?: string; readonly input?: unknown; readonly path: PropertyKey[]; readonly message: string }
+        \\export interface InvalidType extends IssueBase { readonly code: "invalid_type"; readonly expected: string; readonly input?: unknown }
+        \\export interface TooBig extends IssueBase { readonly code: "too_big"; readonly origin: string; readonly maximum: number | bigint; readonly inclusive?: boolean; readonly exact?: boolean }
+        \\export interface TooSmall extends IssueBase { readonly code: "too_small"; readonly origin: string; readonly minimum: number | bigint; readonly inclusive?: boolean; readonly exact?: boolean }
+        \\export interface InvalidFormat extends IssueBase { readonly code: "invalid_format"; readonly format: string; readonly pattern?: string }
+        \\export interface NotMultipleOf extends IssueBase { readonly code: "not_multiple_of"; readonly divisor: number; readonly input?: number | bigint }
+        \\export interface UnrecognizedKeys extends IssueBase { readonly code: "unrecognized_keys"; readonly keys: string[]; readonly input?: Record<string, unknown> }
+        \\export interface InvalidUnionNoMatch extends IssueBase { readonly code: "invalid_union"; readonly errors: Issue[][]; readonly inclusive?: true }
+        \\export interface InvalidUnionMultipleMatch extends IssueBase { readonly code: "invalid_union"; readonly errors: []; readonly inclusive: false; readonly matches: number[] }
+        \\export type InvalidUnion = InvalidUnionNoMatch | InvalidUnionMultipleMatch;
+        \\export interface InvalidKey extends IssueBase { readonly code: "invalid_key"; readonly origin: "map" | "record"; readonly issues: Issue[] }
+        \\export interface InvalidElement extends IssueBase { readonly code: "invalid_element"; readonly origin: "map" | "set"; readonly key: unknown; readonly issues: Issue[] }
+        \\export interface InvalidValue extends IssueBase { readonly code: "invalid_value"; readonly values: (string | number | bigint | boolean | null | undefined)[] }
+        \\export interface CustomIssue extends IssueBase { readonly code: "custom"; readonly params?: Record<string, any> | undefined }
+        \\export type Issue = InvalidType | TooBig | TooSmall | InvalidFormat | NotMultipleOf | UnrecognizedKeys | InvalidUnion | InvalidKey | InvalidElement | InvalidValue | CustomIssue;
+    ;
+    const schemas =
+        \\export interface ParsePayload<T = unknown> { value: T; issues: string[] }
+    ;
+    const util =
+        \\export type Omit<T, K extends keyof T> = Pick<T, Exclude<keyof T, K>>;
+        \\export type InexactPartial<T> = { [P in keyof T]?: T[P] | undefined };
+        \\export type MakePartial<T, K extends keyof T> = Omit<T, K> & InexactPartial<Pick<T, K>>;
+        \\export type Identity<T> = T;
+        \\export type Flatten<T> = Identity<{ [K in keyof T]: T[K] }>;
+    ;
+    const api =
+        \\import type * as errors from "./errors.js";
+        \\import * as schemas from "./schemas.js";
+        \\import * as util from "./util.js";
+        \\type RawIssue<T extends errors.IssueBase> = T extends any
+        \\  ? util.Flatten<util.MakePartial<T, "message" | "path"> & { readonly inst?: unknown; readonly continue?: boolean | undefined } & Record<string, unknown>>
+        \\  : never;
+        \\type SuperIssue<T extends errors.IssueBase = errors.Issue> = T extends any ? RawIssue<T> : never;
+        \\interface RefinementCtx<T = unknown> extends schemas.ParsePayload<T> {
+        \\  addIssue(arg: string | SuperIssue): void;
+        \\}
+        \\declare const payload: schemas.ParsePayload;
+        \\(payload as RefinementCtx).addIssue = (issue) => {
+        \\  payload.issues.push(typeof issue === "string" ? issue : issue.code ?? "custom");
+        \\};
+        \\(payload as RefinementCtx).addIssue = (issue: number) => { void issue; };
+    ;
+    try vfs.addFile("/proj/errors.ts", errors);
+    try vfs.addFile("/proj/schemas.ts", schemas);
+    try vfs.addFile("/proj/util.ts", util);
+    try vfs.addFile("/proj/api.ts", api);
+    _ = try p.add("/proj/errors.ts", errors);
+    _ = try p.add("/proj/schemas.ts", schemas);
+    _ = try p.add("/proj/util.ts", util);
+    const api_id = try p.add("/proj/api.ts", api);
+
+    try p.compileAll(.{
+        .no_emit = true,
+        .strict_flags = .{ .no_implicit_any = true, .strict_null_checks = true, .strict_function_types = true },
+        .external_resolver = .{ .ptr = &checker_resolver, .vtable = &NamespaceImportTestResolver.vtable },
+    });
+    const compilation = p.fileById(api_id).compilation.?;
+    try expectCompilationLacksDiagnosticCode(compilation, 7006);
+    try T.expectEqual(@as(usize, 1), compilation.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 2322), compilation.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, @intCast(std.mem.indexOf(u8, api, "(payload as RefinementCtx).addIssue = (issue: number)").?)), compilation.diagnostics.items[0].pos);
+}
+
 test "Program: local multiple heritage retains qualified imported members in factory defaults" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();
