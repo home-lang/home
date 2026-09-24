@@ -9644,6 +9644,45 @@ positives, so generic overload parity is not claimed complete. The unchanged
 106-file Zod graph and fair timing comparison remain gated on the remaining
 Home-only identities and consumer negative controls.
 
+### Contextual generic constructor and indexed getter inference (untimed)
+
+Issue [#820](https://github.com/home-lang/home/issues/820), under the Zod
+admission tracker [#548](https://github.com/home-lang/home/issues/548), covers
+the next frozen-core checkpoint. A generic constructor callback is provisionally
+checked before its contextual parameters are fully known. Home retained a
+missing-property error from that provisional pass. The final contextual pass
+now owns those diagnostics, while imported copies of written generic arguments
+receive the same substitutions as their declaration parameters. Separately,
+when an earlier call argument has fixed an object's indexed member, a later
+getter return is checked against that member rather than widening the object
+to make the getter valid.
+
+| Exact 21-file Zod 4.5.2 core proxy | Previous main | Candidate | Delta |
+|---|---:|---:|---|
+| Diagnostic identities | 3 | **2** | false `core/schemas.ts:4879:19 TS2741` removed; 0 added |
+| Home-only identities | 2 | **1** | `core/visit.ts:34:21 TS2571` remains ([#821](https://github.com/home-lang/home/issues/821)) |
+| Shared proxy-boundary TS2307 | 1 | 1 | `core/index.ts:11:26`, also in both pinned controls |
+
+A separate three-file `core.ts` / `util.ts` / `acceptance.ts` oracle keeps both
+invalid `defineLazy` getters in place. Pinned TypeScript 6.0.3, native
+TypeScript 7.0.2, and the guarded Home ReleaseSafe CLI each report exactly
+two TS2322 errors at `acceptance.ts:15` and `:19`; the valid constructor
+callback remains accepted. Checker regressions also assert the invalid
+parameterless getter return for both a concrete object and an interface, and
+that a genuine missing-property TS2741 inside a contextual callback survives
+the provisional-diagnostic cleanup.
+
+The complete checker suite passed under the 3,840 MB guard (2,141 MB peak),
+and a stripped ReleaseSafe `home-tsc` build completed under the same guard
+(2,731 MB peak). The frozen-core and fresh cross-file CLI checks used that
+newly built binary. The Program suite also passed with a permanent three-file
+virtual-module regression, whose resolver reads export facts from the fixture
+sources rather than supplying invented export names.
+
+This is an **untimed** correctness result, not a 106-file Zod admission or
+performance claim. The full graph and fair timing comparison remain gated on
+the unresolved Home-only diagnostics and complete consumer controls.
+
 ### Typed cross-file global ownership and cyclic provenance (untimed)
 
 Issue [#480](https://github.com/home-lang/home/issues/480), under

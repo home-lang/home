@@ -14192,3 +14192,104 @@ test "Program: imported callback typeof guard preserves any and rejects Function
         try T.expect(found);
     }
 }
+
+test "Program: contextual imported constructor callback retains indexed getter errors" {
+    const SourceExportResolver = struct {
+        resolver: *ts_resolver.Resolver,
+        arena: std.heap.ArenaAllocator,
+
+        const vtable = ts_driver.ExternalResolver.VTable{
+            .resolve = resolve,
+            .moduleExport = moduleExport,
+            .moduleExportNames = moduleExportNames,
+        };
+
+        fn resolve(ptr: *anyopaque, specifier: []const u8, containing_file: []const u8) ?ts_driver.ExternalResolver.Resolution {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            const result = self.resolver.resolve(specifier, containing_file) catch return null;
+            return .{ .path = result.path, .is_declaration = result.is_declaration };
+        }
+
+        fn moduleExport(ptr: *anyopaque, specifier: []const u8, containing_file: []const u8, name: []const u8) ?ts_driver.ExternalResolver.ModuleExport {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            const result = self.resolver.resolve(specifier, containing_file) catch return null;
+            const facts = moduleExportFactsFromResolvedModule(self.arena.allocator(), self.resolver, result.path, name);
+            return .{
+                .module_name = "fixture",
+                .exported_type = facts.exported_type,
+                .exported_value = facts.exported_value,
+                .runtime_value = facts.exported_value,
+                .generic_function = facts.generic_function,
+                .call_only_function = facts.call_only_function,
+                .module_is_external = facts.module_is_external,
+            };
+        }
+
+        fn moduleExportNames(ptr: *anyopaque, specifier: []const u8, containing_file: []const u8) ?[]const []const u8 {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            const result = self.resolver.resolve(specifier, containing_file) catch return null;
+            return moduleExportNamesFromResolvedModule(self.arena.allocator(), self.resolver, result.path) catch null;
+        }
+    };
+
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var source_exports = SourceExportResolver{ .resolver = &resolver, .arena = std.heap.ArenaAllocator.init(T.allocator) };
+    defer source_exports.arena.deinit();
+    var program = Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    const core =
+        \\export interface Trait { _zod: { def: any; [key: string]: any } }
+        \\export interface Constructor<T extends Trait, D = T["_zod"]["def"]> {
+        \\  new (def: D): T;
+        \\  init(inst: T, def: D): asserts inst is T;
+        \\}
+        \\export declare function makeConstructor<T extends Trait, D = T["_zod"]["def"]>(
+        \\  name: string, initializer: (inst: T, def: D) => void
+        \\): Constructor<T, D>;
+        \\export interface Base extends Trait { _zod: { def: any } }
+        \\export declare const BaseConstructor: Constructor<Base>;
+    ;
+    const util =
+        \\export declare function defineLazy<T, K extends keyof T>(
+        \\  object: T, key: K, getter: () => T[K]
+        \\): void;
+    ;
+    const app =
+        \\import * as core from "./core.js";
+        \\import * as util from "./util.js";
+        \\interface Inner extends core.Trait { _zod: { def: { type: "inner" } } }
+        \\interface Lazy extends core.Trait {
+        \\  _zod: { def: { type: "lazy" }; innerType: Inner };
+        \\}
+        \\declare const inner: Inner;
+        \\export const good: core.Constructor<Lazy> = core.makeConstructor("Lazy", (inst, def) => {
+        \\  core.BaseConstructor.init(inst, def);
+        \\  util.defineLazy(inst._zod, "innerType", () => inner);
+        \\});
+        \\export const bad: core.Constructor<Lazy> = core.makeConstructor("Bad", (inst, def) => {
+        \\  core.BaseConstructor.init(inst, def);
+        \\  util.defineLazy(inst._zod, "innerType", () => 123);
+        \\});
+    ;
+    try vfs.addFile("/proj/core.ts", core);
+    try vfs.addFile("/proj/util.ts", util);
+    try vfs.addFile("/proj/app.ts", app);
+    _ = try program.add("/proj/core.ts", core);
+    _ = try program.add("/proj/util.ts", util);
+    const app_id = try program.add("/proj/app.ts", app);
+
+    try program.compileAll(.{
+        .no_emit = true,
+        .strict_flags = .{ .no_implicit_any = true, .strict_null_checks = true, .strict_function_types = true },
+        .external_resolver = .{ .ptr = &source_exports, .vtable = &SourceExportResolver.vtable },
+    });
+    const compilation = program.fileById(app_id).compilation.?;
+    try expectCompilationLacksDiagnosticCode(compilation, 2741);
+    try T.expectEqual(@as(usize, 1), compilation.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 2322), compilation.diagnostics.items[0].code);
+    try T.expectEqual(@as(u32, @intCast(std.mem.indexOf(u8, app, "123").?)), compilation.diagnostics.items[0].pos);
+}

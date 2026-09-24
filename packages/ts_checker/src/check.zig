@@ -122749,6 +122749,11 @@ pub const Checker = struct {
         self.removePriorDiagnosticsInNodeSpan(fn_node, TsCodes.argument_type_mismatch);
         self.removePriorDiagnosticsInNodeSpan(fn_node, TsCodes.type_not_assignable);
         self.removePriorDiagnosticsInNodeSpan(fn_node, TsCodes.property_does_not_exist);
+        // The provisional callback pass may infer its generic parameter from
+        // a later argument and report a missing required property. Recheck
+        // with the final contextual parameter type; any real TS2741 is then
+        // emitted again from the body with the resolved type.
+        self.removePriorDiagnosticsInNodeSpan(fn_node, TsCodes.property_missing_required);
         // A provisional pass can see an unconstrained callback parameter and
         // diagnose a spread as non-iterable. The contextual pass owns the
         // final body types, so discard that provisional TS2488 and let this
@@ -154098,10 +154103,24 @@ pub const Checker = struct {
 
         var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
         defer subs.deinit(self.gpa);
-        for (target_arg_nodes, generic_params[0..target_arg_nodes.len]) |arg_node, parameter| {
+        const contextual_types = try self.gpa.alloc(TypeId, target_arg_nodes.len);
+        defer self.gpa.free(contextual_types);
+        for (target_arg_nodes, generic_params[0..target_arg_nodes.len], 0..) |arg_node, parameter, i| {
             const argument = try self.lowererLowerWithTypeParams(arg_node);
             try subs.put(self.gpa, parameter, argument);
+            contextual_types[i] = argument;
         }
+        // Imported generic declarations can carry fresh copies of a type
+        // parameter inside their callback signature. Contextual arguments
+        // from the written result type must reach those copies just as
+        // explicit call-site type arguments do.
+        try self.addExplicitTypeArgNameSubstitutions(
+            sig,
+            generic_params[0..target_arg_nodes.len],
+            contextual_types,
+            &subs,
+            true,
+        );
         for (generic_params[target_arg_nodes.len..]) |parameter| {
             if (parameter >= self.interner.pool.typeCount()) continue;
             const flags = self.interner.pool.flagsOf(parameter);
@@ -161113,6 +161132,12 @@ pub const Checker = struct {
             return true;
         }
         const key = self.stringLiteralValueFromType(index_t) orelse return false;
+        // A prior argument may already have fixed the object and the indexed
+        // member. A later callback's return is checked against that member;
+        // it must not widen the inferred object to make its own return valid.
+        if (subs.get(ia.object)) |existing| {
+            if ((try self.resolveObjectIndexedAccessType(existing, index_t)) != null) return true;
+        }
         try self.mergeIndexedAccessInference(ia.object, key, arg_t, subs);
         return true;
     }
@@ -282212,6 +282237,74 @@ test "checker: open rest implements generic overloads but not a wrong return" {
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_not_assignable));
     try T.expectEqual(@as(usize, 2), s.checker.diagnostics.items.len);
+}
+
+test "checker: inferred indexed getter checks parameterless callback returns" {
+    const b = try newBoundSetup(
+        \\declare function defineLazy<T, K extends keyof T>(object: T, key: K, getter: () => T[K]): void;
+        \\const record = { innerType: "value" };
+        \\defineLazy(record, "innerType", () => "next");
+        \\defineLazy(record, "innerType", () => 123);
+        \\interface WithInner { innerType: string }
+        \\declare const importedLike: WithInner;
+        \\defineLazy(importedLike, "innerType", () => "next");
+        \\defineLazy(importedLike, "innerType", () => 123);
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{ .strict_null_checks = true, .strict_function_types = true });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(b.base, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 2), b.base.checker.diagnostics.items.len);
+}
+
+test "checker: contextual generic constructor preserves indexed getter errors" {
+    const b = try newBoundSetup(
+        \\interface Trait { _zod: { def: any; [key: string]: any } }
+        \\interface Constructor<T extends Trait, D = T["_zod"]["def"]> {
+        \\  new (def: D): T;
+        \\  init(inst: T, def: D): asserts inst is T;
+        \\}
+        \\declare function makeConstructor<T extends Trait, D = T["_zod"]["def"]>(
+        \\  name: string, initializer: (inst: T, def: D) => void
+        \\): Constructor<T, D>;
+        \\declare function defineLazy<T, K extends keyof T>(object: T, key: K, getter: () => T[K]): void;
+        \\interface Base extends Trait { _zod: { def: any } }
+        \\declare const BaseConstructor: Constructor<Base>;
+        \\interface Inner extends Trait { _zod: { def: { type: "inner" } } }
+        \\interface Lazy extends Trait { _zod: { def: { type: "lazy" }; innerType: Inner } }
+        \\declare const inner: Inner;
+        \\const good: Constructor<Lazy> = makeConstructor("Lazy", (inst, def) => {
+        \\  BaseConstructor.init(inst, def);
+        \\  defineLazy(inst._zod, "innerType", () => inner);
+        \\});
+        \\const bad: Constructor<Lazy> = makeConstructor("Bad", (inst, def) => {
+        \\  BaseConstructor.init(inst, def);
+        \\  defineLazy(inst._zod, "innerType", () => 123);
+        \\});
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{ .strict_null_checks = true, .strict_function_types = true });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.property_missing_required));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 1), b.base.checker.diagnostics.items.len);
+}
+
+test "checker: contextual generic callback retains genuine missing-property errors" {
+    const b = try newBoundSetup(
+        \\declare function apply<T>(value: T, callback: (item: T) => void): void;
+        \\interface Source { value: number }
+        \\declare const source: Source;
+        \\apply(source, item => {
+        \\  const required: { present: number } = {};
+        \\  const value: number = item.value;
+        \\});
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{ .strict_null_checks = true, .strict_function_types = true });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.property_missing_required));
+    try T.expectEqual(@as(usize, 1), b.base.checker.diagnostics.items.len);
 }
 
 test "checker: nullish member assignment narrows the following member read" {
