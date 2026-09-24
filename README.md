@@ -631,6 +631,15 @@ type across checker pools:
 | Unique path/line/column/code identities | 13 | **8** | **5 removed; 0 added** |
 | Focused Home oracle | 3 TS2411 + 2 TS7006 | **clean** | matches clean TypeScript 6.0.3 and native 7.0.2 controls |
 
+Bigint operators, merged namespace exports, and mapped-key substitution now
+retain their exact type domains and callable contracts across Program owners:
+
+| [Bigint, merged-namespace, and mapped-contract audit](docs/docs/TS_PERFORMANCE.md#bigint-arithmetic-merged-namespaces-and-mapped-key-contracts-untimed) | Control | Home main | Change |
+|---|---:|---:|---:|
+| Zod 4.5.2 core identities (#775/#776) | 8 | **6** | 2 false TS2339 removed; 0 added |
+| Program suite (#777) | 218/220 | **222/222** | 2 origin regressions fixed; 2 permanent controls added |
+| Zod identities after #777 | 6 | **6** | byte-identical; 0 added/removed |
+
 TypeScript 6.0.3 reports zero diagnostics on this graph. Home still reports
 348, so Zod remains outside the cross-compiler timing table until Home also
 reaches zero diagnostics.

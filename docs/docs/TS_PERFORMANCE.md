@@ -9490,6 +9490,69 @@ zig build home-tsc -Doptimize=ReleaseFast -j1 -Dhome-tsc-strip=true
 ~/.cache/home-ts-parity/tools/gate751.sh ./zig-out/bin/home-tsc /private/tmp/home-764
 ```
 
+### Bigint arithmetic, merged namespaces, and mapped-key contracts (untimed)
+
+Issues [#775](https://github.com/home-lang/home/issues/775),
+[#776](https://github.com/home-lang/home/issues/776), and
+[#777](https://github.com/home-lang/home/issues/777), under the Zod admission
+tracker [#548](https://github.com/home-lang/home/issues/548), cover three
+independent type-identity failures found after the deferred-Normalize work.
+This is a correctness checkpoint; no timing result is claimed.
+
+Commit [`d1d9abb0b`](https://github.com/home-lang/home/commit/d1d9abb0b88b2ed365cd8347155e21699b265865)
+keeps arithmetic in the `bigint` domain when both effective operands are
+bigint-like, adds `undefined` for optional access only when the receiver is
+possibly nullish, and transfers exported nested declarations from merged
+interface/namespace symbols through their exact namespace path. The preserved
+Zod 4.5.2 core gate moved from eight identities to six: the only removals were
+the two false TS2339 reports at `core/standard-schema.ts:27:102` and
+`:30:103`; no identity was added.
+
+Commit [`f9548c289`](https://github.com/home-lang/home/commit/f9548c289f1ecf653f8f54722c1869739d04a265)
+then repairs mapped-type substitution. A deferred mapped type now rebuilds its
+key binder and remaps the original key in the same substitution walk. Concrete
+properties compose outer substitutions with `K -> property` while
+specializing the original template, and `keyof (Fixed & T)` remains deferred
+until `T` is known without erasing the callable contract of a lone constrained
+type parameter. Empty positional signature substitutions are true identities;
+they no longer re-intern union/intersection parameters and discard
+declaration-scoped relation metadata.
+
+The permanent Program oracle uses the full recursive eleven-member issue union
+that exposed the production failure. A valid assignment to
+`RefinementCtx.addIssue` is accepted, while an explicit `(issue: number)`
+assignment still produces exactly one TS2322. The two tests failing on exact
+`origin/main` control `5d6e7cbc2` also pass: defaulted indexed namespace
+callbacks and mapped prototype conditionals with optional generic/rest
+parameters.
+
+| Admission evidence | Exact control | Final candidate | Result |
+|---|---:|---:|---|
+| Program suite | 218/220 | **222/222** | two existing regressions fixed; two permanent tests added across #775–#777 |
+| Full checker suite | pass | **pass** | no regression |
+| Zod 4.5.2 core diagnostics / identities | 6 / 6 | **6 / 6** | byte-identical normalized set |
+| Zod normalized SHA-256 | `64abd7817175b2885f805e3580a8ed0b74727e15f456dde3d85ba9ee3c528d19` | **same** | zero additions/removals |
+
+The stripped ReleaseSafe `home-tsc` build passed at a guarded 2,603 MB peak;
+the unchanged Zod gate passed at 1,248 MB under the fixed 3,840 MB process-tree
+ceiling. ReleaseFast was not admitted on this host: two normal attempts and a
+single-job attempt were terminated cleanly by the same guard at 3,845 MB,
+3,874 MB, and 3,843 MB. The ceiling was not raised. A Debug Zod run was also
+stopped at 3,843 MB, after which the documented ReleaseSafe gate supplied the
+successful semantic result above.
+
+A broader `Record` materialization experiment was rejected before commit: it
+expanded the six-identity Zod baseline to 25, adding 19 diagnostics. The final
+implementation does not special-case Zod, source paths, member names, or
+diagnostic codes, and it does not suppress errors or rewrite the corpus.
+
+```sh
+zig build test -Dfilter=ts_program
+zig build test -Dfilter=ts_checker
+zig build -j1 home-tsc -Doptimize=ReleaseSafe -Dhome-tsc-strip=true
+~/.cache/home-ts-parity/tools/gate751.sh ./zig-out/bin/home-tsc /private/tmp/home-775-777-final-releasesafe
+```
+
 ### Typed cross-file global ownership and cyclic provenance (untimed)
 
 Issue [#480](https://github.com/home-lang/home/issues/480), under
