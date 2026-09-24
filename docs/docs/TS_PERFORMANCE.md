@@ -9605,6 +9605,45 @@ under the fixed 3,840 MB process-tree memory ceiling. The unmodified
 the Home-only identities are resolved; the 21-file proxy result must not be
 presented as a full-graph benchmark.
 
+### Open-rest generic overload assignability (untimed)
+
+The next [#548](https://github.com/home-lang/home/issues/548) checkpoint
+keeps the pinned Zod 4.5.2 core proxy and its TypeScript 6.0.3 / native 7.0.2
+controls unchanged. An open `(...args: any[])` implementation can cover a
+generic fixed-arity overload when its argument elements and return type are
+assignable for every instantiation. Home previously rejected the second
+`$ZodFunction.input` overload before its full rest-parameter relation ran.
+The checker now evaluates that complete relation ahead of the generic
+type-parameter mismatch precheck. It also relates `any` to a free type
+parameter in a same-generic-instance comparison and applies declared
+generic variance to a contextual callback return before expanding its
+substituted structural members. `unknown` and concrete sources do not gain
+the `any` rule; wrong callback returns and constrained parameter types remain
+errors.
+
+| Frozen 21-file core identities | Prior main | Candidate | Delta |
+|---|---:|---:|---|
+| Total | 4 | **3** | `core/schemas.ts:4779:5 TS2322` removed; 0 added |
+| Home-only | 3 | **2** | `core/schemas.ts:4879:19 TS2741` and `core/visit.ts:34:21 TS2571` remain |
+| Shared proxy-boundary TS2307 | 1 | 1 | `core/index.ts:11:26`, also reported by both controls |
+
+The exact after-set SHA-256 is
+`d0b900373c14def43cf1e6efd3827691c560f0825fc516f300cea69e805c0376`.
+Both pinned TypeScript controls and Home report the same six intentional
+TS2322 errors on the covariant, contravariant, and invariant `any`/`unknown`
+negative-control oracle. A separate open-rest overload reduction accepts the
+valid implementation and rejects the wrong return and argument type. The
+complete checker and Program test suites pass, as do `zig fmt --check`, a
+guarded stripped ReleaseSafe build (2,655 MB peak), and the frozen gate
+(1,342 MB peak). The guard ceiling was 3,840 MB; all heavy processes were
+serialized.
+
+This is correctness evidence, **not** a timing result or full Zod admission.
+Another standalone overloaded-property oracle still has two Home-only false
+positives, so generic overload parity is not claimed complete. The unchanged
+106-file Zod graph and fair timing comparison remain gated on the remaining
+Home-only identities and consumer negative controls.
+
 ### Typed cross-file global ownership and cyclic provenance (untimed)
 
 Issue [#480](https://github.com/home-lang/home/issues/480), under

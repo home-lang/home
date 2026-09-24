@@ -300,6 +300,7 @@ The latest untimed correctness gate is reported separately from performance:
 | [Schema-3 workload admission](docs/docs/TS_PERFORMANCE.md#current-snapshot) | 20/20 | 20/20 | 20/20 |
 | [Returned imported callable controls](docs/docs/TS_PERFORMANCE.md#returned-imported-callable-context) | 2/2 positive; TS2339 + TS2322 | 2/2 positive; TS2339 + TS2322 | 2/2 positive; TS2339 + TS2322 |
 | [Polymorphic mapped receiver controls](docs/docs/TS_PERFORMANCE.md#polymorphic-mapped-receiver-context) | TS2339 + TS2322 | TS2339 + TS2322 | TS2339 + TS2322 |
+| [Zod 4.5.2 core overload audit](docs/docs/TS_PERFORMANCE.md#open-rest-generic-overload-assignability-untimed) | 1 shared proxy-boundary diagnostic | 1 shared proxy-boundary diagnostic | 4 → **3** identities; 1 Home-only false error removed, 0 added (untimed 21-file proxy) |
 
 The same-parent ReleaseFast audit on the pinned 106-file Zod 4.5.2 graph is
 reported separately from the admitted synthetic suite:

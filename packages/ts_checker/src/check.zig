@@ -94109,6 +94109,17 @@ pub const Checker = struct {
         const source_type_param_count = if (self.generic_signature_params.get(source_t)) |params| params.len else 0;
         const target_type_param_count = if (self.generic_signature_params.get(target_t)) |params| params.len else 0;
         if (source_type_param_count == 0 and target_type_param_count == 0) return false;
+        // An open-rest callback can implement every instantiation of a
+        // generic fixed-arity signature. Its element and return relations
+        // must be checked together before comparing free type parameters by
+        // position, which otherwise rejects a valid universal implementation.
+        if (source_type_param_count == 0 and target_type_param_count > 0 and
+            self.rest_signatures.contains(source_t) and
+            !self.rest_signatures.contains(target_t) and
+            try self.contextualFunctionSignatureAssignable(source_t, target_t))
+        {
+            return false;
+        }
         if (source_type_param_count == 0 and
             target_type_param_count > 0 and
             try self.signatureContainsTypeParameterOutsideOwnParams(source_t))
@@ -94566,6 +94577,9 @@ pub const Checker = struct {
 
     fn typeArgumentAssignableTo(self: *Checker, source_t: TypeId, target_t: TypeId) CheckError!bool {
         if (source_t == target_t) return true;
+        // `any` is assignable to a free type parameter too. Unlike `any`,
+        // `unknown` and concrete sources must still satisfy its constraint.
+        if (source_t == types.Primitive.any) return true;
         if (source_t >= self.interner.pool.typeCount() or target_t >= self.interner.pool.typeCount()) {
             return try self.checkerAssignableTo(source_t, target_t);
         }
@@ -178019,6 +178033,11 @@ pub const Checker = struct {
             return false;
         }
         if (self.sameNonGenericClassInstanceDeclaration(source_ret, target_ret)) return true;
+        // A callback return uses the same declared variance relation as a
+        // direct assignment of two instances of one generic interface.
+        // Structural expansion can reject substituted conditional members
+        // even when the generic arguments relate.
+        if (try self.sameGenericInstantiationAssignableByVariance(source_ret, target_ret)) |ok| return ok;
         if (try self.contextualReturnLacksRequiredObjectShape(source_ret, target_ret)) return false;
         if (self.engine.isAssignableTo(source_ret, target_ret) catch false) return true;
         if (try self.generatorReturnAssignableToTargetReturn(source_ret, target_ret)) return true;
@@ -282137,6 +282156,62 @@ test "checker: top-level forward calls see every overload signature" {
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.expected_n_arguments));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.no_overload_matches));
+}
+
+test "checker: any relates to free generic arguments without admitting unknown or concrete sources" {
+    const s = try newSetup(
+        \\interface Covariant<out T> { value: T }
+        \\interface Contravariant<in T> { consume(value: T): void }
+        \\interface Invariant<in out T> { value: T; consume(value: T): void }
+        \\declare const covAny: Covariant<any>;
+        \\declare const covUnknown: Covariant<unknown>;
+        \\declare const covNumber: Covariant<number>;
+        \\declare const contraAny: Contravariant<any>;
+        \\declare const contraNumber: Contravariant<number>;
+        \\declare const invAny: Invariant<any>;
+        \\declare const invNumber: Invariant<number>;
+        \\function check<T extends string>() {
+        \\  const covPositive: Covariant<T> = covAny;
+        \\  const covNegative: Covariant<T> = covUnknown;
+        \\  const covWrongNumber: Covariant<T> = covNumber;
+        \\  const contraPositive: Contravariant<T> = contraAny;
+        \\  const contraNegative: Contravariant<T> = contraNumber;
+        \\  const invPositive: Invariant<T> = invAny;
+        \\  const invNegative: Invariant<T> = invNumber;
+        \\  let covSlot: Covariant<T> = null!;
+        \\  covSlot = covAny;
+        \\  covSlot = covUnknown;
+        \\  let invSlot: Invariant<T> = null!;
+        \\  invSlot = invAny;
+        \\  invSlot = invNumber;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 6), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 6), s.checker.diagnostics.items.len);
+}
+
+test "checker: open rest implements generic overloads but not a wrong return" {
+    const s = try newSetup(
+        \\interface Builder<Output> {
+        \\  input<const Items extends readonly string[]>(args: Items, rest?: Output): Builder<Items>;
+        \\  input<NewArgs extends { name: string }>(args: NewArgs): Builder<NewArgs>;
+        \\  input(...args: any[]): Builder<any>;
+        \\}
+        \\declare let builder: Builder<unknown>;
+        \\builder.input = (...args: any[]): Builder<any> => builder as Builder<any>;
+        \\builder.input = (...args: any[]): number => args.length;
+        \\interface StrictBuilder { input<T extends { tag: string }>(arg: T): Builder<T> }
+        \\declare let strictBadArgument: StrictBuilder;
+        \\strictBadArgument.input = (arg: number): Builder<any> => builder as Builder<any>;
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 2), s.checker.diagnostics.items.len);
 }
 
 test "checker: nullish member assignment narrows the following member read" {
