@@ -449,6 +449,7 @@ pub fn build(b: *std.Build) void {
     const comptime_pkg = createPackage(b, "packages/comptime/src/comptime.zig", target, optimize, zig_test_framework);
     const generics_pkg = createPackage(b, "packages/generics/src/generic_system.zig", target, optimize, zig_test_framework);
     const codegen_pkg = createPackage(b, "packages/codegen/src/codegen.zig", target, optimize, zig_test_framework);
+    const build_cli_options_pkg = createPackage(b, "src/build_cli_options.zig", target, optimize, zig_test_framework);
     const compiler_pkg = createPackage(b, "packages/compiler/src/borrow_check_pass.zig", target, optimize, zig_test_framework);
     const optimizer_pkg = createPackage(b, "packages/optimizer/src/pass_manager.zig", target, optimize, zig_test_framework);
     const config_pkg = createPackage(b, "packages/config/src/config.zig", target, optimize, zig_test_framework);
@@ -928,6 +929,7 @@ pub fn build(b: *std.Build) void {
     codegen_pkg.addImport("types", types_pkg);
     codegen_pkg.addImport("comptime", comptime_pkg);
     codegen_pkg.addImport("generics", generics_pkg);
+    build_cli_options_pkg.addImport("codegen", codegen_pkg);
     compiler_pkg.addImport("ast", ast_pkg);
     compiler_pkg.addImport("types", types_pkg);
     compiler_pkg.addImport("diagnostics", diagnostics_pkg);
@@ -1323,6 +1325,9 @@ pub fn build(b: *std.Build) void {
 
     const run_codegen_tests = b.addRunArtifact(codegen_tests);
 
+    const build_cli_options_tests = b.addTest(.{ .root_module = build_cli_options_pkg });
+    const run_build_cli_options_tests = b.addRunArtifact(build_cli_options_tests);
+
     // ARM64 assembler tests (issue #5)
     const arm64_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -1460,6 +1465,7 @@ pub fn build(b: *std.Build) void {
     dependOnTest(test_step, &run_interpreter_tests.step, test_filter, "interpreter");
     dependOnTest(test_step, &run_formatter_tests.step, test_filter, "formatter");
     dependOnTest(test_step, &run_codegen_tests.step, test_filter, "codegen");
+    dependOnTest(test_step, &run_build_cli_options_tests.step, test_filter, "build_cli_options");
     dependOnTest(test_step, &run_arm64_tests.step, test_filter, "arm64");
     if (run_database_tests) |db_tests| dependOnTest(test_step, &db_tests.step, test_filter, "database");
     dependOnTest(test_step, &run_threading_tests.step, test_filter, "threading");
