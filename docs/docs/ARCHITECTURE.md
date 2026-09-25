@@ -104,9 +104,12 @@ The parser constructs an Abstract Syntax Tree (AST) from the token stream using 
 
 ### 3. Semantic Analysis (Type Checker)
 
-**Location**: `/packages/types/src/type*system.zig`
+**Location**: `/packages/types/src/type_system.zig`
 
-The type checker performs type inference and validates type correctness.
+The type checker performs type inference and validates type correctness before
+native code generation starts. It is the single semantic authority for Home
+source; code generation consumes the checked AST and does not carry a second,
+weaker checker.
 
 **Type System**:
 
@@ -119,6 +122,7 @@ The type checker performs type inference and validates type correctness.
 
 - Type inference from expressions
 - Function signature verification
+- Return, block, assertion, match, trait, implementation, and extension validation
 - Struct field type checking
 - Array element homogeneity
 - Binary operation type compatibility
