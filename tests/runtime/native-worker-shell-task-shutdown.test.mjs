@@ -2,10 +2,12 @@ import assert from 'node:assert/strict'
 import { once } from 'node:events'
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { Worker } from 'node:worker_threads'
 import { $ } from 'bun'
 import { getEventLoopStats } from 'bun:internal-for-testing'
+
+assert.match(basename(process.execPath), /^home(?:-(?:debug|release-(?:safe|fast|small)))?(?:\.exe)?$/)
 
 const probeCount = getEventLoopStats().nativeWorkPoolThreads
 
