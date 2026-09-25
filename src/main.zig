@@ -28,7 +28,6 @@ const pkg_manager_mod = @import("pkg_manager");
 const PackageManager = pkg_manager_mod.PackageManager;
 const AuthManager = pkg_manager_mod.AuthManager;
 const ir_cache_mod = @import("ir_cache");
-const IRCache = ir_cache_mod.IRCache;
 const IncrementalCompiler = ir_cache_mod.IncrementalCompiler;
 const build_options = @import("build_options");
 const profiler_mod = @import("profiler.zig");
@@ -3350,6 +3349,36 @@ fn buildJsLikeCommand(
     }
 }
 
+fn restoreCachedExecutable(
+    allocator: std.mem.Allocator,
+    compiler: *IncrementalCompiler,
+    file_path: []const u8,
+    source: []const u8,
+    out_path: []const u8,
+) !bool {
+    if (!try compiler.canUseCached(file_path, source)) return false;
+    const artifact = (try compiler.getCachedObject(file_path)) orelse return false;
+    defer allocator.free(artifact);
+
+    try Io.Dir.cwd().writeFile(g_io, .{ .sub_path = out_path, .data = artifact });
+    if (comptime native_os != .windows) {
+        try Io.Dir.cwd().setFilePermissions(g_io, out_path, std.Io.File.Permissions.fromMode(0o755), .{});
+    }
+    return true;
+}
+
+fn cacheBuiltExecutable(
+    allocator: std.mem.Allocator,
+    compiler: *IncrementalCompiler,
+    file_path: []const u8,
+    source: []const u8,
+    out_path: []const u8,
+) !void {
+    const artifact = try Io.Dir.cwd().readFileAlloc(g_io, out_path, allocator, std.Io.Limit.unlimited);
+    defer allocator.free(artifact);
+    try compiler.storeCompilation(file_path, source, artifact, &.{});
+}
+
 fn buildCommand(allocator: std.mem.Allocator, options: BuildCliOptions) !void {
     const file_path = options.entrypoint;
     if (JSEntrypointLLVM.isSupportedEntrypoint(file_path)) {
@@ -3397,37 +3426,13 @@ fn buildCommand(allocator: std.mem.Allocator, options: BuildCliOptions) !void {
 
     // Initialize incremental compilation cache (skip for kernel mode)
     var inc_compiler: ?IncrementalCompiler = null;
-    var cache: ?IRCache = null;
 
     if (build_options.enable_ir_cache and !options.kernel_mode) {
-        // Use new incremental compiler
         inc_compiler = try IncrementalCompiler.init(allocator, ".home-cache", true, g_io);
         std.debug.print("{s}Incremental compilation:{s} enabled\n", .{ Color.Cyan.code(), Color.Reset.code() });
-
-        // Check if module needs recompilation
-        const can_use_cached = try inc_compiler.?.canUseCached(file_path, source);
-        if (can_use_cached) {
-            std.debug.print("{s}Cache Hit:{s} Module is up-to-date, skipping compilation\n", .{ Color.Green.code(), Color.Reset.code() });
-
-            // Get cached object
-            if (try inc_compiler.?.getCachedObject(file_path)) |_| {
-                std.debug.print("{s}Using cached object{s}\n", .{
-                    Color.Cyan.code(),
-                    Color.Reset.code(),
-                });
-            }
-        } else {
-            std.debug.print("{s}Cache Miss:{s} Recompiling module\n", .{ Color.Yellow.code(), Color.Reset.code() });
-        }
-
-        // Also init old cache for backward compatibility
-        cache = try IRCache.init(allocator, ".home-cache", g_io);
     }
 
-    defer {
-        if (inc_compiler) |*ic| ic.deinit();
-        if (cache) |*c| c.deinit();
-    }
+    defer if (inc_compiler) |*ic| ic.deinit();
 
     // Use arena allocator for AST
     var arena = std.heap.ArenaAllocator.init(allocator);
@@ -3645,6 +3650,18 @@ fn buildCommand(allocator: std.mem.Allocator, options: BuildCliOptions) !void {
             break :blk "a.out";
         };
 
+        if (inc_compiler) |*ic| {
+            if (try restoreCachedExecutable(allocator, ic, file_path, source, out_path)) {
+                std.debug.print("{s}Cache Hit:{s} Restored byte-identical executable {s}\n", .{
+                    Color.Green.code(),
+                    Color.Reset.code(),
+                    out_path,
+                });
+                return;
+            }
+            std.debug.print("{s}Cache Miss:{s} Recompiling module\n", .{ Color.Yellow.code(), Color.Reset.code() });
+        }
+
         // Pick backend by host arch. The aarch64 path implements Path B-lite
         // of issue #5 (M1–M9 — return literals through match expressions).
         // Fall through to the x64 backend for any other host (the existing
@@ -3673,10 +3690,18 @@ fn buildCommand(allocator: std.mem.Allocator, options: BuildCliOptions) !void {
                 std.debug.print("{s}Warning:{s} codesign failed ({}); binary may not run\n", .{ Color.Yellow.code(), Color.Reset.code(), err });
             };
 
+            if (inc_compiler) |*ic| {
+                if (cacheBuiltExecutable(allocator, ic, file_path, source, out_path)) |_| {
+                    std.debug.print("{s}Cache updated:{s} Stored compiled executable\n", .{ Color.Cyan.code(), Color.Reset.code() });
+                } else |cache_err| {
+                    std.debug.print("{s}Warning:{s} Failed to update incremental cache: {}\n", .{ Color.Yellow.code(), Color.Reset.code(), cache_err });
+                }
+            }
+
             std.debug.print("\n{s}Success:{s} Built native executable {s}\n", .{ Color.Green.code(), Color.Reset.code(), out_path });
             std.debug.print("{s}Info:{s} Run with: ./{s}\n", .{ Color.Blue.code(), Color.Reset.code(), out_path });
 
-            // Skip the x64 path below (incremental cache is x64-only for now).
+            // Skip the x64 path below.
             return;
         }
 
@@ -3720,17 +3745,11 @@ fn buildCommand(allocator: std.mem.Allocator, options: BuildCliOptions) !void {
 
         // Register module with incremental compiler for future builds
         if (inc_compiler) |*ic| {
-            ic.storeCompilation(
-                file_path,
-                source,
-                &.{}, // AST data — not serialised in the current pipeline
-                &.{}, // type info — not serialised in the current pipeline
-                &.{}, // object data — binary is written directly to disk
-                &.{}, // no tracked dependencies yet
-            ) catch |cache_err| {
+            if (cacheBuiltExecutable(allocator, ic, file_path, source, out_path)) |_| {
+                std.debug.print("{s}Cache updated:{s} Stored compiled executable\n", .{ Color.Cyan.code(), Color.Reset.code() });
+            } else |cache_err| {
                 std.debug.print("{s}Warning:{s} Failed to update incremental cache: {}\n", .{ Color.Yellow.code(), Color.Reset.code(), cache_err });
-            };
-            std.debug.print("{s}Cache updated:{s} Module registered for incremental compilation\n", .{ Color.Cyan.code(), Color.Reset.code() });
+            }
         }
     }
 }

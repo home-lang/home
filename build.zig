@@ -1337,6 +1337,16 @@ pub fn build(b: *std.Build) void {
     });
     const run_home_rt_no_jsc_tests = b.addRunArtifact(home_rt_no_jsc_tests);
 
+    const cache_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("packages/cache/tests/cache_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    cache_tests.root_module.addImport("ir_cache", cache_pkg);
+    const run_cache_tests = b.addRunArtifact(cache_tests);
+
     // ARM64 assembler tests (issue #5)
     const arm64_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -1476,6 +1486,7 @@ pub fn build(b: *std.Build) void {
     dependOnTest(test_step, &run_codegen_tests.step, test_filter, "codegen");
     dependOnTest(test_step, &run_build_cli_options_tests.step, test_filter, "build_cli_options");
     dependOnTest(test_step, &run_home_rt_no_jsc_tests.step, test_filter, "home_rt_no_jsc");
+    dependOnTest(test_step, &run_cache_tests.step, test_filter, "cache");
     dependOnTest(test_step, &run_arm64_tests.step, test_filter, "arm64");
     if (run_database_tests) |db_tests| dependOnTest(test_step, &db_tests.step, test_filter, "database");
     dependOnTest(test_step, &run_threading_tests.step, test_filter, "threading");

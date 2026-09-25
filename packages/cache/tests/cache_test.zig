@@ -1,5 +1,6 @@
 const std = @import("std");
 const testing = std.testing;
+const ir_cache = @import("ir_cache");
 
 // Cache system tests
 // Tests for IR caching and build caching
@@ -7,6 +8,49 @@ const testing = std.testing;
 test "cache - basic compilation" {
     // Ensure cache system compiles
     try testing.expect(true);
+}
+
+test "incremental cache stores and validates a complete artifact" {
+    const allocator = testing.allocator;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    defer allocator.free(root);
+    const cache_dir = try std.fs.path.join(allocator, &.{ root, "cache" });
+    defer allocator.free(cache_dir);
+    const source_path = try std.fs.path.join(allocator, &.{ root, "entry.home" });
+    defer allocator.free(source_path);
+    const source = "fn main() -> i32 { return 7 }";
+    try std.Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = source_path, .data = source });
+
+    var compiler = try ir_cache.IncrementalCompiler.init(allocator, cache_dir, false, testing.io);
+    defer compiler.deinit();
+
+    const artifact = "complete-native-executable";
+    try compiler.storeCompilation(source_path, source, artifact, &.{});
+    try testing.expect(try compiler.canUseCached(source_path, source));
+
+    const restored = (try compiler.getCachedObject(source_path)).?;
+    defer allocator.free(restored);
+    try testing.expectEqualSlices(u8, artifact, restored);
+    try testing.expect(!try compiler.canUseCached(source_path, "changed source"));
+}
+
+test "incremental cache rejects an empty artifact" {
+    const allocator = testing.allocator;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    defer allocator.free(root);
+    const cache_dir = try std.fs.path.join(allocator, &.{ root, "cache" });
+    defer allocator.free(cache_dir);
+
+    var compiler = try ir_cache.IncrementalCompiler.init(allocator, cache_dir, false, testing.io);
+    defer compiler.deinit();
+    try testing.expectError(
+        error.EmptyObjectArtifact,
+        compiler.storeCompilation("entry.home", "source", &.{}, &.{}),
+    );
 }
 
 test "cache - cache entry structure" {
@@ -55,7 +99,7 @@ test "cache - LRU eviction simulation" {
         }
     };
 
-    var entry1 = LRUEntry{ .key = "a", .value = 1, .access_count = 5 };
+    const entry1 = LRUEntry{ .key = "a", .value = 1, .access_count = 5 };
     var entry2 = LRUEntry{ .key = "b", .value = 2, .access_count = 2 };
 
     entry2.touch();

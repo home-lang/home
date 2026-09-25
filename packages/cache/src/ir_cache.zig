@@ -332,15 +332,26 @@ pub const CompiledCache = struct {
         return false;
     }
 
-    /// Store compiled object file
-    pub fn storeObject(self: *CompiledCache, file_path: []const u8, object_data: []const u8) !void {
+    /// Store a complete compiled artifact and the source hash that produced it.
+    pub fn storeObject(self: *CompiledCache, file_path: []const u8, source: []const u8, object_data: []const u8) !void {
+        if (object_data.len == 0) return error.EmptyObjectArtifact;
         const io_val = self.io orelse return error.IoNotAvailable;
         const obj_path = try self.getObjectPath(file_path);
         defer self.allocator.free(obj_path);
+        const hash_path = try self.getSourceHashPath(file_path);
+        defer self.allocator.free(hash_path);
 
         try Io.Dir.cwd().writeFile(io_val, .{
             .sub_path = obj_path,
             .data = object_data,
+        });
+        errdefer Io.Dir.cwd().deleteFile(io_val, obj_path) catch {};
+
+        var encoded_hash: [8]u8 = undefined;
+        std.mem.writeInt(u64, &encoded_hash, hashSource(source), .little);
+        try Io.Dir.cwd().writeFile(io_val, .{
+            .sub_path = hash_path,
+            .data = &encoded_hash,
         });
     }
 
@@ -350,7 +361,12 @@ pub const CompiledCache = struct {
         const obj_path = try self.getObjectPath(file_path);
         defer self.allocator.free(obj_path);
 
-        return try Io.Dir.cwd().readFileAlloc(io_val, obj_path, self.allocator, Io.Limit.unlimited);
+        const artifact = try Io.Dir.cwd().readFileAlloc(io_val, obj_path, self.allocator, Io.Limit.unlimited);
+        if (artifact.len == 0) {
+            self.allocator.free(artifact);
+            return error.EmptyObjectArtifact;
+        }
+        return artifact;
     }
 
     /// Register file dependencies for incremental tracking
@@ -385,6 +401,25 @@ pub const CompiledCache = struct {
             "{s}/{s}_{x}.o",
             .{ self.cache_dir, basename, hash },
         );
+    }
+
+    fn getSourceHashPath(self: *CompiledCache, file_path: []const u8) ![]const u8 {
+        const basename = std.fs.path.basename(file_path);
+        const hash = hashSource(file_path);
+        return std.fmt.allocPrint(self.allocator, "{s}/{s}_{x}.source-hash", .{ self.cache_dir, basename, hash });
+    }
+
+    pub fn matchesSource(self: *CompiledCache, file_path: []const u8, source: []const u8) !bool {
+        const io_val = self.io orelse return error.IoNotAvailable;
+        const hash_path = try self.getSourceHashPath(file_path);
+        defer self.allocator.free(hash_path);
+
+        var encoded_hash: [8]u8 = undefined;
+        const file = Io.Dir.cwd().openFile(io_val, hash_path, .{}) catch return false;
+        defer file.close(io_val);
+        const bytes_read = try file.readPositionalAll(io_val, &encoded_hash, 0);
+        if (bytes_read != encoded_hash.len) return false;
+        return std.mem.readInt(u64, &encoded_hash, .little) == hashSource(source);
     }
 
     /// Get list of files that need recompilation
@@ -481,7 +516,6 @@ pub const FileWatcher = struct {
 /// Incremental Compilation Manager - coordinates all caching and recompilation
 pub const IncrementalCompiler = struct {
     allocator: std.mem.Allocator,
-    ir_cache: IRCache,
     compiled_cache: CompiledCache,
     file_watcher: ?FileWatcher,
     verbose: bool,
@@ -490,7 +524,6 @@ pub const IncrementalCompiler = struct {
     pub fn init(allocator: std.mem.Allocator, cache_dir: []const u8, enable_watch: bool, io: ?Io) !IncrementalCompiler {
         return .{
             .allocator = allocator,
-            .ir_cache = try IRCache.init(allocator, cache_dir, io),
             .compiled_cache = try CompiledCache.init(allocator, cache_dir, io),
             .file_watcher = if (enable_watch) FileWatcher.init(allocator, 100, io) else null,
             .verbose = false,
@@ -499,15 +532,13 @@ pub const IncrementalCompiler = struct {
     }
 
     pub fn deinit(self: *IncrementalCompiler) void {
-        self.ir_cache.deinit();
         self.compiled_cache.deinit();
         if (self.file_watcher) |*w| w.deinit();
     }
 
     /// Check if a file can use cached compilation
     pub fn canUseCached(self: *IncrementalCompiler, file_path: []const u8, source: []const u8) !bool {
-        // First check IR cache
-        if (!try self.ir_cache.isCacheValid(file_path, source)) {
+        if (!try self.compiled_cache.matchesSource(file_path, source)) {
             return false;
         }
 
@@ -532,13 +563,10 @@ pub const IncrementalCompiler = struct {
         self: *IncrementalCompiler,
         file_path: []const u8,
         source: []const u8,
-        ast_data: []const u8,
-        type_info: []const u8,
         object_data: []const u8,
         dependencies: []const []const u8,
     ) !void {
-        try self.ir_cache.put(file_path, source, ast_data, type_info);
-        try self.compiled_cache.storeObject(file_path, object_data);
+        try self.compiled_cache.storeObject(file_path, source, object_data);
         try self.compiled_cache.registerDependencies(file_path, dependencies);
     }
 
@@ -560,14 +588,15 @@ pub const IncrementalCompiler = struct {
     /// Clear all caches
     pub fn clearAll(self: *IncrementalCompiler) !void {
         const io_val = self.io orelse return error.IoNotAvailable;
-        try self.ir_cache.clear();
-        // Also clear compiled objects
+        // Clear compiled artifacts and their source-hash sidecars.
         var dir = Io.Dir.cwd().openDir(io_val, self.compiled_cache.cache_dir, .{ .iterate = true }) catch return;
         defer dir.close(io_val);
 
         var it = dir.iterate();
         while (try it.next(io_val)) |entry| {
-            if (entry.kind == .file and std.mem.endsWith(u8, entry.name, ".o")) {
+            if (entry.kind == .file and
+                (std.mem.endsWith(u8, entry.name, ".o") or std.mem.endsWith(u8, entry.name, ".source-hash")))
+            {
                 dir.deleteFile(entry.name) catch {};
             }
         }
