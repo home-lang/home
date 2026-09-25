@@ -3,9 +3,11 @@ import { once } from 'node:events'
 import { closeSync, exists, fstat, mkdtempSync, openSync, read, readv, realpathSync, rmSync, symlinkSync, write, writev } from 'node:fs'
 import { access, cp, lstat, mkdir, mkdtemp, open, readFile, readdir, readlink, realpath, stat, statfs, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { Worker } from 'node:worker_threads'
 import { getEventLoopStats } from 'bun:internal-for-testing'
+
+assert.match(basename(process.execPath), /^home(?:-(?:debug|release-(?:safe|fast|small)))?(?:\.exe)?$/)
 
 const probeCount = getEventLoopStats().nativeWorkPoolThreads
 

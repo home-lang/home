@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict'
 import { scrypt, scryptSync } from 'node:crypto'
 import { once } from 'node:events'
+import { basename } from 'node:path'
 import { Worker } from 'node:worker_threads'
 import { getEventLoopStats } from 'bun:internal-for-testing'
+
+assert.match(basename(process.execPath), /^home(?:-(?:debug|release-(?:safe|fast|small)))?(?:\.exe)?$/)
 
 const normalOptions = { N: 1024, r: 8, p: 1, maxmem: 32 * 1024 * 1024 }
 const expected = scryptSync('password', 'salt', 32, normalOptions)
