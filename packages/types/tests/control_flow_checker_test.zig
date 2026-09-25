@@ -330,3 +330,29 @@ test "checker rejects unknown array methods" {
         \\}
     ));
 }
+
+test "checker validates inline struct method arguments" {
+    try std.testing.expect(!try checkSource(
+        \\struct Counter {
+        \\    value: i32
+        \\    fn add(self, amount: i32) -> i32 { return amount }
+        \\}
+        \\fn run() {
+        \\    let counter = Counter { value: 1 }
+        \\    counter.add("wrong")
+        \\}
+    ));
+}
+
+test "checker excludes self from inline method arity" {
+    try std.testing.expect(!try checkSource(
+        \\struct Counter {
+        \\    value: i32
+        \\    fn read(self) -> i32 { return 1 }
+        \\}
+        \\fn run() {
+        \\    let counter = Counter { value: 1 }
+        \\    counter.read(1)
+        \\}
+    ));
+}

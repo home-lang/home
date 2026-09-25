@@ -202,6 +202,19 @@ test "checker rejects void struct construction" {
     ));
 }
 
+test "checker preserves inline struct method return types" {
+    try std.testing.expect(try checkSource(
+        \\struct Counter {
+        \\    value: i32
+        \\    fn add(self, amount: i32) -> i32 { return amount }
+        \\}
+        \\fn run() {
+        \\    let counter = Counter { value: 1 }
+        \\    let result: i32 = counter.add(2)
+        \\}
+    ));
+}
+
 test "checker rejects unary operators on void" {
     try std.testing.expect(!try checkSource(
         \\fn noop() -> void { return }

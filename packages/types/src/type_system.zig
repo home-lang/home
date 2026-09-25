@@ -225,6 +225,9 @@ pub const Type = union(enum) {
         name: []const u8,
         /// Field definitions
         fields: []const Field,
+        /// Inline methods declared in the struct body. Their function types
+        /// omit the implicit `self` receiver.
+        methods: []const Field = &.{},
 
         /// A single field in a struct.
         pub const Field = struct {
@@ -1039,12 +1042,27 @@ pub const TypeChecker = struct {
                     // slice in env.bindings but the tracker keeps the
                     // pointer reachable for cleanup.
                     try self.env.trackAllocation(fields_slice);
-                    const struct_type = Type{
+                    const base_struct_type = Type{
                         .Struct = .{
                             .name = struct_decl.name,
                             .fields = fields_slice,
                         },
                     };
+                    var methods = std.ArrayList(Type.StructType.Field).empty;
+                    defer methods.deinit(self.allocator);
+                    for (struct_decl.methods) |method| {
+                        try methods.append(self.allocator, .{
+                            .name = method.name,
+                            .type = try self.methodTypeFromDecl(method, base_struct_type, false),
+                        });
+                    }
+                    const methods_slice = try methods.toOwnedSlice(self.allocator);
+                    try self.env.trackAllocation(methods_slice);
+                    const struct_type = Type{ .Struct = .{
+                        .name = struct_decl.name,
+                        .fields = fields_slice,
+                        .methods = methods_slice,
+                    } };
                     try self.env.define(struct_decl.name, struct_type);
                 },
                 .EnumDecl => |enum_decl| {
@@ -1169,6 +1187,55 @@ pub const TypeChecker = struct {
                 .required_params = required_params,
             },
         };
+    }
+
+    fn methodTypeFromDecl(
+        self: *TypeChecker,
+        fn_decl: *const ast.FnDecl,
+        owner: Type,
+        validate: bool,
+    ) !Type {
+        const first_param = if (fn_decl.params.len > 0 and std.mem.eql(u8, fn_decl.params[0].name, "self"))
+            @as(usize, 1)
+        else
+            0;
+        const param_types = try self.allocator.alloc(Type, fn_decl.params.len - first_param);
+        var param_types_tracked = false;
+        errdefer if (!param_types_tracked) self.allocator.free(param_types);
+
+        var required_params: usize = 0;
+        for (fn_decl.params[first_param..], 0..) |param, index| {
+            param_types[index] = if (std.mem.eql(u8, param.type_name, "Self"))
+                owner
+            else if (validate)
+                try self.parseDeclaredType(param.type_name, param.loc)
+            else
+                try self.parseTypeName(param.type_name);
+            if (param.default_value == null) required_params += 1;
+        }
+
+        const return_type = try self.allocator.create(Type);
+        var return_type_tracked = false;
+        errdefer if (!return_type_tracked) self.allocator.destroy(return_type);
+        return_type.* = if (fn_decl.return_type) |name|
+            if (std.mem.eql(u8, name, "Self"))
+                owner
+            else if (validate)
+                try self.parseDeclaredType(name, fn_decl.node.loc)
+            else
+                try self.parseTypeName(name)
+        else
+            Type.Void;
+        try self.allocated_types.append(self.allocator, return_type);
+        return_type_tracked = true;
+        try self.allocated_slices.append(self.allocator, param_types);
+        param_types_tracked = true;
+
+        return Type{ .Function = .{
+            .params = param_types,
+            .return_type = return_type,
+            .required_params = required_params,
+        } };
     }
 
     /// Process an import declaration by loading and parsing the imported module
@@ -1773,12 +1840,27 @@ pub const TypeChecker = struct {
                 // Track the allocated slice for proper cleanup
                 try self.env.trackAllocation(fields_slice);
 
-                const struct_type = Type{
+                const base_struct_type = Type{
                     .Struct = .{
                         .name = struct_decl.name,
                         .fields = fields_slice,
                     },
                 };
+                var methods = std.ArrayList(Type.StructType.Field).empty;
+                defer methods.deinit(self.allocator);
+                for (struct_decl.methods) |method| {
+                    try methods.append(self.allocator, .{
+                        .name = method.name,
+                        .type = try self.methodTypeFromDecl(method, base_struct_type, true),
+                    });
+                }
+                const methods_slice = try methods.toOwnedSlice(self.allocator);
+                try self.env.trackAllocation(methods_slice);
+                const struct_type = Type{ .Struct = .{
+                    .name = struct_decl.name,
+                    .fields = fields_slice,
+                    .methods = methods_slice,
+                } };
 
                 // Register struct type in environment
                 try self.env.define(struct_decl.name, struct_type);
@@ -3581,6 +3663,24 @@ pub const TypeChecker = struct {
                 for (object_type.Struct.fields) |field| {
                     if (!std.mem.eql(u8, field.name, method_name) or field.type != .Function) continue;
                     const function = field.type.Function;
+                    const required = function.required_params orelse function.params.len;
+                    const provided = call.args.len + call.named_args.len;
+                    if (provided < required or provided > function.params.len) {
+                        try self.addError("Wrong number of arguments", call.node.loc);
+                        return error.WrongNumberOfArguments;
+                    }
+                    for (call.args, 0..) |argument, index| {
+                        const actual = try self.inferExpressionWithHint(argument, function.params[index]);
+                        try self.checkExpressionAgainst(argument, function.params[index], actual);
+                    }
+                    for (call.named_args) |named_argument| {
+                        _ = try self.inferExpression(named_argument.value);
+                    }
+                    return function.return_type.*;
+                }
+                for (object_type.Struct.methods) |method| {
+                    if (!std.mem.eql(u8, method.name, method_name)) continue;
+                    const function = method.type.Function;
                     const required = function.required_params orelse function.params.len;
                     const provided = call.args.len + call.named_args.len;
                     if (provided < required or provided > function.params.len) {
