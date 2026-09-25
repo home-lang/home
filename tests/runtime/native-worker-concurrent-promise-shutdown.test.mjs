@@ -2,9 +2,11 @@ import assert from 'node:assert/strict'
 import { once } from 'node:events'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { Worker } from 'node:worker_threads'
 import { getEventLoopStats } from 'bun:internal-for-testing'
+
+assert.match(basename(process.execPath), /^home(?:-(?:debug|release-(?:safe|fast|small)))?(?:\.exe)?$/)
 
 const workerSource = `
   const { parentPort } = require('node:worker_threads');
