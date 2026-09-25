@@ -215,6 +215,33 @@ test "checker preserves inline struct method return types" {
     ));
 }
 
+test "checker preserves inherent impl method signatures" {
+    try std.testing.expect(try checkSource(
+        \\struct Counter { value: i32 }
+        \\impl Counter {
+        \\    fn add(self, amount: i32) -> i32 { return self.value + amount }
+        \\}
+        \\fn run() {
+        \\    let counter = Counter { value: 1 }
+        \\    let result: i32 = counter.add(2)
+        \\}
+    ));
+}
+
+test "checker preserves trait impl method signatures" {
+    try std.testing.expect(try checkSource(
+        \\trait Readable { fn read(self): i32; }
+        \\struct Counter { value: i32 }
+        \\impl Readable for Counter {
+        \\    fn read(self) -> i32 { return self.value }
+        \\}
+        \\fn run() {
+        \\    let counter = Counter { value: 1 }
+        \\    let result: i32 = counter.read()
+        \\}
+    ));
+}
+
 test "checker rejects unary operators on void" {
     try std.testing.expect(!try checkSource(
         \\fn noop() -> void { return }

@@ -1098,6 +1098,16 @@ pub const TypeChecker = struct {
             }
         }
 
+        // Struct declarations are now registered, so implementation and
+        // extension methods can be merged into their nominal targets without
+        // depending on source order. The checking pass below rebuilds these
+        // signatures with declared-type diagnostics enabled.
+        for (self.program.statements) |stmt| switch (stmt) {
+            .ImplDecl => |impl_decl| _ = try self.attachStructMethods(impl_decl.for_type, impl_decl.methods, false),
+            .ExtendDecl => |extend_decl| _ = try self.attachStructMethods(extend_decl.target_type, extend_decl.methods, false),
+            else => {},
+        };
+
         // Second pass: type check all statements
         for (self.program.statements) |stmt| {
             self.checkStatement(stmt) catch |err| {
@@ -1236,6 +1246,114 @@ pub const TypeChecker = struct {
             .return_type = return_type,
             .required_params = required_params,
         } };
+    }
+
+    fn methodTargetName(type_expr: *const ast.TypeExpr) ?[]const u8 {
+        return switch (type_expr.*) {
+            .Named => |name| name,
+            .Generic => |generic| generic.base,
+            .Reference => |reference| methodTargetName(reference.inner),
+            .Pointer => |pointer| methodTargetName(pointer.inner),
+            .Nullable => |inner| methodTargetName(inner),
+            else => null,
+        };
+    }
+
+    fn resolveMethodOwner(
+        self: *TypeChecker,
+        type_expr: *const ast.TypeExpr,
+        loc: ast.SourceLocation,
+        validate: bool,
+    ) !Type {
+        const name = methodTargetName(type_expr) orelse return Type.Unknown;
+        if (self.env.get(name)) |known| return known;
+        return if (validate)
+            try self.parseDeclaredType(name, loc)
+        else
+            try self.parseTypeName(name);
+    }
+
+    fn attachStructMethods(
+        self: *TypeChecker,
+        target_expr: *const ast.TypeExpr,
+        declarations: []const *ast.FnDecl,
+        validate: bool,
+    ) !Type {
+        const loc = if (declarations.len > 0) declarations[0].node.loc else ast.SourceLocation{ .line = 0, .column = 0 };
+        const owner = try self.resolveMethodOwner(target_expr, loc, validate);
+        if (owner != .Struct or declarations.len == 0) return owner;
+
+        var methods = std.ArrayList(Type.StructType.Field).empty;
+        defer methods.deinit(self.allocator);
+        try methods.appendSlice(self.allocator, owner.Struct.methods);
+        for (declarations) |declaration| {
+            const method_type = try self.methodTypeFromDecl(declaration, owner, validate);
+            var replaced = false;
+            for (methods.items) |*method| {
+                if (!std.mem.eql(u8, method.name, declaration.name)) continue;
+                method.type = method_type;
+                replaced = true;
+                break;
+            }
+            if (!replaced) {
+                try methods.append(self.allocator, .{
+                    .name = declaration.name,
+                    .type = method_type,
+                });
+            }
+        }
+
+        const methods_slice = try methods.toOwnedSlice(self.allocator);
+        try self.env.trackAllocation(methods_slice);
+        const updated = Type{ .Struct = .{
+            .name = owner.Struct.name,
+            .fields = owner.Struct.fields,
+            .methods = methods_slice,
+        } };
+        try self.env.define(owner.Struct.name, updated);
+        return updated;
+    }
+
+    fn checkFunctionDecl(self: *TypeChecker, fn_decl: *const ast.FnDecl, owner: ?Type) TypeError!void {
+        const previous_return_type = self.current_function_return_type;
+        self.current_function_return_type = if (fn_decl.return_type) |return_type|
+            if (owner != null and std.mem.eql(u8, return_type, "Self"))
+                owner.?
+            else
+                try self.parseDeclaredType(return_type, fn_decl.node.loc)
+        else
+            Type.Void;
+        defer self.current_function_return_type = previous_return_type;
+
+        const saved_env_ptr = try self.allocator.create(TypeEnvironment);
+        saved_env_ptr.* = self.env;
+        var func_env = TypeEnvironment.init(self.allocator);
+        func_env.parent = saved_env_ptr;
+        self.uninitialized_vars.clearRetainingCapacity();
+
+        for (fn_decl.params) |param| {
+            const param_type = if (owner != null and
+                (std.mem.eql(u8, param.name, "self") or std.mem.eql(u8, param.type_name, "Self")))
+                owner.?
+            else
+                try self.parseDeclaredType(param.type_name, param.loc);
+            try func_env.define(param.name, param_type);
+            try self.ownership_tracker.define(param.name, param_type, fn_decl.node.loc);
+        }
+
+        self.env = func_env;
+        defer {
+            self.env.deinit();
+            self.env = saved_env_ptr.*;
+            self.allocator.destroy(saved_env_ptr);
+            self.ownership_tracker.exitScope();
+        }
+
+        for (fn_decl.body.statements) |body_stmt| {
+            self.checkStatement(body_stmt) catch |err| {
+                if (err != error.TypeMismatch and err != error.UndefinedVariable) return err;
+            };
+        }
     }
 
     /// Process an import declaration by loading and parsing the imported module
@@ -1545,63 +1663,7 @@ pub const TypeChecker = struct {
                 }
             },
             .FnDecl => |fn_decl| {
-                const previous_return_type = self.current_function_return_type;
-                self.current_function_return_type = if (fn_decl.return_type) |return_type|
-                    try self.parseDeclaredType(return_type, fn_decl.node.loc)
-                else
-                    Type.Void;
-                defer self.current_function_return_type = previous_return_type;
-
-                // Save the module environment pointer for parent scope lookup
-                const saved_env_ptr = try self.allocator.create(TypeEnvironment);
-                saved_env_ptr.* = self.env;
-
-                // Create new scope for function with parent link to module scope
-                var func_env = TypeEnvironment.init(self.allocator);
-                func_env.parent = saved_env_ptr; // Enable module-level variable lookup
-
-                // The may-be-uninitialized set is keyed by name alone, with no
-                // scope of its own, so it has to be cleared at each function
-                // boundary. Without this a `var value: u64` declared in one
-                // function marked *every* later `value` in the file — including
-                // parameters, which are initialized by definition — as
-                // possibly uninitialized. The warnings appeared in functions
-                // that had nothing to do with the declaration.
-                self.uninitialized_vars.clearRetainingCapacity();
-
-                // Add parameters to function scope
-                for (fn_decl.params) |param| {
-                    const param_type = try self.parseDeclaredType(param.type_name, param.loc);
-                    try func_env.define(param.name, param_type);
-                    // Also define them in the ownership tracker. Parameters
-                    // were registered only in the type environment, so the
-                    // tracker never reset their state at a function boundary
-                    // and whatever a *previous* function's variable of the
-                    // same name had left behind persisted. A parameter named
-                    // `cmd` inherited a moved state from an unrelated
-                    // function and every use of it reported "Use of moved
-                    // value" — for a u64, which is Copy and cannot be moved
-                    // at all.
-                    try self.ownership_tracker.define(param.name, param_type, fn_decl.node.loc);
-                }
-
-                // Type check function body with the function environment
-                self.env = func_env;
-                defer {
-                    self.env.deinit();
-                    self.env = saved_env_ptr.*;
-                    self.allocator.destroy(saved_env_ptr);
-                    self.ownership_tracker.exitScope();
-                }
-
-                for (fn_decl.body.statements) |body_stmt| {
-                    self.checkStatement(body_stmt) catch |err| {
-                        if (err != error.TypeMismatch and err != error.UndefinedVariable) {
-                            return err;
-                        }
-                        // Continue checking to find more errors
-                    };
-                }
+                try self.checkFunctionDecl(fn_decl, null);
             },
             .ReturnStmt => |return_stmt| {
                 const expected = self.current_function_return_type orelse {
@@ -1639,6 +1701,7 @@ pub const TypeChecker = struct {
                 }
             },
             .ImplDecl => |impl_decl| {
+                const owner = try self.attachStructMethods(impl_decl.for_type, impl_decl.methods, true);
                 if (impl_decl.trait_name) |trait_name| {
                     if (self.trait_declarations.get(trait_name)) |trait_decl| {
                         try self.checkImplSignatures(impl_decl, trait_decl);
@@ -1647,12 +1710,13 @@ pub const TypeChecker = struct {
                     }
                 }
                 for (impl_decl.methods) |method| {
-                    try self.checkStatement(.{ .FnDecl = method });
+                    try self.checkFunctionDecl(method, owner);
                 }
             },
             .ExtendDecl => |extend_decl| {
+                const owner = try self.attachStructMethods(extend_decl.target_type, extend_decl.methods, true);
                 for (extend_decl.methods) |method| {
-                    try self.checkStatement(.{ .FnDecl = method });
+                    try self.checkFunctionDecl(method, owner);
                 }
             },
             .IfStmt => |if_stmt| {
@@ -1864,6 +1928,9 @@ pub const TypeChecker = struct {
 
                 // Register struct type in environment
                 try self.env.define(struct_decl.name, struct_type);
+                for (struct_decl.methods) |method| {
+                    try self.checkFunctionDecl(method, struct_type);
+                }
             },
             .EnumDecl => |enum_decl| {
                 // Build enum type from variants

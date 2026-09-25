@@ -356,3 +356,30 @@ test "checker excludes self from inline method arity" {
         \\}
     ));
 }
+
+test "checker validates inherent impl method arguments" {
+    try std.testing.expect(!try checkSource(
+        \\struct Counter { value: i32 }
+        \\impl Counter {
+        \\    fn add(self, amount: i32) -> i32 { return self.value + amount }
+        \\}
+        \\fn run() {
+        \\    let counter = Counter { value: 1 }
+        \\    counter.add("wrong")
+        \\}
+    ));
+}
+
+test "checker validates trait impl method arguments" {
+    try std.testing.expect(!try checkSource(
+        \\trait Adjust { fn add(self, amount: i32): i32; }
+        \\struct Counter { value: i32 }
+        \\impl Adjust for Counter {
+        \\    fn add(self, amount: i32) -> i32 { return self.value + amount }
+        \\}
+        \\fn run() {
+        \\    let counter = Counter { value: 1 }
+        \\    counter.add(false)
+        \\}
+    ));
+}
