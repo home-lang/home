@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { getEventLoopStats } from 'bun:internal-for-testing'
+
+assert.match(basename(process.execPath), /^home(?:-(?:debug|release-(?:safe|fast|small)))?(?:\.exe)?$/)
 
 const root = mkdtempSync(join(tmpdir(), 'home-runtime-transpiler-publish-'))
 const moduleCount = 1_024
