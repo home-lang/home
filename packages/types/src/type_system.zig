@@ -876,6 +876,9 @@ pub const TypeChecker = struct {
     /// only aliases produced by clear AddressOf-of-local expressions
     /// are recorded; ambiguous let-bindings are not aliased.
     pointer_aliases: std.StringHashMap([]const u8),
+    /// Declared return type of the function currently being checked.
+    /// Nested statement checking consults this for every ReturnStmt.
+    current_function_return_type: ?Type,
 
     pub const TypeErrorInfo = struct {
         message: []const u8,
@@ -903,6 +906,7 @@ pub const TypeChecker = struct {
             .loaded_modules = std.StringHashMap(bool).init(allocator),
             .uninitialized_vars = std.StringHashMap(ast.SourceLocation).init(allocator),
             .pointer_aliases = std.StringHashMap([]const u8).init(allocator),
+            .current_function_return_type = null,
         };
     }
 
@@ -1507,6 +1511,13 @@ pub const TypeChecker = struct {
                 _ = value_type; // Used for type checking, not needed after
             },
             .FnDecl => |fn_decl| {
+                const previous_return_type = self.current_function_return_type;
+                self.current_function_return_type = if (fn_decl.return_type) |return_type|
+                    try self.parseTypeName(return_type)
+                else
+                    Type.Void;
+                defer self.current_function_return_type = previous_return_type;
+
                 // Save the module environment pointer for parent scope lookup
                 const saved_env_ptr = try self.allocator.create(TypeEnvironment);
                 saved_env_ptr.* = self.env;
@@ -1561,6 +1572,28 @@ pub const TypeChecker = struct {
 
                 // End function scope - release all borrows
                 self.ownership_tracker.exitScope();
+            },
+            .ReturnStmt => |return_stmt| {
+                const expected = self.current_function_return_type orelse {
+                    try self.addError("Return statement outside of a function", return_stmt.node.loc);
+                    return error.TypeMismatch;
+                };
+
+                if (return_stmt.value) |value| {
+                    try self.checkExpression(value, expected);
+                } else if (!expected.equals(Type.Void)) {
+                    try self.addTypeMismatchError(expected, Type.Void, return_stmt.node.loc);
+                    return error.TypeMismatch;
+                }
+            },
+            .BlockStmt => |block| {
+                try self.checkBlock(block);
+            },
+            .AssertStmt => |assert_stmt| {
+                try self.checkExpression(assert_stmt.condition, Type.Bool);
+                if (assert_stmt.message) |message| {
+                    _ = try self.inferExpression(message);
+                }
             },
             .IfStmt => |if_stmt| {
                 // Check condition is boolean, optional, Void (unknown),
@@ -1940,6 +1973,16 @@ pub const TypeChecker = struct {
                 try self.env.define(union_decl.name, union_type);
             },
             else => {},
+        }
+    }
+
+    fn checkBlock(self: *TypeChecker, block: *const ast.BlockStmt) TypeError!void {
+        for (block.statements) |statement| {
+            self.checkStatement(statement) catch |err| {
+                if (err != error.TypeMismatch and err != error.UndefinedVariable) {
+                    return err;
+                }
+            };
         }
     }
 

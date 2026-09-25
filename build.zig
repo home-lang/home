@@ -1181,6 +1181,26 @@ pub fn build(b: *std.Build) void {
 
     const run_parser_tests = b.addRunArtifact(parser_tests);
 
+    const types_control_flow_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("packages/types/tests/control_flow_checker_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    types_control_flow_tests.root_module.addImport("home", home_module);
+    const run_types_control_flow_tests = b.addRunArtifact(types_control_flow_tests);
+
+    const types_assert_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("packages/types/tests/assert_checker_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    types_assert_tests.root_module.addImport("home", home_module);
+    const run_types_assert_tests = b.addRunArtifact(types_assert_tests);
+
     // HTTP Router tests
     const http_router_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -1425,6 +1445,8 @@ pub fn build(b: *std.Build) void {
     dependOnTest(test_step, &run_native_binding_tests.step, test_filter, "native-bindings");
     dependOnTest(test_step, &run_lexer_tests.step, test_filter, "lexer");
     dependOnTest(test_step, &run_parser_tests.step, test_filter, "parser");
+    dependOnTest(test_step, &run_types_control_flow_tests.step, test_filter, "types_control_flow");
+    dependOnTest(test_step, &run_types_assert_tests.step, test_filter, "types_assert");
     dependOnTest(test_step, &run_http_router_tests.step, test_filter, "http_router");
     dependOnTest(test_step, &run_craft_tests.step, test_filter, "craft");
     dependOnTest(test_step, &run_package_manager_tests.step, test_filter, "package_manager");
