@@ -4797,9 +4797,70 @@ pub const TypeChecker = struct {
         return Type.Unknown;
     }
 
+    fn containsUnknownType(t: Type) bool {
+        return switch (t) {
+            .Unknown => true,
+            .Array => |array| containsUnknownType(array.element_type.*),
+            .Map => |map| containsUnknownType(map.key_type.*) or containsUnknownType(map.value_type.*),
+            .Function => |function| blk: {
+                for (function.params) |param| {
+                    if (containsUnknownType(param)) break :blk true;
+                }
+                break :blk containsUnknownType(function.return_type.*);
+            },
+            .Generic => |generic| blk: {
+                for (generic.bounds) |bound| {
+                    if (containsUnknownType(bound)) break :blk true;
+                }
+                break :blk false;
+            },
+            .Result => |result| containsUnknownType(result.ok_type.*) or containsUnknownType(result.err_type.*),
+            .Tuple => |tuple| blk: {
+                for (tuple.element_types) |element| {
+                    if (containsUnknownType(element)) break :blk true;
+                }
+                break :blk false;
+            },
+            .Union => |union_type| blk: {
+                for (union_type.variants) |variant| {
+                    if (variant.data_type) |data_type| {
+                        if (containsUnknownType(data_type)) break :blk true;
+                    }
+                }
+                break :blk false;
+            },
+            .Optional, .Reference, .MutableReference, .Keyof => |inner| containsUnknownType(inner.*),
+            .Intersection => |intersection| blk: {
+                for (intersection.types) |part| {
+                    if (containsUnknownType(part.*)) break :blk true;
+                }
+                break :blk false;
+            },
+            .Conditional => |conditional| containsUnknownType(conditional.check_type.*) or
+                containsUnknownType(conditional.extends_type.*) or
+                containsUnknownType(conditional.true_type.*) or
+                containsUnknownType(conditional.false_type.*),
+            .Mapped => |mapped| containsUnknownType(mapped.source_type.*) or containsUnknownType(mapped.value_type.*),
+            .Typeof => |typeof_type| if (typeof_type.resolved_type) |resolved| containsUnknownType(resolved.*) else false,
+            .Infer => |inferred| if (inferred.constraint) |constraint| containsUnknownType(constraint.*) else false,
+            .TemplateLiteral => |template| blk: {
+                for (template.parts) |part| switch (part) {
+                    .literal => {},
+                    .type_placeholder => |placeholder| if (containsUnknownType(placeholder.*)) break :blk true,
+                };
+                break :blk false;
+            },
+            .Branded => |branded| containsUnknownType(branded.base_type.*),
+            .IndexAccess => |access| containsUnknownType(access.object_type.*) or containsUnknownType(access.index_type.*),
+            // Named structs and enums are validated at their declarations.
+            // Treating them as leaves also avoids cycles in recursive types.
+            else => false,
+        };
+    }
+
     fn parseDeclaredType(self: *TypeChecker, name: []const u8, loc: ast.SourceLocation) TypeError!Type {
         const resolved = try self.parseTypeName(name);
-        if (resolved != .Unknown) return resolved;
+        if (!containsUnknownType(resolved)) return resolved;
 
         const message = try std.fmt.allocPrint(self.allocator, "Unknown type '{s}'", .{name});
         defer self.allocator.free(message);

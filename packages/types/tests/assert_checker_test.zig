@@ -155,6 +155,20 @@ test "checker suppresses cascades with unknown rather than void" {
     ));
 }
 
+test "checker rejects unresolved array element types" {
+    try std.testing.expect(!try checkSource(
+        \\fn run() {
+        \\    let values: [Missing] = []
+        \\}
+    ));
+}
+
+test "checker rejects unresolved referenced types" {
+    try std.testing.expect(!try checkSource(
+        \\fn inspect(value: &Missing) {}
+    ));
+}
+
 test "checker rejects unary operators on void" {
     try std.testing.expect(!try checkSource(
         \\fn noop() -> void { return }

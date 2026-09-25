@@ -284,3 +284,15 @@ test "checker does not coerce arrays of void" {
         \\}
     ));
 }
+
+test "checker rejects unresolved result member types" {
+    try std.testing.expect(!try checkSource(
+        \\fn inspect(value: Result<i32, Missing>) {}
+    ));
+}
+
+test "checker rejects unresolved map member types" {
+    try std.testing.expect(!try checkSource(
+        \\fn inspect(value: HashMap<string, Missing>) {}
+    ));
+}
