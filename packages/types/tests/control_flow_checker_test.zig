@@ -246,6 +246,12 @@ test "checker rejects missing import alias members" {
     ));
 }
 
+test "checker rejects an unresolved import" {
+    try std.testing.expect(!try checkSourceWithImports(
+        \\import definitely_missing_module as missing
+    ));
+}
+
 test "checker hides non-public import alias members" {
     try std.testing.expect(!try checkSourceWithImports(
         \\import import_alias_support as support

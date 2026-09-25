@@ -999,8 +999,8 @@ pub const TypeChecker = struct {
                     // Process the module and bind its namespace to the explicit
                     // alias, or to the final path segment for a bare import.
                     const namespace = self.processImport(import_decl) catch |err| blk: {
-                        // Log import error but continue checking
                         if (err == error.OutOfMemory) return err;
+                        try self.addImportError(import_decl, err);
                         break :blk null;
                     };
                     if (namespace) |module_type| {
@@ -5161,6 +5161,23 @@ pub const TypeChecker = struct {
         const msg = try self.allocator.dupe(u8, message);
         errdefer self.allocator.free(msg);
         try self.errors.append(self.allocator, .{ .message = msg, .loc = loc });
+    }
+
+    fn addImportError(self: *TypeChecker, import_decl: *const ast.ImportDecl, import_error: anyerror) !void {
+        var path = std.ArrayList(u8).empty;
+        defer path.deinit(self.allocator);
+        for (import_decl.path, 0..) |segment, index| {
+            if (index > 0) try path.append(self.allocator, '/');
+            try path.appendSlice(self.allocator, segment);
+        }
+
+        const message = try std.fmt.allocPrint(
+            self.allocator,
+            "Cannot resolve import '{s}': {s}",
+            .{ path.items, @errorName(import_error) },
+        );
+        errdefer self.allocator.free(message);
+        try self.errors.append(self.allocator, .{ .message = message, .loc = import_decl.node.loc });
     }
 
     fn addErrorWithCode(self: *TypeChecker, message: []const u8, loc: ast.SourceLocation, code: u32) !void {

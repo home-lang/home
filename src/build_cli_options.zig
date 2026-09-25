@@ -38,6 +38,21 @@ pub const ParseResult = union(enum) {
     err: ParseError,
 };
 
+pub const TypeCheckOutcome = enum {
+    passed,
+    fail,
+    continue_by_request,
+};
+
+pub fn checkPassed(had_parse_errors: bool, type_check_passed: bool) bool {
+    return !had_parse_errors and type_check_passed;
+}
+
+pub fn typeCheckOutcome(options: Options, type_check_passed: bool) TypeCheckOutcome {
+    if (type_check_passed) return .passed;
+    return if (options.allow_type_errors) .continue_by_request else .fail;
+}
+
 pub fn parse(args: []const [:0]const u8) ParseResult {
     var entrypoint: ?[]const u8 = null;
     var output_path: ?[]const u8 = null;
@@ -231,4 +246,20 @@ test "build options reject malformed arguments" {
             .ok => return error.ExpectedBuildParseError,
         }
     }
+}
+
+test "check rejects parse errors without an environment toggle" {
+    try std.testing.expect(checkPassed(false, true));
+    try std.testing.expect(!checkPassed(true, true));
+    try std.testing.expect(!checkPassed(false, false));
+}
+
+test "build type errors are fatal unless explicitly allowed" {
+    const strict = Options{ .entrypoint = "entry.home" };
+    try std.testing.expectEqual(TypeCheckOutcome.passed, typeCheckOutcome(strict, true));
+    try std.testing.expectEqual(TypeCheckOutcome.fail, typeCheckOutcome(strict, false));
+
+    var permissive = strict;
+    permissive.allow_type_errors = true;
+    try std.testing.expectEqual(TypeCheckOutcome.continue_by_request, typeCheckOutcome(permissive, false));
 }

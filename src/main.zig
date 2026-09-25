@@ -558,13 +558,9 @@ fn checkFile(allocator: std.mem.Allocator, file_path: []const u8) !bool {
 
     const program = try parser.parse();
 
-    // Parse errors are collected into parser.errors but `parse()`
-    // returns a partial AST so the type checker can still run for
-    // richer diagnostics. Setting HOME_STRICT=1 fails the command
-    // on ANY parse error; the default keeps the older loose behavior
-    // so existing regression sweeps don't fail on pre-existing quirks.
-    const strict_env = std.c.getenv("HOME_STRICT");
-    const strict = strict_env != null and strict_env.?[0] != 0;
+    // Parse errors are collected into parser.errors while `parse()` returns a
+    // partial AST. Keep checking that AST for richer diagnostics, but never
+    // report success for source that did not parse completely.
     const had_parse_errors = parser.errors.items.len > 0;
 
     // Create comptime value store for compile-time evaluation
@@ -581,7 +577,7 @@ fn checkFile(allocator: std.mem.Allocator, file_path: []const u8) !bool {
 
     const passed = try type_checker.check();
 
-    if (!passed or (strict and had_parse_errors)) {
+    if (!build_cli_options.checkPassed(had_parse_errors, passed)) {
         // Display rich type errors with enhanced formatting
         for (type_checker.errors.items) |err_info| {
             try printEnhancedError(file_path, source, err_info);
@@ -3506,34 +3502,44 @@ fn buildCommand(allocator: std.mem.Allocator, options: BuildCliOptions) !void {
         std.debug.print("{s}Comptime executor initialized ✓{s}\n", .{ Color.Green.code(), Color.Reset.code() });
     }
 
-    // Type check (unless disabled or kernel mode)
-    if (!options.kernel_mode) {
-        std.debug.print("{s}Type checking...{s}\n", .{ Color.Cyan.code(), Color.Reset.code() });
+    // Type checking is a correctness gate for every Home build, including
+    // kernels. The opt-out is explicit so ordinary builds cannot silently
+    // generate an executable from an invalid program.
+    std.debug.print("{s}Type checking...{s}\n", .{ Color.Cyan.code(), Color.Reset.code() });
 
-        var type_checker = TypeChecker.initWithComptime(allocator, program, &comptime_store);
-        defer type_checker.deinit();
+    var type_checker = TypeChecker.initWithSourcePath(allocator, program, file_path);
+    type_checker.comptime_store = &comptime_store;
+    type_checker.io = g_io;
+    defer type_checker.deinit();
 
-        const type_check_passed = try type_checker.check();
-
-        if (!type_check_passed) {
-            // Type errors are warnings for now - multi-module type checking is not complete
-            std.debug.print("{s}Type Warnings (continuing):{s}\n", .{ Color.Yellow.code(), Color.Reset.code() });
-            const max_errors_to_show: usize = 5;
-            for (type_checker.errors.items[0..@min(max_errors_to_show, type_checker.errors.items.len)]) |err_info| {
-                std.debug.print("  {s}Warning:{s} {s} (line {d}, col {d})\n", .{
-                    Color.Yellow.code(),
-                    Color.Reset.code(),
-                    err_info.message,
-                    err_info.loc.line,
-                    err_info.loc.column,
-                });
-            }
-            if (type_checker.errors.items.len > max_errors_to_show) {
-                std.debug.print("  ... and {d} more warnings\n", .{type_checker.errors.items.len - max_errors_to_show});
-            }
-        } else {
-            std.debug.print("{s}Type check passed ✓{s}\n", .{ Color.Green.code(), Color.Reset.code() });
+    const type_check_passed = try type_checker.check();
+    const type_check_outcome = build_cli_options.typeCheckOutcome(options, type_check_passed);
+    if (type_check_outcome != .passed) {
+        const continuing = type_check_outcome == .continue_by_request;
+        const color = if (continuing) Color.Yellow else Color.Red;
+        const label = if (continuing) "Type Warnings (continuing by request)" else "Type Errors";
+        const diagnostic_label = if (continuing) "Warning" else "Error";
+        std.debug.print("{s}{s}:{s}\n", .{ color.code(), label, Color.Reset.code() });
+        const max_errors_to_show: usize = 5;
+        for (type_checker.errors.items[0..@min(max_errors_to_show, type_checker.errors.items.len)]) |err_info| {
+            std.debug.print("  {s}{s}:{s} {s} (line {d}, col {d})\n", .{
+                color.code(),
+                diagnostic_label,
+                Color.Reset.code(),
+                err_info.message,
+                err_info.loc.line,
+                err_info.loc.column,
+            });
         }
+        if (type_checker.errors.items.len > max_errors_to_show) {
+            std.debug.print("  ... and {d} more errors\n", .{type_checker.errors.items.len - max_errors_to_show});
+        }
+        if (type_check_outcome == .fail) return error.TypeCheckFailed;
+    } else {
+        std.debug.print("{s}Type check passed ✓{s}\n", .{ Color.Green.code(), Color.Reset.code() });
+    }
+
+    if (!options.kernel_mode) {
 
         // Borrow checking pass
         std.debug.print("{s}Borrow checking...{s}\n", .{ Color.Cyan.code(), Color.Reset.code() });
