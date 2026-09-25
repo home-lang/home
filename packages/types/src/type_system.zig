@@ -1484,9 +1484,26 @@ pub const TypeChecker = struct {
         }
         const owned_fields = try fields.toOwnedSlice(self.allocator);
         try self.env.trackAllocation(owned_fields);
-        return Type{ .Struct = .{
-            .name = try self.ownString(declaration.name),
+        const owned_name = try self.ownString(declaration.name);
+        const base_struct_type = Type{ .Struct = .{
+            .name = owned_name,
             .fields = owned_fields,
+        } };
+        var methods = std.ArrayList(Type.StructType.Field).empty;
+        defer methods.deinit(self.allocator);
+        for (declaration.methods) |method| {
+            if (!method.is_public and !method.is_exported) continue;
+            try methods.append(self.allocator, .{
+                .name = try self.ownString(method.name),
+                .type = try self.methodTypeFromDecl(method, base_struct_type, true),
+            });
+        }
+        const owned_methods = try methods.toOwnedSlice(self.allocator);
+        try self.env.trackAllocation(owned_methods);
+        return Type{ .Struct = .{
+            .name = owned_name,
+            .fields = owned_fields,
+            .methods = owned_methods,
         } };
     }
 

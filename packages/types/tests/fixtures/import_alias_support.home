@@ -5,3 +5,11 @@ pub fn exported(value: i32) -> i32 {
 fn hidden() -> i32 {
     return 0
 }
+
+pub struct Counter {
+    value: i32
+
+    pub fn add(self, amount: i32) -> i32 {
+        return self.value + amount
+    }
+}

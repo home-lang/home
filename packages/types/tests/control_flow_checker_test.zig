@@ -219,6 +219,26 @@ test "checker hides non-public import alias members" {
     ));
 }
 
+test "checker preserves imported struct method signatures" {
+    try std.testing.expect(try checkSourceWithImports(
+        \\import import_alias_support { Counter }
+        \\fn run() {
+        \\    let counter = Counter { value: 1 }
+        \\    let result: i32 = counter.add(2)
+        \\}
+    ));
+}
+
+test "checker validates imported struct method arguments" {
+    try std.testing.expect(!try checkSourceWithImports(
+        \\import import_alias_support { Counter }
+        \\fn run() {
+        \\    let counter = Counter { value: 1 }
+        \\    counter.add("wrong")
+        \\}
+    ));
+}
+
 test "checker rejects arithmetic with a void value" {
     try std.testing.expect(!try checkSource(
         \\fn noop() -> void { return }
