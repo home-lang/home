@@ -99,3 +99,36 @@ test "checker rejects tuple destructuring arity mismatches" {
         \\}
     ));
 }
+
+test "checker rejects incompatible match expression arm types" {
+    try std.testing.expect(!try checkSource(
+        \\fn classify(value: bool) {
+        \\    let result = match value {
+        \\        true => 1,
+        \\        false => "no",
+        \\    }
+        \\}
+    ));
+}
+
+test "checker visits every match expression arm" {
+    try std.testing.expect(!try checkSource(
+        \\fn classify(value: bool) {
+        \\    let result = match value {
+        \\        true => 1,
+        \\        false => missing_name,
+        \\    }
+        \\}
+    ));
+}
+
+test "checker scopes match expression bindings to their arm" {
+    try std.testing.expect(try checkSource(
+        \\fn classify(value: i32) -> i32 {
+        \\    return match value {
+        \\        captured if captured > 0 => captured,
+        \\        _ => 0,
+        \\    }
+        \\}
+    ));
+}

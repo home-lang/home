@@ -86,3 +86,25 @@ test "checker accepts compatible destructured tuple elements" {
         \\}
     ));
 }
+
+test "checker rejects non-boolean match expression guards" {
+    try std.testing.expect(!try checkSource(
+        \\fn classify(value: i32) {
+        \\    let result = match value {
+        \\        captured if captured => 1,
+        \\        _ => 0,
+        \\    }
+        \\}
+    ));
+}
+
+test "checker propagates expected types into all match arms" {
+    try std.testing.expect(try checkSource(
+        \\fn classify(value: bool) -> u32 {
+        \\    return match value {
+        \\        true => 1,
+        \\        false => 2,
+        \\    }
+        \\}
+    ));
+}

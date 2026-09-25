@@ -2687,6 +2687,7 @@ pub const TypeChecker = struct {
             },
             .ArrayLiteral => |array| try self.inferArrayLiteralWithHint(array, eff_hint),
             .IfExpr => |ie| try self.inferIfExprWithHint(ie, eff_hint),
+            .MatchExpr => |me| try self.inferMatchExprWithHint(me, eff_hint),
             .UnaryExpr => |unary| try self.inferUnaryExprWithHint(unary, eff_hint),
             else => try self.inferExpression(expr),
         };
@@ -2810,6 +2811,126 @@ pub const TypeChecker = struct {
             try self.addError("if-expression branches have different types", ie.node.loc);
         }
         return then_raw;
+    }
+
+    /// Infer every arm of a match expression. Each arm gets its own lexical
+    /// scope so a binding pattern can be used by both its guard and body but
+    /// cannot escape into a sibling arm or the enclosing scope.
+    fn inferMatchExprWithHint(
+        self: *TypeChecker,
+        match_expr: *const ast.MatchExpr,
+        hint: ?Type,
+    ) TypeError!Type {
+        const matched_type = try self.inferExpression(match_expr.value);
+        if (match_expr.arms.len == 0) {
+            try self.addError("Match expression must have at least one arm", match_expr.node.loc);
+            return error.TypeMismatch;
+        }
+
+        var result_type: ?Type = null;
+        for (match_expr.arms) |arm| {
+            const saved_env = try self.allocator.create(TypeEnvironment);
+            saved_env.* = self.env;
+
+            var arm_env = TypeEnvironment.init(self.allocator);
+            arm_env.parent = saved_env;
+            self.env = arm_env;
+            defer {
+                self.env.deinit();
+                self.env = saved_env.*;
+                self.allocator.destroy(saved_env);
+            }
+
+            try self.checkMatchExprPattern(arm.pattern, matched_type);
+            try self.defineMatchExprPatternBindings(arm.pattern, matched_type);
+
+            if (arm.guard) |guard| {
+                try self.checkExpression(guard, Type.Bool);
+            }
+
+            const arm_hint = hint orelse result_type;
+            const arm_type = try self.inferExpressionWithHint(arm.body, arm_hint);
+            if (arm_type == .Never) continue;
+
+            if (hint) |expected| {
+                if (arm_type != .Unknown and !arm_type.equals(expected) and !canCoerce(arm_type, expected)) {
+                    try self.addError("Match expression arm does not match the expected type", arm.body.getLocation());
+                    return error.TypeMismatch;
+                }
+                result_type = expected;
+                continue;
+            }
+
+            if (result_type) |current| {
+                if (current == .Unknown or arm_type == .Unknown) {
+                    result_type = Type.Unknown;
+                } else if (!current.equals(arm_type) and
+                    !canCoerce(arm_type, current) and !canCoerce(current, arm_type))
+                {
+                    try self.addError("Match expression arms have different types", arm.body.getLocation());
+                    return error.TypeMismatch;
+                } else if (canCoerce(current, arm_type) and !canCoerce(arm_type, current)) {
+                    result_type = arm_type;
+                }
+            } else {
+                result_type = arm_type;
+            }
+        }
+
+        return result_type orelse Type.Never;
+    }
+
+    fn checkMatchExprPattern(self: *TypeChecker, pattern: *const ast.Expr, matched_type: Type) TypeError!void {
+        switch (pattern.*) {
+            .Identifier => {}, // wildcard, enum variant, or whole-value binding
+            .IntegerLiteral,
+            .FloatLiteral,
+            .StringLiteral,
+            .CharLiteral,
+            .BooleanLiteral,
+            .UnaryExpr,
+            => {
+                const pattern_type = try self.inferExpression(pattern);
+                if (!patternCoercesToSwitchValue(pattern, pattern_type, matched_type)) {
+                    try self.addError("Match pattern type must match the matched value type", pattern.getLocation());
+                    return error.TypeMismatch;
+                }
+            },
+            .RangeExpr => |range| {
+                try self.checkMatchExprPattern(range.start, matched_type);
+                try self.checkMatchExprPattern(range.end, matched_type);
+            },
+            .TupleExpr => |tuple| {
+                if (matched_type != .Tuple or tuple.elements.len != matched_type.Tuple.element_types.len) {
+                    try self.addError("Tuple pattern does not match the matched value type", pattern.getLocation());
+                    return error.TypeMismatch;
+                }
+                for (tuple.elements, matched_type.Tuple.element_types) |element, element_type| {
+                    try self.checkMatchExprPattern(element, element_type);
+                }
+            },
+            else => {},
+        }
+    }
+
+    fn defineMatchExprPatternBindings(self: *TypeChecker, pattern: *const ast.Expr, matched_type: Type) TypeError!void {
+        switch (pattern.*) {
+            .Identifier => |identifier| {
+                if (std.mem.eql(u8, identifier.name, "_")) return;
+                if (matched_type == .Enum) {
+                    for (matched_type.Enum.variants) |variant| {
+                        if (std.mem.eql(u8, variant.name, identifier.name)) return;
+                    }
+                }
+                try self.env.define(identifier.name, matched_type);
+            },
+            .TupleExpr => |tuple| if (matched_type == .Tuple and tuple.elements.len == matched_type.Tuple.element_types.len) {
+                for (tuple.elements, matched_type.Tuple.element_types) |element, element_type| {
+                    try self.defineMatchExprPatternBindings(element, element_type);
+                }
+            },
+            else => {},
+        }
     }
 
     /// Hint-aware unary expression inference. The hint passes through
@@ -3026,13 +3147,7 @@ pub const TypeChecker = struct {
             // falling through to Void.
             .CharLiteral => Type.Int,
             .InterpolatedString => Type.String,
-            .MatchExpr => |me| blk: {
-                // Infer from the first arm body, or Void if empty.
-                if (me.arms.len > 0) {
-                    break :blk try self.inferExpression(me.arms[0].body);
-                }
-                break :blk Type.Void;
-            },
+            .MatchExpr => |me| try self.inferMatchExprWithHint(me, null),
             .IfExpr => |ie| try self.inferIfExprWithHint(ie, null),
             .ClosureExpr => Type.Void,
             else => Type.Void,
