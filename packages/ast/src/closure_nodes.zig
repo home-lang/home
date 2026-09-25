@@ -64,7 +64,7 @@ pub const ClosureParam = struct {
     type_annotation: ?*TypeExpr,
     is_mut: bool,
 
-    pub fn deinit(self: *ClosureParam, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *const ClosureParam, allocator: std.mem.Allocator) void {
         allocator.free(self.name);
         if (self.type_annotation) |ta| {
             ta.deinit(allocator);
@@ -80,8 +80,8 @@ pub const ClosureBody = union(enum) {
 
     pub fn deinit(self: *ClosureBody, allocator: std.mem.Allocator) void {
         switch (self.*) {
-            .Expression => |expr| allocator.destroy(expr),
-            .Block => |block| allocator.destroy(block),
+            .Expression => |expr| ast.Program.deinitExpr(expr, allocator),
+            .Block => |block| ast.Program.deinitBlockStmt(block, allocator),
         }
     }
 };
@@ -99,7 +99,7 @@ pub const Capture = struct {
         ByMove,       // Take ownership (move)
     };
 
-    pub fn deinit(self: *Capture, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *const Capture, allocator: std.mem.Allocator) void {
         allocator.free(self.name);
     }
 };
@@ -147,9 +147,13 @@ pub const TypeExpr = union(enum) {
                 }
                 allocator.free(gen.args);
             },
-            .Reference, .Pointer => |ref| {
-                ref.inner.deinit(allocator);
-                allocator.destroy(ref.inner);
+            .Reference => |reference| {
+                reference.inner.deinit(allocator);
+                allocator.destroy(reference.inner);
+            },
+            .Pointer => |pointer| {
+                pointer.inner.deinit(allocator);
+                allocator.destroy(pointer.inner);
             },
             .Function => |func| {
                 for (func.params) |param| {

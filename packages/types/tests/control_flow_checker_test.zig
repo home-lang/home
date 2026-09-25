@@ -132,3 +132,29 @@ test "checker scopes match expression bindings to their arm" {
         \\}
     ));
 }
+
+test "checker gives typed closures callable function types" {
+    try std.testing.expect(try checkSource(
+        \\fn run() -> i32 {
+        \\    let add_one = |value: i32| value + 1
+        \\    return add_one(2)
+        \\}
+    ));
+}
+
+test "checker rejects closure calls with the wrong argument type" {
+    try std.testing.expect(!try checkSource(
+        \\fn run() {
+        \\    let add_one = |value: i32| value + 1
+        \\    add_one("wrong")
+        \\}
+    ));
+}
+
+test "checker visits closure bodies before they are called" {
+    try std.testing.expect(!try checkSource(
+        \\fn run() {
+        \\    let broken = |value: i32| value + "wrong"
+        \\}
+    ));
+}

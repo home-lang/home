@@ -2688,6 +2688,7 @@ pub const TypeChecker = struct {
             .ArrayLiteral => |array| try self.inferArrayLiteralWithHint(array, eff_hint),
             .IfExpr => |ie| try self.inferIfExprWithHint(ie, eff_hint),
             .MatchExpr => |me| try self.inferMatchExprWithHint(me, eff_hint),
+            .ClosureExpr => |closure| try self.inferClosureExprWithHint(closure, eff_hint),
             .UnaryExpr => |unary| try self.inferUnaryExprWithHint(unary, eff_hint),
             else => try self.inferExpression(expr),
         };
@@ -2933,6 +2934,221 @@ pub const TypeChecker = struct {
         }
     }
 
+    fn inferClosureExprWithHint(
+        self: *TypeChecker,
+        closure: *const ast.ClosureExpr,
+        hint: ?Type,
+    ) TypeError!Type {
+        const expected_function: ?Type.FunctionType = if (hint) |expected|
+            (if (expected == .Function) expected.Function else null)
+        else
+            null;
+
+        if (expected_function) |expected| {
+            if (expected.params.len != closure.params.len) {
+                try self.addError("Closure parameter count does not match the expected function type", closure.node.loc);
+                return error.TypeMismatch;
+            }
+        }
+
+        const param_types = try self.allocator.alloc(Type, closure.params.len);
+        var param_types_tracked = false;
+        errdefer if (!param_types_tracked) self.allocator.free(param_types);
+
+        const saved_env = try self.allocator.create(TypeEnvironment);
+        saved_env.* = self.env;
+        var closure_env = TypeEnvironment.init(self.allocator);
+        closure_env.parent = saved_env;
+        self.env = closure_env;
+        defer {
+            self.env.deinit();
+            self.env = saved_env.*;
+            self.allocator.destroy(saved_env);
+        }
+
+        for (closure.params, 0..) |param, index| {
+            const param_type = if (param.type_annotation) |annotation|
+                try self.parseClosureTypeExpr(annotation, closure.node.loc)
+            else if (expected_function) |expected|
+                expected.params[index]
+            else blk: {
+                try self.addError("Cannot infer closure parameter type without context", closure.node.loc);
+                break :blk Type.Unknown;
+            };
+            param_types[index] = param_type;
+            try self.env.define(param.name, param_type);
+        }
+
+        const annotated_return = if (closure.return_type) |annotation|
+            try self.parseClosureTypeExpr(annotation, closure.node.loc)
+        else
+            null;
+        const expected_return = annotated_return orelse if (expected_function) |expected|
+            expected.return_type.*
+        else
+            null;
+
+        const return_type = switch (closure.body) {
+            .Expression => |body| blk: {
+                const inferred = try self.inferExpressionWithHint(body, expected_return);
+                if (expected_return) |expected| {
+                    try self.checkExpressionAgainst(body, expected, inferred);
+                    break :blk expected;
+                }
+                break :blk inferred;
+            },
+            .Block => |body| blk: {
+                const block_return = expected_return orelse try self.inferClosureBlockReturnType(body);
+                const previous_return_type = self.current_function_return_type;
+                self.current_function_return_type = block_return;
+                defer self.current_function_return_type = previous_return_type;
+                try self.checkBlock(body);
+                break :blk block_return;
+            },
+        };
+
+        const return_ptr = try self.allocator.create(Type);
+        errdefer self.allocator.destroy(return_ptr);
+        return_ptr.* = return_type;
+        try self.allocated_types.append(self.allocator, return_ptr);
+        try self.allocated_slices.append(self.allocator, param_types);
+        param_types_tracked = true;
+
+        return Type{ .Function = .{
+            .params = param_types,
+            .return_type = return_ptr,
+            .required_params = param_types.len,
+        } };
+    }
+
+    fn inferClosureBlockReturnType(self: *TypeChecker, block: *const ast.BlockStmt) TypeError!Type {
+        var inferred: ?Type = null;
+        for (block.statements) |statement| {
+            if (statement != .ReturnStmt) continue;
+            const return_type = if (statement.ReturnStmt.value) |value|
+                try self.inferExpression(value)
+            else
+                Type.Void;
+
+            if (inferred) |current| {
+                if (current == .Unknown or return_type == .Unknown) {
+                    inferred = Type.Unknown;
+                } else if (!current.equals(return_type) and
+                    !canCoerce(return_type, current) and !canCoerce(current, return_type))
+                {
+                    try self.addError("Closure return expressions have different types", statement.ReturnStmt.node.loc);
+                    return error.TypeMismatch;
+                }
+            } else {
+                inferred = return_type;
+            }
+        }
+        return inferred orelse Type.Void;
+    }
+
+    fn parseClosureTypeExpr(
+        self: *TypeChecker,
+        type_expr: *const ast.closure_nodes.TypeExpr,
+        loc: ast.SourceLocation,
+    ) TypeError!Type {
+        return switch (type_expr.*) {
+            .Named => |name| try self.parseDeclaredType(name, loc),
+            .Reference => |reference| blk: {
+                const inner = try self.allocator.create(Type);
+                errdefer self.allocator.destroy(inner);
+                inner.* = try self.parseClosureTypeExpr(reference.inner, loc);
+                try self.allocated_types.append(self.allocator, inner);
+                break :blk if (reference.is_mut)
+                    Type{ .MutableReference = inner }
+                else
+                    Type{ .Reference = inner };
+            },
+            .Pointer => |pointer| blk: {
+                const inner = try self.allocator.create(Type);
+                errdefer self.allocator.destroy(inner);
+                inner.* = try self.parseClosureTypeExpr(pointer.inner, loc);
+                try self.allocated_types.append(self.allocator, inner);
+                break :blk if (pointer.is_mut)
+                    Type{ .MutableReference = inner }
+                else
+                    Type{ .Reference = inner };
+            },
+            .Function => |function| try self.parseClosureFunctionType(function.params, function.return_type, loc),
+            .Closure => |function| try self.parseClosureFunctionType(function.params, function.return_type, loc),
+            .Generic => |generic| try self.parseClosureGenericType(generic.base, generic.args, loc),
+        };
+    }
+
+    fn parseClosureFunctionType(
+        self: *TypeChecker,
+        params: []const *ast.closure_nodes.TypeExpr,
+        return_expr: ?*ast.closure_nodes.TypeExpr,
+        loc: ast.SourceLocation,
+    ) TypeError!Type {
+        const param_types = try self.allocator.alloc(Type, params.len);
+        var param_types_tracked = false;
+        errdefer if (!param_types_tracked) self.allocator.free(param_types);
+        for (params, 0..) |param, index| {
+            param_types[index] = try self.parseClosureTypeExpr(param, loc);
+        }
+
+        const return_type = try self.allocator.create(Type);
+        errdefer self.allocator.destroy(return_type);
+        return_type.* = if (return_expr) |expr|
+            try self.parseClosureTypeExpr(expr, loc)
+        else
+            Type.Void;
+        try self.allocated_types.append(self.allocator, return_type);
+        try self.allocated_slices.append(self.allocator, param_types);
+        param_types_tracked = true;
+
+        return Type{ .Function = .{
+            .params = param_types,
+            .return_type = return_type,
+            .required_params = param_types.len,
+        } };
+    }
+
+    fn parseClosureGenericType(
+        self: *TypeChecker,
+        base: []const u8,
+        args: []const *ast.closure_nodes.TypeExpr,
+        loc: ast.SourceLocation,
+    ) TypeError!Type {
+        if ((std.mem.eql(u8, base, "Vec") or std.mem.eql(u8, base, "Array") or
+            std.mem.eql(u8, base, "List")) and args.len == 1)
+        {
+            const element_type = try self.allocator.create(Type);
+            errdefer self.allocator.destroy(element_type);
+            element_type.* = try self.parseClosureTypeExpr(args[0], loc);
+            try self.allocated_types.append(self.allocator, element_type);
+            return Type{ .Array = .{ .element_type = element_type } };
+        }
+        if (std.mem.eql(u8, base, "Option") and args.len == 1) {
+            const inner_type = try self.allocator.create(Type);
+            errdefer self.allocator.destroy(inner_type);
+            inner_type.* = try self.parseClosureTypeExpr(args[0], loc);
+            try self.allocated_types.append(self.allocator, inner_type);
+            return Type{ .Optional = inner_type };
+        }
+        if (std.mem.eql(u8, base, "Result") and args.len == 2) {
+            const ok_type = try self.allocator.create(Type);
+            errdefer self.allocator.destroy(ok_type);
+            ok_type.* = try self.parseClosureTypeExpr(args[0], loc);
+            try self.allocated_types.append(self.allocator, ok_type);
+            const err_type = try self.allocator.create(Type);
+            errdefer self.allocator.destroy(err_type);
+            err_type.* = try self.parseClosureTypeExpr(args[1], loc);
+            try self.allocated_types.append(self.allocator, err_type);
+            return Type{ .Result = .{ .ok_type = ok_type, .err_type = err_type } };
+        }
+
+        const message = try std.fmt.allocPrint(self.allocator, "Unknown closure type '{s}'", .{base});
+        defer self.allocator.free(message);
+        try self.addError(message, loc);
+        return Type.Unknown;
+    }
+
     /// Hint-aware unary expression inference. The hint passes through
     /// negation so `let x: i32 = -1` types `1` as `i32` and the
     /// surrounding `-` produces `i32` as well. For `&expr` we must
@@ -3149,7 +3365,7 @@ pub const TypeChecker = struct {
             .InterpolatedString => Type.String,
             .MatchExpr => |me| try self.inferMatchExprWithHint(me, null),
             .IfExpr => |ie| try self.inferIfExprWithHint(ie, null),
-            .ClosureExpr => Type.Void,
+            .ClosureExpr => |closure| try self.inferClosureExprWithHint(closure, null),
             else => Type.Void,
         };
     }

@@ -2874,6 +2874,10 @@ pub const Program = struct {
                 allocator.free(tuple.elements);
                 allocator.destroy(tuple);
             },
+            .ClosureExpr => |closure| {
+                closure.deinit(allocator);
+                allocator.destroy(closure);
+            },
             else => {},
         }
         allocator.destroy(expr);

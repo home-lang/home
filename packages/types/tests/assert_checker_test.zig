@@ -108,3 +108,21 @@ test "checker propagates expected types into all match arms" {
         \\}
     ));
 }
+
+test "checker resolves closure captures through the parent scope" {
+    try std.testing.expect(try checkSource(
+        \\fn run() -> i32 {
+        \\    let base: i32 = 40
+        \\    let add = |value: i32| base + value
+        \\    return add(2)
+        \\}
+    ));
+}
+
+test "checker enforces closure return annotations" {
+    try std.testing.expect(!try checkSource(
+        \\fn run() {
+        \\    let broken = |value: i32|: bool value + 1
+        \\}
+    ));
+}
