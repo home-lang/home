@@ -1560,7 +1560,6 @@ fn spawnInteractive(argv: []const []const u8) !void {
 
 fn findBunBinary() ![]const u8 {
     const candidates = [_][]const u8{
-        "/Users/chrisbreuer/.local/share/pantry/global/bin/bun",
         "/usr/local/bin/bun",
         "/opt/homebrew/bin/bun",
     };

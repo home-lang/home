@@ -40,6 +40,10 @@ fi
 # all of them phantom. Bun's own test launcher exports this before starting a
 # Debug executable; do the same, and export it so spawned children inherit it.
 export BUN_DEBUG_QUIET_LOGS="${BUN_DEBUG_QUIET_LOGS:-1}"
+# This suite is evidence for Home's embedded runtime, never for a delegated
+# system Bun. Export the gate before the capability probe so every invocation,
+# including children spawned by a fixture, stays on Home's native VM.
+export HOME_NATIVE_VM=1
 
 TEST_DIR="$ROOT/tests/runtime"
 shopt -s nullglob

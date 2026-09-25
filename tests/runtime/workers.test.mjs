@@ -11,6 +11,11 @@
 // Run via scripts/runtime-regression.sh (self-skips on non-JSC builds).
 // Exits 0 iff every assertion passes; exits 1 on failure or watchdog timeout.
 
+import assert from "node:assert/strict";
+import { basename } from "node:path";
+
+assert.match(basename(process.execPath), /^home(?:-(?:debug|release-(?:safe|fast|small)))?(?:\.exe)?$/);
+
 let failures = 0;
 let pending = 0;
 const ok = (cond, msg) => {
