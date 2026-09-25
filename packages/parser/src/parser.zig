@@ -6233,24 +6233,54 @@ pub const Parser = struct {
 
         _ = try self.expect(.RightParen, "Expected ')' after arguments");
 
-        const call_expr = if (named_args.items.len > 0)
-            try ast.CallExpr.initWithNamedArgs(
-                self.allocator,
-                callee,
-                try args.toOwnedSlice(self.allocator),
-                try named_args.toOwnedSlice(self.allocator),
-                ast.SourceLocation.fromToken(lparen_token),
-            )
-        else
-            try ast.CallExpr.init(
-                self.allocator,
-                callee,
-                try args.toOwnedSlice(self.allocator),
-                ast.SourceLocation.fromToken(lparen_token),
-            );
-
         const result = try self.allocator.create(ast.Expr);
-        result.* = ast.Expr{ .CallExpr = call_expr };
+        const owned_args = try args.toOwnedSlice(self.allocator);
+        const owned_named_args = if (named_args.items.len > 0)
+            try named_args.toOwnedSlice(self.allocator)
+        else
+            &.{};
+
+        if (callee.* == .MemberExpr and callee.MemberExpr.is_static and
+            callee.MemberExpr.object.* == .Identifier)
+        {
+            const member = callee.MemberExpr;
+            const static_call = if (owned_named_args.len > 0)
+                try ast.StaticCallExpr.initWithNamedArgs(
+                    self.allocator,
+                    member.object.Identifier.name,
+                    member.member,
+                    owned_args,
+                    owned_named_args,
+                    ast.SourceLocation.fromToken(lparen_token),
+                )
+            else
+                try ast.StaticCallExpr.init(
+                    self.allocator,
+                    member.object.Identifier.name,
+                    member.member,
+                    owned_args,
+                    ast.SourceLocation.fromToken(lparen_token),
+                );
+            ast.Program.deinitExpr(callee, self.allocator);
+            result.* = ast.Expr{ .StaticCallExpr = static_call };
+        } else {
+            const call_expr = if (owned_named_args.len > 0)
+                try ast.CallExpr.initWithNamedArgs(
+                    self.allocator,
+                    callee,
+                    owned_args,
+                    owned_named_args,
+                    ast.SourceLocation.fromToken(lparen_token),
+                )
+            else
+                try ast.CallExpr.init(
+                    self.allocator,
+                    callee,
+                    owned_args,
+                    ast.SourceLocation.fromToken(lparen_token),
+                );
+            result.* = ast.Expr{ .CallExpr = call_expr };
+        }
         return result;
     }
 
@@ -6537,6 +6567,7 @@ pub const Parser = struct {
             member_token.lexeme,
             ast.SourceLocation.fromToken(dot_token),
         );
+        member_expr.is_static = dot_token.type == .ColonColon;
 
         const result = try self.allocator.create(ast.Expr);
         result.* = ast.Expr{ .MemberExpr = member_expr };

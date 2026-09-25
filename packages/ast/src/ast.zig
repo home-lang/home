@@ -937,6 +937,9 @@ pub const MemberExpr = struct {
     node: Node,
     object: *Expr,
     member: []const u8,
+    /// True when the parser saw `::` rather than `.`, allowing a following
+    /// call to lower into `StaticCallExpr` without losing path syntax.
+    is_static: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, object: *Expr, member: []const u8, loc: SourceLocation) !*MemberExpr {
         const expr = try allocator.create(MemberExpr);
@@ -944,6 +947,7 @@ pub const MemberExpr = struct {
             .node = .{ .type = .MemberExpr, .loc = loc },
             .object = object,
             .member = member,
+            .is_static = false,
         };
         return expr;
     }

@@ -719,6 +719,17 @@ test "parser: member access expression" {
     try testing.expectEqualStrings("x", member.member);
 }
 
+test "parser: double-colon call produces a static call" {
+    const program = try parseSource(testing.allocator, "Factory::make(1)");
+    defer program.deinit(testing.allocator);
+
+    const expr = program.statements[0].ExprStmt;
+    try testing.expect(expr.* == .StaticCallExpr);
+    try testing.expectEqualStrings("Factory", expr.StaticCallExpr.type_name);
+    try testing.expectEqualStrings("make", expr.StaticCallExpr.method_name);
+    try testing.expectEqual(@as(usize, 1), expr.StaticCallExpr.args.len);
+}
+
 test "parser: chained member access" {
     const program = try parseSource(testing.allocator, "obj.field.nested");
     defer program.deinit(testing.allocator);

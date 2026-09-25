@@ -403,3 +403,34 @@ test "checker validates trait impl method arguments" {
         \\}
     ));
 }
+
+test "checker preserves static method return types" {
+    try std.testing.expect(try checkSource(
+        \\struct Factory {
+        \\    fn make(value: i32) -> i32 { return value }
+        \\}
+        \\fn run() {
+        \\    let result: i32 = Factory::make(1)
+        \\}
+    ));
+}
+
+test "checker validates static method arguments" {
+    try std.testing.expect(!try checkSource(
+        \\struct Factory {
+        \\    fn make(value: i32) -> i32 { return value }
+        \\}
+        \\fn run() {
+        \\    Factory::make("wrong")
+        \\}
+    ));
+}
+
+test "checker rejects missing static methods" {
+    try std.testing.expect(!try checkSource(
+        \\struct Factory {}
+        \\fn run() {
+        \\    Factory::missing()
+        \\}
+    ));
+}

@@ -3957,52 +3957,78 @@ pub const TypeChecker = struct {
     }
 
     fn inferStaticCallExpression(self: *TypeChecker, static_call: *const ast.StaticCallExpr) TypeError!Type {
-        // Handle static method calls like Type::method() and enum variant constructors like Result::Ok(value)
         const type_name = static_call.type_name;
         const method_name = static_call.method_name;
 
-        // Look up the type in the environment
         const type_value = self.env.get(type_name) orelse {
-            // Unknown type, allow to continue
-            return Type.Void;
+            for (static_call.args) |arg| _ = self.inferExpression(arg) catch Type.Unknown;
+            for (static_call.named_args) |arg| _ = self.inferExpression(arg.value) catch Type.Unknown;
+            const message = try std.fmt.allocPrint(self.allocator, "Unknown static-call type '{s}'", .{type_name});
+            defer self.allocator.free(message);
+            try self.addError(message, static_call.node.loc);
+            return Type.Unknown;
         };
 
-        // Check if this is an enum variant constructor
         if (type_value == .Enum) {
-            // Look for a variant matching the method_name
             for (type_value.Enum.variants) |variant| {
                 if (std.mem.eql(u8, variant.name, method_name)) {
-                    // Type check the argument if the variant has data
                     if (variant.data_type) |expected_data_type| {
-                        if (static_call.args.len == 1) {
-                            const arg_type = try self.inferExpression(static_call.args[0]);
-                            if (!arg_type.equals(expected_data_type) and !canCoerce(arg_type, expected_data_type)) {
-                                try self.addError("Enum variant data type mismatch", static_call.node.loc);
-                                return error.TypeMismatch;
-                            }
+                        if (static_call.args.len != 1 or static_call.named_args.len != 0) {
+                            try self.addError("Wrong number of enum variant arguments", static_call.node.loc);
+                            return error.WrongNumberOfArguments;
                         }
+                        const actual = try self.inferExpressionWithHint(static_call.args[0], expected_data_type);
+                        try self.checkExpressionAgainst(static_call.args[0], expected_data_type, actual);
+                    } else if (static_call.args.len != 0 or static_call.named_args.len != 0) {
+                        try self.addError("Wrong number of enum variant arguments", static_call.node.loc);
+                        return error.WrongNumberOfArguments;
                     }
-                    // Return the enum type itself
                     return type_value;
                 }
             }
+            const message = try std.fmt.allocPrint(
+                self.allocator,
+                "Enum '{s}' has no variant '{s}'",
+                .{ type_value.Enum.name, method_name },
+            );
+            defer self.allocator.free(message);
+            try self.addError(message, static_call.node.loc);
+            return Type.Unknown;
         }
 
-        // Check if this is a static method on a struct
         if (type_value == .Struct) {
-            // For now, static methods return void - can be expanded later
-            // Type check arguments
-            for (static_call.args) |arg| {
-                _ = try self.inferExpression(arg);
+            for (type_value.Struct.methods) |method| {
+                if (!std.mem.eql(u8, method.name, method_name)) continue;
+                const function = method.type.Function;
+                const required = function.required_params orelse function.params.len;
+                const provided = static_call.args.len + static_call.named_args.len;
+                if (provided < required or provided > function.params.len) {
+                    try self.addError("Wrong number of arguments", static_call.node.loc);
+                    return error.WrongNumberOfArguments;
+                }
+                for (static_call.args, 0..) |argument, index| {
+                    const actual = try self.inferExpressionWithHint(argument, function.params[index]);
+                    try self.checkExpressionAgainst(argument, function.params[index], actual);
+                }
+                for (static_call.named_args) |named_argument| {
+                    _ = try self.inferExpression(named_argument.value);
+                }
+                return function.return_type.*;
             }
-            return Type.Void;
+            const message = try std.fmt.allocPrint(
+                self.allocator,
+                "Struct '{s}' has no static method '{s}'",
+                .{ type_value.Struct.name, method_name },
+            );
+            defer self.allocator.free(message);
+            try self.addError(message, static_call.node.loc);
+            return Type.Unknown;
         }
 
-        // Unknown static call - type check arguments and return void
-        for (static_call.args) |arg| {
-            _ = try self.inferExpression(arg);
-        }
-        return Type.Void;
+        for (static_call.args) |arg| _ = try self.inferExpression(arg);
+        for (static_call.named_args) |arg| _ = try self.inferExpression(arg.value);
+        try self.addError("Static calls require a struct or enum type", static_call.node.loc);
+        return Type.Unknown;
     }
 
     fn inferTryExpression(self: *TypeChecker, try_expr: *const ast.TryExpr) TypeError!Type {
