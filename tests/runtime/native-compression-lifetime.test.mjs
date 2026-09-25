@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict'
+import { basename } from 'node:path'
 import { createBrotliCompress, createDeflate, createZstdCompress } from 'node:zlib'
+
+assert.match(basename(process.execPath), /^home(?:-(?:debug|release-(?:safe|fast|small)))?(?:\.exe)?$/)
 
 const codecs = [
   ['zlib', createDeflate],

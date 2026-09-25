@@ -1,7 +1,10 @@
 // Flags: --expose-internals
 import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
+import { basename } from 'node:path'
 import { PassThrough } from 'node:stream'
+
+assert.match(basename(process.execPath), /^home(?:-(?:debug|release-(?:safe|fast|small)))?(?:\.exe)?$/)
 
 const require = createRequire(import.meta.url)
 require('../../packages/runtime/test/test/js/node/test/common')
