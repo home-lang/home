@@ -236,3 +236,23 @@ test "checker rejects void as a condition" {
         \\}
     ));
 }
+
+test "checker rejects indexing and slicing void" {
+    try std.testing.expect(!try checkSource(
+        \\fn noop() -> void { return }
+        \\fn run() {
+        \\    let indexed = noop()[0]
+        \\    let sliced = noop()[0..1]
+        \\}
+    ));
+}
+
+test "checker rejects void member and safe navigation access" {
+    try std.testing.expect(!try checkSource(
+        \\fn noop() -> void { return }
+        \\fn run() {
+        \\    let direct = noop().value
+        \\    let safe = noop()?.value
+        \\}
+    ));
+}

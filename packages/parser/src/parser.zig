@@ -6308,6 +6308,10 @@ pub const Parser = struct {
                 range.inclusive,
                 ast.SourceLocation.fromToken(bracket_token),
             );
+            // Ownership of the range endpoints moved into SliceExpr. Free the
+            // now-empty RangeExpr wrapper and its Expr container.
+            self.allocator.destroy(range);
+            self.allocator.destroy(first_expr);
 
             const result = try self.allocator.create(ast.Expr);
             result.* = ast.Expr{ .SliceExpr = slice_expr };

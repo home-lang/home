@@ -145,3 +145,22 @@ test "checker suppresses cascades with unknown rather than void" {
         \\}
     ));
 }
+
+test "checker rejects unary operators on void" {
+    try std.testing.expect(!try checkSource(
+        \\fn noop() -> void { return }
+        \\fn run() {
+        \\    let negative = -noop()
+        \\    let inverted = !noop()
+        \\}
+    ));
+}
+
+test "checker rejects try on void" {
+    try std.testing.expect(!try checkSource(
+        \\fn noop() -> void { return }
+        \\fn run() {
+        \\    let value = try noop()
+        \\}
+    ));
+}

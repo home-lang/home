@@ -3810,9 +3810,7 @@ pub const TypeChecker = struct {
             return err;
         };
 
-        if (operand_type == .Void) {
-            return Type.Void;
-        }
+        if (operand_type == .Unknown) return Type.Unknown;
 
         // Handle Result<T, E> type - try operator unwraps Ok value
         if (operand_type == .Result) {
@@ -3825,9 +3823,8 @@ pub const TypeChecker = struct {
             return operand_type.Optional.*;
         }
 
-        // For other types, allow as fallback (may be from imports we can't resolve)
-        // Return Void to allow type checking to continue
-        return Type.Void;
+        try self.addError("`try` operand must be a Result or Optional", try_expr.node.loc);
+        return error.TypeMismatch;
     }
 
     fn inferArrayLiteral(self: *TypeChecker, array: *const ast.ArrayLiteral) TypeError!Type {
@@ -3866,16 +3863,13 @@ pub const TypeChecker = struct {
         const array_type = try self.inferExpression(index.array);
         const index_type = try self.inferExpression(index.index);
 
-        // Index must be an integer (or Void/unknown)
-        if (!isIntegerType(index_type) and index_type != .Void) {
+        // Unknown suppresses a follow-on error; unit is not an index.
+        if (!isIntegerType(index_type) and index_type != .Unknown) {
             try self.addError("Array index must be an integer", index.node.loc);
             return error.TypeMismatch;
         }
 
-        // Allow Void (unknown) types to be indexed - return Void
-        if (array_type == .Void) {
-            return Type.Void;
-        }
+        if (array_type == .Unknown or index_type == .Unknown) return Type.Unknown;
 
         // Pointers support index access (many-item pointer `[*]T` and
         // raw pointer `*T`). Kernel code uses `name[i]` where name is
@@ -3919,28 +3913,25 @@ pub const TypeChecker = struct {
     fn inferSliceExpression(self: *TypeChecker, slice: *const ast.SliceExpr) TypeError!Type {
         const array_type = try self.inferExpression(slice.array);
 
-        // Check start index if present (allow Void/unknown)
+        // Check start index if present. Unknown suppresses a follow-on error.
         if (slice.start) |start| {
             const start_type = try self.inferExpression(start);
-            if (!isIntegerType(start_type) and start_type != .Void) {
+            if (!isIntegerType(start_type) and start_type != .Unknown) {
                 try self.addError("Slice start index must be an integer", slice.node.loc);
                 return error.TypeMismatch;
             }
         }
 
-        // Check end index if present (allow Void/unknown)
+        // Check end index if present. Unknown suppresses a follow-on error.
         if (slice.end) |end| {
             const end_type = try self.inferExpression(end);
-            if (!isIntegerType(end_type) and end_type != .Void) {
+            if (!isIntegerType(end_type) and end_type != .Unknown) {
                 try self.addError("Slice end index must be an integer", slice.node.loc);
                 return error.TypeMismatch;
             }
         }
 
-        // Allow Void (unknown) types to be sliced - return Void
-        if (array_type == .Void) {
-            return Type.Void;
-        }
+        if (array_type == .Unknown) return Type.Unknown;
 
         // Slicing a pointer produces a slice of the pointee. This is how a
         // kernel turns an address handed to it by a syscall into something
@@ -3993,16 +3984,17 @@ pub const TypeChecker = struct {
                                 }
                             }
                         }
-                        // Static method on struct - return Void (method return type handled by call expression)
-                        return Type.Void;
+                        // Static method signatures are resolved by call
+                        // inference; a bare access has no known value type.
+                        return Type.Unknown;
                     }
                 }
             }
         }
 
-        const object_type = self.inferExpression(member.object) catch {
-            // If we can't infer the object type, return a generic type
-            return Type.Void;
+        const object_type = self.inferExpression(member.object) catch |err| {
+            if (err == error.OutOfMemory) return err;
+            return Type.Unknown;
         };
 
         // Handle enum variant access (e.g., Platform::MACOS)
@@ -4024,12 +4016,7 @@ pub const TypeChecker = struct {
             return error.TypeMismatch;
         }
 
-        // Object must be a struct type for field access
-        // Allow Void (unknown type) to pass through - this happens with generic collections
-        // where the return type of .get() is unknown
-        if (object_type == .Void) {
-            return Type.Void;
-        }
+        if (object_type == .Unknown) return Type.Unknown;
 
         // Auto-deref pointer-like types so `ptr.field` works when
         // `ptr: *Foo`. Kernel code uses this pattern everywhere for
@@ -4075,20 +4062,23 @@ pub const TypeChecker = struct {
                 }
                 return Type.String;
             }
-            return Type.Void;
+            try self.addError("Member access requires a struct, enum, array, or string value", member.node.loc);
+            return error.TypeMismatch;
         }
 
         // Continue with the resolved type below.
         const object_type_resolved = resolved;
-        // Enum access already handled above; if we still have one here it's
-        // a variant reference, return Void so callers can chain further.
+        // Enum access was handled above; reaching this point means the member
+        // was not a valid variant.
         if (object_type_resolved == .Enum) {
-            return Type.Void;
+            try self.addError("Invalid enum member access", member.node.loc);
+            return error.TypeMismatch;
         }
 
-        // Safety check: if fields slice has invalid length, return Void
+        // An invalid field table is an internal type error, not an unknown.
         if (object_type_resolved.Struct.fields.len > 1000) {
-            return Type.Void;
+            try self.addError("Struct field table is invalid", member.node.loc);
+            return error.TypeMismatch;
         }
 
         for (object_type_resolved.Struct.fields) |field| {
@@ -4271,14 +4261,11 @@ pub const TypeChecker = struct {
         }
 
         const operand_type = try self.inferExpression(unary.operand);
+        if (operand_type == .Unknown) return Type.Unknown;
 
         return switch (unary.op) {
             .Not => {
-                // Allow logical not on boolean, optional, or Void (unknown) types
                 // For optional types, !opt is true if opt is null (None)
-                if (operand_type == .Void) {
-                    return Type.Bool;
-                }
                 if (!operand_type.equals(Type.Bool) and operand_type != .Optional) {
                     try self.addError("Logical not requires boolean or optional operand", unary.node.loc);
                     return error.TypeMismatch;
@@ -4286,10 +4273,6 @@ pub const TypeChecker = struct {
                 return Type.Bool;
             },
             .Neg => {
-                // Allow Void (unknown) types
-                if (operand_type == .Void) {
-                    return Type.Void;
-                }
                 if (!isIntegerType(operand_type) and !isFloatType(operand_type)) {
                     try self.addError("Negation requires numeric operand", unary.node.loc);
                     return error.TypeMismatch;
@@ -4297,10 +4280,6 @@ pub const TypeChecker = struct {
                 return operand_type;
             },
             .BitNot => {
-                // Allow Void (unknown) types
-                if (operand_type == .Void) {
-                    return Type.Int;
-                }
                 if (!isIntegerType(operand_type)) {
                     try self.addError("Bitwise not requires integer operand", unary.node.loc);
                     return error.TypeMismatch;
@@ -4441,10 +4420,7 @@ pub const TypeChecker = struct {
     fn inferSafeNavExpression(self: *TypeChecker, safe_nav: *const ast.SafeNavExpr) TypeError!Type {
         const object_type = try self.inferExpression(safe_nav.object);
 
-        // Allow Void (unknown) types - return Void
-        if (object_type == .Void) {
-            return Type.Void;
-        }
+        if (object_type == .Unknown) return Type.Unknown;
 
         // Object can be Optional<Struct> or just Struct
         var actual_type = object_type;
@@ -4452,10 +4428,7 @@ pub const TypeChecker = struct {
             actual_type = object_type.Optional.*;
         }
 
-        // Allow Void (unknown) actual types
-        if (actual_type == .Void) {
-            return Type.Void;
-        }
+        if (actual_type == .Unknown) return Type.Unknown;
 
         // Actual type must be a struct
         if (actual_type != .Struct) {
