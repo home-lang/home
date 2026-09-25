@@ -93,6 +93,11 @@ const HEAP_START: usize = 0x10000000; // Start of heap memory
 /// would use a proper allocator with deallocation support.
 const HEAP_SIZE: usize = 1024 * 1024; // 1MB heap
 
+/// Stable runtime failure text for an expression-form match that reaches no
+/// arm. Exported so end-to-end codegen tests can assert the executable
+/// contract without duplicating the message.
+pub const match_expression_fallthrough_panic = "panic: non-exhaustive match expression";
+
 // Layout descriptors extracted into `native/layouts.zig` per
 // TS_PARITY_PLAN §0 Phase 0.8. The aliasing block below preserves
 // the previous public API so external callers keep compiling without
@@ -10442,10 +10447,7 @@ pub const NativeCodegen = struct {
                 // no legitimate default value, so never let the final failed
                 // pattern's zero in rax masquerade as the expression result.
                 // Successful arms jump over this non-returning panic below.
-                try self.assembler.pushReg(.r10);
-                try self.emitRuntimePanicWithOperand(
-                    "panic: non-exhaustive match expression: no arm matched value ",
-                );
+                try self.emitRuntimePanic(match_expression_fallthrough_panic);
 
                 // Patch all "end of match" jumps
                 const match_end = self.assembler.getPosition();

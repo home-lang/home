@@ -192,10 +192,49 @@ test "codegen: match expression fallthrough emits a non-returning panic" {
     const machine_code = try native_codegen.generate();
     defer allocator.free(machine_code);
 
-    const panic_prefix = "panic: non-exhaustive match expression: no arm matched value ";
     var found = false;
     for (native_codegen.string_literals.items) |literal| {
-        if (std.mem.eql(u8, literal, panic_prefix)) found = true;
+        if (std.mem.startsWith(u8, literal, codegen.match_expression_fallthrough_panic)) found = true;
     }
     try testing.expect(found);
+}
+
+test "codegen: unmatched match expression executable exits instead of returning zero" {
+    const allocator = testing.allocator;
+    const source =
+        \\fn main() -> i32 {
+        \\    return match true { false => 7 }
+        \\}
+    ;
+    var lexer = Lexer.init(allocator, source);
+    var tokens = try lexer.tokenize();
+    defer tokens.deinit(allocator);
+    var parser = try Parser.init(allocator, tokens.items);
+    defer parser.deinit();
+    const program = try parser.parse();
+    defer program.deinit(allocator);
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    defer allocator.free(dir_path);
+    const executable_path = try std.fs.path.join(allocator, &.{ dir_path, "match-fallthrough" });
+    defer allocator.free(executable_path);
+
+    var native_codegen = codegen.NativeCodegen.init(allocator, program, null, null);
+    defer native_codegen.deinit();
+    native_codegen.io = testing.io;
+    try native_codegen.writeExecutable(executable_path);
+
+    const result = try std.process.run(allocator, testing.io, .{
+        .argv = &.{executable_path},
+        .timeout = .{ .duration = .{ .raw = .fromSeconds(5), .clock = .awake } },
+    });
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+    if (result.term != .exited or result.term.exited != 101) {
+        std.debug.print("match fallthrough term={} stderr={s}\n", .{ result.term, result.stderr });
+    }
+    try testing.expectEqual(std.process.Child.Term{ .exited = 101 }, result.term);
+    try testing.expect(std.mem.indexOf(u8, result.stderr, codegen.match_expression_fallthrough_panic) != null);
 }

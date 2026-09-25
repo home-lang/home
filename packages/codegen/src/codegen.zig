@@ -34,6 +34,7 @@ pub const LLVMCodegen = llvm_codegen.LLVMCodegen;
 pub const JSEntrypointLLVM = js_entrypoint_llvm;
 pub const WasmCodegen = wasm.WasmCodegen;
 pub const CodegenError = native_codegen.CodegenError;
+pub const match_expression_fallthrough_panic = native_codegen.match_expression_fallthrough_panic;
 pub const Optimizer = optimizer.Optimizer;
 pub const OptLevel = optimizer.OptLevel;
 pub const GraphColoringAllocator = regalloc.GraphColoringAllocator;
