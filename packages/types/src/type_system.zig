@@ -879,6 +879,7 @@ pub const TypeChecker = struct {
     /// Declared return type of the function currently being checked.
     /// Nested statement checking consults this for every ReturnStmt.
     current_function_return_type: ?Type,
+    trait_declarations: std.StringHashMap(*const ast.TraitDecl),
 
     pub const TypeErrorInfo = struct {
         message: []const u8,
@@ -907,6 +908,7 @@ pub const TypeChecker = struct {
             .uninitialized_vars = std.StringHashMap(ast.SourceLocation).init(allocator),
             .pointer_aliases = std.StringHashMap([]const u8).init(allocator),
             .current_function_return_type = null,
+            .trait_declarations = std.StringHashMap(*const ast.TraitDecl).init(allocator),
         };
     }
 
@@ -953,6 +955,7 @@ pub const TypeChecker = struct {
         self.loaded_modules.deinit();
         self.uninitialized_vars.deinit();
         self.pointer_aliases.deinit();
+        self.trait_declarations.deinit();
     }
 
     pub fn check(self: *TypeChecker) !bool {
@@ -1066,6 +1069,7 @@ pub const TypeChecker = struct {
                     };
                     try self.env.define(enum_decl.name, enum_type);
                 },
+                .TraitDecl => |trait_decl| try self.trait_declarations.put(trait_decl.name, trait_decl),
                 else => {},
             }
         }
@@ -1594,6 +1598,33 @@ pub const TypeChecker = struct {
             .MatchStmt => |match_stmt| {
                 try self.checkMatchStatement(match_stmt);
             },
+            .TraitDecl => |trait_decl| {
+                for (trait_decl.super_traits) |super_trait| {
+                    if (!self.trait_declarations.contains(super_trait)) {
+                        try self.addError("Undefined super trait", trait_decl.node.loc);
+                    }
+                }
+                for (trait_decl.methods) |method| {
+                    if (method.default_body) |body| try self.checkBlock(body);
+                }
+            },
+            .ImplDecl => |impl_decl| {
+                if (impl_decl.trait_name) |trait_name| {
+                    if (self.trait_declarations.get(trait_name)) |trait_decl| {
+                        try self.checkImplSignatures(impl_decl, trait_decl);
+                    } else {
+                        try self.addError("Implementation references an undefined trait", impl_decl.node.loc);
+                    }
+                }
+                for (impl_decl.methods) |method| {
+                    try self.checkStatement(.{ .FnDecl = method });
+                }
+            },
+            .ExtendDecl => |extend_decl| {
+                for (extend_decl.methods) |method| {
+                    try self.checkStatement(.{ .FnDecl = method });
+                }
+            },
             .IfStmt => |if_stmt| {
                 // Check condition is boolean, optional, Void (unknown),
                 // or any integer/reference type. Kernel code uses
@@ -2082,6 +2113,79 @@ pub const TypeChecker = struct {
         for (self.pattern_checker.errors.items[start..]) |pattern_error| {
             try self.addError(pattern_error.message, pattern_error.loc);
         }
+    }
+
+    fn checkImplSignatures(
+        self: *TypeChecker,
+        impl_decl: *const ast.ImplDecl,
+        trait_decl: *const ast.TraitDecl,
+    ) TypeError!void {
+        for (trait_decl.methods) |trait_method| {
+            var implementation: ?*const ast.FnDecl = null;
+            for (impl_decl.methods) |method| {
+                if (std.mem.eql(u8, method.name, trait_method.name)) {
+                    implementation = method;
+                    break;
+                }
+            }
+
+            const method = implementation orelse {
+                if (!trait_method.has_default_impl) {
+                    try self.addError("Missing required trait method", impl_decl.node.loc);
+                }
+                continue;
+            };
+
+            if (method.params.len != trait_method.params.len or method.is_async != trait_method.is_async) {
+                try self.addError("Trait method signature mismatch", method.node.loc);
+                continue;
+            }
+
+            var matches = true;
+            for (method.params, trait_method.params) |impl_param, trait_param| {
+                if (!traitTypeMatchesName(trait_param.type_expr, impl_param.type_name)) {
+                    matches = false;
+                    break;
+                }
+            }
+            const impl_return = method.return_type orelse "void";
+            if (trait_method.return_type) |trait_return| {
+                matches = matches and traitTypeMatchesName(trait_return, impl_return);
+            } else {
+                matches = matches and std.mem.eql(u8, impl_return, "void");
+            }
+            if (!matches) try self.addError("Trait method signature mismatch", method.node.loc);
+        }
+
+        for (impl_decl.methods) |method| {
+            var declared = false;
+            for (trait_decl.methods) |trait_method| {
+                if (std.mem.eql(u8, method.name, trait_method.name)) {
+                    declared = true;
+                    break;
+                }
+            }
+            if (!declared) try self.addError("Implementation method is not declared by the trait", method.node.loc);
+        }
+    }
+
+    fn traitTypeMatchesName(type_expr: *const ast.TypeExpr, name: []const u8) bool {
+        return switch (type_expr.*) {
+            .Named => |expected| std.mem.eql(u8, expected, name),
+            .SelfType => std.mem.eql(u8, name, "Self"),
+            .Reference => |reference| blk: {
+                const prefix = if (reference.is_mut) "&mut " else "&";
+                if (!std.mem.startsWith(u8, name, prefix)) break :blk false;
+                break :blk traitTypeMatchesName(reference.inner, name[prefix.len..]);
+            },
+            .Pointer => |pointer| blk: {
+                const prefix = if (pointer.is_mut) "*mut " else "*";
+                if (!std.mem.startsWith(u8, name, prefix)) break :blk false;
+                break :blk traitTypeMatchesName(pointer.inner, name[prefix.len..]);
+            },
+            .Nullable => |inner| name.len > 1 and name[0] == '?' and traitTypeMatchesName(inner, name[1..]),
+            else => false,
+        };
     }
 
     // ============================================================================

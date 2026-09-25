@@ -2527,6 +2527,18 @@ pub const Program = struct {
                 if (decl.target_type_owned) allocator.free(decl.target_type);
                 allocator.destroy(decl);
             },
+            .TraitDecl => |decl| {
+                decl.deinit(allocator);
+                allocator.destroy(decl);
+            },
+            .ImplDecl => |decl| {
+                decl.deinit(allocator);
+                allocator.destroy(decl);
+            },
+            .ExtendDecl => |decl| {
+                decl.deinit(allocator);
+                allocator.destroy(decl);
+            },
             .ReturnStmt => |ret| {
                 if (ret.value) |val| deinitExpr(val, allocator);
                 allocator.destroy(ret);

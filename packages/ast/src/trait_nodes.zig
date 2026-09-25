@@ -40,9 +40,22 @@ pub const TraitDecl = struct {
 
     pub fn deinit(self: *TraitDecl, allocator: std.mem.Allocator) void {
         allocator.free(self.name);
+        for (self.generic_params) |param| {
+            var owned = param;
+            owned.deinit(allocator);
+        }
         allocator.free(self.generic_params);
+        for (self.super_traits) |super_trait| allocator.free(super_trait);
         allocator.free(self.super_traits);
+        for (self.methods) |method| {
+            var owned = method;
+            owned.deinit(allocator);
+        }
         allocator.free(self.methods);
+        for (self.associated_types) |associated_type| {
+            var owned = associated_type;
+            owned.deinit(allocator);
+        }
         allocator.free(self.associated_types);
         if (self.where_clause) |wc| {
             wc.deinit(allocator);
@@ -62,12 +75,18 @@ pub const TraitMethod = struct {
 
     pub fn deinit(self: *TraitMethod, allocator: std.mem.Allocator) void {
         allocator.free(self.name);
+        for (self.params) |param| {
+            allocator.free(param.name);
+            param.type_expr.deinit(allocator);
+            allocator.destroy(param.type_expr);
+        }
         allocator.free(self.params);
         if (self.return_type) |rt| {
+            rt.deinit(allocator);
             allocator.destroy(rt);
         }
         if (self.default_body) |body| {
-            allocator.destroy(body);
+            ast.Program.deinitBlockStmt(body, allocator);
         }
     }
 };
@@ -129,16 +148,22 @@ pub const ImplDecl = struct {
 
     pub fn deinit(self: *ImplDecl, allocator: std.mem.Allocator) void {
         if (self.trait_name) |tn| allocator.free(tn);
+        self.for_type.deinit(allocator);
         allocator.destroy(self.for_type);
+        for (self.generic_params) |param| {
+            var owned = param;
+            owned.deinit(allocator);
+        }
         allocator.free(self.generic_params);
         for (self.methods) |method| {
-            allocator.destroy(method);
+            ast.Program.deinitStmt(.{ .FnDecl = method }, allocator);
         }
         allocator.free(self.methods);
         
         var it = self.associated_type_bindings.iterator();
         while (it.next()) |entry| {
             allocator.free(entry.key_ptr.*);
+            entry.value_ptr.*.deinit(allocator);
             allocator.destroy(entry.value_ptr.*);
         }
         self.associated_type_bindings.deinit();
@@ -181,10 +206,15 @@ pub const ExtendDecl = struct {
     }
 
     pub fn deinit(self: *ExtendDecl, allocator: std.mem.Allocator) void {
+        self.target_type.deinit(allocator);
         allocator.destroy(self.target_type);
+        for (self.generic_params) |param| {
+            var owned = param;
+            owned.deinit(allocator);
+        }
         allocator.free(self.generic_params);
         for (self.methods) |method| {
-            allocator.destroy(method);
+            ast.Program.deinitStmt(.{ .FnDecl = method }, allocator);
         }
         allocator.free(self.methods);
         if (self.where_clause) |wc| {
@@ -200,8 +230,9 @@ pub const WhereClause = struct {
     bounds: []const WhereBound,
 
     pub fn deinit(self: *WhereClause, allocator: std.mem.Allocator) void {
-        for (self.bounds) |*bound| {
-            bound.deinit(allocator);
+        for (self.bounds) |bound| {
+            var owned = bound;
+            owned.deinit(allocator);
         }
         allocator.free(self.bounds);
     }
@@ -281,7 +312,11 @@ pub const TypeExpr = union(enum) {
                 }
                 allocator.free(gen.args);
             },
-            .Reference, .Pointer => |ref| {
+            .Reference => |ref| {
+                ref.inner.deinit(allocator);
+                allocator.destroy(ref.inner);
+            },
+            .Pointer => |ref| {
                 ref.inner.deinit(allocator);
                 allocator.destroy(ref.inner);
             },

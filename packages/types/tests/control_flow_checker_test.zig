@@ -63,3 +63,14 @@ test "checker defines identifier pattern bindings in their arm" {
         \\}
     ));
 }
+
+test "checker rejects mismatched trait implementation signatures" {
+    try std.testing.expect(!try checkSource(
+        \\trait Convert {
+        \\    fn convert(value: i32): bool;
+        \\}
+        \\impl Convert for i32 {
+        \\    fn convert(value: bool) -> bool { return value }
+        \\}
+    ));
+}

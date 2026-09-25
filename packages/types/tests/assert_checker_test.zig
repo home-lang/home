@@ -61,3 +61,11 @@ test "checker rejects a non-exhaustive boolean match" {
         \\}
     ));
 }
+
+test "checker visits extension method bodies" {
+    try std.testing.expect(!try checkSource(
+        \\extend i32 {
+        \\    fn broken(value: i32) { missing_name }
+        \\}
+    ));
+}
