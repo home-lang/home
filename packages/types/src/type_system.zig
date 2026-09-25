@@ -1439,7 +1439,7 @@ pub const TypeChecker = struct {
                     // checkExpressionAgainst), so an un-typed binding degrades
                     // to gradual typing instead of cascading.
                     const value_type = if (decl.type_name) |type_name| blk: {
-                        const declared_type = self.parseTypeName(type_name) catch Type.Void;
+                        const declared_type = try self.parseDeclaredType(type_name, decl.node.loc);
                         // CHECK mode: propagate the declared type as a
                         // hint into the initializer so numeric literals
                         // and array literals adopt the destination
@@ -1485,7 +1485,7 @@ pub const TypeChecker = struct {
                     // Track ownership of the new variable
                     try self.ownership_tracker.define(decl.name, value_type, decl.node.loc);
                 } else if (decl.type_name) |type_name| {
-                    const var_type = try self.parseTypeName(type_name);
+                    const var_type = try self.parseDeclaredType(type_name, decl.node.loc);
                     try self.env.define(decl.name, var_type);
                     try self.ownership_tracker.define(decl.name, var_type, decl.node.loc);
                     // Remember the declaration so a subsequent read
@@ -1517,7 +1517,7 @@ pub const TypeChecker = struct {
             .FnDecl => |fn_decl| {
                 const previous_return_type = self.current_function_return_type;
                 self.current_function_return_type = if (fn_decl.return_type) |return_type|
-                    try self.parseTypeName(return_type)
+                    try self.parseDeclaredType(return_type, fn_decl.node.loc)
                 else
                     Type.Void;
                 defer self.current_function_return_type = previous_return_type;
@@ -1541,7 +1541,7 @@ pub const TypeChecker = struct {
 
                 // Add parameters to function scope
                 for (fn_decl.params) |param| {
-                    const param_type = try self.parseTypeName(param.type_name);
+                    const param_type = try self.parseDeclaredType(param.type_name, param.loc);
                     try func_env.define(param.name, param_type);
                     // Also define them in the ownership tracker. Parameters
                     // were registered only in the type environment, so the
@@ -1798,7 +1798,7 @@ pub const TypeChecker = struct {
                 defer fields.deinit(self.allocator);
 
                 for (struct_decl.fields) |field| {
-                    const field_type = try self.parseTypeName(field.type_name);
+                    const field_type = try self.parseDeclaredType(field.type_name, field.loc);
                     try fields.append(self.allocator, .{
                         .name = field.name,
                         .type = field_type,
@@ -1827,7 +1827,7 @@ pub const TypeChecker = struct {
                 for (enum_decl.variants) |variant| {
                     var data_type: ?Type = null;
                     if (variant.data_type) |type_name| {
-                        data_type = try self.parseTypeName(type_name);
+                        data_type = try self.parseDeclaredType(type_name, enum_decl.node.loc);
                     }
                     try variants.append(self.allocator, .{
                         .name = variant.name,
@@ -1851,7 +1851,7 @@ pub const TypeChecker = struct {
             },
             .TypeAliasDecl => |type_alias| {
                 // Resolve the target type
-                const target_type = try self.parseTypeName(type_alias.target_type);
+                const target_type = try self.parseDeclaredType(type_alias.target_type, type_alias.node.loc);
 
                 // Register type alias in environment
                 try self.env.define(type_alias.name, target_type);
@@ -1984,7 +1984,7 @@ pub const TypeChecker = struct {
                 for (union_decl.variants) |variant| {
                     var data_type: ?Type = null;
                     if (variant.type_name) |type_name| {
-                        data_type = try self.parseTypeName(type_name);
+                        data_type = try self.parseDeclaredType(type_name, union_decl.node.loc);
                     }
                     try variants.append(self.allocator, .{
                         .name = variant.name,
@@ -2276,10 +2276,11 @@ pub const TypeChecker = struct {
         expected: Type,
         actual: Type,
     ) TypeError!void {
-        // Allow Void (unknown) types to match any expected type
-        // This enables gradual typing for expressions with unknown types
-        if (actual == .Void) {
-            return; // Accept unknown types
+        // Unknown suppresses follow-on mismatches only after the declaration
+        // or lookup that produced it has emitted the primary diagnostic.
+        // Void is the real unit type and must not act as a wildcard.
+        if (actual == .Unknown or expected == .Unknown) {
+            return;
         }
 
         // Special case: null literals can be assigned to optional types
@@ -4420,8 +4421,8 @@ pub const TypeChecker = struct {
             if (std.mem.eql(u8, base_name, "HashMap") or std.mem.eql(u8, base_name, "Map") or std.mem.eql(u8, base_name, "Dict")) {
                 // Parse Map<K, V> syntax to extract key and value types
                 const comma_pos = std.mem.indexOf(u8, type_params, ",") orelse {
-                    // No comma found - invalid syntax, return Void
-                    return Type.Void;
+                    // No comma found - invalid generic syntax.
+                    return Type.Unknown;
                 };
 
                 // Extract key type (before comma)
@@ -4446,8 +4447,7 @@ pub const TypeChecker = struct {
                 } };
             }
 
-            // Unknown generic type - treat as void for now
-            return Type.Void;
+            return Type.Unknown;
         }
 
         // Check if it's an array type [T], [T; N], or [N]T.
@@ -4525,8 +4525,17 @@ pub const TypeChecker = struct {
             return user_type;
         }
 
-        // Unknown type - for now, treat as void
-        return Type.Void;
+        return Type.Unknown;
+    }
+
+    fn parseDeclaredType(self: *TypeChecker, name: []const u8, loc: ast.SourceLocation) TypeError!Type {
+        const resolved = try self.parseTypeName(name);
+        if (resolved != .Unknown) return resolved;
+
+        const message = try std.fmt.allocPrint(self.allocator, "Unknown type '{s}'", .{name});
+        defer self.allocator.free(message);
+        try self.addError(message, loc);
+        return Type.Unknown;
     }
 
     /// Clone the current uninitialized-variables map so a branch can

@@ -74,3 +74,11 @@ test "checker rejects mismatched trait implementation signatures" {
         \\}
     ));
 }
+
+test "checker rejects an unresolved declared type" {
+    try std.testing.expect(!try checkSource(
+        \\fn run() {
+        \\    let value: Nonexistent = 1
+        \\}
+    ));
+}

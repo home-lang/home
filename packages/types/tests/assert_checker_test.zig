@@ -69,3 +69,11 @@ test "checker visits extension method bodies" {
         \\}
     ));
 }
+
+test "checker keeps void as the unit return type" {
+    try std.testing.expect(try checkSource(
+        \\fn noop() -> void {
+        \\    return
+        \\}
+    ));
+}
