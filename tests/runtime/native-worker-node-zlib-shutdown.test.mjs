@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict'
 import { once } from 'node:events'
+import { basename } from 'node:path'
 import { createBrotliCompress, createDeflate, createZstdCompress } from 'node:zlib'
 import { Worker } from 'node:worker_threads'
 import { getEventLoopStats } from 'bun:internal-for-testing'
+
+assert.match(basename(process.execPath), /^home(?:-(?:debug|release-(?:safe|fast|small)))?(?:\.exe)?$/)
 
 const probeCount = getEventLoopStats().nativeWorkPoolThreads
 
