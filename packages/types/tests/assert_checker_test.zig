@@ -40,3 +40,24 @@ test "checker visits an assert message expression" {
         \\}
     ));
 }
+
+test "checker rejects a pattern with the wrong matched type" {
+    try std.testing.expect(!try checkSource(
+        \\fn classify(value: bool) {
+        \\    match value {
+        \\        1 => 1,
+        \\        _ => 0,
+        \\    }
+        \\}
+    ));
+}
+
+test "checker rejects a non-exhaustive boolean match" {
+    try std.testing.expect(!try checkSource(
+        \\fn classify(value: bool) {
+        \\    match value {
+        \\        true => 1,
+        \\    }
+        \\}
+    ));
+}

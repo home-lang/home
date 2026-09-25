@@ -5244,6 +5244,7 @@ pub const Parser = struct {
             }
 
             // Not a range, backtrack and parse as identifier or enum variant
+            ast.Program.deinitExpr(start_expr, self.allocator);
             self.current = start_pos;
         }
 

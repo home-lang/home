@@ -1553,25 +1553,21 @@ pub const TypeChecker = struct {
 
                 // Type check function body with the function environment
                 self.env = func_env;
+                defer {
+                    self.env.deinit();
+                    self.env = saved_env_ptr.*;
+                    self.allocator.destroy(saved_env_ptr);
+                    self.ownership_tracker.exitScope();
+                }
 
                 for (fn_decl.body.statements) |body_stmt| {
                     self.checkStatement(body_stmt) catch |err| {
                         if (err != error.TypeMismatch and err != error.UndefinedVariable) {
-                            // Restore env before returning error
-                            self.env = saved_env_ptr.*;
-                            self.allocator.destroy(saved_env_ptr);
                             return err;
                         }
                         // Continue checking to find more errors
                     };
                 }
-
-                // Restore the original environment
-                self.env = saved_env_ptr.*;
-                self.allocator.destroy(saved_env_ptr);
-
-                // End function scope - release all borrows
-                self.ownership_tracker.exitScope();
             },
             .ReturnStmt => |return_stmt| {
                 const expected = self.current_function_return_type orelse {
@@ -1594,6 +1590,9 @@ pub const TypeChecker = struct {
                 if (assert_stmt.message) |message| {
                     _ = try self.inferExpression(message);
                 }
+            },
+            .MatchStmt => |match_stmt| {
+                try self.checkMatchStatement(match_stmt);
             },
             .IfStmt => |if_stmt| {
                 // Check condition is boolean, optional, Void (unknown),
@@ -1983,6 +1982,105 @@ pub const TypeChecker = struct {
                     return err;
                 }
             };
+        }
+    }
+
+    fn checkMatchStatement(self: *TypeChecker, match_stmt: *const ast.MatchStmt) TypeError!void {
+        const match_type = try self.inferExpression(match_stmt.value);
+        var patterns = std.ArrayList(*ast.Pattern).empty;
+        defer patterns.deinit(self.allocator);
+
+        for (match_stmt.arms) |arm| {
+            try patterns.append(self.allocator, arm.pattern);
+
+            const errors_before = self.pattern_checker.errors.items.len;
+            const valid = try self.pattern_checker.checkPattern(arm.pattern, match_type, arm.node.loc);
+            try self.copyPatternErrors(errors_before);
+            if (!valid and self.pattern_checker.errors.items.len == errors_before) {
+                try self.addError("Pattern does not match the matched value type", arm.node.loc);
+            }
+
+            try self.checkMatchArm(arm, match_type, valid);
+        }
+
+        const errors_before = self.pattern_checker.errors.items.len;
+        const exhaustive = try self.pattern_checker.checkExhaustiveness(match_type, patterns.items, match_stmt.node.loc);
+        try self.copyPatternErrors(errors_before);
+        if (!exhaustive and self.pattern_checker.errors.items.len == errors_before) {
+            try self.addError("Match statement is not exhaustive", match_stmt.node.loc);
+        }
+    }
+
+    fn checkMatchArm(self: *TypeChecker, arm: *const ast.MatchArm, match_type: Type, pattern_is_valid: bool) TypeError!void {
+        const saved_env = try self.allocator.create(TypeEnvironment);
+        saved_env.* = self.env;
+
+        var arm_env = TypeEnvironment.init(self.allocator);
+        arm_env.parent = saved_env;
+        self.env = arm_env;
+        defer {
+            self.env.deinit();
+            self.env = saved_env.*;
+            self.allocator.destroy(saved_env);
+        }
+
+        if (pattern_is_valid) try self.definePatternBindings(arm.pattern, match_type);
+
+        if (arm.guard) |guard| {
+            self.checkExpression(guard, Type.Bool) catch |err| {
+                if (err != error.TypeMismatch and err != error.UndefinedVariable) return err;
+            };
+        }
+        _ = self.inferExpression(arm.body) catch |err| {
+            if (err != error.TypeMismatch and err != error.UndefinedVariable) return err;
+        };
+    }
+
+    fn definePatternBindings(self: *TypeChecker, pattern: *const ast.Pattern, matched_type: Type) TypeError!void {
+        switch (pattern.*) {
+            .Identifier => |name| try self.env.define(name, matched_type),
+            .Tuple => |elements| if (matched_type == .Tuple) {
+                for (elements, matched_type.Tuple.element_types) |element, element_type| {
+                    try self.definePatternBindings(element, element_type);
+                }
+            },
+            .Array => |array| if (matched_type == .Array) {
+                for (array.elements) |element| {
+                    try self.definePatternBindings(element, matched_type.Array.element_type.*);
+                }
+                if (array.rest) |name| try self.env.define(name, matched_type);
+            },
+            .Struct => |struct_pattern| if (matched_type == .Struct) {
+                for (struct_pattern.fields) |field_pattern| {
+                    for (matched_type.Struct.fields) |field| {
+                        if (std.mem.eql(u8, field.name, field_pattern.name)) {
+                            try self.definePatternBindings(field_pattern.pattern, field.type);
+                            break;
+                        }
+                    }
+                }
+            },
+            .EnumVariant => |variant_pattern| if (variant_pattern.payload) |payload| {
+                if (matched_type == .Enum) {
+                    for (matched_type.Enum.variants) |variant| {
+                        if (std.mem.eql(u8, variant.name, variant_pattern.variant)) {
+                            try self.definePatternBindings(payload, variant.data_type orelse Type.Void);
+                            break;
+                        }
+                    }
+                }
+            },
+            .As => |as_pattern| {
+                try self.definePatternBindings(as_pattern.pattern, matched_type);
+                try self.env.define(as_pattern.identifier, matched_type);
+            },
+            else => {},
+        }
+    }
+
+    fn copyPatternErrors(self: *TypeChecker, start: usize) TypeError!void {
+        for (self.pattern_checker.errors.items[start..]) |pattern_error| {
+            try self.addError(pattern_error.message, pattern_error.loc);
         }
     }
 

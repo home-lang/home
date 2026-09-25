@@ -2601,6 +2601,7 @@ pub const Program = struct {
             .MatchStmt => |m| {
                 deinitExpr(m.value, allocator);
                 for (m.arms) |arm| {
+                    deinitPattern(arm.pattern, allocator);
                     if (arm.guard) |g| deinitExpr(g, allocator);
                     deinitExpr(arm.body, allocator);
                     allocator.destroy(arm);
@@ -2616,6 +2617,38 @@ pub const Program = struct {
             .ContinueStmt => |cs| allocator.destroy(cs),
             else => {},
         }
+    }
+
+    fn deinitPattern(pattern: *Pattern, allocator: std.mem.Allocator) void {
+        switch (pattern.*) {
+            .StringLiteral => |value| allocator.free(value),
+            .Tuple => |elements| {
+                for (elements) |element| deinitPattern(element, allocator);
+                allocator.free(elements);
+            },
+            .Array => |array| {
+                for (array.elements) |element| deinitPattern(element, allocator);
+                allocator.free(array.elements);
+            },
+            .Struct => |struct_pattern| {
+                for (struct_pattern.fields) |field| deinitPattern(field.pattern, allocator);
+                allocator.free(struct_pattern.fields);
+            },
+            .EnumVariant => |variant| {
+                if (variant.payload) |payload| deinitPattern(payload, allocator);
+            },
+            .Range => |range| {
+                deinitExpr(range.start, allocator);
+                deinitExpr(range.end, allocator);
+            },
+            .Or => |patterns| {
+                for (patterns) |child| deinitPattern(child, allocator);
+                allocator.free(patterns);
+            },
+            .As => |as_pattern| deinitPattern(as_pattern.pattern, allocator),
+            else => {},
+        }
+        allocator.destroy(pattern);
     }
 
     pub fn deinitBlockStmt(block: *BlockStmt, allocator: std.mem.Allocator) void {

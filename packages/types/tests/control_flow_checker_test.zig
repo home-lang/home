@@ -42,3 +42,24 @@ test "checker visits statements nested in unsafe blocks" {
         \\}
     ));
 }
+
+test "checker visits match guards and arm bodies" {
+    try std.testing.expect(!try checkSource(
+        \\fn classify(value: bool) {
+        \\    match value {
+        \\        true if 1 => missing_name,
+        \\        false => 0,
+        \\    }
+        \\}
+    ));
+}
+
+test "checker defines identifier pattern bindings in their arm" {
+    try std.testing.expect(try checkSource(
+        \\fn classify(value: i32) {
+        \\    match value {
+        \\        captured => captured,
+        \\    }
+        \\}
+    ));
+}
