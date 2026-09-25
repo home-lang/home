@@ -17,6 +17,7 @@ const ownership = @import("ownership.zig");
 pub const OwnershipTracker = ownership.OwnershipTracker;
 pub const OwnershipState = ownership.OwnershipState;
 const pattern_checker = @import("pattern_checker.zig");
+const ts_diagnostics = @import("ts_diagnostics");
 pub const PatternChecker = pattern_checker.PatternChecker;
 pub const PatternMatcher = pattern_checker.PatternMatcher;
 const error_handling = @import("error_handling.zig");
@@ -888,6 +889,9 @@ pub const TypeChecker = struct {
     pub const TypeErrorInfo = struct {
         message: []const u8,
         loc: ast.SourceLocation,
+        /// Stable Home diagnostic code when this error has one (for example
+        /// HM2000 for a non-exhaustive pattern match).
+        code: ?u32 = null,
         // Enhanced error information
         expected: ?[]const u8 = null,
         actual: ?[]const u8 = null,
@@ -2219,7 +2223,9 @@ pub const TypeChecker = struct {
         defer patterns.deinit(self.allocator);
 
         for (match_stmt.arms) |arm| {
-            try patterns.append(self.allocator, arm.pattern);
+            // A guard may reject a value after the pattern matched, so guarded
+            // arms cannot prove coverage.
+            if (arm.guard == null) try patterns.append(self.allocator, arm.pattern);
 
             const errors_before = self.pattern_checker.errors.items.len;
             const valid = try self.pattern_checker.checkPattern(arm.pattern, match_type, arm.node.loc);
@@ -2233,9 +2239,13 @@ pub const TypeChecker = struct {
 
         const errors_before = self.pattern_checker.errors.items.len;
         const exhaustive = try self.pattern_checker.checkExhaustiveness(match_type, patterns.items, match_stmt.node.loc);
-        try self.copyPatternErrors(errors_before);
+        try self.copyPatternErrorsWithCode(errors_before, ts_diagnostics.HmCodes.pattern_non_exhaustive);
         if (!exhaustive and self.pattern_checker.errors.items.len == errors_before) {
-            try self.addError("Match statement is not exhaustive", match_stmt.node.loc);
+            try self.addErrorWithCode(
+                "Match statement is not exhaustive",
+                match_stmt.node.loc,
+                ts_diagnostics.HmCodes.pattern_non_exhaustive,
+            );
         }
     }
 
@@ -2309,6 +2319,12 @@ pub const TypeChecker = struct {
     fn copyPatternErrors(self: *TypeChecker, start: usize) TypeError!void {
         for (self.pattern_checker.errors.items[start..]) |pattern_error| {
             try self.addError(pattern_error.message, pattern_error.loc);
+        }
+    }
+
+    fn copyPatternErrorsWithCode(self: *TypeChecker, start: usize, code: u32) TypeError!void {
+        for (self.pattern_checker.errors.items[start..]) |pattern_error| {
+            try self.addErrorWithCode(pattern_error.message, pattern_error.loc, code);
         }
     }
 
@@ -2950,6 +2966,17 @@ pub const TypeChecker = struct {
             try self.addError("Match expression must have at least one arm", match_expr.node.loc);
             return error.TypeMismatch;
         }
+
+        const exhaustiveness_errors_before = self.pattern_checker.errors.items.len;
+        _ = try self.pattern_checker.checkExpressionExhaustiveness(
+            matched_type,
+            match_expr.arms,
+            match_expr.node.loc,
+        );
+        try self.copyPatternErrorsWithCode(
+            exhaustiveness_errors_before,
+            ts_diagnostics.HmCodes.pattern_non_exhaustive,
+        );
 
         var result_type: ?Type = null;
         for (match_expr.arms) |arm| {
@@ -5134,6 +5161,12 @@ pub const TypeChecker = struct {
         const msg = try self.allocator.dupe(u8, message);
         errdefer self.allocator.free(msg);
         try self.errors.append(self.allocator, .{ .message = msg, .loc = loc });
+    }
+
+    fn addErrorWithCode(self: *TypeChecker, message: []const u8, loc: ast.SourceLocation, code: u32) !void {
+        const msg = try self.allocator.dupe(u8, message);
+        errdefer self.allocator.free(msg);
+        try self.errors.append(self.allocator, .{ .message = msg, .loc = loc, .code = code });
     }
 
     /// Add a type mismatch error with expected and actual types

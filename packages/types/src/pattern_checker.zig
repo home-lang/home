@@ -46,6 +46,7 @@ pub const PatternChecker = struct {
 
         return switch (match_type) {
             .Enum => |et| try self.checkEnumExhaustiveness(et, patterns, loc),
+            .Result => try self.checkResultExhaustiveness(patterns, loc),
             .Bool => try self.checkBoolExhaustiveness(patterns, loc),
             // For Int/Float/String the only way to be total is via a wildcard
             // (handled above). Anything else is non-exhaustive.
@@ -153,6 +154,19 @@ pub const PatternChecker = struct {
             },
 
             .EnumVariant => |variant_pat| blk: {
+                if (expected_type == .Result) {
+                    if (!std.mem.eql(u8, variant_pat.variant, "Ok") and
+                        !std.mem.eql(u8, variant_pat.variant, "Err"))
+                    {
+                        try self.addError("Result patterns must use Ok or Err", loc);
+                        break :blk false;
+                    }
+                    if (variant_pat.payload == null) {
+                        try self.addError("Result variant pattern requires a payload", loc);
+                        break :blk false;
+                    }
+                    break :blk true;
+                }
                 if (expected_type != .Enum) {
                     try self.addError("Pattern is an enum variant but type is not an enum", loc);
                     break :blk false;
@@ -305,6 +319,118 @@ pub const PatternChecker = struct {
 
         try self.addError("Match is not exhaustive: missing boolean cases", loc);
         return false;
+    }
+
+    /// Check if statement patterns cover both Result constructors.
+    pub fn checkResultExhaustiveness(
+        self: *PatternChecker,
+        patterns: []const *ast.Pattern,
+        loc: ast.SourceLocation,
+    ) !bool {
+        var has_ok = false;
+        var has_err = false;
+        for (patterns) |pattern| {
+            switch (pattern.*) {
+                .Wildcard, .Identifier => return true,
+                .EnumVariant => |variant| {
+                    if (std.mem.eql(u8, variant.variant, "Ok")) has_ok = true;
+                    if (std.mem.eql(u8, variant.variant, "Err")) has_err = true;
+                },
+                .Or => |alternatives| for (alternatives) |alternative| {
+                    if (alternative.* == .Wildcard or alternative.* == .Identifier) return true;
+                    if (alternative.* != .EnumVariant) continue;
+                    if (std.mem.eql(u8, alternative.EnumVariant.variant, "Ok")) has_ok = true;
+                    if (std.mem.eql(u8, alternative.EnumVariant.variant, "Err")) has_err = true;
+                },
+                else => {},
+            }
+        }
+        if (has_ok and has_err) return true;
+        try self.addError(if (!has_ok)
+            "Match is not exhaustive: missing Result variant 'Ok'"
+        else
+            "Match is not exhaustive: missing Result variant 'Err'", loc);
+        return false;
+    }
+
+    /// Check expression-form match arms. Guarded arms never contribute to
+    /// total coverage because their guard can reject a value after its pattern
+    /// matched.
+    pub fn checkExpressionExhaustiveness(
+        self: *PatternChecker,
+        match_type: Type,
+        arms: []const ast.MatchExprArm,
+        loc: ast.SourceLocation,
+    ) !bool {
+        var has_true = false;
+        var has_false = false;
+        var has_ok = false;
+        var has_err = false;
+        var covered_variants = std.StringHashMap(void).init(self.allocator);
+        defer covered_variants.deinit();
+
+        for (arms) |arm| {
+            if (arm.guard != null) continue;
+            const pattern = arm.pattern;
+            if (pattern.* == .Identifier) {
+                const name = pattern.Identifier.name;
+                if (std.mem.eql(u8, name, "_")) return true;
+                if (match_type == .Enum) {
+                    for (match_type.Enum.variants) |variant| {
+                        if (std.mem.eql(u8, name, variant.name)) {
+                            try covered_variants.put(name, {});
+                            break;
+                        }
+                    } else return true;
+                    continue;
+                }
+                return true;
+            }
+            if (match_type == .Bool and pattern.* == .BooleanLiteral) {
+                if (pattern.BooleanLiteral.value) has_true = true else has_false = true;
+                continue;
+            }
+            const variant_name = expressionVariantName(pattern) orelse continue;
+            if (match_type == .Result) {
+                if (std.mem.eql(u8, variant_name, "Ok")) has_ok = true;
+                if (std.mem.eql(u8, variant_name, "Err")) has_err = true;
+            } else if (match_type == .Enum) {
+                for (match_type.Enum.variants) |variant| {
+                    if (std.mem.eql(u8, variant_name, variant.name)) {
+                        try covered_variants.put(variant_name, {});
+                        break;
+                    }
+                }
+            }
+        }
+
+        const exhaustive = switch (match_type) {
+            .Bool => has_true and has_false,
+            .Result => has_ok and has_err,
+            .Enum => |enum_type| blk: {
+                for (enum_type.variants) |variant| {
+                    if (!covered_variants.contains(variant.name)) break :blk false;
+                }
+                break :blk true;
+            },
+            else => false,
+        };
+        if (exhaustive) return true;
+        try self.addError("Match expression is not exhaustive: add the missing case or a wildcard `_` arm", loc);
+        return false;
+    }
+
+    fn expressionVariantName(pattern: *const ast.Expr) ?[]const u8 {
+        return switch (pattern.*) {
+            .CallExpr => |call| switch (call.callee.*) {
+                .Identifier => |identifier| identifier.name,
+                .MemberExpr => |member| member.member,
+                else => null,
+            },
+            .StaticCallExpr => |call| call.method_name,
+            .MemberExpr => |member| member.member,
+            else => null,
+        };
     }
 
     fn buildCoverage(self: *PatternChecker, patterns: []const *ast.Pattern) !std.StringHashMap(void) {

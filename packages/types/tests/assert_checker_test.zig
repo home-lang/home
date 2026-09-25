@@ -17,6 +17,22 @@ fn checkSource(source: []const u8) !bool {
     return checker.check();
 }
 
+fn hasDiagnosticCode(source: []const u8, code: u32) !bool {
+    const allocator = std.testing.allocator;
+    var lexer = home.lexer.Lexer.init(allocator, source);
+    var tokens = try lexer.tokenize();
+    defer tokens.deinit(allocator);
+    var parser = try home.parser.Parser.init(allocator, tokens.items);
+    defer parser.deinit();
+    const program = try parser.parse();
+    defer program.deinit(allocator);
+    var checker = home.types.TypeChecker.init(allocator, program);
+    defer checker.deinit();
+    _ = try checker.check();
+    for (checker.errors.items) |diagnostic| if (diagnostic.code == code) return true;
+    return false;
+}
+
 test "checker rejects a non-boolean assert condition" {
     try std.testing.expect(!try checkSource(
         \\fn run() {
@@ -60,6 +76,42 @@ test "checker rejects a non-exhaustive boolean match" {
         \\    }
         \\}
     ));
+}
+
+test "checker labels non-exhaustive statement matches HM2000" {
+    try std.testing.expect(try hasDiagnosticCode(
+        \\fn classify(value: bool) {
+        \\    match value { true => 1 }
+        \\}
+    , 2000));
+}
+
+test "checker rejects guarded arms as exhaustive coverage" {
+    try std.testing.expect(!try checkSource(
+        \\fn classify(value: bool, enabled: bool) {
+        \\    match value {
+        \\        true if enabled => 1,
+        \\        false if enabled => 0,
+        \\    }
+        \\}
+    ));
+}
+
+test "checker labels non-exhaustive enum match expressions HM2000" {
+    try std.testing.expect(try hasDiagnosticCode(
+        \\enum State { ready, waiting }
+        \\fn classify(value: State) -> i32 {
+        \\    return match value { ready => 1 }
+        \\}
+    , 2000));
+}
+
+test "checker labels non-exhaustive Result match expressions HM2000" {
+    try std.testing.expect(try hasDiagnosticCode(
+        \\fn classify(value: Result<i32, string>) -> i32 {
+        \\    return match value { Ok(_) => 1 }
+        \\}
+    , 2000));
 }
 
 test "checker visits extension method bodies" {

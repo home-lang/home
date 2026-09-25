@@ -144,6 +144,42 @@ test "checker rejects incompatible match expression arm types" {
     ));
 }
 
+test "checker rejects a non-exhaustive boolean match expression" {
+    try std.testing.expect(!try checkSource(
+        \\fn classify(value: bool) -> i32 {
+        \\    return match value { true => 1 }
+        \\}
+    ));
+}
+
+test "checker accepts an exhaustive boolean match expression" {
+    try std.testing.expect(try checkSource(
+        \\fn classify(value: bool) -> i32 {
+        \\    return match value {
+        \\        true => 1,
+        \\        false => 0,
+        \\    }
+        \\}
+    ));
+}
+
+test "checker rejects a non-exhaustive enum match expression" {
+    try std.testing.expect(!try checkSource(
+        \\enum State { ready, waiting }
+        \\fn classify(value: State) -> i32 {
+        \\    return match value { ready => 1 }
+        \\}
+    ));
+}
+
+test "checker rejects a non-exhaustive Result match expression" {
+    try std.testing.expect(!try checkSource(
+        \\fn classify(value: Result<i32, string>) -> i32 {
+        \\    return match value { Ok(_) => 1 }
+        \\}
+    ));
+}
+
 test "checker visits every match expression arm" {
     try std.testing.expect(!try checkSource(
         \\fn classify(value: bool) {
