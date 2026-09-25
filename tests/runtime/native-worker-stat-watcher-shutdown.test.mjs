@@ -3,9 +3,11 @@ import { spawnSync } from 'node:child_process'
 import { once } from 'node:events'
 import { mkdtempSync, rmSync, unwatchFile, watchFile, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { Worker } from 'node:worker_threads'
 import { getEventLoopStats } from 'bun:internal-for-testing'
+
+assert.match(basename(process.execPath), /^home(?:-(?:debug|release-(?:safe|fast|small)))?(?:\.exe)?$/)
 
 const probeCount = getEventLoopStats().nativeWorkPoolThreads
 
