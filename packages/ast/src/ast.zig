@@ -2693,7 +2693,13 @@ pub const Program = struct {
                 for (call.args) |arg| {
                     deinitExpr(arg, allocator);
                 }
+                for (call.named_args) |named_arg| {
+                    deinitExpr(named_arg.value, allocator);
+                }
                 allocator.free(call.args);
+                if (call.named_args.len > 0) {
+                    allocator.free(call.named_args);
+                }
                 allocator.destroy(call);
             },
             .ArrayLiteral => |array| {
@@ -2774,8 +2780,16 @@ pub const Program = struct {
                 allocator.destroy(map);
             },
             .StaticCallExpr => |sc| {
-                for (sc.args) |arg| deinitExpr(arg, allocator);
+                for (sc.args) |arg| {
+                    deinitExpr(arg, allocator);
+                }
+                for (sc.named_args) |named_arg| {
+                    deinitExpr(named_arg.value, allocator);
+                }
                 allocator.free(sc.args);
+                if (sc.named_args.len > 0) {
+                    allocator.free(sc.named_args);
+                }
                 allocator.destroy(sc);
             },
             .ElvisExpr => |elvis| {

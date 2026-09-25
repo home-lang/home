@@ -296,3 +296,20 @@ test "checker rejects unresolved map member types" {
         \\fn inspect(value: HashMap<string, Missing>) {}
     ));
 }
+
+test "checker rejects calls through unresolved capitalized values" {
+    try std.testing.expect(!try checkSource(
+        \\fn run() {
+        \\    Missing.create()
+        \\}
+    ));
+}
+
+test "checker rejects missing enum variant constructors" {
+    try std.testing.expect(!try checkSource(
+        \\enum Choice { One, Two }
+        \\fn run() {
+        \\    Choice.Three()
+        \\}
+    ));
+}

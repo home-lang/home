@@ -3216,12 +3216,6 @@ pub const TypeChecker = struct {
                 }
 
                 return self.env.get(id.name) orelse {
-                    // If identifier starts with uppercase, it might be a type name used
-                    // for static method calls like Mat4.identity(). Return Void to allow
-                    // member access to handle it.
-                    if (id.name.len > 0 and id.name[0] >= 'A' and id.name[0] <= 'Z') {
-                        return Type.Void;
-                    }
                     try self.addError("Undefined variable", id.node.loc);
                     return error.UndefinedVariable;
                 };
@@ -3446,7 +3440,13 @@ pub const TypeChecker = struct {
                     }
                     _ = self.inferExpression(arg) catch {};
                 }
-                return Type.Void;
+                for (call.named_args) |named_arg| {
+                    _ = self.inferExpression(named_arg.value) catch {};
+                }
+                const message = try std.fmt.allocPrint(self.allocator, "Undefined function '{s}'", .{func_name});
+                defer self.allocator.free(message);
+                try self.addError(message, call.node.loc);
+                return Type.Unknown;
             };
 
             if (func_type == .Function) {
@@ -3718,6 +3718,14 @@ pub const TypeChecker = struct {
                             return enum_type;
                         }
                     }
+                    const message = try std.fmt.allocPrint(
+                        self.allocator,
+                        "Enum '{s}' has no variant '{s}'",
+                        .{ enum_type.Enum.name, member.member },
+                    );
+                    defer self.allocator.free(message);
+                    try self.addError(message, call.node.loc);
+                    return Type.Unknown;
                 }
             }
         }
@@ -5066,6 +5074,10 @@ pub const TypeEnvironment = struct {
     }
 
     pub fn define(self: *TypeEnvironment, name: []const u8, typ: Type) !void {
+        if (self.bindings.getPtr(name)) |existing| {
+            existing.* = typ;
+            return;
+        }
         const name_copy = try self.allocator.dupe(u8, name);
         errdefer self.allocator.free(name_copy);
         try self.bindings.put(name_copy, typ);

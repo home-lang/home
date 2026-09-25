@@ -169,6 +169,22 @@ test "checker rejects unresolved referenced types" {
     ));
 }
 
+test "checker rejects unresolved capitalized values" {
+    try std.testing.expect(!try checkSource(
+        \\fn run() {
+        \\    let value = Missing
+        \\}
+    ));
+}
+
+test "checker rejects unresolved direct calls" {
+    try std.testing.expect(!try checkSource(
+        \\fn run() {
+        \\    missing_call(value: 1)
+        \\}
+    ));
+}
+
 test "checker rejects unary operators on void" {
     try std.testing.expect(!try checkSource(
         \\fn noop() -> void { return }
