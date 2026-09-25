@@ -9,10 +9,43 @@ fn checkSource(source: []const u8) !bool {
 
     var parser = try home.parser.Parser.init(allocator, tokens.items);
     defer parser.deinit();
+    parser.module_resolver.io = std.testing.io;
+    try parser.module_resolver.setSourceRoot("packages/types/tests/fixtures/import_alias_main.home");
+    const module_key = try allocator.dupe(u8, "import_alias_support");
+    errdefer allocator.free(module_key);
+    const module_file = try allocator.dupe(u8, "packages/types/tests/fixtures/import_alias_support.home");
+    errdefer allocator.free(module_file);
+    try parser.module_resolver.module_cache.put(module_key, .{
+        .path = &.{"import_alias_support"},
+        .file_path = module_file,
+        .name = "import_alias_support",
+        .is_zig = false,
+    });
     const program = try parser.parse();
     defer program.deinit(allocator);
 
     var checker = home.types.TypeChecker.init(allocator, program);
+    defer checker.deinit();
+    return checker.check();
+}
+
+fn checkSourceWithImports(source: []const u8) !bool {
+    const allocator = std.testing.allocator;
+    var lexer = home.lexer.Lexer.init(allocator, source);
+    var tokens = try lexer.tokenize();
+    defer tokens.deinit(allocator);
+
+    var parser = try home.parser.Parser.init(allocator, tokens.items);
+    defer parser.deinit();
+    const program = try parser.parse();
+    defer program.deinit(allocator);
+
+    var checker = home.types.TypeChecker.initWithSourcePath(
+        allocator,
+        program,
+        "packages/types/tests/fixtures/import_alias_main.home",
+    );
+    checker.io = std.testing.io;
     defer checker.deinit();
     return checker.check();
 }
@@ -155,6 +188,33 @@ test "checker visits closure bodies before they are called" {
     try std.testing.expect(!try checkSource(
         \\fn run() {
         \\    let broken = |value: i32| value + "wrong"
+        \\}
+    ));
+}
+
+test "checker resolves exported import alias members" {
+    try std.testing.expect(try checkSourceWithImports(
+        \\import import_alias_support as support
+        \\fn run() -> i32 {
+        \\    return support.exported(1)
+        \\}
+    ));
+}
+
+test "checker rejects missing import alias members" {
+    try std.testing.expect(!try checkSourceWithImports(
+        \\import import_alias_support as support
+        \\fn run() {
+        \\    support.anything
+        \\}
+    ));
+}
+
+test "checker hides non-public import alias members" {
+    try std.testing.expect(!try checkSourceWithImports(
+        \\import import_alias_support as support
+        \\fn run() {
+        \\    support.hidden
         \\}
     ));
 }

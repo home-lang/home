@@ -2766,6 +2766,7 @@ pub const Parser = struct {
                 .is_zig = false,
             };
         };
+        defer if (resolution_failed) self.allocator.free(resolved_module.file_path);
 
         // Register the module in the symbol table
         const module_path_str = try self.pathToString(path);

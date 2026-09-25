@@ -1,0 +1,7 @@
+pub fn exported(value: i32) -> i32 {
+    return value
+}
+
+fn hidden() -> i32 {
+    return 0
+}

@@ -854,6 +854,7 @@ pub const TypeChecker = struct {
     errors: std.ArrayList(TypeErrorInfo),
     allocated_types: std.ArrayList(*Type),
     allocated_slices: std.ArrayList([]Type),
+    owned_strings: std.ArrayList([]u8),
     comptime_store: ?*ComptimeValueStore,
     ownership_tracker: OwnershipTracker,
     pattern_checker: PatternChecker,
@@ -899,6 +900,7 @@ pub const TypeChecker = struct {
             .errors = std.ArrayList(TypeErrorInfo).empty,
             .allocated_types = std.ArrayList(*Type).empty,
             .allocated_slices = std.ArrayList([]Type).empty,
+            .owned_strings = std.ArrayList([]u8).empty,
             .comptime_store = null,
             .ownership_tracker = OwnershipTracker.init(allocator),
             .pattern_checker = PatternChecker.init(allocator),
@@ -949,9 +951,14 @@ pub const TypeChecker = struct {
         }
         self.allocated_slices.deinit(self.allocator);
 
+        for (self.owned_strings.items) |string| self.allocator.free(string);
+        self.owned_strings.deinit(self.allocator);
+
         self.ownership_tracker.deinit();
         self.pattern_checker.deinit();
         self.error_handler.deinit();
+        var loaded_it = self.loaded_modules.iterator();
+        while (loaded_it.next()) |entry| self.allocator.free(entry.key_ptr.*);
         self.loaded_modules.deinit();
         self.uninitialized_vars.deinit();
         self.pointer_aliases.deinit();
@@ -982,22 +989,21 @@ pub const TypeChecker = struct {
         for (self.program.statements) |stmt| {
             switch (stmt) {
                 .ImportDecl => |import_decl| {
-                    // Process import to register imported types
-                    self.processImport(import_decl) catch |err| {
+                    // Process the module and bind its namespace to the explicit
+                    // alias, or to the final path segment for a bare import.
+                    const namespace = self.processImport(import_decl) catch |err| blk: {
                         // Log import error but continue checking
                         if (err == error.OutOfMemory) return err;
-                        // Other errors are logged as warnings
+                        break :blk null;
                     };
-                    // `import "…" as foo` — bind the alias to Void so
-                    // `foo.anything` type-checks as an opaque namespace.
-                    if (import_decl.alias) |alias_name| {
-                        self.env.define(alias_name, Type.Void) catch {};
-                    } else if (import_decl.path.len > 0) {
-                        // `import basics/os/serial` (no alias) — use
-                        // the last path segment as an implicit
-                        // namespace name: `serial.write(...)` is OK.
-                        const last = import_decl.path[import_decl.path.len - 1];
-                        self.env.define(last, Type.Void) catch {};
+                    if (namespace) |module_type| {
+                        const namespace_name: ?[]const u8 = if (import_decl.alias) |alias_name|
+                            alias_name
+                        else if (import_decl.path.len > 0)
+                            import_decl.path[import_decl.path.len - 1]
+                        else
+                            null;
+                        if (namespace_name) |name| try self.env.define(name, module_type);
                     }
                 },
                 .FnDecl => |fn_decl| {
@@ -1126,9 +1132,13 @@ pub const TypeChecker = struct {
     }
 
     fn collectFunctionSignature(self: *TypeChecker, fn_decl: *const ast.FnDecl) !void {
+        try self.env.define(fn_decl.name, try self.functionTypeFromDecl(fn_decl));
+    }
+
+    fn functionTypeFromDecl(self: *TypeChecker, fn_decl: *const ast.FnDecl) !Type {
         var param_types = try self.allocator.alloc(Type, fn_decl.params.len);
-        errdefer self.allocator.free(param_types);
-        try self.allocated_slices.append(self.allocator, param_types);
+        var param_types_tracked = false;
+        errdefer if (!param_types_tracked) self.allocator.free(param_types);
 
         // Count required parameters (those without default values)
         var required_params: usize = 0;
@@ -1140,28 +1150,30 @@ pub const TypeChecker = struct {
         }
 
         const return_type = try self.allocator.create(Type);
-        errdefer self.allocator.destroy(return_type);
-        try self.allocated_types.append(self.allocator, return_type);
+        var return_type_tracked = false;
+        errdefer if (!return_type_tracked) self.allocator.destroy(return_type);
         if (fn_decl.return_type) |rt| {
             return_type.* = try self.parseTypeName(rt);
         } else {
             return_type.* = Type.Void;
         }
+        try self.allocated_types.append(self.allocator, return_type);
+        return_type_tracked = true;
+        try self.allocated_slices.append(self.allocator, param_types);
+        param_types_tracked = true;
 
-        const func_type = Type{
+        return Type{
             .Function = .{
                 .params = param_types,
                 .return_type = return_type,
                 .required_params = required_params,
             },
         };
-
-        try self.env.define(fn_decl.name, func_type);
     }
 
     /// Process an import declaration by loading and parsing the imported module
     /// and registering the imported types/functions in the current environment
-    fn processImport(self: *TypeChecker, import_decl: *const ast.ImportDecl) !void {
+    fn processImport(self: *TypeChecker, import_decl: *const ast.ImportDecl) !?Type {
         // Build module path key for caching
         var path_key = std.ArrayList(u8).empty;
         defer path_key.deinit(self.allocator);
@@ -1170,198 +1182,147 @@ pub const TypeChecker = struct {
             try path_key.appendSlice(self.allocator, segment);
         }
 
-        // Check if already loaded
-        if (self.loaded_modules.contains(path_key.items)) {
-            return;
-        }
-
         // Resolve module file path
-        const file_path = self.resolveModulePath(import_decl.path) catch |err| {
-            // Module not found - register imported names as unknown types to allow checking to continue
-            if (import_decl.imports) |imports| {
-                for (imports) |import_name| {
-                    // Register as a placeholder struct type so type checking can continue
-                    const struct_type = Type{
-                        .Struct = .{
-                            .name = import_name,
-                            .fields = &[_]Type.StructType.Field{},
-                        },
-                    };
-                    self.env.define(import_name, struct_type) catch {};
-                }
-            }
-            return err;
-        };
+        const file_path = try self.resolveModulePath(import_decl.path);
         defer self.allocator.free(file_path);
 
-        // Mark as loaded to prevent circular imports
-        const key_copy = try self.allocator.dupe(u8, path_key.items);
-        try self.loaded_modules.put(key_copy, true);
+        if (!self.loaded_modules.contains(path_key.items)) {
+            const key_copy = try self.allocator.dupe(u8, path_key.items);
+            errdefer self.allocator.free(key_copy);
+            try self.loaded_modules.put(key_copy, true);
+        }
 
         // Read the module source file
-        const io_val = self.io orelse return;
-        const source = Io.Dir.cwd().readFileAlloc(io_val, file_path, self.allocator, .unlimited) catch |err| {
-            // File read error - register imported names as placeholder types
-            if (import_decl.imports) |imports| {
-                for (imports) |import_name| {
-                    const struct_type = Type{
-                        .Struct = .{
-                            .name = import_name,
-                            .fields = &[_]Type.StructType.Field{},
-                        },
-                    };
-                    self.env.define(import_name, struct_type) catch {};
-                }
-            }
-            return err;
-        };
+        const io_val = self.io orelse return error.IoNotInitialized;
+        const source = try Io.Dir.cwd().readFileAlloc(io_val, file_path, self.allocator, .unlimited);
         defer self.allocator.free(source);
 
         // Tokenize
         var lexer = Lexer.init(self.allocator, source);
-        var tokens = lexer.tokenize() catch |err| {
-            if (import_decl.imports) |imports| {
-                for (imports) |import_name| {
-                    const struct_type = Type{
-                        .Struct = .{
-                            .name = import_name,
-                            .fields = &[_]Type.StructType.Field{},
-                        },
-                    };
-                    self.env.define(import_name, struct_type) catch {};
-                }
-            }
-            return err;
-        };
+        var tokens = try lexer.tokenize();
         defer tokens.deinit(self.allocator);
 
         // Parse
-        var parser = Parser.init(self.allocator, tokens.items) catch |err| {
-            if (import_decl.imports) |imports| {
-                for (imports) |import_name| {
-                    const struct_type = Type{
-                        .Struct = .{
-                            .name = import_name,
-                            .fields = &[_]Type.StructType.Field{},
-                        },
-                    };
-                    self.env.define(import_name, struct_type) catch {};
-                }
-            }
-            return err;
-        };
+        var parser = try Parser.init(self.allocator, tokens.items);
+        defer parser.deinit();
 
         // Set source root for module resolution based on the imported file path
         parser.module_resolver.setSourceRoot(file_path) catch {};
 
-        const program = parser.parse() catch |err| {
-            if (import_decl.imports) |imports| {
-                for (imports) |import_name| {
-                    const struct_type = Type{
-                        .Struct = .{
-                            .name = import_name,
-                            .fields = &[_]Type.StructType.Field{},
-                        },
-                    };
-                    self.env.define(import_name, struct_type) catch {};
-                }
-            }
-            return err;
-        };
+        const program = try parser.parse();
+        defer program.deinit(self.allocator);
 
-        // Extract imported types from the module
-        const imported_names: ?[]const []const u8 = import_decl.imports;
+        var namespace_fields = std.ArrayList(Type.StructType.Field).empty;
+        defer namespace_fields.deinit(self.allocator);
 
-        // Collect all exported types from the module
+        // Build a typed namespace from public declarations. Selective imports
+        // additionally bind their requested names directly in the caller.
         for (program.statements) |stmt| {
             switch (stmt) {
                 .StructDecl => |struct_decl| {
-                    // Check if this struct is in the import list (or if no specific imports, import all)
-                    const should_import = if (imported_names) |names| blk: {
-                        for (names) |name| {
-                            if (std.mem.eql(u8, name, struct_decl.name)) {
-                                break :blk true;
-                            }
-                        }
-                        break :blk false;
-                    } else true;
-
-                    if (should_import) {
-                        // Build struct type and register it
-                        var fields = std.ArrayList(Type.StructType.Field).empty;
-                        for (struct_decl.fields) |field| {
-                            const field_type = self.parseTypeName(field.type_name) catch Type.Void;
-                            // Duplicate field name to outlive parser memory
-                            const field_name_copy = self.allocator.dupe(u8, field.name) catch continue;
-                            fields.append(self.allocator, .{
-                                .name = field_name_copy,
-                                .type = field_type,
-                            }) catch {};
-                        }
-                        // Duplicate struct name to outlive parser memory
-                        const struct_name_copy = self.allocator.dupe(u8, struct_decl.name) catch continue;
-                        const struct_type = Type{
-                            .Struct = .{
-                                .name = struct_name_copy,
-                                .fields = fields.toOwnedSlice(self.allocator) catch &[_]Type.StructType.Field{},
-                            },
-                        };
-                        self.env.define(struct_name_copy, struct_type) catch {};
-                    }
+                    if (!struct_decl.is_public) continue;
+                    const exported_type = try self.importedStructType(struct_decl);
+                    try namespace_fields.append(self.allocator, .{
+                        .name = try self.ownString(struct_decl.name),
+                        .type = exported_type,
+                    });
+                    if (importRequested(import_decl.imports, struct_decl.name))
+                        try self.env.define(struct_decl.name, exported_type);
                 },
                 .EnumDecl => |enum_decl| {
-                    const should_import = if (imported_names) |names| blk: {
-                        for (names) |name| {
-                            if (std.mem.eql(u8, name, enum_decl.name)) {
-                                break :blk true;
-                            }
-                        }
-                        break :blk false;
-                    } else true;
-
-                    if (should_import) {
-                        var variants = std.ArrayList(Type.EnumType.Variant).empty;
-                        for (enum_decl.variants) |variant| {
-                            var data_type_val: ?Type = null;
-                            if (variant.data_type) |type_name| {
-                                data_type_val = self.parseTypeName(type_name) catch null;
-                            }
-                            // Duplicate variant name to outlive parser memory
-                            const variant_name_copy = self.allocator.dupe(u8, variant.name) catch continue;
-                            variants.append(self.allocator, .{
-                                .name = variant_name_copy,
-                                .data_type = data_type_val,
-                            }) catch {};
-                        }
-                        // Duplicate enum name to outlive parser memory
-                        const enum_name_copy = self.allocator.dupe(u8, enum_decl.name) catch continue;
-                        const enum_type = Type{
-                            .Enum = .{
-                                .name = enum_name_copy,
-                                .variants = variants.toOwnedSlice(self.allocator) catch &[_]Type.EnumType.Variant{},
-                            },
-                        };
-                        self.env.define(enum_name_copy, enum_type) catch {};
-                    }
+                    if (!enum_decl.is_public) continue;
+                    const exported_type = try self.importedEnumType(enum_decl);
+                    try namespace_fields.append(self.allocator, .{
+                        .name = try self.ownString(enum_decl.name),
+                        .type = exported_type,
+                    });
+                    if (importRequested(import_decl.imports, enum_decl.name))
+                        try self.env.define(enum_decl.name, exported_type);
                 },
                 .FnDecl => |fn_decl| {
-                    const should_import = if (imported_names) |names| blk: {
-                        for (names) |name| {
-                            if (std.mem.eql(u8, name, fn_decl.name)) {
-                                break :blk true;
-                            }
-                        }
-                        break :blk false;
-                    } else true;
-
-                    if (should_import) {
-                        // Build function type and register it
-                        self.collectFunctionSignature(fn_decl) catch {};
-                    }
+                    if (!fn_decl.is_public and !fn_decl.is_exported) continue;
+                    const exported_type = try self.functionTypeFromDecl(fn_decl);
+                    try namespace_fields.append(self.allocator, .{
+                        .name = try self.ownString(fn_decl.name),
+                        .type = exported_type,
+                    });
+                    if (importRequested(import_decl.imports, fn_decl.name))
+                        try self.env.define(fn_decl.name, exported_type);
+                },
+                .LetDecl => |let_decl| {
+                    if (!let_decl.is_public) continue;
+                    const exported_type = if (let_decl.type_name) |type_name|
+                        try self.parseDeclaredType(type_name, let_decl.node.loc)
+                    else
+                        Type.Unknown;
+                    try namespace_fields.append(self.allocator, .{
+                        .name = try self.ownString(let_decl.name),
+                        .type = exported_type,
+                    });
+                    if (importRequested(import_decl.imports, let_decl.name))
+                        try self.env.define(let_decl.name, exported_type);
                 },
                 else => {},
             }
         }
+
+        const fields = try namespace_fields.toOwnedSlice(self.allocator);
+        try self.env.trackAllocation(fields);
+        const namespace_name = import_decl.alias orelse
+            if (import_decl.path.len > 0) import_decl.path[import_decl.path.len - 1] else "module";
+        return Type{ .Struct = .{ .name = namespace_name, .fields = fields } };
+    }
+
+    fn ownString(self: *TypeChecker, value: []const u8) ![]const u8 {
+        const copy = try self.allocator.dupe(u8, value);
+        errdefer self.allocator.free(copy);
+        try self.owned_strings.append(self.allocator, copy);
+        return copy;
+    }
+
+    fn importRequested(imports: ?[]const []const u8, name: []const u8) bool {
+        const requested = imports orelse return false;
+        for (requested) |candidate| {
+            if (std.mem.eql(u8, candidate, name)) return true;
+        }
+        return false;
+    }
+
+    fn importedStructType(self: *TypeChecker, declaration: *const ast.StructDecl) !Type {
+        var fields = std.ArrayList(Type.StructType.Field).empty;
+        defer fields.deinit(self.allocator);
+        for (declaration.fields) |field| {
+            try fields.append(self.allocator, .{
+                .name = try self.ownString(field.name),
+                .type = try self.parseDeclaredType(field.type_name, field.loc),
+            });
+        }
+        const owned_fields = try fields.toOwnedSlice(self.allocator);
+        try self.env.trackAllocation(owned_fields);
+        return Type{ .Struct = .{
+            .name = try self.ownString(declaration.name),
+            .fields = owned_fields,
+        } };
+    }
+
+    fn importedEnumType(self: *TypeChecker, declaration: *const ast.EnumDecl) !Type {
+        var variants = std.ArrayList(Type.EnumType.Variant).empty;
+        defer variants.deinit(self.allocator);
+        for (declaration.variants) |variant| {
+            try variants.append(self.allocator, .{
+                .name = try self.ownString(variant.name),
+                .data_type = if (variant.data_type) |type_name|
+                    try self.parseDeclaredType(type_name, declaration.node.loc)
+                else
+                    null,
+            });
+        }
+        const owned_variants = try variants.toOwnedSlice(self.allocator);
+        try self.env.trackAllocation(owned_variants);
+        return Type{ .Enum = .{
+            .name = try self.ownString(declaration.name),
+            .variants = owned_variants,
+        } };
     }
 
     /// Resolve module path to file path
@@ -3626,6 +3587,31 @@ pub const TypeChecker = struct {
             const object_type = try self.inferExpression(member.object);
             const method_name = member.member;
 
+            // Imported namespaces are represented as typed structs whose
+            // fields are their public exports. If the selected export is a
+            // function, apply the same arity and argument checks as a direct
+            // function call and preserve its return type.
+            if (object_type == .Struct) {
+                for (object_type.Struct.fields) |field| {
+                    if (!std.mem.eql(u8, field.name, method_name) or field.type != .Function) continue;
+                    const function = field.type.Function;
+                    const required = function.required_params orelse function.params.len;
+                    const provided = call.args.len + call.named_args.len;
+                    if (provided < required or provided > function.params.len) {
+                        try self.addError("Wrong number of arguments", call.node.loc);
+                        return error.WrongNumberOfArguments;
+                    }
+                    for (call.args, 0..) |argument, index| {
+                        const actual = try self.inferExpressionWithHint(argument, function.params[index]);
+                        try self.checkExpressionAgainst(argument, function.params[index], actual);
+                    }
+                    for (call.named_args) |named_argument| {
+                        _ = try self.inferExpression(named_argument.value);
+                    }
+                    return function.return_type.*;
+                }
+            }
+
             // Handle String methods
             if (object_type == .String) {
                 // String methods that return bool
@@ -4111,13 +4097,6 @@ pub const TypeChecker = struct {
 
         // Continue with the resolved type below.
         const object_type_resolved = resolved;
-        // Placeholder struct check - must come BEFORE field iteration
-        // Placeholder structs have no fields and are created when imports fail
-        if (object_type_resolved == .Struct and object_type_resolved.Struct.fields.len == 0) {
-            // Placeholder struct - return Void to allow type checking to continue
-            return Type.Void;
-        }
-
         // Enum access already handled above; if we still have one here it's
         // a variant reference, return Void so callers can chain further.
         if (object_type_resolved == .Enum) {

@@ -573,6 +573,7 @@ fn checkFile(allocator: std.mem.Allocator, file_path: []const u8) !bool {
     // Type check with source path for import resolution
     var type_checker = TypeChecker.initWithSourcePath(allocator, program, file_path);
     type_checker.comptime_store = &comptime_store;
+    type_checker.io = g_io;
     defer type_checker.deinit();
 
     std.debug.print("{s}Checking:{s} {s}\n\n", .{ Color.Blue.code(), Color.Reset.code(), file_path });
