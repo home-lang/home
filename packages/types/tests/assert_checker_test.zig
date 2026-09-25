@@ -185,6 +185,23 @@ test "checker rejects unresolved direct calls" {
     ));
 }
 
+test "checker rejects calls to non-function values" {
+    try std.testing.expect(!try checkSource(
+        \\fn run() {
+        \\    let value = 1
+        \\    value()
+        \\}
+    ));
+}
+
+test "checker rejects void struct construction" {
+    try std.testing.expect(!try checkSource(
+        \\fn run() {
+        \\    let value = void {}
+        \\}
+    ));
+}
+
 test "checker rejects unary operators on void" {
     try std.testing.expect(!try checkSource(
         \\fn noop() -> void { return }

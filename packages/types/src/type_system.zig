@@ -3558,6 +3558,11 @@ pub const TypeChecker = struct {
 
                 return func_type.Function.return_type.*;
             }
+
+            const message = try std.fmt.allocPrint(self.allocator, "Value '{s}' is not callable", .{func_name});
+            defer self.allocator.free(message);
+            try self.addError(message, call.node.loc);
+            return Type.Unknown;
         }
 
         // Handle method calls on objects (string methods, struct methods, etc.)
@@ -3619,6 +3624,10 @@ pub const TypeChecker = struct {
                 {
                     return Type.String;
                 }
+                const message = try std.fmt.allocPrint(self.allocator, "String has no method '{s}'", .{method_name});
+                defer self.allocator.free(message);
+                try self.addError(message, call.node.loc);
+                return Type.Unknown;
             }
 
             // Handle Vec/Array methods
@@ -3637,6 +3646,10 @@ pub const TypeChecker = struct {
                 if (std.mem.eql(u8, method_name, "contains")) {
                     return Type.Bool;
                 }
+                const message = try std.fmt.allocPrint(self.allocator, "Array has no method '{s}'", .{method_name});
+                defer self.allocator.free(message);
+                try self.addError(message, call.node.loc);
+                return Type.Unknown;
             }
 
             // Handle common collection methods on any struct type (HashMap, HashSet, etc.)
@@ -4160,15 +4173,6 @@ pub const TypeChecker = struct {
                 _ = try self.inferExpression(field.value);
             }
             return parsed_type;
-        }
-
-        // For Void (unknown/generic types like HashMap<K,V>), allow to pass through
-        // This happens with generic collection types that we don't have full type info for
-        if (parsed_type == .Void) {
-            for (struct_lit.fields) |field| {
-                _ = try self.inferExpression(field.value);
-            }
-            return Type.Void;
         }
 
         // Otherwise, report unknown type

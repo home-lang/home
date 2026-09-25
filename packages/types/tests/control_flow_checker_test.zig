@@ -313,3 +313,20 @@ test "checker rejects missing enum variant constructors" {
         \\}
     ));
 }
+
+test "checker rejects unknown string methods" {
+    try std.testing.expect(!try checkSource(
+        \\fn run() {
+        \\    "value".missing()
+        \\}
+    ));
+}
+
+test "checker rejects unknown array methods" {
+    try std.testing.expect(!try checkSource(
+        \\fn run() {
+        \\    let values = [1, 2]
+        \\    values.missing()
+        \\}
+    ));
+}
