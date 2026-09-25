@@ -1497,14 +1497,18 @@ pub const TypeChecker = struct {
                 // Handle tuple destructuring: let (a, b, c) = tuple_expr
                 const value_type = try self.inferExpression(decl.value);
 
-                // If value is a tuple type, extract element types
-                // For now, just define all names with Void type (unknown)
-                // since we don't have full tuple type tracking
-                for (decl.names) |name| {
-                    // Ideally we'd extract the element type from the tuple
-                    // For now, use Void (any type) to allow type checking to continue
-                    try self.env.define(name, Type.Void);
-                    try self.ownership_tracker.define(name, Type.Void, decl.node.loc);
+                if (value_type != .Tuple) {
+                    try self.addError("Tuple destructuring requires a tuple value", decl.node.loc);
+                    return error.TypeMismatch;
+                }
+                if (value_type.Tuple.element_types.len != decl.names.len) {
+                    try self.addError("Tuple destructuring binding count does not match tuple length", decl.node.loc);
+                    return error.TypeMismatch;
+                }
+
+                for (decl.names, value_type.Tuple.element_types) |name, element_type| {
+                    try self.env.define(name, element_type);
+                    try self.ownership_tracker.define(name, element_type, decl.node.loc);
                 }
 
                 // Mark original value as moved if applicable
@@ -1512,7 +1516,6 @@ pub const TypeChecker = struct {
                     const id_name = decl.value.Identifier.name;
                     try self.ownership_tracker.markMoved(id_name);
                 }
-                _ = value_type; // Used for type checking, not needed after
             },
             .FnDecl => |fn_decl| {
                 const previous_return_type = self.current_function_return_type;
@@ -3042,8 +3045,10 @@ pub const TypeChecker = struct {
 
         return switch (binary.op) {
             .Add => {
-                // String concatenation with + operator
-                if (left_type.equals(Type.String) or right_type.equals(Type.String)) {
+                // String concatenation requires two strings. Accepting either
+                // operand as a string silently converted mixed tuples such as
+                // `(1, "s")` after destructuring.
+                if (left_type.equals(Type.String) and right_type.equals(Type.String)) {
                     return Type.String;
                 }
                 // Allow Void (unknown) types - assume numeric

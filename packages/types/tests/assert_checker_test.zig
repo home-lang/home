@@ -77,3 +77,12 @@ test "checker keeps void as the unit return type" {
         \\}
     ));
 }
+
+test "checker accepts compatible destructured tuple elements" {
+    try std.testing.expect(try checkSource(
+        \\fn add() -> int {
+        \\    let (left, right) = (1, 2)
+        \\    return left + right
+        \\}
+    ));
+}

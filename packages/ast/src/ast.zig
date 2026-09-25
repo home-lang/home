@@ -2623,6 +2623,7 @@ pub const Program = struct {
             },
             .TupleDestructureDecl => |td| {
                 deinitExpr(td.value, allocator);
+                allocator.free(td.names);
                 allocator.destroy(td);
             },
             .BreakStmt => |bs| allocator.destroy(bs),

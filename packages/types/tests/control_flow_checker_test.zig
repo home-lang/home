@@ -82,3 +82,20 @@ test "checker rejects an unresolved declared type" {
         \\}
     ));
 }
+
+test "checker preserves tuple element types during destructuring" {
+    try std.testing.expect(!try checkSource(
+        \\fn run() {
+        \\    let (number, text) = (1, "s")
+        \\    number + text
+        \\}
+    ));
+}
+
+test "checker rejects tuple destructuring arity mismatches" {
+    try std.testing.expect(!try checkSource(
+        \\fn run() {
+        \\    let (first, second) = (1, 2, 3)
+        \\}
+    ));
+}
