@@ -2275,10 +2275,7 @@ pub const TypeChecker = struct {
             // (matches Home's existing kernel convention). Any other
             // integer value would be suspicious in a pointer init.
             if (expr.IntegerLiteral.value == 0) {
-                // Field-access into Void passes through permissively,
-                // pointer types are modeled either via Reference or as
-                // Void in imported namespaces — accept both here.
-                if (expected == .Reference or expected == .MutableReference or expected == .Void) {
+                if (expected == .Reference or expected == .MutableReference) {
                     return;
                 }
             }
@@ -2326,7 +2323,7 @@ pub const TypeChecker = struct {
         // C-style string storage.
         if (expr.* == .StringLiteral) {
             if (expected == .Reference or expected == .MutableReference or
-                expected == .U64 or expected == .I64 or expected == .Void)
+                expected == .U64 or expected == .I64)
             {
                 return;
             }
@@ -2339,7 +2336,7 @@ pub const TypeChecker = struct {
             // accepted.
             if (expected == .Array) {
                 const elem = expected.Array.element_type.*;
-                if (elem == .U8 or elem == .I8 or elem == .Int or elem == .Void) {
+                if (elem == .U8 or elem == .I8 or elem == .Int) {
                     return;
                 }
             }
@@ -2460,7 +2457,7 @@ pub const TypeChecker = struct {
         if (pattern.* == .StringLiteral) {
             if (value_type == .Array) {
                 const elem = value_type.Array.element_type.*;
-                if (elem == .U8 or elem == .I8 or elem == .Int or elem == .Void) {
+                if (elem == .U8 or elem == .I8 or elem == .Int) {
                     return true;
                 }
             }
@@ -2571,8 +2568,9 @@ pub const TypeChecker = struct {
             if (from_elem.equals(to_elem)) return true;
             if (isIntegerType(from_elem) and isIntegerType(to_elem)) return true;
             if (isFloatType(from_elem) and isFloatType(to_elem)) return true;
-            // Unknown/void element is a wildcard.
-            if (from_elem == .Void or to_elem == .Void) return true;
+            // An unknown nested element suppresses a follow-on mismatch;
+            // void remains the concrete unit element type.
+            if (from_elem == .Unknown or to_elem == .Unknown) return true;
         }
         // String literal → byte-array slice (`[]u8`, `[]const u8`).
         // Kernel string-handling helpers declare their input as a u8
@@ -2582,7 +2580,7 @@ pub const TypeChecker = struct {
         // even though the runtime layout is identical.
         if (from == .String and to == .Array) {
             const to_elem = to.Array.element_type.*;
-            if (to_elem == .U8 or to_elem == .I8 or to_elem == .Void) return true;
+            if (to_elem == .U8 or to_elem == .I8 or to_elem == .Unknown) return true;
         }
         return false;
     }
@@ -2688,7 +2686,7 @@ pub const TypeChecker = struct {
         // element either coerces to it or generates an error.
         for (array.elements) |elem| {
             const elem_t = try self.inferExpressionWithHint(elem, elem_hint);
-            if (elem_t == .Void or elem_t.equals(elem_hint.?) or
+            if (elem_t == .Unknown or elem_t.equals(elem_hint.?) or
                 canCoerce(elem_t, elem_hint.?))
             {
                 continue;
@@ -2730,7 +2728,7 @@ pub const TypeChecker = struct {
             const else_t = self.inferExpressionWithHint(ie.else_branch, dest) catch {
                 return then_t;
             };
-            if (!then_t.equals(else_t) and then_t != .Void and else_t != .Void and
+            if (!then_t.equals(else_t) and then_t != .Unknown and else_t != .Unknown and
                 !canCoerce(then_t, else_t) and !canCoerce(else_t, then_t))
             {
                 try self.addError("if-expression branches have different types", ie.node.loc);
@@ -2765,7 +2763,7 @@ pub const TypeChecker = struct {
             return then_raw;
         }
 
-        if (!then_raw.equals(else_raw) and then_raw != .Void and else_raw != .Void and
+        if (!then_raw.equals(else_raw) and then_raw != .Unknown and else_raw != .Unknown and
             !canCoerce(then_raw, else_raw) and !canCoerce(else_raw, then_raw))
         {
             try self.addError("if-expression branches have different types", ie.node.loc);

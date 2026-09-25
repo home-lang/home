@@ -256,3 +256,31 @@ test "checker rejects void member and safe navigation access" {
         \\}
     ));
 }
+
+test "checker rejects void in if expression joins" {
+    try std.testing.expect(!try checkSource(
+        \\fn noop() -> void { return }
+        \\fn run() {
+        \\    let value = if true then noop() else 1
+        \\}
+    ));
+}
+
+test "checker rejects void in typed array literals" {
+    try std.testing.expect(!try checkSource(
+        \\fn noop() -> void { return }
+        \\fn run() {
+        \\    let values: [i32] = [noop(), 1]
+        \\}
+    ));
+}
+
+test "checker does not coerce arrays of void" {
+    try std.testing.expect(!try checkSource(
+        \\fn noop() -> void { return }
+        \\fn run() {
+        \\    let units = [noop()]
+        \\    let values: [i32] = units
+        \\}
+    ));
+}

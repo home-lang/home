@@ -137,6 +137,15 @@ test "checker rejects void function arguments" {
     ));
 }
 
+test "checker rejects non-unit values assigned to void" {
+    try std.testing.expect(!try checkSource(
+        \\fn run() {
+        \\    let text: void = "not unit"
+        \\    let zero: void = 0
+        \\}
+    ));
+}
+
 test "checker suppresses cascades with unknown rather than void" {
     try std.testing.expect(!try checkSource(
         \\fn run() {
