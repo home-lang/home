@@ -989,9 +989,10 @@ pub const NativeCodegen = struct {
             self.enum_layouts.deinit();
         }
 
-        // Free string_offsets (keys point to AST memory, not allocated)
+        // string_offsets keys alias the owned entries in string_literals.
         self.string_offsets.deinit();
 
+        for (self.string_literals.items) |literal| self.allocator.free(literal);
         self.string_literals.deinit(self.allocator);
         self.string_fixups.deinit(self.allocator);
 
@@ -1292,9 +1293,16 @@ pub const NativeCodegen = struct {
             offset += existing_str.len + 1; // +1 for null terminator
         }
 
-        // Store the string and its offset
-        try self.string_literals.append(self.allocator, str);
-        try self.string_offsets.put(str, offset);
+        // Own one canonical copy. Callers may pass AST-backed slices or
+        // temporary formatter buffers; neither is guaranteed to outlive the
+        // codegen pass and both must follow the same deallocation path.
+        const owned = try self.allocator.dupe(u8, str);
+        errdefer self.allocator.free(owned);
+        try self.string_literals.append(self.allocator, owned);
+        self.string_offsets.put(owned, offset) catch |err| {
+            self.string_literals.items.len -= 1;
+            return err;
+        };
 
         return offset;
     }
@@ -2131,6 +2139,14 @@ pub const NativeCodegen = struct {
                 // Compare
                 const cmp_reg = if (needs_save) saved_reg else value_reg;
                 try self.assembler.cmpRegReg(cmp_reg, .rdx);
+                try self.emitCmpResult();
+            },
+            .BooleanLiteral => |bool_lit| {
+                const needs_save = value_reg == .rcx or value_reg == .rdx;
+                const saved_reg: x64.Register = if (value_reg == .rcx) .r11 else .r12;
+                if (needs_save) try self.assembler.movRegReg(saved_reg, value_reg);
+                try self.assembler.movRegImm64(.rdx, if (bool_lit.value) 1 else 0);
+                try self.assembler.cmpRegReg(if (needs_save) saved_reg else value_reg, .rdx);
                 try self.emitCmpResult();
             },
             .Identifier => |ident| {
@@ -5817,6 +5833,7 @@ pub const NativeCodegen = struct {
         // hand ownership of the dupe to string_literals for the lifetime of
         // the codegen pass — registerStringLiteral stores the slice directly.
         const buf = try std.fmt.allocPrint(self.allocator, "{s}\n", .{message});
+        defer self.allocator.free(buf);
         try self.emitWriteStderrStaticBuf(buf);
 
         // exit(101) — matches Rust's panic exit code.
@@ -5851,13 +5868,11 @@ pub const NativeCodegen = struct {
         try self.assembler.syscall();
     }
 
-    /// Convenience: emit a static string literal (by dup-ing it) and write
-    /// it to stderr. Use this for short constant fragments that appear at
-    /// exactly one panic site.
+    /// Convenience: register a static string literal and write it to stderr.
+    /// registerStringLiteral owns the canonical copy.
     fn emitWriteStderrStatic(self: *NativeCodegen, msg: []const u8) !void {
         if (msg.len == 0) return;
-        const owned = try self.allocator.dupe(u8, msg);
-        try self.emitWriteStderrStaticBuf(owned);
+        try self.emitWriteStderrStaticBuf(msg);
     }
 
     /// Emit write(2, <nul-terminated C string pointed to by rax>, strlen).
@@ -10421,6 +10436,16 @@ pub const NativeCodegen = struct {
                     const next_offset = @as(i32, @intCast(next_arm_pos)) - @as(i32, @intCast(next_arm_jump + 6));
                     try self.assembler.patchJzRel32(next_arm_jump, next_offset);
                 }
+
+                // Reaching this point means every arm rejected the value (or
+                // a matching arm's guard rejected it). A match expression has
+                // no legitimate default value, so never let the final failed
+                // pattern's zero in rax masquerade as the expression result.
+                // Successful arms jump over this non-returning panic below.
+                try self.assembler.pushReg(.r10);
+                try self.emitRuntimePanicWithOperand(
+                    "panic: non-exhaustive match expression: no arm matched value ",
+                );
 
                 // Patch all "end of match" jumps
                 const match_end = self.assembler.getPosition();
