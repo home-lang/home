@@ -126,3 +126,22 @@ test "checker enforces closure return annotations" {
         \\}
     ));
 }
+
+test "checker rejects void function arguments" {
+    try std.testing.expect(!try checkSource(
+        \\fn consume(value: i32) {}
+        \\fn noop() -> void { return }
+        \\fn run() {
+        \\    consume(noop())
+        \\}
+    ));
+}
+
+test "checker suppresses cascades with unknown rather than void" {
+    try std.testing.expect(!try checkSource(
+        \\fn run() {
+        \\    let value: Missing = 1
+        \\    let result = value + 1
+        \\}
+    ));
+}

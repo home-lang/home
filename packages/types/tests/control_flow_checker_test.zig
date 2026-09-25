@@ -218,3 +218,21 @@ test "checker hides non-public import alias members" {
         \\}
     ));
 }
+
+test "checker rejects arithmetic with a void value" {
+    try std.testing.expect(!try checkSource(
+        \\fn noop() -> void { return }
+        \\fn run() {
+        \\    let value = noop() + 1
+        \\}
+    ));
+}
+
+test "checker rejects void as a condition" {
+    try std.testing.expect(!try checkSource(
+        \\fn noop() -> void { return }
+        \\fn run() {
+        \\    if noop() {}
+        \\}
+    ));
+}

@@ -1395,10 +1395,9 @@ pub const TypeChecker = struct {
                     // One un-inferable `let` produced fifteen errors in
                     // home-os's vmm.home, none of them at the real cause.
                     //
-                    // Void is this checker's "unknown", and it already treats
-                    // Void as compatible with everything (see
-                    // checkExpressionAgainst), so an un-typed binding degrades
-                    // to gradual typing instead of cascading.
+                    // Failed synthesis binds Unknown after the primary
+                    // diagnostic so later uses do not cascade. Void remains
+                    // the real unit type and is never an error placeholder.
                     const value_type = if (decl.type_name) |type_name| blk: {
                         const declared_type = try self.parseDeclaredType(type_name, decl.node.loc);
                         // CHECK mode: propagate the declared type as a
@@ -1415,7 +1414,7 @@ pub const TypeChecker = struct {
                         break :blk declared_type;
                     } else blk: {
                         // SYNTHESIS mode: infer type from value.
-                        break :blk self.synthesizeExpression(value) catch Type.Void;
+                        break :blk self.synthesizeExpression(value) catch Type.Unknown;
                     };
 
                     // If the value is an identifier, mark it as moved (if movable)
@@ -1590,11 +1589,12 @@ pub const TypeChecker = struct {
                 }
             },
             .IfStmt => |if_stmt| {
-                // Check condition is boolean, optional, Void (unknown),
+                // Check condition is boolean, optional, or unknown after a
+                // primary diagnostic,
                 // or any integer/reference type. Kernel code uses
                 // C-style `if (flag)` and `if (count)` pervasively.
                 const cond_type = try self.inferExpression(if_stmt.condition);
-                const cond_ok = cond_type == .Void or cond_type.equals(Type.Bool) or
+                const cond_ok = cond_type == .Unknown or cond_type.equals(Type.Bool) or
                     cond_type == .Optional or isIntegerType(cond_type) or
                     cond_type == .Reference or cond_type == .MutableReference;
                 if (!cond_ok) {
@@ -2417,12 +2417,10 @@ pub const TypeChecker = struct {
         pattern_type: Type,
         value_type: Type,
     ) bool {
-        // Gradual-typing escape hatch: when the switch value or
-        // pattern carries an unknown / `Void` type (e.g. an
-        // unresolved field access into an imported namespace), don't
-        // block the rest of the type-check. Mirrors the
-        // `actual == .Void` policy in `checkExpressionAgainst`.
-        if (value_type == .Void or pattern_type == .Void) return true;
+        // Suppress follow-on pattern errors only for the dedicated Unknown
+        // type after its primary diagnostic. Unit values are not patterns for
+        // arbitrary matched values.
+        if (value_type == .Unknown or pattern_type == .Unknown) return true;
 
         // Fast path: types already match.
         if (pattern_type.equals(value_type)) return true;
@@ -3334,6 +3332,7 @@ pub const TypeChecker = struct {
     fn inferBinaryExpression(self: *TypeChecker, binary: *const ast.BinaryExpr) TypeError!Type {
         const left_type = try self.inferExpression(binary.left);
         const right_type = try self.inferExpression(binary.right);
+        if (left_type == .Unknown or right_type == .Unknown) return Type.Unknown;
 
         return switch (binary.op) {
             .Add => {
@@ -3342,10 +3341,6 @@ pub const TypeChecker = struct {
                 // `(1, "s")` after destructuring.
                 if (left_type.equals(Type.String) and right_type.equals(Type.String)) {
                     return Type.String;
-                }
-                // Allow Void (unknown) types - assume numeric
-                if (left_type == .Void or right_type == .Void) {
-                    return Type.Void;
                 }
                 // Pointer + integer = pointer (C/Zig pointer arithmetic).
                 // Kernel code routinely advances raw pointers by an
@@ -3390,10 +3385,6 @@ pub const TypeChecker = struct {
                     return Type.Int;
                 } else if (isFloatType(left_type) or isFloatType(right_type)) {
                     return Type.Float;
-                } else if (left_type == .Void or right_type == .Void) {
-                    // Allow Void (unknown) types in arithmetic - assume numeric
-                    // This handles tuple destructuring where element types are unknown
-                    return Type.Void;
                 } else {
                     try self.addError("Arithmetic operation requires numeric types", binary.node.loc);
                     return error.TypeMismatch;
@@ -3401,10 +3392,6 @@ pub const TypeChecker = struct {
             },
             .Equal, .NotEqual, .Less, .LessEq, .Greater, .GreaterEq => Type.Bool,
             .And, .Or => {
-                // Allow Void (unknown) types - assume boolean
-                if (left_type == .Void or right_type == .Void) {
-                    return Type.Bool;
-                }
                 if (!left_type.equals(Type.Bool) or !right_type.equals(Type.Bool)) {
                     try self.addError("Logical operation requires boolean types", binary.node.loc);
                     return error.TypeMismatch;
@@ -3412,10 +3399,6 @@ pub const TypeChecker = struct {
                 return Type.Bool;
             },
             .BitAnd, .BitOr, .BitXor, .LeftShift, .RightShift => {
-                // Allow Void (unknown) types - assume integer
-                if (left_type == .Void or right_type == .Void) {
-                    return Type.Int;
-                }
                 // Use isIntegerType to support sized integers (i32, u32, etc.)
                 if (!isIntegerType(left_type) or !isIntegerType(right_type)) {
                     try self.addError("Bitwise operation requires integer types", binary.node.loc);
@@ -3549,8 +3532,8 @@ pub const TypeChecker = struct {
                             }
                         }
                         const arg_type = try self.inferExpressionWithHint(arg, param_hint);
-                        // Allow Void (unknown/inferred type) to match any expected type
-                        // This handles cases where .get() returns unknown type from generic collections.
+                        // Unknown suppresses a follow-on mismatch after its
+                        // primary diagnostic. Void is a concrete unit value.
                         // Also allow String → integer/pointer coercion for kernel
                         // string literals passed to C-style `*u8` / `u64` parameters.
                         const is_string_to_pointer_like =
@@ -3559,7 +3542,7 @@ pub const TypeChecker = struct {
                                 expected_params[i] == .Reference or expected_params[i] == .MutableReference);
                         const is_integer_literal_slack =
                             arg.* == .IntegerLiteral and isIntegerType(expected_params[i]);
-                        if (arg_type != .Void and expected_params[i] != .Void and
+                        if (arg_type != .Unknown and expected_params[i] != .Unknown and
                             !arg_type.equals(expected_params[i]) and !canCoerce(arg_type, expected_params[i]) and
                             !is_string_to_pointer_like and !is_integer_literal_slack)
                         {
