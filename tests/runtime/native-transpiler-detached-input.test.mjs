@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict'
+import { basename } from 'node:path'
+
+assert.match(basename(process.execPath), /^home(?:-(?:debug|release-(?:safe|fast|small)))?(?:\.exe)?$/)
 
 const transpiler = new Bun.Transpiler({ loader: 'js' })
 const size = 1 << 20

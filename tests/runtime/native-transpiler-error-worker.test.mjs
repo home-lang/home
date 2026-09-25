@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict'
 import { once } from 'node:events'
+import { basename } from 'node:path'
 import { Worker } from 'node:worker_threads'
+
+assert.match(basename(process.execPath), /^home(?:-(?:debug|release-(?:safe|fast|small)))?(?:\.exe)?$/)
 
 const withTimeout = async (promise, label) => {
   let timeout
