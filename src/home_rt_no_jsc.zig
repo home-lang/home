@@ -22,6 +22,13 @@ pub const StackCheck = struct {
     pub fn configureThread() void {}
 };
 
+/// Output configuration belongs to the JSC runtime in full builds. Native-only
+/// compiler builds still call it during process startup, where no setup is
+/// required because all diagnostics use `std.debug.print` directly.
+pub const Output = struct {
+    pub fn configure() void {}
+};
+
 pub fn dupeZ(allocator: std.mem.Allocator, comptime T: type, value: []const T) std.mem.Allocator.Error![:0]T {
     const result = try allocator.allocSentinel(T, value.len, 0);
     @memcpy(result, value);
