@@ -8,7 +8,11 @@
 // first and skips gracefully on non-JSC targets). Exits 0 iff every assertion
 // passes; exits 1 on the first failure or on a watchdog timeout.
 
+const assert = require("node:assert/strict");
+const { basename } = require("node:path");
 const http2 = require("node:http2");
+
+assert.match(basename(process.execPath), /^home(?:-(?:debug|release-(?:safe|fast|small)))?(?:\.exe)?$/);
 
 let failures = 0;
 let pending = 0;
