@@ -215,14 +215,13 @@ through the bootstrap harness — wiring the realm into those is the next
 convergence step (see [Bun parity plan](/docs/BUN_PARITY_PLAN)).
 
 `home build app.ts -o app` (and the equivalent JS/JSX/TSX module extensions)
-now creates a self-contained host executable through LLVM. LLVM compiles the
-native launcher, while the binary embeds the entry source and Home's own
-JavaScriptCore runtime so JavaScript semantics remain faithful to the runtime.
-Arguments and exit status are forwarded to the entrypoint. This first slice is
-single-entrypoint; bundling imported files and cross-target builds remain part
-of the standalone module-graph work. Native JS/TS builds currently require a
-JavaScriptCore-enabled Home compiler plus LLVM/Clang on `PATH`, and are
-available on arm64 and x86-64 macOS/Linux hosts.
+routes through the native bundler and emits a standalone executable containing
+the bundled module graph. The graph runs in Home's JavaScriptCore runtime; this
+is deliberately **not** described as TypeScript-to-machine-code lowering.
+Arguments and exit status are forwarded to the entrypoint. The bundled path is
+covered by the runtime's
+[`bundler_compile.test.ts`](https://github.com/home-lang/home/blob/main/packages/runtime/test/test/bundler/bundler_compile.test.ts);
+the remaining cross-target matrix is still in progress.
 
 | Measurement | Coverage | % |
 |---|---|---|
@@ -255,7 +254,7 @@ Bun's `test/` corpus must pass **100% with no skips** once feature-complete.
 | 12.8 — `home test` runner | `test/` | 🚧 blocked on 12.2 |
 | 12.9 — Pantry integration | `install/` | 🚧 scaffold in progress |
 | 12.10 — CLI surface | `cli/` | 🚧 scaffold landed |
-| 12.11 — Cross-compile + bundles | `build/` | 🚧 not started |
+| 12.11 — Cross-compile + bundles | `build/` | 🟡 bundled standalone module graphs landed; cross-target matrix incomplete |
 
 ## Bun compatibility shim (`packages/compat/`)
 
@@ -392,7 +391,7 @@ cross-file interner search.
 | x86-64 native codegen | 🚧 Substantial (primary target) |
 | arm64 codegen | 🚧 In progress (Path B-lite M1-M11 shipped) |
 | WebAssembly codegen | 🚧 Stub |
-| LLVM backend | 🚧 JS/TS native launcher shipped; Home AST lowering in progress |
+| LLVM backend | 🚧 legacy launcher only; not the native bundler path and not TypeScript AOT |
 | ELF object emission | 🚧 In progress |
 | Mach-O object emission | 🚧 In progress |
 

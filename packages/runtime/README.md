@@ -104,13 +104,21 @@ packages while the execution engine is still blocked.
 | 12.8 | `test/` runner | `src/test/` | 🔴 blocked on 12.2 |
 | 12.9 | Pantry CLI integration | `src/install/pantry.zig` | 🟡 scaffold in progress |
 | 12.10 | CLI surface | `src/cli/` | 🟡 scaffold landed |
-| 12.11 | Cross-compile + single-file builds | `src/build/` | 🔴 not started |
+| 12.11 | Cross-compile + standalone builds | `src/build/` | 🟡 bundled standalone module graphs landed; cross-target matrix incomplete |
 
-While the JS-callable JSC bridge isn't wired up yet, the Home CLI surface (`home run`, `home test`, `home add`, `home x`) is exposed today via a delegation shim that calls into pantry / the system Bun runtime. This is intentional scaffolding — every delegation site has a `TODO(phase-12-N)` marker in `src/main.zig` so progressive replacement is mechanical.
+The JS-callable JSC bridge is live for native eval/run and standalone builds.
+The default `home run` path and parts of `home test`, `home add`, and `home x`
+still use bootstrap/delegation paths while their native replacements converge;
+the current split is tracked in
+[`PARITY-STATUS.md`](../../docs/docs/PARITY-STATUS.md#bun-runtime-port-packagesruntime).
 
 ## Building
 
-The runtime package is wired into the Home build. Substrate + JSC milestones M1-M6 currently compile and pass their inline tests; the runtime won't actually run JS / TS until the JS-callable JSC bridge is wired up. Verification today:
+The runtime package is wired into the Home build, and the JS-callable JSC bridge
+runs JS/TS for native eval/run and bundled standalone executables. This is a
+runtime-hosted path, not TypeScript AOT. Standalone behavior is exercised by
+[`bundler_compile.test.ts`](https://github.com/home-lang/home/blob/main/packages/runtime/test/test/bundler/bundler_compile.test.ts).
+Verification today:
 
 ```sh
 ./pantry/.bin/zig build --summary all        # Pantry Zig 0.17.0-dev.263+0add2dfc4

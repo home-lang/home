@@ -1,9 +1,10 @@
 //! HIR — High-level Intermediate Representation.
 //!
 //! Per TS_PARITY_PLAN §5.2 ("the single most important data-structure
-//! decision"). HIR is the shared IR consumed by both the Home and TS
-//! frontends after binding, and produced for the type checker, JS
-//! emitter, declaration emitter, and native codegen.
+//! decision"). HIR is the shared IR for the TypeScript parser, binder,
+//! checker, emitter, LSP, and Program graph. Home's native code generators
+//! still consume `ast` directly; HIR-to-native lowering is tracked in #800
+//! and is not implemented yet.
 //!
 //! Layout: struct-of-arrays.
 //!

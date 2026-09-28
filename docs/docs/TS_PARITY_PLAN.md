@@ -3337,9 +3337,14 @@ This is the substance of "more performant than tsgo." Beating tsgo by 2–3× re
 | SIMD | Limited; goroutine pool overhead | First-class `@Vector(N, u8)` | 3–5× lex throughput |
 | Inlining | Whole-program | LLVM/comptime per call site | Hot loops 1.5–2× faster |
 | Per-phase memory cap | GC heap bound only | Per-arena hard cap | Predictable memory behavior |
-| Native AOT | N/A | Real, ships TS→x64 | Differentiator |
+| Native AOT | N/A | 🚧 HIR→native lowering is not wired; current JS/TS standalones embed JSC | Planned differentiator ([#800](https://github.com/home-lang/home/issues/800)) |
 
 These are *individually small* wins that compound. The cache-locality win on the type-checker hot path alone is plausibly 1.5–2× by itself.
+
+The HIR currently serves the TypeScript parser, binder, checker, emitter, LSP,
+and Program graph. Home's native code generators still consume the Home AST;
+the runtime's JS/TS standalone path bundles a module graph into a JSC host. It
+does not lower checked TypeScript to machine code yet.
 
 ### 5.2 The AST/HIR layout (the single most important data-structure decision)
 

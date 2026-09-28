@@ -727,7 +727,7 @@ Conservative on purpose: anything not exercised by an example or a test stays
 | TypeScript conformance (coarse + byte-exact) | 5,907 / 5,907 — 100% | [TypeScript parity](https://home-lang.org/docs/PARITY-TYPESCRIPT) |
 | TypeScript diagnostic codes emitted | 1,620 / 2,079; **0 reachable targets left** | [Diagnostic reachability](https://home-lang.org/docs/TS_DIAGNOSTIC_REACHABILITY) |
 | Language server methods routed | 76 / ~80 | [Parity status](https://home-lang.org/docs/PARITY-STATUS#lsp--ide-coverage--home-lsp-vs-tsserver) |
-| Native codegen | Maturing — single-entrypoint LLVM builds work | [Parity status](https://home-lang.org/docs/PARITY-STATUS#codegen-targets) |
+| Native codegen | 🚧 Home AST→native is maturing; JS/TS standalones run bundled graphs in JSC, not TS→native lowering | [Codegen tests](https://github.com/home-lang/home/blob/main/packages/codegen/tests/codegen_test.zig) · [standalone tests](https://github.com/home-lang/home/blob/main/packages/runtime/test/test/bundler/bundler_compile.test.ts) |
 | Bun runtime port | 552 / 1,193 files integrated | [Bun parity](https://home-lang.org/docs/PARITY-BUN) |
 | `node:*` modules JS-callable | 24 / 47 (partial surfaces) | [Node.js parity](https://home-lang.org/docs/PARITY-NODE) |
 | Compiler test suite | ~8,415 tests | [Parity status](https://home-lang.org/docs/PARITY-STATUS) |
