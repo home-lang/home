@@ -16,7 +16,6 @@ const JSEntrypointLLVM = codegen_mod.JSEntrypointLLVM;
 const TypeChecker = @import("types").TypeChecker;
 const comptime_mod = @import("comptime");
 const ComptimeValueStore = comptime_mod.integration.ComptimeValueStore;
-const ComptimeExecutor = comptime_mod.ComptimeExecutor;
 const Formatter = @import("formatter").Formatter;
 const DiagnosticReporter = @import("diagnostics").DiagnosticReporter;
 const EnhancedReporter = @import("diagnostics").enhanced_reporter.EnhancedReporter;
@@ -3493,23 +3492,10 @@ fn buildCommand(allocator: std.mem.Allocator, options: BuildCliOptions) !void {
     // Register source file for better error reporting
     try enhanced_reporter.registerSource(file_path, source);
 
-    // Compile-time evaluation pass (unless disabled or kernel mode)
-    if (!options.kernel_mode) {
-        std.debug.print("{s}Evaluating comptime blocks...{s}\n", .{ Color.Cyan.code(), Color.Reset.code() });
-
-        var comptime_executor = try ComptimeExecutor.init(allocator);
-        defer comptime_executor.deinit();
-
-        // Note: Comptime evaluation happens during type checking for now
-        // The ComptimeExecutor is prepared and will be used by the type checker
-        // to evaluate comptime blocks and expressions as needed
-
-        std.debug.print("{s}Comptime executor initialized ✓{s}\n", .{ Color.Green.code(), Color.Reset.code() });
-    }
-
     // Type checking is a correctness gate for every Home build, including
-    // kernels. The opt-out is explicit so ordinary builds cannot silently
-    // generate an executable from an invalid program.
+    // kernels. It also evaluates comptime expressions into `comptime_store`
+    // for native codegen. The opt-out is explicit so ordinary builds cannot
+    // silently generate an executable from an invalid program.
     std.debug.print("{s}Type checking...{s}\n", .{ Color.Cyan.code(), Color.Reset.code() });
 
     var type_checker = TypeChecker.initWithSourcePath(allocator, program, file_path);
@@ -3675,6 +3661,7 @@ fn buildCommand(allocator: std.mem.Allocator, options: BuildCliOptions) !void {
             var codegen = Aarch64NativeCodegen.init(allocator, program);
             defer codegen.deinit();
             codegen.io = g_io;
+            codegen.comptime_store = &comptime_store;
 
             codegen.writeExecutable(out_path) catch |err| {
                 if (codegen.io) |cio| {

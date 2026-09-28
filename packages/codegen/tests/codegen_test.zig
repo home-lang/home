@@ -3,6 +3,8 @@ const testing = std.testing;
 const codegen = @import("codegen");
 const Lexer = @import("lexer").Lexer;
 const Parser = @import("parser").Parser;
+const TypeChecker = @import("types").TypeChecker;
+const ComptimeValueStore = @import("comptime").integration.ComptimeValueStore;
 
 test "codegen: x64 assembler creation" {
     const allocator = testing.allocator;
@@ -237,4 +239,57 @@ test "codegen: unmatched match expression executable exits instead of returning 
     }
     try testing.expectEqual(std.process.Child.Term{ .exited = 101 }, result.term);
     try testing.expect(std.mem.indexOf(u8, result.stderr, codegen.match_expression_fallthrough_panic) != null);
+}
+
+test "codegen: comptime values are evaluated before native emission" {
+    const allocator = testing.allocator;
+    const source =
+        \\fn main() -> i32 {
+        \\    return comptime 6 * 7
+        \\}
+    ;
+    var lexer = Lexer.init(allocator, source);
+    var tokens = try lexer.tokenize();
+    defer tokens.deinit(allocator);
+    var parser = try Parser.init(allocator, tokens.items);
+    defer parser.deinit();
+    const program = try parser.parse();
+    defer program.deinit(allocator);
+
+    var comptime_store = ComptimeValueStore.init(allocator);
+    defer comptime_store.deinit();
+    var checker = TypeChecker.initWithComptime(allocator, program, &comptime_store);
+    defer checker.deinit();
+    const type_check_passed = try checker.check();
+    if (!type_check_passed) {
+        for (checker.errors.items) |type_error| {
+            std.debug.print("comptime type error: {s} at {d}:{d}\n", .{
+                type_error.message,
+                type_error.loc.line,
+                type_error.loc.column,
+            });
+        }
+    }
+    try testing.expect(type_check_passed);
+    try testing.expectEqual(@as(usize, 1), comptime_store.values.count());
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    defer allocator.free(dir_path);
+    const executable_path = try std.fs.path.join(allocator, &.{ dir_path, "comptime-result" });
+    defer allocator.free(executable_path);
+
+    var native_codegen = codegen.NativeCodegen.init(allocator, program, &comptime_store, null);
+    defer native_codegen.deinit();
+    native_codegen.io = testing.io;
+    try native_codegen.writeExecutable(executable_path);
+
+    const result = try std.process.run(allocator, testing.io, .{
+        .argv = &.{executable_path},
+        .timeout = .{ .duration = .{ .raw = .fromSeconds(5), .clock = .awake } },
+    });
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+    try testing.expectEqual(std.process.Child.Term{ .exited = 42 }, result.term);
 }

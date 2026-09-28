@@ -983,12 +983,13 @@ pub const TypeChecker = struct {
                 defer integration.deinit();
                 // Process all comptime expressions in the program
                 integration.processProgram(@constCast(self.program)) catch |err| {
-                    std.log.warn("comptime evaluation failed: {}", .{err});
+                    if (err == error.OutOfMemory) return err;
+                    const message = try std.fmt.allocPrint(self.allocator, "Comptime evaluation failed: {s}", .{@errorName(err)});
+                    defer self.allocator.free(message);
+                    try self.addError(message, .{ .line = 0, .column = 0 });
                 };
             } else |err| {
-                // If comptime init fails, continue without comptime support
-                std.log.warn("comptime initialization failed: {}", .{err});
-                self.comptime_store = null;
+                return err;
             }
         }
 
@@ -3510,6 +3511,7 @@ pub const TypeChecker = struct {
             .MatchExpr => |me| try self.inferMatchExprWithHint(me, null),
             .IfExpr => |ie| try self.inferIfExprWithHint(ie, null),
             .ClosureExpr => |closure| try self.inferClosureExprWithHint(closure, null),
+            .ComptimeExpr => |comptime_expr| try self.inferExpression(comptime_expr.expression),
             else => Type.Void,
         };
     }

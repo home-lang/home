@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const Io = std.Io;
 const ast = @import("ast");
+const ComptimeValueStore = @import("comptime").integration.ComptimeValueStore;
 const arm64 = @import("arm64.zig");
 const macho = @import("macho.zig");
 const elf = @import("elf.zig");
@@ -84,6 +85,7 @@ pub const Aarch64NativeCodegen = struct {
     functions: std.StringHashMap(usize),
     current_function_name: ?[]const u8 = null,
     io: ?Io = null,
+    comptime_store: ?*ComptimeValueStore = null,
 
     /// Locals → byte offset from SP at prologue end. All locals are 8 bytes
     /// for scalars; struct locals occupy multiple consecutive slots and the
@@ -653,6 +655,20 @@ pub const Aarch64NativeCodegen = struct {
             },
             .BooleanLiteral => |lit| {
                 try self.assembler.movRegImm64(.x0, if (lit.value) 1 else 0);
+            },
+            .ComptimeExpr => |comptime_expr| {
+                const store = self.comptime_store orelse return error.NotImplemented;
+                const value = store.get(comptime_expr.expression) orelse return error.NotImplemented;
+                switch (value) {
+                    .int => |int_value| {
+                        if (int_value > std.math.maxInt(i64) or int_value < std.math.minInt(i64)) {
+                            return error.IntegerLiteralOutOfRange;
+                        }
+                        try self.assembler.movRegImm64(.x0, @intCast(int_value));
+                    },
+                    .bool => |bool_value| try self.assembler.movRegImm64(.x0, if (bool_value) 1 else 0),
+                    else => return error.NotImplemented,
+                }
             },
             .Identifier => |ident| {
                 const base = self.locals.get(ident.name) orelse return error.UndefinedIdentifier;

@@ -1322,6 +1322,8 @@ pub fn build(b: *std.Build) void {
     codegen_tests.root_module.addImport("ast", ast_pkg);
     codegen_tests.root_module.addImport("lexer", lexer_pkg);
     codegen_tests.root_module.addImport("parser", parser_pkg);
+    codegen_tests.root_module.addImport("types", types_pkg);
+    codegen_tests.root_module.addImport("comptime", comptime_pkg);
 
     const run_codegen_tests = b.addRunArtifact(codegen_tests);
 
