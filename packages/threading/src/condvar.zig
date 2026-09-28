@@ -1,15 +1,16 @@
 // Home Programming Language - Condition Variables
-// Stub implementation for Zig 0.16 (std.Thread.Condition no longer exists)
+// Futex-backed condition variable with monotonic relative timeouts
 
 const std = @import("std");
 const ThreadError = @import("errors.zig").ThreadError;
 const Mutex = @import("mutex.zig").Mutex;
+const Futex = @import("threading_futex");
 
 pub const CondVar = struct {
-    signaled: bool,
+    epoch: std.atomic.Value(u32),
 
     pub fn init() ThreadError!CondVar {
-        return CondVar{ .signaled = false };
+        return CondVar{ .epoch = std.atomic.Value(u32).init(0) };
     }
 
     pub fn deinit(self: *CondVar) void {
@@ -17,43 +18,31 @@ pub const CondVar = struct {
     }
 
     pub fn wait(self: *CondVar, mutex: *Mutex) ThreadError!void {
-        // Release the mutex, spin until signaled, then re-acquire
+        const observed = self.epoch.load(.acquire);
         try mutex.unlock();
-        while (!self.signaled) {
-            std.atomic.spinLoopHint();
-        }
-        self.signaled = false;
+        Futex.waitForever(&self.epoch, observed);
         try mutex.lock();
     }
 
     pub fn waitTimeout(self: *CondVar, mutex: *Mutex, timeout_ns: u64) ThreadError!bool {
-        // Release the mutex, spin with counter-based timeout, then re-acquire
+        const observed = self.epoch.load(.acquire);
         try mutex.unlock();
-
-        // Approximate timeout using spin iterations
-        // Each iteration ~10-100ns depending on CPU, so divide by ~50ns
-        const max_iterations = timeout_ns / 50;
-        var iterations: u64 = 0;
-
-        while (!self.signaled) {
-            iterations += 1;
-            if (iterations >= max_iterations) {
-                try mutex.lock();
-                return false; // Timeout
-            }
-            std.atomic.spinLoopHint();
-        }
-        self.signaled = false;
+        Futex.wait(&self.epoch, observed, timeout_ns) catch {
+            try mutex.lock();
+            return false;
+        };
         try mutex.lock();
-        return true; // Signaled
+        return true;
     }
 
     pub fn signal(self: *CondVar) ThreadError!void {
-        self.signaled = true;
+        _ = self.epoch.fetchAdd(1, .release);
+        Futex.wake(&self.epoch, 1);
     }
 
     pub fn broadcast(self: *CondVar) ThreadError!void {
-        self.signaled = true;
+        _ = self.epoch.fetchAdd(1, .release);
+        Futex.wake(&self.epoch, std.math.maxInt(u32));
     }
 };
 
@@ -67,4 +56,109 @@ test "condvar signal" {
     defer cv.deinit();
     try cv.signal();
     try cv.broadcast();
+}
+
+test "condvar does not remember signals and reacquires after timeout" {
+    var mutex = try Mutex.init();
+    defer mutex.deinit();
+    var cv = try CondVar.init();
+    defer cv.deinit();
+
+    try cv.signal();
+    try mutex.lock();
+    try std.testing.expect(!try cv.waitTimeout(&mutex, std.time.ns_per_ms));
+    try mutex.unlock();
+}
+
+test "condvar signal wakes one waiter" {
+    var mutex = try Mutex.init();
+    defer mutex.deinit();
+    var cv = try CondVar.init();
+    defer cv.deinit();
+
+    const Context = struct {
+        mutex: *Mutex,
+        condvar: *CondVar,
+        waiting: std.atomic.Value(bool) = .init(false),
+        released: bool = false,
+        failed: std.atomic.Value(bool) = .init(false),
+
+        fn worker(context: *@This()) void {
+            context.mutex.lock() catch {
+                context.failed.store(true, .release);
+                return;
+            };
+            context.waiting.store(true, .release);
+            while (!context.released) {
+                context.condvar.wait(context.mutex) catch {
+                    context.failed.store(true, .release);
+                    context.mutex.unlock() catch {};
+                    return;
+                };
+            }
+            context.mutex.unlock() catch context.failed.store(true, .release);
+        }
+    };
+
+    var context = Context{ .mutex = &mutex, .condvar = &cv };
+    const thread = try std.Thread.spawn(.{}, Context.worker, .{&context});
+    while (!context.waiting.load(.acquire)) std.Thread.yield() catch {};
+
+    try mutex.lock();
+    context.released = true;
+    try cv.signal();
+    try mutex.unlock();
+    thread.join();
+
+    try std.testing.expect(!context.failed.load(.acquire));
+}
+
+test "condvar broadcast wakes eight waiters" {
+    const thread_count = 8;
+    var mutex = try Mutex.init();
+    defer mutex.deinit();
+    var cv = try CondVar.init();
+    defer cv.deinit();
+
+    const Context = struct {
+        mutex: *Mutex,
+        condvar: *CondVar,
+        waiting: std.atomic.Value(u32) = .init(0),
+        completed: std.atomic.Value(u32) = .init(0),
+        released: bool = false,
+        failed: std.atomic.Value(bool) = .init(false),
+
+        fn worker(context: *@This()) void {
+            context.mutex.lock() catch {
+                context.failed.store(true, .release);
+                return;
+            };
+            _ = context.waiting.fetchAdd(1, .release);
+            while (!context.released) {
+                context.condvar.wait(context.mutex) catch {
+                    context.failed.store(true, .release);
+                    context.mutex.unlock() catch {};
+                    return;
+                };
+            }
+            _ = context.completed.fetchAdd(1, .release);
+            context.mutex.unlock() catch context.failed.store(true, .release);
+        }
+    };
+
+    var context = Context{ .mutex = &mutex, .condvar = &cv };
+    var threads: [thread_count]std.Thread = undefined;
+    for (&threads) |*thread| {
+        thread.* = try std.Thread.spawn(.{}, Context.worker, .{&context});
+    }
+    while (context.waiting.load(.acquire) != thread_count) std.Thread.yield() catch {};
+
+    try mutex.lock();
+    context.released = true;
+    try cv.broadcast();
+    try mutex.unlock();
+    for (threads) |thread| thread.join();
+
+    try std.testing.expect(!context.failed.load(.acquire));
+    try std.testing.expectEqual(@as(u32, thread_count), context.completed.load(.acquire));
 }

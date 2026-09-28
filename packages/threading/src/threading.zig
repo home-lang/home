@@ -6,7 +6,7 @@
 // - Thread-local storage (TLS)
 // - Blocking non-recursive mutexes
 // - Semaphores (binary and counting)
-// - Condition variables
+// - Futex-backed condition variables
 // - Read-write locks
 // - Thread barriers
 // - Linux and Windows current-thread CPU affinity
@@ -129,6 +129,17 @@ test "public mutex API rejects unsupported recursive mode" {
     var attr = MutexAttr.init();
     attr.setRecursive(true);
     try std.testing.expectError(ThreadError.OperationNotSupported, Mutex.initWithAttr(attr));
+}
+
+test "public condition timeout returns with the mutex reacquired" {
+    var mutex = try Mutex.init();
+    defer mutex.deinit();
+    var condvar = try CondVar.init();
+    defer condvar.deinit();
+
+    try mutex.lock();
+    try std.testing.expect(!try condvar.waitTimeout(&mutex, 0));
+    try mutex.unlock();
 }
 
 test "constants defined" {

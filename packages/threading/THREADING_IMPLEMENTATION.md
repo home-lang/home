@@ -11,7 +11,7 @@
 | Threads | `spawn`, `spawnWithAttr`, `join`, `detach`, IDs, yield, and sleep wrap `std.Thread`. The caller allocator and validated stack size reach `std.Thread.SpawnConfig`; pthread-backed tests inspect the child thread's actual stack size. Priority is stored but not applied. | [`thread.zig`](src/thread.zig) and its inline tests |
 | Mutex | Futex-backed blocking lock with `lock`, `tryLock`, `unlock`, and scoped guards. Recursive mode is explicitly rejected instead of ignored. Timed locking, robust ownership, and priority inheritance are not implemented. | [`mutex.zig`](src/mutex.zig) and [#802](https://github.com/home-lang/home/issues/802) |
 | Semaphore | Atomic counting semaphore with OS-backed futex waiting, CAS-based `tryWait`, one-waiter `post` wakeups, and `getValue`. No named or timed semaphore API. | [`semaphore.zig`](src/semaphore.zig) and its inline tests |
-| Condition variable | Sequence-counter implementation with spin waiting, signal, and broadcast. It is not an OS-blocking condition variable yet. | [`condvar.zig`](src/condvar.zig) and [#802](https://github.com/home-lang/home/issues/802) |
+| Condition variable | Futex epoch implementation with blocking wait, one-waiter signal, all-waiter broadcast, and monotonic relative timeout. Signals with no waiter are not remembered. | [`condvar.zig`](src/condvar.zig) and [#802](https://github.com/home-lang/home/issues/802) |
 | Read/write lock | Atomic reader count plus spin-based writer exclusion. No timed operations, preference modes, or upgrade/downgrade API. | [`rwlock.zig`](src/rwlock.zig) and [#802](https://github.com/home-lang/home/issues/802) |
 | Barrier and once | Atomic/spin implementations with focused inline tests. | [`barrier.zig`](src/barrier.zig), [`once.zig`](src/once.zig) |
 | TLS | Fixed process-wide key table and per-key atomic values. Destructor and true per-thread storage semantics are not implemented. | [`tls.zig`](src/tls.zig) |
@@ -78,9 +78,10 @@ test plan:
   restoration, and overflow behavior.
 - [`mutex.zig`](src/mutex.zig): basic lock behavior, recursive-mode rejection,
   and an eight-thread protected-counter contention test.
-- [`condvar.zig`](src/condvar.zig), [`rwlock.zig`](src/rwlock.zig),
-  [`barrier.zig`](src/barrier.zig), and [`tls.zig`](src/tls.zig): focused
-  current-surface checks.
+- [`condvar.zig`](src/condvar.zig): no-waiter signal behavior, timeout with
+  mutex reacquisition, one-waiter signal, and eight-waiter broadcast.
+- [`rwlock.zig`](src/rwlock.zig), [`barrier.zig`](src/barrier.zig), and
+  [`tls.zig`](src/tls.zig): focused current-surface checks.
 - [`sched.zig`](src/sched.zig): cross-word `CpuSet` behavior, Windows
   processor-group conversion, and platform-gated current-thread round trips.
 
@@ -91,9 +92,8 @@ freedom.
 ## Remaining work
 
 - [#802](https://github.com/home-lang/home/issues/802): replace the remaining
-  spin-only condition-variable, read/write-lock, and barrier waits with
-  blocking primitives and add TSan, contention, timeout, and blocked-CPU
-  coverage.
+  spin-only read/write-lock and barrier waits with blocking primitives and add
+  TSan plus measured blocked-CPU coverage.
 - [#803](https://github.com/home-lang/home/issues/803): apply thread priority,
   document macOS affinity tags, run affinity on live Windows infrastructure,
   and run the pthread stack check on live Linux infrastructure.
