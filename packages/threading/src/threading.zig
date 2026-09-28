@@ -1,5 +1,5 @@
-// Home Programming Language - Complete Threading System
-// POSIX-compatible threading with modern features
+// Home Programming Language - Threading System
+// Portable facade over Zig's threading primitives
 //
 // Features:
 // - Full POSIX thread API
@@ -9,8 +9,8 @@
 // - Condition variables
 // - Read-write locks
 // - Thread barriers
-// - CPU affinity
-// - Scheduling policies
+// - Linux and Windows current-thread CPU affinity
+// - Scheduling policy data types (priority application pending)
 // - Once initialization
 
 const std = @import("std");

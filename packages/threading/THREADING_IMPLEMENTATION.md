@@ -8,7 +8,7 @@
 
 | Area | Current behavior | Evidence |
 |---|---|---|
-| Threads | `spawn`, `spawnWithAttr`, `join`, `detach`, IDs, yield, and sleep wrap `std.Thread`. The caller allocator and validated stack size reach `std.Thread.SpawnConfig`; priority is stored but not applied. | [`thread.zig`](src/thread.zig) and its inline tests |
+| Threads | `spawn`, `spawnWithAttr`, `join`, `detach`, IDs, yield, and sleep wrap `std.Thread`. The caller allocator and validated stack size reach `std.Thread.SpawnConfig`; pthread-backed tests inspect the child thread's actual stack size. Priority is stored but not applied. | [`thread.zig`](src/thread.zig) and its inline tests |
 | Mutex | Atomic spin lock with `lock`, `tryLock`, and `unlock`. No recursive/error-checking modes, timed lock, robust ownership, or priority inheritance. | [`mutex.zig`](src/mutex.zig) and [#802](https://github.com/home-lang/home/issues/802) |
 | Semaphore | Atomic counting semaphore with spin-based `wait`, CAS-based `tryWait`, `post`, and `getValue`. No named or timed semaphore API. | [`semaphore.zig`](src/semaphore.zig) and its inline tests |
 | Condition variable | Sequence-counter implementation with spin waiting, signal, and broadcast. It is not an OS-blocking condition variable yet. | [`condvar.zig`](src/condvar.zig) and [#802](https://github.com/home-lang/home/issues/802) |
@@ -70,7 +70,10 @@ Implementation tests live beside the source rather than in an aspirational
 test plan:
 
 - [`thread.zig`](src/thread.zig): spawn/join, yield, sleep, allocator and stack
-  configuration, and undersized-stack rejection.
+  configuration, child pthread stack-size inspection, and undersized-stack
+  rejection. Linux uses `pthread_getattr_np` plus `pthread_attr_getstacksize`;
+  macOS uses `pthread_get_stacksize_np`, which may include pthread overhead
+  above the requested minimum.
 - [`semaphore.zig`](src/semaphore.zig): permit accounting, empty `tryWait`,
   restoration, and overflow behavior.
 - [`mutex.zig`](src/mutex.zig), [`condvar.zig`](src/condvar.zig),
@@ -89,7 +92,7 @@ freedom.
   mutex/condition/read-write/semaphore waiting with futex-backed primitives.
 - [#803](https://github.com/home-lang/home/issues/803): apply thread priority,
   document macOS affinity tags, run affinity on live Windows infrastructure,
-  and complete OS-level stack verification.
+  and run the pthread stack check on live Linux infrastructure.
 - [#805](https://github.com/home-lang/home/issues/805): add language-level
   `spawn`, threads, and the multi-core executor.
 - [#806](https://github.com/home-lang/home/issues/806): implement `Send`/`Sync`
