@@ -50,6 +50,26 @@ fn checkSourceWithImports(source: []const u8) !bool {
     return checker.check();
 }
 
+fn checkSourceErrorContains(source: []const u8, needle: []const u8) !bool {
+    const allocator = std.testing.allocator;
+    var lexer = home.lexer.Lexer.init(allocator, source);
+    var tokens = try lexer.tokenize();
+    defer tokens.deinit(allocator);
+
+    var parser = try home.parser.Parser.init(allocator, tokens.items);
+    defer parser.deinit();
+    const program = try parser.parse();
+    defer program.deinit(allocator);
+
+    var checker = home.types.TypeChecker.init(allocator, program);
+    defer checker.deinit();
+    _ = try checker.check();
+    for (checker.errors.items) |type_error| {
+        if (std.mem.indexOf(u8, type_error.message, needle) != null) return true;
+    }
+    return false;
+}
+
 test "checker rejects a value with the wrong function return type" {
     try std.testing.expect(!try checkSource(
         \\fn answer() -> bool {
@@ -139,6 +159,18 @@ test "checker accepts constant arithmetic within its destination range" {
         \\    let value: u8 = 100 + 20
         \\}
     ));
+}
+
+test "checker routes use-after-move through drop safety" {
+    const source =
+        \\fn run() {
+        \\    let original = "owned"
+        \\    let moved = original
+        \\    let invalid = original
+        \\}
+    ;
+    try std.testing.expect(!try checkSource(source));
+    try std.testing.expect(try checkSourceErrorContains(source, "Drop safety violation"));
 }
 
 test "checker visits statements nested in unsafe blocks" {

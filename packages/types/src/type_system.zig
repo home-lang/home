@@ -19,6 +19,7 @@ pub const OwnershipState = ownership.OwnershipState;
 const null_safety = @import("null_safety.zig");
 const bounds_checking = @import("bounds_checking.zig");
 const overflow_detection = @import("overflow_detection.zig");
+const drop_safety = @import("drop_safety.zig");
 const pattern_checker = @import("pattern_checker.zig");
 const ts_diagnostics = @import("ts_diagnostics");
 pub const PatternChecker = pattern_checker.PatternChecker;
@@ -915,6 +916,7 @@ pub const TypeChecker = struct {
     null_safety_tracker: null_safety.NullSafetyTracker,
     bounds_tracker: bounds_checking.BoundsTracker,
     overflow_tracker: overflow_detection.OverflowTracker,
+    drop_safety_tracker: drop_safety.DropSafetyTracker,
     pattern_checker: PatternChecker,
     error_handler: ErrorHandler,
     /// Source file path for resolving imports
@@ -967,6 +969,7 @@ pub const TypeChecker = struct {
             .null_safety_tracker = null_safety.NullSafetyTracker.init(allocator),
             .bounds_tracker = bounds_checking.BoundsTracker.init(allocator),
             .overflow_tracker = overflow_detection.OverflowTracker.init(allocator),
+            .drop_safety_tracker = drop_safety.DropSafetyTracker.init(allocator),
             .pattern_checker = PatternChecker.init(allocator),
             .error_handler = ErrorHandler.init(allocator),
             .source_path = null,
@@ -1022,6 +1025,7 @@ pub const TypeChecker = struct {
         self.null_safety_tracker.deinit();
         self.bounds_tracker.deinit();
         self.overflow_tracker.deinit();
+        self.drop_safety_tracker.deinit();
         self.pattern_checker.deinit();
         self.error_handler.deinit();
         var loaded_it = self.loaded_modules.iterator();
@@ -1035,6 +1039,7 @@ pub const TypeChecker = struct {
     pub fn check(self: *TypeChecker) !bool {
         // Register built-in types
         try self.registerBuiltins();
+        try drop_safety.BuiltinDropBehaviors.register(&self.drop_safety_tracker);
 
         // Evaluate comptime expressions if store provided
         if (self.comptime_store) |store| {
@@ -1197,6 +1202,9 @@ pub const TypeChecker = struct {
             try self.addError(err_info.message, err_info.location);
         }
         for (self.overflow_tracker.errorItems()) |err_info| {
+            try self.addError(err_info.message, err_info.location);
+        }
+        for (self.drop_safety_tracker.errorItems()) |err_info| {
             try self.addError(err_info.message, err_info.location);
         }
 
@@ -1392,6 +1400,8 @@ pub const TypeChecker = struct {
         self.null_safety_tracker.clearFlowFacts();
         self.bounds_tracker.clearFlowFacts();
         self.overflow_tracker.clearFlowFacts();
+        self.drop_safety_tracker.clearFlowFacts();
+        try self.drop_safety_tracker.enterScope();
 
         const previous_return_type = self.current_function_return_type;
         self.current_function_return_type = if (fn_decl.return_type) |return_type|
@@ -1418,6 +1428,7 @@ pub const TypeChecker = struct {
             try func_env.define(param.name, param_type);
             try self.ownership_tracker.define(param.name, param_type, fn_decl.node.loc);
             try self.null_safety_tracker.setNullability(param.name, nullabilityForType(param_type));
+            try self.registerDropVariable(param.name, param_type);
         }
 
         self.env = func_env;
@@ -1433,6 +1444,7 @@ pub const TypeChecker = struct {
                 if (err != error.TypeMismatch and err != error.UndefinedVariable) return err;
             };
         }
+        try self.drop_safety_tracker.exitScope(fn_decl.node.loc);
     }
 
     /// Process an import declaration by loading and parsing the imported module
@@ -1702,6 +1714,7 @@ pub const TypeChecker = struct {
                     if (value.* == .Identifier) {
                         const id_name = value.Identifier.name;
                         try self.ownership_tracker.markMoved(id_name);
+                        try self.drop_safety_tracker.markMoved(id_name);
                     }
 
                     // Record pointer-aliasing: `let p = &local` (or any
@@ -1749,6 +1762,7 @@ pub const TypeChecker = struct {
                     }
                     // Track ownership of the new variable
                     try self.ownership_tracker.define(decl.name, value_type, decl.node.loc);
+                    try self.registerDropVariable(decl.name, value_type);
                 } else if (decl.type_name) |type_name| {
                     const var_type = try self.parseDeclaredType(type_name, decl.node.loc);
                     try self.env.define(decl.name, var_type);
@@ -1756,6 +1770,7 @@ pub const TypeChecker = struct {
                     self.bounds_tracker.forgetBounds(decl.name);
                     self.overflow_tracker.forgetRange(decl.name);
                     try self.ownership_tracker.define(decl.name, var_type, decl.node.loc);
+                    try self.registerDropVariable(decl.name, var_type);
                     // Remember the declaration so a subsequent read
                     // before any assignment can surface a warning.
                     try self.uninitialized_vars.put(decl.name, decl.node.loc);
@@ -3507,6 +3522,7 @@ pub const TypeChecker = struct {
                     if (err != error.UseAfterMove) return err;
                     // Error already added to ownership tracker, continue type checking
                 };
+                try self.drop_safety_tracker.checkAccessDuringDrop(id.name, id.node.loc);
 
                 // Use-before-def: if this identifier was declared with a
                 // type annotation but never assigned, warn about reading
@@ -5346,6 +5362,19 @@ pub const TypeChecker = struct {
         if (value.* == .NullLiteral) return .Null;
         if (typ == .Optional) return .NonNull;
         return nullabilityForType(typ);
+    }
+
+    fn registerDropVariable(self: *TypeChecker, name: []const u8, typ: Type) !void {
+        if (!needsDropTracking(typ)) return;
+        const type_name = if (typ == .Struct) typ.Struct.name else @tagName(typ);
+        try self.drop_safety_tracker.registerVariable(name, type_name);
+    }
+
+    fn needsDropTracking(typ: Type) bool {
+        return switch (typ) {
+            .String, .Array, .Map, .Struct, .Result, .Tuple, .Optional, .Enum, .Generic => true,
+            else => false,
+        };
     }
 
     fn addImportError(self: *TypeChecker, import_decl: *const ast.ImportDecl, import_error: anyerror) !void {

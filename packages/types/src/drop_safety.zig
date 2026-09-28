@@ -91,35 +91,53 @@ pub const DropSafetyTracker = struct {
             .allocator = allocator,
             .type_behaviors = std.StringHashMap(DropBehavior).init(allocator),
             .var_states = std.StringHashMap(DropState).init(allocator),
-            .dependencies = std.ArrayList(DropDependency).init(allocator),
-            .drop_order = std.ArrayList([]const u8).init(allocator),
+            .dependencies = std.ArrayList(DropDependency).empty,
+            .drop_order = std.ArrayList([]const u8).empty,
             .scope_depth = 0,
-            .scope_drops = std.ArrayList(std.ArrayList([]const u8)).init(allocator),
-            .errors = std.ArrayList(DropError).init(allocator),
-            .warnings = std.ArrayList(DropWarning).init(allocator),
+            .scope_drops = std.ArrayList(std.ArrayList([]const u8)).empty,
+            .errors = std.ArrayList(DropError).empty,
+            .warnings = std.ArrayList(DropWarning).empty,
         };
     }
 
     pub fn deinit(self: *DropSafetyTracker) void {
         self.type_behaviors.deinit();
         self.var_states.deinit();
-        self.dependencies.deinit();
-        self.drop_order.deinit();
+        self.dependencies.deinit(self.allocator);
+        self.drop_order.deinit(self.allocator);
 
         for (self.scope_drops.items) |scope_list| {
             var owned_list = scope_list;
-            owned_list.deinit();
+            owned_list.deinit(self.allocator);
         }
-        self.scope_drops.deinit();
+        self.scope_drops.deinit(self.allocator);
 
         for (self.errors.items) |err| {
             self.allocator.free(err.message);
         }
-        self.errors.deinit();
+        self.errors.deinit(self.allocator);
         for (self.warnings.items) |w| {
             self.allocator.free(w.message);
         }
-        self.warnings.deinit();
+        self.warnings.deinit(self.allocator);
+    }
+
+    /// Discard ownership facts that belong to the previous function while
+    /// preserving registered type behavior and accumulated diagnostics.
+    pub fn clearFlowFacts(self: *DropSafetyTracker) void {
+        self.var_states.clearRetainingCapacity();
+        self.dependencies.clearRetainingCapacity();
+        self.drop_order.clearRetainingCapacity();
+        for (self.scope_drops.items) |scope_list| {
+            var owned_list = scope_list;
+            owned_list.deinit(self.allocator);
+        }
+        self.scope_drops.clearRetainingCapacity();
+        self.scope_depth = 0;
+    }
+
+    pub fn errorItems(self: *const DropSafetyTracker) []const DropError {
+        return self.errors.items;
     }
 
     /// Register drop behavior for a type
@@ -135,7 +153,7 @@ pub const DropSafetyTracker = struct {
     /// Enter a new scope
     pub fn enterScope(self: *DropSafetyTracker) !void {
         self.scope_depth += 1;
-        try self.scope_drops.append(std.ArrayList([]const u8).init(self.allocator));
+        try self.scope_drops.append(self.allocator, std.ArrayList([]const u8).empty);
     }
 
     /// Exit current scope (drop all variables in scope)
@@ -155,8 +173,8 @@ pub const DropSafetyTracker = struct {
         }
 
         // Get variables to drop in this scope
-        var scope_list = self.scope_drops.pop();
-        defer scope_list.deinit();
+        var scope_list = self.scope_drops.pop().?;
+        defer scope_list.deinit(self.allocator);
 
         // Drop in reverse order (LIFO)
         var i = scope_list.items.len;
@@ -179,11 +197,13 @@ pub const DropSafetyTracker = struct {
 
         // Add to current scope's drop list if type needs drop
         const behavior = self.getBehavior(type_name);
-        if (behavior.needsDrop()) {
-            if (self.scope_drops.items.len > 0) {
-                const current_scope = &self.scope_drops.items[self.scope_drops.items.len - 1];
-                try current_scope.append(var_name);
-            }
+        if (!behavior.needsDrop()) {
+            _ = self.var_states.remove(var_name);
+            return;
+        }
+        if (self.scope_drops.items.len > 0) {
+            const current_scope = &self.scope_drops.items[self.scope_drops.items.len - 1];
+            try current_scope.append(self.allocator, var_name);
         }
     }
 
@@ -194,7 +214,7 @@ pub const DropSafetyTracker = struct {
         second: []const u8,
         reason: []const u8,
     ) !void {
-        try self.dependencies.append(.{
+        try self.dependencies.append(self.allocator, .{
             .first = first,
             .second = second,
             .reason = reason,
@@ -242,7 +262,7 @@ pub const DropSafetyTracker = struct {
         try self.var_states.put(var_name, .Dropping);
 
         // Record drop order
-        try self.drop_order.append(var_name);
+        try self.drop_order.append(self.allocator, var_name);
 
         // Mark as dropped
         try self.var_states.put(var_name, .Dropped);
@@ -277,11 +297,12 @@ pub const DropSafetyTracker = struct {
 
     /// Mark variable as moved (drop responsibility transferred)
     pub fn markMoved(self: *DropSafetyTracker, var_name: []const u8) !void {
+        if (!self.var_states.contains(var_name)) return;
         try self.var_states.put(var_name, .Moved);
 
-        // Remove from scope drop list
-        if (self.scope_drops.items.len > 0) {
-            const current_scope = &self.scope_drops.items[self.scope_drops.items.len - 1];
+        // The moved value may have been declared in an outer scope, so remove
+        // it from whichever scope owns its pending drop.
+        for (self.scope_drops.items) |*current_scope| {
             var i: usize = 0;
             while (i < current_scope.items.len) {
                 if (std.mem.eql(u8, current_scope.items[i], var_name)) {
@@ -339,6 +360,17 @@ pub const DropSafetyTracker = struct {
                 .location = loc,
                 .variable_name = var_name,
             });
+        } else if (state == .Moved) {
+            try self.addError(.{
+                .kind = .UseAfterMove,
+                .message = try std.fmt.allocPrint(
+                    self.allocator,
+                    "Drop safety violation: use of moved variable '{s}'",
+                    .{var_name},
+                ),
+                .location = loc,
+                .variable_name = var_name,
+            });
         }
     }
 
@@ -368,11 +400,11 @@ pub const DropSafetyTracker = struct {
     }
 
     fn addError(self: *DropSafetyTracker, err: DropError) !void {
-        try self.errors.append(err);
+        try self.errors.append(self.allocator, err);
     }
 
     fn addWarning(self: *DropSafetyTracker, warning: DropWarning) !void {
-        try self.warnings.append(warning);
+        try self.warnings.append(self.allocator, warning);
     }
 
     pub fn hasErrors(self: *DropSafetyTracker) bool {
@@ -390,6 +422,7 @@ pub const DropError = struct {
     pub const ErrorKind = enum {
         DoubleDrop,
         UseAfterDrop,
+        UseAfterMove,
         DropOrderViolation,
         DropUndefined,
         ScopeError,
