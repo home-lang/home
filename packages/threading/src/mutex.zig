@@ -1,19 +1,24 @@
 // Home Programming Language - Mutex Primitives
-// Simple spinlock built on std.atomic.Value (std.atomic.Mutex was removed).
+// Blocking mutex built on Home's shared futex layer
 
 const std = @import("std");
 const ThreadError = @import("errors.zig").ThreadError;
+const Futex = @import("threading_futex");
 
 pub const Mutex = struct {
-    flag: std.atomic.Value(bool),
+    state: std.atomic.Value(u32),
+
+    const unlocked: u32 = 0b00;
+    const locked: u32 = 0b01;
+    const contended: u32 = 0b11;
 
     pub fn init() ThreadError!Mutex {
-        return Mutex{ .flag = std.atomic.Value(bool).init(false) };
+        return Mutex{ .state = std.atomic.Value(u32).init(unlocked) };
     }
 
     pub fn initWithAttr(attr: MutexAttr) ThreadError!Mutex {
-        _ = attr; // Recursive mutexes not directly supported yet
-        return Mutex{ .flag = std.atomic.Value(bool).init(false) };
+        if (attr.recursive) return ThreadError.OperationNotSupported;
+        return init();
     }
 
     pub fn deinit(self: *Mutex) void {
@@ -21,15 +26,24 @@ pub const Mutex = struct {
     }
 
     pub fn lock(self: *Mutex) ThreadError!void {
-        while (self.flag.swap(true, .acquire)) std.atomic.spinLoopHint();
+        if (try self.tryLock()) return;
+
+        if (self.state.load(.monotonic) == contended) {
+            Futex.waitForever(&self.state, contended);
+        }
+        while (self.state.swap(contended, .acquire) != unlocked) {
+            Futex.waitForever(&self.state, contended);
+        }
     }
 
     pub fn tryLock(self: *Mutex) ThreadError!bool {
-        return !self.flag.swap(true, .acquire);
+        return self.state.cmpxchgStrong(unlocked, locked, .acquire, .monotonic) == null;
     }
 
     pub fn unlock(self: *Mutex) ThreadError!void {
-        self.flag.store(false, .release);
+        const previous = self.state.swap(unlocked, .release);
+        if (previous == unlocked) return ThreadError.MutexUnlockFailed;
+        if (previous == contended) Futex.wake(&self.state, 1);
     }
 
     pub const Guard = struct {
@@ -79,4 +93,49 @@ test "mutex tryLock" {
     const testing = std.testing;
     try testing.expect(locked);
     try mutex.unlock();
+}
+
+test "mutex rejects recursive attributes instead of ignoring them" {
+    var attr = MutexAttr.init();
+    attr.setRecursive(true);
+    try std.testing.expectError(ThreadError.OperationNotSupported, Mutex.initWithAttr(attr));
+}
+
+test "mutex protects a counter across eight threads" {
+    const thread_count = 8;
+    const increments_per_thread = 1_000;
+
+    var mutex = try Mutex.init();
+    defer mutex.deinit();
+    var counter: usize = 0;
+
+    const Context = struct {
+        mutex: *Mutex,
+        counter: *usize,
+        failed: std.atomic.Value(bool) = .init(false),
+
+        fn worker(context: *@This()) void {
+            for (0..increments_per_thread) |_| {
+                context.mutex.lock() catch {
+                    context.failed.store(true, .release);
+                    return;
+                };
+                context.counter.* += 1;
+                context.mutex.unlock() catch {
+                    context.failed.store(true, .release);
+                    return;
+                };
+            }
+        }
+    };
+
+    var context = Context{ .mutex = &mutex, .counter = &counter };
+    var threads: [thread_count]std.Thread = undefined;
+    for (&threads) |*thread| {
+        thread.* = try std.Thread.spawn(.{}, Context.worker, .{&context});
+    }
+    for (threads) |thread| thread.join();
+
+    try std.testing.expect(!context.failed.load(.acquire));
+    try std.testing.expectEqual(@as(usize, thread_count * increments_per_thread), counter);
 }

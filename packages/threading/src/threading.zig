@@ -4,7 +4,7 @@
 // Features:
 // - Full POSIX thread API
 // - Thread-local storage (TLS)
-// - Mutexes with priority inheritance
+// - Blocking non-recursive mutexes
 // - Semaphores (binary and counting)
 // - Condition variables
 // - Read-write locks
@@ -123,6 +123,12 @@ test "public semaphore API tracks permits" {
     try std.testing.expectEqual(@as(i32, 2), try semaphore.getValue());
     try std.testing.expect(try semaphore.tryWait());
     try std.testing.expectEqual(@as(i32, 1), try semaphore.getValue());
+}
+
+test "public mutex API rejects unsupported recursive mode" {
+    var attr = MutexAttr.init();
+    attr.setRecursive(true);
+    try std.testing.expectError(ThreadError.OperationNotSupported, Mutex.initWithAttr(attr));
 }
 
 test "constants defined" {
