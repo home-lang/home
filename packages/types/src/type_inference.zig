@@ -1,8 +1,17 @@
 const std = @import("std");
 const ast = @import("ast");
-const type_system = @import("type_system.zig");
+const type_system = @import("types");
 const Type = type_system.Type;
 const TraitSystem = @import("traits").TraitSystem;
+
+pub const InferenceError = std.mem.Allocator.Error || error{
+    UndefinedVariable,
+    ArgumentCountMismatch,
+    InfiniteType,
+    TypeMismatch,
+    TraitNotImplemented,
+    CannotInferType,
+};
 
 /// Comprehensive type inference engine for the Home language.
 ///
@@ -21,7 +30,7 @@ const TraitSystem = @import("traits").TraitSystem;
 ///
 /// Example:
 /// ```zig
-/// var inferencer = TypeInferencer.init(allocator);
+/// var inferencer = try TypeInferencer.init(allocator);
 /// defer inferencer.deinit();
 ///
 /// const inferred_type = try inferencer.inferExpression(expr, &env);
@@ -54,6 +63,11 @@ pub const TypeMismatchDetail = struct {
 };
 
 pub const TypeInferencer = struct {
+    backing_allocator: std.mem.Allocator,
+    arena: *std.heap.ArenaAllocator,
+    /// Inference types and composite slices live for the whole inference run.
+    /// A dedicated arena makes that ownership explicit and releases them in
+    /// one operation from `deinit`.
     allocator: std.mem.Allocator,
     /// Counter for generating unique type variables
     next_type_var: usize,
@@ -73,11 +87,17 @@ pub const TypeInferencer = struct {
     /// "variable annotation"). Read by `unify` when recording an error.
     current_origin: []const u8,
 
-    pub fn init(allocator: std.mem.Allocator) TypeInferencer {
+    pub fn init(backing_allocator: std.mem.Allocator) std.mem.Allocator.Error!TypeInferencer {
+        const arena = try backing_allocator.create(std.heap.ArenaAllocator);
+        errdefer backing_allocator.destroy(arena);
+        arena.* = std.heap.ArenaAllocator.init(backing_allocator);
+        const allocator = arena.allocator();
         return .{
+            .backing_allocator = backing_allocator,
+            .arena = arena,
             .allocator = allocator,
             .next_type_var = 0,
-            .constraints = std.ArrayList(Constraint).initCapacity(allocator, 0) catch std.ArrayList(Constraint).empty,
+            .constraints = .empty,
             .substitution = Substitution.init(allocator),
             .type_env = std.StringHashMap(*TypeScheme).init(allocator),
             .trait_system = null,
@@ -90,14 +110,16 @@ pub const TypeInferencer = struct {
         self.constraints.deinit(self.allocator);
         self.substitution.deinit();
 
-        if (self.last_error) |*err| err.deinit(self.allocator);
+        if (self.last_error) |*err| err.deinit(self.backing_allocator);
 
         var it = self.type_env.valueIterator();
         while (it.next()) |scheme| {
-            scheme.*.deinit(self.allocator);
-            self.allocator.destroy(scheme.*);
+            scheme.*.deinit(self.backing_allocator);
+            self.backing_allocator.destroy(scheme.*);
         }
         self.type_env.deinit();
+        self.arena.deinit();
+        self.backing_allocator.destroy(self.arena);
     }
 
     /// Pop the last recorded type-mismatch detail, transferring ownership to the caller.
@@ -168,36 +190,37 @@ pub const TypeInferencer = struct {
     /// Record a type-mismatch detail for the most recent failed unification.
     /// Frees any previously stored detail.
     fn recordMismatch(self: *TypeInferencer, expected: *Type, found: *Type) !void {
-        if (self.last_error) |*old| old.deinit(self.allocator);
+        const allocator = self.backing_allocator;
+        if (self.last_error) |*old| old.deinit(allocator);
         var expected_buf = std.ArrayList(u8).empty;
-        defer expected_buf.deinit(self.allocator);
+        defer expected_buf.deinit(allocator);
         var found_buf = std.ArrayList(u8).empty;
-        defer found_buf.deinit(self.allocator);
-        try renderType(expected, &expected_buf, self.allocator);
-        try renderType(found, &found_buf, self.allocator);
+        defer found_buf.deinit(allocator);
+        try renderType(expected, &expected_buf, allocator);
+        try renderType(found, &found_buf, allocator);
 
         const origin_copy = if (self.current_origin.len > 0)
-            try self.allocator.dupe(u8, self.current_origin)
+            try allocator.dupe(u8, self.current_origin)
         else
             "";
 
         const suggestion: ?[]const u8 = blk: {
             // Cheap heuristic: int <-> float gets a numeric-conversion hint.
             if (expected.* == .Int and found.* == .Float) {
-                break :blk try self.allocator.dupe(u8, "use `as int` to truncate the float");
+                break :blk try allocator.dupe(u8, "use `as int` to truncate the float");
             }
             if (expected.* == .Float and found.* == .Int) {
-                break :blk try self.allocator.dupe(u8, "use `as float` or write the literal as e.g. `1.0`");
+                break :blk try allocator.dupe(u8, "use `as float` or write the literal as e.g. `1.0`");
             }
             if (expected.* == .Bool and (found.* == .Int or found.* == .Float)) {
-                break :blk try self.allocator.dupe(u8, "compare against zero explicitly: `x != 0`");
+                break :blk try allocator.dupe(u8, "compare against zero explicitly: `x != 0`");
             }
             break :blk null;
         };
 
         self.last_error = .{
-            .expected_repr = try self.allocator.dupe(u8, expected_buf.items),
-            .found_repr = try self.allocator.dupe(u8, found_buf.items),
+            .expected_repr = try allocator.dupe(u8, expected_buf.items),
+            .found_repr = try allocator.dupe(u8, found_buf.items),
             .origin = origin_copy,
             .suggestion = suggestion,
         };
@@ -289,7 +312,7 @@ pub const TypeInferencer = struct {
 
     /// Infer the type of an expression
     /// This is the legacy function that will gradually be replaced by synthesizeExpression
-    pub fn inferExpression(self: *TypeInferencer, expr: *const ast.Expr, env: *type_system.TypeEnvironment) !*Type {
+    pub fn inferExpression(self: *TypeInferencer, expr: *const ast.Expr, env: *type_system.TypeEnvironment) InferenceError!*Type {
         return switch (expr.*) {
             .IntegerLiteral => |lit| {
                 // If there's a type suffix, use it; otherwise default to Int
@@ -332,7 +355,7 @@ pub const TypeInferencer = struct {
                     return try self.instantiate(scheme);
                 }
                 // Fallback to runtime environment
-                if (env.lookup(id.name)) |ty| {
+                if (env.get(id.name)) |ty| {
                     const result = try self.allocator.create(Type);
                     result.* = ty;
                     return result;
@@ -366,28 +389,29 @@ pub const TypeInferencer = struct {
             .ClosureExpr => |closure| try self.inferClosureExpr(closure, env),
             .TupleExpr => |tuple| try self.inferTupleExpr(tuple, env),
 
-            else => {
-                try self.addDiagnostic("type inference not implemented for this expression", .warning);
-                return try self.freshTypeVar();
-            },
+            else => error.CannotInferType,
         };
     }
 
     /// Infer type of binary expression
     fn inferBinaryExpr(self: *TypeInferencer, bin: *const ast.BinaryExpr, env: *type_system.TypeEnvironment) !*Type {
-        const left_ty = try self.inferExpression(&bin.left, env);
-        const right_ty = try self.inferExpression(&bin.right, env);
+        const left_ty = try self.inferExpression(bin.left, env);
+        const right_ty = try self.inferExpression(bin.right, env);
 
-        switch (bin.operator) {
+        switch (bin.op) {
             // Arithmetic operators: both operands must be numeric
-            .Plus, .Minus, .Star, .Slash, .Percent => {
+            .Add, .Sub, .Mul, .Div, .IntDiv, .Mod, .Power,
+            .CheckedAdd, .CheckedSub, .CheckedMul, .CheckedDiv,
+            .SaturatingAdd, .SaturatingSub, .SaturatingMul, .SaturatingDiv,
+            .ClampAdd, .ClampSub, .ClampMul,
+            => {
                 try self.addConstraint(.{ .Equality = .{ .lhs = left_ty, .rhs = right_ty } });
                 // Result type is same as operand type
                 return left_ty;
             },
 
             // Comparison operators: operands must match, result is Bool
-            .Equal, .NotEqual, .Less, .LessEqual, .Greater, .GreaterEqual => {
+            .Equal, .NotEqual, .Less, .LessEq, .Greater, .GreaterEq => {
                 try self.addConstraint(.{ .Equality = .{ .lhs = left_ty, .rhs = right_ty } });
                 const result = try self.allocator.create(Type);
                 result.* = Type.Bool;
@@ -404,7 +428,7 @@ pub const TypeInferencer = struct {
             },
 
             // Bitwise operators: both must be Int
-            .BitwiseAnd, .BitwiseOr, .BitwiseXor, .LeftShift, .RightShift => {
+            .BitAnd, .BitOr, .BitXor, .LeftShift, .RightShift => {
                 const int_ty = try self.allocator.create(Type);
                 int_ty.* = Type.Int;
                 try self.addConstraint(.{ .Equality = .{ .lhs = left_ty, .rhs = int_ty } });
@@ -418,10 +442,10 @@ pub const TypeInferencer = struct {
 
     /// Infer type of unary expression
     fn inferUnaryExpr(self: *TypeInferencer, un: *const ast.UnaryExpr, env: *type_system.TypeEnvironment) !*Type {
-        const operand_ty = try self.inferExpression(&un.operand, env);
+        const operand_ty = try self.inferExpression(un.operand, env);
 
-        switch (un.operator) {
-            .Minus => {
+        switch (un.op) {
+            .Neg => {
                 // Operand must be numeric, result is same type
                 return operand_ty;
             },
@@ -432,7 +456,7 @@ pub const TypeInferencer = struct {
                 try self.addConstraint(.{ .Equality = .{ .lhs = operand_ty, .rhs = bool_ty } });
                 return bool_ty;
             },
-            .BitwiseNot => {
+            .BitNot => {
                 // Operand must be Int
                 const int_ty = try self.allocator.create(Type);
                 int_ty.* = Type.Int;
@@ -446,7 +470,7 @@ pub const TypeInferencer = struct {
     /// Infer type of function call (with bidirectional checking)
     fn inferCallExpr(self: *TypeInferencer, call: *const ast.CallExpr, env: *type_system.TypeEnvironment) !*Type {
         // Synthesize the type of the callee
-        const func_ty = try self.synthesizeExpression(&call.callee, env);
+        const func_ty = try self.synthesizeExpression(call.callee, env);
 
         // Try to extract function type information
         const resolved_func_ty = try self.substitution.apply(func_ty, self.allocator);
@@ -455,32 +479,33 @@ pub const TypeInferencer = struct {
             // We know the parameter types! Use CHECK mode for arguments
             const func_info = resolved_func_ty.Function;
 
-            if (call.arguments.len != func_info.params.len) {
+            if (call.args.len != func_info.params.len) {
                 // Record a rich diagnostic the caller can surface. Reuses
                 // the same `last_error` channel used by unify() mismatches
                 // so error reporters see argument-count issues uniformly.
-                if (self.last_error) |*old| old.deinit(self.allocator);
+                const allocator = self.backing_allocator;
+                if (self.last_error) |*old| old.deinit(allocator);
                 const origin_str = try std.fmt.allocPrint(
-                    self.allocator,
+                    allocator,
                     "function takes {d} argument(s), called with {d}",
-                    .{ func_info.params.len, call.arguments.len },
+                    .{ func_info.params.len, call.args.len },
                 );
                 self.last_error = .{
                     .expected_repr = try std.fmt.allocPrint(
-                        self.allocator,
+                        allocator,
                         "{d} argument(s)",
                         .{func_info.params.len},
                     ),
                     .found_repr = try std.fmt.allocPrint(
-                        self.allocator,
+                        allocator,
                         "{d} argument(s)",
-                        .{call.arguments.len},
+                        .{call.args.len},
                     ),
                     .origin = origin_str,
-                    .suggestion = if (call.arguments.len < func_info.params.len)
-                        try self.allocator.dupe(u8, "too few arguments — add the missing ones")
+                    .suggestion = if (call.args.len < func_info.params.len)
+                        try allocator.dupe(u8, "too few arguments — add the missing ones")
                     else
-                        try self.allocator.dupe(u8, "too many arguments — remove the extras"),
+                        try allocator.dupe(u8, "too many arguments — remove the extras"),
                 };
                 return error.ArgumentCountMismatch;
             }
@@ -488,14 +513,15 @@ pub const TypeInferencer = struct {
             // CHECK each argument against its expected parameter type. We
             // use the origin-aware checker so a mismatch can say "argument N
             // of function call" instead of just "expected X, got Y".
-            for (call.arguments, func_info.params, 0..) |arg, param_ty, idx| {
+            for (call.args, func_info.params, 0..) |arg, param_ty, idx| {
                 var origin_buf: [64]u8 = undefined;
                 const origin = std.fmt.bufPrint(
                     &origin_buf,
                     "function argument #{d}",
                     .{idx + 1},
                 ) catch "function argument";
-                try self.checkExpressionWithOrigin(&arg, @constCast(param_ty), env, origin);
+                var param_copy = param_ty;
+                try self.checkExpressionWithOrigin(arg, &param_copy, env, origin);
             }
 
             // Return type is known
@@ -505,12 +531,12 @@ pub const TypeInferencer = struct {
             // Fall back to synthesis mode with fresh type variables
 
             // Generate fresh type variables for parameters and return type
-            var param_types = std.ArrayList(*Type).empty;
+            var param_types = std.ArrayList(Type).empty;
             defer param_types.deinit(self.allocator);
 
-            for (call.arguments) |_| {
+            for (call.args) |_| {
                 const param_ty = try self.freshTypeVar();
-                try param_types.append(self.allocator, param_ty);
+                try param_types.append(self.allocator, param_ty.*);
             }
 
             const return_ty = try self.freshTypeVar();
@@ -526,9 +552,12 @@ pub const TypeInferencer = struct {
             try self.addConstraint(.{ .Equality = .{ .lhs = func_ty, .rhs = expected_func_ty } });
 
             // SYNTHESIZE argument types and constrain them
-            for (call.arguments, 0..) |arg, i| {
-                const arg_ty = try self.synthesizeExpression(&arg, env);
-                try self.addConstraint(.{ .Equality = .{ .lhs = arg_ty, .rhs = expected_func_ty.Function.params[i] } });
+            for (call.args, 0..) |arg, i| {
+                const arg_ty = try self.synthesizeExpression(arg, env);
+                try self.addConstraint(.{ .Equality = .{
+                    .lhs = arg_ty,
+                    .rhs = @constCast(&expected_func_ty.Function.params[i]),
+                } });
             }
 
             return return_ty;
@@ -546,13 +575,13 @@ pub const TypeInferencer = struct {
         }
 
         // SYNTHESIZE type from first element
-        const first_ty = try self.synthesizeExpression(&arr.elements[0], env);
+        const first_ty = try self.synthesizeExpression(arr.elements[0], env);
 
         // CHECK that all other elements have the same type. Tag the origin
         // so a mismatch points the user at "must match the first array
         // element's type" rather than just "type mismatch".
         for (arr.elements[1..]) |elem| {
-            try self.checkExpressionWithOrigin(&elem, first_ty, env, "array element type (inferred from first element)");
+            try self.checkExpressionWithOrigin(elem, first_ty, env, "array element type (inferred from first element)");
         }
 
         const arr_ty = try self.allocator.create(Type);
@@ -562,8 +591,8 @@ pub const TypeInferencer = struct {
 
     /// Infer type of index expression
     fn inferIndexExpr(self: *TypeInferencer, idx: *const ast.IndexExpr, env: *type_system.TypeEnvironment) !*Type {
-        const arr_ty = try self.inferExpression(&idx.object, env);
-        const index_ty = try self.inferExpression(&idx.index, env);
+        const arr_ty = try self.inferExpression(idx.array, env);
+        const index_ty = try self.inferExpression(idx.index, env);
 
         // Index must be Int
         const int_ty = try self.allocator.create(Type);
@@ -581,10 +610,10 @@ pub const TypeInferencer = struct {
 
     /// Infer type of member expression
     fn inferMemberExpr(self: *TypeInferencer, mem: *const ast.MemberExpr, env: *type_system.TypeEnvironment) !*Type {
-        const obj_ty = try self.inferExpression(&mem.object, env);
+        const obj_ty = try self.inferExpression(mem.object, env);
 
         // Resolve type variables if needed
-        const resolved_ty = try self.resolveType(obj_ty);
+        const resolved_ty = self.resolveType(obj_ty);
 
         // Look up field type in struct
         switch (resolved_ty.*) {
@@ -613,18 +642,12 @@ pub const TypeInferencer = struct {
     }
 
     /// Resolve type variables in a type
-    fn resolveType(self: *TypeInferencer, ty: *Type) !*Type {
-        switch (ty.*) {
-            .TypeVar => |tv| {
-                // Check if this type variable has been unified
-                if (self.substitutions.get(tv.id)) |subst_ty| {
-                    // Recursively resolve
-                    return try self.resolveType(subst_ty);
-                }
-                return ty;
-            },
-            else => return ty,
+    fn resolveType(self: *TypeInferencer, initial: *Type) *Type {
+        var ty = initial;
+        while (ty.* == .TypeVar) {
+            ty = self.substitution.bindings.get(ty.TypeVar.id) orelse return ty;
         }
+        return ty;
     }
 
     /// Infer type of ternary expression
@@ -634,13 +657,13 @@ pub const TypeInferencer = struct {
         // a generic mismatch.
         const bool_ty = try self.allocator.create(Type);
         bool_ty.* = Type.Bool;
-        try self.checkExpressionWithOrigin(&tern.condition, bool_ty, env, "ternary condition (must be bool)");
+        try self.checkExpressionWithOrigin(tern.condition, bool_ty, env, "ternary condition (must be bool)");
 
         // SYNTHESIZE type from then branch
-        const then_ty = try self.synthesizeExpression(&tern.then_expr, env);
+        const then_ty = try self.synthesizeExpression(tern.true_val, env);
 
         // CHECK that else branch matches then branch.
-        try self.checkExpressionWithOrigin(&tern.else_expr, then_ty, env, "ternary else branch (must match then branch)");
+        try self.checkExpressionWithOrigin(tern.false_val, then_ty, env, "ternary else branch (must match then branch)");
 
         return then_ty;
     }
@@ -648,21 +671,22 @@ pub const TypeInferencer = struct {
     /// Infer type of closure expression
     fn inferClosureExpr(self: *TypeInferencer, closure: *const ast.ClosureExpr, env: *type_system.TypeEnvironment) !*Type {
         // Create new environment for closure body
-        var closure_env = type_system.TypeEnvironment.init(self.allocator, env);
+        var closure_env = type_system.TypeEnvironment.init(self.allocator);
+        closure_env.parent = env;
         defer closure_env.deinit();
 
         // Infer or use annotated parameter types
-        var param_types = std.ArrayList(*Type).empty;
+        var param_types = std.ArrayList(Type).empty;
         defer param_types.deinit(self.allocator);
 
-        for (closure.parameters) |param| {
+        for (closure.params) |param| {
             const param_ty = if (param.type_annotation) |type_ann|
                 // Parse type annotation
                 try self.parseTypeAnnotation(type_ann)
             else
                 try self.freshTypeVar();
 
-            try param_types.append(self.allocator, param_ty);
+            try param_types.append(self.allocator, param_ty.*);
             try closure_env.define(param.name, param_ty.*);
         }
 
@@ -671,7 +695,10 @@ pub const TypeInferencer = struct {
             // Parse return type annotation
             try self.parseTypeAnnotation(ret_type)
         else
-            try self.inferExpression(&closure.body, &closure_env);
+            switch (closure.body) {
+                .Expression => |body| try self.inferExpression(body, &closure_env),
+                .Block => try self.freshTypeVar(),
+            };
 
         // Create function type
         const func_ty = try self.allocator.create(Type);
@@ -689,7 +716,7 @@ pub const TypeInferencer = struct {
         defer elem_types.deinit(self.allocator);
 
         for (tuple.elements) |elem| {
-            const elem_ty = try self.inferExpression(&elem, env);
+            const elem_ty = try self.inferExpression(elem, env);
             try elem_types.append(self.allocator, elem_ty.*);
         }
 
@@ -719,10 +746,50 @@ pub const TypeInferencer = struct {
         return Type.Int; // Default
     }
 
-    /// Parse type annotation (string or TypeExpr) into Type
-    fn parseTypeAnnotation(self: *TypeInferencer, type_ann: []const u8) !*Type {
+    /// Parse a closure type annotation into the canonical type-system Type.
+    fn parseTypeAnnotation(self: *TypeInferencer, type_ann: *const ast.closure_nodes.TypeExpr) InferenceError!*Type {
         const ty = try self.allocator.create(Type);
-        ty.* = if (std.mem.eql(u8, type_ann, "i8"))
+        ty.* = try self.parseTypeExpr(type_ann);
+        return ty;
+    }
+
+    fn parseTypeExpr(self: *TypeInferencer, type_ann: *const ast.closure_nodes.TypeExpr) InferenceError!Type {
+        return switch (type_ann.*) {
+            .Named => |name| self.parseNamedType(name),
+            .Reference => |reference| blk: {
+                const inner = try self.parseTypeAnnotation(reference.inner);
+                break :blk if (reference.is_mut)
+                    Type{ .MutableReference = inner }
+                else
+                    Type{ .Reference = inner };
+            },
+            .Pointer => |pointer| blk: {
+                const inner = try self.parseTypeAnnotation(pointer.inner);
+                break :blk if (pointer.is_mut)
+                    Type{ .MutableReference = inner }
+                else
+                    Type{ .Reference = inner };
+            },
+            .Function => |function| try self.parseFunctionType(function.params, function.return_type),
+            .Closure => |function| try self.parseFunctionType(function.params, function.return_type),
+            .Generic => |generic| blk: {
+                if (generic.args.len == 1 and
+                    (std.mem.eql(u8, generic.base, "Array") or
+                        std.mem.eql(u8, generic.base, "List") or
+                        std.mem.eql(u8, generic.base, "Vec")))
+                {
+                    break :blk Type{ .Array = .{ .element_type = try self.parseTypeAnnotation(generic.args[0]) } };
+                }
+                if (generic.args.len == 1 and std.mem.eql(u8, generic.base, "Option")) {
+                    break :blk Type{ .Optional = try self.parseTypeAnnotation(generic.args[0]) };
+                }
+                break :blk Type.Unknown;
+            },
+        };
+    }
+
+    fn parseNamedType(self: *TypeInferencer, type_ann: []const u8) Type {
+        return if (std.mem.eql(u8, type_ann, "i8"))
             Type.I8
         else if (std.mem.eql(u8, type_ann, "i16"))
             Type.I16
@@ -752,12 +819,34 @@ pub const TypeInferencer = struct {
             Type.String
         else if (std.mem.eql(u8, type_ann, "void"))
             Type.Void
-        else
-            // Unknown type - create fresh type variable
-            Type{ .TypeVar = .{ .id = self.next_type_var_id, .name = type_ann } };
+        else blk: {
+            const var_id = self.next_type_var;
+            self.next_type_var += 1;
+            break :blk Type{ .TypeVar = .{ .id = var_id, .name = type_ann } };
+        };
+    }
 
-        self.next_type_var_id += 1;
-        return ty;
+    fn parseFunctionType(
+        self: *TypeInferencer,
+        params: []const *ast.closure_nodes.TypeExpr,
+        return_type: ?*ast.closure_nodes.TypeExpr,
+    ) InferenceError!Type {
+        const param_types = try self.allocator.alloc(Type, params.len);
+        for (params, 0..) |param, index| {
+            param_types[index] = try self.parseTypeExpr(param);
+        }
+        const return_ty = if (return_type) |ret|
+            try self.parseTypeAnnotation(ret)
+        else blk: {
+            const void_type = try self.allocator.create(Type);
+            void_type.* = .Void;
+            break :blk void_type;
+        };
+        return Type{ .Function = .{
+            .params = param_types,
+            .return_type = return_ty,
+            .required_params = params.len,
+        } };
     }
 
     /// Add a type constraint
@@ -782,7 +871,7 @@ pub const TypeInferencer = struct {
 
     /// Unify two types. On failure records a TypeMismatchDetail in `last_error`
     /// so the caller can produce a high-quality error message.
-    fn unify(self: *TypeInferencer, t1: *Type, t2: *Type) !void {
+    pub fn unify(self: *TypeInferencer, t1: *Type, t2: *Type) InferenceError!void {
         const t1_resolved = try self.substitution.apply(t1, self.allocator);
         const t2_resolved = try self.substitution.apply(t2, self.allocator);
 
@@ -866,7 +955,7 @@ pub const TypeInferencer = struct {
 
     /// Render a Type into a human-readable name for error messages.
     /// Recursive but bounded by AST depth in practice.
-    fn renderType(ty: *Type, buf: *std.ArrayList(u8), allocator: std.mem.Allocator) !void {
+    fn renderType(ty: *Type, buf: *std.ArrayList(u8), allocator: std.mem.Allocator) std.mem.Allocator.Error!void {
         switch (ty.*) {
             .Int => try buf.appendSlice(allocator, "int"),
             .Float => try buf.appendSlice(allocator, "float"),
@@ -878,7 +967,7 @@ pub const TypeInferencer = struct {
                     try buf.appendSlice(allocator, n);
                 } else {
                     var num_buf: [32]u8 = undefined;
-                    const formatted = try std.fmt.bufPrint(&num_buf, "'t{d}", .{tv.id});
+                    const formatted = std.fmt.bufPrint(&num_buf, "'t{d}", .{tv.id}) catch unreachable;
                     try buf.appendSlice(allocator, formatted);
                 }
             },
@@ -910,7 +999,7 @@ pub const TypeInferencer = struct {
     }
 
     /// Check if a type variable occurs in a type (prevents infinite types)
-    fn occursCheck(self: *TypeInferencer, var_id: usize, ty: *Type) !bool {
+    fn occursCheck(self: *TypeInferencer, var_id: usize, ty: *Type) InferenceError!bool {
         const resolved = try self.substitution.apply(ty, self.allocator);
 
         if (resolved.* == .TypeVar and resolved.TypeVar.id == var_id) {
@@ -1050,12 +1139,13 @@ pub const TypeInferencer = struct {
 
     /// Generalize a type into a type scheme (let-polymorphism)
     pub fn generalize(self: *TypeInferencer, ty: *Type) !*TypeScheme {
-        const free_vars = try self.freeTypeVars(ty);
-        defer free_vars.deinit();
+        var free_vars = try self.freeTypeVars(ty);
+        defer free_vars.deinit(self.allocator);
 
-        const scheme = try self.allocator.create(TypeScheme);
+        const scheme = try self.backing_allocator.create(TypeScheme);
+        errdefer self.backing_allocator.destroy(scheme);
         scheme.* = .{
-            .forall = try free_vars.toOwnedSlice(),
+            .forall = try self.backing_allocator.dupe(usize, free_vars.items),
             .ty = ty,
         };
 
@@ -1063,40 +1153,50 @@ pub const TypeInferencer = struct {
     }
 
     /// Find all free type variables in a type
-    fn freeTypeVars(self: *TypeInferencer, ty: *Type) !std.ArrayList(usize) {
+    fn freeTypeVars(self: *TypeInferencer, ty: *Type) InferenceError!std.ArrayList(usize) {
         var vars = std.ArrayList(usize).empty;
         const resolved = try self.substitution.apply(ty, self.allocator);
 
         switch (resolved.*) {
             .TypeVar => |tv| {
-                try vars.append(self.allocator, tv.id);
+                try self.appendUniqueTypeVars(&vars, &.{tv.id});
             },
             .Array => |arr| {
-                const elem_vars = try self.freeTypeVars(@constCast(arr.element_type));
-                defer elem_vars.deinit();
-                try vars.appendSlice(self.allocator, elem_vars.items);
+                var elem_vars = try self.freeTypeVars(@constCast(arr.element_type));
+                defer elem_vars.deinit(self.allocator);
+                try self.appendUniqueTypeVars(&vars, elem_vars.items);
             },
             .Function => |func| {
                 for (func.params) |param| {
-                    const param_vars = try self.freeTypeVars(@constCast(param));
-                    defer param_vars.deinit();
-                    try vars.appendSlice(self.allocator, param_vars.items);
+                    var param_copy = param;
+                    var param_vars = try self.freeTypeVars(&param_copy);
+                    defer param_vars.deinit(self.allocator);
+                    try self.appendUniqueTypeVars(&vars, param_vars.items);
                 }
-                const ret_vars = try self.freeTypeVars(@constCast(func.return_type));
-                defer ret_vars.deinit();
-                try vars.appendSlice(self.allocator, ret_vars.items);
+                var ret_vars = try self.freeTypeVars(@constCast(func.return_type));
+                defer ret_vars.deinit(self.allocator);
+                try self.appendUniqueTypeVars(&vars, ret_vars.items);
             },
             .Tuple => |tuple| {
                 for (tuple.element_types) |elem| {
-                    const elem_vars = try self.freeTypeVars(@constCast(elem));
-                    defer elem_vars.deinit();
-                    try vars.appendSlice(self.allocator, elem_vars.items);
+                    var elem_copy = elem;
+                    var elem_vars = try self.freeTypeVars(&elem_copy);
+                    defer elem_vars.deinit(self.allocator);
+                    try self.appendUniqueTypeVars(&vars, elem_vars.items);
                 }
             },
             else => {},
         }
 
         return vars;
+    }
+
+    fn appendUniqueTypeVars(self: *TypeInferencer, vars: *std.ArrayList(usize), additions: []const usize) std.mem.Allocator.Error!void {
+        for (additions) |id| {
+            if (std.mem.indexOfScalar(usize, vars.items, id) == null) {
+                try vars.append(self.allocator, id);
+            }
+        }
     }
 
     /// Apply the current substitution to get the final type
@@ -1120,7 +1220,6 @@ pub const TypeScheme = struct {
 
     pub fn deinit(self: *TypeScheme, allocator: std.mem.Allocator) void {
         allocator.free(self.forall);
-        allocator.destroy(self.ty);
     }
 };
 
@@ -1158,7 +1257,7 @@ pub const Substitution = struct {
     }
 
     /// Apply substitution to a type
-    pub fn apply(self: *Substitution, ty: *Type, allocator: std.mem.Allocator) !*Type {
+    pub fn apply(self: *Substitution, ty: *Type, allocator: std.mem.Allocator) std.mem.Allocator.Error!*Type {
         switch (ty.*) {
             .TypeVar => |tv| {
                 if (self.bindings.get(tv.id)) |bound_ty| {
@@ -1225,7 +1324,7 @@ pub const Substitution = struct {
 
 test "type inference: mismatch records expected and found names" {
     const allocator = std.testing.allocator;
-    var inferencer = TypeInferencer.init(allocator);
+    var inferencer = try TypeInferencer.init(allocator);
     defer inferencer.deinit();
 
     var int_ty: Type = .Int;
@@ -1246,7 +1345,7 @@ test "type inference: mismatch records expected and found names" {
 
 test "type inference: takeLastError transfers ownership" {
     const allocator = std.testing.allocator;
-    var inferencer = TypeInferencer.init(allocator);
+    var inferencer = try TypeInferencer.init(allocator);
     defer inferencer.deinit();
 
     var a: Type = .Int;
@@ -1262,7 +1361,7 @@ test "type inference: takeLastError transfers ownership" {
 
 test "type inference: int↔float mismatch suggests cast" {
     const allocator = std.testing.allocator;
-    var inferencer = TypeInferencer.init(allocator);
+    var inferencer = try TypeInferencer.init(allocator);
     defer inferencer.deinit();
 
     var i: Type = .Int;
@@ -1280,7 +1379,7 @@ test "type inference: int↔float mismatch suggests cast" {
 
 test "type inference: bool from int suggests explicit comparison" {
     const allocator = std.testing.allocator;
-    var inferencer = TypeInferencer.init(allocator);
+    var inferencer = try TypeInferencer.init(allocator);
     defer inferencer.deinit();
 
     var b: Type = .Bool;
@@ -1298,7 +1397,7 @@ test "type inference: bool from int suggests explicit comparison" {
 
 test "type inference: setExpectedOrigin propagates through to error" {
     const allocator = std.testing.allocator;
-    var inferencer = TypeInferencer.init(allocator);
+    var inferencer = try TypeInferencer.init(allocator);
     defer inferencer.deinit();
 
     inferencer.setExpectedOrigin("variable annotation `let x: int`");
@@ -1315,7 +1414,7 @@ test "type inference: setExpectedOrigin propagates through to error" {
 
 test "type inference: matching primitives don't create errors" {
     const allocator = std.testing.allocator;
-    var inferencer = TypeInferencer.init(allocator);
+    var inferencer = try TypeInferencer.init(allocator);
     defer inferencer.deinit();
 
     var a: Type = .Int;
@@ -1339,13 +1438,13 @@ test "type inference: levenshtein distance" {
 
 test "type inference: did-you-mean suggests the closest identifier" {
     const allocator = std.testing.allocator;
-    var inferencer = TypeInferencer.init(allocator);
+    var inferencer = try TypeInferencer.init(allocator);
     defer inferencer.deinit();
 
     // Seed the type environment with a handful of valid names.
     const names = [_][]const u8{ "counter", "length", "visible" };
     for (names) |name| {
-        const ty = try allocator.create(Type);
+        const ty = try inferencer.allocator.create(Type);
         ty.* = .Int;
         const scheme = try allocator.create(TypeScheme);
         scheme.* = .{ .forall = &.{}, .ty = ty };

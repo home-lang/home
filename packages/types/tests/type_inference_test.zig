@@ -3,14 +3,14 @@ const testing = std.testing;
 const type_inference = @import("type_inference");
 const TypeInferencer = type_inference.TypeInferencer;
 const ast = @import("ast");
-const type_system = @import("type_system");
+const type_system = @import("types");
 const Type = type_system.Type;
 
 test "type inference: integer literal" {
-    var inferencer = TypeInferencer.init(testing.allocator);
+    var inferencer = try TypeInferencer.init(testing.allocator);
     defer inferencer.deinit();
 
-    var env = type_system.TypeEnvironment.init(testing.allocator, null);
+    var env = type_system.TypeEnvironment.init(inferencer.allocator);
     defer env.deinit();
 
     // Create integer literal: 42
@@ -25,10 +25,10 @@ test "type inference: integer literal" {
 }
 
 test "type inference: integer literal with type suffix" {
-    var inferencer = TypeInferencer.init(testing.allocator);
+    var inferencer = try TypeInferencer.init(testing.allocator);
     defer inferencer.deinit();
 
-    var env = type_system.TypeEnvironment.init(testing.allocator, null);
+    var env = type_system.TypeEnvironment.init(inferencer.allocator);
     defer env.deinit();
 
     // Create integer literal with type suffix: 42i32
@@ -44,27 +44,27 @@ test "type inference: integer literal with type suffix" {
 }
 
 test "type inference: binary expression" {
-    var inferencer = TypeInferencer.init(testing.allocator);
+    var inferencer = try TypeInferencer.init(testing.allocator);
     defer inferencer.deinit();
 
-    var env = type_system.TypeEnvironment.init(testing.allocator, null);
+    var env = type_system.TypeEnvironment.init(inferencer.allocator);
     defer env.deinit();
 
     // Create: 1 + 2
     const left_lit = ast.IntegerLiteral.init(1, ast.SourceLocation{ .line = 1, .column = 1 });
     const right_lit = ast.IntegerLiteral.init(2, ast.SourceLocation{ .line = 1, .column = 5 });
 
-    const left_expr = try testing.allocator.create(ast.Expr);
+    const left_expr = try inferencer.allocator.create(ast.Expr);
     left_expr.* = ast.Expr{ .IntegerLiteral = left_lit };
 
-    const right_expr = try testing.allocator.create(ast.Expr);
+    const right_expr = try inferencer.allocator.create(ast.Expr);
     right_expr.* = ast.Expr{ .IntegerLiteral = right_lit };
 
     const bin = try ast.BinaryExpr.init(
-        testing.allocator,
-        left_expr.*,
-        .Plus,
-        right_expr.*,
+        inferencer.allocator,
+        .Add,
+        left_expr,
+        right_expr,
         ast.SourceLocation{ .line = 1, .column = 1 },
     );
 
@@ -78,27 +78,33 @@ test "type inference: binary expression" {
 }
 
 test "type inference: array literal homogeneous" {
-    var inferencer = TypeInferencer.init(testing.allocator);
+    var inferencer = try TypeInferencer.init(testing.allocator);
     defer inferencer.deinit();
 
-    var env = type_system.TypeEnvironment.init(testing.allocator, null);
+    var env = type_system.TypeEnvironment.init(inferencer.allocator);
     defer env.deinit();
 
     // Create: [1, 2, 3]
-    var elements = std.ArrayList(ast.Expr).empty;
-    defer elements.deinit(testing.allocator);
+    var elements = std.ArrayList(*ast.Expr).empty;
+    defer elements.deinit(inferencer.allocator);
 
     const lit1 = ast.IntegerLiteral.init(1, ast.SourceLocation{ .line = 1, .column = 2 });
     const lit2 = ast.IntegerLiteral.init(2, ast.SourceLocation{ .line = 1, .column = 5 });
     const lit3 = ast.IntegerLiteral.init(3, ast.SourceLocation{ .line = 1, .column = 8 });
 
-    try elements.append(testing.allocator, ast.Expr{ .IntegerLiteral = lit1 });
-    try elements.append(testing.allocator, ast.Expr{ .IntegerLiteral = lit2 });
-    try elements.append(testing.allocator, ast.Expr{ .IntegerLiteral = lit3 });
+    const elem1 = try inferencer.allocator.create(ast.Expr);
+    elem1.* = .{ .IntegerLiteral = lit1 };
+    const elem2 = try inferencer.allocator.create(ast.Expr);
+    elem2.* = .{ .IntegerLiteral = lit2 };
+    const elem3 = try inferencer.allocator.create(ast.Expr);
+    elem3.* = .{ .IntegerLiteral = lit3 };
+    try elements.append(inferencer.allocator, elem1);
+    try elements.append(inferencer.allocator, elem2);
+    try elements.append(inferencer.allocator, elem3);
 
     const arr = try ast.ArrayLiteral.init(
-        testing.allocator,
-        try elements.toOwnedSlice(testing.allocator),
+        inferencer.allocator,
+        try elements.toOwnedSlice(inferencer.allocator),
         ast.SourceLocation{ .line = 1, .column = 1 },
     );
 
@@ -113,15 +119,15 @@ test "type inference: array literal homogeneous" {
 }
 
 test "type inference: empty array" {
-    var inferencer = TypeInferencer.init(testing.allocator);
+    var inferencer = try TypeInferencer.init(testing.allocator);
     defer inferencer.deinit();
 
-    var env = type_system.TypeEnvironment.init(testing.allocator, null);
+    var env = type_system.TypeEnvironment.init(inferencer.allocator);
     defer env.deinit();
 
     // Create: []
     const arr = try ast.ArrayLiteral.init(
-        testing.allocator,
+        inferencer.allocator,
         &.{},
         ast.SourceLocation{ .line = 1, .column = 1 },
     );
@@ -139,7 +145,7 @@ test "type inference: empty array" {
 }
 
 test "type inference: unification of type variables" {
-    var inferencer = TypeInferencer.init(testing.allocator);
+    var inferencer = try TypeInferencer.init(testing.allocator);
     defer inferencer.deinit();
 
     // Create two type variables
@@ -147,7 +153,7 @@ test "type inference: unification of type variables" {
     const t2 = try inferencer.freshTypeVar();
 
     // Unify t1 with Int
-    const int_ty = try testing.allocator.create(Type);
+    const int_ty = try inferencer.allocator.create(Type);
     int_ty.* = Type.Int;
     try inferencer.unify(t1, int_ty);
 
@@ -155,21 +161,21 @@ test "type inference: unification of type variables" {
     try inferencer.unify(t2, t1);
 
     // Apply substitution
-    const resolved_t2 = try inferencer.substitution.apply(t2, testing.allocator);
+    const resolved_t2 = try inferencer.substitution.apply(t2, inferencer.allocator);
 
     // t2 should now be Int
     try testing.expect(resolved_t2.* == .Int);
 }
 
 test "type inference: occurs check prevents infinite types" {
-    var inferencer = TypeInferencer.init(testing.allocator);
+    var inferencer = try TypeInferencer.init(testing.allocator);
     defer inferencer.deinit();
 
     // Create type variable
     const tv = try inferencer.freshTypeVar();
 
     // Try to create infinite type: tv = [tv]
-    const arr_ty = try testing.allocator.create(Type);
+    const arr_ty = try inferencer.allocator.create(Type);
     arr_ty.* = Type{ .Array = .{ .element_type = tv } };
 
     // This should fail with InfiniteType error
@@ -177,26 +183,26 @@ test "type inference: occurs check prevents infinite types" {
 }
 
 test "type inference: function type unification" {
-    var inferencer = TypeInferencer.init(testing.allocator);
+    var inferencer = try TypeInferencer.init(testing.allocator);
     defer inferencer.deinit();
 
     // Create function type: fn(Int) -> Bool
-    const param_ty = try testing.allocator.create(Type);
+    const param_ty = try inferencer.allocator.create(Type);
     param_ty.* = Type.Int;
 
-    const ret_ty = try testing.allocator.create(Type);
+    const ret_ty = try inferencer.allocator.create(Type);
     ret_ty.* = Type.Bool;
 
     var params = [_]Type{param_ty.*};
 
-    const func1 = try testing.allocator.create(Type);
+    const func1 = try inferencer.allocator.create(Type);
     func1.* = Type{ .Function = .{
         .params = &params,
         .return_type = ret_ty,
     } };
 
     // Create another function type with same signature
-    const func2 = try testing.allocator.create(Type);
+    const func2 = try inferencer.allocator.create(Type);
     func2.* = Type{ .Function = .{
         .params = &params,
         .return_type = ret_ty,
@@ -207,27 +213,27 @@ test "type inference: function type unification" {
 }
 
 test "type inference: comparison operators return Bool" {
-    var inferencer = TypeInferencer.init(testing.allocator);
+    var inferencer = try TypeInferencer.init(testing.allocator);
     defer inferencer.deinit();
 
-    var env = type_system.TypeEnvironment.init(testing.allocator, null);
+    var env = type_system.TypeEnvironment.init(inferencer.allocator);
     defer env.deinit();
 
     // Create: 1 < 2
     const left_lit = ast.IntegerLiteral.init(1, ast.SourceLocation{ .line = 1, .column = 1 });
     const right_lit = ast.IntegerLiteral.init(2, ast.SourceLocation{ .line = 1, .column = 5 });
 
-    const left_expr = try testing.allocator.create(ast.Expr);
+    const left_expr = try inferencer.allocator.create(ast.Expr);
     left_expr.* = ast.Expr{ .IntegerLiteral = left_lit };
 
-    const right_expr = try testing.allocator.create(ast.Expr);
+    const right_expr = try inferencer.allocator.create(ast.Expr);
     right_expr.* = ast.Expr{ .IntegerLiteral = right_lit };
 
     const bin = try ast.BinaryExpr.init(
-        testing.allocator,
-        left_expr.*,
+        inferencer.allocator,
         .Less,
-        right_expr.*,
+        left_expr,
+        right_expr,
         ast.SourceLocation{ .line = 1, .column = 1 },
     );
 
@@ -241,27 +247,33 @@ test "type inference: comparison operators return Bool" {
 }
 
 test "type inference: tuple with heterogeneous types" {
-    var inferencer = TypeInferencer.init(testing.allocator);
+    var inferencer = try TypeInferencer.init(testing.allocator);
     defer inferencer.deinit();
 
-    var env = type_system.TypeEnvironment.init(testing.allocator, null);
+    var env = type_system.TypeEnvironment.init(inferencer.allocator);
     defer env.deinit();
 
     // Create: (42, "hello", true)
-    var elements = std.ArrayList(ast.Expr).empty;
-    defer elements.deinit(testing.allocator);
+    var elements = std.ArrayList(*ast.Expr).empty;
+    defer elements.deinit(inferencer.allocator);
 
     const int_lit = ast.IntegerLiteral.init(42, ast.SourceLocation{ .line = 1, .column = 2 });
     const str_lit = ast.StringLiteral.init("hello", ast.SourceLocation{ .line = 1, .column = 6 });
     const bool_lit = ast.BooleanLiteral.init(true, ast.SourceLocation{ .line = 1, .column = 15 });
 
-    try elements.append(testing.allocator, ast.Expr{ .IntegerLiteral = int_lit });
-    try elements.append(testing.allocator, ast.Expr{ .StringLiteral = str_lit });
-    try elements.append(testing.allocator, ast.Expr{ .BooleanLiteral = bool_lit });
+    const int_expr = try inferencer.allocator.create(ast.Expr);
+    int_expr.* = .{ .IntegerLiteral = int_lit };
+    const str_expr = try inferencer.allocator.create(ast.Expr);
+    str_expr.* = .{ .StringLiteral = str_lit };
+    const bool_expr = try inferencer.allocator.create(ast.Expr);
+    bool_expr.* = .{ .BooleanLiteral = bool_lit };
+    try elements.append(inferencer.allocator, int_expr);
+    try elements.append(inferencer.allocator, str_expr);
+    try elements.append(inferencer.allocator, bool_expr);
 
     const tuple = try ast.TupleExpr.init(
-        testing.allocator,
-        try elements.toOwnedSlice(testing.allocator),
+        inferencer.allocator,
+        try elements.toOwnedSlice(inferencer.allocator),
         ast.SourceLocation{ .line = 1, .column = 1 },
     );
 
@@ -279,7 +291,7 @@ test "type inference: tuple with heterogeneous types" {
 }
 
 test "type inference: let-polymorphism generalization" {
-    var inferencer = TypeInferencer.init(testing.allocator);
+    var inferencer = try TypeInferencer.init(testing.allocator);
     defer inferencer.deinit();
 
     // Create a polymorphic type: forall a. a -> a
@@ -290,7 +302,7 @@ test "type inference: let-polymorphism generalization" {
     try inferencer.unify(param_tv, return_tv);
 
     var params = [_]Type{param_tv.*};
-    const func_ty = try testing.allocator.create(Type);
+    const func_ty = try inferencer.allocator.create(Type);
     func_ty.* = Type{ .Function = .{
         .params = &params,
         .return_type = return_tv,
@@ -298,14 +310,17 @@ test "type inference: let-polymorphism generalization" {
 
     // Generalize to type scheme
     const scheme = try inferencer.generalize(func_ty);
-    defer scheme.deinit(testing.allocator);
+    defer {
+        scheme.deinit(testing.allocator);
+        testing.allocator.destroy(scheme);
+    }
 
     // Should have one quantified variable
     try testing.expectEqual(@as(usize, 1), scheme.forall.len);
 }
 
 test "type inference: substitution transitivity" {
-    var inferencer = TypeInferencer.init(testing.allocator);
+    var inferencer = try TypeInferencer.init(testing.allocator);
     defer inferencer.deinit();
 
     // Create chain: t1 -> t2 -> t3 -> Int
@@ -316,11 +331,11 @@ test "type inference: substitution transitivity" {
     try inferencer.substitution.bind(t1.TypeVar.id, t2);
     try inferencer.substitution.bind(t2.TypeVar.id, t3);
 
-    const int_ty = try testing.allocator.create(Type);
+    const int_ty = try inferencer.allocator.create(Type);
     int_ty.* = Type.Int;
     try inferencer.substitution.bind(t3.TypeVar.id, int_ty);
 
     // Applying substitution to t1 should resolve to Int
-    const resolved = try inferencer.substitution.apply(t1, testing.allocator);
+    const resolved = try inferencer.substitution.apply(t1, inferencer.allocator);
     try testing.expect(resolved.* == .Int);
 }

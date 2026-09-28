@@ -5586,17 +5586,6 @@ pub const LifetimeTracker = @import("lifetime_analysis.zig").LifetimeTracker;
 ///   * Partial moves of struct fields are tracked individually.
 pub const MoveTracker = @import("move_detection.zig").MoveTracker;
 
-/// Stub for type inference (to be implemented)
-pub const TypeInferencer = struct {
-    pub fn init(allocator: std.mem.Allocator) TypeInferencer {
-        _ = allocator;
-        return .{};
-    }
-    pub fn deinit(self: *TypeInferencer) void {
-        _ = self;
-    }
-};
-
 // =============================================================================
 // Tests
 // =============================================================================
@@ -5721,14 +5710,6 @@ test "type: TypeEnvironment define and get" {
 
     // Undefined variable returns null
     try testing.expect(env.get("undefined") == null);
-}
-
-test "type: TypeInferencer init/deinit" {
-    const testing = std.testing;
-
-    var inferencer = TypeInferencer.init(testing.allocator);
-    defer inferencer.deinit();
-    // Just verify no crash - stub implementation
 }
 
 test "type: LifetimeTracker init/deinit" {

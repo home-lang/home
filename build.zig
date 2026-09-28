@@ -463,6 +463,7 @@ pub fn build(b: *std.Build) void {
     const macros_pkg = createPackage(b, "packages/macros/src/macro_system.zig", target, optimize, zig_test_framework);
     macros_pkg.addImport("ast", ast_pkg);
     const traits_pkg = createPackage(b, "packages/traits/src/traits.zig", target, optimize, zig_test_framework);
+    const type_inference_pkg = createPackage(b, "packages/types/src/type_inference.zig", target, optimize, zig_test_framework);
     const pkg_manager_pkg = createPackage(b, "packages/pkg/src/package_manager.zig", target, optimize, zig_test_framework);
     const queue_pkg = createPackage(b, "packages/queue/src/queue.zig", target, optimize, zig_test_framework);
     const database_pkg = createPackage(b, "packages/database/src/database.zig", target, optimize, zig_test_framework);
@@ -925,6 +926,9 @@ pub fn build(b: *std.Build) void {
     interpreter_pkg.addImport("ast", ast_pkg);
     comptime_pkg.addImport("ast", ast_pkg);
     types_pkg.addImport("comptime", comptime_pkg);
+    type_inference_pkg.addImport("ast", ast_pkg);
+    type_inference_pkg.addImport("traits", traits_pkg);
+    type_inference_pkg.addImport("types", types_pkg);
     generics_pkg.addImport("ast", ast_pkg);
     generics_pkg.addImport("types", types_pkg);
     generics_pkg.addImport("traits", traits_pkg);
@@ -1209,6 +1213,18 @@ pub fn build(b: *std.Build) void {
     types_assert_tests.root_module.addImport("home", home_module);
     const run_types_assert_tests = b.addRunArtifact(types_assert_tests);
 
+    const types_inference_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("packages/types/tests/type_inference_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    types_inference_tests.root_module.addImport("ast", ast_pkg);
+    types_inference_tests.root_module.addImport("type_inference", type_inference_pkg);
+    types_inference_tests.root_module.addImport("types", types_pkg);
+    const run_types_inference_tests = b.addRunArtifact(types_inference_tests);
+
     // HTTP Router tests
     const http_router_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -1483,6 +1499,7 @@ pub fn build(b: *std.Build) void {
     dependOnTest(test_step, &run_parser_tests.step, test_filter, "parser");
     dependOnTest(test_step, &run_types_control_flow_tests.step, test_filter, "types_control_flow");
     dependOnTest(test_step, &run_types_assert_tests.step, test_filter, "types_assert");
+    dependOnTest(test_step, &run_types_inference_tests.step, test_filter, "types_inference");
     dependOnTest(test_step, &run_http_router_tests.step, test_filter, "http_router");
     dependOnTest(test_step, &run_craft_tests.step, test_filter, "craft");
     dependOnTest(test_step, &run_package_manager_tests.step, test_filter, "package_manager");
