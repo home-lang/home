@@ -9,7 +9,8 @@ Home's memory safety guarantees:
 - **No null pointer dereferences**: Optional types replace null
 - **No use-after-free**: Ownership prevents dangling pointers
 - **No double-free**: Single ownership ensures one deallocation
-- **No data races**: Borrowing rules prevent concurrent mutation
+- **Thread data-race prevention**: 🚧 Send/Sync enforcement is not implemented;
+  follow [#806](https://github.com/home-lang/home/issues/806)
 - **No buffer overflows**: Bounds checking with opt-out
 
 ## Ownership Model
@@ -306,6 +307,11 @@ fn shared_data() {
 
 ### Arc<T> - Atomic Reference Counting
 
+> [!WARNING]
+> The threaded `Arc` example below is an intended API sketch. Home does not yet
+> enforce Send/Sync boundaries, so it is not currently a data-race guarantee.
+> See [#806](https://github.com/home-lang/home/issues/806).
+
 ```home
 use std.sync.Arc
 use std.thread
@@ -408,6 +414,12 @@ impl Graph {
 ```
 
 ### Mutex<T>
+
+> [!WARNING]
+> The Home-language `std.sync.Mutex` surface is experimental. The implemented
+> lower-level mutex is spin-based and does not yet provide the blocking,
+> fairness, or advanced POSIX semantics described by a production mutex; see
+> the [threading status](https://github.com/home-lang/home/blob/main/packages/threading/THREADING_IMPLEMENTATION.md).
 
 ```home
 use std.sync.Mutex

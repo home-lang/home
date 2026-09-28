@@ -14,7 +14,7 @@ The standard library is organized into modules:
 | `std::net` | Networking |
 | `std::http` | HTTP client and server |
 | `std::json` | JSON parsing and serialization |
-| `std::sync` | Synchronization primitives |
+| `std::sync` | 🚧 Experimental synchronization surface; see the [threading status](https://github.com/home-lang/home/blob/main/packages/threading/THREADING_IMPLEMENTATION.md) |
 | `std::time` | Time and duration |
 | `std::fmt` | String formatting |
 
@@ -327,6 +327,14 @@ print("From {}: {}", addr, String.from_utf8(&buffer[..n])?)
 ```
 
 ## Synchronization
+
+> [!WARNING]
+> `std::sync` is experimental. The examples below describe the intended
+> Home-language surface, not a stable compatibility guarantee. The underlying
+> primitives are currently spin-based, and blocking, fairness, and Send/Sync
+> enforcement remain incomplete; see the
+> [implementation status](https://github.com/home-lang/home/blob/main/packages/threading/THREADING_IMPLEMENTATION.md)
+> and [#806](https://github.com/home-lang/home/issues/806).
 
 ### Mutex
 

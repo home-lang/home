@@ -79,8 +79,9 @@ through a first project.
 - **Errors as values.** `Result` types with `?` propagation, plus null-safety
   operators (`?.`, `?:`, `??`, `?[]`).
   ([error handling](https://home-lang.org/docs/advanced/error-handling))
-- **Batteries in the stdlib.** HTTP, database, JSON, async, threading and FFI.
-  ([standard library](https://home-lang.org/docs/reference/stdlib))
+- **Batteries in the stdlib.** HTTP, database, JSON, async and FFI, with
+  experimental threading 🚧. ([standard library](https://home-lang.org/docs/reference/stdlib),
+  [threading status](https://github.com/home-lang/home/blob/main/packages/threading/THREADING_IMPLEMENTATION.md))
 
 ## Language tour
 
