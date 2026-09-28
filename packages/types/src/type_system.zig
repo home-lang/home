@@ -1237,14 +1237,17 @@ pub const TypeChecker = struct {
         void_type.* = Type.Void;
         try self.allocated_types.append(self.allocator, void_type);
 
-        // print: fn(...) -> void
-        const print_type = Type{
+        // Output builtins are variadic, but every argument is still inferred
+        // at the call site so diagnostics inside those expressions are not
+        // suppressed.
+        const output_type = Type{
             .Function = .{
                 .params = &[_]Type{}, // Variadic, we'll handle specially
                 .return_type = void_type,
             },
         };
-        try self.env.define("print", print_type);
+        try self.env.define("print", output_type);
+        try self.env.define("println", output_type);
 
         // assert: fn(bool) -> void
         const assert_params = try self.allocator.alloc(Type, 1);
@@ -3929,8 +3932,16 @@ pub const TypeChecker = struct {
                 // Check argument types
                 const expected_params = func_type.Function.params;
 
-                // Special case for print (variadic)
-                if (!std.mem.eql(u8, func_name, "print")) {
+                const is_variadic_output = std.mem.eql(u8, func_name, "print") or
+                    std.mem.eql(u8, func_name, "println");
+                if (is_variadic_output) {
+                    for (call.args) |arg| {
+                        _ = try self.inferExpression(arg);
+                    }
+                    for (call.named_args) |named_arg| {
+                        _ = try self.inferExpression(named_arg.value);
+                    }
+                } else {
                     // Get required params count (if not set, all params are required)
                     const required_params = func_type.Function.required_params orelse expected_params.len;
 

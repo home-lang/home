@@ -246,6 +246,14 @@ test "checker rejects calls to non-function values" {
     ));
 }
 
+test "checker visits println arguments" {
+    try std.testing.expect(!try checkSource(
+        \\fn run() {
+        \\    println("value", missing_value)
+        \\}
+    ));
+}
+
 test "checker rejects void struct construction" {
     try std.testing.expect(!try checkSource(
         \\fn run() {

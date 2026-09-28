@@ -239,6 +239,23 @@ test "checker accepts external calls inside unsafe" {
     ));
 }
 
+test "checker accepts variadic output builtins" {
+    try std.testing.expect(try checkSource(
+        \\fn run() {
+        \\    print("value", 1, true)
+        \\    println("value", 1, true)
+        \\}
+    ));
+}
+
+test "checker visits print arguments" {
+    try std.testing.expect(!try checkSource(
+        \\fn run() {
+        \\    print("value", missing_value)
+        \\}
+    ));
+}
+
 test "checker enforces unsafe function calls" {
     const outside =
         \\unsafe fn raw_value() -> i32 { return 1 }
