@@ -7,7 +7,7 @@
 // - Blocking non-recursive mutexes
 // - Semaphores (binary and counting)
 // - Futex-backed condition variables
-// - Read-write locks
+// - Writer-preferring futex-backed read-write locks
 // - Thread barriers
 // - Linux and Windows current-thread CPU affinity
 // - Scheduling policy data types (priority application pending)
@@ -140,6 +140,16 @@ test "public condition timeout returns with the mutex reacquired" {
     try mutex.lock();
     try std.testing.expect(!try condvar.waitTimeout(&mutex, 0));
     try mutex.unlock();
+}
+
+test "public read-write lock permits multiple readers" {
+    var lock = try RwLock.init();
+    defer lock.deinit();
+
+    try lock.lockRead();
+    try lock.lockRead();
+    try lock.unlockRead();
+    try lock.unlockRead();
 }
 
 test "constants defined" {

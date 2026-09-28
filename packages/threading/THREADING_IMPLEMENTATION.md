@@ -12,7 +12,7 @@
 | Mutex | Futex-backed blocking lock with `lock`, `tryLock`, `unlock`, and scoped guards. Recursive mode is explicitly rejected instead of ignored. Timed locking, robust ownership, and priority inheritance are not implemented. | [`mutex.zig`](src/mutex.zig) and [#802](https://github.com/home-lang/home/issues/802) |
 | Semaphore | Atomic counting semaphore with OS-backed futex waiting, CAS-based `tryWait`, one-waiter `post` wakeups, and `getValue`. No named or timed semaphore API. | [`semaphore.zig`](src/semaphore.zig) and its inline tests |
 | Condition variable | Futex epoch implementation with blocking wait, one-waiter signal, all-waiter broadcast, and monotonic relative timeout. Signals with no waiter are not remembered. | [`condvar.zig`](src/condvar.zig) and [#802](https://github.com/home-lang/home/issues/802) |
-| Read/write lock | Atomic reader count plus spin-based writer exclusion. No timed operations, preference modes, or upgrade/downgrade API. | [`rwlock.zig`](src/rwlock.zig) and [#802](https://github.com/home-lang/home/issues/802) |
+| Read/write lock | Writer-preferring futex state permits concurrent readers or one writer while blocking new readers behind queued writers. No timed operations or upgrade/downgrade API. | [`rwlock.zig`](src/rwlock.zig) and [#802](https://github.com/home-lang/home/issues/802) |
 | Barrier and once | Atomic/spin implementations with focused inline tests. | [`barrier.zig`](src/barrier.zig), [`once.zig`](src/once.zig) |
 | TLS | Fixed process-wide key table and per-key atomic values. Destructor and true per-thread storage semantics are not implemented. | [`tls.zig`](src/tls.zig) |
 | Scheduling | `CpuSet` bit operations and current-thread affinity are implemented on Linux and with Windows processor groups. Linux has a live round-trip test; Windows conversion tests and cross-compilation cover the ABI, but a live Windows run is still pending. macOS hard affinity and priority application remain unsupported. | [`sched.zig`](src/sched.zig) and [#803](https://github.com/home-lang/home/issues/803) |
@@ -80,8 +80,10 @@ test plan:
   and an eight-thread protected-counter contention test.
 - [`condvar.zig`](src/condvar.zig): no-waiter signal behavior, timeout with
   mutex reacquisition, one-waiter signal, and eight-waiter broadcast.
-- [`rwlock.zig`](src/rwlock.zig), [`barrier.zig`](src/barrier.zig), and
-  [`tls.zig`](src/tls.zig): focused current-surface checks.
+- [`rwlock.zig`](src/rwlock.zig): eight concurrent readers plus a mixed
+  four-reader/four-writer protected-state stress test.
+- [`barrier.zig`](src/barrier.zig) and [`tls.zig`](src/tls.zig): focused
+  current-surface checks.
 - [`sched.zig`](src/sched.zig): cross-word `CpuSet` behavior, Windows
   processor-group conversion, and platform-gated current-thread round trips.
 
@@ -92,8 +94,8 @@ freedom.
 ## Remaining work
 
 - [#802](https://github.com/home-lang/home/issues/802): replace the remaining
-  spin-only read/write-lock and barrier waits with blocking primitives and add
-  TSan plus measured blocked-CPU coverage.
+  spin-only barrier waits with blocking primitives and add TSan plus measured
+  blocked-CPU coverage.
 - [#803](https://github.com/home-lang/home/issues/803): apply thread priority,
   document macOS affinity tags, run affinity on live Windows infrastructure,
   and run the pthread stack check on live Linux infrastructure.
