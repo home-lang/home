@@ -28,11 +28,10 @@ pub const Semaphore = struct {
     }
 
     pub fn tryWait(self: *Semaphore) ThreadError!bool {
-        const current = self.permits.load(.acquire);
-        if (current > 0) {
-            if (self.permits.cmpxchgWeak(current, current - 1, .acq_rel, .acquire) == null) {
+        var current = self.permits.load(.acquire);
+        while (current > 0) {
+            current = self.permits.cmpxchgWeak(current, current - 1, .acq_rel, .acquire) orelse
                 return true;
-            }
         }
         return false;
     }
@@ -41,14 +40,15 @@ pub const Semaphore = struct {
         // Atomically increment, guarding against overflow with a CAS loop.
         while (true) {
             const current = self.permits.load(.monotonic);
-            if (current == std.math.maxInt(u32)) return;
+            if (current == std.math.maxInt(u32)) return ThreadError.SemaphoreOverflow;
             if (self.permits.cmpxchgWeak(current, current + 1, .release, .monotonic) == null) return;
         }
     }
 
-    pub fn getValue(self: *Semaphore) ThreadError!i32 {
-        _ = self;
-        return ThreadError.NotSupported;
+    pub fn getValue(self: *const Semaphore) ThreadError!i32 {
+        const current = self.permits.load(.acquire);
+        if (current > std.math.maxInt(i32)) return ThreadError.SemaphoreOverflow;
+        return @intCast(current);
     }
 };
 
@@ -82,4 +82,40 @@ pub const BinarySemaphore = struct {
 test "semaphore init" {
     var sem = try Semaphore.init(1);
     defer sem.deinit();
+
+    try std.testing.expectEqual(@as(i32, 1), try sem.getValue());
+}
+
+test "tryWait consumes exactly one permit" {
+    var sem = try Semaphore.init(2);
+    defer sem.deinit();
+
+    try std.testing.expect(try sem.tryWait());
+    try std.testing.expectEqual(@as(i32, 1), try sem.getValue());
+    try std.testing.expect(try sem.tryWait());
+    try std.testing.expectEqual(@as(i32, 0), try sem.getValue());
+    try std.testing.expect(!try sem.tryWait());
+}
+
+test "post restores a consumed permit" {
+    var sem = try Semaphore.init(1);
+    defer sem.deinit();
+
+    try std.testing.expect(try sem.tryWait());
+    try sem.post();
+    try std.testing.expectEqual(@as(i32, 1), try sem.getValue());
+}
+
+test "semaphore reports values outside its public range" {
+    var sem = try Semaphore.init(@as(u32, std.math.maxInt(i32)) + 1);
+    defer sem.deinit();
+
+    try std.testing.expectError(ThreadError.SemaphoreOverflow, sem.getValue());
+}
+
+test "semaphore rejects permit overflow" {
+    var sem = try Semaphore.init(std.math.maxInt(u32));
+    defer sem.deinit();
+
+    try std.testing.expectError(ThreadError.SemaphoreOverflow, sem.post());
 }

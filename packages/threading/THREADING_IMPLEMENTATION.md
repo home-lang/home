@@ -148,16 +148,18 @@ pub const MutexProtocol = enum {
 ```zig
 // Initialize/destroy
 pub fn init(value: u32) !Semaphore
-pub fn initNamed(name: []const u8, value: u32) !Semaphore
 pub fn deinit(self: _Semaphore) void
 
 // Operations
 pub fn wait(self: _Semaphore) !void
-pub fn tryWait(self: _Semaphore) !void
-pub fn timedWait(self: _Semaphore, timeout: std.time.Duration) !void
+pub fn tryWait(self: _Semaphore) !bool
 pub fn post(self: _Semaphore) !void
-pub fn getValue(self: _const Semaphore) u32
+pub fn getValue(self: _const Semaphore) !i32
 ```
+
+`getValue` is an acquire load of the atomic permit count. Counts that cannot
+be represented by the public signed return type, and posts that would overflow
+the internal `u32`, return `SemaphoreOverflow` instead of wrapping.
 
 ### Condition Variable API
 

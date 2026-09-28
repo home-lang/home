@@ -24,6 +24,7 @@ pub const ThreadAttr = @import("thread.zig").ThreadAttr;
 pub const Mutex = @import("mutex.zig").Mutex;
 pub const MutexAttr = @import("mutex.zig").MutexAttr;
 pub const Semaphore = @import("semaphore.zig").Semaphore;
+pub const BinarySemaphore = @import("semaphore.zig").BinarySemaphore;
 pub const CondVar = @import("condvar.zig").CondVar;
 pub const RwLock = @import("rwlock.zig").RwLock;
 pub const Barrier = @import("barrier.zig").Barrier;
@@ -107,6 +108,15 @@ test "thread priority conversion" {
 
     const p2 = ThreadPriority.fromInt(75);
     try testing.expectEqual(ThreadPriority.AboveNormal, p2);
+}
+
+test "public semaphore API tracks permits" {
+    var semaphore = try Semaphore.init(2);
+    defer semaphore.deinit();
+
+    try std.testing.expectEqual(@as(i32, 2), try semaphore.getValue());
+    try std.testing.expect(try semaphore.tryWait());
+    try std.testing.expectEqual(@as(i32, 1), try semaphore.getValue());
 }
 
 test "constants defined" {
