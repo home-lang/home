@@ -101,10 +101,21 @@ source scripts/home-bin.sh
 HOME_TEST_MAX_RSS_MB=2048 run_bounded 1800 scripts/threading-tsan.sh 100
 ```
 
+Blocked-waiter CPU usage has a separate native measurement. Eight semaphore
+waiters record their own thread CPU clocks across a 250 ms blocked interval;
+the command fails if any waiter consumes 5% or more of that wall interval:
+
+```sh
+source scripts/home-bin.sh
+HOME_TEST_MAX_RSS_MB=512 run_bounded 300 scripts/threading-blocked-cpu.sh 5
+```
+
+On macOS, five consecutive runs measured a worst-case waiter CPU time of
+32 µs during the 250 ms blocked interval, against the 12,500 µs failure
+threshold. The guarded command peaked at 82 MB.
+
 ## Remaining work
 
-- [#802](https://github.com/home-lang/home/issues/802): add measured blocked-CPU
-  acceptance coverage for the blocking primitives.
 - [#803](https://github.com/home-lang/home/issues/803): apply thread priority,
   document macOS affinity tags, run affinity on live Windows infrastructure,
   and run the pthread stack check on live Linux infrastructure.
