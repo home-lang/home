@@ -706,6 +706,19 @@ test "parser: index expression" {
     try testing.expectEqual(@as(i128, 0), index.index.IntegerLiteral.value);
 }
 
+test "parser: full array slice has no synthetic bounds" {
+    const program = try parseSource(testing.allocator, "arr[..]");
+    defer program.deinit(testing.allocator);
+
+    const expr = program.statements[0].ExprStmt;
+    try testing.expect(expr.* == .SliceExpr);
+    try testing.expect(expr.SliceExpr.array.* == .Identifier);
+    try testing.expectEqualStrings("arr", expr.SliceExpr.array.Identifier.name);
+    try testing.expect(expr.SliceExpr.start == null);
+    try testing.expect(expr.SliceExpr.end == null);
+    try testing.expect(!expr.SliceExpr.inclusive);
+}
+
 test "parser: member access expression" {
     const program = try parseSource(testing.allocator, "point.x");
     defer program.deinit(testing.allocator);

@@ -145,6 +145,24 @@ test "checker accepts a constant in-bounds array index" {
     ));
 }
 
+test "checker accepts every array slice form used by the example" {
+    try std.testing.expect(try checkSource(
+        \\let numbers = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+        \\let slice1 = numbers[2..5]
+        \\println(slice1)
+        \\let slice2 = numbers[2..=5]
+        \\println(slice2)
+        \\let slice3 = numbers[..3]
+        \\println(slice3)
+        \\let slice4 = numbers[7..]
+        \\println(slice4)
+        \\let slice5 = numbers[5..5]
+        \\println(slice5)
+        \\let slice6 = numbers[..]
+        \\println(slice6)
+    ));
+}
+
 test "checker rejects constant arithmetic that overflows its destination" {
     try std.testing.expect(!try checkSource(
         \\fn run() {

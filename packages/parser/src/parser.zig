@@ -6304,7 +6304,13 @@ pub const Parser = struct {
                 _ = self.advance(); // consume DotDot
                 break :blk false;
             };
-            const end = try self.expression();
+            // `array[..]` is a full slice. Do not ask the expression parser
+            // to consume the closing bracket as a synthetic operand; the
+            // absence of both bounds is represented directly by SliceExpr.
+            var end: ?*ast.Expr = null;
+            if (!self.check(.RightBracket)) {
+                end = try self.expression();
+            }
             _ = try self.expect(.RightBracket, "Expected ']' after slice");
 
             const slice_expr = try ast.SliceExpr.init(
