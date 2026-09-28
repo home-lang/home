@@ -8,7 +8,7 @@
 // - Semaphores (binary and counting)
 // - Futex-backed condition variables
 // - Writer-preferring futex-backed read-write locks
-// - Thread barriers
+// - Reusable futex-backed thread barriers
 // - Linux and Windows current-thread CPU affinity
 // - Scheduling policy data types (priority application pending)
 // - Once initialization
@@ -150,6 +150,12 @@ test "public read-write lock permits multiple readers" {
     try lock.lockRead();
     try lock.unlockRead();
     try lock.unlockRead();
+}
+
+test "public single-party barrier returns immediately" {
+    var barrier = try Barrier.init(1);
+    defer barrier.deinit();
+    try barrier.wait();
 }
 
 test "constants defined" {
