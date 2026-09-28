@@ -14,6 +14,7 @@
 // - Once initialization
 
 const std = @import("std");
+const builtin = @import("builtin");
 
 // ============================================================================
 // Public API Exports
@@ -141,4 +142,13 @@ test "public scheduling API exports affinity and priority operations" {
     _ = getAffinity;
     _ = setPriority;
     _ = getPriority;
+}
+
+test "public affinity API reports unsupported platforms" {
+    if (builtin.os.tag == .linux or builtin.os.tag == .windows) return error.SkipZigTest;
+
+    var cpu_set = CpuSet.init();
+    cpu_set.set(0);
+    try std.testing.expectError(ThreadError.OperationNotSupported, setAffinity(&cpu_set));
+    try std.testing.expectError(ThreadError.OperationNotSupported, getAffinity());
 }

@@ -15,7 +15,7 @@
 | Read/write lock | Atomic reader count plus spin-based writer exclusion. No timed operations, preference modes, or upgrade/downgrade API. | [`rwlock.zig`](src/rwlock.zig) and [#802](https://github.com/home-lang/home/issues/802) |
 | Barrier and once | Atomic/spin implementations with focused inline tests. | [`barrier.zig`](src/barrier.zig), [`once.zig`](src/once.zig) |
 | TLS | Fixed process-wide key table and per-key atomic values. Destructor and true per-thread storage semantics are not implemented. | [`tls.zig`](src/tls.zig) |
-| Scheduling | `CpuSet` bit operations and current-thread affinity round trips are implemented on Linux. macOS hard affinity, Windows affinity, and priority application remain unsupported. | [`sched.zig`](src/sched.zig) and [#803](https://github.com/home-lang/home/issues/803) |
+| Scheduling | `CpuSet` bit operations and current-thread affinity are implemented on Linux and with Windows processor groups. Linux has a live round-trip test; Windows conversion tests and cross-compilation cover the ABI, but a live Windows run is still pending. macOS hard affinity and priority application remain unsupported. | [`sched.zig`](src/sched.zig) and [#803](https://github.com/home-lang/home/issues/803) |
 
 The public facade is [`threading.zig`](src/threading.zig). It exports the
 implemented types above, including `BinarySemaphore`, and keeps stack-size
@@ -76,6 +76,8 @@ test plan:
 - [`mutex.zig`](src/mutex.zig), [`condvar.zig`](src/condvar.zig),
   [`rwlock.zig`](src/rwlock.zig), [`barrier.zig`](src/barrier.zig), and
   [`tls.zig`](src/tls.zig): focused current-surface checks.
+- [`sched.zig`](src/sched.zig): cross-word `CpuSet` behavior, Windows
+  processor-group conversion, and platform-gated current-thread round trips.
 
 These tests prove only the current surface. They do not prove fairness,
 contention behavior, real-time scheduling, platform affinity, or data-race
@@ -86,8 +88,8 @@ freedom.
 - [#802](https://github.com/home-lang/home/issues/802): replace spin-only
   mutex/condition/read-write/semaphore waiting with futex-backed primitives.
 - [#803](https://github.com/home-lang/home/issues/803): apply thread priority,
-  add Windows affinity, document macOS affinity tags, and complete OS-level
-  stack verification.
+  document macOS affinity tags, run affinity on live Windows infrastructure,
+  and complete OS-level stack verification.
 - [#805](https://github.com/home-lang/home/issues/805): add language-level
   `spawn`, threads, and the multi-core executor.
 - [#806](https://github.com/home-lang/home/issues/806): implement `Send`/`Sync`
