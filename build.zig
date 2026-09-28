@@ -343,6 +343,11 @@ pub fn build(b: *std.Build) void {
         "filter",
         "Only run umbrella test artifacts whose package name contains this substring",
     );
+    const codegen_test_filter = b.option(
+        []const u8,
+        "codegen-test-filter",
+        "Only compile/run codegen tests whose name contains this substring",
+    );
     const ts_conformance_test_filter = b.option(
         []const u8,
         "ts-conformance-test-filter",
@@ -1317,6 +1322,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
         }),
+        .filters = if (codegen_test_filter) |needle| &.{needle} else &.{},
     });
     codegen_tests.root_module.addImport("codegen", codegen_pkg);
     codegen_tests.root_module.addImport("ast", ast_pkg);

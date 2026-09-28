@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const testing = std.testing;
 const codegen = @import("codegen");
 const Lexer = @import("lexer").Lexer;
@@ -292,4 +293,88 @@ test "codegen: comptime values are evaluated before native emission" {
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
     try testing.expectEqual(std.process.Child.Term{ .exited = 42 }, result.term);
+}
+
+test "codegen: native module symbols keep same-named helpers distinct" {
+    const allocator = testing.allocator;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try std.fs.path.join(allocator, &.{ ".zig-cache", "tmp", tmp.sub_path[0..] });
+    defer allocator.free(root);
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "left.home", .data = "fn helper() -> i32 { return 19 }\n" });
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "right.home", .data = "fn helper() -> i32 { return 23 }\n" });
+
+    const source =
+        \\import left as left
+        \\import right as right
+        \\fn main() -> i32 { return left.helper() + right.helper() }
+    ;
+    var lexer = Lexer.init(allocator, source);
+    var tokens = try lexer.tokenize();
+    defer tokens.deinit(allocator);
+    var parser = try Parser.init(allocator, tokens.items);
+    defer parser.deinit();
+    parser.module_resolver.io = testing.io;
+    try parser.module_resolver.setSourceRootDirect(root);
+    const program = try parser.parse();
+    defer program.deinit(allocator);
+    try testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+
+    const main_path = try std.fs.path.join(allocator, &.{ root, "main.home" });
+    defer allocator.free(main_path);
+
+    const arm64_path = try std.fs.path.join(allocator, &.{ root, "module-symbols-arm64" });
+    defer allocator.free(arm64_path);
+    var arm64_codegen = codegen.Aarch64NativeCodegen.init(allocator, program);
+    defer arm64_codegen.deinit();
+    arm64_codegen.io = testing.io;
+    try arm64_codegen.setSourceRoot(main_path);
+    switch (builtin.os.tag) {
+        .macos, .linux => try arm64_codegen.writeExecutable(arm64_path),
+        else => arm64_codegen.writeExecutable(arm64_path) catch |err| {
+            try testing.expectEqual(error.UnsupportedPlatform, err);
+        },
+    }
+    const arm64_left = arm64_codegen.functions.get("left::helper") orelse return error.TestUnexpectedResult;
+    const arm64_right = arm64_codegen.functions.get("right::helper") orelse return error.TestUnexpectedResult;
+    try testing.expect(arm64_left != arm64_right);
+    const arm64_main = arm64_codegen.functions.get("main") orelse return error.TestUnexpectedResult;
+    var arm64_calls_left = false;
+    var arm64_calls_right = false;
+    var arm64_call_pos = arm64_main;
+    while (arm64_call_pos + 4 <= arm64_codegen.assembler.code.items.len) : (arm64_call_pos += 4) {
+        const instruction = std.mem.readInt(u32, arm64_codegen.assembler.code.items[arm64_call_pos..][0..4], .little);
+        if (instruction & 0xfc000000 != 0x94000000) continue;
+        const immediate = instruction & 0x03ffffff;
+        var word_offset: i64 = immediate;
+        if (immediate & 0x02000000 != 0) word_offset -= 1 << 26;
+        const target = @as(i64, @intCast(arm64_call_pos)) + word_offset * 4;
+        if (target == @as(i64, @intCast(arm64_left))) arm64_calls_left = true;
+        if (target == @as(i64, @intCast(arm64_right))) arm64_calls_right = true;
+    }
+    try testing.expect(arm64_calls_left);
+    try testing.expect(arm64_calls_right);
+
+    var x64_codegen = codegen.NativeCodegen.init(allocator, program, null, null);
+    defer x64_codegen.deinit();
+    x64_codegen.io = testing.io;
+    try x64_codegen.setSourceRoot(main_path);
+    const x64_code = try x64_codegen.generate();
+    defer allocator.free(x64_code);
+    const x64_left = x64_codegen.functions.get("left::helper") orelse return error.TestUnexpectedResult;
+    const x64_right = x64_codegen.functions.get("right::helper") orelse return error.TestUnexpectedResult;
+    try testing.expect(x64_left != x64_right);
+    const x64_main = x64_codegen.functions.get("main") orelse return error.TestUnexpectedResult;
+    var x64_calls_left = false;
+    var x64_calls_right = false;
+    var x64_call_pos = x64_main;
+    while (x64_call_pos + 5 <= x64_code.len) : (x64_call_pos += 1) {
+        if (x64_code[x64_call_pos] != 0xe8) continue;
+        const relative = std.mem.readInt(i32, x64_code[x64_call_pos + 1 ..][0..4], .little);
+        const target = @as(i64, @intCast(x64_call_pos + 5)) + @as(i64, relative);
+        if (target == @as(i64, @intCast(x64_left))) x64_calls_left = true;
+        if (target == @as(i64, @intCast(x64_right))) x64_calls_right = true;
+    }
+    try testing.expect(x64_calls_left);
+    try testing.expect(x64_calls_right);
 }

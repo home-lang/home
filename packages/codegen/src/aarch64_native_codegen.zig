@@ -25,7 +25,8 @@ const elf = @import("elf.zig");
 ///     identifiers and struct field assignments
 ///   - binary expressions: `+ - * /`, `== != < <= > >=`
 ///   - call expressions: positional args only, callee must be a bare
-///     identifier referencing a function in this program
+///     identifier referencing a function in this program, or a qualified
+///     module call such as `math_helpers.square(4)`
 ///   - built-in `print(s)` / `println(s)` for string-literal arguments,
 ///     lowered to the BSD `write` syscall on macOS-arm64
 ///   - struct field reads (`p.x`) and writes (`p.x = ...`)
@@ -54,14 +55,16 @@ pub const CodegenError = error{
     FrameTooLarge,
     InvalidOffset,
     FileSystemAccessDenied,
+    ModuleNotFound,
+    ModuleParseFailed,
 } || std.mem.Allocator.Error;
 
 const PendingCall = struct {
     /// Byte offset in the assembler buffer where the BL instruction lives.
     pos: usize,
-    /// Name of the callee. Borrowed from the AST (Identifier slice), valid
-    /// for the lifetime of the program.
-    callee: []const u8,
+    /// Owned name of the callee. Imported ASTs have independent lifetimes,
+    /// so fixups must not borrow their identifier slices.
+    callee: []u8,
 };
 
 /// A string literal ready to be appended to the code buffer once function
@@ -86,6 +89,12 @@ pub const Aarch64NativeCodegen = struct {
     current_function_name: ?[]const u8 = null,
     io: ?Io = null,
     comptime_store: ?*ComptimeValueStore = null,
+    source_root: ?[]const u8 = null,
+    current_module_prefix: ?[]const u8 = null,
+    imported_modules: std.StringHashMap(void),
+    module_aliases: std.StringHashMap([]const u8),
+    module_sources: std.ArrayList([]const u8),
+    module_arenas: std.ArrayList(*std.heap.ArenaAllocator),
 
     /// Locals → byte offset from SP at prologue end. All locals are 8 bytes
     /// for scalars; struct locals occupy multiple consecutive slots and the
@@ -155,23 +164,180 @@ pub const Aarch64NativeCodegen = struct {
             .struct_layouts = std.StringHashMap(*const ast.StructDecl).init(allocator),
             .enum_layouts = std.StringHashMap(*const ast.EnumDecl).init(allocator),
             .fn_decls = std.StringHashMap(*const ast.FnDecl).init(allocator),
+            .imported_modules = std.StringHashMap(void).init(allocator),
+            .module_aliases = std.StringHashMap([]const u8).init(allocator),
+            .module_sources = std.ArrayList([]const u8).empty,
+            .module_arenas = std.ArrayList(*std.heap.ArenaAllocator).empty,
         };
+    }
+
+    pub fn setSourceRoot(self: *Aarch64NativeCodegen, source_file: []const u8) !void {
+        const next_root = if (std.mem.indexOf(u8, source_file, "/src/")) |src_pos|
+            try self.allocator.dupe(u8, source_file[0..src_pos])
+        else if (std.mem.startsWith(u8, source_file, "src/"))
+            try self.allocator.dupe(u8, ".")
+        else if (std.mem.lastIndexOf(u8, source_file, "/")) |last_slash|
+            try self.allocator.dupe(u8, source_file[0..last_slash])
+        else
+            try self.allocator.dupe(u8, ".");
+        if (self.source_root) |root| self.allocator.free(root);
+        self.source_root = next_root;
     }
 
     pub fn deinit(self: *Aarch64NativeCodegen) void {
         self.assembler.deinit();
+        if (self.source_root) |root| self.allocator.free(root);
+        var function_keys = self.functions.keyIterator();
+        while (function_keys.next()) |key| self.allocator.free(key.*);
         self.functions.deinit();
         self.locals.deinit();
         self.local_struct_types.deinit();
         self.local_array_lens.deinit();
         self.local_enum_types.deinit();
+        for (self.pending_calls.items) |call| self.allocator.free(call.callee);
         self.pending_calls.deinit(self.allocator);
         for (self.strings.items) |str| self.allocator.free(str.bytes);
         self.strings.deinit(self.allocator);
         self.string_fixups.deinit(self.allocator);
         self.struct_layouts.deinit();
         self.enum_layouts.deinit();
+        var fn_decl_keys = self.fn_decls.keyIterator();
+        while (fn_decl_keys.next()) |key| self.allocator.free(key.*);
         self.fn_decls.deinit();
+        var imported_keys = self.imported_modules.keyIterator();
+        while (imported_keys.next()) |key| self.allocator.free(key.*);
+        self.imported_modules.deinit();
+        var alias_iter = self.module_aliases.iterator();
+        while (alias_iter.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+            self.allocator.free(entry.value_ptr.*);
+        }
+        self.module_aliases.deinit();
+        for (self.module_arenas.items) |arena| {
+            arena.deinit();
+            self.allocator.destroy(arena);
+        }
+        self.module_arenas.deinit(self.allocator);
+        for (self.module_sources.items) |source| self.allocator.free(source);
+        self.module_sources.deinit(self.allocator);
+    }
+
+    fn qualify(self: *Aarch64NativeCodegen, prefix: []const u8, name: []const u8) ![]u8 {
+        return std.fmt.allocPrint(self.allocator, "{s}::{s}", .{ prefix, name });
+    }
+
+    fn scopedAliasKey(self: *Aarch64NativeCodegen, alias: []const u8) ![]u8 {
+        if (self.current_module_prefix) |prefix| return self.qualify(prefix, alias);
+        return self.allocator.dupe(u8, alias);
+    }
+
+    fn putFunctionDecl(self: *Aarch64NativeCodegen, name: []const u8, decl: *const ast.FnDecl) !void {
+        if (self.fn_decls.contains(name)) {
+            try self.fn_decls.put(name, decl);
+            return;
+        }
+        const owned = try self.allocator.dupe(u8, name);
+        errdefer self.allocator.free(owned);
+        try self.fn_decls.put(owned, decl);
+    }
+
+    fn registerModuleAlias(self: *Aarch64NativeCodegen, alias: []const u8, module_key: []const u8) !void {
+        const scoped = try self.scopedAliasKey(alias);
+        errdefer self.allocator.free(scoped);
+        if (self.module_aliases.getPtr(scoped)) |existing| {
+            const target = try self.allocator.dupe(u8, module_key);
+            self.allocator.free(existing.*);
+            existing.* = target;
+            self.allocator.free(scoped);
+            return;
+        }
+        const target = try self.allocator.dupe(u8, module_key);
+        errdefer self.allocator.free(target);
+        try self.module_aliases.put(scoped, target);
+    }
+
+    fn handleImport(self: *Aarch64NativeCodegen, decl: *ast.ImportDecl) CodegenError!void {
+        var key = std.ArrayList(u8).empty;
+        defer key.deinit(self.allocator);
+        for (decl.path, 0..) |part, index| {
+            if (index != 0) try key.append(self.allocator, '/');
+            try key.appendSlice(self.allocator, part);
+        }
+        const module_key = key.items;
+        const alias = decl.alias orelse if (decl.path.len > 0) decl.path[decl.path.len - 1] else return error.ModuleNotFound;
+        try self.registerModuleAlias(alias, module_key);
+        if (self.imported_modules.contains(module_key)) return;
+
+        const owned_key = try self.allocator.dupe(u8, module_key);
+        var key_registered = false;
+        errdefer if (!key_registered) self.allocator.free(owned_key);
+        try self.imported_modules.put(owned_key, {});
+        key_registered = true;
+
+        const root = self.source_root orelse ".";
+        const suffix = if (std.mem.endsWith(u8, module_key, ".home") or std.mem.endsWith(u8, module_key, ".hm")) "" else ".home";
+        const relative = try std.fmt.allocPrint(self.allocator, "{s}{s}", .{ module_key, suffix });
+        defer self.allocator.free(relative);
+        const src_path = try std.fs.path.join(self.allocator, &.{ root, "src", relative });
+        defer self.allocator.free(src_path);
+        const direct_path = try std.fs.path.join(self.allocator, &.{ root, relative });
+        defer self.allocator.free(direct_path);
+
+        const io = self.io orelse return error.FileSystemAccessDenied;
+        const cwd = Io.Dir.cwd();
+        const source = cwd.readFileAlloc(io, src_path, self.allocator, std.Io.Limit.limited(10 * 1024 * 1024)) catch
+            cwd.readFileAlloc(io, direct_path, self.allocator, std.Io.Limit.limited(10 * 1024 * 1024)) catch
+            return error.ModuleNotFound;
+        var source_registered = false;
+        errdefer if (!source_registered) self.allocator.free(source);
+
+        const arena = try self.allocator.create(std.heap.ArenaAllocator);
+        var arena_registered = false;
+        errdefer if (!arena_registered) self.allocator.destroy(arena);
+        arena.* = std.heap.ArenaAllocator.init(self.allocator);
+        errdefer if (!arena_registered) arena.deinit();
+        const module_allocator = arena.allocator();
+        const Lexer = @import("lexer").Lexer;
+        const Parser = @import("parser").Parser;
+        var lexer = Lexer.init(module_allocator, source);
+        const tokens = lexer.tokenize() catch return error.ModuleParseFailed;
+        var parser = Parser.init(module_allocator, tokens.items) catch return error.ModuleParseFailed;
+        defer parser.deinit();
+        parser.module_resolver.setSourceRootDirect(root) catch return error.ModuleParseFailed;
+        const module = parser.parse() catch return error.ModuleParseFailed;
+        if (parser.errors.items.len != 0) return error.ModuleParseFailed;
+        try self.module_sources.append(self.allocator, source);
+        source_registered = true;
+        try self.module_arenas.append(self.allocator, arena);
+        arena_registered = true;
+
+        const previous_prefix = self.current_module_prefix;
+        self.current_module_prefix = owned_key;
+        defer self.current_module_prefix = previous_prefix;
+
+        for (module.statements) |stmt| {
+            switch (stmt) {
+                .FnDecl => |fn_decl| {
+                    const qualified = try self.qualify(owned_key, fn_decl.name);
+                    defer self.allocator.free(qualified);
+                    if (!fn_decl.is_forward_decl or !self.fn_decls.contains(qualified)) {
+                        try self.putFunctionDecl(qualified, fn_decl);
+                    }
+                },
+                else => {},
+            }
+        }
+        // Resolve every nested import before emitting any local function.
+        // Home permits declarations before imports, and those declarations
+        // must still be able to call a namespace introduced later in the file.
+        for (module.statements) |stmt| switch (stmt) {
+            .ImportDecl => |import_decl| try self.handleImport(import_decl),
+            else => {},
+        };
+        for (module.statements) |stmt| switch (stmt) {
+            .ImportDecl => {},
+            else => try self.generateStmt(stmt),
+        };
     }
 
     pub fn writeExecutable(self: *Aarch64NativeCodegen, path: []const u8) !void {
@@ -185,12 +351,21 @@ pub const Aarch64NativeCodegen = struct {
                     // A forward declaration (issue #17) must not clobber a
                     // real definition already registered under the name.
                     if (!decl.is_forward_decl or !self.fn_decls.contains(decl.name)) {
-                        try self.fn_decls.put(decl.name, decl);
+                        try self.putFunctionDecl(decl.name, decl);
                     }
                 },
                 else => {},
             }
         }
+
+        // Load imports before emitting any root function. Import declarations
+        // are not required to precede functions in source order, so delaying
+        // this until generateStmt would make an earlier function unable to
+        // resolve a later module alias.
+        for (self.program.statements) |stmt| switch (stmt) {
+            .ImportDecl => |import_decl| try self.handleImport(import_decl),
+            else => {},
+        };
 
         // Two-pass emission to dodge forward-reference pain: first emit every
         // non-main function (so any `bl foo` from main lands on a known
@@ -203,6 +378,7 @@ pub const Aarch64NativeCodegen = struct {
                         try self.generateStmt(stmt);
                     }
                 },
+                .ImportDecl => {},
                 else => try self.generateStmt(stmt),
             }
         }
@@ -257,6 +433,7 @@ pub const Aarch64NativeCodegen = struct {
                 // emitting them would duplicate the later definition's symbol.
                 if (!func.is_forward_decl) try self.generateFnDecl(func);
             },
+            .ImportDecl => |decl| try self.handleImport(decl),
             .StructDecl => {}, // registered in writeExecutable's pass 0
             .EnumDecl => {}, // registered in writeExecutable's pass 0
             .LetDecl => |decl| try self.generateLetDecl(decl),
@@ -339,6 +516,9 @@ pub const Aarch64NativeCodegen = struct {
     }
 
     fn generateFnDecl(self: *Aarch64NativeCodegen, func: *ast.FnDecl) CodegenError!void {
+        const qualified = if (self.current_module_prefix) |prefix| try self.qualify(prefix, func.name) else null;
+        defer if (qualified) |name| self.allocator.free(name);
+        const effective_name = qualified orelse func.name;
         // Compute per-param register/slot counts up front so we can validate
         // the AAPCS64 budget (8 regs total) before emitting any code.
         var total_param_regs: u32 = 0;
@@ -351,10 +531,14 @@ pub const Aarch64NativeCodegen = struct {
         if (total_param_regs > 8) return error.TooManyArguments;
 
         const offset = self.assembler.getPosition();
-        try self.functions.put(func.name, offset);
+        if (!self.functions.contains(effective_name)) {
+            const owned = try self.allocator.dupe(u8, effective_name);
+            errdefer self.allocator.free(owned);
+            try self.functions.put(owned, offset);
+        }
 
         const prev_name = self.current_function_name;
-        self.current_function_name = func.name;
+        self.current_function_name = effective_name;
         defer self.current_function_name = prev_name;
 
         // Reset per-function state.
@@ -416,7 +600,7 @@ pub const Aarch64NativeCodegen = struct {
         // bodies that don't end in an explicit `return` still exit cleanly
         // (otherwise control would walk past the function into whatever
         // bytes follow — strings, the next function, etc.).
-        const is_main = std.mem.eql(u8, func.name, "main");
+        const is_main = std.mem.eql(u8, effective_name, "main");
         if (is_main) {
             try self.assembler.movRegImm64(.x0, 0);
             switch (builtin.os.tag) {
@@ -1084,8 +1268,32 @@ pub const Aarch64NativeCodegen = struct {
     fn generateCallExpr(self: *Aarch64NativeCodegen, call: *ast.CallExpr) CodegenError!void {
         if (call.named_args.len != 0) return error.NotImplemented;
 
+        var owned_callee: ?[]u8 = null;
+        defer if (owned_callee) |name| self.allocator.free(name);
         const callee_name: []const u8 = switch (call.callee.*) {
-            .Identifier => |ident| ident.name,
+            .Identifier => |ident| blk: {
+                if (self.current_module_prefix) |prefix| {
+                    const qualified = try self.qualify(prefix, ident.name);
+                    if (self.fn_decls.contains(qualified) or self.functions.contains(qualified)) {
+                        owned_callee = qualified;
+                        break :blk qualified;
+                    }
+                    self.allocator.free(qualified);
+                }
+                break :blk ident.name;
+            },
+            .MemberExpr => |member| blk: {
+                const object = switch (member.object.*) {
+                    .Identifier => |ident| ident.name,
+                    else => return error.InvalidCallTarget,
+                };
+                const alias_key = try self.scopedAliasKey(object);
+                defer self.allocator.free(alias_key);
+                const module_key = self.module_aliases.get(alias_key) orelse return error.InvalidCallTarget;
+                const qualified = try self.qualify(module_key, member.member);
+                owned_callee = qualified;
+                break :blk qualified;
+            },
             else => return error.InvalidCallTarget,
         };
 
@@ -1158,7 +1366,12 @@ pub const Aarch64NativeCodegen = struct {
             const back: i32 = @as(i32, @intCast(target)) - @as(i32, @intCast(call_pos));
             try self.assembler.bl(back);
         } else {
-            try self.pending_calls.append(self.allocator, .{ .pos = call_pos, .callee = callee_name });
+            const pending_callee = try self.allocator.dupe(u8, callee_name);
+            errdefer self.allocator.free(pending_callee);
+            try self.pending_calls.append(self.allocator, .{
+                .pos = call_pos,
+                .callee = pending_callee,
+            });
             try self.assembler.bl(0); // placeholder
         }
         // Result lives in x0 (and x1 for payload-enum returns); the caller

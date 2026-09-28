@@ -3662,6 +3662,7 @@ fn buildCommand(allocator: std.mem.Allocator, options: BuildCliOptions) !void {
             defer codegen.deinit();
             codegen.io = g_io;
             codegen.comptime_store = &comptime_store;
+            try codegen.setSourceRoot(file_path);
 
             codegen.writeExecutable(out_path) catch |err| {
                 if (codegen.io) |cio| {
@@ -3706,13 +3707,9 @@ fn buildCommand(allocator: std.mem.Allocator, options: BuildCliOptions) !void {
         // FileSystemAccessDenied.
         codegen.io = g_io;
 
-        // Module prefix wiring for mangleMethodName is not enabled here yet:
-        // call sites and emission sites already route through the helper,
-        // but enabling the prefix breaks the ImplDecl emission path because
-        // the MachO/ELF writer resolves the generated methods to position 0
-        // when the key length changes. Leaving `module_prefix` null keeps
-        // the historical bare `Type$method` form so nothing regresses; the
-        // helper is ready to be flipped on once the writer issue is traced.
+        // The root module intentionally keeps bare symbols. Imported modules
+        // temporarily install their canonical prefix while they are emitted,
+        // preventing same-named functions and methods from colliding.
         codegen.module_prefix = null;
 
         // Set source root for import resolution

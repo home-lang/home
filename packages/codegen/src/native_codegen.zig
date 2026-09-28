@@ -113,6 +113,13 @@ pub const FunctionParamInfo = layouts.FunctionParamInfo;
 pub const FunctionInfo = layouts.FunctionInfo;
 pub const StringFixup = layouts.StringFixup;
 
+const PendingFunctionCall = struct {
+    /// Position of the rel32 displacement (the byte immediately after E8).
+    rel32_pos: usize,
+    /// Owned symbol name; imported AST arenas are independent of call fixups.
+    callee: []u8,
+};
+
 /// Simple register allocator for optimizing register usage
 /// Tracks which registers are currently in use and allocates them efficiently
 pub const RegisterAllocator = struct {
@@ -769,11 +776,24 @@ pub const NativeCodegen = struct {
     // Import tracking
     /// Set of already-imported module paths to prevent duplicate imports
     imported_modules: std.StringHashMap(void),
+    /// Type registration parses imports separately from code emission, so it
+    /// needs an independent visited set. Sharing the code-emission set caused
+    /// every imported function body to be skipped after PASS 1.
+    registered_type_modules: std.StringHashMap(void),
+    /// Scoped alias (`parent::alias`, or bare alias at the root) to canonical
+    /// module key. Values and keys are owned by this codegen instance.
+    module_aliases: std.StringHashMap([]const u8),
 
     // Module source buffers
     /// Sources of imported modules - must be kept alive until codegen completes
     /// because string literals in AST point into these buffers
     module_sources: std.ArrayList([]const u8),
+    /// Imported ASTs supply parameter/default-expression pointers retained by
+    /// function_info, so their arenas must outlive code generation.
+    module_arenas: std.ArrayList(*std.heap.ArenaAllocator),
+    /// Calls emitted before their target function are patched after all root
+    /// and imported functions have been generated.
+    pending_function_calls: std.ArrayList(PendingFunctionCall),
 
     // Loop control flow tracking
     /// Stack of loop contexts for break/continue statements
@@ -841,7 +861,11 @@ pub const NativeCodegen = struct {
             .borrow_checker = null, // Initialized on demand
             .source_root = null, // Set via setSourceRoot
             .imported_modules = std.StringHashMap(void).init(allocator),
+            .registered_type_modules = std.StringHashMap(void).init(allocator),
+            .module_aliases = std.StringHashMap([]const u8).init(allocator),
             .module_sources = std.ArrayList([]const u8).empty,
+            .module_arenas = std.ArrayList(*std.heap.ArenaAllocator).empty,
+            .pending_function_calls = std.ArrayList(PendingFunctionCall).empty,
             .comptime_store = comptime_store,
             .loop_stack = std.ArrayList(LoopContext).empty,
             .defer_stack = std.ArrayList(*const ast.Expr).empty,
@@ -855,16 +879,17 @@ pub const NativeCodegen = struct {
         // Find the project root by looking for src/ directory
         // For absolute paths like /path/to/project/src/math/file.home -> /path/to/project
         // For relative paths like src/math/file.home -> . (current directory)
-        if (std.mem.indexOf(u8, source_file, "/src/")) |src_pos| {
-            // Absolute path with /src/ in it
-            self.source_root = try self.allocator.dupe(u8, source_file[0..src_pos]);
-        } else if (std.mem.startsWith(u8, source_file, "src/")) {
-            // Relative path starting with src/ - project root is current directory
-            self.source_root = try self.allocator.dupe(u8, ".");
-        } else if (std.mem.lastIndexOf(u8, source_file, "/")) |last_slash| {
-            // Other path - use parent directory
-            self.source_root = try self.allocator.dupe(u8, source_file[0..last_slash]);
-        }
+        const root_slice = if (std.mem.indexOf(u8, source_file, "/src/")) |src_pos|
+            source_file[0..src_pos]
+        else if (std.mem.startsWith(u8, source_file, "src/"))
+            "."
+        else if (std.mem.lastIndexOf(u8, source_file, "/")) |last_slash|
+            source_file[0..last_slash]
+        else
+            ".";
+        const next_root = try self.allocator.dupe(u8, root_slice);
+        if (self.source_root) |root| self.allocator.free(root);
+        self.source_root = next_root;
     }
 
     /// Clean up codegen resources.
@@ -922,7 +947,7 @@ pub const NativeCodegen = struct {
 
         // Free struct_layouts memory
         {
-            const sentinel: usize = 0xaaaaaaaaaaaaaaaa;
+            const sentinel: usize = @truncate(@as(u64, 0xaaaaaaaaaaaaaaaa));
             var struct_iter = self.struct_layouts.iterator();
             while (struct_iter.next()) |entry| {
                 const key = entry.key_ptr.*;
@@ -959,7 +984,7 @@ pub const NativeCodegen = struct {
 
         // Free enum_layouts memory
         {
-            const sentinel: usize = 0xaaaaaaaaaaaaaaaa;
+            const sentinel: usize = @truncate(@as(u64, 0xaaaaaaaaaaaaaaaa));
             var enum_iter = self.enum_layouts.iterator();
             while (enum_iter.next()) |entry| {
                 const key = entry.key_ptr.*;
@@ -1032,7 +1057,7 @@ pub const NativeCodegen = struct {
 
         // Free imported_modules keys and hashmap
         {
-            const sentinel: usize = 0xaaaaaaaaaaaaaaaa;
+            const sentinel: usize = @truncate(@as(u64, 0xaaaaaaaaaaaaaaaa));
             var import_iter = self.imported_modules.keyIterator();
             while (import_iter.next()) |key_ptr| {
                 const import_key_ptr = @intFromPtr(key_ptr.*.ptr);
@@ -1042,6 +1067,17 @@ pub const NativeCodegen = struct {
             }
             self.imported_modules.deinit();
         }
+        var type_module_iter = self.registered_type_modules.keyIterator();
+        while (type_module_iter.next()) |key| self.allocator.free(key.*);
+        self.registered_type_modules.deinit();
+        var alias_iter = self.module_aliases.iterator();
+        while (alias_iter.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+            self.allocator.free(entry.value_ptr.*);
+        }
+        self.module_aliases.deinit();
+        for (self.pending_function_calls.items) |call| self.allocator.free(call.callee);
+        self.pending_function_calls.deinit(self.allocator);
 
         // Free type integration if initialized
         if (self.type_integration) |*ti| {
@@ -1057,6 +1093,14 @@ pub const NativeCodegen = struct {
         if (self.borrow_checker) |*bc| {
             bc.deinit();
         }
+
+        // Imported ASTs can reference module source buffers, so tear down
+        // their arenas first and release source storage afterwards.
+        for (self.module_arenas.items) |arena| {
+            arena.deinit();
+            self.allocator.destroy(arena);
+        }
+        self.module_arenas.deinit(self.allocator);
 
         // Free imported module source buffers
         for (self.module_sources.items) |source| {
@@ -2860,6 +2904,61 @@ pub const NativeCodegen = struct {
         );
     }
 
+    fn qualifyModuleSymbol(self: *NativeCodegen, prefix: []const u8, name: []const u8) ![]u8 {
+        return std.fmt.allocPrint(self.allocator, "{s}::{s}", .{ prefix, name });
+    }
+
+    fn scopedModuleAlias(self: *NativeCodegen, alias: []const u8) ![]u8 {
+        if (self.module_prefix) |prefix| return self.qualifyModuleSymbol(prefix, alias);
+        return self.allocator.dupe(u8, alias);
+    }
+
+    fn registerModuleAlias(self: *NativeCodegen, alias: []const u8, module_key: []const u8) !void {
+        const scoped = try self.scopedModuleAlias(alias);
+        errdefer self.allocator.free(scoped);
+        if (self.module_aliases.getPtr(scoped)) |existing| {
+            const replacement = try self.allocator.dupe(u8, module_key);
+            self.allocator.free(existing.*);
+            existing.* = replacement;
+            self.allocator.free(scoped);
+            return;
+        }
+        const target = try self.allocator.dupe(u8, module_key);
+        errdefer self.allocator.free(target);
+        try self.module_aliases.put(scoped, target);
+    }
+
+    fn registerFunctionSignature(self: *NativeCodegen, name: []const u8, func: *ast.FnDecl) !void {
+        if (self.function_info.contains(name)) return;
+
+        var param_infos = try self.allocator.alloc(FunctionParamInfo, func.params.len);
+        errdefer self.allocator.free(param_infos);
+        var required_params: usize = 0;
+        for (func.params, 0..) |param, index| {
+            param_infos[index] = .{
+                .name = param.name,
+                .type_name = param.type_name,
+                .default_value = param.default_value,
+            };
+            if (param.default_value == null) required_params += 1;
+        }
+
+        const owned_name = try self.allocator.dupe(u8, name);
+        errdefer self.allocator.free(owned_name);
+        try self.function_info.put(owned_name, .{
+            .position = 0,
+            .params = param_infos,
+            .required_params = required_params,
+        });
+    }
+
+    fn resolvePendingFunctionCalls(self: *NativeCodegen) !void {
+        for (self.pending_function_calls.items) |call| {
+            const target = self.functions.get(call.callee) orelse return error.UnsupportedFeature;
+            try self.assembler.patchRel32(call.rel32_pos, target);
+        }
+    }
+
     /// Natural alignment for a primitive or known struct type. Used to
     /// pad struct fields so each one lands on a multiple of its own
     /// alignment, matching the C / SysV layout rules most callers
@@ -3100,11 +3199,22 @@ pub const NativeCodegen = struct {
         // a forward-declared async fn would emit a plain call.
         try self.preregisterAsyncFns(self.program.statements);
 
+        for (self.program.statements) |stmt| switch (stmt) {
+            .FnDecl => |func| try self.registerFunctionSignature(func.name, func),
+            else => {},
+        };
+        for (self.program.statements) |stmt| switch (stmt) {
+            .ImportDecl => |import_decl| try self.handleImport(import_decl),
+            else => {},
+        };
+
         // Generate code for all statements.
         // Note: Don't add prologue/epilogue here - each function handles its own.
-        for (self.program.statements) |stmt| {
-            try self.generateStmt(stmt);
-        }
+        for (self.program.statements) |stmt| switch (stmt) {
+            .ImportDecl => {},
+            else => try self.generateStmt(stmt),
+        };
+        try self.resolvePendingFunctionCalls();
 
         return try self.assembler.getCode();
     }
@@ -3254,13 +3364,13 @@ pub const NativeCodegen = struct {
         const module_key = key_list.items;
 
         // Check if already imported
-        if (self.imported_modules.contains(module_key)) {
+        if (self.registered_type_modules.contains(module_key)) {
             return; // Already imported, skip
         }
 
         // Mark as imported (store a copy of the key)
         const key_copy = self.allocator.dupe(u8, module_key) catch return;
-        self.imported_modules.put(key_copy, {}) catch {
+        self.registered_type_modules.put(key_copy, {}) catch {
             self.allocator.free(key_copy);
             return;
         };
@@ -3395,10 +3505,24 @@ pub const NativeCodegen = struct {
         // PASS 1: Register all types from this module and all imports
         try self.registerAllTypes();
 
-        // PASS 2: Generate code (all types now available)
-        for (self.program.statements) |stmt| {
-            try self.generateStmt(stmt);
-        }
+        // PASS 2: Register root signatures and load all imported modules.
+        // This makes forward calls and imports declared after functions
+        // independent of source order.
+        for (self.program.statements) |stmt| switch (stmt) {
+            .FnDecl => |func| try self.registerFunctionSignature(func.name, func),
+            else => {},
+        };
+        for (self.program.statements) |stmt| switch (stmt) {
+            .ImportDecl => |import_decl| try self.handleImport(import_decl),
+            else => {},
+        };
+
+        // PASS 3: Generate root code. Imports were emitted above.
+        for (self.program.statements) |stmt| switch (stmt) {
+            .ImportDecl => {},
+            else => try self.generateStmt(stmt),
+        };
+        try self.resolvePendingFunctionCalls();
 
         // Calculate data section file offset (after code + padding)
         const page_size: usize = 0x1000;
@@ -4874,7 +4998,6 @@ pub const NativeCodegen = struct {
     }
 
     fn handleImport(self: *NativeCodegen, import_decl: *ast.ImportDecl) CodegenError!void {
-        // Build module key from path components
         var key_list = std.ArrayList(u8).empty;
         defer key_list.deinit(self.allocator);
         for (import_decl.path, 0..) |component, i| {
@@ -4882,124 +5005,83 @@ pub const NativeCodegen = struct {
             try key_list.appendSlice(self.allocator, component);
         }
         const module_key = key_list.items;
+        if (module_key.len == 0) return error.ImportFailed;
 
-        // Check if already imported
-        if (self.imported_modules.contains(module_key)) {
-            return; // Already imported, skip
-        }
+        const alias = import_decl.alias orelse import_decl.path[import_decl.path.len - 1];
+        try self.registerModuleAlias(alias, module_key);
 
-        // Mark as imported (store a copy of the key)
+        if (self.imported_modules.contains(module_key)) return;
+
         const key_copy = try self.allocator.dupe(u8, module_key);
+        var key_registered = false;
+        errdefer if (!key_registered) self.allocator.free(key_copy);
         try self.imported_modules.put(key_copy, {});
+        key_registered = true;
 
-        // Convert import path to file path
-        // Use source_root if available, otherwise use current directory
-        var path_list = std.ArrayList(u8).empty;
-        defer path_list.deinit(self.allocator);
+        const root = self.source_root orelse ".";
+        const suffix = if (std.mem.endsWith(u8, module_key, ".home") or std.mem.endsWith(u8, module_key, ".hm")) "" else ".home";
+        const relative = try std.fmt.allocPrint(self.allocator, "{s}{s}", .{ module_key, suffix });
+        defer self.allocator.free(relative);
+        const src_path = try std.fs.path.join(self.allocator, &.{ root, "src", relative });
+        defer self.allocator.free(src_path);
+        const direct_path = try std.fs.path.join(self.allocator, &.{ root, relative });
+        defer self.allocator.free(direct_path);
 
-        // Add source root prefix if available (skip "." as it's redundant)
-        if (self.source_root) |root| {
-            if (!std.mem.eql(u8, root, ".")) {
-                try path_list.appendSlice(self.allocator, root);
-                try path_list.append(self.allocator, '/');
-            }
-        }
+        const io = self.io orelse return error.ImportFailed;
+        const cwd = Io.Dir.cwd();
+        const module_source = cwd.readFileAlloc(io, src_path, self.allocator, std.Io.Limit.limited(10 * 1024 * 1024)) catch
+            cwd.readFileAlloc(io, direct_path, self.allocator, std.Io.Limit.limited(10 * 1024 * 1024)) catch
+            return error.ImportFailed;
+        var source_registered = false;
+        errdefer if (!source_registered) self.allocator.free(module_source);
 
-        // Try src/ subdirectory first
-        try path_list.appendSlice(self.allocator, "src/");
-        for (import_decl.path, 0..) |component, i| {
-            if (i > 0) try path_list.append(self.allocator, '/');
-            try path_list.appendSlice(self.allocator, component);
-        }
-        try path_list.appendSlice(self.allocator, ".home");
-
-        var module_path = path_list.items;
-
-        // Try to read from src/ first
-        const io_val2 = self.io orelse return;
-        const cwd2 = Io.Dir.cwd();
-        const module_source = cwd2.readFileAlloc(
-            io_val2,
-            module_path,
-            self.allocator,
-            std.Io.Limit.limited(10 * 1024 * 1024), // 10MB max
-        ) catch blk: {
-            // If src/ doesn't work, try without src/ prefix (just the path)
-            path_list.clearRetainingCapacity();
-            for (import_decl.path, 0..) |component, i| {
-                if (i > 0) try path_list.append(self.allocator, '/');
-                try path_list.appendSlice(self.allocator, component);
-            }
-            try path_list.appendSlice(self.allocator, ".home");
-            module_path = path_list.items;
-
-            break :blk cwd2.readFileAlloc(
-                io_val2,
-                module_path,
-                self.allocator,
-                std.Io.Limit.limited(10 * 1024 * 1024),
-            ) catch |err| {
-                std.debug.print("Failed to read import file '{s}': {}\n", .{ module_path, err });
-                return;
-            };
-        };
-        // Store source in module_sources list - DON'T free it here!
-        // String literals in the AST point into this buffer
-        try self.module_sources.append(self.allocator, module_source);
-
-        // Parse the module using an arena allocator to avoid leak issues
-        // The arena ensures all AST memory is freed when we're done
         const lexer_mod = @import("lexer");
         const parser_mod = @import("parser");
 
-        var arena = std.heap.ArenaAllocator.init(self.allocator);
-        defer arena.deinit();
+        const arena = try self.allocator.create(std.heap.ArenaAllocator);
+        var arena_registered = false;
+        errdefer if (!arena_registered) self.allocator.destroy(arena);
+        arena.* = std.heap.ArenaAllocator.init(self.allocator);
+        errdefer if (!arena_registered) arena.deinit();
         const arena_alloc = arena.allocator();
 
         var lexer = lexer_mod.Lexer.init(arena_alloc, module_source);
-        const token_list = lexer.tokenize() catch |err| {
-            std.debug.print("Failed to tokenize module '{s}': {}\n", .{ module_path, err });
-            return;
-        };
+        const token_list = lexer.tokenize() catch return error.ImportFailed;
         const tokens = token_list.items;
 
-        var parser = parser_mod.Parser.init(arena_alloc, tokens) catch |err| {
-            std.debug.print("Failed to create parser for module '{s}': {}\n", .{ module_path, err });
-            return;
-        };
+        var parser = parser_mod.Parser.init(arena_alloc, tokens) catch return error.ImportFailed;
         defer parser.deinit();
+        parser.module_resolver.setSourceRootDirect(root) catch return error.ImportFailed;
+        const module_ast = parser.parse() catch return error.ImportFailed;
+        if (parser.errors.items.len != 0) return error.ImportFailed;
 
-        // Set source root for nested imports - use the same source root as the main module
-        if (self.source_root) |root| {
-            parser.module_resolver.setSourceRootDirect(root) catch {};
-        } else {
-            // Fall back to using the module path to determine source root
-            parser.module_resolver.setSourceRoot(module_path) catch {};
-        }
+        try self.module_sources.append(self.allocator, module_source);
+        source_registered = true;
+        try self.module_arenas.append(self.allocator, arena);
+        arena_registered = true;
 
-        const module_ast = parser.parse() catch |err| {
-            std.debug.print("Failed to parse module '{s}': {}\n", .{ module_path, err });
-            return;
+        const previous_prefix = self.module_prefix;
+        self.module_prefix = key_copy;
+        defer self.module_prefix = previous_prefix;
+
+        // Register every function signature before code emission so calls to
+        // later declarations get a rel32 fixup rather than a zero target.
+        for (module_ast.statements) |stmt| switch (stmt) {
+            .FnDecl => |func| {
+                const qualified = try self.qualifyModuleSymbol(key_copy, func.name);
+                defer self.allocator.free(qualified);
+                try self.registerFunctionSignature(qualified, func);
+            },
+            else => {},
         };
-        // Arena allocator will free all AST memory when it's deinitialized
-
-        // If the module had parse errors, skip code generation entirely
-        // Parse errors can leave invalid AST nodes with garbage pointers
-        if (parser.errors.items.len > 0) {
-            std.debug.print("Skipping module '{s}' due to {d} parse error(s)\n", .{ module_path, parser.errors.items.len });
-            return;
-        }
-
-        // Generate code for all module statements
-        // This will register functions, structs, etc. in our codegen context
-        for (module_ast.statements) |stmt| {
-            // Make individual statement generation non-fatal to allow partial compilation
-            self.generateStmt(stmt) catch |err| {
-                // Skip statements that fail to generate (may be from parse error recovery)
-                std.debug.print("Skipping statement in module (error: {})\n", .{err});
-                continue;
-            };
-        }
+        for (module_ast.statements) |stmt| switch (stmt) {
+            .ImportDecl => |nested| try self.handleImport(nested),
+            else => {},
+        };
+        for (module_ast.statements) |stmt| switch (stmt) {
+            .ImportDecl => {},
+            else => try self.generateStmt(stmt),
+        };
     }
 
     /// Check if an expression is a string type
@@ -6815,6 +6897,11 @@ pub const NativeCodegen = struct {
     }
 
     fn generateFnDecl(self: *NativeCodegen, func: *ast.FnDecl) CodegenError!void {
+        if (self.module_prefix) |prefix| {
+            const qualified = try self.qualifyModuleSymbol(prefix, func.name);
+            defer self.allocator.free(qualified);
+            return self.generateFnDeclWithName(func, qualified);
+        }
         return self.generateFnDeclWithName(func, null);
     }
 
@@ -6924,39 +7011,16 @@ pub const NativeCodegen = struct {
 
         // Record function position
         const func_pos = self.assembler.getPosition();
-        // Only put if not pre-registered (methods are pre-registered with mangled names)
-        if (!self.functions.contains(effective_name)) {
+        if (self.functions.getPtr(effective_name)) |position| {
+            position.* = func_pos;
+        } else {
             const name_copy = try self.allocator.dupe(u8, effective_name);
             errdefer self.allocator.free(name_copy);
             try self.functions.put(name_copy, func_pos);
         }
 
-        // Store function info with parameter defaults
-        // Only register function_info if not already registered
-        if (!self.function_info.contains(effective_name)) {
-            var param_infos = try self.allocator.alloc(FunctionParamInfo, func.params.len);
-            errdefer self.allocator.free(param_infos);
-
-            var required_params: usize = 0;
-            for (func.params, 0..) |param, i| {
-                param_infos[i] = .{
-                    .name = param.name,
-                    .type_name = param.type_name,
-                    .default_value = param.default_value,
-                };
-                if (param.default_value == null) {
-                    required_params += 1;
-                }
-            }
-
-            const info_name_copy = try self.allocator.dupe(u8, effective_name);
-            errdefer self.allocator.free(info_name_copy);
-            try self.function_info.put(info_name_copy, .{
-                .position = func_pos,
-                .params = param_infos,
-                .required_params = required_params,
-            });
-        }
+        try self.registerFunctionSignature(effective_name, func);
+        self.function_info.getPtr(effective_name).?.position = func_pos;
 
         // Function prologue
         try self.assembler.pushReg(.rbp);
@@ -7469,6 +7533,103 @@ pub const NativeCodegen = struct {
         try self.assembler.fstpSt1();
         try self.assembler.fstpQwordRsp();
         try self.assembler.popReg(.rax);
+    }
+
+    /// Emit a direct call to a known function symbol. Signatures are
+    /// registered before bodies are emitted, so a known function may not have
+    /// a code position yet; in that case emit a placeholder and patch it once
+    /// every module has been generated.
+    fn tryEmitFunctionCall(
+        self: *NativeCodegen,
+        call: *const ast.CallExpr,
+        func_name: []const u8,
+    ) CodegenError!bool {
+        const func_info = self.function_info.get(func_name);
+        const func_pos = self.functions.get(func_name);
+        if (func_info == null and func_pos == null) return false;
+
+        const arg_regs = [_]x64.Register{ .rdi, .rsi, .rdx, .rcx, .r8, .r9 };
+        const total_params = if (func_info) |info| info.params.len else call.args.len;
+        const total_args = @max(call.args.len + call.named_args.len, total_params);
+
+        const resolved_args = try self.allocator.alloc(?*ast.Expr, total_args);
+        defer self.allocator.free(resolved_args);
+        @memset(resolved_args, null);
+
+        for (call.args, 0..) |arg, index| resolved_args[index] = arg;
+        if (func_info) |info| {
+            for (call.named_args) |named_arg| {
+                for (info.params, 0..) |param, param_index| {
+                    if (std.mem.eql(u8, param.name, named_arg.name)) {
+                        resolved_args[param_index] = named_arg.value;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // SysV passes arguments after the sixth on the stack, right-to-left.
+        if (total_args > arg_regs.len) {
+            var index = total_args;
+            while (index > arg_regs.len) {
+                index -= 1;
+                if (resolved_args[index]) |arg_expr| {
+                    try self.generateExpr(arg_expr);
+                } else if (func_info) |info| {
+                    if (index < info.params.len and info.params[index].default_value != null) {
+                        try self.generateExpr(info.params[index].default_value.?);
+                    } else {
+                        try self.assembler.movRegImm64(.rax, 0);
+                    }
+                } else {
+                    try self.assembler.movRegImm64(.rax, 0);
+                }
+                try self.assembler.pushReg(.rax);
+            }
+        }
+
+        const reg_arg_count = @min(total_args, arg_regs.len);
+        for (0..reg_arg_count) |index| {
+            if (resolved_args[index]) |arg_expr| {
+                try self.generateExpr(arg_expr);
+            } else if (func_info) |info| {
+                if (index < info.params.len and info.params[index].default_value != null) {
+                    try self.generateExpr(info.params[index].default_value.?);
+                } else {
+                    try self.assembler.movRegImm64(.rax, 0);
+                }
+            } else {
+                try self.assembler.movRegImm64(.rax, 0);
+            }
+            try self.assembler.pushReg(.rax);
+        }
+
+        var index = reg_arg_count;
+        while (index > 0) {
+            index -= 1;
+            try self.assembler.popReg(arg_regs[index]);
+        }
+
+        if (func_pos) |position| {
+            const call_pos = self.assembler.getPosition();
+            const rel_offset = @as(i32, @intCast(position)) - @as(i32, @intCast(call_pos + 5));
+            try self.assembler.callRel32(rel_offset);
+        } else {
+            const call_pos = self.assembler.getPosition();
+            try self.assembler.callRel32(0);
+            const owned_callee = try self.allocator.dupe(u8, func_name);
+            errdefer self.allocator.free(owned_callee);
+            try self.pending_function_calls.append(self.allocator, .{
+                .rel32_pos = call_pos + 1,
+                .callee = owned_callee,
+            });
+        }
+
+        if (total_args > arg_regs.len) {
+            const stack_bytes: i32 = @intCast((total_args - arg_regs.len) * 8);
+            try self.assembler.addRegImm(.rsp, stack_bytes);
+        }
+        return true;
     }
 
     fn generateExpr(self: *NativeCodegen, expr: *const ast.Expr) CodegenError!void {
@@ -8048,6 +8209,22 @@ pub const NativeCodegen = struct {
 
                                 return;
                             }
+                        }
+                    }
+
+                    // An imported module namespace is not a runtime receiver.
+                    // Resolve `alias.function()` to the canonical qualified
+                    // symbol before the generic instance/static-method paths.
+                    if (member.object.* == .Identifier) {
+                        const alias_key = try self.scopedModuleAlias(member.object.Identifier.name);
+                        defer self.allocator.free(alias_key);
+                        if (self.module_aliases.get(alias_key)) |module_key| {
+                            const qualified = try self.qualifyModuleSymbol(module_key, member.member);
+                            defer self.allocator.free(qualified);
+                            if (!try self.tryEmitFunctionCall(call, qualified)) {
+                                return error.UnsupportedFeature;
+                            }
+                            return;
                         }
                     }
 
@@ -8655,112 +8832,23 @@ pub const NativeCodegen = struct {
                     // This allows the game to compile even with unimplemented methods
                 }
 
-                // x64 calling convention: rdi, rsi, rdx, rcx, r8, r9 for first 6 args
                 if (call.callee.* == .Identifier) {
-                    const func_name = call.callee.Identifier.name;
+                    const bare_name = call.callee.Identifier.name;
+                    var qualified_name: ?[]u8 = null;
+                    defer if (qualified_name) |name| self.allocator.free(name);
 
-                    // Check if it's a known function
-                    if (self.functions.get(func_name)) |func_pos| {
-                        // x64 System V ABI: first 6 integer args in registers, rest on stack
-                        const arg_regs = [_]x64.Register{ .rdi, .rsi, .rdx, .rcx, .r8, .r9 };
-
-                        // Get function info for default parameter and named argument handling
-                        const func_info = self.function_info.get(func_name);
-                        const total_params = if (func_info) |info| info.params.len else call.args.len;
-
-                        // Resolve arguments: build an array of expressions for each parameter position
-                        // Start with null for each position
-                        var resolved_args: [16]?*ast.Expr = @splat(null);
-
-                        // Fill in positional arguments
-                        for (call.args, 0..) |arg, idx| {
-                            if (idx < resolved_args.len) {
-                                resolved_args[idx] = arg;
-                            }
+                    var func_name = bare_name;
+                    if (self.module_prefix) |prefix| {
+                        const candidate = try self.qualifyModuleSymbol(prefix, bare_name);
+                        if (self.function_info.contains(candidate) or self.functions.contains(candidate)) {
+                            qualified_name = candidate;
+                            func_name = candidate;
+                        } else {
+                            self.allocator.free(candidate);
                         }
-
-                        // Fill in named arguments by matching parameter names
-                        if (func_info) |info| {
-                            for (call.named_args) |named_arg| {
-                                // Find the parameter index for this named argument
-                                for (info.params, 0..) |param, param_idx| {
-                                    if (std.mem.eql(u8, param.name, named_arg.name)) {
-                                        if (param_idx < resolved_args.len) {
-                                            resolved_args[param_idx] = named_arg.value;
-                                        }
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-
-                        const total_args = @max(call.args.len + call.named_args.len, total_params);
-                        const reg_arg_count = @min(total_args, arg_regs.len);
-
-                        // Push stack arguments first (args 7+) in reverse order
-                        // This is required by System V ABI: caller pushes in reverse
-                        if (total_args > arg_regs.len) {
-                            var i: usize = total_args;
-                            while (i > arg_regs.len) {
-                                i -= 1;
-                                if (resolved_args[i]) |arg_expr| {
-                                    try self.generateExpr(arg_expr);
-                                } else if (func_info) |info| {
-                                    // Use default value
-                                    if (i < info.params.len and info.params[i].default_value != null) {
-                                        try self.generateExpr(info.params[i].default_value.?);
-                                    } else {
-                                        try self.assembler.movRegImm64(.rax, 0);
-                                    }
-                                } else {
-                                    try self.assembler.movRegImm64(.rax, 0);
-                                }
-                                try self.assembler.pushReg(.rax);
-                            }
-                        }
-
-                        // Evaluate register arguments and push onto stack first
-                        var i: usize = 0;
-                        while (i < reg_arg_count) : (i += 1) {
-                            if (resolved_args[i]) |arg_expr| {
-                                try self.generateExpr(arg_expr);
-                            } else if (func_info) |info| {
-                                // Use default value
-                                if (i < info.params.len and info.params[i].default_value != null) {
-                                    try self.generateExpr(info.params[i].default_value.?);
-                                } else {
-                                    try self.assembler.movRegImm64(.rax, 0);
-                                }
-                            } else {
-                                try self.assembler.movRegImm64(.rax, 0);
-                            }
-                            try self.assembler.pushReg(.rax);
-                        }
-
-                        // Pop arguments into correct registers (in reverse order)
-                        if (reg_arg_count > 0) {
-                            var j: usize = reg_arg_count;
-                            while (j > 0) {
-                                j -= 1;
-                                try self.assembler.popReg(arg_regs[j]);
-                            }
-                        }
-
-                        // Calculate relative offset to function
-                        const current_pos = self.assembler.getPosition();
-                        const rel_offset = @as(i32, @intCast(func_pos)) - @as(i32, @intCast(current_pos + 5));
-                        try self.assembler.callRel32(rel_offset);
-
-                        // Clean up stack arguments (args 7+) after the call
-                        // Each arg is 8 bytes
-                        if (total_args > arg_regs.len) {
-                            const stack_args = total_args - arg_regs.len;
-                            const stack_bytes: i32 = @intCast(stack_args * 8);
-                            try self.assembler.addRegImm(.rsp, stack_bytes);
-                        }
-
-                        return;
                     }
+
+                    if (try self.tryEmitFunctionCall(call, func_name)) return;
 
                     // Handle built-in functions
                     if (std.mem.eql(u8, func_name, "print") or
