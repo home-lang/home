@@ -5,8 +5,6 @@ const MoveTracker = type_system.MoveTracker;
 const MoveSemantics = type_system.MoveSemantics;
 const MoveState = type_system.MoveState;
 const BuiltinMoveSemantics = type_system.BuiltinMoveSemantics;
-const Type = type_system.Type;
-const TypeIntegration = @import("type_integration.zig").TypeIntegration;
 
 /// Integration layer for move semantics checking in the compiler.
 ///
@@ -22,9 +20,6 @@ pub const MoveChecker = struct {
     tracker: MoveTracker,
     /// Errors encountered during checking
     errors: std.ArrayList(MoveCheckError),
-    /// Type integration for getting inferred types
-    type_integration: ?*TypeIntegration,
-
     pub const MoveCheckError = struct {
         message: []const u8,
         location: ast.SourceLocation,
@@ -43,13 +38,7 @@ pub const MoveChecker = struct {
             .allocator = allocator,
             .tracker = MoveTracker.init(allocator),
             .errors = std.ArrayList(MoveCheckError).init(allocator),
-            .type_integration = null,
         };
-    }
-
-    /// Set type integration for type information
-    pub fn setTypeIntegration(self: *MoveChecker, type_integration: *TypeIntegration) void {
-        self.type_integration = type_integration;
     }
 
     pub fn deinit(self: *MoveChecker) void {
@@ -213,7 +202,12 @@ pub const MoveChecker = struct {
                     // If argument is an identifier, it might be moved
                     if (arg.* == .Identifier) {
                         const arg_name = arg.Identifier.name;
-                        const type_name = self.getTypeName(arg_name) orelse "unknown";
+                        // The authoritative semantic checker runs before
+                        // codegen. This legacy move pass has never received
+                        // its inferred-type map, so preserve its existing
+                        // conservative behavior without depending on a second,
+                        // unwired inferencer.
+                        const type_name = "unknown";
                         const loc = ast.SourceLocation{
                             .line = 0,
                             .column = 0,
@@ -316,32 +310,6 @@ pub const MoveChecker = struct {
         _ = self;
         var owned_states = states;
         owned_states.deinit();
-    }
-
-    /// Get type name for a variable
-    fn getTypeName(self: *MoveChecker, var_name: []const u8) ?[]const u8 {
-        if (self.type_integration) |type_int| {
-            if (type_int.var_types.get(var_name)) |ty| {
-                return self.typeToString(ty);
-            }
-        }
-        return null;
-    }
-
-    /// Convert Type to string for move semantics lookup
-    fn typeToString(self: *MoveChecker, ty: *Type) []const u8 {
-        _ = self;
-        return switch (ty.*) {
-            .Int, .I8, .I16, .I32, .I64 => "i64",
-            .U8, .U16, .U32, .U64 => "u64",
-            .Float, .F32 => "f32",
-            .F64 => "f64",
-            .Bool => "bool",
-            .String => "String",
-            .Struct => |s| s.name,
-            .Enum => |e| e.name,
-            else => "unknown",
-        };
     }
 
     /// Check if there are any move errors

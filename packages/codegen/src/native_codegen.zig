@@ -5,8 +5,6 @@ pub const x64 = @import("x64.zig");
 const elf = @import("elf.zig");
 const macho = @import("macho.zig");
 const builtin = @import("builtin");
-const type_integration_mod = @import("type_integration.zig");
-pub const TypeIntegration = type_integration_mod.TypeIntegration;
 const move_checker_mod = @import("move_checker.zig");
 pub const MoveChecker = move_checker_mod.MoveChecker;
 const borrow_checker_mod = @import("borrow_checker.zig");
@@ -753,10 +751,6 @@ pub const NativeCodegen = struct {
     /// Simple register allocator for optimizing register usage
     reg_alloc: RegisterAllocator,
 
-    // Type inference
-    /// Type integration layer for Hindley-Milner type inference
-    type_integration: ?TypeIntegration,
-
     // Move semantics
     /// Move semantics checker for ownership and borrow checking
     move_checker: ?MoveChecker,
@@ -856,7 +850,6 @@ pub const NativeCodegen = struct {
             .impl_set = std.StringHashMap(void).init(allocator),
             .async_fn_names = std.StringHashMap(void).init(allocator),
             .reg_alloc = RegisterAllocator.init(),
-            .type_integration = null, // Initialized on demand
             .move_checker = null, // Initialized on demand
             .borrow_checker = null, // Initialized on demand
             .source_root = null, // Set via setSourceRoot
@@ -1079,11 +1072,6 @@ pub const NativeCodegen = struct {
         for (self.pending_function_calls.items) |call| self.allocator.free(call.callee);
         self.pending_function_calls.deinit(self.allocator);
 
-        // Free type integration if initialized
-        if (self.type_integration) |*ti| {
-            ti.deinit();
-        }
-
         // Free move checker if initialized
         if (self.move_checker) |*mc| {
             mc.deinit();
@@ -1113,58 +1101,6 @@ pub const NativeCodegen = struct {
             loop_ctx.break_fixups.deinit(self.allocator);
         }
         self.loop_stack.deinit(self.allocator);
-    }
-
-    /// Run Hindley-Milner type inference on the program.
-    ///
-    /// This performs full type inference using the Hindley-Milner algorithm:
-    /// - Generates type variables for unknown types
-    /// - Collects type constraints from expressions
-    /// - Unifies constraints to solve for concrete types
-    /// - Generalizes let-polymorphic types
-    ///
-    /// The inferred types are stored in the type_integration field
-    /// and can be queried using getVarTypeString().
-    ///
-    /// Returns: true if type inference succeeded, false if there were errors
-    pub fn runTypeInference(self: *NativeCodegen) !bool {
-        // Initialize type integration if not already done
-        if (self.type_integration == null) {
-            self.type_integration = TypeIntegration.init(self.allocator);
-        }
-
-        var ti = &self.type_integration.?;
-
-        // Run type inference on the entire program
-        ti.inferProgram(self.program) catch |err| {
-            std.debug.print("Type inference failed with error: {}\n", .{err});
-            return false;
-        };
-
-        // Check for errors (unresolved type variables, etc.)
-        if (ti.hasErrors()) {
-            std.debug.print("Type inference completed with errors\n", .{});
-            return false;
-        }
-
-        // Print inferred types for debugging
-        try ti.printInferredTypes();
-
-        std.debug.print("Type inference completed successfully!\n", .{});
-        return true;
-    }
-
-    /// Get the inferred type for a variable as a string.
-    ///
-    /// This can be used during code generation to get type information
-    /// for variables without explicit type annotations.
-    ///
-    /// Returns: Type string (e.g., "i32", "[i32]", "bool") or null if not inferred
-    pub fn getInferredType(self: *NativeCodegen, var_name: []const u8) !?[]const u8 {
-        if (self.type_integration) |*ti| {
-            return try ti.getVarTypeString(var_name);
-        }
-        return null;
     }
 
     /// Run move semantics checking on the program.
