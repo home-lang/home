@@ -125,6 +125,22 @@ test "checker accepts a constant in-bounds array index" {
     ));
 }
 
+test "checker rejects constant arithmetic that overflows its destination" {
+    try std.testing.expect(!try checkSource(
+        \\fn run() {
+        \\    let value: u8 = 200 + 100
+        \\}
+    ));
+}
+
+test "checker accepts constant arithmetic within its destination range" {
+    try std.testing.expect(try checkSource(
+        \\fn run() {
+        \\    let value: u8 = 100 + 20
+        \\}
+    ));
+}
+
 test "checker visits statements nested in unsafe blocks" {
     try std.testing.expect(!try checkSource(
         \\fn run() {

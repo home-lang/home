@@ -18,6 +18,7 @@ pub const OwnershipTracker = ownership.OwnershipTracker;
 pub const OwnershipState = ownership.OwnershipState;
 const null_safety = @import("null_safety.zig");
 const bounds_checking = @import("bounds_checking.zig");
+const overflow_detection = @import("overflow_detection.zig");
 const pattern_checker = @import("pattern_checker.zig");
 const ts_diagnostics = @import("ts_diagnostics");
 pub const PatternChecker = pattern_checker.PatternChecker;
@@ -889,6 +890,7 @@ pub const TypeChecker = struct {
     ownership_tracker: OwnershipTracker,
     null_safety_tracker: null_safety.NullSafetyTracker,
     bounds_tracker: bounds_checking.BoundsTracker,
+    overflow_tracker: overflow_detection.OverflowTracker,
     pattern_checker: PatternChecker,
     error_handler: ErrorHandler,
     /// Source file path for resolving imports
@@ -940,6 +942,7 @@ pub const TypeChecker = struct {
             .ownership_tracker = OwnershipTracker.init(allocator),
             .null_safety_tracker = null_safety.NullSafetyTracker.init(allocator),
             .bounds_tracker = bounds_checking.BoundsTracker.init(allocator),
+            .overflow_tracker = overflow_detection.OverflowTracker.init(allocator),
             .pattern_checker = PatternChecker.init(allocator),
             .error_handler = ErrorHandler.init(allocator),
             .source_path = null,
@@ -994,6 +997,7 @@ pub const TypeChecker = struct {
         self.ownership_tracker.deinit();
         self.null_safety_tracker.deinit();
         self.bounds_tracker.deinit();
+        self.overflow_tracker.deinit();
         self.pattern_checker.deinit();
         self.error_handler.deinit();
         var loaded_it = self.loaded_modules.iterator();
@@ -1166,6 +1170,9 @@ pub const TypeChecker = struct {
             try self.addError(err_info.message, err_info.location);
         }
         for (self.bounds_tracker.errorItems()) |err_info| {
+            try self.addError(err_info.message, err_info.location);
+        }
+        for (self.overflow_tracker.errorItems()) |err_info| {
             try self.addError(err_info.message, err_info.location);
         }
 
@@ -1360,6 +1367,7 @@ pub const TypeChecker = struct {
     fn checkFunctionDecl(self: *TypeChecker, fn_decl: *const ast.FnDecl, owner: ?Type) TypeError!void {
         self.null_safety_tracker.clearFlowFacts();
         self.bounds_tracker.clearFlowFacts();
+        self.overflow_tracker.clearFlowFacts();
 
         const previous_return_type = self.current_function_return_type;
         self.current_function_return_type = if (fn_decl.return_type) |return_type|
@@ -1710,6 +1718,11 @@ pub const TypeChecker = struct {
                     } else {
                         self.bounds_tracker.forgetBounds(decl.name);
                     }
+                    if (self.knownIntegerRange(value)) |range| {
+                        try self.overflow_tracker.setRange(decl.name, range);
+                    } else {
+                        self.overflow_tracker.forgetRange(decl.name);
+                    }
                     // Track ownership of the new variable
                     try self.ownership_tracker.define(decl.name, value_type, decl.node.loc);
                 } else if (decl.type_name) |type_name| {
@@ -1717,6 +1730,7 @@ pub const TypeChecker = struct {
                     try self.env.define(decl.name, var_type);
                     try self.null_safety_tracker.setNullability(decl.name, nullabilityForType(var_type));
                     self.bounds_tracker.forgetBounds(decl.name);
+                    self.overflow_tracker.forgetRange(decl.name);
                     try self.ownership_tracker.define(decl.name, var_type, decl.node.loc);
                     // Remember the declaration so a subsequent read
                     // before any assignment can surface a warning.
@@ -2491,6 +2505,10 @@ pub const TypeChecker = struct {
         // Void is the real unit type and must not act as a wildcard.
         if (actual == .Unknown or expected == .Unknown) {
             return;
+        }
+
+        if (isIntegerType(expected)) {
+            _ = try self.analyzeIntegerRange(expr, expected);
         }
 
         // Special case: null literals can be assigned to optional types
@@ -3660,6 +3678,46 @@ pub const TypeChecker = struct {
                 return Type.Int;
             },
             else => Type.Void,
+        };
+    }
+
+    fn knownIntegerRange(self: *TypeChecker, expr: *const ast.Expr) ?overflow_detection.ValueRange {
+        return switch (expr.*) {
+            .IntegerLiteral => |literal| overflow_detection.ValueRange.fromConstant(literal.value),
+            .UnaryExpr => |unary| blk: {
+                if (unary.op != .Neg or unary.operand.* != .IntegerLiteral) break :blk null;
+                const value = std.math.sub(i128, 0, unary.operand.IntegerLiteral.value) catch break :blk null;
+                break :blk overflow_detection.ValueRange.fromConstant(value);
+            },
+            .Identifier => |identifier| self.overflow_tracker.getRange(identifier.name),
+            else => null,
+        };
+    }
+
+    /// Evaluate the statically known range of an integer expression and route
+    /// each arithmetic operation through OverflowTracker. Unknown operands do
+    /// not produce speculative diagnostics; runtime overflow checks remain
+    /// responsible for those paths.
+    fn analyzeIntegerRange(
+        self: *TypeChecker,
+        expr: *const ast.Expr,
+        result_type: Type,
+    ) TypeError!?overflow_detection.ValueRange {
+        if (self.knownIntegerRange(expr)) |range| return range;
+        if (expr.* != .BinaryExpr) return null;
+
+        const binary = expr.BinaryExpr;
+        const left = (try self.analyzeIntegerRange(binary.left, result_type)) orelse return null;
+        const right = (try self.analyzeIntegerRange(binary.right, result_type)) orelse return null;
+        return switch (binary.op) {
+            .Add => try self.overflow_tracker.checkAdd(left, right, result_type, binary.node.loc),
+            .Sub => try self.overflow_tracker.checkSub(left, right, result_type, binary.node.loc),
+            .Mul => try self.overflow_tracker.checkMul(left, right, result_type, binary.node.loc),
+            .Div, .Mod => blk: {
+                try self.overflow_tracker.checkDiv(left, right, binary.node.loc);
+                break :blk null;
+            },
+            else => null,
         };
     }
 

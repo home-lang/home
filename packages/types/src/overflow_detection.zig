@@ -140,6 +140,7 @@ pub const ValueRange = struct {
 
     /// Check if range can overflow when divided (division by zero)
     pub fn canOverflowDiv(self: ValueRange, other: ValueRange) bool {
+        _ = self;
         // Division can fail if divisor includes zero
         return other.min <= 0 and other.max >= 0;
     }
@@ -199,15 +200,31 @@ pub const OverflowTracker = struct {
             .allocator = allocator,
             .default_mode = .Runtime,
             .var_ranges = std.StringHashMap(ValueRange).init(allocator),
-            .errors = std.ArrayList(OverflowError).init(allocator),
-            .warnings = std.ArrayList(OverflowWarning).init(allocator),
+            .errors = std.ArrayList(OverflowError).empty,
+            .warnings = std.ArrayList(OverflowWarning).empty,
         };
     }
 
     pub fn deinit(self: *OverflowTracker) void {
         self.var_ranges.deinit();
-        self.errors.deinit();
-        self.warnings.deinit();
+        for (self.errors.items) |err| self.allocator.free(err.message);
+        self.errors.deinit(self.allocator);
+        for (self.warnings.items) |warning| self.allocator.free(warning.message);
+        self.warnings.deinit(self.allocator);
+    }
+
+    /// Discard ranges that belong to the previous function while preserving
+    /// diagnostics already collected for the program.
+    pub fn clearFlowFacts(self: *OverflowTracker) void {
+        self.var_ranges.clearRetainingCapacity();
+    }
+
+    pub fn forgetRange(self: *OverflowTracker, var_name: []const u8) void {
+        _ = self.var_ranges.remove(var_name);
+    }
+
+    pub fn errorItems(self: *const OverflowTracker) []const OverflowError {
+        return self.errors.items;
     }
 
     pub fn setMode(self: *OverflowTracker, mode: OverflowMode) void {
@@ -369,11 +386,11 @@ pub const OverflowTracker = struct {
     }
 
     fn addError(self: *OverflowTracker, err: OverflowError) !void {
-        try self.errors.append(err);
+        try self.errors.append(self.allocator, err);
     }
 
     fn addWarning(self: *OverflowTracker, warning: OverflowWarning) !void {
-        try self.warnings.append(warning);
+        try self.warnings.append(self.allocator, warning);
     }
 
     pub fn hasErrors(self: *OverflowTracker) bool {
