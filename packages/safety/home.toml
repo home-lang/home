@@ -2,7 +2,7 @@
 name = "home-safety"
 version = "0.1.0"
 authors = ["Home Contributors"]
-description = "Home Safety System - Unsafe blocks and safety checks"
+description = "Home Safety System - Ownership and borrow checks"
 license = "MIT"
 
 [dependencies]
@@ -10,4 +10,4 @@ home-ast = { path = "../ast" }
 home-types = { path = "../types" }
 
 [scripts]
-test = "zig test src/unsafe_blocks.zig"
+test = "zig test tests/safety_test.zig"
