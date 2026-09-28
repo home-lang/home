@@ -41,18 +41,18 @@ pub const NullableType = struct {
     nullability: Nullability,
     location: ?ast.SourceLocation,
 
-    pub fn init(base: Type, nullable: Nullability) NullableType {
+    pub fn init(base: Type, nullability: Nullability) NullableType {
         return .{
             .base_type = base,
-            .nullability = nullable,
+            .nullability = nullability,
             .location = null,
         };
     }
 
-    pub fn initWithLocation(base: Type, nullable: Nullability, loc: ast.SourceLocation) NullableType {
+    pub fn initWithLocation(base: Type, nullability: Nullability, loc: ast.SourceLocation) NullableType {
         return .{
             .base_type = base,
-            .nullability = nullable,
+            .nullability = nullability,
             .location = loc,
         };
     }
@@ -92,8 +92,8 @@ pub const NullSafetyTracker = struct {
             .var_nullability = std.StringHashMap(Nullability).init(allocator),
             .checked_vars = std.StringHashMap(bool).init(allocator),
             .functions = std.StringHashMap(FunctionSignature).init(allocator),
-            .errors = std.ArrayList(NullSafetyError).init(allocator),
-            .warnings = std.ArrayList(NullSafetyWarning).init(allocator),
+            .errors = std.ArrayList(NullSafetyError).empty,
+            .warnings = std.ArrayList(NullSafetyWarning).empty,
             .scope_depth = 0,
         };
     }
@@ -108,8 +108,20 @@ pub const NullSafetyTracker = struct {
         self.var_nullability.deinit();
         self.checked_vars.deinit();
         self.functions.deinit();
-        self.errors.deinit();
-        self.warnings.deinit();
+        self.errors.deinit(self.allocator);
+        self.warnings.deinit(self.allocator);
+    }
+
+    /// Discard facts that belong to the previous function while preserving
+    /// diagnostics already collected for the program.
+    pub fn clearFlowFacts(self: *NullSafetyTracker) void {
+        self.var_nullability.clearRetainingCapacity();
+        self.checked_vars.clearRetainingCapacity();
+        self.scope_depth = 0;
+    }
+
+    pub fn errorItems(self: *const NullSafetyTracker) []const NullSafetyError {
+        return self.errors.items;
     }
 
     /// Set nullability for a variable
@@ -304,11 +316,11 @@ pub const NullSafetyTracker = struct {
     }
 
     fn addError(self: *NullSafetyTracker, err: NullSafetyError) !void {
-        try self.errors.append(err);
+        try self.errors.append(self.allocator, err);
     }
 
     fn addWarning(self: *NullSafetyTracker, warning: NullSafetyWarning) !void {
-        try self.warnings.append(warning);
+        try self.warnings.append(self.allocator, warning);
     }
 
     pub fn hasErrors(self: *NullSafetyTracker) bool {

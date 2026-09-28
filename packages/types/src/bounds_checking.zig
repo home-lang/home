@@ -155,6 +155,22 @@ pub const BoundsTracker = struct {
         self.warnings.deinit(self.allocator);
     }
 
+    /// Discard bounds facts that belong to the previous function while
+    /// preserving diagnostics already collected for the program.
+    pub fn clearFlowFacts(self: *BoundsTracker) void {
+        self.array_bounds.clearRetainingCapacity();
+        self.index_ranges.clearRetainingCapacity();
+        self.checked_indices.clearRetainingCapacity();
+    }
+
+    pub fn forgetBounds(self: *BoundsTracker, array_name: []const u8) void {
+        _ = self.array_bounds.remove(array_name);
+    }
+
+    pub fn errorItems(self: *const BoundsTracker) []const BoundsError {
+        return self.errors.items;
+    }
+
     pub fn setMode(self: *BoundsTracker, mode: BoundsCheckMode) void {
         self.default_mode = mode;
     }

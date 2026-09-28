@@ -16,6 +16,8 @@ const ComptimeValueStore = comptime_mod.integration.ComptimeValueStore;
 const ownership = @import("ownership.zig");
 pub const OwnershipTracker = ownership.OwnershipTracker;
 pub const OwnershipState = ownership.OwnershipState;
+const null_safety = @import("null_safety.zig");
+const bounds_checking = @import("bounds_checking.zig");
 const pattern_checker = @import("pattern_checker.zig");
 const ts_diagnostics = @import("ts_diagnostics");
 pub const PatternChecker = pattern_checker.PatternChecker;
@@ -885,6 +887,8 @@ pub const TypeChecker = struct {
     owned_strings: std.ArrayList([]u8),
     comptime_store: ?*ComptimeValueStore,
     ownership_tracker: OwnershipTracker,
+    null_safety_tracker: null_safety.NullSafetyTracker,
+    bounds_tracker: bounds_checking.BoundsTracker,
     pattern_checker: PatternChecker,
     error_handler: ErrorHandler,
     /// Source file path for resolving imports
@@ -934,6 +938,8 @@ pub const TypeChecker = struct {
             .owned_strings = std.ArrayList([]u8).empty,
             .comptime_store = null,
             .ownership_tracker = OwnershipTracker.init(allocator),
+            .null_safety_tracker = null_safety.NullSafetyTracker.init(allocator),
+            .bounds_tracker = bounds_checking.BoundsTracker.init(allocator),
             .pattern_checker = PatternChecker.init(allocator),
             .error_handler = ErrorHandler.init(allocator),
             .source_path = null,
@@ -986,6 +992,8 @@ pub const TypeChecker = struct {
         self.owned_strings.deinit(self.allocator);
 
         self.ownership_tracker.deinit();
+        self.null_safety_tracker.deinit();
+        self.bounds_tracker.deinit();
         self.pattern_checker.deinit();
         self.error_handler.deinit();
         var loaded_it = self.loaded_modules.iterator();
@@ -1153,6 +1161,12 @@ pub const TypeChecker = struct {
         for (self.ownership_tracker.errors.items) |err_info| {
             const msg = try self.allocator.dupe(u8, err_info.message);
             try self.errors.append(self.allocator, .{ .message = msg, .loc = err_info.loc });
+        }
+        for (self.null_safety_tracker.errorItems()) |err_info| {
+            try self.addError(err_info.message, err_info.location);
+        }
+        for (self.bounds_tracker.errorItems()) |err_info| {
+            try self.addError(err_info.message, err_info.location);
         }
 
         return self.errors.items.len == 0;
@@ -1344,6 +1358,9 @@ pub const TypeChecker = struct {
     }
 
     fn checkFunctionDecl(self: *TypeChecker, fn_decl: *const ast.FnDecl, owner: ?Type) TypeError!void {
+        self.null_safety_tracker.clearFlowFacts();
+        self.bounds_tracker.clearFlowFacts();
+
         const previous_return_type = self.current_function_return_type;
         self.current_function_return_type = if (fn_decl.return_type) |return_type|
             if (owner != null and std.mem.eql(u8, return_type, "Self"))
@@ -1368,6 +1385,7 @@ pub const TypeChecker = struct {
                 try self.parseDeclaredType(param.type_name, param.loc);
             try func_env.define(param.name, param_type);
             try self.ownership_tracker.define(param.name, param_type, fn_decl.node.loc);
+            try self.null_safety_tracker.setNullability(param.name, nullabilityForType(param_type));
         }
 
         self.env = func_env;
@@ -1673,11 +1691,32 @@ pub const TypeChecker = struct {
                     }
 
                     try self.env.define(decl.name, value_type);
+                    try self.null_safety_tracker.setNullability(
+                        decl.name,
+                        nullabilityForBinding(value_type, value),
+                    );
+                    if (value.* == .ArrayLiteral) {
+                        try self.bounds_tracker.setBounds(
+                            decl.name,
+                            bounds_checking.BoundsInfo.constant(value.ArrayLiteral.elements.len),
+                        );
+                    } else if (value.* == .Identifier) {
+                        const source_bounds = self.bounds_tracker.getBounds(value.Identifier.name);
+                        if (source_bounds.known_length) |_| {
+                            try self.bounds_tracker.setBounds(decl.name, source_bounds);
+                        } else {
+                            self.bounds_tracker.forgetBounds(decl.name);
+                        }
+                    } else {
+                        self.bounds_tracker.forgetBounds(decl.name);
+                    }
                     // Track ownership of the new variable
                     try self.ownership_tracker.define(decl.name, value_type, decl.node.loc);
                 } else if (decl.type_name) |type_name| {
                     const var_type = try self.parseDeclaredType(type_name, decl.node.loc);
                     try self.env.define(decl.name, var_type);
+                    try self.null_safety_tracker.setNullability(decl.name, nullabilityForType(var_type));
+                    self.bounds_tracker.forgetBounds(decl.name);
                     try self.ownership_tracker.define(decl.name, var_type, decl.node.loc);
                     // Remember the declaration so a subsequent read
                     // before any assignment can surface a warning.
@@ -4156,6 +4195,24 @@ pub const TypeChecker = struct {
 
         if (array_type == .Unknown or index_type == .Unknown) return Type.Unknown;
 
+        if (rootIdentName(index.array)) |array_name| {
+            const bounds = self.bounds_tracker.getBounds(array_name);
+            if (bounds.known_length != null and index.index.* == .IntegerLiteral) {
+                const value = index.index.IntegerLiteral.value;
+                const bounded_value: i64 = if (value < std.math.minInt(i64))
+                    std.math.minInt(i64)
+                else if (value > std.math.maxInt(i64))
+                    std.math.maxInt(i64)
+                else
+                    @intCast(value);
+                try self.bounds_tracker.checkAccess(
+                    array_name,
+                    bounds_checking.IndexRange.constant(bounded_value),
+                    index.node.loc,
+                );
+            }
+        }
+
         // Pointers support index access (many-item pointer `[*]T` and
         // raw pointer `*T`). Kernel code uses `name[i]` where name is
         // `[*]u8` for string-like buffers.
@@ -4302,6 +4359,13 @@ pub const TypeChecker = struct {
         }
 
         if (object_type == .Unknown) return Type.Unknown;
+
+        if (object_type == .Optional and member.object.* == .Identifier) {
+            try self.null_safety_tracker.checkDereference(
+                member.object.Identifier.name,
+                member.node.loc,
+            );
+        }
 
         // Auto-deref pointer-like types so `ptr.field` works when
         // `ptr: *Foo`. Kernel code uses this pattern everywhere for
@@ -5190,6 +5254,16 @@ pub const TypeChecker = struct {
         const msg = try self.allocator.dupe(u8, message);
         errdefer self.allocator.free(msg);
         try self.errors.append(self.allocator, .{ .message = msg, .loc = loc });
+    }
+
+    fn nullabilityForType(typ: Type) null_safety.Nullability {
+        return if (typ == .Optional) .Nullable else .NonNull;
+    }
+
+    fn nullabilityForBinding(typ: Type, value: *const ast.Expr) null_safety.Nullability {
+        if (value.* == .NullLiteral) return .Null;
+        if (typ == .Optional) return .NonNull;
+        return nullabilityForType(typ);
     }
 
     fn addImportError(self: *TypeChecker, import_decl: *const ast.ImportDecl, import_error: anyerror) !void {

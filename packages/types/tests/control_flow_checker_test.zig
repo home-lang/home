@@ -87,6 +87,44 @@ test "checker permits covariance through an immutable array view" {
     ));
 }
 
+test "checker rejects unsafe member access through a nullable binding" {
+    try std.testing.expect(!try checkSource(
+        \\struct Box { value: i32 }
+        \\fn run() {
+        \\    let maybe: ?Box = null
+        \\    let value = maybe.value
+        \\}
+    ));
+}
+
+test "checker accepts safe navigation through a nullable binding" {
+    try std.testing.expect(try checkSource(
+        \\struct Box { value: i32 }
+        \\fn run() {
+        \\    let maybe: ?Box = null
+        \\    let value = maybe?.value
+        \\}
+    ));
+}
+
+test "checker rejects a constant out-of-bounds array index" {
+    try std.testing.expect(!try checkSource(
+        \\fn run() {
+        \\    let items = [1, 2, 3]
+        \\    let missing = items[3]
+        \\}
+    ));
+}
+
+test "checker accepts a constant in-bounds array index" {
+    try std.testing.expect(try checkSource(
+        \\fn run() {
+        \\    let items = [1, 2, 3]
+        \\    let present = items[2]
+        \\}
+    ));
+}
+
 test "checker visits statements nested in unsafe blocks" {
     try std.testing.expect(!try checkSource(
         \\fn run() {
