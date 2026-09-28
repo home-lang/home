@@ -10,6 +10,7 @@
 // - Writer-preferring futex-backed read-write locks
 // - Reusable futex-backed thread barriers
 // - Linux and Windows current-thread CPU affinity
+// - macOS current-thread advisory affinity tags
 // - Scheduling policy data types (priority application pending)
 // - Once initialization
 
@@ -42,6 +43,8 @@ pub const SchedParam = sched.SchedParam;
 pub const CpuSet = sched.CpuSet;
 pub const setAffinity = sched.setAffinity;
 pub const getAffinity = sched.getAffinity;
+pub const setAffinityTag = sched.setAffinityTag;
+pub const getAffinityTag = sched.getAffinityTag;
 pub const setPriority = sched.setPriority;
 pub const getPriority = sched.getPriority;
 
@@ -173,6 +176,8 @@ test "thread stack minimum follows ThreadAttr validation" {
 test "public scheduling API exports affinity and priority operations" {
     _ = setAffinity;
     _ = getAffinity;
+    _ = setAffinityTag;
+    _ = getAffinityTag;
     _ = setPriority;
     _ = getPriority;
 }
@@ -184,4 +189,11 @@ test "public affinity API reports unsupported platforms" {
     cpu_set.set(0);
     try std.testing.expectError(ThreadError.OperationNotSupported, setAffinity(&cpu_set));
     try std.testing.expectError(ThreadError.OperationNotSupported, getAffinity());
+}
+
+test "public macOS affinity-tag API reports unsupported platforms" {
+    if (builtin.os.tag == .macos) return error.SkipZigTest;
+
+    try std.testing.expectError(ThreadError.OperationNotSupported, setAffinityTag(1));
+    try std.testing.expectError(ThreadError.OperationNotSupported, getAffinityTag());
 }

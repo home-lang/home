@@ -15,7 +15,7 @@
 | Read/write lock | Writer-preferring futex state permits concurrent readers or one writer while blocking new readers behind queued writers. No timed operations or upgrade/downgrade API. | [`rwlock.zig`](src/rwlock.zig) and [#802](https://github.com/home-lang/home/issues/802) |
 | Barrier and once | Barrier is a reusable futex-backed generation barrier; zero-party construction is rejected. Once remains an atomic/spin implementation. | [`barrier.zig`](src/barrier.zig), [`once.zig`](src/once.zig) |
 | TLS | Fixed process-wide key table and per-key atomic values. Destructor and true per-thread storage semantics are not implemented. | [`tls.zig`](src/tls.zig) |
-| Scheduling | `CpuSet` bit operations and current-thread affinity are implemented on Linux and with Windows processor groups. Linux has a live round-trip test; Windows conversion tests and cross-compilation cover the ABI, but a live Windows run is still pending. macOS hard affinity and priority application remain unsupported. | [`sched.zig`](src/sched.zig) and [#803](https://github.com/home-lang/home/issues/803) |
+| Scheduling | `CpuSet` bit operations and current-thread affinity are implemented on Linux and with Windows processor groups. Linux has a live round-trip test; Windows conversion tests and cross-compilation cover the ABI, but a live Windows run is still pending. macOS exposes advisory affinity tags, not hard CPU masks; Home exposes those tags separately and reports when the running kernel does not support them. Priority application remains unsupported. | [`sched.zig`](src/sched.zig) and [#803](https://github.com/home-lang/home/issues/803) |
 
 The public facade is [`threading.zig`](src/threading.zig). It exports the
 implemented types above, including `BinarySemaphore`, and keeps stack-size
@@ -87,7 +87,13 @@ test plan:
   generations, plus invalid and single-party construction coverage.
 - [`tls.zig`](src/tls.zig): focused current-surface checks.
 - [`sched.zig`](src/sched.zig): cross-word `CpuSet` behavior, Windows
-  processor-group conversion, and platform-gated current-thread round trips.
+  processor-group conversion, platform-gated hard-affinity round trips, and a
+  live macOS advisory-affinity-tag check. A macOS tag is only a scheduler hint
+  that threads with equal non-zero tags should share an L2 cache where
+  possible; it is not a CPU pinning guarantee. XNU may return
+  `KERN_NOT_SUPPORTED` when the hardware scheduler does not implement affinity
+  sets; Home maps that result to `OperationNotSupported` instead of claiming a
+  tag was applied.
 
 These tests prove only the current surface. They do not prove fairness,
 contention behavior, real-time scheduling, platform affinity, or data-race
@@ -117,8 +123,8 @@ threshold. The guarded command peaked at 82 MB.
 ## Remaining work
 
 - [#803](https://github.com/home-lang/home/issues/803): apply thread priority,
-  document macOS affinity tags, run affinity on live Windows infrastructure,
-  and run the pthread stack check on live Linux infrastructure.
+  run affinity on live Windows infrastructure, and run the pthread stack check
+  on live Linux infrastructure.
 - [#805](https://github.com/home-lang/home/issues/805): add language-level
   `spawn`, threads, and the multi-core executor.
 - [#806](https://github.com/home-lang/home/issues/806): implement `Send`/`Sync`

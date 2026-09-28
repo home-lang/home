@@ -23,6 +23,31 @@ extern "kernel32" fn SetThreadGroupAffinity(
     previous_group_affinity: ?*WindowsGroupAffinity,
 ) callconv(.winapi) std.os.windows.BOOL;
 
+const MachThreadAffinityPolicy = extern struct {
+    affinity_tag: std.c.integer_t,
+};
+
+const mach_thread_affinity_policy: c_uint = 4;
+const mach_thread_affinity_policy_count: std.c.mach_msg_type_number_t =
+    @sizeOf(MachThreadAffinityPolicy) / @sizeOf(std.c.integer_t);
+// mach/kern_return.h
+const mach_not_supported: std.c.kern_return_t = 46;
+
+extern "c" fn mach_thread_self() std.c.mach_port_t;
+extern "c" fn thread_policy_set(
+    thread: std.c.thread_t,
+    flavor: c_uint,
+    policy_info: [*]std.c.integer_t,
+    count: std.c.mach_msg_type_number_t,
+) std.c.kern_return_t;
+extern "c" fn thread_policy_get(
+    thread: std.c.thread_t,
+    flavor: c_uint,
+    policy_info: [*]std.c.integer_t,
+    count: *std.c.mach_msg_type_number_t,
+    get_default: *std.c.boolean_t,
+) std.c.kern_return_t;
+
 pub const SchedPolicy = enum(c_int) {
     Other = 0,
     FIFO = 1,
@@ -166,6 +191,49 @@ pub fn getAffinity() ThreadError!CpuSet {
     return ThreadError.OperationNotSupported;
 }
 
+/// Set the current macOS thread's advisory affinity tag. Threads with the
+/// same non-zero tag are hints to the scheduler to share an L2 cache where
+/// possible. A zero tag removes the hint. This does not pin a thread to a CPU.
+pub fn setAffinityTag(tag: i32) ThreadError!void {
+    if (comptime builtin.os.tag != .macos) return ThreadError.OperationNotSupported;
+
+    const thread = mach_thread_self();
+    defer _ = std.c.mach_port_deallocate(std.c.mach_task_self(), thread);
+
+    var policy = MachThreadAffinityPolicy{ .affinity_tag = tag };
+    const result = thread_policy_set(
+        thread,
+        mach_thread_affinity_policy,
+        @ptrCast(&policy),
+        mach_thread_affinity_policy_count,
+    );
+    if (result == mach_not_supported) return ThreadError.OperationNotSupported;
+    if (result != 0) return ThreadError.AffinitySetFailed;
+}
+
+/// Read the current macOS thread's advisory affinity tag. Zero means the
+/// scheduler has no affinity relationship hint for the thread.
+pub fn getAffinityTag() ThreadError!i32 {
+    if (comptime builtin.os.tag != .macos) return ThreadError.OperationNotSupported;
+
+    const thread = mach_thread_self();
+    defer _ = std.c.mach_port_deallocate(std.c.mach_task_self(), thread);
+
+    var policy = MachThreadAffinityPolicy{ .affinity_tag = 0 };
+    var count = mach_thread_affinity_policy_count;
+    var get_default: std.c.boolean_t = 0;
+    const result = thread_policy_get(
+        thread,
+        mach_thread_affinity_policy,
+        @ptrCast(&policy),
+        &count,
+        &get_default,
+    );
+    if (result == mach_not_supported) return ThreadError.OperationNotSupported;
+    if (result != 0 or count != mach_thread_affinity_policy_count) return ThreadError.SchedParamFailed;
+    return policy.affinity_tag;
+}
+
 pub fn setPriority(priority: i32) ThreadError!void {
     _ = priority;
     return ThreadError.OperationNotSupported;
@@ -268,4 +336,21 @@ test "Windows current-thread affinity round trips" {
     for (0..CpuSet.capacity) |other| {
         if (other != cpu) try std.testing.expect(!observed.isSet(other));
     }
+}
+
+test "macOS current-thread affinity tag round trips or reports kernel unsupported" {
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+
+    const original = getAffinityTag() catch |err| switch (err) {
+        ThreadError.OperationNotSupported => {
+            try std.testing.expectError(ThreadError.OperationNotSupported, setAffinityTag(1));
+            return;
+        },
+        else => return err,
+    };
+    defer setAffinityTag(original) catch {};
+
+    const requested: i32 = 0x484f4d45;
+    try setAffinityTag(requested);
+    try std.testing.expectEqual(requested, try getAffinityTag());
 }
