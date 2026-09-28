@@ -80,8 +80,15 @@ execute_query(user_input); // ERROR: Cannot pass UserInput taint to Trusted para
 
 **Purpose**: Embed security capabilities in types
 
+> **Status:** Design proposal, not a current Home compiler feature. The former
+> `packages/types/src/capability_types.zig` prototype was reachable only from
+> its standalone Zig tests; Home source declarations and function types cannot
+> carry these capability requirements into `TypeChecker`. It was removed in
+> #788. A future implementation must define the source-language representation
+> first and prove enforcement with checker-level failing-program tests.
+
 ```zig
-// packages/types/src/capability_types.zig
+// Proposed API shape (not implemented)
 pub const Capability = enum {
     ReadFile,
     WriteFile,
