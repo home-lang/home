@@ -66,6 +66,27 @@ test "checker accepts a correctly typed function return" {
     ));
 }
 
+test "checker rejects widening an existing mutable array" {
+    try std.testing.expect(!try checkSource(
+        \\fn run() {
+        \\    let narrow: [i32] = [1]
+        \\    let widened: [i64] = narrow
+        \\}
+    ));
+}
+
+test "checker permits covariance through an immutable array view" {
+    try std.testing.expect(try checkSource(
+        \\fn first(values: &[i64]) -> i64 {
+        \\    return values[0]
+        \\}
+        \\fn run() {
+        \\    let narrow: [i32] = [1]
+        \\    first(&narrow)
+        \\}
+    ));
+}
+
 test "checker visits statements nested in unsafe blocks" {
     try std.testing.expect(!try checkSource(
         \\fn run() {

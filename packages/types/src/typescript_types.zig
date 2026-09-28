@@ -694,7 +694,7 @@ test "isSubtype - function contravariant params" {
     try std.testing.expect(!fn2.isSubtype(fn1));
 }
 
-test "isSubtype - array covariance" {
+test "isSubtype - mutable arrays are invariant and immutable views are covariant" {
     const allocator = std.testing.allocator;
 
     const i32_elem = try allocator.create(Type);
@@ -707,7 +707,18 @@ test "isSubtype - array covariance" {
     i64_elem.* = .I64;
     const arr2: Type = .{ .Array = .{ .element_type = i64_elem } };
 
-    try std.testing.expect(arr1.isSubtype(arr2));
+    try std.testing.expect(!arr1.isSubtype(arr2));
+    try std.testing.expect(!arr1.isAssignable(arr2, true));
+    try std.testing.expect(arr1.isAssignable(arr2, false));
+
+    const ref1: Type = .{ .Reference = &arr1 };
+    const ref2: Type = .{ .Reference = &arr2 };
+    const mut_ref1: Type = .{ .MutableReference = &arr1 };
+    const mut_ref2: Type = .{ .MutableReference = &arr2 };
+    try std.testing.expect(ref1.isSubtype(ref2));
+    try std.testing.expect(mut_ref1.isSubtype(ref2));
+    try std.testing.expect(!ref1.isSubtype(mut_ref2));
+    try std.testing.expect(!mut_ref1.isSubtype(mut_ref2));
 }
 
 test "isSubtype - struct width subtyping" {

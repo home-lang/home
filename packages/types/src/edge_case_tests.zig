@@ -107,7 +107,7 @@ test "edge: Never is subtype of Optional<T>" {
     try std.testing.expect(never.isSubtype(optional_string));
 }
 
-test "edge: nested arrays - [Int] is subtype of [Int?]" {
+test "edge: mutable arrays are invariant but immutable views are covariant" {
     const allocator = std.testing.allocator;
 
     const int_elem = try allocator.create(Type);
@@ -125,8 +125,9 @@ test "edge: nested arrays - [Int] is subtype of [Int?]" {
 
     const arr_opt_int: Type = .{ .Array = .{ .element_type = optional_int } };
 
-    // Array covariance: [Int] should be subtype of [Int?]
-    try std.testing.expect(arr_int.isSubtype(arr_opt_int));
+    try std.testing.expect(!arr_int.isSubtype(arr_opt_int));
+    try std.testing.expect(!arr_int.isAssignable(arr_opt_int, true));
+    try std.testing.expect(arr_int.isAssignable(arr_opt_int, false));
 }
 
 test "edge: nested arrays - [[Int]] subtyping" {
@@ -152,8 +153,10 @@ test "edge: nested arrays - [[Int]] subtyping" {
     arr_i64_ptr.* = arr_i64;
     const nested_arr_i64: Type = .{ .Array = .{ .element_type = arr_i64_ptr } };
 
-    // [[I32]] should be subtype of [[I64]] due to covariance
-    try std.testing.expect(nested_arr_i32.isSubtype(nested_arr_i64));
+    // A read-only outer view still exposes mutable inner arrays, so widening
+    // their element type would reintroduce the write hole one level down.
+    try std.testing.expect(!nested_arr_i32.isSubtype(nested_arr_i64));
+    try std.testing.expect(!nested_arr_i32.isAssignable(nested_arr_i64, false));
 }
 
 test "edge: empty struct is supertype of all structs" {

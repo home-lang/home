@@ -626,9 +626,23 @@ pub const Type = union(enum) {
             return self.equals(supertype.Optional.*);
         }
 
-        // Mutable reference is subtype of immutable reference
+        // Mutable reference is subtype of immutable reference. Array views
+        // may widen covariantly only while the destination remains immutable;
+        // a mutable destination would permit writes of the wider element type.
         if (std.meta.activeTag(self) == .MutableReference and std.meta.activeTag(supertype) == .Reference) {
+            if (self.MutableReference.* == .Array and supertype.Reference.* == .Array) {
+                return self.MutableReference.Array.element_type.isSubtype(supertype.Reference.Array.element_type.*);
+            }
             return self.MutableReference.equals(supertype.Reference.*);
+        }
+
+        // Immutable references are covariant. Keep the special case explicit
+        // for arrays because bare Array values below are intentionally
+        // invariant: only the read-only view may widen its element type.
+        if (std.meta.activeTag(self) == .Reference and std.meta.activeTag(supertype) == .Reference) {
+            if (self.Reference.* == .Array and supertype.Reference.* == .Array) {
+                return self.Reference.Array.element_type.isSubtype(supertype.Reference.Array.element_type.*);
+            }
         }
 
         // Function subtyping (covariant return, contravariant params)
@@ -648,9 +662,12 @@ pub const Type = union(enum) {
             return true;
         }
 
-        // Array subtyping (covariant for immutable)
+        // Arrays are mutable values, so their element type is invariant.
+        // Covariance is exposed only through immutable assignment contexts or
+        // immutable Reference views; otherwise a widened alias could write an
+        // element the original array cannot hold.
         if (std.meta.activeTag(self) == .Array and std.meta.activeTag(supertype) == .Array) {
-            return self.Array.element_type.isSubtype(supertype.Array.element_type.*);
+            return self.Array.element_type.equals(supertype.Array.element_type.*);
         }
 
         // Struct subtyping (all fields must be subtypes)
@@ -704,6 +721,13 @@ pub const Type = union(enum) {
         // In mutable context, require exact equality (invariance)
         if (mutable_context) {
             return self.equals(target);
+        }
+
+        // A read-only view can widen element types covariantly. This relation
+        // must not leak into isSubtype(Array, Array), which represents a
+        // mutable alias and is therefore invariant.
+        if (self == .Array and target == .Array) {
+            return self.Array.element_type.isSubtype(target.Array.element_type.*);
         }
 
         // In immutable context, use subtyping
@@ -2702,6 +2726,14 @@ pub const TypeChecker = struct {
         const from_is_ref = from == .Reference or from == .MutableReference;
         const to_is_ref = to == .Reference or to == .MutableReference;
         if (from_is_ref and to_is_ref) {
+            const from_inner = if (from == .Reference) from.Reference.* else from.MutableReference.*;
+            const to_inner = if (to == .Reference) to.Reference.* else to.MutableReference.*;
+            if (from_inner == .Array and to_inner == .Array) {
+                if (to == .MutableReference) {
+                    return from == .MutableReference and from_inner.Array.element_type.equals(to_inner.Array.element_type.*);
+                }
+                return from_inner.Array.element_type.isSubtype(to_inner.Array.element_type.*);
+            }
             return true;
         }
         // Allow integer ↔ Reference: kernel passes raw addresses as
@@ -2741,19 +2773,14 @@ pub const TypeChecker = struct {
                 return true;
             }
         }
-        // Array element coercion: `[int]` → `[u8]` / `[u32]` etc. when
-        // the element types are both integer-family. Kernel tables like
-        // the AES S-box are declared `[u8; 256]` but literal-initialized
-        // with `0xNN` values which infer as plain `int`.
+        // Mutable arrays are invariant. Array literals receive the expected
+        // element type through inferExpressionWithHint before this point, so
+        // exact equality retains literal initialization without allowing an
+        // existing `[Sub]` value to masquerade as mutable `[Super]` storage.
         if (from == .Array and to == .Array) {
             const from_elem = from.Array.element_type.*;
             const to_elem = to.Array.element_type.*;
-            if (from_elem.equals(to_elem)) return true;
-            if (isIntegerType(from_elem) and isIntegerType(to_elem)) return true;
-            if (isFloatType(from_elem) and isFloatType(to_elem)) return true;
-            // An unknown nested element suppresses a follow-on mismatch;
-            // void remains the concrete unit element type.
-            if (from_elem == .Unknown or to_elem == .Unknown) return true;
+            return from_elem.equals(to_elem);
         }
         // String literal → byte-array slice (`[]u8`, `[]const u8`).
         // Kernel string-handling helpers declare their input as a u8
