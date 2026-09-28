@@ -35,9 +35,14 @@ pub const TLS = @import("tls.zig");
 pub const sync = @import("sync.zig");
 
 // Scheduling
-pub const SchedPolicy = @import("sched.zig").SchedPolicy;
-pub const SchedParam = @import("sched.zig").SchedParam;
-pub const CpuSet = @import("sched.zig").CpuSet;
+const sched = @import("sched.zig");
+pub const SchedPolicy = sched.SchedPolicy;
+pub const SchedParam = sched.SchedParam;
+pub const CpuSet = sched.CpuSet;
+pub const setAffinity = sched.setAffinity;
+pub const getAffinity = sched.getAffinity;
+pub const setPriority = sched.setPriority;
+pub const getPriority = sched.getPriority;
 
 // Error types
 pub const ThreadError = @import("errors.zig").ThreadError;
@@ -129,4 +134,11 @@ test "constants defined" {
 
 test "thread stack minimum follows ThreadAttr validation" {
     try std.testing.expectEqual(ThreadAttr.minimum_stack_size, THREAD_STACK_MIN);
+}
+
+test "public scheduling API exports affinity and priority operations" {
+    _ = setAffinity;
+    _ = getAffinity;
+    _ = setPriority;
+    _ = getPriority;
 }
