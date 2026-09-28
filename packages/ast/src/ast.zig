@@ -1163,6 +1163,10 @@ pub const IsExpr = struct {
 pub const BlockExpr = struct {
     node: Node,
     statements: []const Stmt,
+    /// True only for a source-level `unsafe { ... }` expression. Keeping this
+    /// bit in the AST lets semantic passes enforce unsafe operations without
+    /// changing the ownership/layout of ordinary block expressions.
+    is_unsafe: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, statements: []const Stmt, loc: SourceLocation) !*BlockExpr {
         const expr = try allocator.create(BlockExpr);
@@ -2171,6 +2175,8 @@ pub const Stmt = union(NodeType) {
 pub const BlockStmt = struct {
     node: Node,
     statements: []Stmt,
+    /// True only for a source-level `unsafe { ... }` statement.
+    is_unsafe: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, statements: []Stmt, loc: SourceLocation) !*BlockStmt {
         const block = try allocator.create(BlockStmt);
@@ -2383,6 +2389,9 @@ pub const FnDecl = struct {
     is_public: bool = false,
     is_exported: bool = false, // export keyword for C ABI exports
     is_inline: bool = false, // inline keyword for inline-hint functions
+    /// `unsafe fn name(...)` may perform unsafe operations in its body and
+    /// requires an unsafe context at each call site.
+    is_unsafe: bool = false,
     is_forward_decl: bool = false, // `fn name(args)` with no body (issue #17): binds the name, no definition emitted
     /// `extern fn name(args)` — the symbol is defined outside Home, by
     /// hand-written assembly or another object file, so it must not be given a

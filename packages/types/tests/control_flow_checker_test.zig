@@ -183,6 +183,76 @@ test "checker visits statements nested in unsafe blocks" {
     ));
 }
 
+test "checker rejects raw pointer dereference outside unsafe" {
+    const source =
+        \\fn read(ptr: *u8) -> u8 {
+        \\    return *ptr
+        \\}
+    ;
+    try std.testing.expect(!try checkSource(source));
+    try std.testing.expect(try checkSourceErrorContains(source, "raw pointer dereference requires an unsafe block"));
+}
+
+test "checker accepts raw pointer dereference inside unsafe" {
+    try std.testing.expect(try checkSource(
+        \\fn read(ptr: *u8) -> u8 {
+        \\    return unsafe { *ptr }
+        \\}
+    ));
+}
+
+test "checker keeps safe reference dereference outside unsafe" {
+    try std.testing.expect(try checkSource(
+        \\fn read(value: &i32) -> i32 {
+        \\    return *value
+        \\}
+    ));
+}
+
+test "checker rejects raw pointer arithmetic outside unsafe" {
+    try std.testing.expect(!try checkSource(
+        \\fn advance(ptr: *u8) -> *u8 {
+        \\    return ptr + 1
+        \\}
+    ));
+}
+
+test "checker accepts raw pointer arithmetic inside unsafe" {
+    try std.testing.expect(try checkSource(
+        \\fn advance(ptr: *u8) -> *u8 {
+        \\    return unsafe { ptr + 1 }
+        \\}
+    ));
+}
+
+test "checker rejects external calls outside unsafe" {
+    try std.testing.expect(!try checkSource(
+        \\extern fn foreign_value() -> i32
+        \\fn read() -> i32 { return foreign_value() }
+    ));
+}
+
+test "checker accepts external calls inside unsafe" {
+    try std.testing.expect(try checkSource(
+        \\extern fn foreign_value() -> i32
+        \\fn read() -> i32 { return unsafe { foreign_value() } }
+    ));
+}
+
+test "checker enforces unsafe function calls" {
+    const outside =
+        \\unsafe fn raw_value() -> i32 { return 1 }
+        \\fn read() -> i32 { return raw_value() }
+    ;
+    try std.testing.expect(!try checkSource(outside));
+    try std.testing.expect(try checkSourceErrorContains(outside, "call to unsafe or external function requires an unsafe block"));
+
+    try std.testing.expect(try checkSource(
+        \\unsafe fn raw_value() -> i32 { return 1 }
+        \\fn read() -> i32 { return unsafe { raw_value() } }
+    ));
+}
+
 test "checker visits match guards and arm bodies" {
     try std.testing.expect(!try checkSource(
         \\fn classify(value: bool) {

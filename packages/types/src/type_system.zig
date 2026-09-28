@@ -215,6 +215,9 @@ pub const Type = union(enum) {
         /// Number of required parameters (without default values)
         /// If null, all parameters are required (for backwards compatibility)
         required_params: ?usize = null,
+        /// Calling this function crosses an unsafe boundary. Set for
+        /// source-level `unsafe fn` declarations and external/FFI symbols.
+        requires_unsafe: bool = false,
     };
 
     /// Struct type with named fields (product type).
@@ -492,7 +495,7 @@ pub const Type = union(enum) {
             },
             .Function => |f1| {
                 const f2 = other.Function;
-                if (f1.params.len != f2.params.len) return false;
+                if (f1.params.len != f2.params.len or f1.requires_unsafe != f2.requires_unsafe) return false;
                 for (f1.params, f2.params) |p1, p2| {
                     if (!p1.equals(p2)) return false;
                 }
@@ -667,6 +670,11 @@ pub const Type = union(enum) {
         if (std.meta.activeTag(self) == .Function and std.meta.activeTag(supertype) == .Function) {
             const f1 = self.Function;
             const f2 = supertype.Function;
+
+            // An unsafe callable cannot stand in for a safe callable: doing
+            // so would erase the call-site obligation. A safe callable may be
+            // used where the destination already requires unsafe.
+            if (f1.requires_unsafe and !f2.requires_unsafe) return false;
 
             // Return type must be covariant (subtype)
             if (!f1.return_type.isSubtype(f2.return_type.*)) return false;
@@ -940,6 +948,14 @@ pub const TypeChecker = struct {
     /// Declared return type of the function currently being checked.
     /// Nested statement checking consults this for every ReturnStmt.
     current_function_return_type: ?Type,
+    /// Nesting depth of source-level unsafe blocks (or an unsafe function
+    /// body). A depth rather than a boolean preserves nested boundaries.
+    unsafe_depth: usize,
+    /// Raw pointers currently share the Reference representation used by safe
+    /// borrows. Record the allocated pointee node for raw-pointer spellings so
+    /// dereference/arithmetic checks can distinguish `*T` from `&T` without
+    /// weakening either operation or changing Type's public ABI.
+    raw_pointer_types: std.AutoHashMap(*const Type, void),
     trait_declarations: std.StringHashMap(*const ast.TraitDecl),
 
     pub const TypeErrorInfo = struct {
@@ -977,6 +993,8 @@ pub const TypeChecker = struct {
             .uninitialized_vars = std.StringHashMap(ast.SourceLocation).init(allocator),
             .pointer_aliases = std.StringHashMap([]const u8).init(allocator),
             .current_function_return_type = null,
+            .unsafe_depth = 0,
+            .raw_pointer_types = std.AutoHashMap(*const Type, void).init(allocator),
             .trait_declarations = std.StringHashMap(*const ast.TraitDecl).init(allocator),
         };
     }
@@ -1033,6 +1051,7 @@ pub const TypeChecker = struct {
         self.loaded_modules.deinit();
         self.uninitialized_vars.deinit();
         self.pointer_aliases.deinit();
+        self.raw_pointer_types.deinit();
         self.trait_declarations.deinit();
     }
 
@@ -1277,6 +1296,7 @@ pub const TypeChecker = struct {
                 .params = param_types,
                 .return_type = return_type,
                 .required_params = required_params,
+                .requires_unsafe = fn_decl.is_unsafe or fn_decl.is_extern,
             },
         };
     }
@@ -1327,6 +1347,7 @@ pub const TypeChecker = struct {
             .params = param_types,
             .return_type = return_type,
             .required_params = required_params,
+            .requires_unsafe = fn_decl.is_unsafe or fn_decl.is_extern,
         } };
     }
 
@@ -1402,6 +1423,10 @@ pub const TypeChecker = struct {
         self.overflow_tracker.clearFlowFacts();
         self.drop_safety_tracker.clearFlowFacts();
         try self.drop_safety_tracker.enterScope();
+
+        const previous_unsafe_depth = self.unsafe_depth;
+        if (fn_decl.is_unsafe) self.unsafe_depth += 1;
+        defer self.unsafe_depth = previous_unsafe_depth;
 
         const previous_return_type = self.current_function_return_type;
         self.current_function_return_type = if (fn_decl.return_type) |return_type|
@@ -2325,6 +2350,10 @@ pub const TypeChecker = struct {
     }
 
     fn checkBlock(self: *TypeChecker, block: *const ast.BlockStmt) TypeError!void {
+        const previous_unsafe_depth = self.unsafe_depth;
+        if (block.is_unsafe) self.unsafe_depth += 1;
+        defer self.unsafe_depth = previous_unsafe_depth;
+
         for (block.statements) |statement| {
             self.checkStatement(statement) catch |err| {
                 if (err != error.TypeMismatch and err != error.UndefinedVariable) {
@@ -2332,6 +2361,29 @@ pub const TypeChecker = struct {
                 }
             };
         }
+    }
+
+    fn inferBlockExpression(
+        self: *TypeChecker,
+        block: *const ast.BlockExpr,
+        hint: ?Type,
+    ) TypeError!Type {
+        const previous_unsafe_depth = self.unsafe_depth;
+        if (block.is_unsafe) self.unsafe_depth += 1;
+        defer self.unsafe_depth = previous_unsafe_depth;
+
+        var result: Type = Type.Void;
+        for (block.statements, 0..) |statement, index| {
+            const is_tail = index + 1 == block.statements.len and statement == .ExprStmt;
+            if (is_tail) {
+                result = try self.inferExpressionWithHint(statement.ExprStmt, hint);
+                continue;
+            }
+            self.checkStatement(statement) catch |err| {
+                if (err != error.TypeMismatch and err != error.UndefinedVariable) return err;
+            };
+        }
+        return result;
     }
 
     fn checkMatchStatement(self: *TypeChecker, match_stmt: *const ast.MatchStmt) TypeError!void {
@@ -2802,6 +2854,43 @@ pub const TypeChecker = struct {
         return t == .Reference or t == .MutableReference;
     }
 
+    fn markRawPointerType(self: *TypeChecker, inner: *const Type) TypeError!void {
+        try self.raw_pointer_types.put(inner, {});
+    }
+
+    fn isRawPointerType(self: *const TypeChecker, t: Type) bool {
+        return switch (t) {
+            .Reference => |inner| self.raw_pointer_types.contains(inner),
+            .MutableReference => |inner| self.raw_pointer_types.contains(inner),
+            else => false,
+        };
+    }
+
+    fn isRawPointerOperand(self: *const TypeChecker, expr: *const ast.Expr, t: Type) bool {
+        if (self.isRawPointerType(t)) return true;
+        return switch (expr.*) {
+            // These builtins manufacture or reinterpret raw addresses even
+            // when contextual typing cannot recover an explicit pointee type.
+            .ReflectExpr => |reflect| switch (reflect.kind) {
+                .PtrFromInt, .PtrCast => true,
+                else => false,
+            },
+            else => false,
+        };
+    }
+
+    fn requireUnsafe(self: *TypeChecker, operation: []const u8, loc: ast.SourceLocation) TypeError!void {
+        if (self.unsafe_depth > 0) return;
+        const message = try std.fmt.allocPrint(
+            self.allocator,
+            "{s} requires an unsafe block",
+            .{operation},
+        );
+        defer self.allocator.free(message);
+        try self.addError(message, loc);
+        return error.TypeMismatch;
+    }
+
     /// Check if a type can be coerced to another type
     fn canCoerce(from: Type, to: Type) bool {
         // Value can be coerced to Optional of that type (T -> ?T)
@@ -2952,6 +3041,7 @@ pub const TypeChecker = struct {
             .IfExpr => |ie| try self.inferIfExprWithHint(ie, eff_hint),
             .MatchExpr => |me| try self.inferMatchExprWithHint(me, eff_hint),
             .ClosureExpr => |closure| try self.inferClosureExprWithHint(closure, eff_hint),
+            .BlockExpr => |block| try self.inferBlockExpression(block, eff_hint),
             .UnaryExpr => |unary| try self.inferUnaryExprWithHint(unary, eff_hint),
             else => try self.inferExpression(expr),
         };
@@ -3342,6 +3432,7 @@ pub const TypeChecker = struct {
                 errdefer self.allocator.destroy(inner);
                 inner.* = try self.parseClosureTypeExpr(pointer.inner, loc);
                 try self.allocated_types.append(self.allocator, inner);
+                try self.markRawPointerType(inner);
                 break :blk if (pointer.is_mut)
                     Type{ .MutableReference = inner }
                 else
@@ -3473,6 +3564,9 @@ pub const TypeChecker = struct {
         // it deliberately.
         if (unary.op == .Deref) {
             const operand_t = try self.inferExpressionWithHint(unary.operand, null);
+            if (self.isRawPointerOperand(unary.operand, operand_t)) {
+                try self.requireUnsafe("raw pointer dereference", unary.node.loc);
+            }
             if (operand_t == .Reference) return operand_t.Reference.*;
             if (operand_t == .MutableReference) return operand_t.MutableReference.*;
             return operand_t;
@@ -3587,7 +3681,11 @@ pub const TypeChecker = struct {
                     }
                 }
                 _ = try self.inferExpression(cast.value);
-                break :blk Type.Void;
+                // Preserve the cast target in the semantic type. In
+                // particular, `value as *T` records a raw pointer rather than
+                // degrading to unit, so the following dereference or pointer
+                // arithmetic can enforce its unsafe boundary.
+                break :blk try self.parseDeclaredType(cast.target_type, cast.node.loc);
             },
             .ReflectExpr => |refl| blk: {
                 // Pointer-flavoured reflection builtins
@@ -3635,6 +3733,7 @@ pub const TypeChecker = struct {
             .MatchExpr => |me| try self.inferMatchExprWithHint(me, null),
             .IfExpr => |ie| try self.inferIfExprWithHint(ie, null),
             .ClosureExpr => |closure| try self.inferClosureExprWithHint(closure, null),
+            .BlockExpr => |block| try self.inferBlockExpression(block, null),
             .ComptimeExpr => |comptime_expr| try self.inferExpression(comptime_expr.expression),
             else => Type.Void,
         };
@@ -3659,9 +3758,19 @@ pub const TypeChecker = struct {
                 // Accept either argument order, but reject pointer +
                 // pointer (no implicit address arithmetic).
                 if (isPointerLike(left_type) and isIntegerType(right_type)) {
+                    if (!self.isRawPointerType(left_type)) {
+                        try self.addError("Pointer arithmetic requires a raw pointer", binary.node.loc);
+                        return error.TypeMismatch;
+                    }
+                    try self.requireUnsafe("raw pointer arithmetic", binary.node.loc);
                     return left_type;
                 }
                 if (isIntegerType(left_type) and isPointerLike(right_type)) {
+                    if (!self.isRawPointerType(right_type)) {
+                        try self.addError("Pointer arithmetic requires a raw pointer", binary.node.loc);
+                        return error.TypeMismatch;
+                    }
+                    try self.requireUnsafe("raw pointer arithmetic", binary.node.loc);
                     return right_type;
                 }
                 // Numeric addition
@@ -3689,6 +3798,11 @@ pub const TypeChecker = struct {
                 // Pointer - integer = pointer. Pointer - pointer is not
                 // supported (would require a ptrdiff type — out of scope).
                 if (binary.op == .Sub and isPointerLike(left_type) and isIntegerType(right_type)) {
+                    if (!self.isRawPointerType(left_type)) {
+                        try self.addError("Pointer arithmetic requires a raw pointer", binary.node.loc);
+                        return error.TypeMismatch;
+                    }
+                    try self.requireUnsafe("raw pointer arithmetic", binary.node.loc);
                     return left_type;
                 }
 
@@ -3809,6 +3923,9 @@ pub const TypeChecker = struct {
             };
 
             if (func_type == .Function) {
+                if (func_type.Function.requires_unsafe) {
+                    try self.requireUnsafe("call to unsafe or external function", call.node.loc);
+                }
                 // Check argument types
                 const expected_params = func_type.Function.params;
 
@@ -3940,6 +4057,9 @@ pub const TypeChecker = struct {
                 for (object_type.Struct.fields) |field| {
                     if (!std.mem.eql(u8, field.name, method_name) or field.type != .Function) continue;
                     const function = field.type.Function;
+                    if (function.requires_unsafe) {
+                        try self.requireUnsafe("call to unsafe or external function", call.node.loc);
+                    }
                     const required = function.required_params orelse function.params.len;
                     const provided = call.args.len + call.named_args.len;
                     if (provided < required or provided > function.params.len) {
@@ -3958,6 +4078,9 @@ pub const TypeChecker = struct {
                 for (object_type.Struct.methods) |method| {
                     if (!std.mem.eql(u8, method.name, method_name)) continue;
                     const function = method.type.Function;
+                    if (function.requires_unsafe) {
+                        try self.requireUnsafe("call to unsafe or external function", call.node.loc);
+                    }
                     const required = function.required_params orelse function.params.len;
                     const provided = call.args.len + call.named_args.len;
                     if (provided < required or provided > function.params.len) {
@@ -4193,6 +4316,9 @@ pub const TypeChecker = struct {
             for (type_value.Struct.methods) |method| {
                 if (!std.mem.eql(u8, method.name, method_name)) continue;
                 const function = method.type.Function;
+                if (function.requires_unsafe) {
+                    try self.requireUnsafe("call to unsafe or external function", static_call.node.loc);
+                }
                 const required = function.required_params orelse function.params.len;
                 const provided = static_call.args.len + static_call.named_args.len;
                 if (provided < required or provided > function.params.len) {
@@ -4725,6 +4851,9 @@ pub const TypeChecker = struct {
                 return operand_type;
             },
             .Deref => {
+                if (self.isRawPointerOperand(unary.operand, operand_type)) {
+                    try self.requireUnsafe("raw pointer dereference", unary.node.loc);
+                }
                 // Dereference strips one level of reference if present,
                 // otherwise returns the operand type (loose fallback).
                 if (operand_type == .Reference) return operand_type.Reference.*;
@@ -5052,6 +5181,7 @@ pub const TypeChecker = struct {
             errdefer self.allocator.destroy(inner_ptr);
             inner_ptr.* = inner_type;
             try self.allocated_types.append(self.allocator, inner_ptr);
+            try self.markRawPointerType(inner_ptr);
             return Type{ .Reference = inner_ptr };
         }
 
