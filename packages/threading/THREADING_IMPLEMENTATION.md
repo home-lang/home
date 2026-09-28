@@ -10,7 +10,7 @@
 |---|---|---|
 | Threads | `spawn`, `spawnWithAttr`, `join`, `detach`, IDs, yield, and sleep wrap `std.Thread`. The caller allocator and validated stack size reach `std.Thread.SpawnConfig`; pthread-backed tests inspect the child thread's actual stack size. Priority is stored but not applied. | [`thread.zig`](src/thread.zig) and its inline tests |
 | Mutex | Atomic spin lock with `lock`, `tryLock`, and `unlock`. No recursive/error-checking modes, timed lock, robust ownership, or priority inheritance. | [`mutex.zig`](src/mutex.zig) and [#802](https://github.com/home-lang/home/issues/802) |
-| Semaphore | Atomic counting semaphore with spin-based `wait`, CAS-based `tryWait`, `post`, and `getValue`. No named or timed semaphore API. | [`semaphore.zig`](src/semaphore.zig) and its inline tests |
+| Semaphore | Atomic counting semaphore with OS-backed futex waiting, CAS-based `tryWait`, one-waiter `post` wakeups, and `getValue`. No named or timed semaphore API. | [`semaphore.zig`](src/semaphore.zig) and its inline tests |
 | Condition variable | Sequence-counter implementation with spin waiting, signal, and broadcast. It is not an OS-blocking condition variable yet. | [`condvar.zig`](src/condvar.zig) and [#802](https://github.com/home-lang/home/issues/802) |
 | Read/write lock | Atomic reader count plus spin-based writer exclusion. No timed operations, preference modes, or upgrade/downgrade API. | [`rwlock.zig`](src/rwlock.zig) and [#802](https://github.com/home-lang/home/issues/802) |
 | Barrier and once | Atomic/spin implementations with focused inline tests. | [`barrier.zig`](src/barrier.zig), [`once.zig`](src/once.zig) |
@@ -61,8 +61,8 @@ pub fn Semaphore.getValue(self: *const Semaphore) !i32
 
 `getValue` uses an acquire load. Values outside the signed public range and
 posts that would overflow the internal `u32` return `SemaphoreOverflow`.
-`wait` still spins; replacing spin-only waiting with futex-backed blocking is
-part of #802.
+`wait` blocks through the runtime's cross-platform futex layer whenever the
+permit count is zero. A successful `post` wakes at most one blocked waiter.
 
 ## Verification
 
@@ -88,8 +88,9 @@ freedom.
 
 ## Remaining work
 
-- [#802](https://github.com/home-lang/home/issues/802): replace spin-only
-  mutex/condition/read-write/semaphore waiting with futex-backed primitives.
+- [#802](https://github.com/home-lang/home/issues/802): replace the remaining
+  spin-only mutex, condition-variable, read/write-lock, and barrier waits with
+  blocking primitives and add contention/timeout stress coverage.
 - [#803](https://github.com/home-lang/home/issues/803): apply thread priority,
   document macOS affinity tags, run affinity on live Windows infrastructure,
   and run the pthread stack check on live Linux infrastructure.

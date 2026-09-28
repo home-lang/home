@@ -2,7 +2,8 @@
 // fd0b6f1a271fca0b8124b69f230b100f4d636af6. MIT — see ../cli/LICENSE.bun.md.
 // Imports rewritten: @import("bun") → @import("home").
 // Rewrites:
-//   * `bun.assert` → `home_rt.assert` (Global.assert).
+//   * `bun.assert` → `std.debug.assert`, so the futex can be shared by the
+//     standalone threading package without importing the runtime root.
 //   * `bun.Output.panic(...)` inside LinuxImpl.wait → `std.debug.panic(...)`.
 //     home_rt has no `Output.panic` shim yet; this preserves crash behavior.
 //   * `Deadline` (uses `std.time.Timer`, removed on Zig 0.17.0-dev) is parked
@@ -243,7 +244,7 @@ const LinuxImpl = struct {
             if (timeout != null) &ts else null,
         );
 
-        switch (linux.E.init(rc)) {
+        switch (linux.errno(rc)) {
             .SUCCESS => {}, // notified by `wake()`
             .INTR => {}, // spurious wakeup
             .AGAIN => {}, // ptr.* != expect
@@ -260,7 +261,7 @@ const LinuxImpl = struct {
     fn wake(ptr: *const atomic.Value(u32), max_waiters: u32) void {
         const rc = linux.futex_3arg(&ptr.raw, .{ .cmd = .WAKE, .private = true }, @bitCast(std.math.cast(i32, max_waiters) orelse std.math.maxInt(i32)));
 
-        switch (linux.E.init(rc)) {
+        switch (linux.errno(rc)) {
             .SUCCESS => {}, // successful wake up
             .INVAL => {}, // invalid futex_wait() on ptr done elsewhere
             .FAULT => @panic("futex_wake() returned EFAULT unexpectedly"), // pointer became invalid while doing the wake
@@ -395,10 +396,8 @@ test "Futex: wake with 0 waiters is a no-op" {
 
 const builtin = @import("builtin");
 
-const home_rt = @import("home");
-const assert = home_rt.assert;
-
 const std = @import("std");
+const assert = std.debug.assert;
 const atomic = std.atomic;
 const c = std.c;
 

@@ -491,7 +491,9 @@ pub fn build(b: *std.Build) void {
         }
     }
     const cache_pkg = createPackage(b, "packages/cache/src/ir_cache.zig", target, optimize, zig_test_framework);
+    const threading_futex_pkg = createPackage(b, "packages/runtime/src/threading/Futex.zig", target, optimize, zig_test_framework);
     const threading_pkg = createPackage(b, "packages/threading/src/threading.zig", target, optimize, zig_test_framework);
+    threading_pkg.addImport("threading_futex", threading_futex_pkg);
     const memory_pkg = createPackage(b, "packages/memory/src/memory.zig", target, optimize, zig_test_framework);
     const intrinsics_pkg = createPackage(b, "packages/intrinsics/src/intrinsics.zig", target, optimize, zig_test_framework);
     const ffi_pkg = createPackage(b, "packages/ffi/src/ffi.zig", target, optimize, zig_test_framework);
