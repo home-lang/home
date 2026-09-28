@@ -70,7 +70,8 @@ test "condvar does not remember signals and reacquires after timeout" {
     try mutex.unlock();
 }
 
-test "condvar signal wakes one waiter" {
+test "condvar signal wakes eight waiters one at a time" {
+    const thread_count = 8;
     var mutex = try Mutex.init();
     defer mutex.deinit();
     var cv = try CondVar.init();
@@ -79,8 +80,9 @@ test "condvar signal wakes one waiter" {
     const Context = struct {
         mutex: *Mutex,
         condvar: *CondVar,
-        waiting: std.atomic.Value(bool) = .init(false),
-        released: bool = false,
+        waiting: std.atomic.Value(u32) = .init(0),
+        completed: std.atomic.Value(u32) = .init(0),
+        tickets: u32 = 0,
         failed: std.atomic.Value(bool) = .init(false),
 
         fn worker(context: *@This()) void {
@@ -88,27 +90,35 @@ test "condvar signal wakes one waiter" {
                 context.failed.store(true, .release);
                 return;
             };
-            context.waiting.store(true, .release);
-            while (!context.released) {
+            _ = context.waiting.fetchAdd(1, .release);
+            while (context.tickets == 0) {
                 context.condvar.wait(context.mutex) catch {
                     context.failed.store(true, .release);
                     context.mutex.unlock() catch {};
                     return;
                 };
             }
+            context.tickets -= 1;
+            _ = context.completed.fetchAdd(1, .release);
             context.mutex.unlock() catch context.failed.store(true, .release);
         }
     };
 
     var context = Context{ .mutex = &mutex, .condvar = &cv };
-    const thread = try std.Thread.spawn(.{}, Context.worker, .{&context});
-    while (!context.waiting.load(.acquire)) std.Thread.yield() catch {};
+    var threads: [thread_count]std.Thread = undefined;
+    for (&threads) |*thread| {
+        thread.* = try std.Thread.spawn(.{}, Context.worker, .{&context});
+    }
+    while (context.waiting.load(.acquire) != thread_count) std.Thread.yield() catch {};
 
-    try mutex.lock();
-    context.released = true;
-    try cv.signal();
-    try mutex.unlock();
-    thread.join();
+    for (1..thread_count + 1) |expected_completed| {
+        try mutex.lock();
+        context.tickets += 1;
+        try cv.signal();
+        try mutex.unlock();
+        while (context.completed.load(.acquire) != expected_completed) std.Thread.yield() catch {};
+    }
+    for (threads) |thread| thread.join();
 
     try std.testing.expect(!context.failed.load(.acquire));
 }

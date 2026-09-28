@@ -79,7 +79,8 @@ test plan:
 - [`mutex.zig`](src/mutex.zig): basic lock behavior, recursive-mode rejection,
   and an eight-thread protected-counter contention test.
 - [`condvar.zig`](src/condvar.zig): no-waiter signal behavior, timeout with
-  mutex reacquisition, one-waiter signal, and eight-waiter broadcast.
+  mutex reacquisition, eight waiters signaled individually, and eight-waiter
+  broadcast.
 - [`rwlock.zig`](src/rwlock.zig): eight concurrent readers plus a mixed
   four-reader/four-writer protected-state stress test.
 - [`barrier.zig`](src/barrier.zig): eight threads synchronizing across 100
@@ -92,10 +93,18 @@ These tests prove only the current surface. They do not prove fairness,
 contention behavior, real-time scheduling, platform affinity, or data-race
 freedom.
 
+The complete native threading graph can be repeated under ThreadSanitizer with
+the repository runner. Keep it inside the shared memory guard:
+
+```sh
+source scripts/home-bin.sh
+HOME_TEST_MAX_RSS_MB=2048 run_bounded 1800 scripts/threading-tsan.sh 100
+```
+
 ## Remaining work
 
-- [#802](https://github.com/home-lang/home/issues/802): add ThreadSanitizer and
-  measured blocked-CPU acceptance coverage for the blocking primitives.
+- [#802](https://github.com/home-lang/home/issues/802): add measured blocked-CPU
+  acceptance coverage for the blocking primitives.
 - [#803](https://github.com/home-lang/home/issues/803): apply thread priority,
   document macOS affinity tags, run affinity on live Windows infrastructure,
   and run the pthread stack check on live Linux infrastructure.
