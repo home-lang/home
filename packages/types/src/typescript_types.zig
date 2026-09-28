@@ -73,6 +73,10 @@ pub const Variance = variance_mod.Variance;
 pub const VariantTypeParam = variance_mod.VariantTypeParam;
 pub const checkVariance = variance_mod.checkVariance;
 
+fn subtypeForVariance(from: *const Type, to: *const Type) bool {
+    return from.*.isSubtype(to.*);
+}
+
 // Type Guards
 pub const TypeGuard = guard_mod.TypeGuard;
 pub const TypePredicate = guard_mod.TypePredicate;
@@ -719,6 +723,25 @@ test "isSubtype - mutable arrays are invariant and immutable views are covariant
     try std.testing.expect(mut_ref1.isSubtype(ref2));
     try std.testing.expect(!ref1.isSubtype(mut_ref2));
     try std.testing.expect(!mut_ref1.isSubtype(mut_ref2));
+
+    try std.testing.expect(checkVariance(
+        VariantTypeParam.init("Element", .covariant),
+        i32_elem,
+        i64_elem,
+        subtypeForVariance,
+    ));
+    try std.testing.expect(!checkVariance(
+        VariantTypeParam.init("Element", .contravariant),
+        i32_elem,
+        i64_elem,
+        subtypeForVariance,
+    ));
+    try std.testing.expect(!checkVariance(
+        VariantTypeParam.init("Element", .invariant),
+        i32_elem,
+        i64_elem,
+        subtypeForVariance,
+    ));
 }
 
 test "isSubtype - struct width subtyping" {

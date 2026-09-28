@@ -60,15 +60,17 @@ pub const VariantTypeParam = struct {
 };
 
 /// Check if a type assignment respects variance rules
+pub const SubtypeFn = *const fn (*const Type, *const Type) bool;
+
 pub fn checkVariance(
     param: VariantTypeParam,
     from_type: *const Type,
     to_type: *const Type,
-    isSubtype: fn (*const Type, *const Type) bool,
+    is_subtype: SubtypeFn,
 ) bool {
     return switch (param.variance) {
-        .covariant => isSubtype(from_type, to_type),
-        .contravariant => isSubtype(to_type, from_type),
+        .covariant => is_subtype(from_type, to_type),
+        .contravariant => is_subtype(to_type, from_type),
         .invariant => from_type.equals(to_type.*),
         .bivariant => true,
     };

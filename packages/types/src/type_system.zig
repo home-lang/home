@@ -54,6 +54,10 @@ pub const TypePredicate = ts_types.TypePredicate;
 pub const RecursiveTypeAlias = ts_types.RecursiveTypeAlias;
 pub const checkVariance = ts_types.checkVariance;
 
+fn typeIsSubtype(from: *const Type, to: *const Type) bool {
+    return from.*.isSubtype(to.*);
+}
+
 /// Home's static type system with support for advanced features.
 ///
 /// The Type union represents all possible types in the Home language, including:
@@ -634,7 +638,12 @@ pub const Type = union(enum) {
         // a mutable destination would permit writes of the wider element type.
         if (std.meta.activeTag(self) == .MutableReference and std.meta.activeTag(supertype) == .Reference) {
             if (self.MutableReference.* == .Array and supertype.Reference.* == .Array) {
-                return self.MutableReference.Array.element_type.isSubtype(supertype.Reference.Array.element_type.*);
+                return checkVariance(
+                    VariantTypeParam.init("Element", .covariant),
+                    self.MutableReference.Array.element_type,
+                    supertype.Reference.Array.element_type,
+                    typeIsSubtype,
+                );
             }
             return self.MutableReference.equals(supertype.Reference.*);
         }
@@ -644,7 +653,12 @@ pub const Type = union(enum) {
         // invariant: only the read-only view may widen its element type.
         if (std.meta.activeTag(self) == .Reference and std.meta.activeTag(supertype) == .Reference) {
             if (self.Reference.* == .Array and supertype.Reference.* == .Array) {
-                return self.Reference.Array.element_type.isSubtype(supertype.Reference.Array.element_type.*);
+                return checkVariance(
+                    VariantTypeParam.init("Element", .covariant),
+                    self.Reference.Array.element_type,
+                    supertype.Reference.Array.element_type,
+                    typeIsSubtype,
+                );
             }
         }
 
@@ -670,7 +684,12 @@ pub const Type = union(enum) {
         // immutable Reference views; otherwise a widened alias could write an
         // element the original array cannot hold.
         if (std.meta.activeTag(self) == .Array and std.meta.activeTag(supertype) == .Array) {
-            return self.Array.element_type.equals(supertype.Array.element_type.*);
+            return checkVariance(
+                VariantTypeParam.init("Element", .invariant),
+                self.Array.element_type,
+                supertype.Array.element_type,
+                typeIsSubtype,
+            );
         }
 
         // Struct subtyping (all fields must be subtypes)
@@ -730,7 +749,12 @@ pub const Type = union(enum) {
         // must not leak into isSubtype(Array, Array), which represents a
         // mutable alias and is therefore invariant.
         if (self == .Array and target == .Array) {
-            return self.Array.element_type.isSubtype(target.Array.element_type.*);
+            return checkVariance(
+                VariantTypeParam.init("Element", .covariant),
+                self.Array.element_type,
+                target.Array.element_type,
+                typeIsSubtype,
+            );
         }
 
         // In immutable context, use subtyping
