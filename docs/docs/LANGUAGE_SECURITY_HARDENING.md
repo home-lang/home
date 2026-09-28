@@ -26,8 +26,15 @@ Your language already has:
 
 **Purpose**: Track untrusted data flow through the program
 
+> **Status:** Design proposal, not a current Home compiler feature. The former
+> `packages/types/src/taint_tracking.zig` prototype was isolated from the parser
+> and `TypeChecker`, and Home has no `Tainted<T, Level>` syntax or declaration
+> metadata yet. It was removed in #788 rather than presenting a test-only API as
+> enforcement. A future implementation must begin with source-language syntax
+> and end-to-end failing-program tests.
+
 ```zig
-// packages/types/src/taint_tracking.zig
+// Proposed API shape (not implemented)
 pub const TaintLevel = enum {
     Trusted,
     UserInput,
@@ -111,8 +118,15 @@ fn open_file(path: String): File requires ReadFile {
 
 **Purpose**: Prevent information leakage via types
 
+> **Status:** Design proposal, not a current Home compiler feature. The former
+> `packages/types/src/information_flow.zig` prototype could only be called by
+> Zig unit tests; no Home AST node could carry a security level into the type
+> checker. It was removed in #788. Reintroducing this requires explicit source
+> annotations and checker-level negative tests for both explicit and implicit
+> flows.
+
 ```zig
-// packages/types/src/information_flow.zig
+// Proposed API shape (not implemented)
 pub const SecurityLevel = enum(u8) {
     Public = 0,
     Internal = 1,
