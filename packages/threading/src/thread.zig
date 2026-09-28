@@ -12,10 +12,19 @@ pub const Thread = struct {
         comptime func: anytype,
         args: anytype,
     ) ThreadError!Thread {
-        const inner = std.Thread.spawn(.{}, func, args) catch {
+        return spawnWithAttr(allocator, .{}, func, args);
+    }
+
+    pub fn spawnWithAttr(
+        allocator: std.mem.Allocator,
+        attr: ThreadAttr,
+        comptime func: anytype,
+        args: anytype,
+    ) ThreadError!Thread {
+        const config = try attr.spawnConfig(allocator);
+        const inner = std.Thread.spawn(config, func, args) catch {
             return ThreadError.ThreadCreationFailed;
         };
-        _ = allocator; // For API compatibility
         return Thread{ .inner = inner };
     }
 
@@ -57,6 +66,8 @@ pub const Thread = struct {
 };
 
 pub const ThreadAttr = struct {
+    pub const minimum_stack_size: usize = 16 * 1024;
+
     stack_size: ?usize = null,
     priority: i32 = 0,
 
@@ -70,6 +81,15 @@ pub const ThreadAttr = struct {
 
     pub fn setPriority(self: *ThreadAttr, priority: i32) void {
         self.priority = priority;
+    }
+
+    fn spawnConfig(self: ThreadAttr, allocator: std.mem.Allocator) ThreadError!std.Thread.SpawnConfig {
+        var config = std.Thread.SpawnConfig{ .allocator = allocator };
+        if (self.stack_size) |stack_size| {
+            if (stack_size < minimum_stack_size) return ThreadError.StackTooSmall;
+            config.stack_size = stack_size;
+        }
+        return config;
     }
 };
 
@@ -91,6 +111,19 @@ test "thread spawn and join" {
 
 test "thread yield" {
     Thread.yield();
+}
+
+test "thread attributes configure stack and allocator" {
+    const testing = std.testing;
+    var attr = ThreadAttr.init();
+    attr.setStackSize(512 * 1024);
+
+    const config = try attr.spawnConfig(testing.allocator);
+    try testing.expectEqual(@as(usize, 512 * 1024), config.stack_size);
+    try testing.expect(config.allocator.?.ptr == testing.allocator.ptr);
+
+    attr.setStackSize(ThreadAttr.minimum_stack_size - 1);
+    try testing.expectError(ThreadError.StackTooSmall, attr.spawnConfig(testing.allocator));
 }
 
 test "thread sleep" {

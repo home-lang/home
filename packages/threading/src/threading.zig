@@ -46,7 +46,7 @@ pub const ThreadError = @import("errors.zig").ThreadError;
 // Constants
 // ============================================================================
 
-pub const THREAD_STACK_MIN: usize = 16384; // 16KB minimum stack
+pub const THREAD_STACK_MIN: usize = ThreadAttr.minimum_stack_size;
 pub const THREAD_STACK_DEFAULT: usize = 2 * 1024 * 1024; // 2MB default
 pub const MAX_THREADS: usize = 4096;
 pub const MAX_CPU_COUNT: usize = 256;
@@ -125,4 +125,8 @@ test "constants defined" {
     try testing.expect(THREAD_STACK_MIN > 0);
     try testing.expect(THREAD_STACK_DEFAULT >= THREAD_STACK_MIN);
     try testing.expect(MAX_THREADS > 0);
+}
+
+test "thread stack minimum follows ThreadAttr validation" {
+    try std.testing.expectEqual(ThreadAttr.minimum_stack_size, THREAD_STACK_MIN);
 }

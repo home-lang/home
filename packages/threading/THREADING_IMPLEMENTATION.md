@@ -71,11 +71,15 @@ This document outlines the complete threading system for Home OS with full POSIX
 ### Thread API
 
 ```zig
-// Create thread
-pub fn create(
-    attr: ?_const ThreadAttr,
-    start_routine: ThreadFunc,
-    arg: ?_anyopaque,
+// Create thread with default attributes
+pub fn spawn(allocator: std.mem.Allocator, comptime func: anytype, args: anytype) !Thread
+
+// Create thread with an explicit stack size
+pub fn spawnWithAttr(
+    allocator: std.mem.Allocator,
+    attr: ThreadAttr,
+    comptime func: anytype,
+    args: anytype,
 ) !Thread
 
 // Join thread
@@ -111,6 +115,10 @@ pub fn yield() void
 pub fn sleep(duration: std.time.Duration) void
 pub fn sleepUntil(deadline: std.time.Instant) void
 ```
+
+`spawnWithAttr` forwards both the caller-provided allocator and a validated
+`ThreadAttr.stack_size` to `std.Thread.spawn`. Stack sizes below 16 KiB return
+`StackTooSmall`; priority application remains platform scheduling work.
 
 ### Mutex API
 
