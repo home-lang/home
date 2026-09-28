@@ -741,7 +741,7 @@ await Mail.to(user.email)
 
 - [x] Ownership & borrowing - Done ✅
 - [x] No null pointer exceptions (Option types) - Done ✅
-- [x] No data races (Send/Sync) - Done ✅
+- [ ] No data races (Send/Sync) — 🚧 not enforced; tracked in [#806](https://github.com/home-lang/home/issues/806)
 
 **Performance**:
 

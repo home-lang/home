@@ -19,7 +19,7 @@ section.
 > useful subset", NOT "passes the Node test suite" (we don't run it yet)
 > and NOT "wired into the bun-corpus gate" (that still routes through the
 > separate bootstrap harness). The remaining 🔴 are server-side sockets
-> and heavy runtime (`tls`/`http2`/`dgram`/`worker_threads`/`cluster`/…);
+> and heavy runtime (`tls`/`http2`/`dgram`/`cluster`/…);
 > client networking (`dns`/`net`/`http`/`https`) is now 🟡 (client-only).
 
 Legend:
@@ -312,7 +312,14 @@ evaluate in the realm's current global via JSC (`JSEvaluateScript`).
 
 ### [`node:worker_threads`](https://nodejs.org/api/worker_threads.html)
 
-🔴 Not implemented.
+🟡 Native runtime implementation with dedicated corpus coverage. `Worker`,
+eval/file workers, `threadId`, `MessageChannel`/`MessagePort`,
+`receiveMessageOnPort`, environment data, worker events, heap snapshots, and
+transfer rollback are exercised by
+[`worker_threads.test.ts`](https://github.com/home-lang/home/blob/main/packages/runtime/test/test/js/node/worker_threads/worker_threads.test.ts)
+and the adjacent lifecycle tests. This is substantial coverage, not a claim of
+complete Node parity; shared-memory admission remains tracked by
+[#810](https://github.com/home-lang/home/issues/810).
 
 ### [`node:zlib`](https://nodejs.org/api/zlib.html)
 
@@ -336,8 +343,8 @@ to prove non-delegation).
 | Status | Count | % |
 |---|---|---|
 | 🟢 Fully implemented | 0 | 0% |
-| 🟡 Partially implemented (JS-callable subset) | 36 | ~77% |
-| 🔴 Not implemented | 10 | ~21% |
+| 🟡 Partially implemented (JS-callable subset) | 37 | ~79% |
+| 🔴 Not implemented | 9 | ~19% |
 | ❌ Won't implement | 1 | ~2% |
 
 🟡 modules (JS-callable via Home's realm — `home eval` /
@@ -347,10 +354,10 @@ to prove non-delegation).
 `perf_hooks`, `process`, `punycode`, `querystring`, `readline`,
 `readline/promises`, `stream`, `stream/consumers`, `stream/promises`,
 `stream/web`, `string_decoder`, `timers`, `timers/promises`, `tty`,
-`url`, `util`, `vm`, `zlib`.
+`url`, `util`, `vm`, `worker_threads`, `zlib`.
 
 Still 🔴 (the next frontier — server-side sockets + heavy runtime):
-`http2`, `tls`, `dgram`, `worker_threads`, `cluster`, `repl`, `wasi`,
+`http2`, `tls`, `dgram`, `cluster`, `repl`, `wasi`,
 `inspector`, `trace_events`, `test`.
 
 **Honest caveats:** (1) 🟡 = a useful subset callable through Home's own
