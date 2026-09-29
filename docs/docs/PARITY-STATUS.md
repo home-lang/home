@@ -410,7 +410,7 @@ cross-file interner search.
 |---|---|
 | `home check` (type-check) | ✅ Stable |
 | `home run` (interpret) | ✅ Stable |
-| `home build` (native binary) | 🚧 Home native codegen + self-contained LLVM JS/TS entrypoints |
+| `home build` (native binary) | 🚧 Home native codegen + runtime standalone JS/TS builder |
 | `home test` runner | 🚧 In progress |
 | Formatter | 🚧 In progress |
 | Linter | 🚧 In progress |
