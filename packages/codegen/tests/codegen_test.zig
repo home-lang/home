@@ -301,6 +301,61 @@ test "codegen: unmatched match expression executable exits instead of returning 
     try testing.expect(std.mem.indexOf(u8, result.stderr, codegen.match_expression_fallthrough_panic) != null);
 }
 
+test "codegen: panic writes its message and exits with status 101" {
+    if (builtin.os.tag != .macos and builtin.os.tag != .linux) return error.SkipZigTest;
+
+    const allocator = testing.allocator;
+    const source =
+        \\fn main() -> i32 {
+        \\    panic("fatal from home")
+        \\}
+    ;
+    var lexer = Lexer.init(allocator, source);
+    var tokens = try lexer.tokenize();
+    defer tokens.deinit(allocator);
+    var parser = try Parser.init(allocator, tokens.items);
+    defer parser.deinit();
+    const program = try parser.parse();
+    defer program.deinit(allocator);
+
+    var checker = TypeChecker.init(allocator, program);
+    defer checker.deinit();
+    try testing.expect(try checker.check());
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    defer allocator.free(dir_path);
+    const executable_path = try std.fs.path.join(allocator, &.{ dir_path, "panic-builtin-x64" });
+    defer allocator.free(executable_path);
+
+    var native_codegen = codegen.NativeCodegen.init(allocator, program, null, null);
+    defer native_codegen.deinit();
+    native_codegen.io = testing.io;
+    try native_codegen.writeExecutable(executable_path);
+
+    const result = try std.process.run(allocator, testing.io, .{
+        .argv = &.{executable_path},
+        .timeout = .{ .duration = .{ .raw = .fromSeconds(5), .clock = .awake } },
+    });
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+    if (result.term != .exited or result.term.exited != 101) {
+        std.debug.print("panic builtin term={} stderr={s}\n", .{ result.term, result.stderr });
+    }
+    try testing.expectEqual(std.process.Child.Term{ .exited = 101 }, result.term);
+    try testing.expectEqualStrings("fatal from home\n", result.stderr);
+
+    const arm64_path = try std.fs.path.join(allocator, &.{ dir_path, "panic-builtin-arm64" });
+    defer allocator.free(arm64_path);
+    var arm64_codegen = codegen.Aarch64NativeCodegen.init(allocator, program);
+    defer arm64_codegen.deinit();
+    arm64_codegen.io = testing.io;
+    try arm64_codegen.writeExecutable(arm64_path);
+    try testing.expectEqual(@as(usize, 1), arm64_codegen.strings.items.len);
+    try testing.expectEqualStrings("fatal from home\n", arm64_codegen.strings.items[0].bytes);
+}
+
 test "codegen: comptime values are evaluated before native emission" {
     const allocator = testing.allocator;
     const source =

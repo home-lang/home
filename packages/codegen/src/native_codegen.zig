@@ -5751,6 +5751,23 @@ pub const NativeCodegen = struct {
         try self.assembler.syscall();
     }
 
+    /// Emit a source-level `panic(message)`. The message pointer arrives in
+    /// rax, so unlike compiler-generated diagnostics this path can report a
+    /// runtime string expression rather than only a static byte slice.
+    fn emitRuntimePanicValue(self: *NativeCodegen) !void {
+        try self.emitWriteStderrCStr();
+        try self.emitWriteStderrStatic("\n");
+
+        const exit_syscall: u64 = switch (builtin.os.tag) {
+            .macos => 0x2000001,
+            .linux => 60,
+            else => 60,
+        };
+        try self.assembler.movRegImm64(.rax, exit_syscall);
+        try self.assembler.movRegImm64(.rdi, 101);
+        try self.assembler.syscall();
+    }
+
     /// Write a static buffer (owned, alive for the rest of the codegen pass)
     /// to stderr using a direct write syscall.
     fn emitWriteStderrStaticBuf(self: *NativeCodegen, buf: []const u8) !void {
@@ -8705,6 +8722,13 @@ pub const NativeCodegen = struct {
                     if (try self.tryEmitFunctionCall(call, func_name)) return;
 
                     // Handle built-in functions
+                    if (std.mem.eql(u8, func_name, "panic")) {
+                        if (call.args.len != 1) return error.UnsupportedFeature;
+                        try self.generateExpr(call.args[0]);
+                        try self.emitRuntimePanicValue();
+                        return;
+                    }
+
                     if (std.mem.eql(u8, func_name, "print") or
                         std.mem.eql(u8, func_name, "println"))
                     {

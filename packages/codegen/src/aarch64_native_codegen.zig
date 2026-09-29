@@ -27,8 +27,8 @@ const elf = @import("elf.zig");
 ///   - call expressions: positional args only, callee must be a bare
 ///     identifier referencing a function in this program, or a qualified
 ///     module call such as `math_helpers.square(4)`
-///   - built-in `print(s)` / `println(s)` for string-literal arguments,
-///     lowered to the BSD `write` syscall on macOS-arm64
+///   - built-in `print(s)`, `println(s)`, and `panic(s)` for string-literal
+///     arguments, lowered to native write/exit syscalls
 ///   - struct field reads (`p.x`) and writes (`p.x = ...`)
 ///   - fixed-size i64 arrays via `[a, b, c]` literals, indexed read/write
 ///     (`arr[i]`, `arr[i] = v`)
@@ -1325,6 +1325,9 @@ pub const Aarch64NativeCodegen = struct {
         {
             return self.emitPrintBuiltin(call, std.mem.eql(u8, callee_name, "println"));
         }
+        if (std.mem.eql(u8, callee_name, "panic")) {
+            return self.emitPanicBuiltin(call);
+        }
 
         // If we know the callee's signature, walk its params to determine
         // each arg's register footprint (1 or 2 slots). Unknown callees
@@ -1492,13 +1495,40 @@ pub const Aarch64NativeCodegen = struct {
             else => return error.NotImplemented, // M6 only supports string literals
         };
 
+        try self.emitStaticWrite(lit.value, 1, append_newline);
+    }
+
+    fn emitPanicBuiltin(self: *Aarch64NativeCodegen, call: *ast.CallExpr) CodegenError!void {
+        if (call.args.len != 1) return error.NotImplemented;
+        const lit = switch (call.args[0].*) {
+            .StringLiteral => |s| s,
+            else => return error.NotImplemented,
+        };
+
+        try self.emitStaticWrite(lit.value, 2, true);
+        try self.assembler.movRegImm64(.x0, 101);
+        switch (builtin.os.tag) {
+            .macos => {
+                try self.assembler.movRegImm64(.x16, 1);
+                try self.assembler.svc(0x80);
+            },
+            .linux => {
+                try self.assembler.movRegImm64(.x8, 93);
+                try self.assembler.svc(0);
+            },
+            else => return error.UnsupportedPlatform,
+        }
+    }
+
+    fn emitStaticWrite(self: *Aarch64NativeCodegen, bytes: []const u8, fd: i64, append_newline: bool) CodegenError!void {
+
         // Build the final byte sequence (with optional trailing newline) and
         // intern it. Bytes are owned by this codegen instance and freed in
         // deinit.
-        const len_with_nl: usize = lit.value.len + @as(usize, if (append_newline) 1 else 0);
+        const len_with_nl: usize = bytes.len + @as(usize, if (append_newline) 1 else 0);
         const owned = try self.allocator.alloc(u8, len_with_nl);
-        @memcpy(owned[0..lit.value.len], lit.value);
-        if (append_newline) owned[lit.value.len] = '\n';
+        @memcpy(owned[0..bytes.len], bytes);
+        if (append_newline) owned[bytes.len] = '\n';
 
         const string_index: usize = self.strings.items.len;
         try self.strings.append(self.allocator, .{ .bytes = owned });
@@ -1513,7 +1543,7 @@ pub const Aarch64NativeCodegen = struct {
         try self.assembler.adr(.x1, 0); // placeholder
         try self.string_fixups.append(self.allocator, .{ .adr_pos = adr_pos, .string_index = string_index });
 
-        try self.assembler.movRegImm64(.x0, 1);
+        try self.assembler.movRegImm64(.x0, fd);
         try self.assembler.movRegImm64(.x2, @intCast(len_with_nl));
         switch (builtin.os.tag) {
             .macos => {
