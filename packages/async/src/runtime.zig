@@ -15,19 +15,19 @@ const JoinHandle = task_mod.JoinHandle;
 const Worker = struct {
     id: usize,
     local_queue: WorkStealingDeque(RawTask),
-    runtime: *Runtime,
+    runtime: ?*Runtime,
     thread: ?std.Thread,
     parker: Parker,
-    notified: std.atomic.Value(bool),
+    prng: std.Random.DefaultPrng,
 
-    fn init(id: usize, runtime: *Runtime) !Worker {
+    fn init(id: usize, allocator: std.mem.Allocator) !Worker {
         return .{
             .id = id,
-            .local_queue = try WorkStealingDeque(RawTask).init(runtime.allocator),
-            .runtime = runtime,
+            .local_queue = try WorkStealingDeque(RawTask).init(allocator),
+            .runtime = null,
             .thread = null,
             .parker = Parker.init(),
-            .notified = std.atomic.Value(bool).init(false),
+            .prng = std.Random.DefaultPrng.init(0x9e3779b97f4a7c15 ^ @as(u64, @intCast(id))),
         };
     }
 
@@ -37,12 +37,15 @@ const Worker = struct {
 
     /// Main worker loop
     fn run(self: *Worker) void {
-        while (!self.runtime.shutdown.load(.acquire)) {
-            if (self.findTask()) |_| {
-                self.runTask();
+        current_worker = self;
+        defer current_worker = null;
+
+        const runtime = self.runtime.?;
+        while (!runtime.shutdown.load(.acquire)) {
+            if (self.findTask()) |task| {
+                self.runTask(task);
             } else {
-                // No work found, park the thread
-                self.park();
+                self.parker.park();
             }
         }
     }
@@ -55,7 +58,8 @@ const Worker = struct {
         }
 
         // Try global queue
-        if (self.runtime.global_queue.pop()) |task| {
+        const runtime = self.runtime.?;
+        if (runtime.global_queue.pop()) |task| {
             return task;
         }
 
@@ -66,15 +70,17 @@ const Worker = struct {
     /// Steal work from other workers
     fn steal(self: *Worker) ?RawTask {
         // Randomize starting point to avoid hot-spots
-        const start = self.runtime.prng.random().intRangeLessThan(usize, 0, self.runtime.workers.len);
+        const runtime = self.runtime.?;
+        if (runtime.workers.len <= 1) return null;
+        const start = self.prng.random().intRangeLessThan(usize, 0, runtime.workers.len);
 
         var i: usize = 0;
-        while (i < self.runtime.workers.len) : (i += 1) {
-            const victim_idx = (start + i) % self.runtime.workers.len;
+        while (i < runtime.workers.len) : (i += 1) {
+            const victim_idx = (start + i) % runtime.workers.len;
 
             if (victim_idx == self.id) continue; // Don't steal from ourselves
 
-            const victim = &self.runtime.workers[victim_idx];
+            const victim = &runtime.workers[victim_idx];
 
             if (victim.local_queue.steal()) |task| {
                 return task;
@@ -85,52 +91,30 @@ const Worker = struct {
     }
 
     /// Execute a task
-    fn runTask(self: *Worker) void {
-        _ = @This();
-
-        if (self.findTask()) |raw_task| {
-            // Create waker for this task
-            const waker_data = self.runtime.allocator.create(WakerData) catch return;
-            waker_data.* = .{
-                .task = raw_task,
-                .worker_id = self.id,
-                .runtime = self.runtime,
-            };
-
-            const waker = Waker{
-                .data = @ptrCast(waker_data),
-                .vtable = &WakerData.vtable,
-            };
-
-            var ctx = Context.init(waker);
-
-            // Poll the task (make mutable copy)
-            var task_copy = raw_task;
-            const completed = task_copy.poll(&ctx);
-
-            if (!completed) {
-                // Task not ready, it will be re-queued when waker is called
-            } else {
-                // Task completed, clean up waker
-                self.runtime.allocator.destroy(waker_data);
-            }
-        }
-    }
-
-    /// Park this worker thread
-    fn park(self: *Worker) void {
-        // Check if we were notified before parking
-        if (self.notified.swap(false, .acquire)) {
+    fn runTask(self: *Worker, raw_task: RawTask) void {
+        const runtime = self.runtime.?;
+        const waker_data = runtime.allocator.create(WakerData) catch {
+            runtime.enqueueTask(raw_task) catch {};
             return;
-        }
+        };
+        waker_data.* = .{
+            .task = raw_task,
+            .runtime = runtime,
+        };
 
-        // Park with timeout to periodically check shutdown
-        _ = self.parker.parkTimeout(100 * std.time.ns_per_ms); // 100ms
+        const waker = Waker{
+            .data = @ptrCast(waker_data),
+            .vtable = &WakerData.vtable,
+        };
+        defer waker.drop();
+
+        var ctx = Context.init(waker);
+        var task_copy = raw_task;
+        _ = task_copy.poll(&ctx);
     }
 
     /// Unpark this worker
     fn unpark(self: *Worker) void {
-        self.notified.store(true, .release);
         self.parker.unpark();
     }
 
@@ -141,10 +125,11 @@ const Worker = struct {
     }
 };
 
+threadlocal var current_worker: ?*Worker = null;
+
 /// Waker data for task notifications
 const WakerData = struct {
     task: RawTask,
-    worker_id: usize,
     runtime: *Runtime,
 
     const vtable = Waker.VTable{
@@ -198,38 +183,39 @@ pub const Runtime = struct {
     workers: []Worker,
     global_queue: ConcurrentQueue(RawTask),
     shutdown: std.atomic.Value(bool),
-    prng: std.Random.DefaultPrng,
+    next_worker: std.atomic.Value(usize),
 
     /// Create a new runtime with the specified number of worker threads
     pub fn init(allocator: std.mem.Allocator, num_workers: usize) !Runtime {
         const worker_count = if (num_workers == 0) try std.Thread.getCpuCount() else num_workers;
+        if (worker_count == 0) return error.InvalidWorkerCount;
 
-        var runtime = Runtime{
-            .allocator = allocator,
-            .workers = try allocator.alloc(Worker, worker_count),
-            .global_queue = try ConcurrentQueue(RawTask).init(allocator),
-            .shutdown = std.atomic.Value(bool).init(false),
-            .prng = std.Random.DefaultPrng.init(@intCast(@as(usize, @intFromPtr(&worker_count)))),
-        };
+        const workers = try allocator.alloc(Worker, worker_count);
+        errdefer allocator.free(workers);
 
-        // Initialize workers
-        for (runtime.workers, 0..) |*worker, i| {
-            worker.* = try Worker.init(i, &runtime);
+        var global_queue = try ConcurrentQueue(RawTask).init(allocator);
+        errdefer global_queue.deinit();
+
+        var initialized: usize = 0;
+        errdefer for (workers[0..initialized]) |*worker| worker.deinit();
+        for (workers, 0..) |*worker, i| {
+            worker.* = try Worker.init(i, allocator);
+            initialized += 1;
         }
 
-        return runtime;
+        return .{
+            .allocator = allocator,
+            .workers = workers,
+            .global_queue = global_queue,
+            .shutdown = std.atomic.Value(bool).init(false),
+            .next_worker = std.atomic.Value(usize).init(0),
+        };
     }
 
     /// Clean up runtime resources
     pub fn deinit(self: *Runtime) void {
-        self.shutdown.store(true, .release);
-
-        // Wait for workers to finish
-        for (self.workers) |*worker| {
-            if (worker.thread) |thread| {
-                thread.join();
-            }
-        }
+        self.requestShutdown();
+        self.joinWorkers();
 
         // Clean up workers
         for (self.workers) |*worker| {
@@ -243,6 +229,7 @@ pub const Runtime = struct {
     /// Spawn a new task
     pub fn spawn(self: *Runtime, comptime T: type, fut: Future(T)) !JoinHandle(T) {
         const task = try Task(T).init(self.allocator, fut);
+        errdefer task.deinit();
         const raw = RawTask.fromTask(T, task);
 
         try self.enqueueTask(raw);
@@ -267,56 +254,74 @@ pub const Runtime = struct {
 
     /// Get the current worker (if running on a worker thread)
     fn getCurrentWorker(self: *Runtime) ?*Worker {
-        _ = std.Thread.getCurrentId();
-
-        for (self.workers) |*worker| {
-            if (worker.thread) |thread| {
-                _ = thread; // Thread comparison would need platform-specific logic
-                // For now, just return null - work stealing will handle distribution
-                continue;
-            }
+        if (current_worker) |worker| {
+            if (worker.runtime == self) return worker;
         }
-
         return null;
     }
 
     /// Unpark one worker thread
     fn unparkOne(self: *Runtime) void {
-        // Simple strategy: unpark first worker
-        // In production, could use round-robin or track parked workers
         if (self.workers.len > 0) {
-            self.workers[0].unpark();
+            const index = self.next_worker.fetchAdd(1, .monotonic) % self.workers.len;
+            self.workers[index].unpark();
         }
+    }
+
+    fn unparkAll(self: *Runtime) void {
+        for (self.workers) |*worker| worker.unpark();
+    }
+
+    fn joinWorkers(self: *Runtime) void {
+        for (self.workers) |*worker| {
+            if (worker.thread) |thread| {
+                thread.join();
+                worker.thread = null;
+            }
+        }
+    }
+
+    pub fn requestShutdown(self: *Runtime) void {
+        self.shutdown.store(true, .release);
+        self.unparkAll();
     }
 
     /// Run the runtime until all tasks complete
     pub fn run(self: *Runtime) !void {
-        // Start worker threads
-        for (self.workers) |*worker| {
-            worker.thread = try std.Thread.spawn(.{}, Worker.run, .{worker});
-        }
+        if (self.shutdown.load(.acquire)) return error.RuntimeShuttingDown;
 
-        // Wait for all workers to finish
-        for (self.workers) |*worker| {
-            if (worker.thread) |thread| {
-                thread.join();
+        for (self.workers) |*worker| worker.runtime = self;
+
+        var started: usize = 0;
+        errdefer {
+            self.requestShutdown();
+            for (self.workers[0..started]) |*worker| {
+                worker.thread.?.join();
+                worker.thread = null;
             }
         }
+
+        for (self.workers) |*worker| {
+            worker.thread = try std.Thread.spawn(.{}, Worker.run, .{worker});
+            started += 1;
+        }
+
+        self.joinWorkers();
     }
 
     /// Block on a future until it completes
     pub fn blockOn(self: *Runtime, comptime T: type, fut: Future(T)) !T {
         const handle = try self.spawn(T, fut);
-
-        // Start runtime in background if not already running
         const runtime_thread = try std.Thread.spawn(.{}, Runtime.run, .{self});
+        const result = handle.await() catch |err| {
+            self.requestShutdown();
+            runtime_thread.join();
+            return err;
+        };
 
-        // Wait for result
-        const result = try handle.await();
-
-        // Shutdown runtime
-        self.shutdown.store(true, .release);
+        self.requestShutdown();
         runtime_thread.join();
+        handle.deinit();
 
         return result;
     }
@@ -343,27 +348,18 @@ test "Runtime - spawn ready future" {
     var runtime = try Runtime.init(allocator, 2);
     defer runtime.deinit();
 
-    var fut = try future_mod.ready(i32, 42, allocator);
+    const fut = try future_mod.ready(i32, 42, allocator);
     const handle = try runtime.spawn(i32, fut);
 
     // Start runtime
     const rt_thread = try std.Thread.spawn(.{}, Runtime.run, .{&runtime});
 
-    // Give it time to execute
-    std.posix.nanosleep(0, 10 * std.time.ns_per_ms);
-
-    // Should be completed
-    if (handle.tryGet()) |result| {
-        try testing.expectEqual(@as(i32, 42), result);
-    }
-
-    runtime.shutdown.store(true, .release);
-    for (runtime.workers) |*worker| {
-        worker.unpark();
-    }
+    const result = try handle.await();
+    runtime.requestShutdown();
     rt_thread.join();
+    defer handle.deinit();
 
-    allocator.destroy(@as(*anyopaque, @ptrCast(fut.state)));
+    try testing.expectEqual(@as(i32, 42), result);
 }
 
 test "Runtime - block_on" {
@@ -373,14 +369,12 @@ test "Runtime - block_on" {
     var runtime = try Runtime.init(allocator, 2);
     defer runtime.deinit();
 
-    var fut = try future_mod.ready(i32, 100, allocator);
+    const fut = try future_mod.ready(i32, 100, allocator);
 
     // This should block until the future completes
     const result = try runtime.blockOn(i32, fut);
 
     try testing.expectEqual(@as(i32, 100), result);
-
-    allocator.destroy(@as(*anyopaque, @ptrCast(fut.state)));
 }
 
 test "Runtime - multiple tasks" {
@@ -390,33 +384,27 @@ test "Runtime - multiple tasks" {
     var runtime = try Runtime.init(allocator, 4);
     defer runtime.deinit();
 
-    var handles: std.ArrayList(JoinHandle(i32)) = .empty;
+    const task_count = 10_000;
+    var handles: std.ArrayList(JoinHandle(usize)) = .empty;
     defer handles.deinit(allocator);
 
-    // Spawn multiple tasks
-    var i: i32 = 0;
-    while (i < 10) : (i += 1) {
-        const fut = try future_mod.ready(i32, i, allocator);
-        const handle = try runtime.spawn(i32, fut);
+    for (0..task_count) |i| {
+        const fut = try future_mod.ready(usize, i, allocator);
+        const handle = try runtime.spawn(usize, fut);
         try handles.append(allocator, handle);
     }
 
     // Start runtime
     const rt_thread = try std.Thread.spawn(.{}, Runtime.run, .{&runtime});
 
-    // Give time for execution
-    std.posix.nanosleep(0, 50 * std.time.ns_per_ms);
-
-    runtime.shutdown.store(true, .release);
-    for (runtime.workers) |*worker| {
-        worker.unpark();
+    var sum: usize = 0;
+    for (handles.items) |handle| {
+        sum += try handle.await();
     }
+
+    runtime.requestShutdown();
     rt_thread.join();
 
-    // Cleanup futures
-    i = 0;
-    while (i < 10) : (i += 1) {
-        const handle = handles.items[@intCast(i)];
-        allocator.destroy(@as(*anyopaque, @ptrCast(handle.task.future.state)));
-    }
+    try testing.expectEqual(task_count * (task_count - 1) / 2, sum);
+    for (handles.items) |handle| handle.deinit();
 }

@@ -97,11 +97,21 @@ pub fn Future(comptime T: type) type {
 
         /// Function pointer for polling this future
         poll_fn: *const fn (*anyopaque, *Context) PollResult(T),
+        /// Optional type-erased destructor for owned concrete state.
+        deinit_fn: ?*const fn (*anyopaque, std.mem.Allocator) void = null,
         /// Type-erased state
         state: *anyopaque,
+        allocator: ?std.mem.Allocator = null,
 
         pub fn poll(self: *Self, ctx: *Context) PollResult(T) {
             return self.poll_fn(self.state, ctx);
+        }
+
+        /// Destroy this future and all state it owns.
+        pub fn deinit(self: *Self) void {
+            if (self.deinit_fn) |deinit_fn| {
+                deinit_fn(self.state, self.allocator.?);
+            }
         }
 
         /// Map the output of this Future
@@ -127,10 +137,19 @@ pub fn Future(comptime T: type) type {
                     };
                 }
             }.poll;
+            const deinit_fn = struct {
+                fn deinit(ptr: *anyopaque, state_allocator: std.mem.Allocator) void {
+                    const s = @as(*State, @ptrCast(@alignCast(ptr)));
+                    s.inner.deinit();
+                    state_allocator.destroy(s);
+                }
+            }.deinit;
 
             return Future(U){
                 .poll_fn = poll_fn,
+                .deinit_fn = deinit_fn,
                 .state = @ptrCast(state),
+                .allocator = allocator,
             };
         }
 
@@ -178,10 +197,20 @@ pub fn Future(comptime T: type) type {
                     return .Pending;
                 }
             }.poll;
+            const deinit_fn = struct {
+                fn deinit(ptr: *anyopaque, state_allocator: std.mem.Allocator) void {
+                    const s = @as(*State, @ptrCast(@alignCast(ptr)));
+                    s.inner.deinit();
+                    if (s.next) |*next| next.deinit();
+                    state_allocator.destroy(s);
+                }
+            }.deinit;
 
             return Future(U){
                 .poll_fn = poll_fn,
+                .deinit_fn = deinit_fn,
                 .state = @ptrCast(state),
+                .allocator = allocator,
             };
         }
     };
@@ -210,10 +239,18 @@ pub fn ready(comptime T: type, value: T, allocator: std.mem.Allocator) !Future(T
             return .{ .Ready = s.value };
         }
     }.poll;
+    const deinit_fn = struct {
+        fn deinit(ptr: *anyopaque, state_allocator: std.mem.Allocator) void {
+            const s = @as(*State, @ptrCast(@alignCast(ptr)));
+            state_allocator.destroy(s);
+        }
+    }.deinit;
 
     return Future(T){
         .poll_fn = poll_fn,
+        .deinit_fn = deinit_fn,
         .state = @ptrCast(state),
+        .allocator = allocator,
     };
 }
 
@@ -228,11 +265,23 @@ pub fn pending(comptime T: type, allocator: std.mem.Allocator) !Future(T) {
             return .Pending;
         }
     }.poll;
+    const deinit_fn = struct {
+        fn deinit(ptr: *anyopaque, state_allocator: std.mem.Allocator) void {
+            const s = @as(*State, @ptrCast(@alignCast(ptr)));
+            state_allocator.destroy(s);
+        }
+    }.deinit;
 
     return Future(T){
         .poll_fn = poll_fn,
+        .deinit_fn = deinit_fn,
         .state = @ptrCast(state),
+        .allocator = allocator,
     };
+}
+
+pub fn JoinResult(comptime T: type, comptime U: type) type {
+    return struct { T, U };
 }
 
 /// Join two futures, returning both results when both complete
@@ -242,8 +291,8 @@ pub fn join(
     allocator: std.mem.Allocator,
     fut1: Future(T),
     fut2: Future(U),
-) !Future(struct { T, U }) {
-    const Result = struct { T, U };
+) !Future(JoinResult(T, U)) {
+    const Result = JoinResult(T, U);
     const State = struct {
         fut1: Future(T),
         fut2: Future(U),
@@ -289,11 +338,25 @@ pub fn join(
             return .Pending;
         }
     }.poll;
+    const deinit_fn = struct {
+        fn deinit(ptr: *anyopaque, state_allocator: std.mem.Allocator) void {
+            const s = @as(*State, @ptrCast(@alignCast(ptr)));
+            s.fut1.deinit();
+            s.fut2.deinit();
+            state_allocator.destroy(s);
+        }
+    }.deinit;
 
     return Future(Result){
         .poll_fn = poll_fn,
+        .deinit_fn = deinit_fn,
         .state = @ptrCast(state),
+        .allocator = allocator,
     };
+}
+
+pub fn SelectResult(comptime T: type, comptime U: type) type {
+    return union(enum) { First: T, Second: U };
 }
 
 /// Select the first of two futures to complete
@@ -303,8 +366,8 @@ pub fn select(
     allocator: std.mem.Allocator,
     fut1: Future(T),
     fut2: Future(U),
-) !Future(union(enum) { First: T, Second: U }) {
-    const Result = union(enum) { First: T, Second: U };
+) !Future(SelectResult(T, U)) {
+    const Result = SelectResult(T, U);
     const State = struct {
         fut1: Future(T),
         fut2: Future(U),
@@ -335,10 +398,20 @@ pub fn select(
             return .Pending;
         }
     }.poll;
+    const deinit_fn = struct {
+        fn deinit(ptr: *anyopaque, state_allocator: std.mem.Allocator) void {
+            const s = @as(*State, @ptrCast(@alignCast(ptr)));
+            s.fut1.deinit();
+            s.fut2.deinit();
+            state_allocator.destroy(s);
+        }
+    }.deinit;
 
     return Future(Result){
         .poll_fn = poll_fn,
+        .deinit_fn = deinit_fn,
         .state = @ptrCast(state),
+        .allocator = allocator,
     };
 }
 
@@ -351,7 +424,7 @@ test "Future - ready" {
     const allocator = testing.allocator;
 
     var fut = try ready(i32, 42, allocator);
-    defer allocator.destroy(@as(*anyopaque, @ptrCast(fut.state)));
+    defer fut.deinit();
 
     const waker = Waker{
         .data = undefined,
@@ -385,7 +458,7 @@ test "Future - pending" {
     const allocator = testing.allocator;
 
     var fut = try pending(i32, allocator);
-    defer allocator.destroy(@as(*anyopaque, @ptrCast(fut.state)));
+    defer fut.deinit();
 
     const waker = Waker{
         .data = undefined,
@@ -418,13 +491,10 @@ test "Future - join" {
     const allocator = testing.allocator;
 
     const fut1 = try ready(i32, 10, allocator);
-    defer allocator.destroy(@as(*anyopaque, @ptrCast(fut1.state)));
-
     const fut2 = try ready(i32, 20, allocator);
-    defer allocator.destroy(@as(*anyopaque, @ptrCast(fut2.state)));
 
     var joined = try join(i32, i32, allocator, fut1, fut2);
-    defer allocator.destroy(@as(*anyopaque, @ptrCast(joined.state)));
+    defer joined.deinit();
 
     const waker = Waker{
         .data = undefined,
@@ -459,13 +529,10 @@ test "Future - select first" {
     const allocator = testing.allocator;
 
     const fut1 = try ready(i32, 42, allocator);
-    defer allocator.destroy(@as(*anyopaque, @ptrCast(fut1.state)));
-
     const fut2 = try pending(i32, allocator);
-    defer allocator.destroy(@as(*anyopaque, @ptrCast(fut2.state)));
 
     var selected = try select(i32, i32, allocator, fut1, fut2);
-    defer allocator.destroy(@as(*anyopaque, @ptrCast(selected.state)));
+    defer selected.deinit();
 
     const waker = Waker{
         .data = undefined,

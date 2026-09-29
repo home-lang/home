@@ -1,7 +1,6 @@
 const std = @import("std");
 const future_mod = @import("future.zig");
 const Future = future_mod.Future;
-const PollResult = future_mod.PollResult;
 const Context = future_mod.Context;
 const Waker = future_mod.Waker;
 
@@ -45,7 +44,6 @@ pub fn Task(comptime T: type) type {
         state: std.atomic.Value(TaskState),
         future: Future(T),
         result: ?T,
-        waker: ?*Waker,
         allocator: std.mem.Allocator,
 
         pub fn init(allocator: std.mem.Allocator, fut: Future(T)) !*Self {
@@ -55,13 +53,13 @@ pub fn Task(comptime T: type) type {
                 .state = std.atomic.Value(TaskState).init(.Pending),
                 .future = fut,
                 .result = null,
-                .waker = null,
                 .allocator = allocator,
             };
             return task;
         }
 
         pub fn deinit(self: *Self) void {
+            self.future.deinit();
             self.allocator.destroy(self);
         }
 
@@ -72,7 +70,7 @@ pub fn Task(comptime T: type) type {
             // Only transition Pending → Running. If the task is already
             // Running or Completed, skip the poll entirely.
             const current = self.state.load(.acquire);
-            if (current == .Completed) return true;
+            if (current == .Completed or current == .Failed or current == .Cancelled) return true;
             if (current == .Running) return false;
 
             if (self.state.cmpxchgStrong(
@@ -125,6 +123,13 @@ pub fn JoinHandle(comptime T: type) type {
         const Self = @This();
 
         task: *Task(T),
+
+        /// Release the completed task and its type-erased future state.
+        pub fn deinit(self: Self) void {
+            const state = self.task.state.load(.acquire);
+            std.debug.assert(state == .Completed or state == .Failed);
+            self.task.deinit();
+        }
 
         /// Wait for the task to complete and get the result
         ///
@@ -214,10 +219,8 @@ test "Task - basic lifecycle" {
     const allocator = testing.allocator;
 
     // Create a ready future
-    var fut = try future_mod.ready(i32, 42, allocator);
-    defer allocator.destroy(@as(*anyopaque, @ptrCast(fut.state)));
-
-    var task = try Task(i32).init(allocator, fut);
+    const fut = try future_mod.ready(i32, 42, allocator);
+    const task = try Task(i32).init(allocator, fut);
     defer task.deinit();
 
     try testing.expect(!task.isCompleted());
@@ -256,10 +259,8 @@ test "Task - pending future" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    var fut = try future_mod.pending(i32, allocator);
-    defer allocator.destroy(@as(*anyopaque, @ptrCast(fut.state)));
-
-    var task = try Task(i32).init(allocator, fut);
+    const fut = try future_mod.pending(i32, allocator);
+    const task = try Task(i32).init(allocator, fut);
     defer task.deinit();
 
     const waker = Waker{
@@ -294,10 +295,8 @@ test "Task - cancellation" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    var fut = try future_mod.pending(i32, allocator);
-    defer allocator.destroy(@as(*anyopaque, @ptrCast(fut.state)));
-
-    var task = try Task(i32).init(allocator, fut);
+    const fut = try future_mod.pending(i32, allocator);
+    const task = try Task(i32).init(allocator, fut);
     defer task.deinit();
 
     try testing.expect(!task.isCancelled());
@@ -311,10 +310,8 @@ test "JoinHandle - await ready task" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    var fut = try future_mod.ready(i32, 100, allocator);
-    defer allocator.destroy(@as(*anyopaque, @ptrCast(fut.state)));
-
-    var task = try Task(i32).init(allocator, fut);
+    const fut = try future_mod.ready(i32, 100, allocator);
+    const task = try Task(i32).init(allocator, fut);
     defer task.deinit();
 
     // Poll to complete
@@ -351,10 +348,8 @@ test "RawTask - type erasure" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    var fut = try future_mod.ready(i32, 77, allocator);
-    defer allocator.destroy(@as(*anyopaque, @ptrCast(fut.state)));
-
-    var task = try Task(i32).init(allocator, fut);
+    const fut = try future_mod.ready(i32, 77, allocator);
+    const task = try Task(i32).init(allocator, fut);
     defer task.deinit();
 
     var raw = RawTask.fromTask(i32, task);
