@@ -93,6 +93,17 @@ test "checker accepts a correctly typed function return" {
     ));
 }
 
+test "checker recognizes never as the bottom type" {
+    try std.testing.expect(try checkSource(
+        \\fn halt(): never {
+        \\    loop {}
+        \\}
+        \\fn answer(): i32 {
+        \\    return halt()
+        \\}
+    ));
+}
+
 test "checker rejects widening an existing mutable array" {
     try std.testing.expect(!try checkSource(
         \\fn run() {

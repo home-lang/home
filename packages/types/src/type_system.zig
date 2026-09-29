@@ -2857,6 +2857,10 @@ pub const TypeChecker = struct {
 
     /// Check if a type can be coerced to another type
     fn canCoerce(from: Type, to: Type) bool {
+        // `never` is the bottom type: a diverging expression produces no
+        // value, so it is valid in every value context.
+        if (from == .Never) return true;
+
         // Value can be coerced to Optional of that type (T -> ?T)
         // This must be checked first to handle Int -> ?i32 coercion
         if (to == .Optional) {
@@ -5072,6 +5076,7 @@ pub const TypeChecker = struct {
         if (std.mem.eql(u8, name, "str")) return Type.String; // Allow both string and str
         if (std.mem.eql(u8, name, "String")) return Type.String; // Allow String (capitalized) as well
         if (std.mem.eql(u8, name, "void")) return Type.Void;
+        if (std.mem.eql(u8, name, "never")) return Type.Never;
         // Allow capitalized versions for Rust-like style
         if (std.mem.eql(u8, name, "Int")) return Type.Int;
         if (std.mem.eql(u8, name, "Float")) return Type.Float;

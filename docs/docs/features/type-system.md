@@ -212,6 +212,9 @@ fn save(item: Printable & Serializable) {
 
 The `never` type represents computations that never complete:
 
+`never` is a built-in bottom type: it needs no declaration or import, and a
+diverging expression is valid anywhere another value type is expected.
+
 ```home
 // Functions that never return
 fn infinite_loop(): never {
