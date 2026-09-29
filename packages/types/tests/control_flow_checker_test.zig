@@ -249,6 +249,30 @@ test "checker routes use-after-move through drop safety" {
     try std.testing.expect(try checkSourceErrorContains(source, "Drop safety violation"));
 }
 
+test "checker isolates ownership state between test declarations" {
+    try std.testing.expect(try checkSource(
+        \\fn owns_string() {
+        \\    let result = "owned"
+        \\    print(result)
+        \\}
+        \\it('reuses the local name') {
+        \\    let result = 5
+        \\    assert(result == 5)
+        \\}
+    ));
+}
+
+test "checker keeps a string alive when it is cloned" {
+    try std.testing.expect(try checkSource(
+        \\fn preserve() {
+        \\    let original = "owned"
+        \\    let cloned = original.clone()
+        \\    print(original)
+        \\    print(cloned)
+        \\}
+    ));
+}
+
 test "checker visits statements nested in unsafe blocks" {
     try std.testing.expect(!try checkSource(
         \\fn run() {

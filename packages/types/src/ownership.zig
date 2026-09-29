@@ -72,6 +72,20 @@ pub const OwnershipTracker = struct {
         self.errors.deinit(self.allocator);
     }
 
+    /// Discard variable and borrow facts from the previous callable while
+    /// preserving accumulated diagnostics. Function and test bodies have
+    /// independent local ownership domains; retaining these entries lets a
+    /// same-named local inherit a stale Moved state from an earlier body.
+    pub fn clearFlowFacts(self: *OwnershipTracker) void {
+        var it = self.variables.iterator();
+        while (it.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+            entry.value_ptr.borrows.deinit(self.allocator);
+        }
+        self.variables.clearRetainingCapacity();
+        self.current_scope = 0;
+    }
+
     /// Register a new variable as owned
     pub fn define(self: *OwnershipTracker, name: []const u8, typ: Type, loc: ast.SourceLocation) !void {
         const name_copy = try self.allocator.dupe(u8, name);

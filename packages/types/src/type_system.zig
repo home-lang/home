@@ -1461,10 +1461,14 @@ pub const TypeChecker = struct {
     }
 
     fn checkFunctionDecl(self: *TypeChecker, fn_decl: *const ast.FnDecl, owner: ?Type) TypeError!void {
+        self.ownership_tracker.clearFlowFacts();
         self.null_safety_tracker.clearFlowFacts();
         self.bounds_tracker.clearFlowFacts();
         self.overflow_tracker.clearFlowFacts();
         self.drop_safety_tracker.clearFlowFacts();
+        self.uninitialized_vars.clearRetainingCapacity();
+        self.pointer_aliases.clearRetainingCapacity();
+        self.ownership_tracker.enterScope();
         try self.drop_safety_tracker.enterScope();
 
         const previous_unsafe_depth = self.unsafe_depth;
@@ -1485,7 +1489,6 @@ pub const TypeChecker = struct {
         saved_env_ptr.* = self.env;
         var func_env = TypeEnvironment.init(self.allocator);
         func_env.parent = saved_env_ptr;
-        self.uninitialized_vars.clearRetainingCapacity();
 
         for (fn_decl.params) |param| {
             const param_type = if (owner != null and
@@ -1513,6 +1516,33 @@ pub const TypeChecker = struct {
             };
         }
         try self.drop_safety_tracker.exitScope(fn_decl.node.loc);
+    }
+
+    fn checkTestDecl(self: *TypeChecker, test_decl: *const ast.ItTestDecl) TypeError!void {
+        self.ownership_tracker.clearFlowFacts();
+        self.null_safety_tracker.clearFlowFacts();
+        self.bounds_tracker.clearFlowFacts();
+        self.overflow_tracker.clearFlowFacts();
+        self.drop_safety_tracker.clearFlowFacts();
+        self.uninitialized_vars.clearRetainingCapacity();
+        self.pointer_aliases.clearRetainingCapacity();
+        self.ownership_tracker.enterScope();
+        try self.drop_safety_tracker.enterScope();
+
+        const saved_env_ptr = try self.allocator.create(TypeEnvironment);
+        saved_env_ptr.* = self.env;
+        var test_env = TypeEnvironment.init(self.allocator);
+        test_env.parent = saved_env_ptr;
+        self.env = test_env;
+        defer {
+            self.env.deinit();
+            self.env = saved_env_ptr.*;
+            self.allocator.destroy(saved_env_ptr);
+            self.ownership_tracker.exitScope();
+        }
+
+        try self.checkBlock(test_decl.body);
+        try self.drop_safety_tracker.exitScope(test_decl.node.loc);
     }
 
     /// Process an import declaration by loading and parsing the imported module
@@ -2285,7 +2315,7 @@ pub const TypeChecker = struct {
                 // Register union type in environment
                 try self.env.define(union_decl.name, union_type);
             },
-            .ItTestDecl => |test_decl| try self.checkBlock(test_decl.body),
+            .ItTestDecl => |test_decl| try self.checkTestDecl(test_decl),
             // These nodes are either expression-only union placeholders or
             // child nodes checked by their owning statement. Listing them
             // explicitly keeps this switch exhaustive: adding a new Stmt
@@ -4207,7 +4237,9 @@ pub const TypeChecker = struct {
                     std.mem.eql(u8, method_name, "to_uppercase") or
                     std.mem.eql(u8, method_name, "trim") or
                     std.mem.eql(u8, method_name, "substr") or
-                    std.mem.eql(u8, method_name, "replace"))
+                    std.mem.eql(u8, method_name, "replace") or
+                    std.mem.eql(u8, method_name, "clone") or
+                    std.mem.eql(u8, method_name, "copy"))
                 {
                     return Type.String;
                 }

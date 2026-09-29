@@ -4,6 +4,6 @@ fn take_ownership(s: string): string {
 }
 
 let msg = "hello"
-let msg2 = msg  // msg is still owned (strings are moved)
-print(msg)      // This should work - basic types are Copy for now
+let msg2 = msg.clone()  // Strings are owned; clone when both bindings remain live.
+print(msg)
 print(msg2)
