@@ -34,6 +34,7 @@
     "lint:fix": "bunx --bun pickier . --fix",
     "format": "bunx --bun pickier . --format",
     "format:fix": "bunx --bun pickier . --format --write",
+    "check:dependencies": "bun scripts/check-dependency-manifests.mjs",
     "test": "bun test",
     "test:compiler": "./pantry/.bin/zig build test",
     "typecheck": "bun --bun tsc --noEmit",
