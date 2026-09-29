@@ -454,6 +454,7 @@ pub fn build(b: *std.Build) void {
     const comptime_pkg = createPackage(b, "packages/comptime/src/comptime.zig", target, optimize, zig_test_framework);
     const generics_pkg = createPackage(b, "packages/generics/src/generic_system.zig", target, optimize, zig_test_framework);
     const codegen_pkg = createPackage(b, "packages/codegen/src/codegen.zig", target, optimize, zig_test_framework);
+    const linker_pkg = createPackage(b, "packages/linker/src/linker.zig", target, optimize, zig_test_framework);
     const build_cli_options_pkg = createPackage(b, "src/build_cli_options.zig", target, optimize, zig_test_framework);
     const compiler_pkg = createPackage(b, "packages/compiler/src/borrow_check_pass.zig", target, optimize, zig_test_framework);
     const optimizer_pkg = createPackage(b, "packages/optimizer/src/pass_manager.zig", target, optimize, zig_test_framework);
@@ -1363,6 +1364,19 @@ pub fn build(b: *std.Build) void {
 
     const run_codegen_tests = b.addRunArtifact(codegen_tests);
 
+    const linker_tests = b.addTest(.{ .root_module = linker_pkg });
+    const run_linker_tests = b.addRunArtifact(linker_tests);
+
+    const linker_integration_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("packages/linker/tests/linker_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    linker_integration_tests.root_module.addImport("linker", linker_pkg);
+    const run_linker_integration_tests = b.addRunArtifact(linker_integration_tests);
+
     const build_cli_options_tests = b.addTest(.{ .root_module = build_cli_options_pkg });
     const run_build_cli_options_tests = b.addRunArtifact(build_cli_options_tests);
 
@@ -1625,6 +1639,8 @@ pub fn build(b: *std.Build) void {
     dependOnTest(test_step, &run_interpreter_tests.step, test_filter, "interpreter");
     dependOnTest(test_step, &run_formatter_tests.step, test_filter, "formatter");
     dependOnTest(test_step, &run_codegen_tests.step, test_filter, "codegen");
+    dependOnTest(test_step, &run_linker_tests.step, test_filter, "linker");
+    dependOnTest(test_step, &run_linker_integration_tests.step, test_filter, "linker_integration");
     dependOnTest(test_step, &run_build_cli_options_tests.step, test_filter, "build_cli_options");
     dependOnTest(test_step, &run_home_rt_no_jsc_tests.step, test_filter, "home_rt_no_jsc");
     dependOnTest(test_step, &run_cache_tests.step, test_filter, "cache");

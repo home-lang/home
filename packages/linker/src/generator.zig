@@ -250,10 +250,14 @@ pub const Generator = struct {
         sections: []const section.Section,
         symbols: []const symbol.Symbol,
     ) !void {
-        const file = try std.fs.cwd().createFile(path, .{});
-        defer file.close();
+        const io = std.Options.debug_io;
+        const file = try std.Io.Dir.cwd().createFile(io, path, .{});
+        defer file.close(io);
 
-        try self.generate(file.writer(), regions, sections, symbols);
+        var buffer: [4096]u8 = undefined;
+        var file_writer = file.writer(io, &buffer);
+        try self.generate(&file_writer.interface, regions, sections, symbols);
+        try file_writer.interface.flush();
     }
 
     // Generate to string
@@ -263,12 +267,12 @@ pub const Generator = struct {
         sections: []const section.Section,
         symbols: []const symbol.Symbol,
     ) ![]const u8 {
-        var list = std.ArrayList(u8).empty;
-        errdefer list.deinit(self.allocator);
+        var output = std.Io.Writer.Allocating.init(self.allocator);
+        defer output.deinit();
 
-        try self.generate(list.writer(self.allocator), regions, sections, symbols);
+        try self.generate(&output.writer, regions, sections, symbols);
 
-        return list.toOwnedSlice(self.allocator);
+        return output.toOwnedSlice();
     }
 };
 
@@ -314,7 +318,8 @@ pub fn generateKernelScript(
 
     for (std_sections) |sect| {
         vma = sect.alignment.alignAddress(vma);
-        try sections_list.append(allocator,
+        try sections_list.append(
+            allocator,
             sect.withVma(vma).withRegion("kernel"),
         );
         vma += 4096; // Assume 4KB minimum per section
@@ -337,8 +342,8 @@ test "generator basic" {
 
     var generator = Generator.init(testing.allocator, .{ .validate = false });
 
-    var output = std.ArrayList(u8).empty;
-    defer output.deinit(testing.allocator);
+    var output = std.Io.Writer.Allocating.init(testing.allocator);
+    defer output.deinit();
 
     const regions = [_]memory.MemoryRegion{
         memory.MemoryRegion.init("kernel", 0x1000, 0x100000, .{
@@ -356,9 +361,9 @@ test "generator basic" {
         symbol.Symbol.init("_start", .Func, .Global).withSection(".text"),
     };
 
-    try generator.generate(output.writer(testing.allocator), &regions, &sections, &symbols);
+    try generator.generate(&output.writer, &regions, &sections, &symbols);
 
-    const script = output.items;
+    const script = output.written();
     try testing.expect(script.len > 0);
     try testing.expect(std.mem.indexOf(u8, script, "MEMORY") != null);
     try testing.expect(std.mem.indexOf(u8, script, "SECTIONS") != null);
@@ -388,8 +393,8 @@ test "generate with validation" {
 
     var generator = Generator.init(testing.allocator, .{ .validate = true });
 
-    var output = std.ArrayList(u8).empty;
-    defer output.deinit(testing.allocator);
+    var output = std.Io.Writer.Allocating.init(testing.allocator);
+    defer output.deinit();
 
     const regions = [_]memory.MemoryRegion{
         memory.MemoryRegion.init("kernel", 0x1000, 0x100000, .{
@@ -408,9 +413,9 @@ test "generate with validation" {
 
     const symbols = [_]symbol.Symbol{};
 
-    try generator.generate(output.writer(testing.allocator), &regions, &sections, &symbols);
+    try generator.generate(&output.writer, &regions, &sections, &symbols);
 
-    try testing.expect(output.items.len > 0);
+    try testing.expect(output.written().len > 0);
 }
 
 test "generate to string" {

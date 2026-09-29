@@ -382,18 +382,11 @@ The `templates/` directory contains hand-written linker script templates:
 Comprehensive test suite:
 
 ```bash
-# Run all tests
-zig build test
+# From the repository root: unit and integration tests
+zig build test -Dfilter=linker
 
-# Individual test modules
-zig test src/linker.zig
-zig test src/memory.zig
-zig test src/section.zig
-zig test src/symbol.zig
-zig test src/validator.zig
-zig test src/generator.zig
-zig test src/script.zig
-zig test tests/linker_test.zig
+# From packages/linker: the same suites through the standalone build
+zig build test
 ```
 
 ### Test Coverage

@@ -373,6 +373,8 @@ test "performance: generate multiple scripts" {
 // Test file generation
 test "generate to file" {
     const tmp_path = "/tmp/test_linker_script.ld";
+    const io = std.Options.debug_io;
+    defer std.Io.Dir.cwd().deleteFile(io, tmp_path) catch {};
 
     var script = try linker.LinkerScript.kernelScript(
         testing.allocator,
@@ -385,15 +387,14 @@ test "generate to file" {
     try script.generateToFile(tmp_path, .{ .validate = true });
 
     // Read back and verify
-    const file = try std.fs.cwd().openFile(tmp_path, .{});
-    defer file.close();
-
-    const content = try file.readToEndAlloc(testing.allocator, 1024 * 1024);
+    const content = try std.Io.Dir.cwd().readFileAlloc(
+        io,
+        tmp_path,
+        testing.allocator,
+        .limited(1024 * 1024),
+    );
     defer testing.allocator.free(content);
 
     try testing.expect(content.len > 0);
     try testing.expect(std.mem.indexOf(u8, content, "MEMORY") != null);
-
-    // Clean up
-    try std.fs.cwd().deleteFile(tmp_path);
 }
