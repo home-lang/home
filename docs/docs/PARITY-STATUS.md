@@ -376,12 +376,12 @@ cross-file interner search.
 
 ## Codegen targets
 
-7 codegen rows:
+6 codegen rows:
 
 | Status | Count | % |
 |---|---|---|
-| ✅ Stable | 1 | 14.3% |
-| 🚧 In progress / partial | 6 | 85.7% |
+| ✅ Stable | 1 | 16.7% |
+| 🚧 In progress / partial | 5 | 83.3% |
 
 **Per-target:**
 
@@ -391,7 +391,6 @@ cross-file interner search.
 | x86-64 native codegen | 🚧 Substantial (primary target) |
 | arm64 codegen | 🚧 In progress (Path B-lite M1-M11 shipped) |
 | WebAssembly codegen | 🚧 Stub |
-| LLVM backend | 🚧 legacy launcher only; not the native bundler path and not TypeScript AOT |
 | ELF object emission | 🚧 In progress |
 | Mach-O object emission | 🚧 In progress |
 

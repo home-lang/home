@@ -398,26 +398,49 @@ ret %2
 
 ---
 
-### D008: Backend - Cranelift vs LLVM vs Custom
+### D008: AOT Backend - Direct Codegen vs LLVM vs Both
 
-**Status**: ✅**Decided**: Cranelift primary, LLVM optional  
+**Status**: ✅**Decided**: Direct native codegen
 **Priority**: HIGH  
-**Decided**: 2025-10-21
+**Originally decided**: 2025-10-21
+**Superseded**: 2026-09-30
 
-**Chosen**: Cranelift for development builds, optional LLVM for release
+**Context**:
+
+The original Cranelift-primary / LLVM-optional plan was never wired into the
+compiler. Home's production build path instead uses its direct x86-64 and
+AArch64 emitters, while JavaScript and TypeScript standalone builds use the
+JavaScriptCore runtime's standalone builder. Keeping untested textual LLVM IR
+generators alongside those paths made the documented architecture differ from
+the executable one.
+
+**Options**:
+
+- Direct native codegen for x86-64 and AArch64
+- LLVM as the sole AOT backend
+- Maintain direct and LLVM backends in parallel
+
+**Chosen**: Direct native codegen for user-space AOT.
 
 **Rationale**:
 
-- Cranelift compiles faster (critical for DX)
-- LLVM optimizes better (important for production)
-- Backend abstraction allows both
-- Match Rust's approach
+- It is the only Home AOT path connected to `home build` and exercised by the
+  codegen suite.
+- Maintaining two lowering stacks would split correctness work across ABIs,
+  object formats, ownership, and diagnostics before either one is complete.
+- The dormant LLVM generators used obsolete AST and Zig APIs and had no build
+  or test integration; retaining them implied capability without verification.
+- Dynamic JavaScript and TypeScript execution remains a separate JavaScriptCore
+  concern and does not constitute a second Home AOT backend.
 
-**Implementation Plan**:
-```
-ion build         # Uses Cranelift (fast)
-ion build --opt   # Uses LLVM (slow but optimized)
-```
+**Implementation**:
+
+- `NativeCodegen` is the x86-64 user-space backend.
+- `Aarch64NativeCodegen` is the AArch64 user-space backend.
+- Kernel lowering remains explicit and target-specific.
+- Unwired LLVM/Cranelift modules are deleted rather than kept as speculative
+  production surfaces. A future backend requires a new decision plus build,
+  CLI, and regression-test integration before it is advertised.
 
 ---
 

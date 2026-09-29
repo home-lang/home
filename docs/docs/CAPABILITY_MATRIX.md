@@ -80,7 +80,6 @@ Drop-in Bun replacement. Detailed per-area status:
 | x86-64 native codegen | 🚧 In progress (substantial; primary target) |
 | arm64 codegen | 🚧 In progress (Path B-lite M1-M11 shipped: function calls + AAPCS64, structs + field access, fixed-size arrays, match, bare-tag + payload-bearing enums, enum ABI for fn args/returns) |
 | WebAssembly codegen | 🚧 Stub |
-| LLVM backend | 🚧 Home AST lowering in progress; legacy JS/TS launcher retired |
 | ELF object emission | 🚧 In progress |
 | Mach-O object emission | 🚧 In progress |
 | Tree-walking interpreter | ✅ Stable |
