@@ -1325,6 +1325,17 @@ test "parser: const primitive alias still parses as LetDecl" {
     try testing.expectEqualStrings("u32", stmt.LetDecl.value.?.Identifier.name);
 }
 
+test "parser: export const is visible to module consumers" {
+    const program = try parseSource(testing.allocator, "export const CHECKS: u32 = 4");
+    defer program.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), program.statements.len);
+    const stmt = program.statements[0];
+    try testing.expect(stmt == .LetDecl);
+    try testing.expectEqualStrings("CHECKS", stmt.LetDecl.name);
+    try testing.expect(stmt.LetDecl.is_public);
+}
+
 // Issue #57 — `?T` accepts any compound type expression for `T`. Each test
 // asserts the encoded `type_name` round-trips so downstream passes see the
 // expected string. Parsed via struct-field type position; the same grammar

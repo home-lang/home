@@ -1248,20 +1248,20 @@ pub const Parser = struct {
 
         if (self.match(&.{.Let})) {
             var stmt = try self.letDeclaration(false);
-            self.applyLetVisibility(&stmt, is_pub, doc_comment, attributes);
+            self.applyLetVisibility(&stmt, is_pub or is_export, doc_comment, attributes);
             return stmt;
         }
 
         if (self.match(&.{.Const})) {
             var stmt = try self.letDeclaration(true);
-            self.applyLetVisibility(&stmt, is_pub, doc_comment, attributes);
+            self.applyLetVisibility(&stmt, is_pub or is_export, doc_comment, attributes);
             return stmt;
         }
 
         // var at module level (mutable global variable)
         if (self.match(&.{.Var})) {
             var stmt = try self.varDeclaration();
-            if (is_pub) stmt.LetDecl.is_public = true;
+            if (is_pub or is_export) stmt.LetDecl.is_public = true;
             return stmt;
         }
 
@@ -1273,7 +1273,7 @@ pub const Parser = struct {
         if (self.match(&.{.Static})) {
             const decl_is_mut = self.match(&.{.Mut});
             var stmt = try self.varDeclaration();
-            if (is_pub) stmt.LetDecl.is_public = true;
+            if (is_pub or is_export) stmt.LetDecl.is_public = true;
             stmt.LetDecl.is_static = true;
             stmt.LetDecl.is_mutable = decl_is_mut;
             return stmt;

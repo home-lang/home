@@ -505,6 +505,15 @@ test "checker resolves exported import alias members" {
     ));
 }
 
+test "checker resolves exported constants through import aliases" {
+    try std.testing.expect(try checkSourceWithImports(
+        \\import import_alias_support as support
+        \\fn run() -> i32 {
+        \\    return support.EXPORTED_VALUE
+        \\}
+    ));
+}
+
 test "checker resolves quoted Home imports relative to the importer" {
     try std.testing.expect(try checkSourceWithImportsAtPath(
         \\import "core/kernel_init.home" as kernel_init

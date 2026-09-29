@@ -2,6 +2,8 @@ pub fn exported(value: i32) -> i32 {
     return value
 }
 
+export const EXPORTED_VALUE: i32 = 7
+
 fn hidden() -> i32 {
     return 0
 }
