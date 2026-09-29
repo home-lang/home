@@ -2433,8 +2433,9 @@ pub const HomeKernelCodegen = struct {
         }
 
         const size = self.sizeOf(type_name) orelse return false;
-        // `= undefined` and `= 0` are both zero-initialized storage; a nonzero
-        // constant initializer goes in .data.
+        // Undefined globals have no explicit data initializer and therefore
+        // remain in zero-fill storage at load time. A nonzero constant
+        // initializer goes in .data.
         var init_value: ?i64 = null;
         if (decl.value) |value| {
             if (self.foldConst(value)) |folded| {
@@ -4358,6 +4359,12 @@ pub const HomeKernelCodegen = struct {
                     });
                     return;
                 }
+                // The frame slot was reserved by the function pre-pass.
+                // `undefined` deliberately emits no store: its contents stay
+                // indeterminate until source code performs a proven write.
+                if (decl.value) |value| {
+                    if (value.* == .NullLiteral and value.NullLiteral.isUndefined()) return;
+                }
                 // The slot was reserved by the prologue; store into it. The
                 // old code used `pushq`, which recorded an offset that was
                 // only right when no expression temporary had been pushed
@@ -5360,7 +5367,8 @@ pub const HomeKernelCodegen = struct {
                     try self.emit().movImm(0);
                 }
             },
-            .NullLiteral => {
+            .NullLiteral => |literal| {
+                if (literal.isUndefined()) return error.UndefinedHasNoRuntimeValue;
                 try self.emit().movImm(0);
             },
             .TypeCastExpr => |cast| {

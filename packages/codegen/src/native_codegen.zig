@@ -56,6 +56,8 @@ pub const CodegenError = error{
     Overflow,
     /// Stack frame exceeded addressable size
     StackTooLarge,
+    /// `undefined` escaped its declaration and was used as a runtime value.
+    UndefinedHasNoRuntimeValue,
 } || std.mem.Allocator.Error || std.Io.File.OpenError || std.Io.File.ReadStreamingError;
 
 /// Maximum number of local variables per function.
@@ -64,6 +66,19 @@ pub const CodegenError = error{
 /// constraints. Each local variable occupies stack space indexed by an 8-bit
 /// offset, allowing for efficient encoding in x64 instructions.
 const MAX_LOCALS = 256;
+
+fn fixedArrayLength(type_name: []const u8) ?usize {
+    const trimmed = std.mem.trim(u8, type_name, " \t\r\n");
+    if (trimmed.len < 3 or trimmed[0] != '[') return null;
+    const close = std.mem.indexOfScalar(u8, trimmed, ']') orelse return null;
+    const inside = std.mem.trim(u8, trimmed[1..close], " \t\r\n");
+    const count_text = if (std.mem.lastIndexOfScalar(u8, inside, ';')) |semi|
+        std.mem.trim(u8, inside[semi + 1 ..], " \t\r\n")
+    else
+        inside;
+    if (count_text.len == 0) return null;
+    return std.fmt.parseInt(usize, count_text, 10) catch null;
+}
 
 // Stack overflow protection: we do NOT emit an explicit guard-page check
 // in each function prologue. Instead, the codegen is structured so every
@@ -6956,12 +6971,44 @@ pub const NativeCodegen = struct {
         self.defer_stack.items.len = 0;
     }
 
+    fn reserveUndefinedLocal(self: *NativeCodegen, name_value: []const u8, type_name: []const u8) !void {
+        const logical_size = if (fixedArrayLength(type_name)) |len|
+            std.math.mul(usize, len, 8) catch return error.StackTooLarge
+        else
+            try self.getTypeSize(type_name);
+        const reserved_size = @max(@as(usize, 8), std.mem.alignForward(usize, logical_size, 8));
+        const slot_count = reserved_size / 8;
+        if (@as(usize, self.next_local_offset) + slot_count > MAX_LOCALS) {
+            return error.TooManyVariables;
+        }
+
+        const offset = self.next_local_offset;
+        self.next_local_offset += @intCast(slot_count);
+        if (self.locals.fetchRemove(name_value)) |old_entry| {
+            self.allocator.free(old_entry.key);
+        }
+        const name = try self.allocator.dupe(u8, name_value);
+        self.locals.put(name, .{
+            .offset = offset,
+            .type_name = type_name,
+            .size = logical_size,
+        }) catch |err| {
+            self.allocator.free(name);
+            return err;
+        };
+
+        // Grow the frame without storing a manufactured value. The maximum
+        // local frame is only 2 KiB, well below the guard-page distance.
+        try self.assembler.subRegImm(.rsp, @intCast(reserved_size));
+    }
+
     fn generateLetDecl(self: *NativeCodegen, decl: *ast.LetDecl) !void {
         // Async fast path: locals live in the heap-allocated state struct
         // instead of on the stack. The pre-scan already allocated a slot.
         // Just evaluate the value and store it via [r12 + offset].
         if (self.async_ctx) |ctx| {
             if (decl.value) |value| {
+                if (value.* == .NullLiteral and value.NullLiteral.isUndefined()) return;
                 try self.generateExpr(value);
                 if (ctx.locals.get(decl.name)) |off| {
                     try self.assembler.movMemReg(.rbx, off, .rax);
@@ -6983,6 +7030,10 @@ pub const NativeCodegen = struct {
             }
 
             const type_name = inferred_type_name orelse "i32";
+
+            if (value.* == .NullLiteral and value.NullLiteral.isUndefined()) {
+                return self.reserveUndefinedLocal(decl.name, type_name);
+            }
 
             // Check if this is an array type
             const is_array = type_name.len > 0 and type_name[0] == '[';
@@ -7459,7 +7510,8 @@ pub const NativeCodegen = struct {
                 // Load boolean value into rax (0 for false, 1 for true)
                 try self.assembler.movRegImm64(.rax, if (lit.value) 1 else 0);
             },
-            .NullLiteral => {
+            .NullLiteral => |literal| {
+                if (literal.isUndefined()) return error.UndefinedHasNoRuntimeValue;
                 // Null is simply 0
                 try self.assembler.movRegImm64(.rax, 0);
             },

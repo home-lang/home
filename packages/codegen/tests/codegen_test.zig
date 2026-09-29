@@ -3,7 +3,10 @@ const builtin = @import("builtin");
 const testing = std.testing;
 const codegen = @import("codegen");
 const Lexer = @import("lexer").Lexer;
-const Parser = @import("parser").Parser;
+const parser_mod = @import("parser");
+const Parser = parser_mod.Parser;
+const SymbolTable = parser_mod.SymbolTable;
+const ModuleResolver = parser_mod.ModuleResolver;
 const TypeChecker = @import("types").TypeChecker;
 const ComptimeValueStore = @import("comptime").integration.ComptimeValueStore;
 
@@ -70,6 +73,62 @@ test "codegen: emit mov immediate to register" {
     defer allocator.free(code);
 
     try testing.expect(code.len > 0);
+}
+
+test "codegen: undefined reserves storage without writing a zero initializer" {
+    const allocator = testing.allocator;
+    const source =
+        \\fn main() -> i32 {
+        \\    var value: i32 = undefined
+        \\    var bytes: [4]u8 = undefined
+        \\    return 0
+        \\}
+    ;
+    var lexer = Lexer.init(allocator, source);
+    var tokens = try lexer.tokenize();
+    defer tokens.deinit(allocator);
+    var parser = try Parser.init(allocator, tokens.items);
+    defer parser.deinit();
+    const program = try parser.parse();
+    defer program.deinit(allocator);
+
+    var checker = TypeChecker.init(allocator, program);
+    defer checker.deinit();
+    try testing.expect(try checker.check());
+
+    var x64_codegen = codegen.NativeCodegen.init(allocator, program, null, null);
+    defer x64_codegen.deinit();
+    const x64_code = try x64_codegen.generate();
+    defer allocator.free(x64_code);
+    try testing.expectEqual(@as(usize, 32), x64_codegen.locals.get("bytes").?.size);
+    const zero_then_push = [_]u8{ 0x48, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0x50 };
+    try testing.expect(std.mem.indexOf(u8, x64_code, &zero_then_push) == null);
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    defer allocator.free(dir_path);
+    const arm64_path = try std.fs.path.join(allocator, &.{ dir_path, "undefined-arm64" });
+    defer allocator.free(arm64_path);
+    var arm64_codegen = codegen.Aarch64NativeCodegen.init(allocator, program);
+    defer arm64_codegen.deinit();
+    arm64_codegen.io = testing.io;
+    try arm64_codegen.writeExecutable(arm64_path);
+    try testing.expectEqual(@as(u32, 4), arm64_codegen.local_array_lens.get("bytes").?);
+    var pos: usize = 0;
+    while (pos + 4 <= arm64_codegen.assembler.code.items.len) : (pos += 4) {
+        const instruction = std.mem.readInt(u32, arm64_codegen.assembler.code.items[pos..][0..4], .little);
+        try testing.expect(instruction & 0xffc00000 != 0xf9000000);
+    }
+
+    var symbol_table = SymbolTable.init(allocator);
+    defer symbol_table.deinit();
+    var module_resolver = try ModuleResolver.init(allocator, null);
+    defer module_resolver.deinit();
+    var kernel_codegen = codegen.HomeKernelCodegen.init(allocator, &symbol_table, &module_resolver);
+    defer kernel_codegen.deinit();
+    const assembly = try kernel_codegen.generate(program);
+    try testing.expect(std.mem.indexOf(u8, assembly, "movq %rax, -") == null);
 }
 
 test "codegen: emit syscall" {

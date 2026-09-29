@@ -486,6 +486,10 @@ pub const NullLiteral = struct {
             .kind = .undefined_value,
         };
     }
+
+    pub fn isUndefined(self: NullLiteral) bool {
+        return self.kind == .undefined_value;
+    }
 };
 
 /// Identifier expression.

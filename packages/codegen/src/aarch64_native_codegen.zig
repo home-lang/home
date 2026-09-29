@@ -57,6 +57,7 @@ pub const CodegenError = error{
     FileSystemAccessDenied,
     ModuleNotFound,
     ModuleParseFailed,
+    UndefinedHasNoRuntimeValue,
 } || std.mem.Allocator.Error;
 
 const PendingCall = struct {
@@ -625,6 +626,26 @@ pub const Aarch64NativeCodegen = struct {
     fn generateLetDecl(self: *Aarch64NativeCodegen, decl: *ast.LetDecl) CodegenError!void {
         if (decl.is_static) return error.NotImplemented;
 
+        const uninitialized = if (decl.value) |value|
+            value.* == .NullLiteral and value.NullLiteral.isUndefined()
+        else
+            true;
+        if (uninitialized) {
+            const type_name = decl.type_name orelse return error.NotImplemented;
+            const slot_count = declaredTypeSlotCount(type_name, &self.struct_layouts, &self.enum_layouts);
+            const base_slot = self.next_slot;
+            self.next_slot += slot_count * 8;
+            try self.locals.put(decl.name, base_slot);
+            if (fixedArrayLength(type_name)) |len| {
+                try self.local_array_lens.put(decl.name, len);
+            } else if (self.struct_layouts.contains(type_name)) {
+                try self.local_struct_types.put(decl.name, type_name);
+            } else if (self.enum_layouts.get(type_name)) |edecl| {
+                try self.local_enum_types.put(decl.name, edecl.name);
+            }
+            return;
+        }
+
         // Struct-typed initializer: allocate N consecutive slots and write
         // each field into its own slot.
         if (decl.value) |value| {
@@ -679,11 +700,7 @@ pub const Aarch64NativeCodegen = struct {
         }
 
         // Scalar path.
-        if (decl.value) |value| {
-            try self.generateExpr(value);
-        } else {
-            try self.assembler.movRegImm64(.x0, 0);
-        }
+        try self.generateExpr(decl.value.?);
 
         const slot = self.next_slot;
         self.next_slot += 8;
@@ -839,6 +856,10 @@ pub const Aarch64NativeCodegen = struct {
             },
             .BooleanLiteral => |lit| {
                 try self.assembler.movRegImm64(.x0, if (lit.value) 1 else 0);
+            },
+            .NullLiteral => |literal| {
+                if (literal.isUndefined()) return error.UndefinedHasNoRuntimeValue;
+                try self.assembler.movRegImm64(.x0, 0);
             },
             .ComptimeExpr => |comptime_expr| {
                 const store = self.comptime_store orelse return error.NotImplemented;
@@ -1568,6 +1589,15 @@ fn countSlotsInStmt(
 ) u32 {
     return switch (stmt) {
         .LetDecl => |decl| blk: {
+            const uninitialized = if (decl.value) |value|
+                value.* == .NullLiteral and value.NullLiteral.isUndefined()
+            else
+                true;
+            if (uninitialized) {
+                if (decl.type_name) |type_name| {
+                    break :blk declaredTypeSlotCount(type_name, struct_layouts, enum_layouts);
+                }
+            }
             if (decl.value) |v| {
                 // Struct-typed initializer? If we know the struct, claim
                 // one slot per field; otherwise fall back to one slot.
@@ -1606,6 +1636,33 @@ fn countSlotsInStmt(
         .WhileStmt => |while_stmt| countSlotsInBlock(while_stmt.body, struct_layouts, enum_layouts),
         else => 0,
     };
+}
+
+fn fixedArrayLength(type_name: []const u8) ?u32 {
+    const trimmed = std.mem.trim(u8, type_name, " \t\r\n");
+    if (trimmed.len < 3 or trimmed[0] != '[') return null;
+    const close = std.mem.indexOfScalar(u8, trimmed, ']') orelse return null;
+    const inside = std.mem.trim(u8, trimmed[1..close], " \t\r\n");
+    const count_text = if (std.mem.lastIndexOfScalar(u8, inside, ';')) |semi|
+        std.mem.trim(u8, inside[semi + 1 ..], " \t\r\n")
+    else
+        inside;
+    if (count_text.len == 0) return null;
+    const length = std.fmt.parseInt(u32, count_text, 10) catch return null;
+    return @max(@as(u32, 1), length);
+}
+
+fn declaredTypeSlotCount(
+    type_name: []const u8,
+    struct_layouts: *std.StringHashMap(*const ast.StructDecl),
+    enum_layouts: *std.StringHashMap(*const ast.EnumDecl),
+) u32 {
+    if (fixedArrayLength(type_name)) |length| return length;
+    if (struct_layouts.get(type_name)) |decl| {
+        return @max(@as(u32, 1), @as(u32, @intCast(decl.fields.len)));
+    }
+    if (enum_layouts.get(type_name)) |decl| return enumSlotCount(decl);
+    return 1;
 }
 
 /// Number of frame slots required to hold any payload bindings introduced
