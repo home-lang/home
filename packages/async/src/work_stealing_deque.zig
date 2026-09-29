@@ -23,6 +23,7 @@ pub fn WorkStealingDeque(comptime T: type) type {
 
             fn init(allocator: std.mem.Allocator, capacity: usize) !*Buffer {
                 const buf = try allocator.create(Buffer);
+                errdefer allocator.destroy(buf);
                 buf.* = .{
                     .data = try allocator.alloc(?T, capacity),
                     .capacity = capacity,
@@ -68,6 +69,10 @@ pub fn WorkStealingDeque(comptime T: type) type {
         bottom: std.atomic.Value(i64),
         /// Current buffer (atomic pointer for resizing)
         buffer: std.atomic.Value(?*Buffer),
+        /// Previous buffers stay alive until deinit because a thief may have
+        /// loaded an old pointer immediately before a grow publishes the new
+        /// buffer. Only the owner thread appends to this list.
+        retired_buffers: std.ArrayList(*Buffer),
 
         /// Minimum capacity for the deque
         const MIN_CAPACITY: usize = 32;
@@ -80,6 +85,7 @@ pub fn WorkStealingDeque(comptime T: type) type {
                 .top = std.atomic.Value(i64).init(0),
                 .bottom = std.atomic.Value(i64).init(0),
                 .buffer = std.atomic.Value(?*Buffer).init(buf),
+                .retired_buffers = .empty,
             };
         }
 
@@ -87,6 +93,10 @@ pub fn WorkStealingDeque(comptime T: type) type {
             if (self.buffer.load(.acquire)) |buf| {
                 buf.deinit(self.allocator);
             }
+            for (self.retired_buffers.items) |buf| {
+                buf.deinit(self.allocator);
+            }
+            self.retired_buffers.deinit(self.allocator);
         }
 
         /// Push a task to the bottom (owner only)
@@ -103,15 +113,15 @@ pub fn WorkStealingDeque(comptime T: type) type {
             // Check if we need to grow the buffer
             if (len >= @as(i64, @intCast(buf.capacity))) {
                 const new_buf = try buf.grow(self.allocator, t, b);
+                errdefer new_buf.deinit(self.allocator);
+
+                // Retire before publishing. If recording the old buffer fails,
+                // the new allocation is discarded and the deque is unchanged.
+                // Retired buffers are reclaimed only after all workers join.
+                try self.retired_buffers.append(self.allocator, buf);
 
                 // Update buffer pointer atomically so stealers see the new buffer.
                 self.buffer.store(new_buf, .release);
-
-                // NOTE: The old buffer is intentionally leaked here rather than
-                // freed immediately, because concurrent stealers may still be
-                // reading from it.  Proper epoch-based or hazard-pointer
-                // reclamation should be used to free old buffers.  Immediate
-                // free (the previous code) was a use-after-free bug.
 
                 buf = new_buf;
             }
@@ -299,6 +309,7 @@ test "WorkStealingDeque - growth" {
     }
 
     try testing.expectEqual(@as(usize, 100), deque.size());
+    try testing.expect(deque.retired_buffers.items.len > 0);
 
     // Pop all items
     var count: i32 = 99;
@@ -342,17 +353,11 @@ test "WorkStealingDeque - concurrent push and steal" {
         fn run(c: *StealContext) void {
             while (c.deque.steal()) |item| {
                 c.stolen.append(c.allocator, item) catch unreachable;
-                // Small sleep to allow owner to push
-                std.posix.nanosleep(0, 100);
             }
         }
     }.run;
 
     const thread = try std.Thread.spawn(.{}, thief_fn, .{&ctx});
-
-    // Give thief time to steal some
-    std.posix.nanosleep(0, 1_000_000); // 1ms
-
     thread.join();
 
     // Verify no duplicates and all items accounted for

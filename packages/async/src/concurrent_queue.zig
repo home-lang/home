@@ -16,12 +16,14 @@ pub fn ConcurrentQueue(comptime T: type) type {
         const Node = struct {
             value: ?T,
             next: std.atomic.Value(?*Node),
+            retired_next: ?*Node,
 
             fn init(allocator: std.mem.Allocator, value: ?T) !*Node {
                 const node = try allocator.create(Node);
                 node.* = .{
                     .value = value,
                     .next = std.atomic.Value(?*Node).init(null),
+                    .retired_next = null,
                 };
                 return node;
             }
@@ -30,6 +32,10 @@ pub fn ConcurrentQueue(comptime T: type) type {
         allocator: std.mem.Allocator,
         head: std.atomic.Value(?*Node),
         tail: std.atomic.Value(?*Node),
+        /// Nodes removed from the head remain allocated until deinit. A
+        /// concurrent consumer may still have loaded the old head before the
+        /// winning CAS, so immediate destruction is a use-after-free.
+        retired_head: std.atomic.Value(?*Node),
         /// Approximate size (for statistics)
         len: std.atomic.Value(usize),
 
@@ -41,6 +47,7 @@ pub fn ConcurrentQueue(comptime T: type) type {
                 .allocator = allocator,
                 .head = std.atomic.Value(?*Node).init(dummy),
                 .tail = std.atomic.Value(?*Node).init(dummy),
+                .retired_head = std.atomic.Value(?*Node).init(null),
                 .len = std.atomic.Value(usize).init(0),
             };
         }
@@ -53,12 +60,32 @@ pub fn ConcurrentQueue(comptime T: type) type {
                 self.allocator.destroy(node);
                 current = next;
             }
+
+            current = self.retired_head.load(.acquire);
+            while (current) |node| {
+                const next = node.retired_next;
+                self.allocator.destroy(node);
+                current = next;
+            }
+        }
+
+        fn retire(self: *Self, node: *Node) void {
+            var retired = self.retired_head.load(.monotonic);
+            while (true) {
+                node.retired_next = retired;
+                retired = self.retired_head.cmpxchgWeak(
+                    retired,
+                    node,
+                    .release,
+                    .monotonic,
+                ) orelse return;
+            }
         }
 
         /// Push a value onto the queue (enqueue)
         ///
-        /// This is wait-free - it will complete in a bounded number of steps
-        /// regardless of other thread actions.
+        /// This is lock-free: one producer always makes progress even if an
+        /// individual producer retries after contention.
         pub fn push(self: *Self, value: T) !void {
             const node = try Node.init(self.allocator, value);
 
@@ -139,8 +166,9 @@ pub fn ConcurrentQueue(comptime T: type) type {
                             .release,
                             .acquire,
                         ) == null) {
-                            // Success! Free the old head
-                            self.allocator.destroy(head.?);
+                            // Other consumers may still hold the old head.
+                            // Retire it and reclaim after all users have joined.
+                            self.retire(head.?);
 
                             _ = self.len.fetchSub(1, .monotonic);
                             return value;
@@ -306,7 +334,7 @@ test "ConcurrentQueue - concurrent push and pop" {
                     ctx.err = e;
                     return;
                 };
-                std.posix.nanosleep(0, 100); // Small delay
+                std.Thread.yield() catch {};
             }
         }
     }.run;
@@ -323,7 +351,7 @@ test "ConcurrentQueue - concurrent push and pop" {
                         return;
                     };
                 }
-                std.posix.nanosleep(0, 100);
+                std.Thread.yield() catch {};
             }
         }
     }.run;
@@ -397,4 +425,91 @@ test "ConcurrentQueue - with struct type" {
     const p2 = queue.pop().?;
     try testing.expectEqual(@as(i32, 3), p2.x);
     try testing.expectEqual(@as(i32, 4), p2.y);
+}
+
+test "ConcurrentQueue - eight producers and consumers preserve every item" {
+    const producer_count = 8;
+    const consumer_count = 8;
+    const items_per_producer = 1_000;
+    const item_count = producer_count * items_per_producer;
+
+    var queue = try ConcurrentQueue(usize).init(std.heap.page_allocator);
+    defer queue.deinit();
+
+    var seen: [item_count]std.atomic.Value(u8) = undefined;
+    for (&seen) |*entry| entry.* = .init(0);
+    var consumed = std.atomic.Value(usize).init(0);
+    var producers_done = std.atomic.Value(usize).init(0);
+    var failed = std.atomic.Value(bool).init(false);
+
+    const ProducerContext = struct {
+        queue: *ConcurrentQueue(usize),
+        producer_id: usize,
+        producers_done: *std.atomic.Value(usize),
+        failed: *std.atomic.Value(bool),
+
+        fn run(context: *@This()) void {
+            const start = context.producer_id * items_per_producer;
+            for (start..start + items_per_producer) |item| {
+                context.queue.push(item) catch {
+                    context.failed.store(true, .release);
+                    break;
+                };
+            }
+            _ = context.producers_done.fetchAdd(1, .release);
+        }
+    };
+    const ConsumerContext = struct {
+        queue: *ConcurrentQueue(usize),
+        seen: *[item_count]std.atomic.Value(u8),
+        consumed: *std.atomic.Value(usize),
+        producers_done: *std.atomic.Value(usize),
+        failed: *std.atomic.Value(bool),
+
+        fn run(context: *@This()) void {
+            while (context.consumed.load(.acquire) < item_count) {
+                if (context.queue.pop()) |item| {
+                    if (item >= item_count or context.seen[item].swap(1, .acq_rel) != 0) {
+                        context.failed.store(true, .release);
+                    }
+                    _ = context.consumed.fetchAdd(1, .release);
+                    continue;
+                }
+                if (context.producers_done.load(.acquire) == producer_count and context.queue.isEmpty()) return;
+                std.Thread.yield() catch {};
+            }
+        }
+    };
+
+    var producer_contexts: [producer_count]ProducerContext = undefined;
+    var producers: [producer_count]std.Thread = undefined;
+    for (&producers, &producer_contexts, 0..) |*thread, *context, producer_id| {
+        context.* = .{
+            .queue = &queue,
+            .producer_id = producer_id,
+            .producers_done = &producers_done,
+            .failed = &failed,
+        };
+        thread.* = try std.Thread.spawn(.{}, ProducerContext.run, .{context});
+    }
+
+    var consumer_context = ConsumerContext{
+        .queue = &queue,
+        .seen = &seen,
+        .consumed = &consumed,
+        .producers_done = &producers_done,
+        .failed = &failed,
+    };
+    var consumers: [consumer_count]std.Thread = undefined;
+    for (&consumers) |*thread| {
+        thread.* = try std.Thread.spawn(.{}, ConsumerContext.run, .{&consumer_context});
+    }
+
+    for (producers) |thread| thread.join();
+    for (consumers) |thread| thread.join();
+
+    try std.testing.expect(!failed.load(.acquire));
+    try std.testing.expectEqual(@as(usize, item_count), consumed.load(.acquire));
+    try std.testing.expect(queue.isEmpty());
+    for (&seen) |*entry| try std.testing.expectEqual(@as(u8, 1), entry.load(.acquire));
 }

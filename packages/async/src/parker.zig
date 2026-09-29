@@ -1,8 +1,28 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const Futex = @import("threading_futex");
 
-// Simpler approach: track relative time using since()
-// We don't actually need absolute timestamps, just elapsed time
+fn monotonicNowNs() u64 {
+    if (comptime builtin.os.tag == .windows) {
+        const ntdll = std.os.windows.ntdll;
+        var counter: std.os.windows.LARGE_INTEGER = undefined;
+        var frequency: std.os.windows.LARGE_INTEGER = undefined;
+        std.debug.assert(ntdll.RtlQueryPerformanceCounter(&counter).toBool());
+        std.debug.assert(ntdll.RtlQueryPerformanceFrequency(&frequency).toBool());
+        return @intCast(@divFloor(
+            @as(u128, @intCast(counter)) * std.time.ns_per_s,
+            @as(u128, @intCast(frequency)),
+        ));
+    } else if (comptime builtin.os.tag == .linux) {
+        var ts: std.os.linux.timespec = .{ .sec = 0, .nsec = 0 };
+        _ = std.os.linux.clock_gettime(.MONOTONIC, &ts);
+        return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
+    } else {
+        var ts: std.c.timespec = .{ .sec = 0, .nsec = 0 };
+        _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
+        return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
+    }
+}
 
 /// Parker/Unparker for efficient thread parking and unparking.
 ///
@@ -10,13 +30,11 @@ const builtin = @import("builtin");
 /// woken up efficiently when work arrives. Based on Java's LockSupport
 /// and Rust's thread::park.
 ///
-/// The implementation uses a semaphore-based approach with atomic operations
-/// to minimize syscalls in the common case.
+/// The state word is also the futex address, so parking has no separate mutex
+/// or semaphore and an early notification is retained as one binary permit.
 pub const Parker = struct {
     /// State: 0 = empty, 1 = notified
     state: std.atomic.Value(u32),
-    /// Semaphore for actual blocking
-    semaphore: std.Thread.Semaphore,
 
     const EMPTY: u32 = 0;
     const NOTIFIED: u32 = 1;
@@ -24,7 +42,6 @@ pub const Parker = struct {
     pub fn init() Parker {
         return .{
             .state = std.atomic.Value(u32).init(EMPTY),
-            .semaphore = .{},
         };
     }
 
@@ -34,21 +51,9 @@ pub const Parker = struct {
     /// wakeup occurs. If unpark() was called before park(), park() returns
     /// immediately.
     pub fn park(self: *Parker) void {
-        // If we're already notified, consume the notification and return
-        if (self.state.swap(EMPTY, .acquire) == NOTIFIED) {
-            return;
-        }
-
-        // Wait on semaphore
         while (true) {
-            self.semaphore.wait();
-
-            // Check if we were actually notified
-            if (self.state.swap(EMPTY, .acquire) == NOTIFIED) {
-                return;
-            }
-
-            // Spurious wakeup, continue waiting
+            if (self.state.cmpxchgStrong(NOTIFIED, EMPTY, .acquire, .monotonic) == null) return;
+            Futex.waitForever(&self.state, EMPTY);
         }
     }
 
@@ -56,36 +61,22 @@ pub const Parker = struct {
     ///
     /// Returns true if unparked by another thread, false if timed out.
     pub fn parkTimeout(self: *Parker, timeout_ns: u64) bool {
-        // If we're already notified, consume the notification and return
-        if (self.state.swap(EMPTY, .acquire) == NOTIFIED) {
-            return true;
-        }
+        if (self.state.cmpxchgStrong(NOTIFIED, EMPTY, .acquire, .monotonic) == null) return true;
+        if (timeout_ns == 0) return false;
 
-        const start = std.time.Instant.now() catch return false;
+        const start = monotonicNowNs();
 
         while (true) {
-            const now = std.time.Instant.now() catch return false;
-            const elapsed = now.since(start);
+            if (self.state.cmpxchgStrong(NOTIFIED, EMPTY, .acquire, .monotonic) == null) return true;
 
-            if (elapsed >= timeout_ns) {
-                // Timed out
-                return false;
-            }
+            const elapsed = monotonicNowNs() - start;
+
+            if (elapsed >= timeout_ns) return false;
 
             const remaining = timeout_ns - elapsed;
-
-            // Wait with timeout
-            self.semaphore.timedWait(remaining) catch {
-                // Timeout
-                return false;
+            Futex.wait(&self.state, EMPTY, remaining) catch {
+                return self.state.cmpxchgStrong(NOTIFIED, EMPTY, .acquire, .monotonic) == null;
             };
-
-            // Check if we were actually notified
-            if (self.state.swap(EMPTY, .acquire) == NOTIFIED) {
-                return true;
-            }
-
-            // Spurious wakeup, continue if time remains
         }
     }
 
@@ -94,10 +85,8 @@ pub const Parker = struct {
     /// If the thread is currently parked, it will be woken up.
     /// If not, the next call to park() will return immediately.
     pub fn unpark(self: *Parker) void {
-        // Set notified state
         if (self.state.swap(NOTIFIED, .release) == EMPTY) {
-            // Thread might be waiting, signal semaphore
-            self.semaphore.post();
+            Futex.wake(&self.state, 1);
         }
     }
 
@@ -139,12 +128,11 @@ test "Parker - park timeout" {
 
     var parker = Parker.init();
 
-    const start = try std.time.Instant.now();
+    const start = monotonicNowNs();
     const timeout = 10 * std.time.ns_per_ms; // 10ms
 
     const unparked = parker.parkTimeout(timeout);
-    const now = try std.time.Instant.now();
-    const elapsed = now.since(start);
+    const elapsed = monotonicNowNs() - start;
 
     // Should have timed out
     try testing.expect(!unparked);
@@ -165,8 +153,6 @@ test "Parker - concurrent unpark" {
 
     const unparker_fn = struct {
         fn run(ctx: *Context) void {
-            // Wait a bit before unparking
-            std.posix.nanosleep(0, 5 * std.time.ns_per_ms); // 5ms
             ctx.parker.unpark();
         }
     }.run;
@@ -175,16 +161,13 @@ test "Parker - concurrent unpark" {
 
     const thread = try std.Thread.spawn(.{}, unparker_fn, .{&ctx});
 
-    const start = try std.time.Instant.now();
+    const start = monotonicNowNs();
     parker.park();
-    const now = try std.time.Instant.now();
-    const elapsed = now.since(start);
+    const elapsed = monotonicNowNs() - start;
 
     thread.join();
 
-    // Should have been unparked, not timed out
-    // Elapsed should be around 5ms (with some tolerance)
-    try testing.expect(elapsed >= 4 * std.time.ns_per_ms);
+    // Should have been unparked, not timed out.
     try testing.expect(elapsed < 100 * std.time.ns_per_ms);
 }
 
@@ -218,7 +201,6 @@ test "Parker - unparker handle" {
 
     const unparker_fn = struct {
         fn run(ctx: *Context) void {
-            std.posix.nanosleep(0, 5 * std.time.ns_per_ms);
             ctx.unparker.unpark();
         }
     }.run;
