@@ -62,6 +62,13 @@ explicit target such as `@as(u64, value)` or `@ptrCast(*u8, pointer)` determines
 the result directly; target-elided forms such as `@intCast(value)` use their
 surrounding expected type.
 
+### Uninitialized Storage
+
+`undefined` reserves storage of its declared type without initializing it. It
+therefore requires a destination type, and reading the binding before a proven
+write is a type error. This is distinct from `null`, which remains a value only
+for optional types.
+
 ## Compound Types
 
 ### Tuples

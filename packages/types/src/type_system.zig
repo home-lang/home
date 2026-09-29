@@ -1725,6 +1725,9 @@ pub const TypeChecker = struct {
                     }
 
                     try self.env.define(decl.name, value_type);
+                    if (isUndefinedLiteral(value)) {
+                        try self.uninitialized_vars.put(decl.name, decl.node.loc);
+                    }
                     try self.null_safety_tracker.setNullability(
                         decl.name,
                         nullabilityForBinding(value_type, value),
@@ -2566,11 +2569,13 @@ pub const TypeChecker = struct {
             _ = try self.analyzeIntegerRange(expr, expected);
         }
 
-        // Special case: null literals can be assigned to optional types
-        if (expr.* == .NullLiteral) {
-            if (expected == .Optional) {
-                return; // Valid null assignment to optional type
-            }
+        // `null` is a value only for optional destinations. `undefined` is
+        // different: it requests storage of the contextual destination type
+        // without initializing it, and the dataflow tracker rejects reads
+        // until a proven write clears the binding's may-uninit bit.
+        if (isUndefinedLiteral(expr)) return;
+        if (isNullLiteral(expr) and expected == .Optional) {
+            return;
         }
 
         // Special case: integer literals can be coerced to any integer
@@ -3075,6 +3080,10 @@ pub const TypeChecker = struct {
                     }
                 }
                 break :blk Type.Float;
+            },
+            .NullLiteral => |literal| switch (literal.kind) {
+                .null_value => Type.Void,
+                .undefined_value => eff_hint orelse Type.Unknown,
             },
             .ArrayLiteral => |array| try self.inferArrayLiteralWithHint(array, eff_hint),
             .IfExpr => |ie| try self.inferIfExprWithHint(ie, eff_hint),
@@ -3649,6 +3658,16 @@ pub const TypeChecker = struct {
             .FloatLiteral => Type.Float,
             .StringLiteral => Type.String,
             .BooleanLiteral => Type.Bool,
+            .NullLiteral => |literal| blk: {
+                if (literal.kind == .undefined_value) {
+                    try self.addError(
+                        "cannot infer the type of undefined without a destination type",
+                        literal.node.loc,
+                    );
+                    return error.CannotInferType;
+                }
+                break :blk Type.Void;
+            },
             .ArrayLiteral => |array| try self.inferArrayLiteral(array),
             .Identifier => |id| {
                 // Check ownership before use
@@ -5499,8 +5518,22 @@ pub const TypeChecker = struct {
         return if (typ == .Optional) .Nullable else .NonNull;
     }
 
+    fn isNullLiteral(value: *const ast.Expr) bool {
+        return switch (value.*) {
+            .NullLiteral => |literal| literal.kind == .null_value,
+            else => false,
+        };
+    }
+
+    fn isUndefinedLiteral(value: *const ast.Expr) bool {
+        return switch (value.*) {
+            .NullLiteral => |literal| literal.kind == .undefined_value,
+            else => false,
+        };
+    }
+
     fn nullabilityForBinding(typ: Type, value: *const ast.Expr) null_safety.Nullability {
-        if (value.* == .NullLiteral) return .Null;
+        if (isNullLiteral(value)) return .Null;
         if (typ == .Optional) return .NonNull;
         return nullabilityForType(typ);
     }

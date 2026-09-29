@@ -318,6 +318,32 @@ test "checker preserves reflection builtin result types" {
     ));
 }
 
+test "checker distinguishes typed undefined storage from null" {
+    try std.testing.expect(try checkSource(
+        \\fn initialize(): u32 {
+        \\    var value: u32 = undefined
+        \\    value = 42
+        \\    return value
+        \\}
+    ));
+    try std.testing.expect(!try checkSource(
+        \\fn read_too_soon(): u32 {
+        \\    var value: u32 = undefined
+        \\    return value
+        \\}
+    ));
+    try std.testing.expect(!try checkSource(
+        \\fn invalid_null() {
+        \\    let value: u32 = null
+        \\}
+    ));
+    try std.testing.expect(!try checkSource(
+        \\fn missing_context() {
+        \\    let value = undefined
+        \\}
+    ));
+}
+
 test "checker visits match guards and arm bodies" {
     try std.testing.expect(!try checkSource(
         \\fn classify(value: bool) {
