@@ -97,8 +97,10 @@ The parser constructs an Abstract Syntax Tree (AST) from the token stream using 
 
 **Recursion Safety**:
 
-- Maximum expression nesting depth: 256 levels
-- Prevents stack overflow on deeply nested expressions
+- Parser and interpreter expression nesting share a 256-level limit
+- Interpreted functions, closures, and methods allow 64 active user-call frames
+- Separate counters prevent both deeply nested expressions and recursive calls
+  from exhausting the native stack
 
 **Test Coverage**: 33 parser tests covering all major constructs
 
@@ -260,7 +262,8 @@ Comprehensive error and warning reporting system.
 **Limitations**:
 
 - Left-recursive grammars require transformation
-- Deep nesting can cause stack overflow (mitigated with depth limit)
+- Deep nesting can cause stack overflow (mitigated with parser, expression, and
+  user-call depth limits)
 
 ### Ownership Model
 

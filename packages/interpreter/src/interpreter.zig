@@ -86,12 +86,17 @@ pub const Interpreter = struct {
     current_span: ?Value,
     /// Baggage for tracing context propagation
     tracing_baggage: std.StringHashMap([]const u8),
-    /// Tracks call / expression recursion depth so pathological input
-    /// can't exhaust the process stack. Incremented on evaluateExpression
-    /// entry, decremented on exit.
-    recursion_depth: u32 = 0,
+    /// Tracks nested expression evaluation independently from interpreted
+    /// user calls. The parser rejects source expressions beyond the same
+    /// limit, while this remains a backstop for synthesized ASTs.
+    expression_depth: u32 = 0,
+    /// Tracks active interpreted function, closure, and method frames. One
+    /// Home call expands to several native frames, so this deliberately has
+    /// a lower limit than expression nesting.
+    call_depth: u32 = 0,
 
-    const MAX_RECURSION_DEPTH: u32 = 512;
+    const MAX_EXPRESSION_DEPTH: u32 = 256;
+    const MAX_CALL_DEPTH: u32 = 64;
 
     pub fn init(allocator: std.mem.Allocator, program: *const ast.Program) !*Interpreter {
         const interpreter = try allocator.create(Interpreter);
@@ -109,11 +114,11 @@ pub const Interpreter = struct {
         interpreter.program = program;
         interpreter.return_value = null;
         // NOTE: `allocator.create` returns uninitialized memory, so struct-field
-        // defaults (e.g. `recursion_depth: u32 = 0`) do NOT apply here — every
-        // field must be set explicitly. Missing this one left recursion_depth as
-        // garbage (~0xAA…), so the very first evaluateExpression tripped the
-        // MAX_RECURSION_DEPTH guard and no program could evaluate an expression.
-        interpreter.recursion_depth = 0;
+        // defaults (e.g. `expression_depth: u32 = 0`) do NOT apply here — every
+        // field must be set explicitly. Missing a depth field can make the first
+        // expression or call trip its guard before user code runs.
+        interpreter.expression_depth = 0;
+        interpreter.call_depth = 0;
         interpreter.debugger = null;
         interpreter.debug_enabled = false;
         interpreter.source_file = "";
@@ -1089,11 +1094,24 @@ pub const Interpreter = struct {
         };
     }
 
+    fn enterUserCall(self: *Interpreter) InterpreterError!void {
+        if (self.call_depth >= MAX_CALL_DEPTH) {
+            std.debug.print("stack overflow: user call depth exceeded {d}\n", .{MAX_CALL_DEPTH});
+            return error.RuntimeError;
+        }
+        self.call_depth += 1;
+    }
+
+    fn leaveUserCall(self: *Interpreter) void {
+        std.debug.assert(self.call_depth > 0);
+        self.call_depth -= 1;
+    }
+
     fn evaluateExpression(self: *Interpreter, expr: *const ast.Expr, env: *Environment) InterpreterError!Value {
-        self.recursion_depth += 1;
-        defer self.recursion_depth -= 1;
-        if (self.recursion_depth > MAX_RECURSION_DEPTH) {
-            std.debug.print("stack overflow: expression recursion depth exceeded {d}\n", .{MAX_RECURSION_DEPTH});
+        self.expression_depth += 1;
+        defer self.expression_depth -= 1;
+        if (self.expression_depth > MAX_EXPRESSION_DEPTH) {
+            std.debug.print("stack overflow: expression recursion depth exceeded {d}\n", .{MAX_EXPRESSION_DEPTH});
             return error.RuntimeError;
         }
         switch (expr.*) {
@@ -1535,6 +1553,9 @@ pub const Interpreter = struct {
                     if (env.get(func_name)) |func_value| {
                         if (func_value == .Function) {
                             const func = func_value.Function;
+
+                            try self.enterUserCall();
+                            defer self.leaveUserCall();
 
                             // Create new environment for function with piped value as first param
                             var func_env = Environment.init(self.arena.allocator(), env);
@@ -2878,6 +2899,8 @@ pub const Interpreter = struct {
                                     if (fn_value == .Function) {
                                         // For user-defined functions, we need to bind the parameter directly
                                         const func = fn_value.Function;
+                                        try self.enterUserCall();
+                                        defer self.leaveUserCall();
                                         var func_env = Environment.init(self.arena.allocator(), env);
                                         if (func.params.len > 0) {
                                             try func_env.define(func.params[0].name, inner);
@@ -2948,6 +2971,8 @@ pub const Interpreter = struct {
                                     if (fn_value == .Function) {
                                         // For user-defined functions with no params (like fallback_value)
                                         const func = fn_value.Function;
+                                        try self.enterUserCall();
+                                        defer self.leaveUserCall();
                                         var func_env = Environment.init(self.arena.allocator(), env);
                                         // Execute function body
                                         for (func.body.statements) |stmt| {
@@ -8996,6 +9021,9 @@ pub const Interpreter = struct {
 
     /// Evaluate a closure body (expression or block) in the given environment
     fn evaluateClosureBody(self: *Interpreter, closure: ClosureValue, closure_env: *Environment) InterpreterError!Value {
+        try self.enterUserCall();
+        defer self.leaveUserCall();
+
         if (closure.body_expr) |expr| {
             return try self.evaluateExpression(expr, closure_env);
         } else if (closure.body_block) |block| {
@@ -9032,6 +9060,9 @@ pub const Interpreter = struct {
 
     /// Call a closure with given arguments
     fn callClosure(self: *Interpreter, closure: ClosureValue, args: []const *const ast.Expr, env: *Environment) InterpreterError!Value {
+        try self.enterUserCall();
+        defer self.leaveUserCall();
+
         // Check argument count
         if (args.len != closure.param_names.len) {
             std.debug.print("Closure expects {d} arguments, got {d}\n", .{ closure.param_names.len, args.len });
@@ -9092,6 +9123,9 @@ pub const Interpreter = struct {
         if (named_args.len == 0) {
             return self.callClosure(closure, args, env);
         }
+
+        try self.enterUserCall();
+        defer self.leaveUserCall();
 
         // Create new environment for closure execution
         var closure_env = Environment.init(self.arena.allocator(), env);
@@ -10899,6 +10933,9 @@ pub const Interpreter = struct {
     }
 
     fn callUserFunctionWithNamed(self: *Interpreter, func: FunctionValue, args: []const *const ast.Expr, named_args: []const ast.NamedArg, parent_env: *Environment) InterpreterError!Value {
+        try self.enterUserCall();
+        defer self.leaveUserCall();
+
         // Clear any stale return value from a previous call so nested
         // invocations don't accidentally inherit it.
         self.return_value = null;
@@ -10993,6 +11030,9 @@ pub const Interpreter = struct {
 
     /// Call an impl method with self binding
     fn callImplMethod(self: *Interpreter, method: *ast.FnDecl, self_value: Value, args: []const *const ast.Expr, parent_env: *Environment) InterpreterError!Value {
+        try self.enterUserCall();
+        defer self.leaveUserCall();
+
         // Check if method has 'self' parameter (first param named "self")
         const has_self_param = method.params.len > 0 and std.mem.eql(u8, method.params[0].name, "self");
 
@@ -11071,6 +11111,9 @@ pub const Interpreter = struct {
 
     /// Execute a default trait method implementation
     fn executeTraitDefaultMethod(self: *Interpreter, method: ast.TraitMethod, body: *ast.BlockStmt, self_value: Value, args: []const *const ast.Expr, parent_env: *Environment) InterpreterError!Value {
+        try self.enterUserCall();
+        defer self.leaveUserCall();
+
         // Create new environment for method scope
         var method_env = Environment.init(self.arena.allocator(), parent_env);
         defer method_env.deinit();

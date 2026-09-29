@@ -26,10 +26,10 @@ fn runProgram(source: []const u8) !void {
     };
 }
 
-// Regression for the uninitialized `recursion_depth` bug: `Interpreter.init`
+// Regression for the uninitialized expression-depth bug: `Interpreter.init`
 // allocates with `allocator.create` (uninitialized memory) and sets fields
-// individually, so the `recursion_depth: u32 = 0` struct default never applied.
-// The garbage value tripped MAX_RECURSION_DEPTH on the *first* expression, so
+// individually, so the struct-field default never applied. The garbage value
+// tripped the depth guard on the *first* expression, so
 // no program could evaluate an expression (hello world included). Each of these
 // evaluates at least one expression and must complete without a spurious
 // "expression recursion depth exceeded" RuntimeError.
@@ -61,7 +61,7 @@ test "eval: nested arithmetic expression" {
 
 test "eval: multiple statements and a returning function" {
     // Exercises several evaluateExpression entries across statements and a
-    // user-function call — all of which were unreachable while recursion_depth
+    // user-function call — all of which were unreachable while expression depth
     // started as garbage.
     try runProgram(
         \\fn add(a: i32, b: i32): i32 {
@@ -73,4 +73,29 @@ test "eval: multiple statements and a returning function" {
         \\  print(add(a, b))
         \\}
     );
+}
+
+test "eval: finite recursive calls remain valid" {
+    try runProgram(
+        \\fn countdown(n: i32): i32 {
+        \\  if n == 0 {
+        \\    return 0
+        \\  }
+        \\  return countdown(n - 1)
+        \\}
+        \\fn main() {
+        \\  print(countdown(8))
+        \\}
+    );
+}
+
+test "eval: runaway user recursion returns a runtime error" {
+    try testing.expectError(error.RuntimeError, runProgram(
+        \\fn recurse(n: i32): i32 {
+        \\  return recurse(n + 1)
+        \\}
+        \\fn main() {
+        \\  print(recurse(0))
+        \\}
+    ));
 }
