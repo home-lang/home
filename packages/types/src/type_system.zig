@@ -2948,6 +2948,77 @@ pub const TypeChecker = struct {
         return false;
     }
 
+    fn inferReflectExpression(
+        self: *TypeChecker,
+        reflect: *const ast.ReflectExpr,
+        hint: ?Type,
+    ) TypeError!Type {
+        const is_type_only = switch (reflect.kind) {
+            .SizeOf, .AlignOf, .TypeOf, .TypeInfo => true,
+            else => false,
+        };
+
+        const explicit_type: ?Type = if (reflect.target_type) |name|
+            try self.parseDeclaredType(name, reflect.node.loc)
+        else
+            null;
+        const result_hint = explicit_type orelse hint;
+        const operand_hint: ?Type = switch (reflect.kind) {
+            .As, .BitCast, .IntCast, .FloatCast, .PtrCast, .Truncate,
+            .PtrFromInt, .IntToFloat, .FloatToInt, .IntToEnum,
+            => result_hint,
+            else => null,
+        };
+
+        // Pointer-flavoured reflection builtins hand writable storage to
+        // their consumer. Preserve the existing may-uninit dataflow before
+        // visiting the operand.
+        const writes_through_target = switch (reflect.kind) {
+            .PtrFromInt, .PtrCast, .BitCast, .As, .IntFromPtr, .PtrToInt,
+            .MemSet, .MemCpy,
+            => true,
+            else => false,
+        };
+        if (writes_through_target) {
+            if (addressOfTarget(reflect.target)) |target_local| {
+                _ = self.uninitialized_vars.remove(target_local);
+            } else if (reflect.target.* == .Identifier) {
+                const arg_name = reflect.target.Identifier.name;
+                if (self.pointer_aliases.get(arg_name)) |target_local| {
+                    _ = self.uninitialized_vars.remove(target_local);
+                } else if (self.env.get(arg_name)) |arg_local_type| {
+                    const decays = arg_local_type == .Array or
+                        arg_local_type == .Struct or
+                        arg_local_type == .Reference or
+                        arg_local_type == .MutableReference;
+                    if (decays) _ = self.uninitialized_vars.remove(arg_name);
+                }
+            }
+        }
+
+        const operand_type = if (is_type_only and reflect.target_type != null)
+            Type.Unknown
+        else
+            try self.inferExpressionWithHint(reflect.target, operand_hint);
+        if (reflect.second_arg) |arg| _ = try self.inferExpression(arg);
+        if (reflect.third_arg) |arg| _ = try self.inferExpression(arg);
+
+        return switch (reflect.kind) {
+            .TargetIs => Type.Bool,
+            .SizeOf, .AlignOf, .OffsetOf, .IntFromPtr, .PtrToInt, .EnumToInt => explicit_type orelse Type.U64,
+            .FieldName => Type.String,
+            .MemSet, .MemCpy => Type.Void,
+            .TypeOf, .TypeInfo, .FieldType => Type.Unknown,
+            .PtrFromInt, .PtrCast, .IntToEnum => result_hint orelse Type.Unknown,
+            .IntToFloat => result_hint orelse Type.Float,
+            .FloatToInt => result_hint orelse Type.Int,
+            .As, .BitCast, .IntCast, .FloatCast, .Truncate => result_hint orelse operand_type,
+            .Sqrt, .Sin, .Cos, .Tan, .Acos, .Asin, .Atan, .Atan2, .Abs,
+            .Min, .Max, .Floor, .Ceil, .Pow, .Exp, .Log,
+            => operand_type,
+        };
+    }
+
     /// Synthesis mode: Infer the type of an expression
     fn synthesizeExpression(self: *TypeChecker, expr: *const ast.Expr) TypeError!Type {
         return try self.inferExpression(expr);
@@ -3011,6 +3082,7 @@ pub const TypeChecker = struct {
             .ClosureExpr => |closure| try self.inferClosureExprWithHint(closure, eff_hint),
             .BlockExpr => |block| try self.inferBlockExpression(block, eff_hint),
             .UnaryExpr => |unary| try self.inferUnaryExprWithHint(unary, eff_hint),
+            .ReflectExpr => |reflect| try self.inferReflectExpression(reflect, eff_hint),
             else => try self.inferExpression(expr),
         };
     }
@@ -3655,45 +3727,7 @@ pub const TypeChecker = struct {
                 // arithmetic can enforce its unsafe boundary.
                 break :blk try self.parseDeclaredType(cast.target_type, cast.node.loc);
             },
-            .ReflectExpr => |refl| blk: {
-                // Pointer-flavoured reflection builtins
-                // (`@ptrFromInt`, `@ptrCast`, `@bitCast`, `@as`,
-                // `@intFromPtr`) hand a writable pointer to whatever
-                // consumes their target. Clear the may-uninit bit on
-                // the pointed-at local BEFORE evaluating the operand,
-                // so the identifier read inside the operand doesn't
-                // surface a spurious warning. Same rule applies to
-                // `@memset` / `@memcpy` whose first argument is the
-                // destination pointer.
-                const is_pointer_builtin = switch (refl.kind) {
-                    .PtrFromInt, .PtrCast, .BitCast, .As, .IntFromPtr,
-                    .PtrToInt, .MemSet, .MemCpy,
-                    => true,
-                    else => false,
-                };
-                if (is_pointer_builtin) {
-                    if (addressOfTarget(refl.target)) |target_local| {
-                        _ = self.uninitialized_vars.remove(target_local);
-                    } else if (refl.target.* == .Identifier) {
-                        const arg_name = refl.target.Identifier.name;
-                        if (self.pointer_aliases.get(arg_name)) |target_local| {
-                            _ = self.uninitialized_vars.remove(target_local);
-                        } else if (self.env.get(arg_name)) |arg_local_type| {
-                            const decays = arg_local_type == .Array or
-                                arg_local_type == .Struct or
-                                arg_local_type == .Reference or
-                                arg_local_type == .MutableReference;
-                            if (decays) {
-                                _ = self.uninitialized_vars.remove(arg_name);
-                            }
-                        }
-                    }
-                }
-                _ = try self.inferExpression(refl.target);
-                if (refl.second_arg) |a| _ = try self.inferExpression(a);
-                if (refl.third_arg) |a| _ = try self.inferExpression(a);
-                break :blk Type.Void;
-            },
+            .ReflectExpr => |reflect| try self.inferReflectExpression(reflect, null),
             // Expression types whose inference is known but was previously
             // falling through to Void.
             .CharLiteral => Type.Int,

@@ -306,6 +306,18 @@ test "checker enforces unsafe function calls" {
     ));
 }
 
+test "checker preserves reflection builtin result types" {
+    try std.testing.expect(try checkSource(
+        \\fn cast_values(width: u32, address: u64): u64 {
+        \\    let widened: u64 = @as(u64, width)
+        \\    let pointer_value: u64 = @intFromPtr(&widened)
+        \\    let narrowed: u32 = @intCast(widened)
+        \\    let loaded: u8 = unsafe { @as(*u8, @ptrFromInt(address)).* }
+        \\    return widened + pointer_value + @as(u64, narrowed) + @as(u64, loaded)
+        \\}
+    ));
+}
+
 test "checker visits match guards and arm bodies" {
     try std.testing.expect(!try checkSource(
         \\fn classify(value: bool) {

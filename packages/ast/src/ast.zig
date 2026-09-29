@@ -2869,6 +2869,7 @@ pub const Program = struct {
                 deinitExpr(re.target, allocator);
                 if (re.second_arg) |arg| deinitExpr(arg, allocator);
                 if (re.third_arg) |arg| deinitExpr(arg, allocator);
+                if (re.target_type) |target_type| allocator.free(target_type);
                 allocator.destroy(re);
             },
             .MacroExpr => |macro| {

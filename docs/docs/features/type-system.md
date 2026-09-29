@@ -55,6 +55,13 @@ let letter: char = 'A'
 let emoji: char = '\u{1F600}'  // Unicode scalar value
 ```
 
+### Explicit Conversions
+
+Reflection conversion builtins retain their result type through checking. An
+explicit target such as `@as(u64, value)` or `@ptrCast(*u8, pointer)` determines
+the result directly; target-elided forms such as `@intCast(value)` use their
+surrounding expected type.
+
 ## Compound Types
 
 ### Tuples
