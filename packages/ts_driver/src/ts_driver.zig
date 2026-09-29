@@ -396,6 +396,10 @@ pub const CompileOptions = struct {
     ///   - `module` — selects the import/export form (Phase 4
     ///     follow-up; today emits ES modules)
     pub_tsconfig: ?*const tsconfig_mod.TsConfig = null,
+    /// Effective Home-only checker controls. These remain entirely disabled
+    /// by default so ordinary TypeScript compilation keeps its existing
+    /// diagnostics and emit behavior.
+    home_options: tsconfig_mod.HomeOptions = .{},
     /// Effective `--module` value when the caller already resolved it
     /// from conformance directives or matrix baseline selection.
     module_kind: []const u8 = "",
@@ -1795,6 +1799,7 @@ fn jsxClassicRuntime(source: []const u8, options: CompileOptions) bool {
 pub fn optionsFromConfig(cfg: *const tsconfig_mod.TsConfig) CompileOptions {
     var opts: CompileOptions = .{};
     opts.pub_tsconfig = cfg;
+    opts.home_options = cfg.home_options;
     if (cfg.compiler_options.jsx) |jsx| {
         applyJsxOption(&opts, jsx);
     }
@@ -7384,6 +7389,18 @@ test "driver: optionsFromConfig checks JavaScript and honors noEmit" {
         if (diagnostic.code == ts_checker.check.TsCodes.type_not_assignable) found = true;
     }
     try T.expect(found);
+}
+
+test "driver: optionsFromConfig carries Home-only options" {
+    var arena = std.heap.ArenaAllocator.init(T.allocator);
+    defer arena.deinit();
+    const cfg = try tsconfig_mod.parseString(T.allocator, arena.allocator(),
+        \\{ "home": { "sound": true, "listUnmodeledAny": false } }
+    );
+
+    const opts = optionsFromConfig(&cfg);
+    try T.expectEqual(@as(?bool, true), opts.home_options.sound);
+    try T.expectEqual(@as(?bool, false), opts.home_options.list_unmodeled_any);
 }
 
 test "driver: noEmit suppresses downlevel private-name WeakMap collisions" {

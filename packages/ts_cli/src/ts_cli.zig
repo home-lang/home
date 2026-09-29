@@ -127,6 +127,9 @@ pub const Options = struct {
     /// emit a `.d.ts.map` (or `.d.hm.map`) alongside each `.d.ts` /
     /// `.d.hm`. Implies `--declaration` at emit time.
     declaration_map: ?bool = null,
+    /// Home-only checker controls. Optional values allow tsconfig settings to
+    /// survive when the corresponding CLI flag was not supplied.
+    home_options: tsconfig_mod.HomeOptions = .{},
 };
 
 /// Apply command-line compiler options after loading tsconfig. Command-line
@@ -145,6 +148,12 @@ pub fn applyCompileOptions(compile_opts: *ts_driver.CompileOptions, opts: Option
         if (tsconfig_mod.Jsx.fromString(value)) |jsx| {
             ts_driver.applyJsxOption(compile_opts, jsx);
         }
+    }
+    if (opts.home_options.sound) |value| {
+        compile_opts.home_options.sound = value;
+    }
+    if (opts.home_options.list_unmodeled_any) |value| {
+        compile_opts.home_options.list_unmodeled_any = value;
     }
 }
 
@@ -224,6 +233,14 @@ pub fn parseArgsCtx(gpa: std.mem.Allocator, args: []const []const u8, ctx: *Pars
             opts.show_all_help = true;
         } else if (std.mem.eql(u8, a, "--strict")) {
             opts.strict = true;
+        } else if (std.mem.eql(u8, a, "--home-sound")) {
+            opts.home_options.sound = parseOptionalBooleanArg(args, &i);
+        } else if (std.mem.eql(u8, a, "--no-home-sound")) {
+            opts.home_options.sound = false;
+        } else if (std.mem.eql(u8, a, "--home-list-unmodeled-any")) {
+            opts.home_options.list_unmodeled_any = parseOptionalBooleanArg(args, &i);
+        } else if (std.mem.eql(u8, a, "--no-home-list-unmodeled-any")) {
+            opts.home_options.list_unmodeled_any = false;
         } else if (std.mem.eql(u8, a, "--project") or std.mem.eql(u8, a, "-p")) {
             i += 1;
             if (i >= args.len) {
@@ -615,6 +632,15 @@ pub fn renderHelp(gpa: std.mem.Allocator, all: bool) ![]u8 {
             if (!all and !opt.simplified) continue;
             try renderOption(gpa, &buf, opt);
         }
+    }
+    if (all) {
+        try buf.appendSlice(gpa,
+            \\
+            \\Home options
+            \\  --home-sound                    Enable Home's sound TypeScript rules.
+            \\  --home-list-unmodeled-any       Report checker-synthesized `any` values.
+            \\
+        );
     }
     return buf.toOwnedSlice(gpa);
 }
@@ -1554,6 +1580,40 @@ test "parseArgs: --strict" {
     const opts = try parseArgs(T.allocator, &argv);
     defer T.allocator.free(opts.files);
     try T.expectEqual(@as(?bool, true), opts.strict);
+}
+
+test "parseArgs: Home options support explicit enable and disable" {
+    const argv = [_][]const u8{
+        "--home-sound",
+        "false",
+        "--home-list-unmodeled-any",
+        "index.ts",
+    };
+    const opts = try parseArgs(T.allocator, &argv);
+    defer T.allocator.free(opts.files);
+
+    try T.expectEqual(@as(?bool, false), opts.home_options.sound);
+    try T.expectEqual(@as(?bool, true), opts.home_options.list_unmodeled_any);
+    try T.expectEqual(@as(usize, 1), opts.files.len);
+    try T.expectEqualStrings("index.ts", opts.files[0]);
+
+    var compile_opts: ts_driver.CompileOptions = .{
+        .home_options = .{ .sound = true, .list_unmodeled_any = true },
+    };
+    applyCompileOptions(&compile_opts, .{ .home_options = .{ .sound = false } });
+    try T.expectEqual(@as(?bool, false), compile_opts.home_options.sound);
+    try T.expectEqual(@as(?bool, true), compile_opts.home_options.list_unmodeled_any);
+}
+
+test "renderHelp: Home options only appear in expanded help" {
+    const regular = try renderHelp(T.allocator, false);
+    defer T.allocator.free(regular);
+    try T.expect(std.mem.indexOf(u8, regular, "--home-sound") == null);
+
+    const expanded = try renderHelp(T.allocator, true);
+    defer T.allocator.free(expanded);
+    try T.expect(std.mem.indexOf(u8, expanded, "--home-sound") != null);
+    try T.expect(std.mem.indexOf(u8, expanded, "--home-list-unmodeled-any") != null);
 }
 
 test "parseArgs: --version sets show_version" {

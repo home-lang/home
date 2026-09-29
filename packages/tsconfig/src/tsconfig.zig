@@ -288,6 +288,16 @@ pub const CompilerOptions = struct {
     extra: std.ArrayListUnmanaged(ExtraEntry) = .empty,
 };
 
+/// Home-specific checker controls live outside `compilerOptions` so the
+/// TypeScript-compatible option surface remains untouched when they are not
+/// requested. Every field is optional to preserve inheritance semantics:
+/// an unset child value inherits its parent, while an explicit `false`
+/// disables a parent setting.
+pub const HomeOptions = struct {
+    sound: ?bool = null,
+    list_unmodeled_any: ?bool = null,
+};
+
 /// Named to avoid anonymous-struct identity issues across functions.
 pub const ExtraEntry = struct {
     key: []const u8,
@@ -354,6 +364,8 @@ pub const TsConfig = struct {
     file_path: []const u8,
     /// Compiler options.
     compiler_options: CompilerOptions,
+    /// Home-only options from the root-level `home` object.
+    home_options: HomeOptions,
     /// `extends`: paths of other tsconfig files this one inherits from.
     extends: [][]const u8,
     /// Whether the raw config contained an `extends` property. This is
@@ -1614,6 +1626,7 @@ pub const LoadError = error{
     NotAnObject,
     InvalidExtends,
     InvalidPaths,
+    InvalidHomeOptions,
     UnknownEnumValue,
     OutOfMemory,
     UnexpectedCharacter,
@@ -1661,6 +1674,7 @@ pub fn parseString(
     var cfg: TsConfig = .{
         .file_path = "",
         .compiler_options = .{},
+        .home_options = .{},
         .extends = &.{},
         .has_extends = false,
         .files = null,
@@ -1749,6 +1763,19 @@ pub fn parseString(
             var opt_diags: std.ArrayListUnmanaged(OptionParseDiagnostic) = .empty;
             try fillCompilerOptions(arena, &cfg.compiler_options, co, &opt_diags);
             try config_diags.appendSlice(arena, opt_diags.items);
+        }
+    }
+    if (root.get("home")) |home_v| {
+        const home = home_v.asObject() orelse return error.InvalidHomeOptions;
+        for (home.keys, 0..) |key, i| {
+            const value = home.values[i].asBool() orelse return error.InvalidHomeOptions;
+            if (std.mem.eql(u8, key, "sound")) {
+                cfg.home_options.sound = value;
+            } else if (std.mem.eql(u8, key, "listUnmodeledAny")) {
+                cfg.home_options.list_unmodeled_any = value;
+            } else {
+                return error.InvalidHomeOptions;
+            }
         }
     }
     cfg.option_parse_diagnostics = try config_diags.toOwnedSlice(arena);
@@ -2264,6 +2291,13 @@ pub fn merge(arena: std.mem.Allocator, base: TsConfig, child: TsConfig) !TsConfi
     }
     merged.compiler_options.extra = combined;
 
+    inline for (@typeInfo(HomeOptions).@"struct".field_names) |field_name| {
+        const child_value = @field(child.home_options, field_name);
+        if (child_value != null) {
+            @field(merged.home_options, field_name) = child_value;
+        }
+    }
+
     // Top-level keys: child overrides if set.
     if (child.files) |f| merged.files = f;
     if (child.include) |f| merged.include = f;
@@ -2312,6 +2346,39 @@ test "tsconfig: minimal config" {
     );
     try t.expectEqual(@as(?bool, true), cfg.compiler_options.strict);
     try t.expectEqual(@as(?Target, .es2024), cfg.compiler_options.target);
+}
+
+test "tsconfig: parses and inherits Home options separately" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+
+    const base = try parseString(t.allocator, arena.allocator(),
+        \\{ "home": { "sound": true, "listUnmodeledAny": true } }
+    );
+    try t.expectEqual(@as(?bool, true), base.home_options.sound);
+    try t.expectEqual(@as(?bool, true), base.home_options.list_unmodeled_any);
+
+    const child = try parseString(t.allocator, arena.allocator(),
+        \\{ "home": { "sound": false } }
+    );
+    const merged = try merge(arena.allocator(), base, child);
+    try t.expectEqual(@as(?bool, false), merged.home_options.sound);
+    try t.expectEqual(@as(?bool, true), merged.home_options.list_unmodeled_any);
+}
+
+test "tsconfig: rejects malformed Home options" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+
+    try t.expectError(error.InvalidHomeOptions, parseString(t.allocator, arena.allocator(),
+        \\{ "home": true }
+    ));
+    try t.expectError(error.InvalidHomeOptions, parseString(t.allocator, arena.allocator(),
+        \\{ "home": { "sound": "yes" } }
+    ));
+    try t.expectError(error.InvalidHomeOptions, parseString(t.allocator, arena.allocator(),
+        \\{ "home": { "futureOption": true } }
+    ));
 }
 
 test "tsconfig: full strict family" {
