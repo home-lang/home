@@ -38,6 +38,8 @@ const build_cli_options = @import("build_cli_options.zig");
 const home_test = @import("home_test");
 // `home tsc`: the tsc-compatible TypeScript compiler (packages/ts_cli).
 const tsc_main = @import("tsc_main");
+// `home lsp` serves TypeScript documents through the ts_lsp_server dispatcher.
+const ts_lsp_server = @import("ts_lsp_server");
 const home_rt = if (build_options.enable_jsc) @import("home_rt") else @import("home_rt_no_jsc.zig");
 
 const Io = std.Io;
@@ -1144,6 +1146,11 @@ fn runLspStdio(allocator: std.mem.Allocator) !void {
     const writer = &stdout_writer_impl.interface;
     defer writer.flush() catch {};
 
+    // Created on the first TypeScript message, so sessions that only
+    // touch `.home` files never load a TypeScript project.
+    var ts_project: ?*tsc_main.LspProject = null;
+    defer if (ts_project) |project| project.destroy();
+
     while (true) {
         const message = try readLspMessage(allocator, reader) orelse break;
         defer allocator.free(message);
@@ -1160,10 +1167,59 @@ fn runLspStdio(allocator: std.mem.Allocator) !void {
             break;
         }
 
-        const response = try handleLspRequest(allocator, request) orelse continue;
+        const response = try routeLspMessage(allocator, &ts_project, request, message) orelse continue;
         defer allocator.free(response);
         try writeLspMessage(writer, response);
     }
+}
+
+/// One server for both languages: messages about `.home` / `.hm` documents
+/// go to Home's handler; TypeScript and JavaScript documents, and requests
+/// with no document (such as `workspace/symbol`), go to the TypeScript
+/// language service.
+fn routeLspMessage(
+    allocator: std.mem.Allocator,
+    ts_project: *?*tsc_main.LspProject,
+    request: LspRequest,
+    message: []const u8,
+) !?[]u8 {
+    if (std.mem.eql(u8, request.method, "initialize")) {
+        const id_json = request.id_json orelse return null;
+        // TypeScript's capabilities are a superset of Home's; add Home's
+        // extra completion triggers.
+        const capabilities = try ts_lsp_server.renderInitializeCapabilitiesWithCompletionTriggers(allocator, &.{ ":", "@" });
+        defer allocator.free(capabilities);
+        return try lspResponse(allocator, id_json, capabilities);
+    }
+    if (std.mem.eql(u8, request.method, "shutdown")) {
+        return try handleLspRequest(allocator, request);
+    }
+    if (ts_lsp_server.documentUri(message)) |uri| {
+        if (isHomeDocumentUri(uri)) return try handleLspRequest(allocator, request);
+    }
+
+    const project = ts_project.* orelse blk: {
+        const created = try tsc_main.LspProject.create(allocator, "tsconfig.json");
+        ts_project.* = created;
+        break :blk created;
+    };
+    const body = project.handle(message) catch |err| {
+        const id_json = request.id_json orelse return null;
+        return try lspErrorResponse(allocator, id_json, -32603, @errorName(err));
+    };
+    if (body.len == 0) return null;
+    return body;
+}
+
+fn isHomeDocumentUri(uri: []const u8) bool {
+    return std.mem.endsWith(u8, uri, ".home") or std.mem.endsWith(u8, uri, ".hm");
+}
+
+test "isHomeDocumentUri" {
+    try std.testing.expect(isHomeDocumentUri("file:///src/main.home"));
+    try std.testing.expect(isHomeDocumentUri("file:///src/main.hm"));
+    try std.testing.expect(!isHomeDocumentUri("file:///src/main.ts"));
+    try std.testing.expect(!isHomeDocumentUri("file:///src/home.tsx"));
 }
 
 fn commandAvailable(command: []const u8, arg: []const u8) bool {

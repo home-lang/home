@@ -52,7 +52,7 @@ Drop-in `tsc` / `tsgo` replacement. Detailed per-feature status:
 | Multi-file program graph + parallel compile | ✅ Stable |
 | Module resolver (5 strategies + paths) | ✅ Stable |
 | Watch mode (`home tsc --watch`) | ✅ Stable |
-| LSP wire surface (`ts_lsp_server` library; not yet served by `home lsp`) | 🚧 53 / ~70 methods (~76%) |
+| LSP wire surface (`home lsp --stdio`, TypeScript and `.home`) | 🚧 53 / ~70 methods (~76%) |
 | `.d.hm` emit (Home declaration files) | 🚧 Basic framing |
 | Generator state-machine downlevel | 🚧 Partial |
 

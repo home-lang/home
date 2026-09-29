@@ -673,6 +673,12 @@ pub const Service = struct {
     /// Keys borrow `program.fileById(id).path`, which lives as long as
     /// the program — no separate dup needed.
     last_diagnostic_hash: std.StringHashMapUnmanaged(u64),
+    /// Options for every compile the language server triggers (open,
+    /// change, save). An editor host sets these to the project's
+    /// tsconfig-derived options and cross-file resolver so editor
+    /// diagnostics match `home tsc`; the default checks files in
+    /// isolation, which is what the unit tests want.
+    compile_options: ts_driver.CompileOptions = .{},
 
     pub fn init(gpa: std.mem.Allocator, program: *ts_program.Program) Service {
         return .{
@@ -3683,11 +3689,14 @@ pub const Service = struct {
             // Unknown file — nothing to do, return empty rendered diagnostics.
             return gpa.dupe(u8, "");
         }
-        // Step 2: recompile this file (and re-resolve imports).
-        // v1 recompiles the changed file only; transitive
-        // re-typecheck of importers is a follow-up.
-        const paths = [_][]const u8{file_path};
-        _ = try self.program.recompileChanged(&paths, .{});
+        // Step 2: recompile through the whole-program pipeline, as
+        // didOpen does. `recompileChanged` compiles the file in isolation
+        // and loses the types of its imports (every imported name becomes
+        // unchecked); `compileAll` only rebuilds files whose compilation
+        // `updateSource` dropped. New imports are loaded first. Importers
+        // of this file are not re-checked until they change themselves.
+        _ = self.program.loadImportClosure(self.compile_options) catch 0;
+        try self.program.compileAll(self.compile_options);
         // Step 3: render fresh diagnostics for the editor.
         return self.diagnostics(gpa, file_path);
     }

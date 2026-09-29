@@ -822,6 +822,9 @@ pub fn build(b: *std.Build) void {
         .{ "tsconfig", tsconfig_pkg },
         .{ "ts_watch", ts_watch_pkg },
         .{ "d_hm", d_hm_pkg },
+        // `home lsp` serves TypeScript through tsc_main.LspProject.
+        .{ "ts_lsp", ts_lsp_pkg },
+        .{ "ts_lsp_server", ts_lsp_server_pkg },
     };
     const tsc_main_pkg = b.createModule(.{
         .root_source_file = b.path("packages/ts_cli/src/tsc_main.zig"),
@@ -1003,6 +1006,7 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("cloud", cloud_pkg);
     exe.root_module.addImport("home_test", home_test_pkg);
     exe.root_module.addImport("tsc_main", tsc_main_pkg);
+    exe.root_module.addImport("ts_lsp_server", ts_lsp_server_pkg);
     // `home eval`/`home run` reach the native JSC runtime through home_rt.
     // JSC itself is linked into `exe` below, gated on `enable_jsc`.
     exe.root_module.addImport("home", home_rt_pkg);
@@ -1541,6 +1545,63 @@ pub fn build(b: *std.Build) void {
         tsc_streams_step.dependOn(&clean.step);
     }
     dependOnTest(test_step, tsc_streams_step, test_filter, "tsc_streams");
+
+    // `home lsp --stdio` end to end: one server for both languages. Frames
+    // for a TypeScript project (main.ts imports util.ts) and a `.home` file
+    // are piped in; TypeScript requests must reach the TypeScript service
+    // and `.home` requests Home's handler. The URIs are relative to the
+    // fixture directory the server runs in (editors send absolute ones);
+    // the file:// form is POSIX-only, so Windows skips this check.
+    const home_lsp_step = b.step("test-home-lsp", "Check home lsp serves TypeScript and .home documents");
+    if (target.result.os.tag != .windows) {
+        const main_uri = "file://main.ts";
+        const home_uri = "file://app.home";
+        const main_text = "import { double } from \"./util\";\nconst total: number = double(21);\nconst label: string = double(2);\nexport {};\n";
+        const bodies = [_][]const u8{
+            \\{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}
+            ,
+            b.fmt(
+                \\{{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{{"textDocument":{{"uri":"{s}","languageId":"typescript","version":1,"text":{f}}}}}}}
+            , .{ main_uri, std.json.fmt(main_text, .{}) }),
+            b.fmt(
+                \\{{"jsonrpc":"2.0","id":2,"method":"textDocument/hover","params":{{"textDocument":{{"uri":"{s}"}},"position":{{"line":1,"character":8}}}}}}
+            , .{main_uri}),
+            b.fmt(
+                \\{{"jsonrpc":"2.0","id":3,"method":"textDocument/definition","params":{{"textDocument":{{"uri":"{s}"}},"position":{{"line":1,"character":24}}}}}}
+            , .{main_uri}),
+            b.fmt(
+                \\{{"jsonrpc":"2.0","id":4,"method":"textDocument/hover","params":{{"textDocument":{{"uri":"{s}"}},"position":{{"line":1,"character":3}}}}}}
+            , .{home_uri}),
+            \\{"jsonrpc":"2.0","id":5,"method":"shutdown"}
+            ,
+            \\{"jsonrpc":"2.0","method":"exit"}
+            ,
+        };
+        var stdin: std.ArrayListUnmanaged(u8) = .empty;
+        for (bodies) |body| {
+            stdin.appendSlice(b.allocator, b.fmt("Content-Length: {d}\r\n\r\n{s}", .{ body.len, body })) catch @panic("OOM");
+        }
+
+        const lsp = b.addRunArtifact(exe);
+        lsp.setCwd(b.path("packages/ts_cli/testdata/lsp"));
+        lsp.addArgs(&.{ "lsp", "--stdio" });
+        lsp.setStdIn(.{ .bytes = stdin.items });
+        // Merged capabilities: TypeScript's, plus `.home`'s `:` and `@`.
+        lsp.addCheck(.{ .expect_stdout_match = "\"triggerCharacters\":[\".\",\" \",\":\",\"@\"]" });
+        // didOpen publishes the TypeScript error.
+        lsp.addCheck(.{ .expect_stdout_match = "\"method\":\"textDocument/publishDiagnostics\"" });
+        lsp.addCheck(.{ .expect_stdout_match = "\"code\":2322" });
+        lsp.addCheck(.{ .expect_stdout_match = "const total: number" });
+        // Definition crosses into the imported file.
+        lsp.addCheck(.{ .expect_stdout_match = "util.ts\"" });
+        // The `.home` document is answered by Home's handler.
+        lsp.addCheck(.{ .expect_stdout_match = "Home language server" });
+        lsp.addCheck(.{ .expect_stdout_match = "\"id\":5,\"result\":null" });
+        lsp.expectStdErrEqual("");
+        lsp.expectExitCode(0);
+        home_lsp_step.dependOn(&lsp.step);
+    }
+    dependOnTest(test_step, home_lsp_step, test_filter, "home_lsp");
     const native_binding_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("build-support/native_bindings.zig"),
@@ -1796,6 +1857,10 @@ pub fn build(b: *std.Build) void {
     const ts_cli_tests = b.addTest(.{ .root_module = ts_cli_pkg });
     const run_ts_cli_tests = b.addRunArtifact(ts_cli_tests);
     dependOnTest(test_step, &run_ts_cli_tests.step, test_filter, "ts_cli");
+    // tsc_main (the `home tsc` driver and `home lsp`'s TypeScript project).
+    const tsc_main_tests = b.addTest(.{ .root_module = tsc_main_pkg });
+    const run_tsc_main_tests = b.addRunArtifact(tsc_main_tests);
+    dependOnTest(test_step, &run_tsc_main_tests.step, test_filter, "tsc_main");
 
     const ts_conformance_test_filters: []const []const u8 = if (ts_conformance_test_filter) |needle| &.{needle} else &.{};
     const ts_conformance_tests = b.addTest(.{
@@ -2312,6 +2377,7 @@ pub fn build(b: *std.Build) void {
     debug_exe.root_module.addImport("cloud", cloud_pkg);
     debug_exe.root_module.addImport("home_test", home_test_pkg);
     debug_exe.root_module.addImport("tsc_main", tsc_main_pkg);
+    debug_exe.root_module.addImport("ts_lsp_server", ts_lsp_server_pkg);
     debug_exe.root_module.addImport("build_options", build_options_module);
     debug_exe.root_module.addImport("home", home_rt_pkg);
     debug_exe.root_module.addImport("home_rt", home_rt_pkg);
@@ -2385,6 +2451,7 @@ pub fn build(b: *std.Build) void {
     release_safe_exe.root_module.addImport("compiler", compiler_pkg);
     release_safe_exe.root_module.addImport("home_test", home_test_pkg);
     release_safe_exe.root_module.addImport("tsc_main", tsc_main_pkg);
+    release_safe_exe.root_module.addImport("ts_lsp_server", ts_lsp_server_pkg);
     release_safe_exe.root_module.addImport("macros", macros_pkg);
     release_safe_exe.root_module.addImport("optimizer", optimizer_pkg);
 
@@ -2428,6 +2495,7 @@ pub fn build(b: *std.Build) void {
     release_small_exe.root_module.addImport("compiler", compiler_pkg);
     release_small_exe.root_module.addImport("home_test", home_test_pkg);
     release_small_exe.root_module.addImport("tsc_main", tsc_main_pkg);
+    release_small_exe.root_module.addImport("ts_lsp_server", ts_lsp_server_pkg);
     release_small_exe.root_module.addImport("macros", macros_pkg);
     release_small_exe.root_module.addImport("optimizer", optimizer_pkg);
 
@@ -2476,6 +2544,7 @@ pub fn build(b: *std.Build) void {
     release_fast_exe.root_module.addImport("compiler", compiler_pkg);
     release_fast_exe.root_module.addImport("home_test", home_test_pkg);
     release_fast_exe.root_module.addImport("tsc_main", tsc_main_pkg);
+    release_fast_exe.root_module.addImport("ts_lsp_server", ts_lsp_server_pkg);
     release_fast_exe.root_module.addImport("macros", macros_pkg);
     release_fast_exe.root_module.addImport("optimizer", optimizer_pkg);
     // LTO is enabled by default for ReleaseFast under modern Zig

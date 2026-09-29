@@ -55,8 +55,11 @@ the editor.
 home lsp --stdio
 ```
 
-`home lsp --stdio` is the stable editor entrypoint. 76 of roughly 80 protocol
-methods are routed:
+`home lsp --stdio` is the stable editor entrypoint, one server for both
+languages: `.home` and `.hm` documents go to Home's handler, and TypeScript and
+JavaScript documents go to the same front end as `home tsc`, configured from
+the `tsconfig.json` in the directory the server starts in. 76 of roughly 80
+protocol methods are routed:
 
 - **Navigation**: definition, declaration, type definition, implementation,
   cross-file references, document and workspace symbols
@@ -66,7 +69,8 @@ methods are routed:
   with resolve, code lens, document links, folding and selection ranges,
   document colour
 - **Structure**: call hierarchy and type hierarchy, both directions
-- **Diagnostics**: publish-based and pull-based, plus workspace diagnostics
+- **Diagnostics**: published when a document is opened or edited; pull-based
+  and workspace diagnostic requests are also answered
 
 Known gaps: quick-fix breadth is partial. Organize imports, add import and add
 explicit type annotation have landed; fix-all, missing return type and infer
@@ -94,9 +98,11 @@ fresh clone plus `pantry install` gets the exact toolchain.
 ## Editor extensions
 
 The VS Code extension lives in `packages/vscode-home` in the repository and
-provides syntax highlighting, diagnostics and the usual language features
-through `home lsp`. Any editor with a language-server client can be pointed at
-`home lsp --stdio` directly.
+provides syntax highlighting, diagnostics and the usual language features for
+`.home` files through `home lsp`. It does not attach to TypeScript files, which
+VS Code's built-in TypeScript support already handles. Any editor with a
+language-server client can be pointed at `home lsp --stdio` directly, for
+TypeScript as well as `.home`.
 
 ## Related
 

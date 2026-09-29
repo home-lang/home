@@ -50,6 +50,7 @@ home tsc --noEmit         # type-check only — same diagnostics, codes and exit
 home tsc --watch          # incremental rebuilds on change
 home tsc -b               # project references / build mode
 home tsc --init           # write a starter tsconfig.json
+home lsp --stdio          # one language server for TypeScript and .home files
 home run server.ts        # run TypeScript on Home's own JavaScriptCore realm
 ```
 
@@ -193,9 +194,10 @@ included), and the real-world correctness audits.
 - **No tagged release yet.** `home tsc` ships inside the `home` binary from
   the first `v*` release on. Until then, build `home` from source (see
   [Build from source](#build-from-source)).
-- **No TypeScript language server yet.** `home lsp --stdio` serves `.home`
-  files. The TypeScript language-server library routes 76 of ~80 methods, but
-  `home lsp` does not serve TypeScript files with it yet.
+- **Editor re-checks are per file.** `home lsp` re-checks a TypeScript file
+  when it is opened or edited, including against unsaved edits to the files it
+  imports, but files that import an edited file are not re-checked until they
+  change themselves.
 
 More: [TypeScript compiler](https://home-lang.org/docs/features/typescript),
 [TypeScript parity by feature](https://home-lang.org/docs/PARITY-TYPESCRIPT),
@@ -424,7 +426,7 @@ Conservative on purpose: anything not exercised by an example or a test stays
 | TypeScript conformance (coarse + byte-exact) | 5,907 / 5,907 — 100% | [TypeScript parity](https://home-lang.org/docs/PARITY-TYPESCRIPT) |
 | Promise chain and readonly `Promise.all` inference | Exact TS2322 controls; 4,410 / 4,410 checker tests | [Untimed validation](docs/docs/TS_PERFORMANCE.md#promise-chain-and-readonly-promiseall-inference-untimed) |
 | TypeScript diagnostic codes emitted | 1,620 / 2,079; **0 reachable targets left** | [Diagnostic reachability](https://home-lang.org/docs/TS_DIAGNOSTIC_REACHABILITY) |
-| TypeScript language-server methods routed (library; not yet served by `home lsp`) | 76 / ~80 | [Parity status](https://home-lang.org/docs/PARITY-STATUS#lsp--ide-coverage--home-lsp-vs-tsserver) |
+| Language-server methods routed (`home lsp`, TypeScript and `.home`) | 76 / ~80 | [Parity status](https://home-lang.org/docs/PARITY-STATUS#lsp--ide-coverage--home-lsp-vs-tsserver) |
 | Native codegen | 🚧 Home AST→native is maturing; JS/TS standalones run bundled graphs in JSC, not TS→native lowering | [Codegen tests](https://github.com/home-lang/home/blob/main/packages/codegen/tests/codegen_test.zig) · [standalone tests](https://github.com/home-lang/home/blob/main/packages/runtime/test/test/bundler/bundler_compile.test.ts) |
 | Bun runtime port | 552 / 1,193 files integrated | [Bun parity](https://home-lang.org/docs/PARITY-BUN) |
 | `node:*` modules JS-callable | 24 / 47 (partial surfaces) | [Node.js parity](https://home-lang.org/docs/PARITY-NODE) |

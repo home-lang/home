@@ -21,6 +21,8 @@ const ts_emit = @import("ts_emit");
 const tsconfig_mod = @import("tsconfig");
 const ts_watch = @import("ts_watch");
 const d_hm = @import("d_hm");
+const ts_lsp = @import("ts_lsp");
+const ts_lsp_server = @import("ts_lsp_server");
 
 const ts_empty_files_list_in_config: u32 = 18002;
 
@@ -2000,6 +2002,93 @@ fn writeOrDie(gpa: std.mem.Allocator, path: []const u8, bytes: []const u8) void 
         std.process.exit(1);
     };
 }
+
+/// A TypeScript project served by `home lsp`, set up the way `home tsc`
+/// compiles: the real filesystem, a `tsconfig.json` (compiler and resolver
+/// options), and the cross-file resolver adapter,
+/// so editor diagnostics match the command line. The editor's open
+/// documents join the program as they are opened, along with their
+/// imports. Heap-allocated because the program, service and compile
+/// options hold pointers into it.
+pub const LspProject = struct {
+    gpa: std.mem.Allocator,
+    config_arena: std.heap.ArenaAllocator,
+    /// Backs `config`'s strings, which alias it.
+    config_source: []const u8,
+    config: ?tsconfig_mod.TsConfig,
+    fs: ResolverRealFs,
+    resolver: ts_resolver.Resolver,
+    program: ts_program.Program,
+    adapter: CheckerResolverAdapter,
+    service: ts_lsp.Service,
+
+    /// `config_path` is the tsconfig to load (`home lsp` passes the working
+    /// directory's `tsconfig.json`); null or a missing file means defaults.
+    pub fn create(gpa: std.mem.Allocator, config_path: ?[]const u8) !*LspProject {
+        const self = try gpa.create(LspProject);
+        errdefer gpa.destroy(self);
+        self.gpa = gpa;
+        self.config_arena = std.heap.ArenaAllocator.init(gpa);
+        self.config_source = &.{};
+        self.config = null;
+        if (config_path) |path| {
+            self.config_source = RealFs.read(gpa, path) catch &.{};
+            if (self.config_source.len > 0) {
+                self.config = tsconfig_mod.parseString(gpa, self.config_arena.allocator(), self.config_source) catch null;
+                if (self.config) |*c| c.file_path = path;
+            }
+        }
+        self.fs = ResolverRealFs.init(gpa);
+        const resolver_config: ts_resolver.Config = if (self.config) |c|
+            resolverConfigFromConfig(self.config_arena.allocator(), c, null)
+        else
+            .{};
+        self.resolver = ts_resolver.Resolver.init(gpa, self.fs.fs(), resolver_config);
+        self.program = ts_program.Program.init(gpa, &self.resolver);
+        self.adapter = CheckerResolverAdapter.init(gpa, &self.resolver);
+        self.service = ts_lsp.Service.init(gpa, &self.program);
+        var compile_options: ts_driver.CompileOptions = if (self.config) |*c| ts_driver.optionsFromConfig(c) else .{};
+        compile_options.external_resolver = .{ .ptr = &self.adapter, .vtable = &CheckerResolverAdapter.vtable };
+        self.service.compile_options = compile_options;
+        return self;
+    }
+
+    pub fn destroy(self: *LspProject) void {
+        const gpa = self.gpa;
+        self.service.deinit();
+        self.adapter.deinit();
+        self.program.deinit();
+        self.resolver.deinit();
+        self.fs.deinit();
+        if (self.config_source.len > 0) gpa.free(self.config_source);
+        self.config_arena.deinit();
+        gpa.destroy(self);
+    }
+
+    /// Handle one JSON-RPC message and return the response or notification
+    /// body to send back (empty when there is none). Caller owns it.
+    pub fn handle(self: *LspProject, message: []const u8) ![]u8 {
+        if (editsDocuments(message)) {
+            // The adapter caches imported modules as read from disk; start
+            // fresh on each edit so saved changes to dependencies show up.
+            self.adapter.deinit();
+            self.adapter = CheckerResolverAdapter.init(self.gpa, &self.resolver);
+        }
+        return ts_lsp_server.dispatchRequest(&self.service, self.gpa, message);
+    }
+
+    fn editsDocuments(message: []const u8) bool {
+        const methods = [_][]const u8{
+            "\"textDocument/didOpen\"",
+            "\"textDocument/didChange\"",
+            "\"textDocument/didSave\"",
+        };
+        for (methods) |method| {
+            if (std.mem.indexOf(u8, message, method) != null) return true;
+        }
+        return false;
+    }
+};
 
 const ResolverRealFs = struct {
     threaded: std.Io.Threaded,
@@ -4361,10 +4450,11 @@ test "tsc_main: TS18003 no-input config diagnostic preserves empty include list"
 }
 
 test "tsc_main: TS18003 diagnostic uses implicit outDir exclude display" {
-    const cfg = try tsconfig_mod.parse(std.testing.allocator,
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cfg = try tsconfig_mod.parseString(std.testing.allocator, arena.allocator(),
         \\{ "compilerOptions": { "outDir": "dist" } }
     );
-    defer cfg.deinit();
     var out: std.ArrayListUnmanaged([]const u8) = .empty;
     defer out.deinit(std.testing.allocator);
     var owned: ?[]u8 = null;
@@ -4746,4 +4836,30 @@ test "tsc_main: TS6307 diagnostic message and anchor match composite file list v
     try std.testing.expectEqual(@as(u32, 1399), related[0].code);
     try std.testing.expectEqualStrings("File is included via import here.", related[0].message);
     try std.testing.expectEqualStrings("/repo/src/main.ts", related[0].file);
+}
+
+test "LspProject: publishes diagnostics on open and change, answers hover, frees everything" {
+    // No tsconfig: the repository's own would make results depend on
+    // whether its type packages are installed.
+    const project = try LspProject.create(std.testing.allocator, null);
+    defer project.destroy();
+
+    const opened = try project.handle(
+        \\{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///home-lsp-test/main.ts","languageId":"typescript","version":1,"text":"const total: number = \"x\";\nexport {};\n"}}}
+    );
+    defer std.testing.allocator.free(opened);
+    try std.testing.expect(std.mem.indexOf(u8, opened, "\"method\":\"textDocument/publishDiagnostics\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, opened, "2322") != null);
+
+    const hover = try project.handle(
+        \\{"jsonrpc":"2.0","id":2,"method":"textDocument/hover","params":{"textDocument":{"uri":"file:///home-lsp-test/main.ts"},"position":{"line":0,"character":8}}}
+    );
+    defer std.testing.allocator.free(hover);
+    try std.testing.expect(std.mem.indexOf(u8, hover, "const total: number") != null);
+
+    const changed = try project.handle(
+        \\{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"file:///home-lsp-test/main.ts","version":2},"contentChanges":[{"text":"const total: number = 1;\nexport {};\n"}]}}
+    );
+    defer std.testing.allocator.free(changed);
+    try std.testing.expect(std.mem.indexOf(u8, changed, "\"diagnostics\":[]") != null);
 }

@@ -619,6 +619,15 @@ fn findJsonStringField(body: []const u8, key: []const u8) ?[]const u8 {
 /// freshly allocated buffer. Handles the standard escapes used by the
 /// LSP wire format: `\"`, `\\`, `\/`, `\n`, `\r`, `\t`, `\b`, `\f`. A
 /// `\uXXXX` escape is decoded into UTF-8. Caller owns the result.
+/// The document URI a JSON-RPC message is about: the first `"uri"` field
+/// anywhere in it (`params.textDocument.uri` for document requests,
+/// `params.item.uri` for hierarchy calls). Null for messages with no
+/// document, such as `initialize` or `workspace/symbol`. Hosts that
+/// serve several languages route on this.
+pub fn documentUri(frame_bytes: []const u8) ?[]const u8 {
+    return findJsonStringField(frame_bytes, "uri");
+}
+
 pub fn decodeJsonString(gpa: std.mem.Allocator, raw: []const u8) ![]u8 {
     var out: std.ArrayListUnmanaged(u8) = .empty;
     errdefer out.deinit(gpa);
@@ -717,7 +726,11 @@ pub fn handleDidOpen(
     } else {
         _ = try service.program.add(path, source);
     }
-    try service.program.compileAll(.{});
+    // Pull the document's imports in from disk, as `home tsc` does, so
+    // cross-file names resolve instead of reporting missing modules.
+    // Best-effort: an unresolvable import just leaves the graph partial.
+    _ = service.program.loadImportClosure(service.compile_options) catch 0;
+    try service.program.compileAll(service.compile_options);
 }
 
 /// Handle a `textDocument/didClose` notification: parse `uri` from
@@ -776,7 +789,7 @@ pub fn handleDidSave(
         } else {
             _ = try service.program.add(path, source);
         }
-        try service.program.compileAll(.{});
+        try service.program.compileAll(service.compile_options);
     }
 }
 
@@ -3911,10 +3924,28 @@ pub fn renderInitializeResult(gpa: std.mem.Allocator) ![]u8 {
 /// `serverInfo.supportedMethods` so external clients and integration
 /// tests can introspect coverage without scraping capability flags.
 pub fn renderInitializeCapabilities(gpa: std.mem.Allocator) ![]u8 {
+    return renderInitializeCapabilitiesWithCompletionTriggers(gpa, &.{});
+}
+
+/// `renderInitializeCapabilities` with `extra_completion_triggers` added
+/// to the completion trigger characters, for hosts that serve another
+/// language from the same server (`home lsp` adds `.home`'s `:` and `@`).
+pub fn renderInitializeCapabilitiesWithCompletionTriggers(
+    gpa: std.mem.Allocator,
+    extra_completion_triggers: []const []const u8,
+) ![]u8 {
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     errdefer buf.deinit(gpa);
     try buf.appendSlice(gpa,
-        \\{"capabilities":{"textDocumentSync":1,"hoverProvider":true,"definitionProvider":true,"declarationProvider":true,"referencesProvider":true,"completionProvider":{"triggerCharacters":["."," "]},"documentSymbolProvider":true,"workspaceSymbolProvider":true,"renameProvider":{"prepareProvider":true},"codeActionProvider":true,"executeCommandProvider":{"commands":["home.organizeImports","home.applyCodeAction"]},"semanticTokensProvider":{"legend":{"tokenTypes":["variable","parameter","function","method","class","interface","type","enum","property","keyword","string","number","operator","comment"],"tokenModifiers":[]},"full":true,"range":true},"signatureHelpProvider":{"triggerCharacters":["(",","]},"documentHighlightProvider":false,"documentFormattingProvider":true,"documentOnTypeFormattingProvider":{"firstTriggerCharacter":"}","moreTriggerCharacters":[";","\n"]},"foldingRangeProvider":true,"selectionRangeProvider":true,"monikerProvider":true,"typeHierarchyProvider":true,"inlineValueProvider":true,"inlineCompletionProvider":true,"colorProvider":true,"inlayHintProvider":{"resolveProvider":false}},"serverInfo":{"name":"home-lsp","version":"0.1.0","supportedMethods":[
+        \\{"capabilities":{"textDocumentSync":1,"hoverProvider":true,"definitionProvider":true,"declarationProvider":true,"referencesProvider":true,"completionProvider":{"triggerCharacters":["."," "
+    );
+    for (extra_completion_triggers) |trigger| {
+        try buf.appendSlice(gpa, ",\"");
+        try writeJsonStringContents(&buf, gpa, trigger);
+        try buf.append(gpa, '"');
+    }
+    try buf.appendSlice(gpa,
+        \\]},"documentSymbolProvider":true,"workspaceSymbolProvider":true,"renameProvider":{"prepareProvider":true},"codeActionProvider":true,"executeCommandProvider":{"commands":["home.organizeImports","home.applyCodeAction"]},"semanticTokensProvider":{"legend":{"tokenTypes":["variable","parameter","function","method","class","interface","type","enum","property","keyword","string","number","operator","comment"],"tokenModifiers":[]},"full":true,"range":true},"signatureHelpProvider":{"triggerCharacters":["(",","]},"documentHighlightProvider":false,"documentFormattingProvider":true,"documentOnTypeFormattingProvider":{"firstTriggerCharacter":"}","moreTriggerCharacters":[";","\n"]},"foldingRangeProvider":true,"selectionRangeProvider":true,"monikerProvider":true,"typeHierarchyProvider":true,"inlineValueProvider":true,"inlineCompletionProvider":true,"colorProvider":true,"inlayHintProvider":{"resolveProvider":false}},"serverInfo":{"name":"home-lsp","version":"0.1.0","supportedMethods":[
     );
     for (SUPPORTED_METHODS, 0..) |m, i| {
         if (i != 0) try buf.append(gpa, ',');
@@ -4080,8 +4111,13 @@ pub fn dispatchRequest(
             return try handleDidChange(service, gpa, params);
         },
         .text_document_did_open => {
+            // Publish diagnostics for the opened document right away, as
+            // didChange does, so errors show before the first edit.
             try handleDidOpen(service, gpa, params);
-            return &.{};
+            const uri = findJsonStringField(params, "uri") orelse return error.MissingUri;
+            const diags = try service.diagnosticsStructured(gpa, uriToPath(uri));
+            defer ts_lsp.freeLspDiagnostics(gpa, diags);
+            return encodePublishDiagnosticsStructured(gpa, uri, diags);
         },
         .text_document_did_close => {
             try handleDidClose(service, gpa, params);
@@ -4705,6 +4741,48 @@ test "handleDidOpen: adds a new file to the program" {
     const f = program.fileById(id);
     try T.expect(f.compilation != null);
     try T.expectEqualStrings("let x: number = 1;", f.source);
+}
+
+test "dispatchRequest: didOpen publishes diagnostics for the document" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+    var svc = ts_lsp.Service.init(T.allocator, &program);
+    defer svc.deinit();
+
+    const frame =
+        \\{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///main.ts","languageId":"typescript","version":1,"text":"let x: number = \"hi\";"}}}
+    ;
+    const out = try dispatchRequest(&svc, T.allocator, frame);
+    defer T.allocator.free(out);
+    try T.expect(std.mem.indexOf(u8, out, "\"method\":\"textDocument/publishDiagnostics\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"uri\":\"file:///main.ts\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "2322") != null);
+}
+
+test "documentUri: finds the document a message is about" {
+    try T.expectEqualStrings("file:///a.ts", documentUri(
+        \\{"method":"textDocument/hover","params":{"textDocument":{"uri":"file:///a.ts"},"position":{"line":0,"character":0}}}
+    ).?);
+    try T.expect(documentUri(
+        \\{"method":"workspace/symbol","params":{"query":"x"}}
+    ) == null);
+}
+
+test "renderInitializeCapabilitiesWithCompletionTriggers: appends extra triggers" {
+    const plain = try renderInitializeCapabilities(T.allocator);
+    defer T.allocator.free(plain);
+    try T.expect(std.mem.indexOf(u8, plain, "\"triggerCharacters\":[\".\",\" \"]") != null);
+
+    const merged = try renderInitializeCapabilitiesWithCompletionTriggers(T.allocator, &.{ ":", "@" });
+    defer T.allocator.free(merged);
+    try T.expect(std.mem.indexOf(u8, merged, "\"triggerCharacters\":[\".\",\" \",\":\",\"@\"]") != null);
+    // Still valid JSON.
+    const parsed = try std.json.parseFromSlice(std.json.Value, T.allocator, merged, .{});
+    defer parsed.deinit();
 }
 
 test "handleDidClose: accepts notification (no-op)" {

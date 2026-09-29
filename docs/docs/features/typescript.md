@@ -83,11 +83,19 @@ per-code breakdown.
 
 ## Editor support
 
-`home lsp --stdio` is Home's language server. The TypeScript language-server
-library (`packages/ts_lsp_server`) routes 76 of roughly 80 protocol methods,
-including hover, completion, signature help, semantic tokens, inlay hints, code
-actions, rename, call and type hierarchies, and pull-based diagnostics, but
-`home lsp` does not serve TypeScript files with it yet. See
+`home lsp --stdio` is one language server for both languages: `.home` and
+`.hm` documents go to Home's handler, and TypeScript and JavaScript documents
+go to the same front end as `home tsc`. It reads `tsconfig.json` from the
+directory the server starts in, loads each opened file's imports from disk,
+and publishes diagnostics when a file is opened or edited, so the errors in
+your editor match the command line. 76 of roughly 80 protocol methods are
+routed, including hover, completion, signature help, go to definition across
+files, semantic tokens, inlay hints, code actions, rename, and call and type
+hierarchies.
+
+A file is re-checked when it is opened or edited, against the current
+(including unsaved) contents of the files it imports. Files that import an
+edited file are not re-checked until they change themselves. See
 [Editor and CLI tooling](/docs/features/tooling) for the full list and the gaps.
 
 ## Emit
@@ -116,7 +124,7 @@ JavaScriptCore-enabled Home compiler plus LLVM on `PATH`.
 | Parsing and binding | Complete for the documented surface |
 | Type checking | Coarse and byte-for-byte exact conformance saturated at 5,907 / 5,907 |
 | Diagnostics | Reachable code set complete |
-| Language server | 76 of about 80 methods routed in the library; not yet served by `home lsp` |
+| Language server | `home lsp --stdio` serves TypeScript and `.home`; 76 of about 80 methods routed |
 | JavaScript emit | Working, checked against Bun's printer |
 | Native single-file builds | Working on arm64 and x86-64 macOS and Linux |
 | Native module-graph bundling | In progress |
