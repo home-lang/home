@@ -494,6 +494,8 @@ pub fn build(b: *std.Build) void {
     const threading_futex_pkg = createPackage(b, "packages/runtime/src/threading/Futex.zig", target, optimize, zig_test_framework);
     const threading_pkg = createPackage(b, "packages/threading/src/threading.zig", target, optimize, zig_test_framework);
     threading_pkg.addImport("threading_futex", threading_futex_pkg);
+    const async_pkg = createPackage(b, "packages/async/src/async.zig", target, optimize, zig_test_framework);
+    async_pkg.addImport("threading_futex", threading_futex_pkg);
     const memory_pkg = createPackage(b, "packages/memory/src/memory.zig", target, optimize, zig_test_framework);
     const intrinsics_pkg = createPackage(b, "packages/intrinsics/src/intrinsics.zig", target, optimize, zig_test_framework);
     const ffi_pkg = createPackage(b, "packages/ffi/src/ffi.zig", target, optimize, zig_test_framework);
@@ -1411,6 +1413,13 @@ pub fn build(b: *std.Build) void {
 
     const run_threading_tests = b.addRunArtifact(threading_tests);
 
+    // Async executor tests
+    const async_tests = b.addTest(.{
+        .root_module = async_pkg,
+    });
+
+    const run_async_tests = b.addRunArtifact(async_tests);
+
     // Memory allocator tests
     const memory_tests = b.addTest(.{
         .root_module = memory_pkg,
@@ -1517,6 +1526,7 @@ pub fn build(b: *std.Build) void {
     dependOnTest(test_step, &run_arm64_tests.step, test_filter, "arm64");
     if (run_database_tests) |db_tests| dependOnTest(test_step, &db_tests.step, test_filter, "database");
     dependOnTest(test_step, &run_threading_tests.step, test_filter, "threading");
+    dependOnTest(test_step, &run_async_tests.step, test_filter, "async");
     dependOnTest(test_step, &run_memory_tests.step, test_filter, "memory");
     dependOnTest(test_step, &run_intrinsics_tests.step, test_filter, "intrinsics");
     dependOnTest(test_step, &run_ffi_tests.step, test_filter, "ffi");

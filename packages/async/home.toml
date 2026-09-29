@@ -6,7 +6,6 @@ description = "Home Async Runtime - Asynchronous programming and concurrency"
 license = "MIT"
 
 [dependencies]
-# May need home-types for async type checking
 
 [scripts]
-test = "zig test src/async_runtime.zig"
+test = "zig test --dep threading_futex -Mroot=src/async.zig -Mthreading_futex=../runtime/src/threading/Futex.zig"

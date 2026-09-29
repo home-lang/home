@@ -2,28 +2,29 @@
 
 ## Overview
 
-The async package provides async/await functionality and concurrent task execution for Home. It includes a Future-based async runtime with support for task scheduling and waker mechanisms.
+The async package provides Home's work-stealing executor, type-erased futures,
+task handles, wakeups, and lock-free scheduling queues.
 
 ## Features
 
 - **Futures**: Async computation primitives with completion tracking
-- **Task Scheduling**: Runtime for managing concurrent tasks
+- **Task Scheduling**: Multi-worker runtime with local Chase-Lev deques and a global injector
 - **Waker System**: Notification mechanism for async operations
 - **Task States**: Pending, Running, Completed, and Failed states
+- **Blocking**: Futex-backed worker parking with retained notifications
 
 ## Usage
 
 ```zig
-const async_runtime = @import("async_runtime");
+const async = @import("async");
 
-// Create a future
-var future = async_runtime.Future(i32).init();
+var runtime = try async.Runtime.init(allocator, 0);
+defer runtime.deinit();
 
-// Complete the future
-future.complete(42);
+const future = try async.future.ready(i32, 42, allocator);
+const result = try runtime.blockOn(i32, future);
 
-// Poll for result
-const result = try future.poll();
+try std.testing.expectEqual(@as(i32, 42), result);
 ```
 
 ## API Reference
@@ -32,27 +33,29 @@ const result = try future.poll();
 
 - **Future(T)**: Represents an async computation that will eventually produce a value of type T
 - **Task**: A unit of async work with state tracking
-- **AsyncRuntime**: Runtime for executing and scheduling async tasks
+- **Runtime**: Work-stealing runtime for executing and scheduling async tasks
 - **Waker**: Callback mechanism to notify when a future is ready
 
 ### Main Functions
 
-- `Future.init()`: Create a new pending future
-- `Future.complete(value)`: Mark future as completed with a value
-- `Future.fail(err)`: Mark future as failed with an error
-- `Future.poll()`: Check if future is ready and get result
+- `future.ready(T, value, allocator)`: Create an immediately ready future
+- `future.pending(T, allocator)`: Create a future that remains pending
+- `Runtime.spawn(T, future)`: Schedule a future and return a join handle
+- `Runtime.blockOn(T, future)`: Run a future to completion
 
 ## Files
 
-- `async_runtime.zig`: Core async runtime and Future implementation
-- `executor.zig`: Task executor
-- `concurrency.zig`: Concurrency primitives
-- `io.zig`: Async I/O operations
+- `async.zig`: Public package root
+- `runtime.zig`: Work-stealing task executor
+- `future.zig` and `task.zig`: Future, waker, task, and join-handle types
+- `concurrent_queue.zig`: Lock-free global injector
+- `work_stealing_deque.zig`: Owner-local Chase-Lev deque
+- `parker.zig`: Futex-backed worker parking
 
 ## Testing
 
 ```bash
-zig test packages/async/tests/async_test.zig
+zig build test -Dfilter=async
 ```
 
 ## Implementation Status
@@ -60,8 +63,9 @@ zig test packages/async/tests/async_test.zig
 - [x] Future type with generic values
 - [x] Task state machine
 - [x] Waker mechanism
-- [x] Basic tests
-- [ ] Full executor implementation
+- [x] Work-stealing executor core
+- [x] Native and ThreadSanitizer coverage
+- [x] Linux and Windows compile coverage
 - [ ] Async I/O integration
 
 ## Related Packages
