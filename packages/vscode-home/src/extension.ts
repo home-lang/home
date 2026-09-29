@@ -31,6 +31,11 @@ let extensionContext: vscode.ExtensionContext | undefined;
 
 const DOCUMENT_SELECTOR: vscode.DocumentSelector = { language: 'home' };
 
+// `home lsp` serves TypeScript as well as Home. JavaScript stays with VS Code:
+// the server does not yet skip type errors in plain `.js` files the way tsc
+// does without `checkJs`.
+const TYPESCRIPT_LANGUAGES = ['typescript', 'typescriptreact'];
+
 function getHomePath(): string {
     const config = vscode.workspace.getConfiguration('home');
     return config.get<string>('path') || 'home';
@@ -271,6 +276,13 @@ export function activate(context: vscode.ExtensionContext) {
 
     // Start language server
     startLanguageServer(context);
+    context.subscriptions.push(
+        vscode.workspace.onDidChangeConfiguration(event => {
+            if (event.affectsConfiguration('home.typescript.enabled')) {
+                void restartServer();
+            }
+        })
+    );
 
     // Dispose resources
     context.subscriptions.push(profiler);
@@ -319,9 +331,17 @@ function startLanguageServer(_context: vscode.ExtensionContext) {
         },
     };
 
-    // Client options
+    // Client options. The server starts in the workspace folder, which is
+    // where `home lsp` looks for tsconfig.json.
+    const serveTypeScript = vscode.workspace.getConfiguration('home').get<boolean>('typescript.enabled', true);
+    const documentSelector = [{ scheme: 'file', language: 'home' }];
+    if (serveTypeScript) {
+        for (const language of TYPESCRIPT_LANGUAGES) {
+            documentSelector.push({ scheme: 'file', language });
+        }
+    }
     const clientOptions: LanguageClientOptions = {
-        documentSelector: [{ scheme: 'file', language: 'home' }],
+        documentSelector,
         synchronize: {
             fileEvents: vscode.workspace.createFileSystemWatcher('**/*.home'),
         },

@@ -94,6 +94,11 @@
           "default": "home",
           "description": "Path to home executable"
         },
+        "home.typescript.enabled": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Serve TypeScript files (`.ts`, `.tsx`, `.mts`, `.cts`) from `home lsp`: diagnostics, hover, completion and go to definition from the same compiler as `home tsc`. VS Code's built-in TypeScript support keeps running alongside it; set `typescript.validate.enable` to `false` to avoid seeing each error twice."
+        },
         "home.debugger.enabled": {
           "type": "boolean",
           "default": true,
@@ -433,7 +438,9 @@
     ]
   },
   "activationEvents": [
-    "onLanguage:home"
+    "onLanguage:home",
+    "onLanguage:typescript",
+    "onLanguage:typescriptreact"
   ],
   "scripts": {
     "vscode:prepublish": "bun run compile",

@@ -98,11 +98,15 @@ fresh clone plus `pantry install` gets the exact toolchain.
 ## Editor extensions
 
 The VS Code extension lives in `packages/vscode-home` in the repository and
-provides syntax highlighting, diagnostics and the usual language features for
-`.home` files through `home lsp`. It does not attach to TypeScript files, which
-VS Code's built-in TypeScript support already handles. Any editor with a
-language-server client can be pointed at `home lsp --stdio` directly, for
-TypeScript as well as `.home`.
+provides syntax highlighting, diagnostics and the usual language features
+through `home lsp`, for `.home` files and for TypeScript (`.ts`, `.tsx`,
+`.mts`, `.cts`). The `home.typescript.enabled` setting turns the TypeScript
+side off. VS Code's built-in TypeScript support keeps running alongside it, so
+set `typescript.validate.enable` to `false` if you don't want to see each error
+twice. JavaScript files stay with VS Code for now, because `home lsp` still
+reports type errors in plain `.js` files that `tsc` only reports under
+`checkJs`. Any editor with a language-server client can be pointed at
+`home lsp --stdio` directly.
 
 ## Related
 
