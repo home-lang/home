@@ -456,17 +456,34 @@ pub const BooleanLiteral = struct {
     }
 };
 
-/// Null literal expression.
+/// Nullish literal expression.
 ///
-/// Represents the null value.
+/// `undefined` deliberately shares the expression variant with `null` so the
+/// expression union remains stable, but its kind must stay distinct: null is
+/// a value for optional types while undefined requests uninitialized storage.
 pub const NullLiteral = struct {
+    pub const Kind = enum {
+        null_value,
+        undefined_value,
+    };
+
     /// Base node metadata
     node: Node,
+    kind: Kind = .null_value,
 
     /// Create a new null literal node.
     pub fn init(loc: SourceLocation) NullLiteral {
         return .{
             .node = .{ .type = .NullLiteral, .loc = loc },
+            .kind = .null_value,
+        };
+    }
+
+    /// Create a typed `undefined` placeholder for uninitialized storage.
+    pub fn initUndefined(loc: SourceLocation) NullLiteral {
+        return .{
+            .node = .{ .type = .NullLiteral, .loc = loc },
+            .kind = .undefined_value,
         };
     }
 };
@@ -2989,8 +3006,12 @@ test "ast: NullLiteral init" {
     const testing = std.testing;
     const loc = SourceLocation{ .line = 1, .column = 1 };
     const lit = NullLiteral.init(loc);
+    const undefined_lit = NullLiteral.initUndefined(loc);
 
     try testing.expectEqual(NodeType.NullLiteral, lit.node.type);
+    try testing.expectEqual(NullLiteral.Kind.null_value, lit.kind);
+    try testing.expectEqual(NodeType.NullLiteral, undefined_lit.node.type);
+    try testing.expectEqual(NullLiteral.Kind.undefined_value, undefined_lit.kind);
 }
 
 test "ast: Identifier init" {

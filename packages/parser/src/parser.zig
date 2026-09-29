@@ -8371,14 +8371,14 @@ pub const Parser = struct {
             return expr;
         }
 
-        // `undefined` — Zig-style typed undefined value. Represented as
-        // a NullLiteral here so it assigns to any type without tripping
-        // the "Undefined variable" type-checker rule.
+        // `undefined` — Zig-style typed undefined storage. It shares the
+        // compact NullLiteral expression variant, but carries a distinct kind
+        // so semantic analysis and codegen never confuse it with null.
         if (self.check(.Identifier) and std.mem.eql(u8, self.peek().lexeme, "undefined")) {
             const token = self.advance();
             const expr = try self.allocator.create(ast.Expr);
             expr.* = ast.Expr{
-                .NullLiteral = ast.NullLiteral.init(ast.SourceLocation.fromToken(token)),
+                .NullLiteral = ast.NullLiteral.initUndefined(ast.SourceLocation.fromToken(token)),
             };
             return expr;
         }

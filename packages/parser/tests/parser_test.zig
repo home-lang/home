@@ -865,6 +865,17 @@ test "parser: null literal" {
     try testing.expectEqual(@as(usize, 1), program.statements.len);
     const expr = program.statements[0].ExprStmt;
     try testing.expect(expr.* == .NullLiteral);
+    try testing.expectEqual(ast.NullLiteral.Kind.null_value, expr.NullLiteral.kind);
+}
+
+test "parser: undefined literal remains distinct from null" {
+    const program = try parseSource(testing.allocator, "undefined");
+    defer program.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), program.statements.len);
+    const expr = program.statements[0].ExprStmt;
+    try testing.expect(expr.* == .NullLiteral);
+    try testing.expectEqual(ast.NullLiteral.Kind.undefined_value, expr.NullLiteral.kind);
 }
 
 test "parser: and keyword" {
