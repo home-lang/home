@@ -4154,10 +4154,11 @@ activity and baseline outliers limit the inference from these paired samples.
 
 The lifetime audit separately identified pre-existing source-update risks,
 tracked in [issue #472](https://github.com/home-lang/home/issues/472): failure
-after removing the old source-map entry can leave inconsistent state, and
-canonical source replacement does not refresh borrowed redirect slices.
-This is a source-level finding awaiting dedicated failure/recovery tests;
-the transient snapshot optimization does not claim to fix those semantics.
+after removing the old source-map entry could leave inconsistent state, and
+canonical source replacement did not refresh borrowed redirect slices. The
+later [atomic source replacement audit](#atomic-incremental-source-replacement-untimed)
+closes those ownership gaps with dedicated failure/recovery coverage; the
+transient snapshot optimization itself did not claim to fix them.
 
 The full snapshot `20260827T195539Z` records 18/18 lower Home means across
 30 interleaved rounds after three warmups. Large predicates measure
@@ -4194,7 +4195,7 @@ These counts guide further work and are not timing claims. The broader #416
 goal remains open: next coverage is dedicated async/await type propagation
 under [issue #473](https://github.com/home-lang/home/issues/473), followed by
 validated real-world projects and cross-platform measurements. Semantic
-issues #467 and #472 and the unvalidated container path #464 remain open.
+issue #467 and the unvalidated container path #464 remain open.
 
 <details>
 <summary>Previous full snapshot: 20260827T195539Z, commit d33019821</summary>
@@ -8113,6 +8114,37 @@ zig build -Doptimize=ReleaseFast
 ./zig-out/bin/home-tsc --project=/path/to/zod-4.5.2/tsconfig.benchmark.json --pretty=false
 bunx --bun pickier .
 ```
+
+### Atomic incremental source replacement (untimed)
+
+Issue [#472](https://github.com/home-lang/home/issues/472) covered two
+ownership faults in `Program.updateSource`: an allocation failure after
+removing the old source-map entry could leave a dangling `File.source`, and
+redirect files continued borrowing the canonical file's freed source after a
+successful replacement.
+
+Source replacement now resolves redirects to their canonical file and
+allocates the complete replacement before changing any published state. The
+commit point is allocation-free: it replaces the existing source-map value in
+place, invalidates the canonical compilation and owner, refreshes every sibling
+redirect, clears stale imports and source-marker snapshots, and only then frees
+the old bytes. The requested path's ID remains the return value, so callers do
+not lose redirect identity. Incremental recompilation separately canonicalizes
+and deduplicates changed paths, preventing a redirect and its canonical path
+from compiling the same source twice.
+
+A deterministic failing-allocator regression checks the old source-map value,
+canonical and redirect pointers, marker snapshot, compilation pointer, owner
+registration, and source bytes after forced allocation failure, then verifies
+a successful retry. The existing duplicate-package fixture now updates through
+the redirect path, preserves the package-ID mapping and redirect target, and
+passes duplicate redirect/canonical paths to incremental recompilation while
+requiring exactly one canonical compile.
+
+The complete Program suite passes **225/225** under the guarded runner. The
+final run peaked at 2,027 MB of conservatively summed process-tree footprint,
+with a 35% host-memory low-water mark. This is an **untimed**
+ownership and recovery result; it makes no compiler-performance claim.
 
 ### Imported overloaded object-literal context
 

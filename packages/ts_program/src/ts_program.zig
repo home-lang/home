@@ -168,8 +168,8 @@ pub const File = struct {
     id: FileId,
     /// Resolved absolute (or program-canonical) path.
     path: []const u8,
-    /// Source text. NOT owned — caller manages lifetime via the
-    /// FileSystem implementation.
+    /// Source text. Canonical files borrow the bytes owned by
+    /// `Program.sources`; redirects borrow their canonical file's slice.
     source: []const u8,
     /// Exact byte facts for the current collection pass only. Cleared on
     /// every compilation exit; redirects never receive a source snapshot.
@@ -430,6 +430,10 @@ pub const Program = struct {
         return self.files.items[id];
     }
 
+    fn canonicalFileId(self: *const Program, id: FileId) FileId {
+        return self.files.items[id].redirect_target orelse id;
+    }
+
     fn isDeclarationPath(path: []const u8) bool {
         return std.mem.endsWith(u8, path, ".d.ts") or
             std.mem.endsWith(u8, path, ".d.mts") or
@@ -446,25 +450,34 @@ pub const Program = struct {
             std.mem.endsWith(u8, path, ".cjs");
     }
 
-    /// Replace the source bytes for an existing file (matched by
-    /// path). Returns the file's id, or null if `path` isn't
-    /// tracked. Drops the file's cached compilation if any.
+    /// Replace the source bytes for an existing file (matched by path).
+    /// Redirect paths update their canonical file and all sibling redirects,
+    /// while the returned id still identifies the requested path. Allocation
+    /// completes before any published source or compilation state changes.
     pub fn updateSource(self: *Program, path: []const u8, new_source: []const u8) !?FileId {
         const id = self.by_path.get(path) orelse return null;
-        const f = self.files.items[id];
-        self.dropCompilation(f);
-        // Replace the source slice. We also update the
-        // `sources` map's value so the dupe stays consistent.
+        const canonical_id = self.canonicalFileId(id);
+        const canonical = self.files.items[canonical_id];
+        const source_slot = self.sources.getPtr(canonical.path) orelse return error.NotFound;
         const new_dupe = try self.gpa.dupe(u8, new_source);
-        if (self.sources.fetchRemove(path)) |old_entry| {
-            self.gpa.free(old_entry.key);
-            self.gpa.free(old_entry.value);
+
+        // Everything after the duplicate succeeds is allocation-free. Keep
+        // the old map entry, source slices, compilations, owners, imports, and
+        // marker snapshots intact if allocation fails.
+        const old_source = source_slot.*;
+        self.dropCompilation(canonical);
+        source_slot.* = new_dupe;
+        canonical.source = new_dupe;
+        canonical.source_markers = null;
+        canonical.imports.clearRetainingCapacity();
+        for (self.files.items) |file| {
+            if (file.redirect_target != canonical_id) continue;
+            self.dropCompilation(file);
+            file.source = new_dupe;
+            file.source_markers = null;
+            file.imports.clearRetainingCapacity();
         }
-        const skey = try self.gpa.dupe(u8, path);
-        try self.sources.put(self.gpa, skey, new_dupe);
-        f.source = new_dupe;
-        f.source_markers = null;
-        f.imports.clearRetainingCapacity();
+        self.gpa.free(old_source);
         return id;
     }
 
@@ -3991,10 +4004,18 @@ pub const Program = struct {
         changed_paths: []const []const u8,
         options: ts_driver.CompileOptions,
     ) ProgramError!u32 {
+        var canonical_ids: std.ArrayListUnmanaged(FileId) = .empty;
+        defer canonical_ids.deinit(self.gpa);
+        for (changed_paths) |path| {
+            const requested_id = self.by_path.get(path) orelse continue;
+            const canonical_id = self.canonicalFileId(requested_id);
+            if (std.mem.indexOfScalar(FileId, canonical_ids.items, canonical_id) != null) continue;
+            try canonical_ids.append(self.gpa, canonical_id);
+        }
+
         try self.prepareNameStore();
         var count: u32 = 0;
-        for (changed_paths) |p| {
-            const id = self.by_path.get(p) orelse continue;
+        for (canonical_ids.items) |id| {
             const f = self.files.items[id];
             // Free the previous compilation so the new one owns
             // a fresh HIR + symbol table.
@@ -7888,7 +7909,7 @@ test "Program: node_modules import records package-id include reason (TS1394)" {
     try T.expectEqual(@as(?u32, 1399), dep.include_reason.?.relatedDiagnosticCode());
 }
 
-test "Program: duplicate package-id import records redirect file (TS1429 reason)" {
+test "Program: duplicate package-id redirect survives source update and recompile" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();
     try vfs.addFile("/app/a.ts", "import 'pkg';\n");
@@ -7932,6 +7953,28 @@ test "Program: duplicate package-id import records redirect file (TS1429 reason)
     try T.expectEqual(nested_id, redirect.include_reason.?.importer);
     try T.expectEqualStrings("\"pkg\"", redirect.include_reason.?.specifier_text);
     try T.expectEqualStrings("pkg/index.d.ts@1.0.0", redirect.include_reason.?.package_id);
+
+    const package_id = "pkg/index.d.ts@1.0.0";
+    try T.expectEqual(canonical_id, p.by_package_id.get(package_id).?);
+    const updated_id = (try p.updateSource(
+        "/app/nested/node_modules/pkg/index.d.ts",
+        "export const changed: string;\n",
+    )) orelse return error.TestUnexpectedResult;
+    try T.expectEqual(redirect_id, updated_id);
+    try T.expectEqual(canonical_id, p.by_package_id.get(package_id).?);
+    try T.expectEqualStrings("export const changed: string;\n", canonical.source);
+    try T.expect(canonical.source.ptr == redirect.source.ptr);
+    try T.expectEqual(canonical_id, redirect.redirect_target.?);
+
+    const changed_paths = [_][]const u8{
+        "/app/nested/node_modules/pkg/index.d.ts",
+        "/app/node_modules/pkg/index.d.ts",
+        "/app/nested/node_modules/pkg/index.d.ts",
+    };
+    try T.expectEqual(@as(u32, 1), try p.recompileChanged(&changed_paths, .{}));
+    try T.expect(canonical.compilation != null);
+    try T.expect(redirect.compilation == null);
+    try T.expectEqual(canonical_id, p.by_package_id.get(package_id).?);
 }
 
 test "Program: disabled package deduplication retains physical package copies" {
@@ -9233,25 +9276,65 @@ test "Program: source markers clear on every compilation entry and error exit" {
     }
 }
 
-test "Program: updateSource replaces a file's source bytes" {
+test "Program: updateSource publishes source and redirects atomically" {
     var vfs = ts_resolver.VirtualFs.init(T.allocator);
     defer vfs.deinit();
     var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
     defer resolver.deinit();
     var p = Program.init(T.allocator, &resolver);
     defer p.deinit();
-    _ = try p.add("/a.ts", "let x = 1;");
+    const canonical_id = try p.add("/a.ts", "let x = 1;");
+    const first_redirect_id = try p.addRedirectFile("/redirect-a.ts", canonical_id);
+    const second_redirect_id = try p.addRedirectFile("/redirect-b.ts", canonical_id);
     try p.compileAll(.{});
-    try T.expect(p.fileById(0).compilation != null);
-    const old_owner = p.fileById(0).owner;
+    p.prepareSourceMarkers();
+    const canonical = p.fileById(canonical_id);
+    const first_redirect = p.fileById(first_redirect_id);
+    const second_redirect = p.fileById(second_redirect_id);
+    const old_source = canonical.source;
+    const old_compilation = canonical.compilation.?;
+    const old_owner = canonical.owner;
+    const source_count = p.sources.count();
     try T.expect(old_owner != .none);
+    try T.expect(canonical.source_markers != null);
+    try T.expect(first_redirect.source.ptr == old_source.ptr);
+    try T.expect(second_redirect.source.ptr == old_source.ptr);
+    try canonical.imports.append(T.allocator, second_redirect_id);
+
+    var failing = T.FailingAllocator.init(T.allocator, .{ .fail_index = 0 });
+    p.gpa = failing.allocator();
+    {
+        defer p.gpa = T.allocator;
+        try T.expectError(error.OutOfMemory, p.updateSource("/a.ts", "let failed = 0;"));
+    }
+    try T.expect(failing.has_induced_failure);
+    try T.expect(canonical.compilation.? == old_compilation);
+    try T.expectEqual(old_owner, canonical.owner);
+    _ = try p.owners.source(old_owner);
+    try T.expect(canonical.source_markers != null);
+    try T.expectEqualStrings("let x = 1;", canonical.source);
+    try T.expectEqual(source_count, p.sources.count());
+    try T.expectEqualSlices(FileId, &.{second_redirect_id}, canonical.imports.items);
+    const preserved_source = p.sources.get("/a.ts") orelse return error.TestUnexpectedResult;
+    try T.expect(preserved_source.ptr == old_source.ptr);
+    try T.expect(first_redirect.source.ptr == old_source.ptr);
+    try T.expect(second_redirect.source.ptr == old_source.ptr);
 
     const id = (try p.updateSource("/a.ts", "let y = 2;")) orelse return error.NoFile;
-    // Compilation cleared; source replaced.
-    try T.expect(p.fileById(id).compilation == null);
-    try T.expectEqual(source_owners.OwnerId.none, p.fileById(id).owner);
+    try T.expectEqual(canonical_id, id);
+    try T.expect(canonical.compilation == null);
+    try T.expectEqual(source_owners.OwnerId.none, canonical.owner);
     try T.expectError(error.InvalidOwner, p.owners.source(old_owner));
-    try T.expectEqualStrings("let y = 2;", p.fileById(id).source);
+    try T.expect(canonical.source_markers == null);
+    try T.expectEqual(@as(usize, 0), canonical.imports.items.len);
+    try T.expectEqual(source_count, p.sources.count());
+    try T.expectEqualStrings("let y = 2;", canonical.source);
+    const replaced_source = p.sources.get("/a.ts") orelse return error.TestUnexpectedResult;
+    try T.expect(replaced_source.ptr == canonical.source.ptr);
+    try T.expect(first_redirect.source.ptr == canonical.source.ptr);
+    try T.expect(second_redirect.source.ptr == canonical.source.ptr);
+    try T.expect(first_redirect.source_markers == null);
+    try T.expect(second_redirect.source_markers == null);
 }
 
 test "Program: recompileChanged only recompiles listed paths" {

@@ -290,6 +290,7 @@ The latest untimed correctness gate is reported separately from performance:
 
 | Admission audit | TypeScript 6.0.3 | Native TypeScript 7.0.2 | Home |
 |---|---:|---:|---:|
+| [Atomic incremental source replacement](docs/docs/TS_PERFORMANCE.md#atomic-incremental-source-replacement-untimed) | Not applicable (Program ownership) | Not applicable (Program ownership) | forced-OOM rollback + direct/redirect publication; 225/225 Program tests |
 | [Export-list owner and barrel diagnostics](docs/docs/TS_PERFORMANCE.md#indexed-export-queries-and-variable-list-ownership) | 128/128 | 128/128 | 128/128 |
 | [Typed cross-file global ownership](docs/docs/TS_PERFORMANCE.md#typed-cross-file-global-ownership-and-cyclic-provenance-untimed) | 60/60 | 60/60 | 60/60 |
 | [Bound-global visibility](docs/docs/TS_PERFORMANCE.md#typed-cross-file-global-ownership-and-cyclic-provenance-untimed) | 56/56 | 56/56 | 56/56 |
