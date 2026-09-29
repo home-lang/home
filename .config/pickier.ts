@@ -18,6 +18,10 @@ const config: PickierConfig = {
     '**/zig-out/**',
     '**/zig-cache/**',
     '**/.zig-cache/**',
+    '**/pantry/**',
+    '**/pantry_modules/**',
+    '**/.home-cache/**',
+    '**/.test-cache/**',
   ],
 
   lint: {

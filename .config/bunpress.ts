@@ -1,5 +1,5 @@
 import type { BunPressConfig } from '@stacksjs/bunpress'
-import homeCss from './.config/docs.css' with { type: 'text' }
+import homeCss from './docs.css' with { type: 'text' }
 
 /** Inline glyphs for the mega menu. One stroke weight, one 24x24 box. */
 const icon = (path: string): string =>
@@ -35,7 +35,7 @@ export default {
   // Canonical URLs, Open Graph tags and JSON-LD are all generated from this
   // base, and none of them are emitted without it. The landing page is the
   // apex; the documentation lives under /docs, which is why every doc page is
-  // a file under `docs/docs/` (see cloud.config.ts for how it is served).
+  // a file under `docs/docs/` (see .config/cloud.ts for how it is served).
   sitemap: {
     enabled: true,
     baseUrl: 'https://home-lang.org',

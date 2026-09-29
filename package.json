@@ -50,19 +50,6 @@
     "./packages/vscode-home",
     "./packages/action"
   ],
-  "pickier": {
-    "ignores": [
-      "**/node_modules/**",
-      "**/pantry/**",
-      "**/pantry_modules/**",
-      "**/zig-out/**",
-      "**/zig-cache/**",
-      "**/.zig-cache/**",
-      "**/.home-cache/**",
-      "**/dist/**",
-      "**/.test-cache/**"
-    ]
-  },
   "git-hooks": {
     "pre-commit": {
       "staged-lint": {
