@@ -124,20 +124,20 @@ error[E0502]: cannot borrow `x` as mutable because it is also borrowed as immuta
 
 **Location**: `packages/codegen/src/`
 
-The code generator produces native machine code or IR.
+The code generator produces native machine code and object files directly.
 
 **Backends**:
 
-- **LLVM Backend**: Generates optimized native code via LLVM
+- **x86-64 Backend**: Direct machine-code and object-file emission
+- **AArch64 Backend**: Direct machine-code and object-file emission
 - **Kernel Mode**: Special codegen for bare-metal kernel development
-- **Interpreter Backend**: Direct AST interpretation for REPL and testing
 
 **Optimizations**:
 
 - Constant folding
 - Dead code elimination
 - Inline expansion
-- SIMD vectorization (via LLVM)
+- Target-aware instruction selection
 
 **Output**: Native object files (.o) or executables
 
@@ -242,7 +242,7 @@ Source Code (.home)
             ↓
 ┌───────────────────────────┐
 │  6. Code Generator        │  Native Code
-│  - LLVM backend           │
+│  - Direct x86-64/AArch64  │
 │  - Optimization passes    │
 │  - Object file emission   │
 └───────────┬───────────────┘

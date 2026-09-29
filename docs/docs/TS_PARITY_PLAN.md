@@ -2522,7 +2522,7 @@ When all six blocks compile cleanly through `home-tsc` with `strict: true` and p
                           ├─► [SIMD Lexer] ─► [Parser → SoA AST] ─► [HIR] ─► [Type-check] ─┬─► JS emit
 .home/.hm/.d.hm ──────────┘                                                                 ├─► .d.ts emit (TS frontend)
                                                                                             ├─► .d.hm emit (Home frontend)
-                                                                                            ├─► Native (LLVM/x64/arm64)
+                                                                                            ├─► Native (direct x64/arm64)
                                                                                             └─► WASM
 ```
 
@@ -2590,7 +2590,7 @@ These shape every phase below.
 
 ### 1.3 The unique offer beyond `tsc` parity
 
-**Native compilation.** Home compiles TypeScript to native object files (x64, arm64, WASM) via LLVM, in addition to JS emit. Neither tsc nor tsgo offers this. Gated behind opt-in (`--target=native`); the default `--target=es2024` JS emit is `tsc`-compatible.
+**Native compilation.** Home plans to compile the typed, monomorphizable TypeScript subset to native object files through its direct x64 and arm64 backends, with WASM as a separate target, in addition to JS emit. Neither tsc nor tsgo offers this. Gated behind opt-in (`--target=native`); the default `--target=es2024` JS emit is `tsc`-compatible.
 
 **Out of scope for v1.** Native codegen of *arbitrary* TS (full `Object`/`Array` semantics, `Function.prototype`, prototypal inheritance, `eval`) is enormous. Phase 7 ships native codegen for the *typed, monomorphizable* subset — TS that doesn't touch dynamic property access. Full-dynamic TS still emits JS.
 
@@ -3263,7 +3263,7 @@ Home pays a ~20–60% overhead vs. raw esbuild/Bun bundler **because we add type
 3. **JS runtime in Zig** (4 weeks). Minimal `Object`, `Array`, `String`, `Map`, `Set`, `Promise` runtime. Most exists in stdlib.
 4. **GC integration or escape analysis** (3 weeks). Two paths: (a) integrate a small precise GC; (b) escape analysis + arenas + RC for cycles. Decision deferred to a Phase 7 design spike.
 5. **WASM emit** (2 weeks). For browser/runtime distribution.
-6. **LLVM backend completion** (2 weeks). Existing `packages/codegen/src/llvm_codegen.zig` works for Home; extend for the TS subset.
+6. **Direct-backend completion** (2 weeks). Extend the wired x64 and arm64 Home backends for the typed TS subset, sharing HIR-to-MIR lowering and ABI tests instead of maintaining a second lowering stack.
 
 **Exit criteria.** A 50-project corpus of typed-subset TS compiles natively and matches Node-on-tsc output for unit tests.
 
@@ -3335,7 +3335,7 @@ This is the substance of "more performant than tsgo." Beating tsgo by 2–3× re
 | AST layout | Pointer-tree of structs | SoA columns of `[]u32` | 4–8× more nodes per L1 line |
 | Interner | Map with GC overhead | Lock-striped open-addressing | ~2× fewer ops per intern |
 | SIMD | Limited; goroutine pool overhead | First-class `@Vector(N, u8)` | 3–5× lex throughput |
-| Inlining | Whole-program | LLVM/comptime per call site | Hot loops 1.5–2× faster |
+| Inlining | Whole-program | Comptime and direct per-call-site specialization | Hot loops 1.5–2× faster |
 | Per-phase memory cap | GC heap bound only | Per-arena hard cap | Predictable memory behavior |
 | Native AOT | N/A | 🚧 HIR→native lowering is not wired; current JS/TS standalones embed JSC | Planned differentiator ([#800](https://github.com/home-lang/home/issues/800)) |
 

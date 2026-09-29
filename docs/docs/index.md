@@ -69,9 +69,8 @@ them.
 - [Stdlib Modules](/docs/STDLIB-MODULES) - the module-by-module index.
 - [Basics Module](/docs/BASICS_MODULE_GUIDE) - what is available without an
   import.
-- [Typed ORM Guide](/docs/TYPED_ORM_GUIDE) and
-  [Backend Quick Guide](/docs/QUICK_BACKEND_GUIDE) - building a service end to
-  end.
+- [Typed ORM Guide](/docs/TYPED_ORM_GUIDE) - building a data-backed service end
+  to end.
 - [Kernel Features](/docs/KERNEL_FEATURES) and
   [Kernel Architecture](/docs/KERNEL_ARCHITECTURE) - freestanding and OS work.
 
