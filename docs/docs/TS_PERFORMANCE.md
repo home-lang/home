@@ -4040,8 +4040,9 @@ control that correctly retains the union in TS 6 and TS 7. Ordinary assignment
 of a function to the nonempty global `Function` already succeeds in Home.
 The optimization preserves the baseline's three diagnostics exactly; it does
 not fix or conceal that discrepancy, and this diagnostic probe is not an
-accepted or timed benchmark. A separate shape-aware semantic correction is
-required before #467 can close.
+accepted or timed benchmark. The later
+[shape-aware semantic checkpoint](#declared-function-predicate-narrowing-untimed)
+closes #467.
 
 The full snapshot `20260827T191750Z` retains all 30 interleaved samples after
 three warmups across 18 workloads, with 17/18 lower Home means. Large predicates
@@ -4117,9 +4118,11 @@ Repeated substring searches remain in program ambient-interface, namespace,
 class, and CommonJS collection, alongside checker/driver setup. These counts
 guide the next investigation, not a speedup claim or a new accepted benchmark.
 Next work should share exact program source facts while auditing source
-replacement, redirects, and declaration visibility. The broader #416 goal,
-the #457 narrow margin, #467 semantic discrepancy, and #464 unvalidated
-container harness all remain open.
+replacement, redirects, and declaration visibility. At this historical
+checkpoint, the broader #416 goal, the #457 narrow margin, #467 semantic
+discrepancy, and #464 unvalidated container harness were open; the later
+[shape-aware semantic checkpoint](#declared-function-predicate-narrowing-untimed)
+closes #467.
 
 Commit `d33019821` shares exact program-source marker searches across 19
 existing collection prechecks. Nine byte markers cover namespace/global,
@@ -4195,7 +4198,9 @@ These counts guide further work and are not timing claims. The broader #416
 goal remains open: next coverage is dedicated async/await type propagation
 under [issue #473](https://github.com/home-lang/home/issues/473), followed by
 validated real-world projects and cross-platform measurements. Semantic
-issue #467 and the unvalidated container path #464 remain open.
+issue #467 was open at this historical snapshot; the later
+[shape-aware semantic checkpoint](#declared-function-predicate-narrowing-untimed)
+closes it. The unvalidated container path #464 remains open.
 
 <details>
 <summary>Previous full snapshot: 20260827T195539Z, commit d33019821</summary>
@@ -8114,6 +8119,41 @@ zig build -Doptimize=ReleaseFast
 ./zig-out/bin/home-tsc --project=/path/to/zod-4.5.2/tsconfig.benchmark.json --pretty=false
 bunx --bun pickier .
 ```
+
+### Declared Function predicate narrowing (untimed)
+
+Issue [#467](https://github.com/home-lang/home/issues/467) separates the
+declared global `Function` shape from the checker's synthetic builtin marker.
+Predicate narrowing now resolves that marker, and aliases of it, to the actual
+global declaration before testing assignability. A callable declaration such
+as `interface Function { call(thisArg: any, ...args: any[]): any }` therefore
+narrows `number | (() => number)` to the function constituent in the positive
+branch and to `number` in the negative branch. An empty `Function` declaration
+does not claim callability and leaves the union intact.
+
+The implementation uses semantic type identity and the declared `call`
+signature. It does not special-case the spelling `Function`: aliases exercise
+the same path, while ordinary assignment of a standalone function to the
+callable declaration remains accepted. Permanent checker controls cover the
+direct and aliased predicates, both branches, typed positive and negative
+consumers, the callable and empty global shapes, and the standalone assignment.
+
+| Untimed correctness gate | TypeScript 6.0.3 | Native TypeScript 7.0.2 | Home |
+|---|---:|---:|---:|
+| Callable `Function`, direct and alias | accepted | accepted | accepted |
+| Deliberately invalid branch consumers | 4× TS2322 | 4× TS2322 | 4× TS2322 |
+| Empty `Function`, direct and alias | 2× TS2349 + 2× TS2322 | 2× TS2349 + 2× TS2322 | 2× TS2349 + 2× TS2322 |
+| Standalone function assignment | accepted | accepted | accepted |
+
+A fresh stripped ReleaseSafe `home-tsc` also matches both pinned controls on
+the standalone CLI oracle: the callable fixture exits cleanly, and the empty
+fixture reports exactly TS2349 and TS2322. The complete checker suite passes
+**4,409/4,409** and the default conformance suite passes **1,419/1,419**. The
+guarded compiler build peaked at 2,592 MB, with all heavy jobs serialized under
+the 3,840 MB ceiling.
+
+This is a correctness result, not a timing claim. No benchmark inputs,
+diagnostic admission rules, or existing performance measurements changed.
 
 ### Atomic incremental source replacement (untimed)
 

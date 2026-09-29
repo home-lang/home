@@ -87646,6 +87646,9 @@ pub const Checker = struct {
         if (self.builtin_object_names.get(t)) |name| {
             if (std.mem.eql(u8, name, "Function")) return true;
         }
+        if (self.declaredGlobalFunctionType()) |declared| {
+            if (t == declared and self.declaredGlobalFunctionIsCallable(declared)) return true;
+        }
         if (self.decl_single_base.get(t)) |base_t| {
             if (base_t != t and self.typeIsBuiltinFunctionObjectDepth(base_t, depth + 1)) return true;
         }
@@ -107426,19 +107429,41 @@ pub const Checker = struct {
         return target == types.Primitive.object_t;
     }
 
-    fn predicateTargetIsFunctionObject(self: *Checker, target: TypeId) bool {
-        // Built-in object lowering creates a fresh structural TypeId each
-        // time. Compare the recorded identity, not two allocations of the
-        // same Function recipe, when preserving `any` through typeof guards.
-        const name = self.builtin_object_names.get(target) orelse return false;
-        return std.mem.eql(u8, name, "Function");
+    fn declaredGlobalFunctionType(self: *Checker) ?TypeId {
+        const function_name = self.string_interner.lookup("Function") orelse return null;
+        const declared = self.type_names.get(function_name) orelse return null;
+        if (declared >= self.interner.pool.typeCount()) return null;
+        const flags = self.interner.pool.flagsOf(declared);
+        if (!flags.is_object_type or flags.is_union or flags.is_intersection) return null;
+        return declared;
     }
 
-    fn predicateTargetNodeIsBareName(self: *Checker, node: NodeId, name: []const u8) bool {
-        if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .type_ref) return false;
-        const r = hir_mod.typeRefOf(self.hir, node);
-        if (r.qualifier_len != 0) return false;
-        return std.mem.eql(u8, self.string_interner.get(r.name), name);
+    fn declaredGlobalFunctionIsCallable(self: *Checker, declared: TypeId) bool {
+        const call_name = self.string_interner.lookup("call") orelse return false;
+        const call_member = self.interner.objectMember(declared, call_name) orelse return false;
+        return self.firstSignatureType(call_member) != null;
+    }
+
+    /// Predicate annotations lower builtin names before consulting declared
+    /// interfaces. For `Function`, use the actual global declaration as the
+    /// relation target so `interface Function {}` and a lib-shaped Function
+    /// retain their distinct narrowing behavior. Aliases share the lowered
+    /// target and therefore take the same path without spelling checks.
+    fn predicateRelationTarget(self: *Checker, target: TypeId) TypeId {
+        const builtin_name = self.builtin_object_names.get(target) orelse return target;
+        if (!std.mem.eql(u8, builtin_name, "Function")) return target;
+        return self.declaredGlobalFunctionType() orelse target;
+    }
+
+    fn predicateTargetIsFunctionObject(self: *Checker, target: TypeId) bool {
+        const relation_target = self.predicateRelationTarget(target);
+        if (relation_target != target) return self.declaredGlobalFunctionIsCallable(relation_target);
+        return self.typeIsBuiltinFunctionObject(target);
+    }
+
+    fn predicateTargetIsUpperObject(self: *Checker, target: TypeId) bool {
+        const name = self.builtin_object_names.get(target) orelse return false;
+        return std.mem.eql(u8, name, "Object");
     }
 
     /// The primitive `typeof` tag a numeric/string enum value carries at
@@ -107512,7 +107537,7 @@ pub const Checker = struct {
         // `TypeGuardWithEnumUnion`.
         if ((target == types.Primitive.number_t or target == types.Primitive.string_t) and
             self.enumTypeofBackingTag(member) == target) return true;
-        return self.engine.isAssignableTo(member, target) catch false;
+        return self.checkerAssignableTo(member, target) catch false;
     }
 
     fn predicateTypeParameterDerivesFrom(self: *Checker, member: TypeId, target: TypeId, depth: u8) bool {
@@ -107685,60 +107710,64 @@ pub const Checker = struct {
     }
 
     fn narrowTypeByPredicate(self: *Checker, current: TypeId, target: TypeId) CheckError!TypeId {
+        const relation_target = self.predicateRelationTarget(target);
         if (current == types.Primitive.never) return types.Primitive.never;
-        if (current == target) return target;
+        if (current == target or current == relation_target) return current;
         if (self.typeIsAnyLike(current)) {
             // TypeScript preserves `any` under a typeof-function guard, but
             // narrows `unknown` to Function. They share this fast path; only
             // the former may keep its unconstrained type.
-            if (self.typeIsAny(current) and self.predicateTargetIsFunctionObject(target)) return current;
-            return target;
+            if (self.typeIsAny(current) and
+                (self.predicateTargetIsFunctionObject(target) or
+                    self.predicateTargetIsBroadObject(relation_target) or
+                    self.predicateTargetIsUpperObject(target))) return current;
+            return relation_target;
         }
-        if (self.typeIsAnyLike(target)) return current;
+        if (self.typeIsAnyLike(relation_target)) return current;
         const current_flags = self.interner.pool.flagsOf(current);
         if (self.isBareTypeParameter(current)) {
             const constraint = self.typeParameterConstraint(current) orelse
-                return self.interner.internIntersection(&.{ current, target }) catch return error.OutOfMemory;
-            if (constraint != current) return try self.narrowTypeByPredicate(constraint, target);
+                return self.interner.internIntersection(&.{ current, relation_target }) catch return error.OutOfMemory;
+            if (constraint != current) return try self.narrowTypeByPredicate(constraint, relation_target);
         }
         if (current_flags.is_union) {
             var kept: std.ArrayListUnmanaged(TypeId) = .empty;
             defer kept.deinit(self.gpa);
             for (self.interner.unionMembers(current)) |member| {
                 const member_flags = self.interner.pool.flagsOf(member);
-                if ((member_flags.is_null and !self.typeIncludesNull(target)) or
-                    (member_flags.is_undefined and !self.typeIncludesUndefined(target)))
+                if ((member_flags.is_null and !self.typeIncludesNull(relation_target)) or
+                    (member_flags.is_undefined and !self.typeIncludesUndefined(relation_target)))
                 {
                     continue;
                 }
-                const member_to_target = self.typeMatchesPredicateTarget(member, target);
-                const target_to_member = if (self.isBareTypeParameter(target) and self.isBareTypeParameter(member))
-                    self.predicateTypeParameterDerivesFrom(target, member, 0)
+                const member_to_target = self.typeMatchesPredicateTarget(member, relation_target);
+                const target_to_member = if (self.isBareTypeParameter(relation_target) and self.isBareTypeParameter(member))
+                    self.predicateTypeParameterDerivesFrom(relation_target, member, 0)
                 else
-                    target == member or (self.engine.isAssignableTo(target, member) catch false);
+                    relation_target == member or (self.checkerAssignableTo(relation_target, member) catch false);
                 if (member_to_target) {
-                    if (target_to_member and self.predicateTargetShouldReplaceMember(member, target)) {
-                        try kept.append(self.gpa, target);
+                    if (target_to_member and self.predicateTargetShouldReplaceMember(member, relation_target)) {
+                        try kept.append(self.gpa, relation_target);
                     } else {
                         try kept.append(self.gpa, member);
                     }
                 } else if (target_to_member) {
                     if (self.predicateTargetIsFunctionObject(target) and !self.objectHasCallOrConstructSignature(member)) continue;
-                    if (self.predicateTargetIsBroadObject(target) and self.enumTypeofBackingTag(member) != types.Primitive.none) continue;
-                    try kept.append(self.gpa, target);
+                    if (self.predicateTargetIsBroadObject(relation_target) and self.enumTypeofBackingTag(member) != types.Primitive.none) continue;
+                    try kept.append(self.gpa, relation_target);
                 }
             }
             if (kept.items.len == 0) {
-                return self.interner.internIntersection(&.{ current, target }) catch return error.OutOfMemory;
+                return self.interner.internIntersection(&.{ current, relation_target }) catch return error.OutOfMemory;
             }
             if (kept.items.len == 1) return kept.items[0];
             return self.interner.internUnion(kept.items) catch return error.OutOfMemory;
         }
-        const current_to_target = self.engine.isAssignableTo(current, target) catch false;
-        const target_to_current = self.engine.isAssignableTo(target, current) catch false;
+        const current_to_target = self.checkerAssignableTo(current, relation_target) catch false;
+        const target_to_current = self.checkerAssignableTo(relation_target, current) catch false;
         if (current_to_target and !target_to_current) return current;
-        if (target_to_current) return target;
-        return self.interner.internIntersection(&.{ current, target }) catch return error.OutOfMemory;
+        if (target_to_current) return relation_target;
+        return self.interner.internIntersection(&.{ current, relation_target }) catch return error.OutOfMemory;
     }
 
     fn predicateTargetShouldReplaceMember(self: *Checker, member: TypeId, target: TypeId) bool {
@@ -107751,37 +107780,38 @@ pub const Checker = struct {
     }
 
     fn subtractTypeByPredicate(self: *Checker, current: TypeId, target: TypeId) CheckError!TypeId {
-        if (current == types.Primitive.never or current == target) return types.Primitive.never;
+        const relation_target = self.predicateRelationTarget(target);
+        if (current == types.Primitive.never or current == target or current == relation_target) return types.Primitive.never;
         if (self.typeIsAny(current)) return current;
         const current_flags = self.interner.pool.flagsOf(current);
         if (self.isBareTypeParameter(current)) {
             const constraint = self.typeParameterConstraint(current) orelse return current;
-            if (constraint != current) return try self.subtractTypeByPredicate(constraint, target);
+            if (constraint != current) return try self.subtractTypeByPredicate(constraint, relation_target);
         }
         if (current_flags.is_union) {
-            const target_is_unit = target == types.Primitive.null_t or
-                target == types.Primitive.undefined_t or
-                target == types.Primitive.true_lit or
-                target == types.Primitive.false_lit or
-                (target < self.interner.pool.typeCount() and
-                    self.interner.pool.flagsOf(target).is_literal and
-                    !self.interner.pool.flagsOf(target).is_union and
-                    !self.interner.pool.flagsOf(target).is_intersection);
+            const target_is_unit = relation_target == types.Primitive.null_t or
+                relation_target == types.Primitive.undefined_t or
+                relation_target == types.Primitive.true_lit or
+                relation_target == types.Primitive.false_lit or
+                (relation_target < self.interner.pool.typeCount() and
+                    self.interner.pool.flagsOf(relation_target).is_literal and
+                    !self.interner.pool.flagsOf(relation_target).is_union and
+                    !self.interner.pool.flagsOf(relation_target).is_intersection);
             var kept: std.ArrayListUnmanaged(TypeId) = .empty;
             defer kept.deinit(self.gpa);
             for (self.interner.unionMembers(current)) |member| {
-                const remove = self.typeMatchesPredicateTarget(member, target) or
+                const remove = self.typeMatchesPredicateTarget(member, relation_target) or
                     (!target_is_unit and
                         !self.isNullishType(member) and
-                        !self.isNullishType(target) and
-                        self.predicateTypesComparable(member, target));
+                        !self.isNullishType(relation_target) and
+                        self.predicateTypesComparable(member, relation_target));
                 if (!remove) try kept.append(self.gpa, member);
             }
             if (kept.items.len == 0) return types.Primitive.never;
             if (kept.items.len == 1) return kept.items[0];
             return self.interner.internUnion(kept.items) catch return error.OutOfMemory;
         }
-        return if (self.typeMatchesPredicateTarget(current, target)) types.Primitive.never else current;
+        return if (self.typeMatchesPredicateTarget(current, relation_target)) types.Primitive.never else current;
     }
 
     fn predicateTypesComparable(self: *Checker, member: TypeId, target: TypeId) bool {
@@ -133779,9 +133809,10 @@ pub const Checker = struct {
                     if (self.hir.kindOf(arg) == .identifier and when_true) {
                         const arg_id = hir_mod.identifierOf(self.hir, arg);
                         const current = self.lookupNarrow(arg_id.name) orelse self.typeOfIdentifier(arg);
-                        if (self.typeIsAnyLike(current) and
-                            (self.predicateTargetNodeIsBareName(pred.target_node, "Object") or
-                                self.predicateTargetNodeIsBareName(pred.target_node, "Function")))
+                        if (self.typeIsAny(current) and
+                            (self.predicateTargetIsBroadObject(target) or
+                                self.predicateTargetIsUpperObject(target) or
+                                self.predicateTargetIsFunctionObject(target)))
                         {
                             try self.recordNarrow(arg_id.name, current);
                             return;
@@ -225842,6 +225873,99 @@ test "checker: type predicate narrows in then-branch" {
     const s_decl = then_stmts[0];
     const s_init = hir_mod.varDeclOf(&s.hir, s_decl).init;
     try T.expectEqual(types.Primitive.string_t, s.hir.typeOf(s_init));
+}
+
+test "checker: Function predicate narrowing follows declared global shape" {
+    const callable = try newBoundSetup(
+        \\interface Function { call(thisArg: any, ...args: any[]): any }
+        \\type CallableAlias = Function;
+        \\function isCallable(value: unknown): value is Function { return typeof value === "function"; }
+        \\function isAliasCallable(value: unknown): value is CallableAlias { return typeof value === "function"; }
+        \\declare const direct: number | (() => number);
+        \\if (isCallable(direct)) {
+        \\  const result: number = direct();
+        \\  const exact: () => number = direct;
+        \\} else {
+        \\  const result: number = direct;
+        \\}
+        \\declare const aliased: string | (() => number);
+        \\if (isAliasCallable(aliased)) {
+        \\  const result: number = aliased();
+        \\  const exact: () => number = aliased;
+        \\} else {
+        \\  const result: string = aliased;
+        \\}
+        \\declare const standaloneFunction: () => number;
+        \\const builtinFunctionAssignment: Function = standaloneFunction;
+    );
+    defer destroyBoundSetup(callable);
+    callable.base.checker.setStrictFlags(.{
+        .strict_null_checks = true,
+        .strict_function_types = true,
+        .no_implicit_any = true,
+    });
+    try callable.base.checker.checkSourceFile(callable.base.root);
+    try T.expectEqual(@as(usize, 0), callable.base.checker.diagnostics.items.len);
+
+    const invalid = try newBoundSetup(
+        \\interface Function { call(thisArg: any, ...args: any[]): any }
+        \\type CallableAlias = Function;
+        \\function isCallable(value: unknown): value is Function { return typeof value === "function"; }
+        \\function isAliasCallable(value: unknown): value is CallableAlias { return typeof value === "function"; }
+        \\declare const direct: number | (() => number);
+        \\if (isCallable(direct)) {
+        \\  const invalidResult: string = direct();
+        \\} else {
+        \\  const invalidElse: string = direct;
+        \\}
+        \\declare const aliased: string | (() => number);
+        \\if (isAliasCallable(aliased)) {
+        \\  const invalidResult: string = aliased();
+        \\} else {
+        \\  const invalidElse: number = aliased;
+        \\}
+    );
+    defer destroyBoundSetup(invalid);
+    invalid.base.checker.setStrictFlags(.{
+        .strict_null_checks = true,
+        .strict_function_types = true,
+        .no_implicit_any = true,
+    });
+    try invalid.base.checker.checkSourceFile(invalid.base.root);
+    try T.expectEqual(@as(usize, 4), checkerCountCode(invalid.base, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(invalid.base, TsCodes.not_callable));
+
+    const empty = try newBoundSetup(
+        \\interface Function {}
+        \\type EmptyFunctionAlias = Function;
+        \\function isCallable(value: unknown): value is Function { return typeof value === "function"; }
+        \\function isAliasCallable(value: unknown): value is EmptyFunctionAlias { return typeof value === "function"; }
+        \\declare const direct: number | (() => number);
+        \\if (isCallable(direct)) {
+        \\  direct();
+        \\  const exact: () => number = direct;
+        \\} else {
+        \\  const unreachable: never = direct;
+        \\}
+        \\declare const aliased: string | (() => number);
+        \\if (isAliasCallable(aliased)) {
+        \\  aliased();
+        \\  const exact: () => number = aliased;
+        \\} else {
+        \\  const unreachable: never = aliased;
+        \\}
+        \\declare const standaloneFunction: () => number;
+        \\const emptyFunctionAssignment: Function = standaloneFunction;
+    );
+    defer destroyBoundSetup(empty);
+    empty.base.checker.setStrictFlags(.{
+        .strict_null_checks = true,
+        .strict_function_types = true,
+        .no_implicit_any = true,
+    });
+    try empty.base.checker.checkSourceFile(empty.base.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(empty.base, TsCodes.not_callable));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(empty.base, TsCodes.type_not_assignable));
 }
 
 test "checker: tiny scopes resolve annotated locals without building an index" {
