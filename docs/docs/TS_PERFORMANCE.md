@@ -4306,6 +4306,40 @@ Both runs, including every outlier, remain in the record. These local synthetic
 results do not establish leadership on real projects or other platforms.
 Issues #473, #475, #476, and #478 remain open before async coverage can be accepted.
 
+### Promise chain and readonly Promise.all inference (untimed)
+
+[Issue #475](https://github.com/home-lang/home/issues/475) covers two false
+acceptances from the async admission audit. A fulfilled callback result was
+erased by `Promise.then`, and `Promise.all([numeric, text] as const)` did not
+retain the readonly tuple's positional awaited types. Home now evaluates
+`then`, `catch`, and `finally` at the instance call site after normal argument
+validation. This keeps generic result inference local to the call instead of
+embedding checker-owned type parameters in the shared structural Promise
+graph. `Awaited` also distributes over union members, and the Promise static
+path unwraps a readonly `as const` array expression before collecting tuple
+elements.
+
+The production-corpus gate exposed a separate interner lifetime bug while
+validating this change: recursive iterable-element discovery retained a slice
+into the shared member pool across calls that could grow and relocate that
+pool. Union and intersection member IDs are now copied before recursion. This
+is an ownership fix, not a crash suppression or a relaxed diagnostic path.
+
+| Untimed correctness gate | TypeScript 6.0.3 | Native TypeScript 7.0.2 | Home |
+|---|---:|---:|---:|
+| Wrong assignment after `await pending.then(value => value.label)` | 1 × TS2322 | 1 × TS2322 | **1 × TS2322** |
+| Wrong first-slot assignment after readonly `Promise.all` | 1 × TS2322 | 1 × TS2322 | **1 × TS2322** |
+| Extended chain/default/rejection matrix | — | — | **7 × TS2322; 0 × TS2345; 0 × TS7006** |
+| Full checker suite | — | — | **4,410/4,410** |
+| Zod 4.5.2 21-file core proxy | 1 shared TS2307 | 1 shared TS2307 | **1 shared TS2307; 0 added** |
+
+The final ReleaseSafe Zod run completed without a crash at 1,360 MB peak
+supervised tree footprint. The ReleaseSafe compiler build peaked at 2,627 MB,
+and the full checker run peaked at 2,258 MB. These figures are memory-safety
+observations from guarded validation, not performance measurements. No timing
+samples were collected, and async admission remains blocked on the other open
+semantic controls under #473.
+
 ### Generic receiver callback validation (untimed)
 
 Commit [`0612a9071`](https://github.com/home-lang/home/commit/0612a9071fd4231f0fce1f3e15c948ec2a3d503d)

@@ -422,6 +422,7 @@ Conservative on purpose: anything not exercised by an example or a test stays
 | Lexer, parser, type inference | Usable today | [Capability matrix](https://home-lang.org/docs/CAPABILITY_MATRIX) |
 | TypeScript front end (`home tsc`) | Usable today; fastest on 20 / 20 benchmark workloads | [TypeScript performance](docs/docs/TS_PERFORMANCE.md) |
 | TypeScript conformance (coarse + byte-exact) | 5,907 / 5,907 — 100% | [TypeScript parity](https://home-lang.org/docs/PARITY-TYPESCRIPT) |
+| Promise chain and readonly `Promise.all` inference | Exact TS2322 controls; 4,410 / 4,410 checker tests | [Untimed validation](docs/docs/TS_PERFORMANCE.md#promise-chain-and-readonly-promiseall-inference-untimed) |
 | TypeScript diagnostic codes emitted | 1,620 / 2,079; **0 reachable targets left** | [Diagnostic reachability](https://home-lang.org/docs/TS_DIAGNOSTIC_REACHABILITY) |
 | TypeScript language-server methods routed (library; not yet served by `home lsp`) | 76 / ~80 | [Parity status](https://home-lang.org/docs/PARITY-STATUS#lsp--ide-coverage--home-lsp-vs-tsserver) |
 | Native codegen | 🚧 Home AST→native is maturing; JS/TS standalones run bundled graphs in JSC, not TS→native lowering | [Codegen tests](https://github.com/home-lang/home/blob/main/packages/codegen/tests/codegen_test.zig) · [standalone tests](https://github.com/home-lang/home/blob/main/packages/runtime/test/test/bundler/bundler_compile.test.ts) |

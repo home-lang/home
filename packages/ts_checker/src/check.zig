@@ -29710,24 +29710,25 @@ pub const Checker = struct {
     /// the operand is no longer a structural Promise. For non-Promise
     /// types this is a no-op and `t` is returned unchanged.
     fn evalAwaited(self: *Checker, t: TypeId) TypeId {
-        var cur = t;
-        // Cap recursion in case of pathological self-referential
-        // Promise shapes; TS itself imposes no fixed depth, but a
-        // small bound matches the practical universe of Promise<...>
-        // chains and prevents runaway loops on cyclic types.
-        var i: usize = 0;
-        while (i < 64) : (i += 1) {
-            const next = self.promisePayloadType(cur) orelse self.unwrapPromise(cur);
-            if (next == cur) return cur;
-            cur = next;
-        }
-        return cur;
+        return self.evalAwaitedDepth(t, 0);
     }
 
-    /// Build a minimal structural `Promise<T>` object type ÃÂ¢ÃÂÃÂ `{ then:
-    /// (onfulfilled: (value: T) => any, onrejected?: any) => any }` ÃÂ¢ÃÂÃÂ
-    /// used when intercepting `Promise<T>` type-refs so downstream
-    /// Awaited / await unwrap machinery can recognize and peel them.
+    fn evalAwaitedDepth(self: *Checker, t: TypeId, depth: u8) TypeId {
+        if (depth >= 64 or t >= self.interner.pool.typeCount()) return t;
+        if (self.interner.pool.flagsOf(t).is_union) {
+            const members = self.gpa.dupe(TypeId, self.interner.unionMembers(t)) catch return t;
+            defer self.gpa.free(members);
+            for (members) |*member| member.* = self.evalAwaitedDepth(member.*, depth + 1);
+            return self.interner.internUnion(members) catch t;
+        }
+        const next = self.promiseAssignablePayload(t) orelse self.unwrapPromise(t);
+        if (next == t) return t;
+        return self.evalAwaitedDepth(next, depth + 1);
+    }
+
+    /// Build a minimal structural `Promise<T>` surface. Generic Promise
+    /// instance methods are evaluated at their call site so this reusable
+    /// object shape does not carry checker-local type parameters across files.
     fn buildStructuralPromise(self: *Checker, value_t: TypeId) CheckError!TypeId {
         const cb_params = [_]TypeId{value_t};
         const cb_sig = self.interner.internSignature(&cb_params, types.Primitive.any, false) catch return error.OutOfMemory;
@@ -29738,9 +29739,6 @@ pub const Checker = struct {
         try self.signature_min_args.put(self.gpa, then_sig, 0);
         const finally_cb_sig = self.interner.internSignature(&[_]TypeId{}, types.Primitive.any, false) catch return error.OutOfMemory;
         const finally_sig = self.interner.internSignature(&[_]TypeId{finally_cb_sig}, types.Primitive.any, false) catch return error.OutOfMemory;
-        // `catch(onrejected?: (reason: any) => any): Promise<any>` — modeled
-        // loosely as `(cb?) => any`. Without it, `p.catch(...)` on a
-        // `Promise<T>` value tripped a spurious TS2339.
         const catch_sig = self.interner.internSignature(&[_]TypeId{optional_reject_cb}, types.Primitive.any, false) catch return error.OutOfMemory;
         const then_id = self.string_interner.intern("then") catch return error.OutOfMemory;
         const finally_id = self.string_interner.intern("finally") catch return error.OutOfMemory;
@@ -36205,7 +36203,12 @@ pub const Checker = struct {
         if (flags.is_union) {
             var elems: std.ArrayListUnmanaged(TypeId) = .empty;
             defer elems.deinit(self.gpa);
-            for (self.interner.unionMembers(t)) |member| {
+            // Recursive element discovery can intern a type and grow the
+            // shared member pool. Do not retain a slice into that pool across
+            // the recursive call.
+            const members = try self.gpa.dupe(TypeId, self.interner.unionMembers(t));
+            defer self.gpa.free(members);
+            for (members) |member| {
                 try elems.append(self.gpa, try self.iterableElementType(member));
             }
             return self.unionOrAny(elems.items);
@@ -36213,7 +36216,9 @@ pub const Checker = struct {
         if (flags.is_intersection) {
             var elems: std.ArrayListUnmanaged(TypeId) = .empty;
             defer elems.deinit(self.gpa);
-            for (self.interner.intersectionMembers(t)) |member| {
+            const members = try self.gpa.dupe(TypeId, self.interner.intersectionMembers(t));
+            defer self.gpa.free(members);
+            for (members) |member| {
                 if (self.isIterableLikeType(member)) try elems.append(self.gpa, try self.iterableElementType(member));
             }
             if (elems.items.len == 0) return types.Primitive.any;
@@ -106104,10 +106109,11 @@ pub const Checker = struct {
         if (self.diagnostics.items.len == 0) return;
         const last = &self.diagnostics.items[self.diagnostics.items.len - 1];
         if (last.code != TsCodes.type_not_assignable) return;
-        const awaited_t = self.unwrapPromise(source_t);
+        const awaited_t = self.promiseAssignablePayload(source_t) orelse self.unwrapPromise(source_t);
         if (awaited_t == source_t) return;
-        if (self.unwrapPromise(target_t) != target_t) return;
-        if (!try self.expressionNodeAssignableToTarget(source_node, awaited_t, target_t)) return;
+        if (self.promiseAssignablePayload(target_t) != null or self.unwrapPromise(target_t) != target_t) return;
+        const assignable = try self.expressionNodeAssignableToTarget(source_node, awaited_t, target_t);
+        if (!assignable) return;
         const existing_len = last.related.len;
         const related = try self.diag_arena.allocator().alloc(RelatedInfo, existing_len + 1);
         if (existing_len > 0) @memcpy(related[0..existing_len], last.related);
@@ -115341,6 +115347,9 @@ pub const Checker = struct {
                             }
                         }
                         self.rewriteStrictBindThisMismatch(node, args, effective_callee_t, strict_bind_diag_start);
+                    }
+                    if (try self.builtinPromiseInstanceCallType(c.callee, arg_types.items)) |promise_t| {
+                        break :blk try self.optionalChainResult(promise_t, call_is_optional_chain);
                     }
                     if (self.interner.signatureReturn(effective_callee_t)) |ret| {
                         if (failed_contextual_generic_return_inference) {
@@ -145274,6 +145283,60 @@ pub const Checker = struct {
         return try self.objectAssignIntersection(arg_types);
     }
 
+    /// Evaluate the generic instance methods of a structural Promise at the
+    /// call site. Keeping the type parameters local to the call avoids
+    /// embedding checker-owned generic signatures in the shared Promise
+    /// object graph, while preserving TypeScript's fulfilled/rejected result
+    /// inference for chained calls.
+    fn builtinPromiseInstanceCallType(
+        self: *Checker,
+        callee: NodeId,
+        arg_types: []const TypeId,
+    ) CheckError!?TypeId {
+        if (self.hir.kindOf(callee) != .member_access) return null;
+        const member = hir_mod.memberOf(self.hir, callee);
+        const receiver_t = self.hir.typeOf(member.object);
+        if (receiver_t == types.Primitive.none) return null;
+        const payload_t = self.promiseAssignablePayload(receiver_t) orelse return null;
+        const name = self.string_interner.get(member.name);
+
+        if (std.mem.eql(u8, name, "finally")) {
+            if (arg_types.len > 1) return null;
+            return try self.buildStructuralPromise(payload_t);
+        }
+
+        const is_then = std.mem.eql(u8, name, "then");
+        const is_catch = std.mem.eql(u8, name, "catch");
+        if ((!is_then and !is_catch) or arg_types.len > 2) return null;
+        if (is_catch and self.promisePayloadType(receiver_t) == null) return null;
+
+        var fulfilled_t = payload_t;
+        var rejected_t = types.Primitive.never;
+        if (is_then and arg_types.len > 0) {
+            fulfilled_t = self.promiseCallbackAwaitedResult(arg_types[0], payload_t);
+        }
+        const rejected_index: usize = if (is_then) 1 else 0;
+        if (arg_types.len > rejected_index) {
+            rejected_t = self.promiseCallbackAwaitedResult(arg_types[rejected_index], types.Primitive.never);
+        }
+
+        const result_t = if (fulfilled_t == types.Primitive.never)
+            rejected_t
+        else if (rejected_t == types.Primitive.never or fulfilled_t == rejected_t)
+            fulfilled_t
+        else
+            self.interner.internUnion(&.{ fulfilled_t, rejected_t }) catch return error.OutOfMemory;
+        return try self.buildStructuralPromise(result_t);
+    }
+
+    fn promiseCallbackAwaitedResult(self: *Checker, callback_t: TypeId, fallback_t: TypeId) TypeId {
+        if (callback_t == types.Primitive.undefined_t or callback_t == types.Primitive.null_t) return fallback_t;
+        if (callback_t == types.Primitive.any) return types.Primitive.any;
+        const sig = self.firstSignatureType(callback_t) orelse return fallback_t;
+        const return_t = self.interner.signatureReturn(sig) orelse return types.Primitive.any;
+        return self.evalAwaited(return_t);
+    }
+
     /// Model the generic `Promise` statics from lib.es2015.promise:
     ///
     ///   resolve(): Promise<void>
@@ -145335,8 +145398,9 @@ pub const Checker = struct {
         var elements: std.ArrayListUnmanaged(TypeId) = .empty;
         defer elements.deinit(self.gpa);
         var is_tuple = true;
-        if (self.hir.kindOf(args[0]) == .array_literal) {
-            for (hir_mod.arrayLiteralElements(self.hir, args[0])) |element| {
+        const literal_arg = self.unwrapIsolatedDeclarationsConstAssertion(args[0]).expr;
+        if (self.hir.kindOf(literal_arg) == .array_literal) {
+            for (hir_mod.arrayLiteralElements(self.hir, literal_arg)) |element| {
                 if (element == hir_mod.none_node_id or self.hir.kindOf(element) == .spread) return null;
                 const element_t = self.hir.typeOf(element);
                 if (element_t == types.Primitive.none) return null;
@@ -166510,6 +166574,10 @@ pub const Checker = struct {
                 param_t = qualified_t;
             }
             param_t = self.pureVariadicTupleTarget(param_t) orelse param_t;
+            // An omitted/defaulted parameter also accepts an explicit
+            // `undefined`. `signature_min_args` is the canonical optional
+            // boundary for synthesized and source-owned signatures alike.
+            if (fixed_pos >= fixed_min_required and arg_types[i] == types.Primitive.undefined_t) continue;
             if (param_t >= self.interner.pool.typeCount()) continue;
             const declared_param_predicate = self.signature_param_predicates.get(.{
                 .signature = sig,
@@ -178518,10 +178586,31 @@ pub const Checker = struct {
     }
 
     fn promisePayloadArgumentAssignable(self: *Checker, arg_t: TypeId, param_t: TypeId) CheckError!bool {
-        const arg_payload = self.promisePayloadType(arg_t) orelse return false;
-        const param_payload = self.promisePayloadType(param_t) orelse return false;
+        const arg_payload = self.promiseAssignablePayload(arg_t) orelse return false;
+        if (param_t < self.interner.pool.typeCount() and self.interner.pool.flagsOf(param_t).is_union) {
+            const members = try self.gpa.dupe(TypeId, self.interner.unionMembers(param_t));
+            defer self.gpa.free(members);
+            for (members) |member| {
+                const member_payload = self.promiseAssignablePayload(member) orelse continue;
+                if (member_payload == types.Primitive.any or
+                    (self.engine.isAssignableTo(arg_payload, member_payload) catch false))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+        const param_payload = self.promiseAssignablePayload(param_t) orelse return false;
         if (param_payload == types.Primitive.any) return true;
         return self.engine.isAssignableTo(arg_payload, param_payload) catch false;
+    }
+
+    fn promiseAssignablePayload(self: *Checker, t: TypeId) ?TypeId {
+        if (self.promisePayloadType(t)) |payload| return payload;
+        return switch (self.promiseLikeResult(t)) {
+            .promised => |payload| payload,
+            .none, .malformed => null,
+        };
     }
 
     fn promisePayloadType(self: *Checker, t: TypeId) ?TypeId {
@@ -205985,6 +206074,86 @@ test "checker: Promise statics type their results for then callbacks" {
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
     try T.expectEqual(@as(usize, 1), s.checker.diagnostics.items.len);
     try T.expect(std.mem.indexOf(u8, s.checker.diagnostics.items[0].message, "'number'") != null);
+}
+
+test "checker: Promise chains and all preserve awaited result types" {
+    // TypeScript 6.0.3 and 7.0.2 both reject the two deliberately wrong
+    // assignments. The chain must infer the fulfilled callback's `string`
+    // result, while Promise.all must retain each readonly tuple position and
+    // recursively assimilate PromiseLike values.
+    {
+        const b = try newBoundSetup(
+            \\declare const pending: Promise<{ label: string }>;
+            \\async function chained() {
+            \\  const result = await pending.then(value => value.label);
+            \\  const good: string = result;
+            \\  const bad: number = result;
+            \\}
+        );
+        defer destroyBoundSetup(b);
+        const s = b.base;
+        s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+        try s.checker.checkSourceFile(s.root);
+        try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+        try T.expectEqual(@as(usize, 1), s.checker.diagnostics.items.len);
+    }
+    {
+        const b = try newBoundSetup(
+            \\declare const numeric: Promise<number>;
+            \\declare const text: PromiseLike<string>;
+            \\async function combined() {
+            \\  const result = await Promise.all([numeric, text] as const);
+            \\  const good: number = result[0];
+            \\  const bad: string = result[0];
+            \\}
+        );
+        defer destroyBoundSetup(b);
+        const s = b.base;
+        s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+        try s.checker.checkSourceFile(s.root);
+        try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+        try T.expectEqual(@as(usize, 1), s.checker.diagnostics.items.len);
+    }
+    {
+        const b = try newBoundSetup(
+            \\declare const pending: Promise<number>;
+            \\declare const like: PromiseLike<string>;
+            \\async function branches() {
+            \\  const plain = await pending.then(value => value.toString());
+            \\  const assimilated = await pending.then(() => like);
+            \\  const recovered = await pending.then(undefined, () => "fallback");
+            \\  const caught = await pending.catch(() => "fallback");
+            \\  const unchanged = await pending.finally(() => {});
+            \\  const defaulted = await pending.then();
+            \\  const plainGood: string = plain;
+            \\  const assimilatedGood: string = assimilated;
+            \\  const recoveredGood: number | string = recovered;
+            \\  const caughtGood: number | string = caught;
+            \\  const unchangedGood: number = unchanged;
+            \\  const defaultedGood: number = defaulted;
+            \\  const plainBad: number = plain;
+            \\  const assimilatedBad: number = assimilated;
+            \\  const recoveredBad: boolean = recovered;
+            \\  const caughtBad: boolean = caught;
+            \\  const unchangedBad: string = unchanged;
+            \\  const defaultedBad: string = defaulted;
+            \\}
+            \\function shadowed() {
+            \\  const Promise = { all(value: string) { return value; } };
+            \\  const result = Promise.all("ok");
+            \\  const good: string = result;
+            \\  const bad: number = result;
+            \\}
+        );
+        defer destroyBoundSetup(b);
+        const s = b.base;
+        s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+        try s.checker.checkSourceFile(s.root);
+        try T.expectEqual(@as(usize, 7), checkerCountCode(s, TsCodes.type_not_assignable));
+        try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
+        try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.parameter_implicitly_any));
+        try T.expectEqual(@as(usize, 7), s.checker.diagnostics.items.len);
+    }
 }
 
 test "checker: built-in Object and Array statics keep their lib parameters" {
