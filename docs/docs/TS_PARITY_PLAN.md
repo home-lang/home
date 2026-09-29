@@ -3262,7 +3262,9 @@ Home pays a ~20–60% overhead vs. raw esbuild/Bun bundler **because we add type
 2. **HIR→MIR lowering** (3 weeks). Existing `packages/optimizer/`, `packages/regalloc/`, `packages/codegen/` apply. Reuse most of the native x64 path. Big addition: monomorphization of generic TS classes/functions, paralleling `packages/codegen/src/monomorphization.zig` for Home generics.
 3. **JS runtime in Zig** (4 weeks). Minimal `Object`, `Array`, `String`, `Map`, `Set`, `Promise` runtime. Most exists in stdlib.
 4. **GC integration or escape analysis** (3 weeks). Two paths: (a) integrate a small precise GC; (b) escape analysis + arenas + RC for cycles. Decision deferred to a Phase 7 design spike.
-5. **WASM emit** (2 weeks). For browser/runtime distribution.
+5. **WASM emit (future, separately admitted)** (2 weeks). The unbuilt prototype
+   was retired; a replacement must be wired through `build.zig`, the CLI, and
+   native WebAssembly execution tests before it is advertised as a target.
 6. **Direct-backend completion** (2 weeks). Extend the wired x64 and arm64 Home backends for the typed TS subset, sharing HIR-to-MIR lowering and ABI tests instead of maintaining a second lowering stack.
 
 **Exit criteria.** A 50-project corpus of typed-subset TS compiles natively and matches Node-on-tsc output for unit tests.
