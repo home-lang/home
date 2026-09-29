@@ -22,6 +22,13 @@ extern "kernel32" fn SetThreadGroupAffinity(
     group_affinity: *const WindowsGroupAffinity,
     previous_group_affinity: ?*WindowsGroupAffinity,
 ) callconv(.winapi) std.os.windows.BOOL;
+extern "kernel32" fn SetThreadPriority(
+    thread: std.os.windows.HANDLE,
+    priority: c_int,
+) callconv(.winapi) std.os.windows.BOOL;
+extern "kernel32" fn GetThreadPriority(
+    thread: std.os.windows.HANDLE,
+) callconv(.winapi) c_int;
 
 const MachThreadAffinityPolicy = extern struct {
     affinity_tag: std.c.integer_t,
@@ -32,6 +39,15 @@ const mach_thread_affinity_policy_count: std.c.mach_msg_type_number_t =
     @sizeOf(MachThreadAffinityPolicy) / @sizeOf(std.c.integer_t);
 // mach/kern_return.h
 const mach_not_supported: std.c.kern_return_t = 46;
+
+const windows_priority_error_return: i32 = std.math.maxInt(i32);
+const windows_priority_idle: i32 = -15;
+const windows_priority_lowest: i32 = -2;
+const windows_priority_below_normal: i32 = -1;
+const windows_priority_normal: i32 = 0;
+const windows_priority_above_normal: i32 = 1;
+const windows_priority_highest: i32 = 2;
+const windows_priority_time_critical: i32 = 15;
 
 extern "c" fn mach_thread_self() std.c.mach_port_t;
 extern "c" fn thread_policy_set(
@@ -234,13 +250,157 @@ pub fn getAffinityTag() ThreadError!i32 {
     return policy.affinity_tag;
 }
 
+fn canonicalPriority(priority: i32) ThreadError!i32 {
+    if (priority < 0 or priority > 100) return ThreadError.InvalidPriority;
+    if (priority == 0) return 0;
+    if (priority < 25) return 1;
+    if (priority < 50) return 25;
+    if (priority < 75) return 50;
+    if (priority < 99) return 75;
+    return priority;
+}
+
+fn priorityToWindows(priority: i32) ThreadError!i32 {
+    return switch (try canonicalPriority(priority)) {
+        0 => windows_priority_idle,
+        1 => windows_priority_lowest,
+        25 => windows_priority_below_normal,
+        50 => windows_priority_normal,
+        75 => windows_priority_above_normal,
+        99 => windows_priority_highest,
+        100 => windows_priority_time_critical,
+        else => unreachable,
+    };
+}
+
+fn priorityFromWindows(priority: i32) ThreadError!i32 {
+    return switch (priority) {
+        windows_priority_idle => 0,
+        windows_priority_lowest => 1,
+        windows_priority_below_normal => 25,
+        windows_priority_normal => 50,
+        windows_priority_above_normal => 75,
+        windows_priority_highest => 99,
+        windows_priority_time_critical => 100,
+        else => ThreadError.SchedParamFailed,
+    };
+}
+
+fn priorityToLinuxNice(priority: i32) ThreadError!i32 {
+    return switch (try canonicalPriority(priority)) {
+        0 => 19,
+        1 => 15,
+        25 => 10,
+        50 => 0,
+        75 => -5,
+        99 => -10,
+        100 => -20,
+        else => unreachable,
+    };
+}
+
+fn priorityFromLinuxNice(nice: i32) ThreadError!i32 {
+    return switch (nice) {
+        19 => 0,
+        15 => 1,
+        10 => 25,
+        0 => 50,
+        -5 => 75,
+        -10 => 99,
+        -20 => 100,
+        else => ThreadError.SchedParamFailed,
+    };
+}
+
+fn priorityToDarwinQos(priority: i32) ThreadError!c_uint {
+    return switch (try canonicalPriority(priority)) {
+        0, 1 => 0x09,
+        25 => 0x11,
+        50 => 0x15,
+        75 => 0x19,
+        99, 100 => 0x21,
+        else => unreachable,
+    };
+}
+
+fn priorityFromDarwinQos(qos: c_uint) ThreadError!i32 {
+    return switch (qos) {
+        0x00, 0x15 => 50,
+        0x09 => 1,
+        0x11 => 25,
+        0x19 => 75,
+        0x21 => 99,
+        else => ThreadError.SchedParamFailed,
+    };
+}
+
 pub fn setPriority(priority: i32) ThreadError!void {
-    _ = priority;
+    if (comptime builtin.os.tag == .windows) {
+        const native = try priorityToWindows(priority);
+        if (!SetThreadPriority(std.os.windows.GetCurrentThread(), native).toBool()) {
+            return ThreadError.SchedParamFailed;
+        }
+        return;
+    }
+    if (comptime builtin.os.tag == .linux) {
+        const nice = try priorityToLinuxNice(priority);
+        const result = std.os.linux.syscall3(
+            .setpriority,
+            0,
+            0,
+            @bitCast(@as(isize, nice)),
+        );
+        return switch (std.os.linux.errno(result)) {
+            .SUCCESS => {},
+            .ACCES, .PERM => ThreadError.PermissionDenied,
+            .INVAL => ThreadError.InvalidPriority,
+            else => ThreadError.SchedParamFailed,
+        };
+    }
+    if (comptime builtin.os.tag == .macos) {
+        const qos: std.c.qos_class_t = @fromBackingInt(@intCast(try priorityToDarwinQos(priority)));
+        const result = std.c.pthread_set_qos_class_self_np(qos, 0);
+        if (result == 0) return;
+        if (result == @backingInt(std.c.E.PERM)) return ThreadError.PermissionDenied;
+        if (result == @backingInt(std.c.E.INVAL)) return ThreadError.InvalidPriority;
+        return ThreadError.SchedParamFailed;
+    }
     return ThreadError.OperationNotSupported;
 }
 
 pub fn getPriority() ThreadError!i32 {
+    if (comptime builtin.os.tag == .windows) {
+        const native = GetThreadPriority(std.os.windows.GetCurrentThread());
+        if (native == windows_priority_error_return) return ThreadError.SchedParamFailed;
+        return priorityFromWindows(native);
+    }
+    if (comptime builtin.os.tag == .linux) {
+        const result = std.os.linux.syscall2(.getpriority, 0, 0);
+        if (std.os.linux.errno(result) != .SUCCESS) return ThreadError.SchedParamFailed;
+        const nice = 20 - @as(i32, @intCast(result));
+        return priorityFromLinuxNice(nice);
+    }
+    if (comptime builtin.os.tag == .macos) {
+        var qos: std.c.qos_class_t = .UNSPECIFIED;
+        var relative_priority: c_int = 0;
+        const result = std.c.pthread_get_qos_class_np(std.c.pthread_self(), &qos, &relative_priority);
+        if (result != 0 or relative_priority != 0) return ThreadError.SchedParamFailed;
+        return priorityFromDarwinQos(@backingInt(qos));
+    }
     return ThreadError.OperationNotSupported;
+}
+
+test "abstract priorities map to native scheduler values" {
+    try std.testing.expectEqual(@as(i32, windows_priority_idle), try priorityToWindows(0));
+    try std.testing.expectEqual(@as(i32, windows_priority_below_normal), try priorityToWindows(25));
+    try std.testing.expectEqual(@as(i32, windows_priority_normal), try priorityToWindows(50));
+    try std.testing.expectEqual(@as(i32, windows_priority_time_critical), try priorityToWindows(100));
+    try std.testing.expectEqual(@as(i32, 10), try priorityToLinuxNice(25));
+    try std.testing.expectEqual(@as(i32, -20), try priorityToLinuxNice(100));
+    try std.testing.expectEqual(@as(c_uint, 0x11), try priorityToDarwinQos(25));
+    try std.testing.expectEqual(@as(c_uint, 0x21), try priorityToDarwinQos(100));
+    try std.testing.expectError(ThreadError.InvalidPriority, priorityToWindows(-1));
+    try std.testing.expectError(ThreadError.InvalidPriority, priorityToLinuxNice(101));
 }
 
 test "cpu set tracks bits across word boundaries" {

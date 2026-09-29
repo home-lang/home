@@ -8,14 +8,14 @@
 
 | Area | Current behavior | Evidence |
 |---|---|---|
-| Threads | `spawn`, `spawnWithAttr`, `join`, `detach`, IDs, yield, and sleep wrap `std.Thread`. The caller allocator and validated stack size reach `std.Thread.SpawnConfig`; pthread-backed tests inspect the child thread's actual stack size. Priority is stored but not applied. | [`thread.zig`](src/thread.zig) and its inline tests |
+| Threads | `spawn`, `spawnWithAttr`, `join`, `detach`, IDs, yield, and sleep wrap `std.Thread`. The caller allocator and validated stack size reach `std.Thread.SpawnConfig`; pthread-backed tests inspect the child thread's actual stack size. Optional priority is applied inside the child before user code, with a futex startup handshake that reports OS rejection to the caller. | [`thread.zig`](src/thread.zig) and its inline tests |
 | Mutex | Futex-backed blocking lock with `lock`, `tryLock`, `unlock`, and scoped guards. Recursive mode is explicitly rejected instead of ignored. Timed locking, robust ownership, and priority inheritance are not implemented. | [`mutex.zig`](src/mutex.zig) and [#802](https://github.com/home-lang/home/issues/802) |
 | Semaphore | Atomic counting semaphore with OS-backed futex waiting, CAS-based `tryWait`, one-waiter `post` wakeups, and `getValue`. No named or timed semaphore API. | [`semaphore.zig`](src/semaphore.zig) and its inline tests |
 | Condition variable | Futex epoch implementation with blocking wait, one-waiter signal, all-waiter broadcast, and monotonic relative timeout. Signals with no waiter are not remembered. | [`condvar.zig`](src/condvar.zig) and [#802](https://github.com/home-lang/home/issues/802) |
 | Read/write lock | Writer-preferring futex state permits concurrent readers or one writer while blocking new readers behind queued writers. No timed operations or upgrade/downgrade API. | [`rwlock.zig`](src/rwlock.zig) and [#802](https://github.com/home-lang/home/issues/802) |
 | Barrier and once | Barrier is a reusable futex-backed generation barrier; zero-party construction is rejected. Once remains an atomic/spin implementation. | [`barrier.zig`](src/barrier.zig), [`once.zig`](src/once.zig) |
 | TLS | Fixed process-wide key table and per-key atomic values. Destructor and true per-thread storage semantics are not implemented. | [`tls.zig`](src/tls.zig) |
-| Scheduling | `CpuSet` bit operations and current-thread affinity are implemented on Linux and with Windows processor groups. Linux has a live round-trip test; Windows conversion tests and cross-compilation cover the ABI, but a live Windows run is still pending. macOS exposes advisory affinity tags, not hard CPU masks; Home exposes those tags separately and reports when the running kernel does not support them. Priority application remains unsupported. | [`sched.zig`](src/sched.zig) and [#803](https://github.com/home-lang/home/issues/803) |
+| Scheduling | `CpuSet` bit operations and current-thread affinity are implemented on Linux and with Windows processor groups. Linux has a live round-trip test; Windows conversion tests and cross-compilation cover the ABI, but a live Windows run is still pending. macOS exposes advisory affinity tags, not hard CPU masks; Home exposes those tags separately and reports when the running kernel does not support them. Abstract priorities map to Linux nice levels, Windows thread priorities, or macOS QoS classes. | [`sched.zig`](src/sched.zig) and [#803](https://github.com/home-lang/home/issues/803) |
 
 The public facade is [`threading.zig`](src/threading.zig). It exports the
 implemented types above, including `BinarySemaphore`, and keeps stack-size
@@ -45,8 +45,11 @@ pub fn Thread.sleep(nanoseconds: u64) void
 ```
 
 `ThreadAttr.stack_size` must be at least 16 KiB. `spawnWithAttr` forwards the
-selected stack size and allocator to `std.Thread.spawn`. The `priority` field
-does not affect the spawned thread yet; that work remains in #803.
+selected stack size and allocator to `std.Thread.spawn`. Priority is optional;
+when present it must be in the inclusive abstract range 0–100. The child maps
+it to a native scheduler level before user code starts, and the parent waits on
+a futex startup handshake so an invalid, unsupported, or permission-denied
+request is returned synchronously.
 
 ## Current semaphore API
 
@@ -122,9 +125,9 @@ threshold. The guarded command peaked at 82 MB.
 
 ## Remaining work
 
-- [#803](https://github.com/home-lang/home/issues/803): apply thread priority,
-  run affinity on live Windows infrastructure, and run the pthread stack check
-  on live Linux infrastructure.
+- [#803](https://github.com/home-lang/home/issues/803): run affinity and
+  priority on live Windows infrastructure, and run the affinity, priority, and
+  pthread stack checks on live Linux infrastructure.
 - [#805](https://github.com/home-lang/home/issues/805): add language-level
   `spawn`, threads, and the multi-core executor.
 - [#806](https://github.com/home-lang/home/issues/806): implement `Send`/`Sync`

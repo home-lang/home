@@ -4,6 +4,55 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const ThreadError = @import("errors.zig").ThreadError;
+const sched = @import("sched.zig");
+const Futex = @import("threading_futex");
+
+const PriorityStartupResult = enum(u32) {
+    success,
+    invalid_priority,
+    permission_denied,
+    operation_not_supported,
+    sched_param_failed,
+};
+
+fn priorityResult(err: ThreadError) PriorityStartupResult {
+    return switch (err) {
+        ThreadError.InvalidPriority => .invalid_priority,
+        ThreadError.PermissionDenied => .permission_denied,
+        ThreadError.OperationNotSupported => .operation_not_supported,
+        else => .sched_param_failed,
+    };
+}
+
+fn priorityError(result: PriorityStartupResult) ThreadError {
+    return switch (result) {
+        .success => unreachable,
+        .invalid_priority => ThreadError.InvalidPriority,
+        .permission_denied => ThreadError.PermissionDenied,
+        .operation_not_supported => ThreadError.OperationNotSupported,
+        .sched_param_failed => ThreadError.SchedParamFailed,
+    };
+}
+
+fn callThreadFunction(comptime func: anytype, args: anytype) void {
+    const bad_return = "expected thread function return type to be 'u8', 'noreturn', '!noreturn', 'void', or '!void'";
+    switch (@typeInfo(@typeInfo(@TypeOf(func)).@"fn".return_type.?)) {
+        .noreturn => @call(.auto, func, args),
+        .void => @call(.auto, func, args),
+        .int => |info| {
+            if (info.bits != 8) @compileError(bad_return);
+            _ = @call(.auto, func, args);
+        },
+        .error_union => |info| switch (info.payload) {
+            void, noreturn => @call(.auto, func, args) catch |err| {
+                std.debug.print("error: {s}\n", .{@errorName(err)});
+                if (@errorReturnTrace()) |trace| std.debug.dumpErrorReturnTrace(trace);
+            },
+            else => @compileError(bad_return),
+        },
+        else => @compileError(bad_return),
+    }
+}
 
 fn currentPthreadStackSize() ?usize {
     if (comptime !std.Thread.use_pthreads) return null;
@@ -51,6 +100,53 @@ pub const Thread = struct {
         args: anytype,
     ) ThreadError!Thread {
         const config = try attr.spawnConfig(allocator);
+        if (attr.priority) |priority| {
+            const Args = @TypeOf(args);
+            const Startup = struct {
+                state: std.atomic.Value(u32) = .init(0),
+                result: PriorityStartupResult = .success,
+                priority: i32,
+                args: Args,
+            };
+            const Runner = struct {
+                fn run(startup: *Startup) void {
+                    const child_args = startup.args;
+                    startup.result = if (sched.setPriority(startup.priority))
+                        .success
+                    else |err|
+                        priorityResult(err);
+
+                    startup.state.store(1, .release);
+                    Futex.wake(&startup.state, 1);
+                    while (startup.state.load(.acquire) != 2) {
+                        Futex.waitForever(&startup.state, 1);
+                    }
+                    const result = startup.result;
+                    startup.state.store(3, .release);
+                    Futex.wake(&startup.state, 1);
+                    if (result == .success) callThreadFunction(func, child_args);
+                }
+            };
+
+            var startup = Startup{ .priority = priority, .args = args };
+            const inner = std.Thread.spawn(config, Runner.run, .{&startup}) catch {
+                return ThreadError.ThreadCreationFailed;
+            };
+            while (startup.state.load(.acquire) != 1) {
+                Futex.waitForever(&startup.state, 0);
+            }
+            const result = startup.result;
+            startup.state.store(2, .release);
+            Futex.wake(&startup.state, 1);
+            while (startup.state.load(.acquire) != 3) {
+                Futex.waitForever(&startup.state, 2);
+            }
+            if (result != .success) {
+                inner.join();
+                return priorityError(result);
+            }
+            return Thread{ .inner = inner };
+        }
         const inner = std.Thread.spawn(config, func, args) catch {
             return ThreadError.ThreadCreationFailed;
         };
@@ -97,7 +193,7 @@ pub const ThreadAttr = struct {
     pub const minimum_stack_size: usize = 16 * 1024;
 
     stack_size: ?usize = null,
-    priority: i32 = 0,
+    priority: ?i32 = null,
 
     pub fn init() ThreadAttr {
         return .{};
@@ -112,6 +208,9 @@ pub const ThreadAttr = struct {
     }
 
     fn spawnConfig(self: ThreadAttr, allocator: std.mem.Allocator) ThreadError!std.Thread.SpawnConfig {
+        if (self.priority) |priority| {
+            if (priority < 0 or priority > 100) return ThreadError.InvalidPriority;
+        }
         var config = std.Thread.SpawnConfig{ .allocator = allocator };
         if (self.stack_size) |stack_size| {
             if (stack_size < minimum_stack_size) return ThreadError.StackTooSmall;
@@ -176,6 +275,36 @@ test "spawnWithAttr applies the requested pthread stack size" {
     const observed = observed_stack_size.?;
     try std.testing.expect(observed >= requested_stack_size);
     try std.testing.expect(observed < std.Thread.SpawnConfig.default_stack_size);
+}
+
+test "spawnWithAttr applies priority before user code" {
+    if (builtin.os.tag != .macos and builtin.os.tag != .linux and builtin.os.tag != .windows) {
+        return error.SkipZigTest;
+    }
+
+    var observed_priority: ?i32 = null;
+    const Worker = struct {
+        fn run(observed: *?i32) void {
+            observed.* = sched.getPriority() catch null;
+        }
+    };
+
+    var attr = ThreadAttr.init();
+    attr.setPriority(25);
+    const thread = try Thread.spawnWithAttr(std.testing.allocator, attr, Worker.run, .{&observed_priority});
+    try thread.join();
+    try std.testing.expectEqual(@as(?i32, 25), observed_priority);
+}
+
+test "spawnWithAttr rejects invalid priority before spawning" {
+    var attr = ThreadAttr.init();
+    attr.setPriority(101);
+    try std.testing.expectError(
+        ThreadError.InvalidPriority,
+        Thread.spawnWithAttr(std.testing.allocator, attr, struct {
+            fn run() void {}
+        }.run, .{}),
+    );
 }
 
 test "thread sleep" {
