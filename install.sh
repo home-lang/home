@@ -133,7 +133,9 @@ main() {
 
   local tmp_dir
   tmp_dir="$(mktemp -d 2>/dev/null || mktemp -d -t 'home-install')"
-  trap 'rm -rf "$tmp_dir"' EXIT
+  # Expand now: the EXIT trap runs after this function's locals are gone.
+  # shellcheck disable=SC2064
+  trap "rm -rf '${tmp_dir}'" EXIT
 
   local artifact_path="${tmp_dir}/${artifact_name}"
   local checksum_path="${artifact_path}.sha256"
