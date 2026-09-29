@@ -25,6 +25,7 @@ pub const Thread = @import("thread.zig").Thread;
 pub const ThreadAttr = @import("thread.zig").ThreadAttr;
 pub const Mutex = @import("mutex.zig").Mutex;
 pub const MutexAttr = @import("mutex.zig").MutexAttr;
+pub const StaticMutex = @import("mutex.zig").StaticMutex;
 pub const Semaphore = @import("semaphore.zig").Semaphore;
 pub const BinarySemaphore = @import("semaphore.zig").BinarySemaphore;
 pub const CondVar = @import("condvar.zig").CondVar;

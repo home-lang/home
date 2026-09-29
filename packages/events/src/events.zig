@@ -1,4 +1,5 @@
 const std = @import("std");
+const StaticMutex = @import("threading").StaticMutex;
 
 /// Event handler function type
 pub fn Handler(comptime T: type) type {
@@ -30,12 +31,14 @@ pub fn EventEmitter(comptime Events: type) type {
         allocator: std.mem.Allocator,
         listeners: ListenerMap,
         wildcard_listeners: std.ArrayList(WildcardHandler),
-        mutex: std.Thread.Mutex,
+        mutex: StaticMutex,
+        next_listener_id: u64,
 
         const Self = @This();
         const ListenerMap = std.StringHashMap(std.ArrayList(AnyListener));
 
         const AnyListener = struct {
+            id: u64,
             handler_ptr: *const anyopaque,
             priority: Priority,
             once: bool,
@@ -47,6 +50,7 @@ pub fn EventEmitter(comptime Events: type) type {
                 .listeners = ListenerMap.init(allocator),
                 .wildcard_listeners = .empty,
                 .mutex = .{},
+                .next_listener_id = 0,
             };
         }
 
@@ -57,6 +61,7 @@ pub fn EventEmitter(comptime Events: type) type {
             }
             self.listeners.deinit();
             self.wildcard_listeners.deinit(self.allocator);
+            self.mutex.deinit();
         }
 
         /// Register an event handler
@@ -96,10 +101,12 @@ pub fn EventEmitter(comptime Events: type) type {
             }
 
             const listener = AnyListener{
+                .id = self.next_listener_id,
                 .handler_ptr = handler,
                 .priority = priority,
                 .once = once_flag,
             };
+            self.next_listener_id += 1;
 
             // Insert sorted by priority (high to low)
             var insert_idx: usize = result.value_ptr.items.len;
@@ -139,23 +146,37 @@ pub fn EventEmitter(comptime Events: type) type {
         pub fn emit(self: *Self, comptime event: []const u8, data: Events.getEventType(event)) void {
             self.mutex.lock();
 
-            // Snapshot listeners AND wildcard listeners under the lock so
-            // iteration below doesn't race with concurrent add/remove.
-            const listeners = if (self.listeners.get(event)) |list| list.items else &[_]AnyListener{};
-            const wildcard_snapshot = self.wildcard_listeners.items;
+            // Own both snapshots before unlocking; listener registration and
+            // removal are allowed to reallocate their backing arrays while
+            // callbacks are running.
+            var listeners_allocated = false;
+            const listeners = if (self.listeners.get(event)) |list| blk: {
+                if (self.allocator.dupe(AnyListener, list.items)) |snapshot| {
+                    listeners_allocated = true;
+                    break :blk snapshot;
+                } else |_| break :blk @as([]AnyListener, &[_]AnyListener{});
+            } else @as([]AnyListener, &[_]AnyListener{});
+            var wildcards_allocated = false;
+            const wildcard_snapshot = if (self.allocator.dupe(WildcardHandler, self.wildcard_listeners.items)) |snapshot| blk: {
+                wildcards_allocated = true;
+                break :blk snapshot;
+            } else |_| @as([]WildcardHandler, &[_]WildcardHandler{});
 
-            // Copy once listeners to remove after
-            var to_remove: std.ArrayList(usize) = .empty;
-            defer to_remove.deinit(self.allocator);
+            var to_remove: std.ArrayList(u64) = .empty;
+            defer {
+                to_remove.deinit(self.allocator);
+                if (listeners_allocated) self.allocator.free(listeners);
+                if (wildcards_allocated) self.allocator.free(wildcard_snapshot);
+            }
 
             self.mutex.unlock();
 
             // Call handlers
-            for (listeners, 0..) |listener, i| {
-                const handler: Handler(Events.getEventType(event)) = @ptrCast(listener.handler_ptr);
+            for (listeners) |listener| {
+                const handler: Handler(Events.getEventType(event)) = @ptrCast(@alignCast(listener.handler_ptr));
                 handler(data);
                 if (listener.once) {
-                    to_remove.append(self.allocator, i) catch {};
+                    to_remove.append(self.allocator, listener.id) catch {};
                 }
             }
 
@@ -171,10 +192,13 @@ pub fn EventEmitter(comptime Events: type) type {
                 defer self.mutex.unlock();
 
                 if (self.listeners.getPtr(event)) |listener_list| {
-                    var offset: usize = 0;
-                    for (to_remove.items) |idx| {
-                        _ = listener_list.orderedRemove(idx - offset);
-                        offset += 1;
+                    for (to_remove.items) |id| {
+                        for (listener_list.items, 0..) |listener, i| {
+                            if (listener.id == id) {
+                                _ = listener_list.orderedRemove(i);
+                                break;
+                            }
+                        }
                     }
                 }
             }
@@ -223,7 +247,7 @@ pub const SimpleEmitter = struct {
     allocator: std.mem.Allocator,
     handlers: std.StringHashMap(std.ArrayList(SimpleHandler)),
     wildcard_handlers: std.ArrayList(WildcardHandler),
-    mutex: std.Thread.Mutex,
+    mutex: StaticMutex,
 
     const SimpleHandler = *const fn (data: []const u8) void;
 
@@ -245,6 +269,7 @@ pub const SimpleEmitter = struct {
         }
         self.handlers.deinit();
         self.wildcard_handlers.deinit(self.allocator);
+        self.mutex.deinit();
     }
 
     /// Register a handler for an event
@@ -358,7 +383,7 @@ pub const SimpleEmitter = struct {
 /// Global event bus (singleton pattern)
 pub const EventBus = struct {
     var instance: ?*SimpleEmitter = null;
-    var mutex: std.Thread.Mutex = .{};
+    var mutex: StaticMutex = .{};
 
     pub fn getInstance(allocator: std.mem.Allocator) !*SimpleEmitter {
         mutex.lock();
@@ -417,22 +442,54 @@ test "simple emitter basic usage" {
     var emitter = SimpleEmitter.init(allocator);
     defer emitter.deinit();
 
-    var called = false;
-    const handler = struct {
+    const TestHandler = struct {
+        var calls: std.atomic.Value(u32) = .init(0);
+        var payload_ok: std.atomic.Value(bool) = .init(false);
+
         fn h(data: []const u8) void {
-            _ = data;
-            // In real test, would verify data
+            payload_ok.store(std.mem.eql(u8, data, "hello"), .release);
+            _ = calls.fetchAdd(1, .release);
         }
-    }.h;
+    };
+    TestHandler.calls.store(0, .release);
+    TestHandler.payload_ok.store(false, .release);
 
-    try emitter.on("test", handler);
+    try emitter.on("test", TestHandler.h);
     emitter.emit("test", "hello");
-    _ = called;
 
+    try std.testing.expectEqual(@as(u32, 1), TestHandler.calls.load(.acquire));
+    try std.testing.expect(TestHandler.payload_ok.load(.acquire));
     try std.testing.expectEqual(@as(usize, 1), emitter.listenerCount("test"));
 
-    emitter.off("test", handler);
+    emitter.off("test", TestHandler.h);
     try std.testing.expectEqual(@as(usize, 0), emitter.listenerCount("test"));
+}
+
+test "generic emitter owns snapshots and removes once listeners by id" {
+    const TestEvents = struct {
+        pub fn getEventType(comptime event: []const u8) type {
+            if (std.mem.eql(u8, event, "value")) return i32;
+            @compileError("unknown test event");
+        }
+    };
+    const TestHandler = struct {
+        var total: std.atomic.Value(i32) = .init(0);
+
+        fn handle(value: i32) void {
+            _ = total.fetchAdd(value, .acq_rel);
+        }
+    };
+
+    TestHandler.total.store(0, .release);
+    var emitter = EventEmitter(TestEvents).init(std.testing.allocator);
+    defer emitter.deinit();
+
+    try emitter.once("value", TestHandler.handle);
+    emitter.emit("value", 7);
+    emitter.emit("value", 11);
+
+    try std.testing.expectEqual(@as(i32, 7), TestHandler.total.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 0), emitter.listenerCount("value"));
 }
 
 test "simple emitter wildcard" {
@@ -440,18 +497,21 @@ test "simple emitter wildcard" {
     var emitter = SimpleEmitter.init(allocator);
     defer emitter.deinit();
 
-    var event_received: []const u8 = "";
-    _ = event_received;
+    const Wildcard = struct {
+        var called: std.atomic.Value(bool) = .init(false);
 
-    const wildcard = struct {
         fn h(event: []const u8, data: []const u8) void {
-            _ = event;
-            _ = data;
+            called.store(
+                std.mem.eql(u8, event, "any-event") and std.mem.eql(u8, data, "data"),
+                .release,
+            );
         }
-    }.h;
+    };
+    Wildcard.called.store(false, .release);
 
-    try emitter.onAny(wildcard);
+    try emitter.onAny(Wildcard.h);
     emitter.emit("any-event", "data");
+    try std.testing.expect(Wildcard.called.load(.acquire));
 }
 
 test "simple emitter clear" {

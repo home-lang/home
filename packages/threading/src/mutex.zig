@@ -72,6 +72,30 @@ pub const MutexAttr = struct {
     }
 };
 
+/// Statically initialized, std-compatible facade for code whose lock API is
+/// intentionally infallible. The underlying futex mutex reports programmer
+/// misuse as `ThreadError`; this facade turns that impossible path into a
+/// panic while preserving the familiar `lock`/`unlock` contract.
+pub const StaticMutex = struct {
+    inner: Mutex = .{ .state = .init(0) },
+
+    pub fn lock(self: *StaticMutex) void {
+        self.inner.lock() catch |err| std.debug.panic("mutex lock failed: {}", .{err});
+    }
+
+    pub fn tryLock(self: *StaticMutex) bool {
+        return self.inner.tryLock() catch |err| std.debug.panic("mutex tryLock failed: {}", .{err});
+    }
+
+    pub fn unlock(self: *StaticMutex) void {
+        self.inner.unlock() catch |err| std.debug.panic("mutex unlock failed: {}", .{err});
+    }
+
+    pub fn deinit(self: *StaticMutex) void {
+        self.inner.deinit();
+    }
+};
+
 test "mutex init and deinit" {
     var mutex = try Mutex.init();
     defer mutex.deinit();
@@ -99,6 +123,16 @@ test "mutex rejects recursive attributes instead of ignoring them" {
     var attr = MutexAttr.init();
     attr.setRecursive(true);
     try std.testing.expectError(ThreadError.OperationNotSupported, Mutex.initWithAttr(attr));
+}
+
+test "static mutex supports infallible lock APIs" {
+    var mutex: StaticMutex = .{};
+    defer mutex.deinit();
+
+    mutex.lock();
+    mutex.unlock();
+    try std.testing.expect(mutex.tryLock());
+    mutex.unlock();
 }
 
 test "mutex protects a counter across eight threads" {

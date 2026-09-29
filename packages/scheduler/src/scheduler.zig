@@ -1,5 +1,7 @@
 const std = @import("std");
-const posix = std.posix;
+const builtin = @import("builtin");
+const threading = @import("threading");
+const StaticMutex = threading.StaticMutex;
 
 /// Cron-like expression for scheduling
 pub const CronExpr = struct {
@@ -233,8 +235,18 @@ pub const DateTime = struct {
 
 /// Get current timestamp
 fn getTimestamp() i64 {
-    const ts = posix.clock_gettime(.REALTIME) catch return 0;
-    return ts.sec;
+    if (comptime builtin.os.tag == .windows) {
+        const ticks = std.os.windows.ntdll.RtlGetSystemTimePrecise();
+        return @divFloor(ticks, 10_000_000) - 11_644_473_600;
+    } else if (comptime builtin.os.tag == .linux) {
+        var ts: std.os.linux.timespec = .{ .sec = 0, .nsec = 0 };
+        _ = std.os.linux.clock_gettime(.REALTIME, &ts);
+        return @intCast(ts.sec);
+    } else {
+        var ts: std.c.timespec = .{ .sec = 0, .nsec = 0 };
+        _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+        return @intCast(ts.sec);
+    }
 }
 
 /// Scheduled task definition
@@ -266,8 +278,8 @@ pub const TaskContext = struct {
 pub const Scheduler = struct {
     allocator: std.mem.Allocator,
     tasks: std.StringHashMap(Task),
-    running: bool,
-    mutex: std.Thread.Mutex,
+    running: std.atomic.Value(bool),
+    mutex: StaticMutex,
     check_interval_ms: u64 = 1000, // Check every second by default
 
     const Self = @This();
@@ -276,7 +288,7 @@ pub const Scheduler = struct {
         return .{
             .allocator = allocator,
             .tasks = std.StringHashMap(Task).init(allocator),
-            .running = false,
+            .running = .init(false),
             .mutex = .{},
         };
     }
@@ -288,6 +300,7 @@ pub const Scheduler = struct {
             self.allocator.free(entry.key_ptr.*);
         }
         self.tasks.deinit();
+        self.mutex.deinit();
     }
 
     /// Register a new scheduled task
@@ -415,16 +428,16 @@ pub const Scheduler = struct {
 
     /// Start the scheduler loop (blocking)
     pub fn start(self: *Self) void {
-        self.running = true;
-        while (self.running) {
+        self.running.store(true, .release);
+        while (self.running.load(.acquire)) {
             self.tick();
-            std.time.sleep(self.check_interval_ms * std.time.ns_per_ms);
+            threading.Thread.sleep(self.check_interval_ms * std.time.ns_per_ms);
         }
     }
 
     /// Stop the scheduler
     pub fn stop(self: *Self) void {
-        self.running = false;
+        self.running.store(false, .release);
     }
 
     /// Run a specific task immediately
@@ -460,7 +473,7 @@ pub const Scheduler = struct {
 pub const JobQueue = struct {
     allocator: std.mem.Allocator,
     jobs: std.ArrayListUnmanaged(Job),
-    mutex: std.Thread.Mutex,
+    mutex: StaticMutex,
 
     const Self = @This();
 
@@ -480,7 +493,7 @@ pub const JobQueue = struct {
         allocator: std.mem.Allocator,
     };
 
-    var next_id: u64 = 0;
+    var next_id: std.atomic.Value(u64) = .init(0);
 
     pub fn init(allocator: std.mem.Allocator) Self {
         return .{
@@ -492,6 +505,7 @@ pub const JobQueue = struct {
 
     pub fn deinit(self: *Self) void {
         self.jobs.deinit(self.allocator);
+        self.mutex.deinit();
     }
 
     /// Schedule a job to run after a delay
@@ -504,8 +518,7 @@ pub const JobQueue = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        const id = next_id;
-        next_id += 1;
+        const id = next_id.fetchAdd(1, .monotonic);
 
         try self.jobs.append(self.allocator, .{
             .id = id,

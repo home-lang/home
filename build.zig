@@ -496,6 +496,10 @@ pub fn build(b: *std.Build) void {
     threading_pkg.addImport("threading_futex", threading_futex_pkg);
     const async_pkg = createPackage(b, "packages/async/src/async.zig", target, optimize, zig_test_framework);
     async_pkg.addImport("threading_futex", threading_futex_pkg);
+    const scheduler_pkg = createPackage(b, "packages/scheduler/src/scheduler.zig", target, optimize, zig_test_framework);
+    scheduler_pkg.addImport("threading", threading_pkg);
+    const events_pkg = createPackage(b, "packages/events/src/events.zig", target, optimize, zig_test_framework);
+    events_pkg.addImport("threading", threading_pkg);
     const memory_pkg = createPackage(b, "packages/memory/src/memory.zig", target, optimize, zig_test_framework);
     const intrinsics_pkg = createPackage(b, "packages/intrinsics/src/intrinsics.zig", target, optimize, zig_test_framework);
     const ffi_pkg = createPackage(b, "packages/ffi/src/ffi.zig", target, optimize, zig_test_framework);
@@ -1420,6 +1424,17 @@ pub fn build(b: *std.Build) void {
 
     const run_async_tests = b.addRunArtifact(async_tests);
 
+    // Scheduler and event-dispatch tests
+    const scheduler_tests = b.addTest(.{
+        .root_module = scheduler_pkg,
+    });
+    const run_scheduler_tests = b.addRunArtifact(scheduler_tests);
+
+    const events_tests = b.addTest(.{
+        .root_module = events_pkg,
+    });
+    const run_events_tests = b.addRunArtifact(events_tests);
+
     // Memory allocator tests
     const memory_tests = b.addTest(.{
         .root_module = memory_pkg,
@@ -1527,6 +1542,8 @@ pub fn build(b: *std.Build) void {
     if (run_database_tests) |db_tests| dependOnTest(test_step, &db_tests.step, test_filter, "database");
     dependOnTest(test_step, &run_threading_tests.step, test_filter, "threading");
     dependOnTest(test_step, &run_async_tests.step, test_filter, "async");
+    dependOnTest(test_step, &run_scheduler_tests.step, test_filter, "scheduler");
+    dependOnTest(test_step, &run_events_tests.step, test_filter, "events");
     dependOnTest(test_step, &run_memory_tests.step, test_filter, "memory");
     dependOnTest(test_step, &run_intrinsics_tests.step, test_filter, "intrinsics");
     dependOnTest(test_step, &run_ffi_tests.step, test_filter, "ffi");
