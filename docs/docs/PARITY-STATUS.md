@@ -376,12 +376,12 @@ cross-file interner search.
 
 ## Codegen targets
 
-6 codegen rows:
+5 codegen rows:
 
 | Status | Count | % |
 |---|---|---|
-| ✅ Stable | 1 | 16.7% |
-| 🚧 In progress / partial | 5 | 83.3% |
+| ✅ Stable | 1 | 20.0% |
+| 🚧 In progress / partial | 4 | 80.0% |
 
 **Per-target:**
 
@@ -390,7 +390,6 @@ cross-file interner search.
 | Tree-walking interpreter | ✅ Stable |
 | x86-64 native codegen | 🚧 Substantial (primary target) |
 | arm64 codegen | 🚧 In progress (Path B-lite M1-M11 shipped) |
-| WebAssembly codegen | 🚧 Stub |
 | ELF object emission | 🚧 In progress |
 | Mach-O object emission | 🚧 In progress |
 
