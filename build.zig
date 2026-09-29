@@ -522,7 +522,6 @@ pub fn build(b: *std.Build) void {
     const drivers_pkg = createPackage(b, "packages/drivers/src/main.zig", target, optimize, zig_test_framework);
     const variadic_pkg = createPackage(b, "packages/variadic/src/variadic.zig", target, optimize, zig_test_framework);
     const inline_pkg = createPackage(b, "packages/inline/src/inline.zig", target, optimize, zig_test_framework);
-    const regalloc_pkg = createPackage(b, "packages/regalloc/src/regalloc.zig", target, optimize, zig_test_framework);
     const platform_pkg = createPackage(b, "packages/platform/src/platform.zig", target, optimize, zig_test_framework);
 
     // TS-parity Phase 0 infrastructure packages (see docs/TS_PARITY_PLAN.md).
@@ -1766,11 +1765,6 @@ pub fn build(b: *std.Build) void {
     const inline_tests = b.addTest(.{ .root_module = inline_pkg });
     const run_inline_tests = b.addRunArtifact(inline_tests);
     dependOnTest(test_step, &run_inline_tests.step, test_filter, "inline");
-
-    // Register allocation tests
-    const regalloc_tests = b.addTest(.{ .root_module = regalloc_pkg });
-    const run_regalloc_tests = b.addRunArtifact(regalloc_tests);
-    dependOnTest(test_step, &run_regalloc_tests.step, test_filter, "regalloc");
 
     // Platform-specific code blocks tests
     const platform_tests = b.addTest(.{ .root_module = platform_pkg });
