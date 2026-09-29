@@ -124,6 +124,26 @@ test "checker types panic as a string-taking bottom expression" {
     ));
 }
 
+test "checker preserves future payloads through await" {
+    try std.testing.expect(try checkSource(
+        \\async fn fetch(): i32 {
+        \\    return 7
+        \\}
+        \\fn resolved(): i32 {
+        \\    return await fetch()
+        \\}
+    ));
+
+    try std.testing.expect(!try checkSource(
+        \\async fn fetch(): i32 { return 7 }
+        \\fn unresolved(): i32 { return fetch() }
+    ));
+
+    try std.testing.expect(!try checkSource(
+        \\fn invalid(): i32 { return await 1 }
+    ));
+}
+
 test "checker rejects widening an existing mutable array" {
     try std.testing.expect(!try checkSource(
         \\fn run() {

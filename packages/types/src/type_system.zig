@@ -130,6 +130,8 @@ pub const Type = union(enum) {
     Enum: EnumType,
     /// Generic/parametric type with bounds
     Generic: GenericType,
+    /// Pending result of an async function call: Future<T>
+    Future: *const Type,
     /// Result type for error handling: Result<T, E>
     Result: ResultType,
     /// Product type with positional fields: (T1, T2, ...)
@@ -218,6 +220,9 @@ pub const Type = union(enum) {
         /// Calling this function crosses an unsafe boundary. Set for
         /// source-level `unsafe fn` declarations and external/FFI symbols.
         requires_unsafe: bool = false,
+        /// Async calls produce `Future<return_type>`; their bodies still
+        /// validate explicit returns against the unwrapped return type.
+        is_async: bool = false,
     };
 
     /// Struct type with named fields (product type).
@@ -495,12 +500,15 @@ pub const Type = union(enum) {
             },
             .Function => |f1| {
                 const f2 = other.Function;
-                if (f1.params.len != f2.params.len or f1.requires_unsafe != f2.requires_unsafe) return false;
+                if (f1.params.len != f2.params.len or
+                    f1.requires_unsafe != f2.requires_unsafe or
+                    f1.is_async != f2.is_async) return false;
                 for (f1.params, f2.params) |p1, p2| {
                     if (!p1.equals(p2)) return false;
                 }
                 return f1.return_type.equals(f2.return_type.*);
             },
+            .Future => |inner| inner.equals(other.Future.*),
             .Reference => |r1| r1.equals(other.Reference.*),
             .MutableReference => |r1| r1.equals(other.MutableReference.*),
             .Struct => |s1| {
@@ -671,6 +679,8 @@ pub const Type = union(enum) {
             const f1 = self.Function;
             const f2 = supertype.Function;
 
+            if (f1.is_async != f2.is_async) return false;
+
             // An unsafe callable cannot stand in for a safe callable: doing
             // so would erase the call-site obligation. A safe callable may be
             // used where the destination already requires unsafe.
@@ -686,6 +696,12 @@ pub const Type = union(enum) {
                 if (!p2.isSubtype(p1)) return false;
             }
             return true;
+        }
+
+        // Futures are covariant in their resolved value: a Future<Sub> can
+        // be used where Future<Super> is expected, but never as Super itself.
+        if (std.meta.activeTag(self) == .Future and std.meta.activeTag(supertype) == .Future) {
+            return self.Future.isSubtype(supertype.Future.*);
         }
 
         // Arrays are mutable values, so their element type is invariant.
@@ -825,6 +841,7 @@ pub const Type = union(enum) {
             .Never => try writer.writeAll("never"),
             .Unknown => try writer.writeAll("unknown"),
             .Function => |f| {
+                if (f.is_async) try writer.writeAll("async ");
                 try writer.writeAll("fn(");
                 for (f.params, 0..) |param, i| {
                     if (i > 0) try writer.writeAll(", ");
@@ -832,6 +849,7 @@ pub const Type = union(enum) {
                 }
                 try writer.print(") -> {}", .{f.return_type.*});
             },
+            .Future => |inner| try writer.print("Future<{}>", .{inner.*}),
             .Reference => |r| try writer.print("&{}", .{r.*}),
             .MutableReference => |r| try writer.print("&mut {}", .{r.*}),
             .Result => |r| try writer.print("Result<{}, {}>", .{ r.ok_type.*, r.err_type.* }),
@@ -1320,6 +1338,7 @@ pub const TypeChecker = struct {
                 .return_type = return_type,
                 .required_params = required_params,
                 .requires_unsafe = fn_decl.is_unsafe or fn_decl.is_extern,
+                .is_async = fn_decl.is_async,
             },
         };
     }
@@ -1371,6 +1390,7 @@ pub const TypeChecker = struct {
             .return_type = return_type,
             .required_params = required_params,
             .requires_unsafe = fn_decl.is_unsafe or fn_decl.is_extern,
+            .is_async = fn_decl.is_async,
         } };
     }
 
@@ -3776,8 +3796,26 @@ pub const TypeChecker = struct {
             .ClosureExpr => |closure| try self.inferClosureExprWithHint(closure, null),
             .BlockExpr => |block| try self.inferBlockExpression(block, null),
             .ComptimeExpr => |comptime_expr| try self.inferExpression(comptime_expr.expression),
+            .AwaitExpr => |await_expr| try self.inferAwaitExpression(await_expr),
             else => Type.Void,
         };
+    }
+
+    fn callResultType(function: Type.FunctionType) Type {
+        return if (function.is_async)
+            Type{ .Future = function.return_type }
+        else
+            function.return_type.*;
+    }
+
+    fn inferAwaitExpression(self: *TypeChecker, await_expr: *const ast.AwaitExpr) TypeError!Type {
+        const operand_type = try self.inferExpression(await_expr.expression);
+        if (operand_type == .Unknown) return Type.Unknown;
+        if (operand_type != .Future) {
+            try self.addError("await requires an async value", await_expr.node.loc);
+            return error.TypeMismatch;
+        }
+        return operand_type.Future.*;
     }
 
     fn inferBinaryExpression(self: *TypeChecker, binary: *const ast.BinaryExpr) TypeError!Type {
@@ -4081,7 +4119,7 @@ pub const TypeChecker = struct {
                     }
                 }
 
-                return func_type.Function.return_type.*;
+                return callResultType(func_type.Function);
             }
 
             const message = try std.fmt.allocPrint(self.allocator, "Value '{s}' is not callable", .{func_name});
@@ -4122,7 +4160,7 @@ pub const TypeChecker = struct {
                     for (call.named_args) |named_argument| {
                         _ = try self.inferExpression(named_argument.value);
                     }
-                    return function.return_type.*;
+                    return callResultType(function);
                 }
                 for (object_type.Struct.methods) |method| {
                     if (!std.mem.eql(u8, method.name, method_name)) continue;
@@ -4143,7 +4181,7 @@ pub const TypeChecker = struct {
                     for (call.named_args) |named_argument| {
                         _ = try self.inferExpression(named_argument.value);
                     }
-                    return function.return_type.*;
+                    return callResultType(function);
                 }
             }
 
@@ -4381,7 +4419,7 @@ pub const TypeChecker = struct {
                 for (static_call.named_args) |named_argument| {
                     _ = try self.inferExpression(named_argument.value);
                 }
-                return function.return_type.*;
+                return callResultType(function);
             }
             const message = try std.fmt.allocPrint(
                 self.allocator,
@@ -5026,7 +5064,7 @@ pub const TypeChecker = struct {
             }
 
             // Return the function's return type
-            return func_type.return_type.*;
+            return callResultType(func_type);
         }
 
         try self.addError("Pipe right side must be a function", pipe.node.loc);
@@ -5449,7 +5487,7 @@ pub const TypeChecker = struct {
                 }
                 break :blk false;
             },
-            .Optional, .Reference, .MutableReference, .Keyof => |inner| containsUnknownType(inner.*),
+            .Future, .Optional, .Reference, .MutableReference, .Keyof => |inner| containsUnknownType(inner.*),
             .Intersection => |intersection| blk: {
                 for (intersection.types) |part| {
                     if (containsUnknownType(part.*)) break :blk true;
@@ -5566,7 +5604,7 @@ pub const TypeChecker = struct {
 
     fn needsDropTracking(typ: Type) bool {
         return switch (typ) {
-            .String, .Array, .Map, .Struct, .Result, .Tuple, .Optional, .Enum, .Generic => true,
+            .String, .Array, .Map, .Struct, .Future, .Result, .Tuple, .Optional, .Enum, .Generic => true,
             else => false,
         };
     }
@@ -5652,6 +5690,11 @@ pub const TypeChecker = struct {
                 try params_str.appendSlice(self.allocator,ret_str);
 
                 return try self.allocator.dupe(u8, params_str.items);
+            },
+            .Future => |inner| {
+                const inner_str = try self.typeToString(inner.*);
+                defer self.allocator.free(inner_str);
+                return try std.fmt.allocPrint(self.allocator, "Future<{s}>", .{inner_str});
             },
             .Reference => |ref| {
                 const inner_str = try self.typeToString(ref.*);

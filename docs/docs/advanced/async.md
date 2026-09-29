@@ -31,6 +31,11 @@ async fn main() {
 }
 ```
 
+Calling an async function produces `Future<T>`, where `T` is the function's
+declared return type. `await` is the type boundary that consumes that future
+and yields `T`; an un-awaited future cannot be used as its completed value,
+and non-future values cannot be awaited.
+
 ### Async Closures
 
 ```home
