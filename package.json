@@ -38,7 +38,7 @@
     "test": "bun test",
     "test:compiler": "./pantry/.bin/zig build test",
     "typecheck": "bun --bun tsc --noEmit",
-    "release": "bunx --bun bumpx -r --all"
+    "release": "bunx --bun @stacksjs/bumpx -r --all"
   },
   "devDependencies": {
     "@stacksjs/bunpress": "^0.2.5",
