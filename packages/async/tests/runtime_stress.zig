@@ -18,6 +18,16 @@ const ProbeState = struct {
     task_index: usize,
 };
 
+const SpawnerState = struct {
+    runtime: *async.Runtime,
+    probe: *Probe,
+    first_task: usize,
+    states: []ProbeState,
+    handles: []async.JoinHandle(usize),
+    spawned: usize = 0,
+    spawn_error: ?anyerror = null,
+};
+
 fn pollProbe(ptr: *anyopaque, _: *async.Context) async.PollResult(usize) {
     const state: *ProbeState = @ptrCast(@alignCast(ptr));
     const probe = state.probe;
@@ -37,6 +47,31 @@ fn pollProbe(ptr: *anyopaque, _: *async.Context) async.PollResult(usize) {
 fn probeFuture(state: *ProbeState) async.Future(usize) {
     return .{
         .poll_fn = pollProbe,
+        .state = @ptrCast(state),
+    };
+}
+
+fn pollSpawner(ptr: *anyopaque, _: *async.Context) async.PollResult(usize) {
+    const state: *SpawnerState = @ptrCast(@alignCast(ptr));
+
+    for (state.states, state.handles, 0..) |*probe_state, *handle, offset| {
+        probe_state.* = .{
+            .probe = state.probe,
+            .task_index = state.first_task + offset,
+        };
+        handle.* = state.runtime.spawn(usize, probeFuture(probe_state)) catch |err| {
+            state.spawn_error = err;
+            return .{ .Ready = state.spawned };
+        };
+        state.spawned += 1;
+    }
+
+    return .{ .Ready = state.spawned };
+}
+
+fn spawnerFuture(state: *SpawnerState) async.Future(usize) {
+    return .{
+        .poll_fn = pollSpawner,
         .state = @ptrCast(state),
     };
 }
@@ -61,7 +96,8 @@ test "runtime executes every stress task exactly once across every worker" {
 
     const Task = async.task.Task(usize);
     const task_slot_size = @sizeOf(Task) + @alignOf(Task) - 1;
-    const task_storage_len = try std.math.mul(usize, batch_size, task_slot_size);
+    const task_slots = try std.math.add(usize, batch_size, 1);
+    const task_storage_len = try std.math.mul(usize, task_slots, task_slot_size);
     const task_storage = try allocator.alloc(u8, task_storage_len);
     defer allocator.free(task_storage);
     var task_pool = std.heap.FixedBufferAllocator.init(task_storage);
@@ -73,7 +109,8 @@ test "runtime executes every stress task exactly once across every worker" {
     );
     defer runtime.deinit();
 
-    const seen_word_count = (task_count + 63) / 64;
+    const rounded_task_count = try std.math.add(usize, task_count, 63);
+    const seen_word_count = rounded_task_count / 64;
     const seen_words = try allocator.alloc(AtomicU64, seen_word_count);
     defer allocator.free(seen_words);
     for (seen_words) |*word| word.* = .init(0);
@@ -103,20 +140,24 @@ test "runtime executes every stress task exactly once across every worker" {
     var base: usize = 0;
     while (base < task_count) {
         const count = @min(batch_size, task_count - base);
+        var spawner_state = SpawnerState{
+            .runtime = &runtime,
+            .probe = &probe,
+            .first_task = base,
+            .states = states[0..count],
+            .handles = handles[0..count],
+        };
+        const spawner_handle = try runtime.spawn(usize, spawnerFuture(&spawner_state));
+        const spawned = try spawner_handle.await();
+        spawner_handle.deinit();
 
-        for (states[0..count], handles[0..count], 0..) |*state, *handle, offset| {
-            state.* = .{
-                .probe = &probe,
-                .task_index = base + offset,
-            };
-            handle.* = try runtime.spawn(usize, probeFuture(state));
-        }
-
-        for (handles[0..count], 0..) |handle, offset| {
+        for (handles[0..spawned], 0..) |handle, offset| {
             const result = try handle.await();
             handle.deinit();
             try std.testing.expectEqual(base + offset, result);
         }
+        if (spawner_state.spawn_error) |err| return err;
+        try std.testing.expectEqual(count, spawned);
 
         // Every task and waker in this batch is gone, so the next batch can
         // reuse the same addresses. TSan still observes every access while

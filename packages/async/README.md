@@ -62,10 +62,11 @@ zig build test -Dfilter=async
 
 The executor acceptance test compiles its ThreadSanitizer binary once, then
 runs one million tasks serially in bounded-memory batches backed by a reusable
-task pool. Every task must be polled exactly once and every runtime worker must
-execute work. The default command repeats that complete run 100 times, with
-each compiler and test process supervised by Home's machine lock, timeout, and
-memory ceiling:
+task pool. Each batch is submitted by an executor worker into its local deque,
+so peer workers must steal the child tasks. Every task must be polled exactly
+once and every runtime worker must execute work. The default command repeats
+that complete run 100 times, with each compiler and test process supervised by
+Home's machine lock, timeout, and memory ceiling:
 
 ```bash
 scripts/async-runtime-tsan.sh

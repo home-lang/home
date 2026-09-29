@@ -40,6 +40,8 @@ source scripts/home-bin.sh
 )
 
 for ((iteration = 1; iteration <= iterations; iteration++)); do
+  printf 'async-runtime-tsan: starting run %d/%d (%s tasks, batch %s)\n' \
+    "$iteration" "$iterations" "$task_count" "$batch_size"
   (
     export HOME_ASYNC_STRESS_TASKS="$task_count"
     export HOME_ASYNC_STRESS_BATCH="$batch_size"

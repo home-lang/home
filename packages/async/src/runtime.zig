@@ -118,7 +118,7 @@ const Worker = struct {
     /// Spawn a task on this worker's local queue
     fn spawnLocal(self: *Worker, task: RawTask) !void {
         try self.local_queue.push(task);
-        self.unpark();
+        self.runtime.?.unparkPeer(self.id);
     }
 };
 
@@ -295,6 +295,19 @@ pub const Runtime = struct {
             const index = self.next_worker.fetchAdd(1, .monotonic) % self.workers.len;
             self.workers[index].unpark();
         }
+    }
+
+    /// Wake a worker other than the one that just added local work, allowing
+    /// parked peers to steal nested tasks immediately.
+    fn unparkPeer(self: *Runtime, excluded_index: usize) void {
+        if (self.workers.len <= 1) {
+            self.workers[0].unpark();
+            return;
+        }
+
+        const candidate = self.next_worker.fetchAdd(1, .monotonic) % (self.workers.len - 1);
+        const index = if (candidate >= excluded_index) candidate + 1 else candidate;
+        self.workers[index].unpark();
     }
 
     fn unparkAll(self: *Runtime) void {
