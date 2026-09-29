@@ -235,10 +235,8 @@ fn infinite_loop(): never {
     loop {}
 }
 
-fn panic(message: string): never {
-    print("PANIC: {message}")
-    std.process.exit(1)
-}
+// panic is a built-in with the signature fn(string) -> never.
+panic("this path cannot continue")
 
 // Useful in match expressions
 fn unwrap_or_panic<T>(opt: ?T): T {

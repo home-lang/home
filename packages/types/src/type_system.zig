@@ -1261,6 +1261,26 @@ pub const TypeChecker = struct {
             },
         };
         try self.env.define("assert", assert_type);
+
+        // panic: fn(string) -> never. `never` is the bottom type, so a panic
+        // expression may occupy any value-producing branch while still
+        // requiring its diagnostic message to be a string.
+        const never_type = try self.allocator.create(Type);
+        errdefer self.allocator.destroy(never_type);
+        never_type.* = Type.Never;
+        try self.allocated_types.append(self.allocator, never_type);
+
+        const panic_params = try self.allocator.alloc(Type, 1);
+        errdefer self.allocator.free(panic_params);
+        try self.allocated_slices.append(self.allocator, panic_params);
+        panic_params[0] = Type.String;
+        const panic_type = Type{
+            .Function = .{
+                .params = panic_params,
+                .return_type = never_type,
+            },
+        };
+        try self.env.define("panic", panic_type);
     }
 
     fn collectFunctionSignature(self: *TypeChecker, fn_decl: *const ast.FnDecl) !void {

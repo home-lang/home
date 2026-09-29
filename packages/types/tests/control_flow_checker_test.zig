@@ -104,6 +104,26 @@ test "checker recognizes never as the bottom type" {
     ));
 }
 
+test "checker types panic as a string-taking bottom expression" {
+    try std.testing.expect(try checkSource(
+        \\fn fail(): string {
+        \\    return panic("not ready")
+        \\}
+    ));
+
+    try std.testing.expect(!try checkSource(
+        \\fn invalid_message() {
+        \\    panic(42)
+        \\}
+    ));
+
+    try std.testing.expect(!try checkSource(
+        \\fn missing_message() {
+        \\    panic()
+        \\}
+    ));
+}
+
 test "checker rejects widening an existing mutable array" {
     try std.testing.expect(!try checkSource(
         \\fn run() {
