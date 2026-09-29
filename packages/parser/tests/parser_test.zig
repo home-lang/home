@@ -2059,3 +2059,31 @@ test "parser: void return — non-empty params still works (issue #64 regression
     try testing.expectEqual(@as(usize, 1), fn_decl.params.len);
     try testing.expect(fn_decl.return_type == null);
 }
+
+test "parser: assert macro preserves a comparison condition" {
+    const program = try parseSource(
+        testing.allocator,
+        \\fn divide(a: i32, b: i32): i32 {
+        \\    assert!(b != 0, "division by zero")
+        \\    return a / b
+        \\}
+        ,
+    );
+    defer program.deinit(testing.allocator);
+
+    const fn_decl = program.statements[0].FnDecl;
+    try testing.expectEqual(@as(usize, 2), fn_decl.body.statements.len);
+
+    const assert_stmt = fn_decl.body.statements[0].AssertStmt;
+    const comparison = assert_stmt.condition;
+    try testing.expect(comparison.* == .BinaryExpr);
+    try testing.expectEqual(ast.BinaryOp.NotEqual, comparison.BinaryExpr.op);
+    try testing.expect(comparison.BinaryExpr.left.* == .Identifier);
+    try testing.expectEqualStrings("b", comparison.BinaryExpr.left.Identifier.name);
+    try testing.expect(comparison.BinaryExpr.right.* == .IntegerLiteral);
+    try testing.expectEqual(@as(i128, 0), comparison.BinaryExpr.right.IntegerLiteral.value);
+
+    try testing.expect(assert_stmt.message != null);
+    try testing.expect(assert_stmt.message.?.* == .StringLiteral);
+    try testing.expectEqualStrings("division by zero", assert_stmt.message.?.StringLiteral.value);
+}

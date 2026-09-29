@@ -3879,11 +3879,31 @@ pub const Parser = struct {
         return self.expressionStatement();
     }
 
-    /// Parse an assert statement
+    /// Parse an assert statement, including the built-in macro spelling.
     /// Grammar: assert condition
     /// Grammar: assert condition, message
+    /// Grammar: assert!(condition[, message])
     fn assertStatement(self: *Parser) !ast.Stmt {
         const assert_token = self.previous();
+
+        var close_token: ?TokenType = null;
+        if (self.match(&.{.Bang})) {
+            close_token = if (self.match(&.{.LeftParen}))
+                .RightParen
+            else if (self.match(&.{.LeftBracket}))
+                .RightBracket
+            else if (self.match(&.{.LeftBrace}))
+                .RightBrace
+            else {
+                try self.reportError("Expected '(', '[', or '{' after 'assert!'");
+                return error.UnexpectedToken;
+            };
+
+            if (self.check(close_token.?)) {
+                try self.reportError("assert! macro requires at least a condition");
+                return error.UnexpectedToken;
+            }
+        }
 
         // Parse the condition expression
         const condition = try self.expression();
@@ -3891,7 +3911,14 @@ pub const Parser = struct {
         // Check for optional message
         var message: ?*ast.Expr = null;
         if (self.match(&.{.Comma})) {
-            message = try self.expression();
+            if (close_token == null or !self.check(close_token.?)) {
+                message = try self.expression();
+                _ = self.match(&.{.Comma});
+            }
+        }
+
+        if (close_token) |close| {
+            _ = try self.expect(close, "Expected closing delimiter after assert! arguments");
         }
 
         const stmt = try ast.AssertStmt.init(

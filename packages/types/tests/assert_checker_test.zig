@@ -49,6 +49,21 @@ test "checker accepts a boolean assert condition" {
     ));
 }
 
+test "checker accepts assert macro comparisons and messages" {
+    try std.testing.expect(try checkSource(
+        \\fn divide(a: i32, b: i32): i32 {
+        \\    assert!(b != 0, "division by zero")
+        \\    return a / b
+        \\}
+    ));
+
+    try std.testing.expect(!try checkSource(
+        \\fn run() {
+        \\    assert!(1, "not a boolean")
+        \\}
+    ));
+}
+
 test "checker visits an assert message expression" {
     try std.testing.expect(!try checkSource(
         \\fn run() {
