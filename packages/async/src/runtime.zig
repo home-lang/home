@@ -93,17 +93,14 @@ const Worker = struct {
     /// Execute a task
     fn runTask(self: *Worker, raw_task: RawTask) void {
         const runtime = self.runtime.?;
-        const waker_data = runtime.allocator.create(WakerData) catch {
-            runtime.enqueueTask(raw_task) catch {};
-            return;
-        };
-        waker_data.* = .{
+        var waker_data = WakerData{
             .task = raw_task,
             .runtime = runtime,
+            .owned = false,
         };
 
         const waker = Waker{
-            .data = @ptrCast(waker_data),
+            .data = @ptrCast(&waker_data),
             .vtable = &WakerData.vtable,
         };
         defer waker.drop();
@@ -131,6 +128,9 @@ threadlocal var current_worker: ?*Worker = null;
 const WakerData = struct {
     task: RawTask,
     runtime: *Runtime,
+    /// The root waker lives on Worker.runTask's stack. Only clones can outlive
+    /// that poll and therefore need allocator-backed ownership.
+    owned: bool,
 
     const vtable = Waker.VTable{
         .wake = wake,
@@ -141,14 +141,14 @@ const WakerData = struct {
 
     fn wake(ptr: *anyopaque) void {
         const self = @as(*WakerData, @ptrCast(@alignCast(ptr)));
+        const task = self.task;
+        const runtime = self.runtime;
+        defer if (self.owned) runtime.task_allocator.destroy(self);
 
         // Re-queue the task
-        self.runtime.enqueueTask(self.task) catch {
+        runtime.enqueueTask(task) catch {
             std.log.err("Failed to re-queue task", .{});
         };
-
-        // Cleanup
-        self.runtime.allocator.destroy(self);
     }
 
     fn wakeByRef(ptr: *anyopaque) void {
@@ -163,15 +163,16 @@ const WakerData = struct {
     fn clone(ptr: *anyopaque) *anyopaque {
         const self = @as(*WakerData, @ptrCast(@alignCast(ptr)));
 
-        const new_data = self.runtime.allocator.create(WakerData) catch @panic("OOM cloning WakerData");
+        const new_data = self.runtime.task_allocator.create(WakerData) catch @panic("OOM cloning WakerData");
         new_data.* = self.*;
+        new_data.owned = true;
 
         return @ptrCast(new_data);
     }
 
     fn drop(ptr: *anyopaque) void {
         const self = @as(*WakerData, @ptrCast(@alignCast(ptr)));
-        self.runtime.allocator.destroy(self);
+        if (self.owned) self.runtime.task_allocator.destroy(self);
     }
 };
 
@@ -179,7 +180,11 @@ const WakerData = struct {
 ///
 /// Manages worker threads, task scheduling, and I/O polling.
 pub const Runtime = struct {
+    /// Owns workers and long-lived queue storage.
     allocator: std.mem.Allocator,
+    /// Owns tasks and cloned wakers. High-throughput callers may provide a
+    /// bounded pool while keeping runtime storage on a general allocator.
+    task_allocator: std.mem.Allocator,
     workers: []Worker,
     global_queue: ConcurrentQueue(RawTask),
     shutdown: std.atomic.Value(bool),
@@ -187,6 +192,16 @@ pub const Runtime = struct {
 
     /// Create a new runtime with the specified number of worker threads
     pub fn init(allocator: std.mem.Allocator, num_workers: usize) !Runtime {
+        return initWithTaskAllocator(allocator, allocator, num_workers);
+    }
+
+    /// Create a runtime with separate allocators for long-lived runtime state
+    /// and short-lived tasks/waker clones.
+    pub fn initWithTaskAllocator(
+        allocator: std.mem.Allocator,
+        task_allocator: std.mem.Allocator,
+        num_workers: usize,
+    ) !Runtime {
         const worker_count = if (num_workers == 0) try std.Thread.getCpuCount() else num_workers;
         if (worker_count == 0) return error.InvalidWorkerCount;
 
@@ -205,6 +220,7 @@ pub const Runtime = struct {
 
         return .{
             .allocator = allocator,
+            .task_allocator = task_allocator,
             .workers = workers,
             .global_queue = global_queue,
             .shutdown = std.atomic.Value(bool).init(false),
@@ -228,7 +244,7 @@ pub const Runtime = struct {
 
     /// Spawn a new task
     pub fn spawn(self: *Runtime, comptime T: type, fut: Future(T)) !JoinHandle(T) {
-        const task = try Task(T).init(self.allocator, fut);
+        const task = try Task(T).init(self.task_allocator, fut);
         errdefer task.deinit();
         const raw = RawTask.fromTask(T, task);
 
@@ -258,6 +274,19 @@ pub const Runtime = struct {
             if (worker.runtime == self) return worker;
         }
         return null;
+    }
+
+    /// Number of worker threads owned by this runtime.
+    pub fn workerCount(self: *const Runtime) usize {
+        return self.workers.len;
+    }
+
+    /// Index of the worker currently polling this task, or null outside this
+    /// runtime's worker threads. This lets executor-aware futures shard work
+    /// and expose scheduling telemetry without leaking the private Worker type.
+    pub fn currentWorkerIndex(self: *Runtime) ?usize {
+        const worker = self.getCurrentWorker() orelse return null;
+        return worker.id;
     }
 
     /// Unpark one worker thread

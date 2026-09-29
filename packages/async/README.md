@@ -42,6 +42,8 @@ try std.testing.expectEqual(@as(i32, 42), result);
 - `future.pending(T, allocator)`: Create a future that remains pending
 - `Runtime.spawn(T, future)`: Schedule a future and return a join handle
 - `Runtime.blockOn(T, future)`: Run a future to completion
+- `Runtime.initWithTaskAllocator(runtime_allocator, task_allocator, workers)`:
+  Keep short-lived task and cloned-waker allocations in a dedicated pool
 
 ## Files
 
@@ -56,6 +58,23 @@ try std.testing.expectEqual(@as(i32, 42), result);
 
 ```bash
 zig build test -Dfilter=async
+```
+
+The executor acceptance test compiles its ThreadSanitizer binary once, then
+runs one million tasks serially in bounded-memory batches backed by a reusable
+task pool. Every task must be polled exactly once and every runtime worker must
+execute work. The default command repeats that complete run 100 times, with
+each compiler and test process supervised by Home's machine lock, timeout, and
+memory ceiling:
+
+```bash
+scripts/async-runtime-tsan.sh
+```
+
+For a quick local smoke run, pass iterations, task count, and batch size:
+
+```bash
+scripts/async-runtime-tsan.sh 1 10000 1024
 ```
 
 ## Implementation Status

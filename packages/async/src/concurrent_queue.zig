@@ -36,6 +36,10 @@ pub fn ConcurrentQueue(comptime T: type) type {
         /// concurrent consumer may still have loaded the old head before the
         /// winning CAS, so immediate destruction is a use-after-free.
         retired_head: std.atomic.Value(?*Node),
+        /// Retired nodes are safe to reclaim whenever this reaches zero: no
+        /// producer or consumer can still hold a pointer loaded before a head
+        /// or tail transition.
+        active_operations: std.atomic.Value(usize),
         /// Approximate size (for statistics)
         len: std.atomic.Value(usize),
 
@@ -48,6 +52,7 @@ pub fn ConcurrentQueue(comptime T: type) type {
                 .head = std.atomic.Value(?*Node).init(dummy),
                 .tail = std.atomic.Value(?*Node).init(dummy),
                 .retired_head = std.atomic.Value(?*Node).init(null),
+                .active_operations = std.atomic.Value(usize).init(0),
                 .len = std.atomic.Value(usize).init(0),
             };
         }
@@ -82,12 +87,36 @@ pub fn ConcurrentQueue(comptime T: type) type {
             }
         }
 
+        fn enterOperation(self: *Self) void {
+            _ = self.active_operations.fetchAdd(1, .acquire);
+        }
+
+        fn leaveOperation(self: *Self) void {
+            if (self.active_operations.fetchSub(1, .acq_rel) == 1) {
+                self.reclaimRetired();
+            }
+        }
+
+        /// Atomically detach the retired list at a quiescent point. Operations
+        /// that begin while this loop runs can only reach the current head and
+        /// tail; nodes on the detached list are no longer queue-reachable.
+        fn reclaimRetired(self: *Self) void {
+            var current = self.retired_head.swap(null, .acquire);
+            while (current) |node| {
+                const next = node.retired_next;
+                self.allocator.destroy(node);
+                current = next;
+            }
+        }
+
         /// Push a value onto the queue (enqueue)
         ///
         /// This is lock-free: one producer always makes progress even if an
         /// individual producer retries after contention.
         pub fn push(self: *Self, value: T) !void {
             const node = try Node.init(self.allocator, value);
+            self.enterOperation();
+            defer self.leaveOperation();
 
             while (true) {
                 const tail = self.tail.load(.acquire);
@@ -133,6 +162,9 @@ pub fn ConcurrentQueue(comptime T: type) type {
         /// This is lock-free - progress is guaranteed if at least one thread
         /// continues to make progress.
         pub fn pop(self: *Self) ?T {
+            self.enterOperation();
+            defer self.leaveOperation();
+
             while (true) {
                 const head = self.head.load(.acquire);
                 const tail = self.tail.load(.acquire);
@@ -511,5 +543,6 @@ test "ConcurrentQueue - eight producers and consumers preserve every item" {
     try std.testing.expect(!failed.load(.acquire));
     try std.testing.expectEqual(@as(usize, item_count), consumed.load(.acquire));
     try std.testing.expect(queue.isEmpty());
+    try std.testing.expect(queue.retired_head.load(.acquire) == null);
     for (&seen) |*entry| try std.testing.expectEqual(@as(u8, 1), entry.load(.acquire));
 }
