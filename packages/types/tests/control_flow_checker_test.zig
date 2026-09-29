@@ -29,7 +29,7 @@ fn checkSource(source: []const u8) !bool {
     return checker.check();
 }
 
-fn checkSourceWithImports(source: []const u8) !bool {
+fn checkSourceWithImportsAtPath(source: []const u8, source_path: []const u8) !bool {
     const allocator = std.testing.allocator;
     var lexer = home.lexer.Lexer.init(allocator, source);
     var tokens = try lexer.tokenize();
@@ -43,11 +43,18 @@ fn checkSourceWithImports(source: []const u8) !bool {
     var checker = home.types.TypeChecker.initWithSourcePath(
         allocator,
         program,
-        "packages/types/tests/fixtures/import_alias_main.home",
+        source_path,
     );
     checker.io = std.testing.io;
     defer checker.deinit();
     return checker.check();
+}
+
+fn checkSourceWithImports(source: []const u8) !bool {
+    return checkSourceWithImportsAtPath(
+        source,
+        "packages/types/tests/fixtures/import_alias_main.home",
+    );
 }
 
 fn checkSourceErrorContains(source: []const u8, needle: []const u8) !bool {
@@ -447,6 +454,15 @@ test "checker resolves exported import alias members" {
         \\    return support.exported(1)
         \\}
     ));
+}
+
+test "checker resolves quoted Home imports relative to the importer" {
+    try std.testing.expect(try checkSourceWithImportsAtPath(
+        \\import "core/kernel_init.home" as kernel_init
+        \\fn run() -> i32 {
+        \\    return kernel_init.boot_stage()
+        \\}
+    , "packages/types/tests/fixtures/kernel/main.home"));
 }
 
 test "checker rejects missing import alias members" {

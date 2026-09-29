@@ -3,7 +3,7 @@ const Io = std.Io;
 const ast = @import("ast");
 const parser_mod = @import("parser");
 const Parser = parser_mod.Parser;
-const ModuleResolver = parser_mod.module_resolver.ModuleResolver;
+const ModuleResolver = parser_mod.ModuleResolver;
 const Lexer = @import("lexer").Lexer;
 const diagnostics = @import("diagnostics");
 const traits_mod = @import("traits");
@@ -1648,57 +1648,18 @@ pub const TypeChecker = struct {
 
     /// Resolve module path to file path
     fn resolveModulePath(self: *TypeChecker, path_segments: []const []const u8) ![]const u8 {
-        // Build path from segments
-        var path_buf = std.ArrayList(u8).empty;
-        defer path_buf.deinit(self.allocator);
+        var resolver = try ModuleResolver.init(self.allocator, self.io);
+        defer resolver.deinit();
 
-        // Get source root directory from source_path
-        var source_root: []const u8 = ".";
-        if (self.source_path) |sp| {
-            if (std.mem.lastIndexOf(u8, sp, "/")) |last_slash| {
-                const dir = sp[0..last_slash];
-                // Check if we're in src/ - handle both "src/..." and ".../src/..."
-                if (std.mem.indexOf(u8, dir, "/src")) |src_pos| {
-                    source_root = dir[0..src_pos];
-                } else if (std.mem.startsWith(u8, dir, "src")) {
-                    // Relative path like "src/engine" - source_root is "."
-                    source_root = ".";
-                } else {
-                    source_root = dir;
-                }
-            }
+        if (self.source_path) |source_path| {
+            try resolver.setSourceRoot(source_path);
         }
 
-        // Try src/ directory first
-        try path_buf.appendSlice(self.allocator, source_root);
-        try path_buf.appendSlice(self.allocator, "/src/");
-        for (path_segments, 0..) |segment, i| {
-            if (i > 0) try path_buf.append(self.allocator, '/');
-            try path_buf.appendSlice(self.allocator, segment);
-        }
-        try path_buf.appendSlice(self.allocator, ".home");
-
-        // Check if file exists
-        const io_check = self.io orelse return error.FileNotFound;
-        if (Io.Dir.cwd().access(io_check, path_buf.items, .{})) |_| {
-            return try self.allocator.dupe(u8, path_buf.items);
-        } else |_| {}
-
-        // Try without src/ prefix
-        path_buf.clearRetainingCapacity();
-        try path_buf.appendSlice(self.allocator, source_root);
-        try path_buf.append(self.allocator, '/');
-        for (path_segments, 0..) |segment, i| {
-            if (i > 0) try path_buf.append(self.allocator, '/');
-            try path_buf.appendSlice(self.allocator, segment);
-        }
-        try path_buf.appendSlice(self.allocator, ".home");
-
-        if (Io.Dir.cwd().access(io_check, path_buf.items, .{})) |_| {
-            return try self.allocator.dupe(u8, path_buf.items);
-        } else |_| {}
-
-        return error.FileNotFound;
+        const resolved = resolver.resolve(path_segments) catch |err| switch (err) {
+            error.ModuleNotFound => return error.FileNotFound,
+            else => return err,
+        };
+        return self.allocator.dupe(u8, resolved.file_path);
     }
 
     fn checkStatement(self: *TypeChecker, stmt: ast.Stmt) TypeError!void {
