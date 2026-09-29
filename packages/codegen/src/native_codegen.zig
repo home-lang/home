@@ -118,72 +118,6 @@ const PendingFunctionCall = struct {
     callee: []u8,
 };
 
-/// Simple register allocator for optimizing register usage
-/// Tracks which registers are currently in use and allocates them efficiently
-pub const RegisterAllocator = struct {
-    /// Bitmask of available general-purpose registers
-    /// Bits correspond to: rbx(0), r12(1), r13(2), r14(3), r15(4)
-    /// We don't allocate rax, rcx, rdx (used for specific operations)
-    /// or rdi, rsi, r8, r9, r10, r11 (used for function calls)
-    available: u8,
-
-    /// Initialize with all callee-saved registers available
-    pub fn init() RegisterAllocator {
-        return .{
-            .available = 0b11111, // rbx, r12, r13, r14, r15 available
-        };
-    }
-
-    /// Allocate a register, returns null if none available
-    pub fn alloc(self: *RegisterAllocator) ?x64.Register {
-        if (self.available & 0b00001 != 0) {
-            self.available &= ~@as(u8, 0b00001);
-            return .rbx;
-        }
-        if (self.available & 0b00010 != 0) {
-            self.available &= ~@as(u8, 0b00010);
-            return .r12;
-        }
-        if (self.available & 0b00100 != 0) {
-            self.available &= ~@as(u8, 0b00100);
-            return .r13;
-        }
-        if (self.available & 0b01000 != 0) {
-            self.available &= ~@as(u8, 0b01000);
-            return .r14;
-        }
-        if (self.available & 0b10000 != 0) {
-            self.available &= ~@as(u8, 0b10000);
-            return .r15;
-        }
-        return null; // No registers available
-    }
-
-    /// Free a register, making it available for reuse
-    pub fn free(self: *RegisterAllocator, reg: x64.Register) void {
-        switch (reg) {
-            .rbx => self.available |= 0b00001,
-            .r12 => self.available |= 0b00010,
-            .r13 => self.available |= 0b00100,
-            .r14 => self.available |= 0b01000,
-            .r15 => self.available |= 0b10000,
-            else => {}, // Other registers aren't managed
-        }
-    }
-
-    /// Check if a specific register is available
-    pub fn isAvailable(self: *RegisterAllocator, reg: x64.Register) bool {
-        return switch (reg) {
-            .rbx => (self.available & 0b00001) != 0,
-            .r12 => (self.available & 0b00010) != 0,
-            .r13 => (self.available & 0b00100) != 0,
-            .r14 => (self.available & 0b01000) != 0,
-            .r15 => (self.available & 0b10000) != 0,
-            else => false,
-        };
-    }
-};
-
 /// CPU feature flags for SIMD optimization
 pub const CpuFeatures = struct {
     has_sse: bool = true, // All x86-64 CPUs have SSE/SSE2
@@ -747,10 +681,6 @@ pub const NativeCodegen = struct {
     /// enforce exhaustiveness can flip this via `setStrictExhaustive`.
     strict_exhaustive_matches: bool = false,
 
-    // Register allocation
-    /// Simple register allocator for optimizing register usage
-    reg_alloc: RegisterAllocator,
-
     // Move semantics
     /// Move semantics checker for ownership and borrow checking
     move_checker: ?MoveChecker,
@@ -849,7 +779,6 @@ pub const NativeCodegen = struct {
             .trait_decls = std.StringHashMap(*ast.TraitDecl).init(allocator),
             .impl_set = std.StringHashMap(void).init(allocator),
             .async_fn_names = std.StringHashMap(void).init(allocator),
-            .reg_alloc = RegisterAllocator.init(),
             .move_checker = null, // Initialized on demand
             .borrow_checker = null, // Initialized on demand
             .source_root = null, // Set via setSourceRoot

@@ -540,6 +540,7 @@ pub fn build(b: *std.Build) void {
     // TS-parity Phase 0.8 — extracted codegen submodules.
     const native_layouts_pkg = createPackage(b, "packages/codegen/src/native/layouts.zig", target, optimize, zig_test_framework);
     native_layouts_pkg.addImport("ast", ast_pkg);
+    const codegen_regalloc_pkg = createPackage(b, "packages/codegen/src/regalloc.zig", target, optimize, zig_test_framework);
 
     // TS-parity Phase 1 — TypeScript frontend packages.
     const ts_lexer_pkg = createPackage(b, "packages/ts_lexer/src/ts_lexer.zig", target, optimize, zig_test_framework);
@@ -1795,6 +1796,10 @@ pub fn build(b: *std.Build) void {
     const native_layouts_tests = b.addTest(.{ .root_module = native_layouts_pkg });
     const run_native_layouts_tests = b.addRunArtifact(native_layouts_tests);
     dependOnTest(test_step, &run_native_layouts_tests.step, test_filter, "native_layouts");
+
+    const codegen_regalloc_tests = b.addTest(.{ .root_module = codegen_regalloc_pkg });
+    const run_codegen_regalloc_tests = b.addRunArtifact(codegen_regalloc_tests);
+    dependOnTest(test_step, &run_codegen_regalloc_tests.step, test_filter, "codegen_regalloc");
 
     const ts_lexer_tests = b.addTest(.{ .root_module = ts_lexer_pkg });
     const run_ts_lexer_tests = b.addRunArtifact(ts_lexer_tests);

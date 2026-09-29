@@ -3259,7 +3259,7 @@ Home pays a ~20–60% overhead vs. raw esbuild/Bun bundler **because we add type
 **Work.**
 
 1. **Subset definition** (2 weeks). Document precisely which TS programs compile natively: full type system, but property access only on declared shapes (no `obj[arbitraryString]` unless typed via `Record<…>`); no `eval`, no `Function` constructor, no prototype mutation. JS escape hatch via `extern "js"` for the dynamic 5%.
-2. **HIR→MIR lowering** (3 weeks). Existing `packages/optimizer/`, `packages/regalloc/`, `packages/codegen/` apply. Reuse most of the native x64 path. Big addition: monomorphization of generic TS classes/functions, paralleling `packages/codegen/src/monomorphization.zig` for Home generics.
+2. **HIR→MIR lowering** (3 weeks). Existing `packages/optimizer/` and `packages/codegen/` apply. The tested IR graph-coloring allocator lives at `packages/codegen/src/regalloc.zig`; attach it after HIR-to-MIR lowering rather than carrying allocator state in the AST-direct emitter. Reuse most of the native x64 path. Big addition: monomorphization of generic TS classes/functions, paralleling `packages/codegen/src/monomorphization.zig` for Home generics.
 3. **JS runtime in Zig** (4 weeks). Minimal `Object`, `Array`, `String`, `Map`, `Set`, `Promise` runtime. Most exists in stdlib.
 4. **GC integration or escape analysis** (3 weeks). Two paths: (a) integrate a small precise GC; (b) escape analysis + arenas + RC for cycles. Decision deferred to a Phase 7 design spike.
 5. **WASM emit (future, separately admitted)** (2 weeks). The unbuilt prototype
