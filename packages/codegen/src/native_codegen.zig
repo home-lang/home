@@ -79,18 +79,6 @@ const MAX_LOCALS = 256;
 // compiler is a fixed 20-byte scratch buffer in `print`, which is
 // nowhere near the guard-page distance.
 
-/// Start address for runtime heap memory.
-///
-/// In a real implementation, this would be determined by the OS loader.
-/// The heap pointer metadata is stored at HEAP_START - 8.
-const HEAP_START: usize = 0x10000000; // Start of heap memory
-
-/// Total heap size available for runtime allocation.
-///
-/// Uses a simple bump allocator for now. A production implementation
-/// would use a proper allocator with deallocation support.
-const HEAP_SIZE: usize = 1024 * 1024; // 1MB heap
-
 /// Stable runtime failure text for an expression-form match that reaches no
 /// arm. Exported so end-to-end codegen tests can assert the executable
 /// contract without duplicating the message.
@@ -480,7 +468,7 @@ pub const VectorizablePattern = struct {
 /// - Expressions leave their result in RAX
 /// - Local variables stored on stack with negative offsets from RBP
 /// - Function calls use System V AMD64 ABI calling convention
-/// - Heap allocation via simple bump allocator
+/// - Escaping heap allocation via anonymous mappings
 /// - Register allocator manages rbx, r12, r13, r14, r15
 ///
 /// Optimizations:
@@ -620,9 +608,6 @@ pub const NativeCodegen = struct {
     function_info: std.StringHashMap(FunctionInfo),
 
     // Heap management
-    /// Current heap allocation pointer (bump allocator state)
-    heap_ptr: usize,
-
     /// Optional module-name prefix used by mangleMethodName. When set,
     /// methods are mangled as `module::Type$method` instead of the bare
     /// `Type$method`. This prevents cross-module collisions when two
@@ -668,12 +653,6 @@ pub const NativeCodegen = struct {
     // an entry in this set. Missing supertrait impls produce a codegen
     // error rather than silently compiling with half a vtable.
     impl_set: std.StringHashMap(void),
-
-    // Data-section offset of the bump allocator state: [current_ptr:i64, current_end:i64].
-    // Lazily initialized on the first heapAlloc call. Setting it to null
-    // means no bump allocator slot is reserved yet; subsequent allocs reuse
-    // the same slot.
-    bump_state_offset: ?usize = null,
 
     /// When true, `match` without covering every enum variant (and without
     /// a wildcard arm) fails codegen. Defaults to false so existing code
@@ -767,7 +746,6 @@ pub const NativeCodegen = struct {
             .next_local_offset = 0,
             .functions = std.StringHashMap(usize).init(allocator),
             .function_info = std.StringHashMap(FunctionInfo).init(allocator),
-            .heap_ptr = HEAP_START,
             .struct_layouts = std.StringHashMap(StructLayout).init(allocator),
             .enum_layouts = std.StringHashMap(EnumLayout).init(allocator),
             .string_literals = std.ArrayList([]const u8).empty,
@@ -1120,47 +1098,6 @@ pub const NativeCodegen = struct {
             return bc.isBorrowed(var_name);
         }
         return false;
-    }
-
-    /// Generate heap allocation code (bump allocator).
-    ///
-    /// Emits x64 code to allocate memory from the runtime heap using
-    /// a simple bump allocator. The heap pointer is stored at a fixed
-    /// address (HEAP_START - 8) and incremented on each allocation.
-    ///
-    /// Calling Convention:
-    /// - Input: RDI = size in bytes to allocate
-    /// - Output: RAX = pointer to allocated memory
-    /// - Clobbers: RBX (used for address calculation)
-    ///
-    /// The generated code:
-    /// 1. Loads current heap pointer from memory
-    /// 2. Saves it as the return value
-    /// 3. Increments heap pointer by requested size
-    /// 4. Stores new heap pointer back to memory
-    /// 5. Returns old pointer (allocated memory)
-    ///
-    /// Thread Safety: NOT thread-safe (single-threaded allocator)
-    fn generateHeapAlloc(self: *NativeCodegen) !void {
-        const heap_ptr_addr = HEAP_START - 8;
-
-        // Load address of heap pointer into rbx
-        try self.assembler.movRegImm64(.rbx, heap_ptr_addr);
-
-        // Load current heap pointer value: mov rax, [rbx]
-        try self.assembler.movRegMem(.rax, .rbx, 0);
-
-        // Save current pointer (this is what we'll return)
-        try self.assembler.pushReg(.rax);
-
-        // Calculate new heap pointer: rax + rdi (size)
-        try self.assembler.addRegReg(.rax, .rdi);
-
-        // Store new heap pointer back to memory using movMemReg helper
-        try self.generateMovMemReg(.rbx, 0, .rax);
-
-        // Restore and return the old pointer
-        try self.assembler.popReg(.rax);
     }
 
     /// Helper to generate mov [reg + offset], src_reg
@@ -6514,7 +6451,7 @@ pub const NativeCodegen = struct {
         // Save the value we want to wrap.
         try self.assembler.movRegReg(.rcx, .rax);
 
-        // Allocate 16 bytes via the bump allocator.
+        // Allocate 16 bytes from the native heap.
         try self.assembler.movRegImm64(.rdi, 16);
         try self.heapAlloc(); // rax = pointer
         try self.assembler.movRegReg(.r10, .rax);
@@ -8255,7 +8192,7 @@ pub const NativeCodegen = struct {
 
                     // string.upper() and string.lower() - ASCII case conversion.
                     // Allocates a new heap buffer (via heapAlloc, currently a stack
-                    // bump allocator) and copies the string with case applied.
+                    // native heap) and copies the string with case applied.
                     if (std.mem.eql(u8, method_name, "upper") or std.mem.eql(u8, method_name, "lower")) {
                         const to_upper = std.mem.eql(u8, method_name, "upper");
                         try self.generateExpr(member.object); // rax = string ptr

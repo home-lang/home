@@ -139,6 +139,14 @@ The code generator produces native machine code and object files directly.
 - Inline expansion
 - Target-aware instruction selection
 
+**Native allocation status**: escaping x86-64 values currently use fresh,
+page-rounded anonymous mappings. This is lifetime-correct for async state and
+other values that outlive their creating stack frame, but it is intentionally
+documented as an interim implementation: small objects consume at least one
+page and there is no emitted deallocation yet. Issue #797 tracks the size-class
+allocator, ownership-drop frees, and allocation/RSS benchmarks required before
+the runtime can be described as production-ready.
+
 **Output**: Native object files (.o) or executables
 
 ### 7. Incremental Compilation Cache

@@ -295,6 +295,46 @@ test "codegen: comptime values are evaluated before native emission" {
     try testing.expectEqual(std.process.Child.Term{ .exited = 42 }, result.term);
 }
 
+test "codegen: dynamic arrays use mapped native storage" {
+    if (builtin.os.tag != .macos and builtin.os.tag != .linux) return error.SkipZigTest;
+
+    const allocator = testing.allocator;
+    const source =
+        \\fn main() -> i32 {
+        \\    let mut values = Array.new()
+        \\    values.push(7)
+        \\    return values.pop()
+        \\}
+    ;
+    var lexer = Lexer.init(allocator, source);
+    var tokens = try lexer.tokenize();
+    defer tokens.deinit(allocator);
+    var parser = try Parser.init(allocator, tokens.items);
+    defer parser.deinit();
+    const program = try parser.parse();
+    defer program.deinit(allocator);
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    defer allocator.free(dir_path);
+    const executable_path = try std.fs.path.join(allocator, &.{ dir_path, "mapped-array" });
+    defer allocator.free(executable_path);
+
+    var native_codegen = codegen.NativeCodegen.init(allocator, program, null, null);
+    defer native_codegen.deinit();
+    native_codegen.io = testing.io;
+    try native_codegen.writeExecutable(executable_path);
+
+    const result = try std.process.run(allocator, testing.io, .{
+        .argv = &.{executable_path},
+        .timeout = .{ .duration = .{ .raw = .fromSeconds(5), .clock = .awake } },
+    });
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+    try testing.expectEqual(std.process.Child.Term{ .exited = 7 }, result.term);
+}
+
 test "codegen: native module symbols keep same-named helpers distinct" {
     const allocator = testing.allocator;
     var tmp = testing.tmpDir(.{});
