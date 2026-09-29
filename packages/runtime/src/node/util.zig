@@ -58,7 +58,6 @@
 //                                                  `isBoxedPrimitive`,
 //                                                  typed-array shapes,
 //                                                  `isAnyArrayBuffer`,
-//                                                  `isSharedArrayBuffer`,
 //                                                  `isArrayBufferView`,
 //                                                  `isDataView`,
 //                                                  `isExternal`,
@@ -77,6 +76,11 @@
 //                                                  message — they
 //                                                  re-attach once the
 //                                                  JSC bridge is live.
+//   * `isSharedArrayBuffer(buffer)`              — reads the `shared` bit
+//                                                  from JSC's native
+//                                                  ArrayBuffer descriptor;
+//                                                  accepts the descriptor by
+//                                                  value or pointer.
 //
 // Inline tests cover inspect / format basic cases, isDeepStrictEqual,
 // types.isArray / isBoolean / isString / isFunction. These mirror the
@@ -602,9 +606,38 @@ pub const types = struct {
         @panic("util.types.isAnyArrayBuffer: JSC bridge not yet live (Phase 12.2 dependency)");
     }
 
-    pub fn isSharedArrayBuffer(comptime T: type) bool {
-        _ = T;
-        @panic("util.types.isSharedArrayBuffer: JSC bridge not yet live (Phase 12.2 dependency)");
+    /// `util.types.isSharedArrayBuffer(buffer)` for the native JSC bridge.
+    ///
+    /// `JSValue.asArrayBuffer` returns an `ArrayBuffer` descriptor carrying
+    /// the engine's authoritative `shared` bit. Keep this utility independent
+    /// of `jsc.zig` to avoid the `home.zig -> node/util.zig -> jsc.zig` import
+    /// cycle, but require the complete descriptor shape so an unrelated struct
+    /// with a coincidental `shared` field is rejected at compile time.
+    pub fn isSharedArrayBuffer(buffer: anytype) bool {
+        const T = @TypeOf(buffer);
+        return switch (@typeInfo(T)) {
+            .pointer => |pointer| blk: {
+                if (pointer.size != .one) {
+                    @compileError("util.types.isSharedArrayBuffer expects an ArrayBuffer descriptor or a single-item pointer");
+                }
+                break :blk isSharedArrayBuffer(buffer.*);
+            },
+            .@"struct" => blk: {
+                comptime {
+                    const required_fields = .{ "ptr", "len", "byte_len", "value", "typed_array_type", "shared", "resizable" };
+                    for (required_fields) |field| {
+                        if (!@hasField(T, field)) {
+                            @compileError("util.types.isSharedArrayBuffer expects JSC's ArrayBuffer descriptor");
+                        }
+                    }
+                    if (@TypeOf(@field(buffer, "shared")) != bool) {
+                        @compileError("JSC ArrayBuffer descriptor shared field must be bool");
+                    }
+                }
+                break :blk @field(buffer, "shared");
+            },
+            else => @compileError("util.types.isSharedArrayBuffer expects JSC's ArrayBuffer descriptor"),
+        };
     }
 
     pub fn isArrayBufferView(comptime T: type) bool {
@@ -737,6 +770,24 @@ test "util.types.isNull / isPrimitive / isObject" {
     const Pt = struct { x: i32 };
     try std.testing.expect(types.isObject(Pt));
     try std.testing.expect(!types.isObject(u32));
+}
+
+test "util.types.isSharedArrayBuffer reads the native descriptor flag" {
+    const ArrayBufferDescriptor = struct {
+        ptr: ?[*]u8 = null,
+        len: usize = 0,
+        byte_len: usize = 0,
+        value: usize = 0,
+        typed_array_type: u8 = 0,
+        shared: bool,
+        resizable: bool = false,
+    };
+
+    const ordinary = ArrayBufferDescriptor{ .shared = false };
+    const shared = ArrayBufferDescriptor{ .shared = true };
+    try std.testing.expect(!types.isSharedArrayBuffer(ordinary));
+    try std.testing.expect(types.isSharedArrayBuffer(shared));
+    try std.testing.expect(types.isSharedArrayBuffer(&shared));
 }
 
 test "util.debuglog: returns disabled logger when section not in NODE_DEBUG" {
