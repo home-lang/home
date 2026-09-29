@@ -19,7 +19,7 @@
 
 Home is two things built from one Zig toolchain:
 
-- **A TypeScript compiler.** `home-tsc` reads your existing `tsconfig.json`,
+- **A TypeScript compiler.** `home tsc` reads your existing `tsconfig.json`,
   accepts `tsc`'s flags, and prints the same `TSxxxx` diagnostics with the same
   exit status. It passes **all 5,907 upstream TypeScript conformance tests
   byte-for-byte** and type-checks **1.6×–11.9× faster than native TypeScript 7**
@@ -36,21 +36,28 @@ Home is two things built from one Zig toolchain:
 
 ## A drop-in replacement for `tsc`
 
-Swap the binary, keep everything else:
+Everything ships in the one `home` binary. Swap the command, keep everything
+else:
 
 ```diff
 - npx tsc -p tsconfig.json --noEmit
-+ home-tsc -p tsconfig.json --noEmit
++ home tsc -p tsconfig.json --noEmit
 ```
 
 ```bash
-home-tsc                  # build the project in ./tsconfig.json
-home-tsc --noEmit         # type-check only — same diagnostics, codes and exit status
-home-tsc --watch          # incremental rebuilds on change
-home-tsc -b               # project references / build mode
-home-tsc --init           # write a starter tsconfig.json
-home-lsp                  # TypeScript language server for your editor
+home tsc                  # build the project in ./tsconfig.json
+home tsc --noEmit         # type-check only — same diagnostics, codes and exit status
+home tsc --watch          # incremental rebuilds on change
+home tsc -b               # project references / build mode
+home tsc --init           # write a starter tsconfig.json
 home run server.ts        # run TypeScript on Home's own JavaScriptCore realm
+```
+
+Invoked under the name `tsc` (or `home-tsc`), `home` behaves exactly like
+`tsc`, so a symlink is a literal drop-in for scripts and tools that call `tsc`:
+
+```bash
+ln -s "$(command -v home)" /usr/local/bin/tsc
 ```
 
 The familiar options work as they do in `tsc`: `-p/--project`, `--strict`,
@@ -77,7 +84,6 @@ compiler.
 | Upstream conformance corpus, diagnostic families | **5,907 / 5,907 — 100%** |
 | Baseline-aware `.errors.txt` comparison, 19 folders | **586 / 586 — 100%** |
 | Diagnostic codes the reference compiler can emit | **100% — 0 reachable codes left** ¹ |
-| Language-server methods routed | 76 / ~80 |
 
 Both conformance modes are regression-gated on every pull request. Reproduce
 the exact run with:
@@ -118,6 +124,11 @@ Home had the lowest mean on **20 / 20** workloads and won **600 / 600** paired
 rounds, with every paired 95% confidence interval favoring Home. A separate
 Linux ARM64 run (Debian Bookworm container) also has Home fastest on 20 / 20,
 from **1.02×** (checked JS, a near tie) to **21.7×** (startup) versus `tsgo`.
+
+These numbers were measured with the standalone compiler build
+(`zig build home-tsc`). `home tsc` runs the same compiler from inside the full
+`home` binary, which adds some process-startup cost that has not been
+benchmarked yet. Expect it to show mostly in the `startup` row.
 
 <details>
 <summary>All 20 workloads (macOS ARM64, ± sample standard deviation)</summary>
@@ -179,9 +190,12 @@ included), and the real-world correctness audits.
   down to 3 diagnostics that TypeScript doesn't report.
   Each fix is tracked in
   [TypeScript performance](docs/docs/TS_PERFORMANCE.md).
-- **`home-tsc` is not in the release tarballs yet.** Build it from source with
-  `./pantry/.bin/zig build home-tsc -Doptimize=ReleaseFast`; it lands in
-  `zig-out/bin/`. A plain `zig build` produces both `home-tsc` and `home-lsp`.
+- **No tagged release yet.** `home tsc` ships inside the `home` binary from
+  the first `v*` release on. Until then, build `home` from source (see
+  [Build from source](#build-from-source)).
+- **No TypeScript language server yet.** `home lsp --stdio` serves `.home`
+  files. The TypeScript language-server library routes 76 of ~80 methods, but
+  `home lsp` does not serve TypeScript files with it yet.
 
 More: [TypeScript compiler](https://home-lang.org/docs/features/typescript),
 [TypeScript parity by feature](https://home-lang.org/docs/PARITY-TYPESCRIPT),
@@ -406,10 +420,10 @@ Conservative on purpose: anything not exercised by an example or a test stays
 | Area | Status | Detail |
 |---|---|---|
 | Lexer, parser, type inference | Usable today | [Capability matrix](https://home-lang.org/docs/CAPABILITY_MATRIX) |
-| TypeScript front end (`home-tsc`) | Usable today; fastest on 20 / 20 benchmark workloads | [TypeScript performance](docs/docs/TS_PERFORMANCE.md) |
+| TypeScript front end (`home tsc`) | Usable today; fastest on 20 / 20 benchmark workloads | [TypeScript performance](docs/docs/TS_PERFORMANCE.md) |
 | TypeScript conformance (coarse + byte-exact) | 5,907 / 5,907 — 100% | [TypeScript parity](https://home-lang.org/docs/PARITY-TYPESCRIPT) |
 | TypeScript diagnostic codes emitted | 1,620 / 2,079; **0 reachable targets left** | [Diagnostic reachability](https://home-lang.org/docs/TS_DIAGNOSTIC_REACHABILITY) |
-| Language server methods routed | 76 / ~80 | [Parity status](https://home-lang.org/docs/PARITY-STATUS#lsp--ide-coverage--home-lsp-vs-tsserver) |
+| TypeScript language-server methods routed (library; not yet served by `home lsp`) | 76 / ~80 | [Parity status](https://home-lang.org/docs/PARITY-STATUS#lsp--ide-coverage--home-lsp-vs-tsserver) |
 | Native codegen | 🚧 Home AST→native is maturing; JS/TS standalones run bundled graphs in JSC, not TS→native lowering | [Codegen tests](https://github.com/home-lang/home/blob/main/packages/codegen/tests/codegen_test.zig) · [standalone tests](https://github.com/home-lang/home/blob/main/packages/runtime/test/test/bundler/bundler_compile.test.ts) |
 | Bun runtime port | 552 / 1,193 files integrated | [Bun parity](https://home-lang.org/docs/PARITY-BUN) |
 | `node:*` modules JS-callable | 24 / 47 (partial surfaces) | [Node.js parity](https://home-lang.org/docs/PARITY-NODE) |
@@ -440,7 +454,7 @@ Common commands:
 | Command | What it does |
 |---|---|
 | `./pantry/.bin/zig build` | Build the compiler |
-| `./pantry/.bin/zig build home-tsc -Doptimize=ReleaseFast` | Build just the `tsc`-compatible compiler (plain `zig build` also builds it, plus `home-lsp`) |
+| `./pantry/.bin/zig build home-tsc -Doptimize=ReleaseFast` | Build the standalone `tsc` benchmark binary (users run `home tsc`) |
 | `./pantry/.bin/zig build test` | Run the unit-test suite |
 | `./pantry/.bin/zig build examples` | Run the native example executables |
 | `./pantry/.bin/zig build run -- examples/fibonacci.home` | Build, then run a file |

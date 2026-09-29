@@ -24,6 +24,43 @@ const d_hm = @import("d_hm");
 
 const ts_empty_files_list_in_config: u32 = 18002;
 
+/// tsc writes its normal output (diagnostics, summaries, status messages,
+/// help, `--showConfig`) to stdout: typescript-go routes all of it through
+/// `sys.Writer()` and uses `ErrorWriter()` only for an env-gated debug
+/// logger. Like `std.debug.print`, each call is serialized and flushed
+/// before returning, so output survives the `std.process.exit` calls below.
+/// Home-internal failures with no tsc counterpart stay on stderr.
+fn printStdout(comptime fmt: []const u8, args: anytype) void {
+    const io = std.Options.debug_io;
+    stdout_mutex.lockUncancelable(io);
+    defer stdout_mutex.unlock(io);
+    var buffer: [256]u8 = undefined;
+    var writer = std.Io.File.stdout().writerStreaming(io, &buffer);
+    writer.interface.print(fmt, args) catch return;
+    writer.interface.flush() catch {};
+}
+
+var stdout_mutex: std.Io.Mutex = .init;
+
+/// tsc's default for `--pretty` when it isn't set: off under `NO_COLOR`, on
+/// under `FORCE_COLOR`, otherwise on only when stdout is a terminal, so piped
+/// CI output keeps the `file(line,col): error TSxxxx: ...` form problem
+/// matchers parse (typescript-go `defaultIsPretty`).
+fn defaultIsPretty(environ: *const std.process.Environ.Map, stdout_is_tty: bool) bool {
+    if (nonEmptyEnv(environ, "NO_COLOR")) return false;
+    if (nonEmptyEnv(environ, "FORCE_COLOR")) return true;
+    return stdout_is_tty;
+}
+
+fn stdoutIsTty() bool {
+    return std.Io.File.stdout().isTty(std.Options.debug_io) catch false;
+}
+
+fn nonEmptyEnv(environ: *const std.process.Environ.Map, name: []const u8) bool {
+    const value = environ.get(name) orelse return false;
+    return value.len > 0;
+}
+
 const RealFs = struct {
     fn read(gpa: std.mem.Allocator, path: []const u8) ![]const u8 {
         var threaded = std.Io.Threaded.init(gpa, .{});
@@ -83,7 +120,7 @@ fn expandResponseFiles(
             if (contents.len == 0) {
                 const msg = ts_cli.cannotReadFileDiagnostic(gpa, fname) catch continue;
                 defer gpa.free(msg);
-                std.debug.print("{s}\n", .{msg});
+                printStdout("{s}\n", .{msg});
                 continue;
             }
             const toks = ts_cli.tokenizeResponseFile(gpa, contents) catch continue;
@@ -92,7 +129,7 @@ fn expandResponseFiles(
                 const msg = ts_cli.unterminatedResponseFileStringDiagnostic(gpa, fname) catch null;
                 if (msg) |m| {
                     defer gpa.free(m);
-                    std.debug.print("{s}\n", .{m});
+                    printStdout("{s}\n", .{m});
                 }
             }
             expandResponseFiles(gpa, arena, toks.args, out, depth + 1);
@@ -274,7 +311,7 @@ fn printConfigValidationDiagnostics(gpa: std.mem.Allocator, cfg: tsconfig_mod.Ts
     defer tsconfig_mod.freeValidationDiagnostics(gpa, diags);
     if (diags.len == 0) return false;
     for (diags) |d| {
-        std.debug.print("error TS{d}: {s}\n", .{ d.code, d.message });
+        printStdout("error TS{d}: {s}\n", .{ d.code, d.message });
     }
     return true;
 }
@@ -284,7 +321,7 @@ fn printConfigValidationDiagnostics(gpa: std.mem.Allocator, cfg: tsconfig_mod.Ts
 /// `code` is carried so the diagnostic-coverage ledger credits it.
 fn buildStatusMessage(comptime code: u32, comptime fmt: []const u8, args: anytype) void {
     comptime std.debug.assert(code >= 6000);
-    std.debug.print(fmt, args);
+    printStdout(fmt, args);
 }
 
 fn reportWatchErrorStatus(error_count: usize) void {
@@ -297,7 +334,7 @@ fn reportWatchErrorStatus(error_count: usize) void {
 
 fn printTraceEntries(sink: *const ts_resolver.TraceSink, printed_count: *usize) void {
     while (printed_count.* < sink.entries.items.len) : (printed_count.* += 1) {
-        std.debug.print("{s}\n", .{sink.entries.items[printed_count.*].text});
+        printStdout("{s}\n", .{sink.entries.items[printed_count.*].text});
     }
 }
 
@@ -386,13 +423,14 @@ fn buildOneProject(
     verbose: bool,
     force: bool,
     upstream_dependency_built_with_unchanged_dts: bool,
+    default_pretty: bool,
 ) BuildOneProjectResult {
     const cfg_src = RealFs.read(arena, config_path) catch {
-        std.debug.print("error reading {s}\n", .{config_path});
+        printStdout("error reading {s}\n", .{config_path});
         return .errors;
     };
     var cfg = tsconfig_mod.parseString(gpa, arena, cfg_src) catch {
-        std.debug.print("error parsing {s}\n", .{config_path});
+        printStdout("error parsing {s}\n", .{config_path});
         return .errors;
     };
     cfg.file_path = config_path;
@@ -436,7 +474,7 @@ fn buildOneProject(
         ) catch return .errors;
     }
     if (input_files.items.len == 0) {
-        if (verbose) std.debug.print("  (no input files)\n", .{});
+        if (verbose) printStdout("  (no input files)\n", .{});
         return .up_to_date;
     }
 
@@ -504,7 +542,7 @@ fn buildOneProject(
     defer program.deinit();
     for (input_files.items) |path| {
         const src = RealFs.read(gpa, path) catch {
-            std.debug.print("error reading {s}\n", .{path});
+            printStdout("error reading {s}\n", .{path});
             return .errors;
         };
         defer gpa.free(src);
@@ -521,7 +559,7 @@ fn buildOneProject(
     var stream_ctx: StreamCtx = .{
         .gpa = gpa,
         .program = &program,
-        .use_pretty = true,
+        .use_pretty = cfg.compiler_options.pretty orelse default_pretty,
         .use_color = false,
         .any_errors = &had_errors,
     };
@@ -1180,7 +1218,7 @@ fn printDryCleanOutputs(outputs: []const []u8) void {
     // TS6356 — dry clean status with one bullet per would-delete output.
     buildStatusMessage(6356, "A non-dry build would delete the following files:\n", .{});
     for (outputs) |path| {
-        std.debug.print(" * {s}\n", .{path});
+        printStdout(" * {s}\n", .{path});
     }
 }
 
@@ -1352,7 +1390,7 @@ fn reportCaseOnlyInputFileDiagnostics(gpa: std.mem.Allocator, input_files: []con
     const related = caseOnlyInputRelatedInfo(root_context, mismatch, &related_buf);
     const msg = alreadyIncludedFileNameDiffersOnlyInCasingDiagnostic(gpa, mismatch, chain, related) catch return true;
     defer gpa.free(msg);
-    std.debug.print("{s}\n", .{msg});
+    printStdout("{s}\n", .{msg});
     return true;
 }
 
@@ -1478,7 +1516,7 @@ fn printNodeFormatExplain(
     const reason = explainNodeFormatReason(gpa, fs, f.path, f.source, module) catch return;
     if (reason) |r| {
         defer gpa.free(r.message);
-        std.debug.print("  {s}\n", .{r.message});
+        printStdout("  {s}\n", .{r.message});
     }
 }
 
@@ -1577,7 +1615,7 @@ fn printExplainFiles(
     _ = code_cjs_package_no_type;
     _ = code_cjs_package_not_found;
     for (program.files.items) |f| {
-        std.debug.print("{s}\n", .{explainFileDisplayPath(f)});
+        printStdout("{s}\n", .{explainFileDisplayPath(f)});
         if (!pathInList(roots, f.path)) {
             // A non-root file is here because something pulled it in —
             // an import (TS1393) or a `/// <reference path>` directive
@@ -1600,7 +1638,7 @@ fn printExplainFiles(
                                 .{ ir.specifier_text, importer_path },
                             ) catch return;
                         defer gpa.free(msg);
-                        std.debug.print("{s}\n", .{msg});
+                        printStdout("{s}\n", .{msg});
                         printProjectReferenceOutputExplain(f);
                         printRedirectExplain(program, f);
                         printNodeFormatExplain(gpa, fs, f, module);
@@ -1621,7 +1659,7 @@ fn printExplainFiles(
                                 .{ ir.specifier_text, importer_path },
                             ) catch return;
                         defer gpa.free(msg);
-                        std.debug.print("{s}\n", .{msg});
+                        printStdout("{s}\n", .{msg});
                         printProjectReferenceOutputExplain(f);
                         printRedirectExplain(program, f);
                         printNodeFormatExplain(gpa, fs, f, module);
@@ -1642,7 +1680,7 @@ fn printExplainFiles(
                                 .{ ir.specifier_text, importer_path },
                             ) catch return;
                         defer gpa.free(msg);
-                        std.debug.print("{s}\n", .{msg});
+                        printStdout("{s}\n", .{msg});
                         printProjectReferenceOutputExplain(f);
                         printRedirectExplain(program, f);
                         printNodeFormatExplain(gpa, fs, f, module);
@@ -1656,7 +1694,7 @@ fn printExplainFiles(
                             .{ ir.specifier_text, referencing_path },
                         ) catch return;
                         defer gpa.free(msg);
-                        std.debug.print("{s}\n", .{msg});
+                        printStdout("{s}\n", .{msg});
                         printProjectReferenceOutputExplain(f);
                         printRedirectExplain(program, f);
                         printNodeFormatExplain(gpa, fs, f, module);
@@ -1677,7 +1715,7 @@ fn printExplainFiles(
                                 .{ ir.specifier_text, referencing_path },
                             ) catch return;
                         defer gpa.free(msg);
-                        std.debug.print("{s}\n", .{msg});
+                        printStdout("{s}\n", .{msg});
                         printProjectReferenceOutputExplain(f);
                         printRedirectExplain(program, f);
                         printNodeFormatExplain(gpa, fs, f, module);
@@ -1691,7 +1729,7 @@ fn printExplainFiles(
                             .{ ir.specifier_text, referencing_path },
                         ) catch return;
                         defer gpa.free(msg);
-                        std.debug.print("{s}\n", .{msg});
+                        printStdout("{s}\n", .{msg});
                         printProjectReferenceOutputExplain(f);
                         printRedirectExplain(program, f);
                         printNodeFormatExplain(gpa, fs, f, module);
@@ -1711,7 +1749,7 @@ fn printExplainFiles(
                                 .{ir.specifier_text},
                             ) catch return;
                         defer gpa.free(msg);
-                        std.debug.print("{s}\n", .{msg});
+                        printStdout("{s}\n", .{msg});
                         printProjectReferenceOutputExplain(f);
                         printRedirectExplain(program, f);
                         printNodeFormatExplain(gpa, fs, f, module);
@@ -1731,7 +1769,7 @@ fn printExplainFiles(
                                 .{ir.specifier_text},
                             ) catch return;
                         defer gpa.free(msg);
-                        std.debug.print("{s}\n", .{msg});
+                        printStdout("{s}\n", .{msg});
                         printProjectReferenceOutputExplain(f);
                         printRedirectExplain(program, f);
                         printNodeFormatExplain(gpa, fs, f, module);
@@ -1744,7 +1782,7 @@ fn printExplainFiles(
                             .{ir.specifier_text},
                         ) catch return;
                         defer gpa.free(msg);
-                        std.debug.print("{s}\n", .{msg});
+                        printStdout("{s}\n", .{msg});
                         printProjectReferenceOutputExplain(f);
                         printRedirectExplain(program, f);
                         printNodeFormatExplain(gpa, fs, f, module);
@@ -1764,7 +1802,7 @@ fn printExplainFiles(
                                 .{},
                             ) catch return;
                         defer gpa.free(msg);
-                        std.debug.print("{s}\n", .{msg});
+                        printStdout("{s}\n", .{msg});
                         printProjectReferenceOutputExplain(f);
                         printRedirectExplain(program, f);
                         printNodeFormatExplain(gpa, fs, f, module);
@@ -1776,7 +1814,7 @@ fn printExplainFiles(
             // No recorded edge (partial program / resolution gap): fall
             // back to the generic root-specified reason rather than
             // fabricating a puller.
-            std.debug.print("  {s}\n", .{(ts_diagnostics.codes.lookup(code_root_specified) orelse unreachable).message});
+            printStdout("  {s}\n", .{(ts_diagnostics.codes.lookup(code_root_specified) orelse unreachable).message});
             printProjectReferenceOutputExplain(f);
             printRedirectExplain(program, f);
             printNodeFormatExplain(gpa, fs, f, module);
@@ -1787,14 +1825,14 @@ fn printExplainFiles(
             const cfg_base = std.fs.path.basename(root.config_path);
             const msg = std.fmt.allocPrint(gpa, "  Matched by include pattern '{s}' in '{s}'", .{ root.spec, cfg_base }) catch return;
             defer gpa.free(msg);
-            std.debug.print("{s}\n", .{msg});
+            printStdout("{s}\n", .{msg});
         } else {
             const code = switch (root.code) {
                 code_files_list => code_files_list,
                 code_default_include => code_default_include,
                 else => code_root_specified,
             };
-            std.debug.print("  {s}\n", .{(ts_diagnostics.codes.lookup(code) orelse unreachable).message});
+            printStdout("  {s}\n", .{(ts_diagnostics.codes.lookup(code) orelse unreachable).message});
         }
         printNodeFormatExplain(gpa, fs, f, module);
     }
@@ -1818,13 +1856,13 @@ fn explainFileDisplayPath(file: *const ts_program.File) []const u8 {
 fn printProjectReferenceOutputExplain(file: *const ts_program.File) void {
     const ir = file.include_reason orelse return;
     if (ir.project_reference_output.len == 0) return;
-    std.debug.print("  File is output of project reference source '{s}'\n", .{file.path});
+    printStdout("  File is output of project reference source '{s}'\n", .{file.path});
 }
 
 fn printRedirectExplain(program: *const ts_program.Program, file: *const ts_program.File) void {
     const target_id = file.redirect_target orelse return;
     const target = program.fileById(target_id);
-    std.debug.print("  File redirects to file '{s}'\n", .{target.path});
+    printStdout("  File redirects to file '{s}'\n", .{target.path});
 }
 
 const CompositeProjectFileListSummary = struct {
@@ -1922,7 +1960,7 @@ fn printCompositeProjectFileListDiagnostics(
         else
             ts_diagnostics.formatDefault(gpa, diag) catch continue;
         defer gpa.free(formatted);
-        std.debug.print("{s}\n", .{formatted});
+        printStdout("{s}\n", .{formatted});
 
         summary.error_count += 1;
         if (!seen_files.contains(anchor.file.path)) {
@@ -1958,7 +1996,7 @@ fn writeOrDie(gpa: std.mem.Allocator, path: []const u8, bytes: []const u8) void 
     RealFs.write(gpa, path, bytes) catch |err| {
         const msg = ts_cli.couldNotWriteFileDiagnostic(gpa, path, @errorName(err)) catch std.process.exit(1);
         defer gpa.free(msg);
-        std.debug.print("{s}\n", .{msg});
+        printStdout("{s}\n", .{msg});
         std.process.exit(1);
     };
 }
@@ -2530,7 +2568,18 @@ const CheckerResolverAdapter = struct {
     }
 };
 
+/// Standalone entry, kept for the `zig build home-tsc` benchmark target.
+/// Users reach the same code through `home tsc`.
 pub fn main(init: std.process.Init) !void {
+    var args_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer args_arena.deinit();
+    const all_args = try init.minimal.args.toSlice(args_arena.allocator());
+    return run(init.environ_map, if (all_args.len > 1) all_args[1..] else &.{});
+}
+
+/// Run the compiler with `tsc`-style `args`, excluding the program name.
+/// Shared by the standalone binary and the `home tsc` subcommand.
+pub fn run(environ: *const std.process.Environ.Map, args: []const [:0]const u8) !void {
     var gpa_state: std.heap.DebugAllocator(.{}) = .init;
     defer {
         if (builtin.mode == .debug) _ = gpa_state.deinit();
@@ -2539,14 +2588,15 @@ pub fn main(init: std.process.Init) !void {
 
     var args_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer args_arena.deinit();
-    const all_args = try init.minimal.args.toSlice(args_arena.allocator());
+
+    const default_pretty = defaultIsPretty(environ, stdoutIsTty());
 
     var argv: std.ArrayListUnmanaged([]const u8) = .empty;
     defer argv.deinit(gpa);
-    if (all_args.len > 1) {
+    if (args.len > 0) {
         // Expand `@response-file` args (TS5083 / TS6045 on failure) before
         // option parsing, the way tsc does.
-        expandResponseFiles(gpa, args_arena.allocator(), all_args[1..], &argv, 0);
+        expandResponseFiles(gpa, args_arena.allocator(), args, &argv, 0);
     }
 
     // `tsc -b` / `tsc --build` (build mode) must be the FIRST argument.
@@ -2565,12 +2615,12 @@ pub fn main(init: std.process.Init) !void {
         defer bp.deinit(gpa);
         var had_build_err = false;
         for (bp.diagnostics) |d| {
-            std.debug.print("{s}\n", .{d});
+            printStdout("{s}\n", .{d});
             had_build_err = true;
         }
         if (had_build_err) std.process.exit(@backingInt(ts_cli.ExitCode.config_error));
         if (bp.options.clean and !bp.options.dry) {
-            std.debug.print("home tsc --build: '--clean' is not yet implemented.\n", .{});
+            printStdout("home tsc --build: '--clean' is not yet implemented.\n", .{});
             return;
         }
         // Resolve the project reference graph, check for cycles (TS6202),
@@ -2579,11 +2629,11 @@ pub fn main(init: std.process.Init) !void {
         const root_ref = if (bp.projects.len > 0) bp.projects[0] else ".";
         const root_cfg = resolveConfigPath(args_arena.allocator(), ".", root_ref) catch root_ref;
         const graph = loadBuildGraph(gpa, args_arena.allocator(), root_cfg) catch {
-            std.debug.print("error: cannot load project '{s}'\n", .{root_cfg});
+            printStdout("error: cannot load project '{s}'\n", .{root_cfg});
             std.process.exit(@backingInt(ts_cli.ExitCode.config_error));
         };
         if (graph.diagnostics.len > 0) {
-            for (graph.diagnostics) |d| std.debug.print("{s}\n", .{d});
+            for (graph.diagnostics) |d| printStdout("{s}\n", .{d});
             std.process.exit(@backingInt(ts_cli.ExitCode.config_error));
         }
         var ord = ts_cli.topoSortProjects(gpa, graph.nodes) catch
@@ -2593,13 +2643,13 @@ pub fn main(init: std.process.Init) !void {
             const msg = ts_cli.projectReferenceCycleDiagnostic(gpa, cyc) catch
                 std.process.exit(@backingInt(ts_cli.ExitCode.internal_error));
             defer gpa.free(msg);
-            std.debug.print("{s}\n", .{msg});
+            printStdout("{s}\n", .{msg});
             std.process.exit(@backingInt(ts_cli.ExitCode.config_error));
         }
         if (bp.options.verbose and graph.paths.len > 1) {
             // TS6355 — `Projects in this build: {0}` (the project list).
             buildStatusMessage(6355, "Projects in this build:\n", .{});
-            for (graph.paths) |p| std.debug.print("    * {s}\n", .{p});
+            for (graph.paths) |p| printStdout("    * {s}\n", .{p});
         }
         if (bp.options.clean and bp.options.dry) {
             var clean_outputs: std.ArrayListUnmanaged([]u8) = .empty;
@@ -2671,7 +2721,7 @@ pub fn main(init: std.process.Init) !void {
                 build_had_errors = true;
                 continue;
             }
-            switch (buildOneProject(gpa, args_arena.allocator(), graph.paths[pi], bp.options.verbose, bp.options.force, upstream_dependency_built_with_unchanged_dts)) {
+            switch (buildOneProject(gpa, args_arena.allocator(), graph.paths[pi], bp.options.verbose, bp.options.force, upstream_dependency_built_with_unchanged_dts, default_pretty)) {
                 .up_to_date => project_status[pi] = .up_to_date,
                 .built_dts_unchanged => project_status[pi] = .built_dts_unchanged,
                 .built_dts_changed => project_status[pi] = .built_dts_changed,
@@ -2695,7 +2745,7 @@ pub fn main(init: std.process.Init) !void {
                             std.process.exit(@backingInt(ts_cli.ExitCode.config_error));
                         };
                         defer gpa.free(msg);
-                        std.debug.print("{s}\n", .{msg});
+                        printStdout("{s}\n", .{msg});
                     } else {
                         std.debug.print("error parsing args: {s}\n", .{@errorName(err)});
                     }
@@ -2706,7 +2756,7 @@ pub fn main(init: std.process.Init) !void {
                             std.process.exit(@backingInt(ts_cli.ExitCode.config_error));
                         };
                         defer gpa.free(msg);
-                        std.debug.print("{s}\n", .{msg});
+                        printStdout("{s}\n", .{msg});
                     } else {
                         std.debug.print("error parsing args: {s}\n", .{@errorName(err)});
                     }
@@ -2717,7 +2767,7 @@ pub fn main(init: std.process.Init) !void {
                             std.process.exit(@backingInt(ts_cli.ExitCode.config_error));
                         };
                         defer gpa.free(msg);
-                        std.debug.print("{s}\n", .{msg});
+                        printStdout("{s}\n", .{msg});
                     } else {
                         std.debug.print("error parsing args: {s}\n", .{@errorName(err)});
                     }
@@ -2728,7 +2778,7 @@ pub fn main(init: std.process.Init) !void {
                             std.process.exit(@backingInt(ts_cli.ExitCode.config_error));
                         };
                         defer gpa.free(msg);
-                        std.debug.print("{s}\n", .{msg});
+                        printStdout("{s}\n", .{msg});
                     } else {
                         std.debug.print("error parsing args: {s}\n", .{@errorName(err)});
                     }
@@ -2739,7 +2789,7 @@ pub fn main(init: std.process.Init) !void {
                             std.process.exit(@backingInt(ts_cli.ExitCode.config_error));
                         };
                         defer gpa.free(msg);
-                        std.debug.print("{s}\n", .{msg});
+                        printStdout("{s}\n", .{msg});
                     } else {
                         std.debug.print("error parsing args: {s}\n", .{@errorName(err)});
                     }
@@ -2758,12 +2808,12 @@ pub fn main(init: std.process.Init) !void {
                 const msg = std.fmt.allocPrint(gpa, "error TS{d}: Compiler option '--{s}' may only be used with '--build'.", .{ code, bn }) catch
                     std.process.exit(@backingInt(ts_cli.ExitCode.config_error));
                 defer gpa.free(msg);
-                std.debug.print("{s}\n", .{msg});
+                printStdout("{s}\n", .{msg});
                 std.process.exit(@backingInt(ts_cli.ExitCode.config_error));
             }
             if (std.mem.eql(u8, a, "--build") or std.mem.eql(u8, a, "-b")) {
                 const code: u32 = 6369;
-                std.debug.print("error TS{d}: Option '--build' must be the first command line argument.\n", .{code});
+                printStdout("error TS{d}: Option '--build' must be the first command line argument.\n", .{code});
                 std.process.exit(@backingInt(ts_cli.ExitCode.config_error));
             }
         }
@@ -2777,7 +2827,7 @@ pub fn main(init: std.process.Init) !void {
             std.process.exit(@backingInt(ts_cli.ExitCode.config_error));
         };
         defer gpa.free(msg);
-        std.debug.print("{s}\n", .{msg});
+        printStdout("{s}\n", .{msg});
         std.process.exit(@backingInt(ts_cli.ExitCode.config_error));
     }
 
@@ -2806,13 +2856,13 @@ pub fn main(init: std.process.Init) !void {
             if (!fileExistsOnDisk(gpa, candidate)) {
                 const msg = try cannotFindTsConfigAtCurrentDirectoryDiagnostic(gpa, candidate);
                 defer gpa.free(msg);
-                std.debug.print("{s}\n", .{msg});
+                printStdout("{s}\n", .{msg});
                 std.process.exit(@backingInt(ts_cli.ExitCode.config_error));
             }
         } else if (!fileExistsOnDisk(gpa, proj)) {
             const msg = try specifiedPathDoesNotExistDiagnostic(gpa, proj);
             defer gpa.free(msg);
-            std.debug.print("{s}\n", .{msg});
+            printStdout("{s}\n", .{msg});
             std.process.exit(@backingInt(ts_cli.ExitCode.config_error));
         }
     }
@@ -2836,11 +2886,11 @@ pub fn main(init: std.process.Init) !void {
     // the `--help` text stays in lockstep with the diagnostic catalogue).
     if (opts.show_help or opts.show_all_help) {
         const help = ts_cli.renderHelp(gpa, opts.show_all_help) catch {
-            std.debug.print("{s}\n", .{ts_cli.helpText});
+            printStdout("{s}\n", .{ts_cli.helpText});
             return;
         };
         defer gpa.free(help);
-        std.debug.print("{s}\n", .{help});
+        printStdout("{s}\n", .{help});
         return;
     }
 
@@ -2849,7 +2899,7 @@ pub fn main(init: std.process.Init) !void {
         if (fileExistsOnDisk(gpa, "tsconfig.json")) {
             const msg = ts_cli.tsconfigAlreadyDefinedDiagnostic(gpa, "tsconfig.json") catch std.process.exit(1);
             defer gpa.free(msg);
-            std.debug.print("{s}\n", .{msg});
+            printStdout("{s}\n", .{msg});
             std.process.exit(1);
         }
         const tsconfig_text = ts_cli.defaultTsconfigContentsWithDiagnostics(gpa) catch std.process.exit(1);
@@ -2865,7 +2915,7 @@ pub fn main(init: std.process.Init) !void {
 
     const dec = ts_cli.dispatch(opts);
     if (dec.stdout_text.len > 0) {
-        std.debug.print("{s}\n", .{dec.stdout_text});
+        printStdout("{s}\n", .{dec.stdout_text});
     }
     if (dec.stderr_text.len > 0) {
         std.debug.print("{s}\n", .{dec.stderr_text});
@@ -2879,7 +2929,7 @@ pub fn main(init: std.process.Init) !void {
             std.process.exit(@backingInt(ts_cli.ExitCode.type_errors));
         };
         defer gpa.free(msg);
-        std.debug.print("{s}\n", .{msg});
+        printStdout("{s}\n", .{msg});
         std.process.exit(@backingInt(ts_cli.ExitCode.type_errors));
     }
 
@@ -2971,12 +3021,12 @@ pub fn main(init: std.process.Init) !void {
                         exclude_display_patterns,
                     );
                     defer gpa.free(msg);
-                    std.debug.print("{s}\n", .{msg});
+                    printStdout("{s}\n", .{msg});
                     std.process.exit(2);
                 }
                 if (c.files) |files| {
                     if (files.len == 0 and c.references.len == 0 and !c.has_extends) {
-                        std.debug.print("error TS{d}: The 'files' list in config file '{s}' is empty.\n", .{ ts_empty_files_list_in_config, c.file_path });
+                        printStdout("error TS{d}: The 'files' list in config file '{s}' is empty.\n", .{ ts_empty_files_list_in_config, c.file_path });
                         std.process.exit(2);
                     }
                 }
@@ -3090,14 +3140,14 @@ pub fn main(init: std.process.Init) !void {
                 if (!allow_js) {
                     const msg = try javaScriptFileNeedsAllowJsDiagnostic(gpa, path);
                     defer gpa.free(msg);
-                    std.debug.print("{s}\n", .{msg});
+                    printStdout("{s}\n", .{msg});
                     extension_errors = true;
                 }
             },
             .unsupported => {
                 const msg = try unsupportedExtensionDiagnostic(gpa, path);
                 defer gpa.free(msg);
-                std.debug.print("{s}\n", .{msg});
+                printStdout("{s}\n", .{msg});
                 extension_errors = true;
             },
         }
@@ -3144,7 +3194,7 @@ pub fn main(init: std.process.Init) !void {
     // running the pipeline; `--listFiles` continues afterward.
     if (opts.list_files or opts.list_files_only) {
         for (input_files.items) |path| {
-            std.debug.print("{s}\n", .{path});
+            printStdout("{s}\n", .{path});
         }
         if (opts.list_files_only) return;
     }
@@ -3152,24 +3202,24 @@ pub fn main(init: std.process.Init) !void {
     // §2.1 — `--showConfig`. Print a minimal JSON view of the
     // resolved tsconfig + the discovered file list. Then exit.
     if (opts.show_config) {
-        std.debug.print("{{\n", .{});
-        std.debug.print("  \"compileOnSave\": false,\n", .{});
-        std.debug.print("  \"compilerOptions\": {{\n", .{});
+        printStdout("{{\n", .{});
+        printStdout("  \"compileOnSave\": false,\n", .{});
+        printStdout("  \"compilerOptions\": {{\n", .{});
         if (loaded_cfg) |c| {
             const co = c.compiler_options;
-            if (co.target) |t| std.debug.print("    \"target\": \"{s}\",\n", .{@tagName(t)});
-            if (co.module) |m| std.debug.print("    \"module\": \"{s}\",\n", .{@tagName(m)});
-            if (co.out_dir) |d| std.debug.print("    \"outDir\": \"{s}\",\n", .{d});
-            if (co.strict) |s| std.debug.print("    \"strict\": {s},\n", .{if (s) "true" else "false"});
-            if (co.declaration) |d| std.debug.print("    \"declaration\": {s},\n", .{if (d) "true" else "false"});
+            if (co.target) |t| printStdout("    \"target\": \"{s}\",\n", .{@tagName(t)});
+            if (co.module) |m| printStdout("    \"module\": \"{s}\",\n", .{@tagName(m)});
+            if (co.out_dir) |d| printStdout("    \"outDir\": \"{s}\",\n", .{d});
+            if (co.strict) |s| printStdout("    \"strict\": {s},\n", .{if (s) "true" else "false"});
+            if (co.declaration) |d| printStdout("    \"declaration\": {s},\n", .{if (d) "true" else "false"});
         }
-        std.debug.print("  }},\n", .{});
-        std.debug.print("  \"files\": [\n", .{});
+        printStdout("  }},\n", .{});
+        printStdout("  \"files\": [\n", .{});
         for (input_files.items, 0..) |path, i| {
-            std.debug.print("    \"{s}\"{s}\n", .{ path, if (i + 1 < input_files.items.len) "," else "" });
+            printStdout("    \"{s}\"{s}\n", .{ path, if (i + 1 < input_files.items.len) "," else "" });
         }
-        std.debug.print("  ]\n", .{});
-        std.debug.print("}}\n", .{});
+        printStdout("  ]\n", .{});
+        printStdout("}}\n", .{});
         return;
     }
 
@@ -3185,6 +3235,8 @@ pub fn main(init: std.process.Init) !void {
         const stdout = std.Io.File.stdout();
         break :blk stdout.isTty(tty_io) catch false;
     };
+    const config_pretty: ?bool = if (loaded_cfg) |c| c.compiler_options.pretty else null;
+    const pretty = opts.pretty orelse config_pretty orelse default_pretty;
     var stream_error_count: usize = 0;
     var stream_files_with_errors: usize = 0;
     var stream_first_error_file: []const u8 = "";
@@ -3195,7 +3247,7 @@ pub fn main(init: std.process.Init) !void {
     var stream_ctx: StreamCtx = .{
         .gpa = gpa,
         .program = &program,
-        .use_pretty = opts.pretty orelse true,
+        .use_pretty = pretty,
         .use_color = stdout_is_tty,
         .any_errors = &any_errors_streaming,
         .error_count = &stream_error_count,
@@ -3220,7 +3272,7 @@ pub fn main(init: std.process.Init) !void {
                 &program,
                 input_files.items,
                 c.file_path,
-                opts.pretty orelse true,
+                pretty,
                 stdout_is_tty,
             );
             if (composite_summary.error_count > 0) {
@@ -3240,9 +3292,12 @@ pub fn main(init: std.process.Init) !void {
     // the TS6193/TS6194 "Watching for file changes" status. For
     // non-watch errors, tsc picks the message by error-and-file count:
     // 1 error → TS6259 in one file else TS6216; many errors across >1
-    // files → TS6261; otherwise TS6217.
+    // files → TS6261; otherwise TS6217. Like typescript-go's
+    // `CreateReportErrorSummary`, the non-watch summary is pretty-only.
     if (opts.watch) {
         reportWatchErrorStatus(stream_error_count);
+    } else if (!pretty) {
+        // Plain `file(line,col): error TSxxxx` output has no summary.
     } else if (stream_error_count == 1) {
         if (stream_files_with_errors == 1 and stream_first_error_file.len != 0) {
             buildStatusMessage(6259, "Found 1 error in {s}\n", .{stream_first_error_file});
@@ -3349,7 +3404,7 @@ pub fn main(init: std.process.Init) !void {
         for (cols) |col| {
             const msg = try ts_cli.formatOutputCollision(gpa, col);
             defer gpa.free(msg);
-            std.debug.print("{s}\n", .{msg});
+            printStdout("{s}\n", .{msg});
             try blocked_outputs.append(gpa, try gpa.dupe(u8, col.output_path));
         }
         if (cols.len > 0) any_errors = true;
@@ -3570,7 +3625,7 @@ pub fn main(init: std.process.Init) !void {
             var watch_stream_ctx: StreamCtx = .{
                 .gpa = gpa,
                 .program = &program,
-                .use_pretty = opts.pretty orelse true,
+                .use_pretty = pretty,
                 .use_color = stdout_is_tty,
                 .any_errors = &watch_any_errors,
                 .error_count = &watch_error_count,
@@ -3681,7 +3736,7 @@ fn streamDiagsCallback(ctx: *StreamCtx, file_path: []const u8, diags: []const ts
         else
             ts_diagnostics.formatDefault(ctx.gpa, fdiag) catch continue;
         defer ctx.gpa.free(formatted);
-        std.debug.print("{s}\n", .{formatted});
+        printStdout("{s}\n", .{formatted});
         if (d.phase != .emit) {
             ctx.any_errors.* = true;
             if (ctx.error_count) |ec| ec.* += 1;
@@ -3730,13 +3785,13 @@ fn printErrorFileSummaryTable(counts: []const ErrorFileCount) void {
     const left_padding_goal = @max(left_heading_len, count_width);
     const header_padding = if (count_width > left_heading_len) count_width - left_heading_len else 0;
     var i: usize = 0;
-    while (i < header_padding) : (i += 1) std.debug.print(" ", .{});
+    while (i < header_padding) : (i += 1) printStdout(" ", .{});
     buildStatusMessage(6041, "Errors  Files\n", .{});
     for (counts) |entry| {
         const digits = decimalDigits(entry.count);
         var pad: usize = digits;
-        while (pad < left_padding_goal) : (pad += 1) std.debug.print(" ", .{});
-        std.debug.print("{d}  {s}\n", .{ entry.count, entry.path });
+        while (pad < left_padding_goal) : (pad += 1) printStdout(" ", .{});
+        printStdout("{d}  {s}\n", .{ entry.count, entry.path });
     }
 }
 

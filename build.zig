@@ -806,10 +806,30 @@ pub fn build(b: *std.Build) void {
     home_test_bun_tier2_expect_matchers_pkg.addImport("bun", home_test_bun_expect_matcher_scaffold_pkg);
 
     // ====================================================================
-    // TS-parity binaries: `home-tsc` (compiler driver) + `home-lsp`
-    // (Language Server Protocol stdio loop). Both consume the
-    // packages above as plain libraries.
+    // TypeScript compiler. Users run it as `home tsc` (or through a
+    // `tsc` / `home-tsc` symlink to `home`); the `tsc_main` module is
+    // imported into the `home` executable below. The standalone
+    // `home-tsc` executable is not installed by default: it exists only
+    // for the frontend benchmark harness (`zig build home-tsc`).
     // ====================================================================
+    const tsc_main_imports = [_]struct { []const u8, *std.Build.Module }{
+        .{ "ts_cli", ts_cli_pkg },
+        .{ "ts_program", ts_program_pkg },
+        .{ "ts_resolver", ts_resolver_pkg },
+        .{ "ts_driver", ts_driver_pkg },
+        .{ "ts_diagnostics", ts_diagnostics_pkg },
+        .{ "ts_emit", ts_emit_pkg },
+        .{ "tsconfig", tsconfig_pkg },
+        .{ "ts_watch", ts_watch_pkg },
+        .{ "d_hm", d_hm_pkg },
+    };
+    const tsc_main_pkg = b.createModule(.{
+        .root_source_file = b.path("packages/ts_cli/src/tsc_main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    for (tsc_main_imports) |imp| tsc_main_pkg.addImport(imp[0], imp[1]);
+
     const home_tsc_exe = b.addExecutable(.{
         .name = "home-tsc",
         .root_module = b.createModule(.{
@@ -819,32 +839,13 @@ pub fn build(b: *std.Build) void {
             .strip = strip_home_tsc,
         }),
     });
-    home_tsc_exe.root_module.addImport("ts_cli", ts_cli_pkg);
-    home_tsc_exe.root_module.addImport("ts_program", ts_program_pkg);
-    home_tsc_exe.root_module.addImport("ts_resolver", ts_resolver_pkg);
-    home_tsc_exe.root_module.addImport("ts_driver", ts_driver_pkg);
-    home_tsc_exe.root_module.addImport("ts_diagnostics", ts_diagnostics_pkg);
-    home_tsc_exe.root_module.addImport("ts_emit", ts_emit_pkg);
-    home_tsc_exe.root_module.addImport("tsconfig", tsconfig_pkg);
-    home_tsc_exe.root_module.addImport("ts_watch", ts_watch_pkg);
-    home_tsc_exe.root_module.addImport("d_hm", d_hm_pkg);
-    b.installArtifact(home_tsc_exe);
+    for (tsc_main_imports) |imp| home_tsc_exe.root_module.addImport(imp[0], imp[1]);
     // Dedicated step so the TS compiler can be built in isolation,
     // independent of the runtime exes (`home`/`database`/…) which may be
     // mid-migration on a given Zig toolchain: `zig build home-tsc`.
-    const home_tsc_step = b.step("home-tsc", "Build just the home-tsc TypeScript compiler");
+    const home_tsc_step = b.step("home-tsc", "Build the standalone home-tsc benchmark binary (users run `home tsc`)");
     home_tsc_step.dependOn(&b.addInstallArtifact(home_tsc_exe, .{}).step);
 
-    const home_lsp_exe = b.addExecutable(.{
-        .name = "home-lsp",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("packages/ts_lsp_server/src/lsp_main.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-    });
-    home_lsp_exe.root_module.addImport("ts_lsp_server", ts_lsp_server_pkg);
-    b.installArtifact(home_lsp_exe);
     const volatile_pkg = createPackage(b, "packages/volatile/src/volatile.zig", target, optimize, zig_test_framework);
     const pantry_pkg = createPackage(b, "packages/pantry/src/pantry.zig", target, optimize, zig_test_framework);
     const collections_pkg = createPackage(b, "packages/collections/src/collection.zig", target, optimize, zig_test_framework);
@@ -1001,6 +1002,7 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("http", http_pkg);
     exe.root_module.addImport("cloud", cloud_pkg);
     exe.root_module.addImport("home_test", home_test_pkg);
+    exe.root_module.addImport("tsc_main", tsc_main_pkg);
     // `home eval`/`home run` reach the native JSC runtime through home_rt.
     // JSC itself is linked into `exe` below, gated on `enable_jsc`.
     exe.root_module.addImport("home", home_rt_pkg);
@@ -1512,6 +1514,33 @@ pub fn build(b: *std.Build) void {
     const run_tpm_tests = b.addRunArtifact(tpm_tests);
 
     const test_step = b.step("test", "Run all tests");
+
+    // `home tsc` output streams: like tsc, diagnostics go to stdout in the
+    // plain `file(line,col): error TSxxxx` form when stdout is not a
+    // terminal, with no summary and nothing on stderr. The environment is
+    // cleared so an inherited FORCE_COLOR / NO_COLOR can't change the default.
+    const tsc_streams_step = b.step("test-tsc-streams", "Check home tsc stdout/stderr parity with tsc");
+    {
+        const streams_dir = b.path("packages/ts_cli/testdata/streams");
+        const type_error = b.addRunArtifact(home_tsc_exe);
+        type_error.setCwd(streams_dir);
+        type_error.clearEnvironment();
+        type_error.addArgs(&.{ "--noEmit", "--ignoreConfig", "type_error.ts" });
+        type_error.expectStdOutEqual("type_error.ts(1,7): error TS2322: Type 'string' is not assignable to type 'number'.\n");
+        type_error.expectStdErrEqual("");
+        type_error.expectExitCode(1);
+        tsc_streams_step.dependOn(&type_error.step);
+
+        const clean = b.addRunArtifact(home_tsc_exe);
+        clean.setCwd(streams_dir);
+        clean.clearEnvironment();
+        clean.addArgs(&.{ "--noEmit", "--ignoreConfig", "clean.ts" });
+        clean.expectStdOutEqual("");
+        clean.expectStdErrEqual("");
+        clean.expectExitCode(0);
+        tsc_streams_step.dependOn(&clean.step);
+    }
+    dependOnTest(test_step, tsc_streams_step, test_filter, "tsc_streams");
     const native_binding_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("build-support/native_bindings.zig"),
@@ -2282,6 +2311,7 @@ pub fn build(b: *std.Build) void {
     debug_exe.root_module.addImport("http", http_pkg);
     debug_exe.root_module.addImport("cloud", cloud_pkg);
     debug_exe.root_module.addImport("home_test", home_test_pkg);
+    debug_exe.root_module.addImport("tsc_main", tsc_main_pkg);
     debug_exe.root_module.addImport("build_options", build_options_module);
     debug_exe.root_module.addImport("home", home_rt_pkg);
     debug_exe.root_module.addImport("home_rt", home_rt_pkg);
@@ -2354,6 +2384,7 @@ pub fn build(b: *std.Build) void {
     release_safe_exe.root_module.addImport("cloud", cloud_pkg);
     release_safe_exe.root_module.addImport("compiler", compiler_pkg);
     release_safe_exe.root_module.addImport("home_test", home_test_pkg);
+    release_safe_exe.root_module.addImport("tsc_main", tsc_main_pkg);
     release_safe_exe.root_module.addImport("macros", macros_pkg);
     release_safe_exe.root_module.addImport("optimizer", optimizer_pkg);
 
@@ -2396,6 +2427,7 @@ pub fn build(b: *std.Build) void {
     release_small_exe.root_module.addImport("cloud", cloud_pkg);
     release_small_exe.root_module.addImport("compiler", compiler_pkg);
     release_small_exe.root_module.addImport("home_test", home_test_pkg);
+    release_small_exe.root_module.addImport("tsc_main", tsc_main_pkg);
     release_small_exe.root_module.addImport("macros", macros_pkg);
     release_small_exe.root_module.addImport("optimizer", optimizer_pkg);
 
@@ -2443,6 +2475,7 @@ pub fn build(b: *std.Build) void {
     release_fast_exe.root_module.addImport("cloud", cloud_pkg);
     release_fast_exe.root_module.addImport("compiler", compiler_pkg);
     release_fast_exe.root_module.addImport("home_test", home_test_pkg);
+    release_fast_exe.root_module.addImport("tsc_main", tsc_main_pkg);
     release_fast_exe.root_module.addImport("macros", macros_pkg);
     release_fast_exe.root_module.addImport("optimizer", optimizer_pkg);
     // LTO is enabled by default for ReleaseFast under modern Zig

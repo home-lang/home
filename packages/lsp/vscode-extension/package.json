@@ -42,7 +42,7 @@
         "homeLanguageServer.path": {
           "type": "string",
           "default": "",
-          "description": "Path to the Home language server executable"
+          "description": "Path to the `home` executable (the language server runs as `home lsp --stdio`)"
         },
         "homeLanguageServer.trace.server": {
           "type": "string",

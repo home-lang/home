@@ -199,7 +199,7 @@ pub fn parseArgsCtx(gpa: std.mem.Allocator, args: []const []const u8, ctx: *Pars
         } else if (std.mem.eql(u8, a, "--watch") or std.mem.eql(u8, a, "-w")) {
             opts.watch = true;
         } else if (std.mem.eql(u8, a, "--pretty")) {
-            opts.pretty = true;
+            opts.pretty = parseOptionalBooleanArg(args, &i);
         } else if (std.mem.eql(u8, a, "--no-pretty")) {
             opts.pretty = false;
         } else if (std.mem.eql(u8, a, "--traceResolution")) {
@@ -1497,6 +1497,16 @@ test "parseArgs: --pretty and --no-pretty" {
         const opts = try parseArgs(T.allocator, &argv);
         defer T.allocator.free(opts.files);
         try T.expectEqual(@as(?bool, false), opts.pretty);
+    }
+    {
+        // tsc's `--pretty false` consumes the value instead of treating
+        // `false` as an input file.
+        const argv = [_][]const u8{ "--pretty", "false", "a.ts" };
+        const opts = try parseArgs(T.allocator, &argv);
+        defer T.allocator.free(opts.files);
+        try T.expectEqual(@as(?bool, false), opts.pretty);
+        try T.expectEqual(@as(usize, 1), opts.files.len);
+        try T.expectEqualStrings("a.ts", opts.files[0]);
     }
 }
 

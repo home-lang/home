@@ -312,7 +312,8 @@ function startLanguageServer(_context: vscode.ExtensionContext) {
     // Server options - launch the LSP server
     const serverOptions: ServerOptions = {
         command: getHomePath(),
-        args: ['lsp'],
+        // Without --stdio, `home lsp` prints its capabilities and exits.
+        args: ['lsp', '--stdio'],
         options: {
             env: process.env,
         },

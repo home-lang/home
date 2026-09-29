@@ -3905,7 +3905,7 @@ pub fn renderInitializeResult(gpa: std.mem.Allocator) ![]u8 {
 /// Render the full InitializeResult capabilities response advertised
 /// by `initialize`. This is the long-form descriptor used by the
 /// lifecycle handler — the older `renderInitializeResult` remains for
-/// the legacy stdio loop in `lsp_main.zig`.
+/// the legacy short-form handshake.
 ///
 /// The response embeds `SUPPORTED_METHODS` under
 /// `serverInfo.supportedMethods` so external clients and integration

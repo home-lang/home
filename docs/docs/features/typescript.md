@@ -1,7 +1,7 @@
 # TypeScript Compiler
 
 Home ships a full TypeScript front end, built from the same packages as the
-`.home` compiler. `home-tsc` parses, binds, type-checks and emits TypeScript,
+`.home` compiler. `home tsc` parses, binds, type-checks and emits TypeScript,
 measured against the upstream TypeScript conformance corpus rather than
 against a test suite we wrote ourselves.
 
@@ -18,15 +18,20 @@ has one binary, one cache and one set of diagnostics.
 
 ## Using it
 
-`home-tsc` reads the `tsconfig.json` you already have:
+`home tsc` reads the `tsconfig.json` you already have:
 
 ```bash
 cd my-typescript-app
-home-tsc --noEmit
+home tsc --noEmit
 ```
 
-It builds alongside the compiler into `zig-out/bin/`, next to `home-lsp`, the
-matching language server.
+It is part of the `home` binary, so there is nothing extra to install. Invoked
+under the name `tsc` (or `home-tsc`), `home` behaves exactly like `tsc`, so a
+symlink makes it a drop-in for scripts and tools that call `tsc` directly:
+
+```bash
+ln -s "$(command -v home)" /usr/local/bin/tsc
+```
 
 Diagnostics carry the same codes as the reference compiler, so existing
 tooling, editor integrations and CI matchers keep working:
@@ -78,21 +83,16 @@ per-code breakdown.
 
 ## Editor support
 
-The same front end backs `home lsp`, which speaks the language server protocol
-over stdio:
-
-```bash
-home lsp --stdio
-```
-
-76 of roughly 80 protocol methods are routed, including hover, completion,
-signature help, semantic tokens, inlay hints, code actions, rename, call and
-type hierarchies, and pull-based diagnostics. See
+`home lsp --stdio` is Home's language server. The TypeScript language-server
+library (`packages/ts_lsp_server`) routes 76 of roughly 80 protocol methods,
+including hover, completion, signature help, semantic tokens, inlay hints, code
+actions, rename, call and type hierarchies, and pull-based diagnostics, but
+`home lsp` does not serve TypeScript files with it yet. See
 [Editor and CLI tooling](/docs/features/tooling) for the full list and the gaps.
 
 ## Emit
 
-`home-tsc` also emits JavaScript. The printer is checked against Bun's
+`home tsc` also emits JavaScript. The printer is checked against Bun's
 official Zig implementation, which Home maintains, so downlevelling and syntax
 lowering match what the runtime expects rather than being reinvented.
 
@@ -116,7 +116,7 @@ JavaScriptCore-enabled Home compiler plus LLVM on `PATH`.
 | Parsing and binding | Complete for the documented surface |
 | Type checking | Coarse and byte-for-byte exact conformance saturated at 5,907 / 5,907 |
 | Diagnostics | Reachable code set complete |
-| Language server | 76 of about 80 methods routed |
+| Language server | 76 of about 80 methods routed in the library; not yet served by `home lsp` |
 | JavaScript emit | Working, checked against Bun's printer |
 | Native single-file builds | Working on arm64 and x86-64 macOS and Linux |
 | Native module-graph bundling | In progress |

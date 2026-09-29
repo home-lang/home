@@ -265,6 +265,7 @@ pub const CompilerOptions = struct {
     disable_size_limit: ?bool = null,
     remove_comments: ?bool = null,
     no_emit: ?bool = null,
+    pretty: ?bool = null,
     import_helpers: ?bool = null,
     no_emit_helpers: ?bool = null,
     down_level_iteration: ?bool = null,
@@ -2047,6 +2048,7 @@ fn fillCompilerOptions(
             .{ .name = "disableSizeLimit", .field = "disable_size_limit" },
             .{ .name = "removeComments", .field = "remove_comments" },
             .{ .name = "noEmit", .field = "no_emit" },
+            .{ .name = "pretty", .field = "pretty" },
             .{ .name = "importHelpers", .field = "import_helpers" },
             .{ .name = "noEmitHelpers", .field = "no_emit_helpers" },
             .{ .name = "downlevelIteration", .field = "down_level_iteration" },
@@ -3754,8 +3756,8 @@ test "tsconfig.validate: misspelled compiler option reports TS5025 with suggesti
 }
 
 test "tsconfig.validate: known-but-unmodeled option is not flagged unknown" {
-    // `outFile`, `noEmitOnError`, `pretty`, `listFiles` are real tsc
-    // options Home does not yet materialize into typed fields. They land
+    // `outFile`, `noEmitOnError`, `listFiles` are real tsc options Home
+    // does not yet materialize into typed fields (`pretty` now is). They land
     // in `extra` but must NOT produce TS5023. (`outFile` additionally
     // triggers the TS5102 removed-option diagnostic.)
     var arena = std.heap.ArenaAllocator.init(t.allocator);
@@ -3767,6 +3769,15 @@ test "tsconfig.validate: known-but-unmodeled option is not flagged unknown" {
     defer freeValidationDiagnostics(t.allocator, diags);
     try t.expectEqual(@as(usize, 0), countCode(diags, 5023));
     try t.expectEqual(@as(usize, 0), countCode(diags, 5025));
+}
+
+test "tsconfig.parse: pretty is a typed compiler option" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const cfg = try parseString(t.allocator, arena.allocator(),
+        \\{ "compilerOptions": { "pretty": false } }
+    );
+    try t.expectEqual(@as(?bool, false), cfg.compiler_options.pretty);
 }
 
 test "tsconfig.parse: moduleSuffixes preserves order and blank fallback" {

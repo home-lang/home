@@ -36,6 +36,8 @@ const lint_cmd = @import("lint_command.zig");
 const package_cmd = @import("package_command.zig");
 const build_cli_options = @import("build_cli_options.zig");
 const home_test = @import("home_test");
+// `home tsc`: the tsc-compatible TypeScript compiler (packages/ts_cli).
+const tsc_main = @import("tsc_main");
 const home_rt = if (build_options.enable_jsc) @import("home_rt") else @import("home_rt_no_jsc.zig");
 
 const Io = std.Io;
@@ -154,6 +156,7 @@ fn printUsage() void {
         \\  parse <file>       Tokenize an Home file and display tokens
         \\  ast <file>         Parse an Home file and display the AST
         \\  check <path>       Type check an Home file or directory
+        \\  tsc [tsc options]  Type-check and build TypeScript, a drop-in for `tsc`
         \\  explain <code>     Explain a diagnostic code
         \\  lint <file>        Lint and show diagnostics
         \\  lint --fix <file>  Lint and auto-fix issues
@@ -942,6 +945,22 @@ fn devCommand(allocator: std.mem.Allocator, target: ?[]const u8) !void {
     try watchCommand(allocator, "src/main.home");
 }
 
+fn isTscProgramName(program_name: []const u8) bool {
+    const stem = if (std.ascii.endsWithIgnoreCase(program_name, ".exe"))
+        program_name[0 .. program_name.len - 4]
+    else
+        program_name;
+    return std.mem.eql(u8, stem, "tsc") or std.mem.eql(u8, stem, "home-tsc");
+}
+
+test "isTscProgramName" {
+    try std.testing.expect(isTscProgramName("tsc"));
+    try std.testing.expect(isTscProgramName("home-tsc"));
+    try std.testing.expect(isTscProgramName("tsc.exe"));
+    try std.testing.expect(!isTscProgramName("home"));
+    try std.testing.expect(!isTscProgramName("tsgo"));
+}
+
 fn lspCommand(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
     var stdio = false;
     for (args) |arg| {
@@ -1400,7 +1419,7 @@ fn completionsCommand(shell_name: []const u8) !void {
             \\  COMPREPLY=()
             \\  cur="${COMP_WORDS[COMP_CWORD]}"
             \\  prev="${COMP_WORDS[COMP_CWORD-1]}"
-            \\  commands="init parse ast check explain lint fmt fix dev lsp symbols docs completions doctor clean ci api-diff size run repl build watch test t profile package pkg publish pack help"
+            \\  commands="init parse ast check tsc explain lint fmt fix dev lsp symbols docs completions doctor clean ci api-diff size run repl build watch test t profile package pkg publish pack help"
             \\  pkg_commands="init add remove update install tools toolchain search info audit dedupe link unlink publish pack version doctor clean size tree why outdated declarations types d.hm api-diff docs run scripts login logout whoami"
             \\  if [[ "${COMP_WORDS[1]}" == "pkg" && ${COMP_CWORD} -eq 2 ]]; then
             \\    COMPREPLY=($(compgen -W "$pkg_commands" -- "$cur"))
@@ -1421,7 +1440,7 @@ fn completionsCommand(shell_name: []const u8) !void {
             \\#compdef home
             \\_home() {
             \\  local -a commands pkg_commands
-            \\  commands=(init parse ast check explain lint fmt fix dev lsp symbols docs completions doctor clean ci api-diff size run repl build watch test t profile package pkg help)
+            \\  commands=(init parse ast check tsc explain lint fmt fix dev lsp symbols docs completions doctor clean ci api-diff size run repl build watch test t profile package pkg help)
             \\  pkg_commands=(init add remove update install tools toolchain search info audit dedupe link unlink publish pack version doctor clean size tree why outdated declarations types d.hm api-diff docs run scripts login logout whoami)
             \\  if [[ $words[2] == pkg ]]; then
             \\    _describe 'pkg command' pkg_commands
@@ -1437,7 +1456,7 @@ fn completionsCommand(shell_name: []const u8) !void {
 
     if (std.mem.eql(u8, shell_name, "fish")) {
         try writeStdout(
-            \\complete -c home -f -n '__fish_use_subcommand' -a 'init parse ast check explain lint fmt fix dev lsp symbols docs completions doctor clean ci api-diff size run repl build watch test t profile package pkg help'
+            \\complete -c home -f -n '__fish_use_subcommand' -a 'init parse ast check tsc explain lint fmt fix dev lsp symbols docs completions doctor clean ci api-diff size run repl build watch test t profile package pkg help'
             \\complete -c home -f -n '__fish_seen_subcommand_from pkg' -a 'init add remove update install tools toolchain search info audit dedupe link unlink publish pack version doctor clean size tree why outdated declarations types d.hm api-diff docs run scripts login logout whoami'
             \\
         );
@@ -5732,6 +5751,12 @@ pub fn main(init: std.process.Init) !void {
 
     // Check if called as 'homecheck' - automatically run test mode
     const program_name = std.fs.path.basename(args[0]);
+    // Invoked through a `tsc` / `home-tsc` symlink: behave exactly like tsc,
+    // so `ln -s "$(command -v home)" tsc` is a drop-in replacement.
+    if (isTscProgramName(program_name)) {
+        try tsc_main.run(init.environ_map, args[1..]);
+        return;
+    }
     if (build_options.enable_jsc and envFlagSet("HOME_NATIVE_VM") and
         (home_rt.cli.Command.isBunX(program_name) or std.mem.eql(u8, program_name, "homex") or std.mem.eql(u8, program_name, "homex.exe")))
     {
@@ -5795,6 +5820,11 @@ pub fn main(init: std.process.Init) !void {
     }
 
     const command = args[1];
+
+    if (std.mem.eql(u8, command, "tsc")) {
+        try tsc_main.run(init.environ_map, args[2..]);
+        return;
+    }
 
     // `bun --version`/`-v` prints the version (e.g. "1.3.14") to stdout and exits;
     // `--revision` prints the version+sha. Tests and tooling spawn

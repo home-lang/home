@@ -25,9 +25,11 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     // Server options - use stdio to communicate with the server
+    // The language server is part of the `home` binary: `home lsp --stdio`.
+    const serverArgs = ['lsp', '--stdio'];
     const serverOptions: ServerOptions = {
-        run: { command: serverPath, transport: TransportKind.stdio },
-        debug: { command: serverPath, transport: TransportKind.stdio }
+        run: { command: serverPath, args: serverArgs, transport: TransportKind.stdio },
+        debug: { command: serverPath, args: serverArgs, transport: TransportKind.stdio }
     };
 
     // Client options - configure language support
@@ -69,8 +71,8 @@ export function deactivate(): Thenable<void> | undefined {
 
 function findLanguageServer(): string | undefined {
     const candidates = [
-        path.join(__dirname, '..', '..', 'zig-out', 'bin', 'home-lsp'),
-        path.join(__dirname, '..', '..', 'build', 'home-lsp'),
+        path.join(__dirname, '..', '..', 'zig-out', 'bin', 'home'),
+        path.join(__dirname, '..', '..', 'build', 'home'),
     ];
 
     for (const candidate of candidates) {
@@ -82,5 +84,5 @@ function findLanguageServer(): string | undefined {
     }
 
     // Fall back to PATH lookup
-    return 'home-lsp';
+    return 'home';
 }
