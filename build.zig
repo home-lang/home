@@ -1570,6 +1570,9 @@ pub fn build(b: *std.Build) void {
     if (target.result.os.tag != .windows) {
         const main_uri = "file://main.ts";
         const home_uri = "file://app.home";
+        const js_uri = "file://plain.js";
+        // Plain JavaScript (no checkJs, no `// @ts-check`) is not type-checked.
+        const js_text = "let count = 1;\ncount = \"one\";\nexport {};\n";
         const main_text = "import { double } from \"./util\";\nconst total: number = double(21);\nconst label: string = double(2);\nexport {};\n";
         const bodies = [_][]const u8{
             \\{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}
@@ -1577,6 +1580,9 @@ pub fn build(b: *std.Build) void {
             b.fmt(
                 \\{{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{{"textDocument":{{"uri":"{s}","languageId":"typescript","version":1,"text":{f}}}}}}}
             , .{ main_uri, std.json.fmt(main_text, .{}) }),
+            b.fmt(
+                \\{{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{{"textDocument":{{"uri":"{s}","languageId":"javascript","version":1,"text":{f}}}}}}}
+            , .{ js_uri, std.json.fmt(js_text, .{}) }),
             b.fmt(
                 \\{{"jsonrpc":"2.0","id":2,"method":"textDocument/hover","params":{{"textDocument":{{"uri":"{s}"}},"position":{{"line":1,"character":8}}}}}}
             , .{main_uri}),
@@ -1608,6 +1614,8 @@ pub fn build(b: *std.Build) void {
         lsp.addCheck(.{ .expect_stdout_match = "const total: number" });
         // Definition crosses into the imported file.
         lsp.addCheck(.{ .expect_stdout_match = "util.ts\"" });
+        // Plain JavaScript gets no type errors, as with tsc without checkJs.
+        lsp.addCheck(.{ .expect_stdout_match = "\"uri\":\"file://plain.js\",\"diagnostics\":[]" });
         // The `.home` document is answered by Home's handler.
         lsp.addCheck(.{ .expect_stdout_match = "Home language server" });
         lsp.addCheck(.{ .expect_stdout_match = "\"id\":5,\"result\":null" });

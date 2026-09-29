@@ -387,6 +387,11 @@ pub const CompileOptions = struct {
     /// `allowJs`. A file-level `// @ts-check` directive still enables
     /// checking when this project option is false.
     check_js: bool = false,
+    /// `checkJs` is explicitly `false` (not merely unset). A JavaScript file
+    /// without `// @ts-check` then reports no checker diagnostics at all,
+    /// not even the plain-JS set: typescript-go's `IsPlainJSFile` requires
+    /// `checkJs` to be unset. Parser diagnostics are unaffected.
+    check_js_disabled: bool = false,
     suppress_js_check_diagnostics: bool = false,
     /// Optional parsed tsconfig. When present, the driver applies
     /// the relevant compilerOptions:
@@ -1835,6 +1840,7 @@ pub fn optionsFromConfig(cfg: *const tsconfig_mod.TsConfig) CompileOptions {
     }
     opts.allow_js = cfg.compiler_options.allow_js orelse false;
     opts.check_js = cfg.compiler_options.check_js orelse false;
+    opts.check_js_disabled = cfg.compiler_options.check_js == false;
     opts.no_emit = cfg.compiler_options.no_emit orelse false;
     if (cfg.compiler_options.types) |names| {
         opts.compiler_type_reference_names = names;
@@ -2493,6 +2499,7 @@ pub fn checkPreparedSource(c: *Compilation, options: CompileOptions) CompileErro
         }
         const suppress_js_check_diagnostics = options.suppress_js_check_diagnostics or
             sourceIsUncheckedJsAtPos(source, diag_pos, options.allow_js, options.check_js);
+        if (suppress_js_check_diagnostics and options.check_js_disabled) continue;
         if (suppress_js_check_diagnostics and !checkerDiagnosticSurfacesInUncheckedJs(d.code, diagnostic_message, source)) continue;
         if (has_syntactic_parse_diagnostics and
             d.code == ts_checker.check.TsCodes.destructuring_decl_must_have_initializer)
@@ -3855,6 +3862,18 @@ fn byteOffsetToLine(source: []const u8, pos: usize) u32 {
         if (c == '\n') line += 1;
     }
     return line;
+}
+
+/// Whether a JavaScript file is type-checked, following typescript-go's
+/// `IsCheckJSEnabledForFile`: a file-level `// @ts-check` (or the
+/// conformance `// @checkJs:` directive) wins over the project's `checkJs`.
+/// An unchecked file reports only the plain-JS diagnostics
+/// (`checkerDiagnosticSurfacesInUncheckedJs`); `// @ts-nocheck` is handled
+/// by the checker.
+pub fn jsSourceIsTypeChecked(source: []const u8, check_js: bool) bool {
+    if (sourceHasTsCheck(source)) return true;
+    if (directiveBool(source, "checkJs")) |on| return on;
+    return check_js;
 }
 
 fn sourceHasTsCheck(source: []const u8) bool {

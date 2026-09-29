@@ -934,6 +934,12 @@ pub const Program = struct {
         per_file.file_id = f.id;
         per_file.suppress_import_helper_diagnostics = true;
         if (per_file.importer_path.len == 0) per_file.importer_path = f.path;
+        // tsc type-checks a JavaScript file only under `checkJs` or a
+        // `// @ts-check` comment; otherwise it reports just the plain-JS
+        // diagnostics (typescript-go `canIncludeBindAndCheckDiagnostics`).
+        if (isJsLikePath(f.path) and !ts_driver.jsSourceIsTypeChecked(f.source, options.check_js)) {
+            per_file.suppress_js_check_diagnostics = true;
+        }
         if (f.compilation == null) f.compilation = try ts_driver.prepareSource(self.gpa, f.source, per_file);
         const c = f.compilation.?;
         errdefer self.dropCompilation(f);
@@ -9496,7 +9502,9 @@ test "Program: static require closure follows nested and transitive JavaScript d
     var p = Program.init(T.allocator, &resolver);
     defer p.deinit();
     const entry = try p.add("/entry.js", entry_source);
-    try T.expectEqual(@as(usize, 2), try p.loadImportClosure(.{ .strict = true, .allow_js = true, .no_emit = true }));
+    // `checkJs`: tsc reports the leaf's JSDoc type error only in checked
+    // JavaScript, and it is the proof that the leaf was compiled.
+    try T.expectEqual(@as(usize, 2), try p.loadImportClosure(.{ .strict = true, .allow_js = true, .check_js = true, .no_emit = true }));
     const middle = p.lookupPath("/middle.js").?;
     const leaf = p.lookupPath("/leaf.js").?;
     try T.expectEqualSlices(FileId, &.{middle}, p.files.items[entry].imports.items);
@@ -14460,4 +14468,61 @@ test "Program: contextual imported constructor callback retains indexed getter e
     try T.expectEqual(@as(usize, 1), compilation.diagnostics.items.len);
     try T.expectEqual(@as(u32, 2322), compilation.diagnostics.items[0].code);
     try T.expectEqual(@as(u32, @intCast(std.mem.indexOf(u8, app, "123").?)), compilation.diagnostics.items[0].pos);
+}
+
+const JsCheckCase = struct {
+    path: []const u8,
+    source: []const u8,
+    check_js: bool = false,
+    check_js_disabled: bool = false,
+    ts2322: usize,
+    ts2451: usize,
+    ts7006: usize,
+};
+
+fn expectJsCheckCase(case: JsCheckCase) !void {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+    const id = try p.add(case.path, case.source);
+    try p.compileAll(.{
+        .strict = true,
+        .allow_js = true,
+        .no_emit = true,
+        .check_js = case.check_js,
+        .check_js_disabled = case.check_js_disabled,
+    });
+    var ts2322: usize = 0;
+    var ts2451: usize = 0;
+    var ts7006: usize = 0;
+    for (p.fileById(id).compilation.?.diagnostics.items) |d| switch (d.code) {
+        2322 => ts2322 += 1,
+        2451 => ts2451 += 1,
+        7006 => ts7006 += 1,
+        else => {},
+    };
+    try T.expectEqual(case.ts2322, ts2322);
+    try T.expectEqual(case.ts2451, ts2451);
+    try T.expectEqual(case.ts7006, ts7006);
+}
+
+test "compileAll: JavaScript files follow tsc's checkJs rules" {
+    // A type error (TS2322), two implicit-any parameters (TS7006) and a
+    // redeclared `let` (TS2451, one of tsc's plain-JS errors).
+    const body = "let count = 1;\ncount = \"one\";\nexport function add(a, b) { return a + b; }\nlet dup = 1;\nlet dup = 2;\n";
+    const checked = "// @ts-check\n" ++ body;
+    // checkJs unset: plain JS reports only the plain-JS set.
+    try expectJsCheckCase(.{ .path = "/p.js", .source = body, .ts2322 = 0, .ts2451 = 2, .ts7006 = 0 });
+    // checkJs: false: nothing from the checker.
+    try expectJsCheckCase(.{ .path = "/p.js", .source = body, .check_js_disabled = true, .ts2322 = 0, .ts2451 = 0, .ts7006 = 0 });
+    // checkJs: true: fully checked, as are the other JS extensions.
+    try expectJsCheckCase(.{ .path = "/p.js", .source = body, .check_js = true, .ts2322 = 1, .ts2451 = 2, .ts7006 = 2 });
+    try expectJsCheckCase(.{ .path = "/p.mjs", .source = body, .check_js = true, .ts2322 = 1, .ts2451 = 2, .ts7006 = 2 });
+    // `// @ts-check` wins over `checkJs: false`.
+    try expectJsCheckCase(.{ .path = "/p.js", .source = checked, .check_js_disabled = true, .ts2322 = 1, .ts2451 = 2, .ts7006 = 2 });
+    // TypeScript files are always checked.
+    try expectJsCheckCase(.{ .path = "/p.ts", .source = body, .check_js_disabled = true, .ts2322 = 1, .ts2451 = 2, .ts7006 = 2 });
 }

@@ -31,10 +31,10 @@ let extensionContext: vscode.ExtensionContext | undefined;
 
 const DOCUMENT_SELECTOR: vscode.DocumentSelector = { language: 'home' };
 
-// `home lsp` serves TypeScript as well as Home. JavaScript stays with VS Code:
-// the server does not yet skip type errors in plain `.js` files the way tsc
-// does without `checkJs`.
-const TYPESCRIPT_LANGUAGES = ['typescript', 'typescriptreact'];
+// `home lsp` serves TypeScript and JavaScript as well as Home. JavaScript
+// files follow tsc's rules: type-checked only under `checkJs` or
+// `// @ts-check`.
+const TYPESCRIPT_LANGUAGES = ['typescript', 'typescriptreact', 'javascript', 'javascriptreact'];
 
 function getHomePath(): string {
     const config = vscode.workspace.getConfiguration('home');
