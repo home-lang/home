@@ -105769,17 +105769,68 @@ pub const Checker = struct {
                     true,
                 );
             } else {
-                const reported_arity = try self.reportOverloadSetBoundaryArity(
-                    call_node,
-                    args,
-                    arg_types,
-                    signatures.items,
-                );
-                if (!reported_arity) {
-                    const report_node = if (args.len > 0) args[0] else call_node;
-                    try self.report(report_node, TsCodes.no_overload_matches, "No overload matches this call.");
+                var arity_candidate = types.Primitive.none;
+                var arity_candidate_count: usize = 0;
+                for (signatures.items) |signature| {
+                    if (!self.callArityFitsSignature(call_node, signature, args)) continue;
+                    arity_candidate = signature;
+                    arity_candidate_count += 1;
                 }
-                selected = signatures.items[0];
+                if (arity_candidate_count == 1) {
+                    // The union may retain several synthesized signatures,
+                    // but only one can accept this argument count. tsc then
+                    // diagnoses against that signature directly (TS2345 on
+                    // the offending argument), not as an overload failure.
+                    selected = arity_candidate;
+                    try self.checkArgsAgainstSignatureWithMode(
+                        call_node,
+                        args,
+                        arg_types,
+                        selected,
+                        true,
+                    );
+                } else if (arity_candidate_count == 0) {
+                    // A finite overload set can report its aggregate
+                    // min/max range directly. Try that before choosing one
+                    // representative so mixed ranges such as 1..2 retain
+                    // the range in TS2554.
+                    const reported_arity = try self.reportOverloadSetBoundaryArity(
+                        call_node,
+                        args,
+                        arg_types,
+                        signatures.items,
+                    );
+                    if (reported_arity) {
+                        selected = signatures.items[0];
+                    } else if (self.unionSignatureBoundaryCandidate(call_node, args, signatures.items)) |boundary| {
+                        // All resolved signatures reject on the same outer
+                        // arity boundary, but at least one has an unbounded
+                        // rest so the aggregate reporter cannot form a finite
+                        // max. Use the widest boundary signature to preserve
+                        // tsc's TS2555 form instead of a generic TS2769.
+                        selected = boundary;
+                        try self.checkArgsAgainstSignatureWithMode(
+                            call_node,
+                            args,
+                            arg_types,
+                            selected,
+                            true,
+                        );
+                    }
+                }
+                if (selected == types.Primitive.none) {
+                    const reported_arity = try self.reportOverloadSetBoundaryArity(
+                        call_node,
+                        args,
+                        arg_types,
+                        signatures.items,
+                    );
+                    if (!reported_arity) {
+                        const report_node = if (args.len > 0) args[0] else call_node;
+                        try self.report(report_node, TsCodes.no_overload_matches, "No overload matches this call.");
+                    }
+                    selected = signatures.items[0];
+                }
             }
         } else {
             try self.checkArgsAgainstSignatureWithMode(
@@ -105799,6 +105850,40 @@ pub const Checker = struct {
             );
         }
         return self.interner.signatureReturn(selected) orelse types.Primitive.any;
+    }
+
+    fn unionSignatureBoundaryCandidate(
+        self: *Checker,
+        call_node: NodeId,
+        args: []const NodeId,
+        signatures: []const TypeId,
+    ) ?TypeId {
+        if (signatures.len == 0) return null;
+        for (args) |arg| if (self.hir.kindOf(arg) == .spread) return null;
+
+        const arg_count = args.len;
+        var all_too_few = true;
+        var all_too_many = true;
+        var candidate = signatures[0];
+        var candidate_arity = self.signatureArity(candidate, call_node);
+        for (signatures) |signature| {
+            const arity = self.signatureArity(signature, call_node);
+            if (arg_count >= arity.min) all_too_few = false;
+            if (arity.max == null or arg_count <= arity.max.?) all_too_many = false;
+
+            // Prefer the signature with the widest accepted upper bound.
+            // For equal lower bounds this preserves optional parameters and
+            // chooses an unbounded rest signature over its fixed prefix.
+            const candidate_max = candidate_arity.max orelse std.math.maxInt(usize);
+            const current_max = arity.max orelse std.math.maxInt(usize);
+            if (current_max > candidate_max or
+                (current_max == candidate_max and arity.min < candidate_arity.min))
+            {
+                candidate = signature;
+                candidate_arity = arity;
+            }
+        }
+        return if (all_too_few or all_too_many) candidate else null;
     }
 
     fn unionContainsAny(self: *Checker, t: TypeId) bool {
@@ -213432,6 +213517,27 @@ test "checker: union call and construct signatures combine parameters and return
         }
     }
     try T.expect(saw_date_return_union);
+}
+
+test "checker: union signature diagnostics use the sole arity-compatible signature" {
+    const s = try newSetup(
+        \\declare let fOptional: ((a: string, b?: number) => string) | ((a: string) => number);
+        \\fOptional("ok", "bad");
+        \\declare let fRest: ((a: string, ...b: number[]) => string) | ((a: string) => number);
+        \\fRest("ok", "bad");
+        \\fRest();
+        \\declare let COptional: { new (a: string, b?: number): string } | { new (a: string): number };
+        \\new COptional("ok", "bad");
+        \\declare let CRest: { new (a: string, ...b: number[]): string } | { new (a: string): number };
+        \\new CRest("ok", "bad");
+        \\new CRest();
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.expected_at_least_n_arguments));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.no_overload_matches));
 }
 
 test "checker: missing union members preserve generic display without argument cascade" {

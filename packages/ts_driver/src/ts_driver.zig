@@ -6740,6 +6740,36 @@ test "driver: type-check reports diagnostic on mismatched assignment" {
     try T.expect(found);
 }
 
+test "driver: union signature mismatches retain argument and arity diagnostics" {
+    var c = try compileSource(T.allocator,
+        \\declare let f: ((a: string, ...b: number[]) => string) | ((a: string) => number);
+        \\f("ok", "bad");
+        \\f();
+        \\declare let C: { new (a: string, ...b: number[]): string } | { new (a: string): number };
+        \\new C("ok", "bad");
+        \\new C();
+    , .{ .strict = true, .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    var argument_mismatches: usize = 0;
+    var arity_mismatches: usize = 0;
+    var overload_mismatches: usize = 0;
+    for (c.diagnostics.items) |diagnostic| {
+        switch (diagnostic.code) {
+            2345 => argument_mismatches += 1,
+            2555 => arity_mismatches += 1,
+            2769 => overload_mismatches += 1,
+            else => {},
+        }
+    }
+    try T.expectEqual(@as(usize, 2), argument_mismatches);
+    try T.expectEqual(@as(usize, 2), arity_mismatches);
+    try T.expectEqual(@as(usize, 0), overload_mismatches);
+}
+
 test "driver: tsx self-closing emits createElement" {
     var c = try compileSource(T.allocator, "let v = <Foo bar=\"baz\" />;", .{ .is_tsx = true });
     defer {

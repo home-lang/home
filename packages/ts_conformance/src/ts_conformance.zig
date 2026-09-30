@@ -20500,6 +20500,34 @@ test "conformance: contextual generic heritage accepts boxed uppercase Object re
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: union signature diagnostics preserve argument and rest arity errors" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "unionSignatureDiagnosticSelection",
+        .path = "unionSignatureDiagnosticSelection.ts",
+        .source =
+        \\declare let f: ((a: string, ...b: number[]) => string) | ((a: string) => number);
+        \\f("ok", "bad");
+        \\f();
+        \\declare let C: { new (a: string, ...b: number[]): string } | { new (a: string): number };
+        \\new C("ok", "bad");
+        \\new C();
+        ,
+        .expects_error = true,
+        .expected_errors =
+        \\unionSignatureDiagnosticSelection.ts(2,9): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.
+        \\unionSignatureDiagnosticSelection.ts(3,1): error TS2555: Expected at least 1 arguments, but got 0.
+        \\unionSignatureDiagnosticSelection.ts(5,13): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.
+        \\unionSignatureDiagnosticSelection.ts(6,1): error TS2555: Expected at least 1 arguments, but got 0.
+        ,
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: contextuallyTypeAsyncFunctionReturnType passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "contextuallyTypeAsyncFunctionReturnType",
