@@ -949,6 +949,11 @@ pub const TypeChecker = struct {
     source_path: ?[]const u8,
     /// Loaded module cache to avoid re-parsing
     loaded_modules: std.StringHashMap(bool),
+    /// Bindings whose struct-shaped type is an imported module namespace.
+    /// Keeping this separate from ordinary structs lets member lookup reject
+    /// missing exports instead of treating them as dynamic methods that return
+    /// `void`.
+    module_namespaces: std.StringHashMap(Type),
     /// Optional I/O context for file operations
     io: ?Io = null,
     /// Names that were declared with `let NAME: TYPE` and have not yet
@@ -1008,6 +1013,7 @@ pub const TypeChecker = struct {
             .error_handler = ErrorHandler.init(allocator),
             .source_path = null,
             .loaded_modules = std.StringHashMap(bool).init(allocator),
+            .module_namespaces = std.StringHashMap(Type).init(allocator),
             .uninitialized_vars = std.StringHashMap(ast.SourceLocation).init(allocator),
             .pointer_aliases = std.StringHashMap([]const u8).init(allocator),
             .current_function_return_type = null,
@@ -1067,6 +1073,7 @@ pub const TypeChecker = struct {
         var loaded_it = self.loaded_modules.iterator();
         while (loaded_it.next()) |entry| self.allocator.free(entry.key_ptr.*);
         self.loaded_modules.deinit();
+        self.module_namespaces.deinit();
         self.uninitialized_vars.deinit();
         self.pointer_aliases.deinit();
         self.raw_pointer_types.deinit();
@@ -1113,7 +1120,10 @@ pub const TypeChecker = struct {
                             import_decl.path[import_decl.path.len - 1]
                         else
                             null;
-                        if (namespace_name) |name| try self.env.define(name, module_type);
+                        if (namespace_name) |name| {
+                            try self.env.define(name, module_type);
+                            try self.module_namespaces.put(name, module_type);
+                        }
                     }
                 },
                 .FnDecl => |fn_decl| {
@@ -4213,6 +4223,47 @@ pub const TypeChecker = struct {
                     }
                     return callResultType(function);
                 }
+
+                if (member.object.* == .Identifier) {
+                    const namespace_name = member.object.Identifier.name;
+                    if (self.isModuleNamespaceBinding(namespace_name, object_type)) {
+                        // A module namespace is closed over its public exports.
+                        // Do not let an absent export fall through to the loose
+                        // object-method heuristics below, where it used to
+                        // synthesize `void` and trigger a misleading mismatch
+                        // at the enclosing assignment or return statement.
+                        for (call.args) |arg| {
+                            if (addressOfTarget(arg)) |target_local| {
+                                _ = self.uninitialized_vars.remove(target_local);
+                            } else if (arg.* == .Identifier) {
+                                const arg_name = arg.Identifier.name;
+                                if (self.pointer_aliases.get(arg_name)) |target_local| {
+                                    _ = self.uninitialized_vars.remove(target_local);
+                                } else if (self.env.get(arg_name)) |arg_local_type| {
+                                    const decays = arg_local_type == .Array or
+                                        arg_local_type == .Struct or
+                                        arg_local_type == .Reference or
+                                        arg_local_type == .MutableReference;
+                                    if (decays) {
+                                        _ = self.uninitialized_vars.remove(arg_name);
+                                    }
+                                }
+                            }
+                            _ = self.inferExpression(arg) catch {};
+                        }
+                        for (call.named_args) |named_arg| {
+                            _ = self.inferExpression(named_arg.value) catch {};
+                        }
+                        const message = try std.fmt.allocPrint(
+                            self.allocator,
+                            "Module '{s}' has no exported member '{s}'",
+                            .{ namespace_name, method_name },
+                        );
+                        defer self.allocator.free(message);
+                        try self.addError(message, member.node.loc);
+                        return Type.Unknown;
+                    }
+                }
             }
 
             // Handle String methods
@@ -4783,6 +4834,20 @@ pub const TypeChecker = struct {
             }
         }
 
+        if (member.object.* == .Identifier) {
+            const namespace_name = member.object.Identifier.name;
+            if (self.isModuleNamespaceBinding(namespace_name, object_type_resolved)) {
+                const err_msg = try std.fmt.allocPrint(
+                    self.allocator,
+                    "Module '{s}' has no exported member '{s}'",
+                    .{ namespace_name, member_name },
+                );
+                try self.addError(err_msg, member.node.loc);
+                self.allocator.free(err_msg);
+                return error.TypeMismatch;
+            }
+        }
+
         const err_msg = try std.fmt.allocPrint(
             self.allocator,
             "Struct '{s}' has no field '{s}'",
@@ -4791,6 +4856,16 @@ pub const TypeChecker = struct {
         try self.addError(err_msg, member.node.loc);
         self.allocator.free(err_msg);
         return error.TypeMismatch;
+    }
+
+    fn isModuleNamespaceBinding(self: *const TypeChecker, name: []const u8, value_type: Type) bool {
+        const namespace_type = self.module_namespaces.get(name) orelse return false;
+        if (namespace_type != .Struct or value_type != .Struct) return false;
+        return namespace_type.equals(value_type) and
+            namespace_type.Struct.fields.ptr == value_type.Struct.fields.ptr and
+            namespace_type.Struct.fields.len == value_type.Struct.fields.len and
+            namespace_type.Struct.methods.ptr == value_type.Struct.methods.ptr and
+            namespace_type.Struct.methods.len == value_type.Struct.methods.len;
     }
 
     fn inferStructLiteral(self: *TypeChecker, struct_lit: *const ast.StructLiteralExpr) TypeError!Type {

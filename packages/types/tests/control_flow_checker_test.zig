@@ -57,6 +57,43 @@ fn checkSourceWithImports(source: []const u8) !bool {
     );
 }
 
+fn checkSourceWithImportsErrorMessages(
+    source: []const u8,
+    required: []const []const u8,
+    forbidden: []const []const u8,
+) !bool {
+    const allocator = std.testing.allocator;
+    var lexer = home.lexer.Lexer.init(allocator, source);
+    var tokens = try lexer.tokenize();
+    defer tokens.deinit(allocator);
+
+    var parser = try home.parser.Parser.init(allocator, tokens.items);
+    defer parser.deinit();
+    const program = try parser.parse();
+    defer program.deinit(allocator);
+
+    var checker = home.types.TypeChecker.initWithSourcePath(
+        allocator,
+        program,
+        "packages/types/tests/fixtures/import_alias_main.home",
+    );
+    checker.io = std.testing.io;
+    defer checker.deinit();
+    _ = try checker.check();
+
+    for (required) |needle| {
+        for (checker.errors.items) |type_error| {
+            if (std.mem.indexOf(u8, type_error.message, needle) != null) break;
+        } else return false;
+    }
+    for (forbidden) |needle| {
+        for (checker.errors.items) |type_error| {
+            if (std.mem.indexOf(u8, type_error.message, needle) != null) return false;
+        }
+    }
+    return true;
+}
+
 fn checkSourceErrorContains(source: []const u8, needle: []const u8) !bool {
     const allocator = std.testing.allocator;
     var lexer = home.lexer.Lexer.init(allocator, source);
@@ -603,10 +640,33 @@ test "checker rejects an unresolved import" {
 }
 
 test "checker hides non-public import alias members" {
-    try std.testing.expect(!try checkSourceWithImports(
+    try std.testing.expect(try checkSourceWithImportsErrorMessages(
         \\import import_alias_support as support
         \\fn run() {
         \\    support.hidden
+        \\}
+    , &.{"Module 'support' has no exported member 'hidden'"}, &.{"Struct 'support' has no field 'hidden'"}));
+}
+
+test "checker diagnoses missing imported namespace calls without a void cascade" {
+    try std.testing.expect(try checkSourceWithImportsErrorMessages(
+        \\import import_alias_support as support
+        \\fn run() -> i32 {
+        \\    return support.hidden_with_argument(missing_value)
+        \\}
+    , &.{
+        "Module 'support' has no exported member 'hidden_with_argument'",
+        "Undefined variable",
+    }, &.{"Type mismatch"}));
+}
+
+test "checker does not retain module identity after an import alias is shadowed" {
+    try std.testing.expect(try checkSourceWithImports(
+        \\import import_alias_support as support
+        \\struct LocalCounter { value: i32 }
+        \\fn run() {
+        \\    let support = LocalCounter { value: 1 }
+        \\    let count = support.len()
         \\}
     ));
 }

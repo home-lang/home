@@ -8,6 +8,10 @@ fn hidden() -> i32 {
     return 0
 }
 
+fn hidden_with_argument(value: i32) -> i32 {
+    return value
+}
+
 pub struct Counter {
     value: i32
 
