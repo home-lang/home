@@ -315,6 +315,8 @@ pub const TsCodes = struct {
 pub const codes = @import("ts_diagnostic_codes.zig");
 
 pub const HmCodes = struct {
+    /// Explicit `any` under Home sound mode.
+    pub const explicit_any_in_sound_mode: u32 = 9001;
     /// Home-only feature 'X' used in TS context.
     pub const home_feature_in_ts_context: u32 = 1000;
     /// Cross-frontend type mismatch (HIR-side).
@@ -356,7 +358,7 @@ test "formatDefault: HM prefix for Home-only codes" {
         .file = "x.ts",
         .line = 1,
         .col = 1,
-        .code = 9001,
+        .code = HmCodes.explicit_any_in_sound_mode,
         .code_prefix = .HM,
         .severity = .warning,
         .message = "Home-only warning.",

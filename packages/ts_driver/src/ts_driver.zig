@@ -79,11 +79,10 @@ pub const RelatedInfo = struct {
 pub const Diagnostic = struct {
     pub const Phase = enum { lex, parse, bind, emit };
     pub const CodePrefix = enum { TS, HM };
-    /// Diagnostic category. Mirrors tsc's error/suggestion split.
-    /// `.suggestion` diagnostics (TS7043-TS7050) are not errors: they
-    /// never set `has_errors` and never appear in `.errors.txt`
-    /// baselines. Only surfaced when `include_suggestions` is set.
-    pub const Category = enum { error_, suggestion };
+    /// Diagnostic category. Home rules may also emit warnings.
+    /// `.warning` and `.suggestion` diagnostics are not errors and never set
+    /// `has_errors`; suggestions are only surfaced when requested.
+    pub const Category = enum { error_, warning, suggestion };
     phase: Phase,
     pos: u32,
     line: u32,
@@ -2341,6 +2340,10 @@ pub fn checkPreparedSource(c: *Compilation, options: CompileOptions) CompileErro
     checker.setAllowJsEnabled(options.allow_js);
     checker.setNoEmitEnabled(options.no_emit);
     checker.setEmitImplicitAnySuggestions(options.include_suggestions);
+    checker.setHomeRuleOptions(.{
+        .sound = options.home_options.sound orelse false,
+        .list_unmodeled_any = options.home_options.list_unmodeled_any orelse false,
+    });
     checker.setTargetEmitEs5(options.emit.es_target == .es5);
     checker.setTargetEs5Baseline(options.report_deprecated_target_es5);
     checker.setTargetSupportsTopLevelAwait(options.emit.es_target.supportsNativeAsync());
@@ -2550,12 +2553,16 @@ pub fn checkPreparedSource(c: *Compilation, options: CompileOptions) CompileErro
             .message = try gpa.dupe(u8, diagnostic_message),
             .chain = try dupeCheckerChain(gpa, d.chain),
             .related = try dupeCheckerRelated(gpa, &c.hir, d.related),
-            .category = if (is_suggestion) .suggestion else .error_,
+            .category = switch (d.category) {
+                .error_ => .error_,
+                .warning => .warning,
+                .suggestion => .suggestion,
+            },
             .is_global = d.is_global,
         });
-        // Suggestions are not errors — they must not flip `has_errors`
-        // (which gates emit fallback / exit codes).
-        if (!is_suggestion) c.has_errors = true;
+        // Only error-category diagnostics flip `has_errors`, which gates emit
+        // fallback and process exit status. Warnings and suggestions do not.
+        if (d.category == .error_) c.has_errors = true;
     }
 
     if (effective_import_helpers and !effective_experimental_decorators and
@@ -7420,6 +7427,38 @@ test "driver: optionsFromConfig carries Home-only options" {
     const opts = optionsFromConfig(&cfg);
     try T.expectEqual(@as(?bool, true), opts.home_options.sound);
     try T.expectEqual(@as(?bool, false), opts.home_options.list_unmodeled_any);
+}
+
+test "driver: Home sound diagnostics keep HM code and error status" {
+    const source = "const value: any = 1;";
+
+    var parity = try compileSource(T.allocator, source, .{});
+    defer {
+        parity.deinit();
+        T.allocator.destroy(parity);
+    }
+    try T.expect(!parity.has_errors);
+    for (parity.diagnostics.items) |diagnostic| {
+        try T.expect(diagnostic.code_prefix != .HM);
+    }
+
+    var sound = try compileSource(T.allocator, source, .{
+        .home_options = .{ .sound = true },
+    });
+    defer {
+        sound.deinit();
+        T.allocator.destroy(sound);
+    }
+    try T.expect(sound.has_errors);
+
+    var found = false;
+    for (sound.diagnostics.items) |diagnostic| {
+        if (diagnostic.code_prefix != .HM or diagnostic.code != 9001) continue;
+        found = true;
+        try T.expectEqual(Diagnostic.Category.error_, diagnostic.category);
+        try T.expectEqualStrings("Explicit 'any' is not permitted in Home sound mode.", diagnostic.message);
+    }
+    try T.expect(found);
 }
 
 test "driver: noEmit suppresses downlevel private-name WeakMap collisions" {

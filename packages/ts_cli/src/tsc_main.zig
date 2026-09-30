@@ -3814,7 +3814,11 @@ fn streamDiagsCallback(ctx: *StreamCtx, file_path: []const u8, diags: []const ts
             .col = pos.col,
             .code = code,
             .code_prefix = prefix,
-            .severity = .err,
+            .severity = switch (d.category) {
+                .error_ => .err,
+                .warning => .warning,
+                .suggestion => .suggestion,
+            },
             .message = d.message,
             .span_len = 0,
             .chain = rendered_chain,
@@ -3826,7 +3830,7 @@ fn streamDiagsCallback(ctx: *StreamCtx, file_path: []const u8, diags: []const ts
             ts_diagnostics.formatDefault(ctx.gpa, fdiag) catch continue;
         defer ctx.gpa.free(formatted);
         printStdout("{s}\n", .{formatted});
-        if (d.phase != .emit) {
+        if (d.phase != .emit and d.category == .error_) {
             ctx.any_errors.* = true;
             if (ctx.error_count) |ec| ec.* += 1;
             file_error_count += 1;

@@ -171,8 +171,60 @@ pub const Diagnostic = struct {
     is_global: bool = false,
 
     pub const CodePrefix = enum { TS, HM };
-    pub const Category = enum { error_, suggestion };
+    pub const Category = enum { error_, warning, suggestion };
 };
+
+/// Runtime switches for Home-only checker rules. The driver translates the
+/// public tsconfig/CLI options into this checker-local shape so `ts_checker`
+/// stays independent of `tsconfig`.
+pub const HomeRuleOptions = struct {
+    sound: bool = false,
+    list_unmodeled_any: bool = false,
+};
+
+pub const HomeRuleGate = enum {
+    sound,
+    list_unmodeled_any,
+};
+
+pub const HomeRuleSeverity = enum {
+    error_,
+    warning,
+};
+
+pub const HomeRuleDefinition = struct {
+    code: u32,
+    default_severity: HomeRuleSeverity,
+    gate: HomeRuleGate,
+    message: []const u8,
+};
+
+/// Stable registry for diagnostics that intentionally extend TypeScript.
+/// Keeping policy here gives every rule one code, severity and option gate;
+/// emitters only transport the resulting diagnostic.
+pub const HomeRule = enum {
+    no_explicit_any,
+
+    pub fn definition(self: HomeRule) HomeRuleDefinition {
+        return switch (self) {
+            .no_explicit_any => .{
+                .code = 9001,
+                .default_severity = .error_,
+                .gate = .sound,
+                .message = "Explicit 'any' is not permitted in Home sound mode.",
+            },
+        };
+    }
+
+    pub fn enabled(self: HomeRule, options: HomeRuleOptions) bool {
+        return switch (self.definition().gate) {
+            .sound => options.sound,
+            .list_unmodeled_any => options.list_unmodeled_any,
+        };
+    }
+};
+
+pub const home_rules = [_]HomeRule{.no_explicit_any};
 
 /// External module-resolution hook the checker can delegate to.
 ///
@@ -5096,6 +5148,9 @@ pub const Checker = struct {
     /// Strictness flags driving optional diagnostics.
     strict_flags: StrictFlags = .{},
     strict_flags_explicit: bool = false,
+    /// Home-only rules are opt-in. TypeScript parity mode therefore does no
+    /// extra rule work and cannot gain an HM diagnostic accidentally.
+    home_rule_options: HomeRuleOptions = .{},
     /// When true, the checker additionally emits `.suggestion`-category
     /// implicit-any diagnostics (TS7043-TS7050, "a better type may be
     /// inferred from usage"). These mirror tsc's
@@ -5724,6 +5779,10 @@ pub const Checker = struct {
         self.strict_flags_explicit = true;
         self.engine.setStrictFunctionTypes(flags.strict_function_types);
         self.engine.setStrictNullChecks(flags.strict_null_checks);
+    }
+
+    pub fn setHomeRuleOptions(self: *Checker, options: HomeRuleOptions) void {
+        self.home_rule_options = options;
     }
 
     /// Attach the effective `compilerOptions.lib` / `noLib` selection.
@@ -6602,6 +6661,7 @@ pub const Checker = struct {
         self.removeContextualReturnDiagnosticsFromDuplicateGetters();
         try self.checkUnusedTopLevelImports(stmts);
         try self.checkUnusedTopLevelFunctions(root, stmts);
+        try self.checkHomeRules();
         self.removeUntypedTypeArgumentCascadesAfterMissingProperty();
         self.removeTypeArgumentCountDiagnosticsInJs();
         self.removeJsDocObjectMethodTypeMismatchCascades();
@@ -6620,6 +6680,42 @@ pub const Checker = struct {
             try self.applyDirectives(root);
             try self.restoreJsNamespaceSyntaxDiagnostics(root);
             self.sortDiagnosticsByPosition();
+        }
+    }
+
+    fn checkHomeRules(self: *Checker) CheckError!void {
+        for (home_rules) |rule| {
+            if (!rule.enabled(self.home_rule_options)) continue;
+            switch (rule) {
+                .no_explicit_any => try self.checkNoExplicitAnyRule(rule.definition()),
+            }
+        }
+    }
+
+    /// HM9001 is HIR-based rather than a source-text scan: only unqualified,
+    /// explicit `any` type references with a real source span are reported.
+    /// This excludes comments/strings, qualified names such as `Types.any`,
+    /// and zero-width recovery nodes synthesized by the parser.
+    fn checkNoExplicitAnyRule(self: *Checker, definition: HomeRuleDefinition) CheckError!void {
+        const total = self.hir.nodeCount();
+        var node: NodeId = 1;
+        while (node < total) : (node += 1) {
+            if (self.hir.kindOf(node) != .type_ref) continue;
+            const span = self.hir.spanOf(node);
+            if (span.start >= span.end) continue;
+            const type_ref = hir_mod.typeRefOf(self.hir, node);
+            if (type_ref.qualifier_len != 0 or type_ref.args_len != 0) continue;
+            if (!std.mem.eql(u8, self.string_interner.get(type_ref.name), "any")) continue;
+            try self.diagnostics.append(self.gpa, .{
+                .node = node,
+                .code = definition.code,
+                .code_prefix = .HM,
+                .message = definition.message,
+                .category = switch (definition.default_severity) {
+                    .error_ => .error_,
+                    .warning => .warning,
+                },
+            });
         }
     }
 
@@ -197612,6 +197708,37 @@ fn testCheckedTypesCapture(allocator: std.mem.Allocator) !void {
 
 test "checker: checked type capture owns borrowed slices and is transactional on OOM" {
     try std.testing.checkAllAllocationFailures(T.allocator, testCheckedTypesCapture, .{});
+}
+
+test "checker: Home sound rule registry emits HM9001 only when enabled" {
+    const definition = HomeRule.no_explicit_any.definition();
+    try T.expectEqual(@as(u32, 9001), definition.code);
+    try T.expectEqual(HomeRuleSeverity.error_, definition.default_severity);
+    try T.expectEqual(HomeRuleGate.sound, definition.gate);
+
+    const disabled = try newSetup("const value: any = 1;");
+    defer destroySetup(disabled);
+    try disabled.checker.checkSourceFile(disabled.root);
+    for (disabled.checker.diagnostics.items) |diagnostic| {
+        try T.expect(diagnostic.code_prefix != .HM);
+    }
+
+    const enabled = try newSetup(
+        \\const value: any = 1;
+        \\type Box = { value: any };
+    );
+    defer destroySetup(enabled);
+    enabled.checker.setHomeRuleOptions(.{ .sound = true });
+    try enabled.checker.checkSourceFile(enabled.root);
+
+    var count: usize = 0;
+    for (enabled.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code_prefix != .HM or diagnostic.code != definition.code) continue;
+        count += 1;
+        try T.expectEqual(Diagnostic.Category.error_, diagnostic.category);
+        try T.expectEqualStrings(definition.message, diagnostic.message);
+    }
+    try T.expectEqual(@as(usize, 2), count);
 }
 
 fn newTsxSetup(source: []const u8) !*TestSetup {
