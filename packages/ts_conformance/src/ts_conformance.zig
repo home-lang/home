@@ -55336,6 +55336,55 @@ test "conformance: nonPrimitiveAccessProperty matches TS2339 baseline" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: nonPrimitiveNarrow keeps rejected conditional assignment out of flow" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "nonPrimitiveNarrow",
+        .path = "nonPrimitiveNarrow.ts",
+        .source =
+        \\// @target: es2015
+        \\class Narrow {
+        \\    narrowed!: boolean
+        \\}
+        \\
+        \\declare var a: object;
+        \\
+        \\if (a instanceof Narrow) {
+        \\    a.narrowed;
+        \\    a = 123;
+        \\}
+        \\
+        \\if (typeof a === 'number') {
+        \\    a.toFixed();
+        \\}
+        \\
+        \\declare var b: object | null;
+        \\
+        \\if (typeof b === 'object') {
+        \\   b.toString();
+        \\} else {
+        \\   b.toString();
+        \\}
+        ,
+        .expects_error = true,
+        .expected_errors =
+        \\nonPrimitiveNarrow.ts(9,5): error TS2322: Type 'number' is not assignable to type 'object'.
+        \\nonPrimitiveNarrow.ts(13,7): error TS2339: Property 'toFixed' does not exist on type 'never'.
+        \\nonPrimitiveNarrow.ts(19,4): error TS18047: 'b' is possibly 'null'.
+        \\nonPrimitiveNarrow.ts(21,6): error TS2339: Property 'toString' does not exist on type 'never'.
+        ,
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    if (result.outcome != .passed) {
+        std.debug.print("nonPrimitiveNarrow detail:\n{s}\n", .{result.detail});
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: initializerReferencingConstructorLocals value-position slice" {
     // Slice of `initializerReferencingConstructorLocals.ts` covering
     // the value-position references — `c = this.z` (TS2339 with the

@@ -132009,14 +132009,21 @@ pub const Checker = struct {
                 if (value_t == types.Primitive.none) value_t = try self.checkExpression(assignment.value);
                 const raw_flow = try self.flowTypeForAssignmentValue(assignment.value, value_t);
                 const declared_t = self.typeOfIdentifierDeclared(assignment.target);
+                if (self.assignmentWasRejected(node)) {
+                    // A rejected write never changes the control-flow type of
+                    // its declared slot. In particular, `a = 123` inside a
+                    // conditional where `a: object` must not make a later
+                    // `typeof a === "number"` branch reachable. The normal
+                    // assignment path already resets an invalid write to the
+                    // declared type; preserve the incoming branch fact here
+                    // while reconstructing the post-conditional join.
+                    break :blk incoming orelse if (declared_t != types.Primitive.none) declared_t else raw_flow;
+                }
                 const preserve_contextual_constructor = self.hir.kindOf(assignment.value) == .new_expr and
                     self.typeIsPossiblyNullishStrict(declared_t);
                 if (declared_t != types.Primitive.none and
                     (preserve_contextual_constructor or
                         !(try self.assignmentFlowValueFitsTarget(raw_flow, declared_t))) and
-                    !self.diagnosticExists(node, TsCodes.type_not_assignable) and
-                    !self.diagnosticExists(assignment.target, TsCodes.type_not_assignable) and
-                    !self.diagnosticExists(assignment.value, TsCodes.type_not_assignable) and
                     !self.typeIsPossiblyNullishStrict(value_t))
                 {
                     // Contextually accepted generic constructors can retain a
@@ -132212,7 +132219,9 @@ pub const Checker = struct {
 
     fn applyNullishGuardAssignmentFlow(self: *Checker, cond: NodeId, then_branch: NodeId) !void {
         const guard = self.nullishEqualityGuard(cond) orelse return;
-        const value_node = self.singleAssignmentValueToIdentifier(then_branch, guard.name) orelse return;
+        const assignment_node = self.singleAssignmentToIdentifier(then_branch, guard.name) orelse return;
+        if (self.assignmentWasRejected(assignment_node)) return;
+        const value_node = hir_mod.assignmentOf(self.hir, assignment_node).value;
         var assigned_t = self.hir.typeOf(value_node);
         if (assigned_t == types.Primitive.none) assigned_t = try self.checkExpression(value_node);
         const current = self.lookupNarrow(guard.name) orelse self.typeOfIdentifier(guard.ident_node);
@@ -132237,7 +132246,9 @@ pub const Checker = struct {
         if (binary.op != .instanceof or self.hir.kindOf(binary.lhs) != .identifier) return;
         const id = hir_mod.identifierOf(self.hir, binary.lhs);
         const target = (try self.directInstanceofTargetType(binary.rhs)) orelse return;
-        const value_node = self.singleAssignmentValueToIdentifier(then_branch, id.name) orelse return;
+        const assignment_node = self.singleAssignmentToIdentifier(then_branch, id.name) orelse return;
+        if (self.assignmentWasRejected(assignment_node)) return;
+        const value_node = hir_mod.assignmentOf(self.hir, assignment_node).value;
         var assigned_t = self.hir.typeOf(value_node);
         if (assigned_t == types.Primitive.none) assigned_t = try self.checkExpression(value_node);
         if (assigned_t == types.Primitive.none or assigned_t == types.Primitive.any or assigned_t == types.Primitive.unknown) return;
@@ -132263,7 +132274,9 @@ pub const Checker = struct {
         if (b.op != .instanceof or self.hir.kindOf(b.lhs) != .identifier) return;
         const id = hir_mod.identifierOf(self.hir, b.lhs);
         const target = (try self.directInstanceofTargetType(b.rhs)) orelse return;
-        const value_node = self.singleAssignmentValueToIdentifier(then_branch, id.name) orelse return;
+        const assignment_node = self.singleAssignmentToIdentifier(then_branch, id.name) orelse return;
+        if (self.assignmentWasRejected(assignment_node)) return;
+        const value_node = hir_mod.assignmentOf(self.hir, assignment_node).value;
         var assigned_t = self.hir.typeOf(value_node);
         if (assigned_t == types.Primitive.none) assigned_t = try self.checkExpression(value_node);
         if (assigned_t == types.Primitive.none or assigned_t == types.Primitive.any or assigned_t == types.Primitive.unknown) return;
@@ -132509,7 +132522,7 @@ pub const Checker = struct {
         };
     }
 
-    fn singleAssignmentValueToIdentifier(self: *Checker, node: NodeId, name: hir_mod.StringId) ?NodeId {
+    fn singleAssignmentToIdentifier(self: *Checker, node: NodeId, name: hir_mod.StringId) ?NodeId {
         const stmt = if (self.hir.kindOf(node) == .block_stmt) blk: {
             const stmts = hir_mod.blockStmts(self.hir, node);
             if (stmts.len != 1) return null;
@@ -132519,7 +132532,26 @@ pub const Checker = struct {
         const a = hir_mod.assignmentOf(self.hir, stmt);
         if (a.op != null or self.hir.kindOf(a.target) != .identifier) return null;
         if (hir_mod.identifierOf(self.hir, a.target).name != name) return null;
-        return a.value;
+        return stmt;
+    }
+
+    fn assignmentWasRejected(self: *Checker, node: NodeId) bool {
+        if (self.hir.kindOf(node) != .assignment) return false;
+        const assignment = hir_mod.assignmentOf(self.hir, node);
+        if (self.diagnosticExists(node, TsCodes.type_not_assignable) or
+            self.diagnosticExists(assignment.target, TsCodes.type_not_assignable) or
+            self.diagnosticExists(assignment.value, TsCodes.type_not_assignable))
+        {
+            return true;
+        }
+
+        const assignment_span = self.hir.spanOf(node);
+        for (self.diagnostics.items) |diagnostic| {
+            if (diagnostic.code != TsCodes.type_not_assignable) continue;
+            const pos = self.diagnosticStart(diagnostic);
+            if (pos >= assignment_span.start and pos <= assignment_span.end) return true;
+        }
+        return false;
     }
 
     fn subtractNullishGuardedType(self: *Checker, t: TypeId, kind: NullishGuardKind) !TypeId {
@@ -202319,6 +202351,27 @@ test "checker: typeof primitive guard narrows object to never" {
         }
     }
     try T.expect(saw_never_member);
+}
+
+test "checker: rejected conditional assignment does not make an impossible typeof branch reachable" {
+    const s = try newSetup(
+        \\class Narrow { narrowed!: boolean }
+        \\declare var a: object;
+        \\if (a instanceof Narrow) {
+        \\  a = 123;
+        \\}
+        \\if (typeof a === 'number') {
+        \\  a.toFixed();
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.property_does_not_exist,
+        "Property 'toFixed' does not exist on type 'never'.",
+    ));
 }
 
 test "checker: loose typeof chains narrow unassigned annotated unions" {

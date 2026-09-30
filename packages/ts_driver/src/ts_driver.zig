@@ -7461,6 +7461,37 @@ test "driver: Home sound diagnostics keep HM code and error status" {
     try T.expect(found);
 }
 
+test "driver: rejected conditional assignment preserves impossible typeof narrowing" {
+    const source =
+        \\class Narrow { narrowed!: boolean }
+        \\declare var a: object;
+        \\if (a instanceof Narrow) {
+        \\  a = 123;
+        \\}
+        \\if (typeof a === 'number') {
+        \\  a.toFixed();
+        \\}
+    ;
+    var c = try compileSource(T.allocator, source, .{ .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    var saw_assignment = false;
+    var saw_never_member = false;
+    for (c.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == ts_checker.check.TsCodes.type_not_assignable) saw_assignment = true;
+        if (diagnostic.code == ts_checker.check.TsCodes.property_does_not_exist and
+            std.mem.eql(u8, diagnostic.message, "Property 'toFixed' does not exist on type 'never'."))
+        {
+            saw_never_member = true;
+        }
+    }
+    try T.expect(saw_assignment);
+    try T.expect(saw_never_member);
+}
+
 test "driver: noEmit suppresses downlevel private-name WeakMap collisions" {
     var c = try compileSource(
         T.allocator,
