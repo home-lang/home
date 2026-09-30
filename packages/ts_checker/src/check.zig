@@ -107830,6 +107830,19 @@ pub const Checker = struct {
         if (self.isBareTypeParameter(current)) {
             const constraint = self.typeParameterConstraint(current) orelse
                 return self.interner.internIntersection(&.{ current, relation_target }) catch return error.OutOfMemory;
+            if (constraint != current) {
+                const current_name = self.typeParameterName(current);
+                if (current_name != null and
+                    std.mem.eql(u8, self.string_interner.get(current_name.?), "this"))
+                {
+                    // A `this is T` predicate narrows polymorphic `this` to
+                    // `this & T`; it must not discard the predicate target by
+                    // first replacing `this` with its class constraint. The
+                    // intersection is observable for overlapping properties:
+                    // `(U | undefined) & U` becomes `U` in the guarded branch.
+                    return self.interner.internIntersection(&.{ current, relation_target }) catch return error.OutOfMemory;
+                }
+            }
             if (constraint != current) return try self.narrowTypeByPredicate(constraint, relation_target);
         }
         if (current_flags.is_union) {
@@ -227505,6 +227518,27 @@ test "checker: generic interface method `this is` predicate narrows receiver" {
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+}
+
+test "checker: generic class method `this is` predicate narrows receiver properties" {
+    const s = try newSetup(
+        \\interface DatafulFoo<T> { data: T; }
+        \\class Foo<T extends string> {
+        \\  data: T | undefined;
+        \\  bar() {
+        \\    if (this.hasData()) {
+        \\      this.data.toLocaleLowerCase();
+        \\    }
+        \\  }
+        \\  hasData(): this is DatafulFoo<T> { return true; }
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |diagnostic| {
+        try T.expect(diagnostic.code != TsCodes.object_possibly_undefined_18048);
     }
 }
 

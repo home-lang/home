@@ -7492,6 +7492,31 @@ test "driver: rejected conditional assignment preserves impossible typeof narrow
     try T.expect(saw_never_member);
 }
 
+test "driver: generic this predicate removes undefined from overlapping property" {
+    const source =
+        \\interface DatafulFoo<T> { data: T; }
+        \\class Foo<T extends string> {
+        \\  data: T | undefined;
+        \\  bar() {
+        \\    if (this.hasData()) this.data.toLocaleLowerCase();
+        \\  }
+        \\  hasData(): this is DatafulFoo<T> { return true; }
+        \\}
+    ;
+    var c = try compileSource(T.allocator, source, .{
+        .no_emit = true,
+        .strict_flags = .{ .strict_null_checks = true },
+    });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    for (c.diagnostics.items) |diagnostic| {
+        try T.expect(diagnostic.code != ts_checker.check.TsCodes.object_possibly_undefined_18048);
+    }
+}
+
 test "driver: noEmit suppresses downlevel private-name WeakMap collisions" {
     var c = try compileSource(
         T.allocator,

@@ -55385,6 +55385,80 @@ test "conformance: nonPrimitiveNarrow keeps rejected conditional assignment out 
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: spreadObjectOrFalsy generic this predicate matches exact baseline" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "spreadObjectOrFalsy",
+        .path = "spreadObjectOrFalsy.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: true
+        \\// @declaration: true
+        \\
+        \\function f1<T>(a: T & undefined) {
+        \\    return { ...a };  // Error
+        \\}
+        \\
+        \\function f2<T>(a: T | T & undefined) {
+        \\    return { ...a };
+        \\}
+        \\
+        \\function f3<T extends undefined>(a: T) {
+        \\    return { ...a };  // Error
+        \\}
+        \\
+        \\function f4<T extends undefined>(a: object | T) {
+        \\    return { ...a };
+        \\}
+        \\
+        \\function f5<S, T extends undefined>(a: S | T) {
+        \\    return { ...a };
+        \\}
+        \\
+        \\function f6<T extends object | undefined>(a: T) {
+        \\    return { ...a };
+        \\}
+        \\
+        \\function g1<T extends {}, A extends { z: (T | undefined) & T }>(a: A) {
+        \\    const { z } = a;
+        \\    return {
+        \\        ...z
+        \\    };
+        \\}
+        \\
+        \\interface DatafulFoo<T> {
+        \\    data: T;
+        \\}
+        \\
+        \\class Foo<T extends string> {
+        \\    data: T | undefined;
+        \\    bar() {
+        \\        if (this.hasData()) {
+        \\            this.data.toLocaleLowerCase();
+        \\        }
+        \\    }
+        \\    hasData(): this is DatafulFoo<T> {
+        \\        return true;
+        \\    }
+        \\}
+        ,
+        .expects_error = true,
+        .expected_errors =
+        \\spreadObjectOrFalsy.ts(2,14): error TS2698: Spread types may only be created from object types.
+        \\spreadObjectOrFalsy.ts(10,14): error TS2698: Spread types may only be created from object types.
+        ,
+        .use_exact_errors = true,
+        .strict_flags = .{ .strict_null_checks = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    if (result.outcome != .passed) {
+        std.debug.print("spreadObjectOrFalsy detail:\n{s}\n", .{result.detail});
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: initializerReferencingConstructorLocals value-position slice" {
     // Slice of `initializerReferencingConstructorLocals.ts` covering
     // the value-position references — `c = this.z` (TS2339 with the
