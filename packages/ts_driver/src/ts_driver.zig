@@ -5388,6 +5388,29 @@ test "driver: inferred generic ThisType receiver uses the instantiated argument"
     for (c.diagnostics.items) |d| try T.expect(d.code != 2339);
 }
 
+test "driver: callback return mismatch preserves compatible nested source names" {
+    var c = try compileSource(T.allocator,
+        \\declare function foo2<T, U>(x: T, a: (x: T) => U, b: (x: T) => U): (x: T) => U;
+        \\declare var x: (a: string) => boolean;
+        \\foo2(x, (a1: (y: string) => boolean) => (n: Object) => 1, (a2: (z: string) => boolean) => 2);
+    , .{ .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    var found = false;
+    for (c.diagnostics.items) |d| {
+        if (d.code != 2345) continue;
+        try T.expectEqualStrings(
+            "Argument of type '(a2: (z: string) => boolean) => number' is not assignable to parameter of type '(x: (z: string) => boolean) => (n: Object) => 1'.",
+            d.message,
+        );
+        found = true;
+    }
+    try T.expect(found);
+}
+
 test "driver: checked nominal origins and nested class metadata outlive the checker" {
     const c = try compileSource(T.allocator,
         \\declare abstract class Base {

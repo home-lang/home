@@ -169902,7 +169902,7 @@ pub const Checker = struct {
         {
             if (try self.simpleDiagnosticTypeName(arg_t)) |arg_name| {
                 const donor = self.contextualCallParameterSignatureForArgument(arg_node);
-                if (try self.allocCallSignatureFnTypeNameInner(param_t, position, null, true, donor)) |param_name| {
+                if (try self.allocCallSignatureFnTypeNameInner(param_t, position, null, true, donor, null)) |param_name| {
                     return try std.fmt.allocPrint(
                         self.diag_arena.allocator(),
                         "Argument of type '{s}' is not assignable to parameter of type '{s}'.",
@@ -169915,9 +169915,9 @@ pub const Checker = struct {
             self.interner.isSignature(arg_t) and
             self.interner.isSignature(param_t))
         {
-            const arg_name = (try self.allocCallSignatureFnTypeNameInner(arg_t, null, null, true, null)) orelse
+            const arg_name = (try self.allocCallSignatureFnTypeNameInner(arg_t, null, null, true, null, null)) orelse
                 return try self.formatArgumentNotAssignable(arg_t, param_t, position);
-            const param_name = (try self.allocCallSignatureFnTypeName(param_t, position)) orelse
+            const param_name = (try self.allocCallSignatureFnTypeNameInner(param_t, position, null, false, null, arg_t)) orelse
                 return try self.formatArgumentNotAssignable(arg_t, param_t, position);
             return try std.fmt.allocPrint(
                 self.diag_arena.allocator(),
@@ -171250,7 +171250,7 @@ pub const Checker = struct {
     /// Returns null when any constituent type isn't nameable so
     /// callers fall through to the positional placeholder.
     fn allocCallSignatureFnTypeName(self: *Checker, t: TypeId, occurrence_index: ?usize) CheckError!?[]const u8 {
-        return self.allocCallSignatureFnTypeNameInner(t, occurrence_index, null, false, null);
+        return self.allocCallSignatureFnTypeNameInner(t, occurrence_index, null, false, null, null);
     }
 
     fn allocCallSignatureFnTypeNameWithPredicate(
@@ -171259,7 +171259,7 @@ pub const Checker = struct {
         occurrence_index: ?usize,
         predicate: ?FnPredicate,
     ) CheckError!?[]const u8 {
-        return self.allocCallSignatureFnTypeNameInner(t, occurrence_index, predicate, false, null);
+        return self.allocCallSignatureFnTypeNameInner(t, occurrence_index, predicate, false, null, null);
     }
 
     fn allocCallSignatureFnTypeNameInner(
@@ -171269,6 +171269,7 @@ pub const Checker = struct {
         predicate: ?FnPredicate,
         omit_type_parameters: bool,
         parameter_name_donor: ?TypeId,
+        constituent_name_donor: ?TypeId,
     ) CheckError!?[]const u8 {
         if (!self.interner.isSignature(t)) return null;
         if (t >= self.interner.pool.typeCount()) return null;
@@ -171313,8 +171314,22 @@ pub const Checker = struct {
             if (is_optional and !std.mem.endsWith(u8, name_text, "?")) try buf.append(arena, '?');
             try buf.appendSlice(arena, ": ");
             const display_p = try self.signatureParameterDisplayType(p, is_optional);
-            const pn = (try self.allocSignatureConstituentDisplayName(display_p)) orelse
+            const fallback_pn = (try self.allocSignatureConstituentDisplayName(display_p)) orelse
                 (try self.allocObjectTypeShape(display_p)) orelse return null;
+            const nested_name_donor = if (constituent_name_donor) |donor_sig| blk: {
+                if (!self.interner.isSignature(donor_sig)) break :blk null;
+                const donor_params = self.interner.signatureParams(donor_sig);
+                if (i >= donor_params.len) break :blk null;
+                const donor_param = donor_params[i];
+                if (!self.interner.isSignature(display_p) or !self.interner.isSignature(donor_param)) break :blk null;
+                if (!(self.engine.isAssignableTo(display_p, donor_param) catch false) or
+                    !(self.engine.isAssignableTo(donor_param, display_p) catch false)) break :blk null;
+                break :blk donor_param;
+            } else null;
+            const pn = if (nested_name_donor) |donor_param|
+                (try self.allocCallSignatureFnTypeNameInner(display_p, null, null, false, donor_param, null)) orelse fallback_pn
+            else
+                fallback_pn;
             if (is_optional and is_rest and !self.typeNameIncludesUndefined(display_p, pn)) {
                 try buf.appendSlice(arena, try std.fmt.allocPrint(arena, "{s} | undefined", .{pn}));
             } else {
@@ -232246,6 +232261,22 @@ test "checker: inferred generic ThisType<T> uses the instantiated call argument"
         try T.expect(d.code != TsCodes.property_does_not_exist);
         try T.expect(d.code != TsCodes.this_implicitly_any);
     }
+}
+
+test "checker: callback return mismatch borrows compatible nested parameter names" {
+    const s = try newSetup(
+        \\declare function foo2<T, U>(x: T, a: (x: T) => U, b: (x: T) => U): (x: T) => U;
+        \\declare var x: (a: string) => boolean;
+        \\foo2(x, (a1: (y: string) => boolean) => (n: Object) => 1, (a2: (z: string) => boolean) => 2);
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.argument_type_mismatch));
+    try T.expectEqualStrings(
+        "Argument of type '(a2: (z: string) => boolean) => number' is not assignable to parameter of type '(x: (z: string) => boolean) => (n: Object) => 1'.",
+        checkerFirstMessageForCode(s, TsCodes.argument_type_mismatch) orelse return error.MissingDiagnostic,
+    );
 }
 
 test "checker: NoInfer<T> in param parses without 'cannot find name'" {

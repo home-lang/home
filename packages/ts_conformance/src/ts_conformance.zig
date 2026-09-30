@@ -55504,6 +55504,31 @@ test "conformance: thisTypeInObjectLiterals2 inferred defineProp receiver passes
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: genericCallWithGenericSignatureArguments3 nested parameter name parity" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "genericCallWithGenericSignatureArguments3",
+        .path = "genericCallWithGenericSignatureArguments3.ts",
+        .source =
+        \\declare function foo2<T, U>(x: T, a: (x: T) => U, b: (x: T) => U): (x: T) => U;
+        \\declare var x: (a: string) => boolean;
+        \\var r12 = foo2(x, (a1: (y: string) => boolean) => (n: Object) => 1, (a2: (z: string) => boolean) => 2);
+        ,
+        .expects_error = true,
+        .expected_errors =
+        \\genericCallWithGenericSignatureArguments3.ts(3,69): error TS2345: Argument of type '(a2: (z: string) => boolean) => number' is not assignable to parameter of type '(x: (z: string) => boolean) => (n: Object) => 1'.
+        ,
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    if (result.outcome != .passed) {
+        std.debug.print("genericCallWithGenericSignatureArguments3 detail:\n{s}\n", .{result.detail});
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: initializerReferencingConstructorLocals value-position slice" {
     // Slice of `initializerReferencingConstructorLocals.ts` covering
     // the value-position references — `c = this.z` (TS2339 with the
