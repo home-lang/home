@@ -20528,6 +20528,30 @@ test "conformance: union signature diagnostics preserve argument and rest arity 
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: mixed mapped type recovery stops after the grammar diagnostic" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "mixedMappedTypeRecovery",
+        .path = "mixedMappedTypeRecovery.ts",
+        .source =
+        \\type PlaceType = "openSky" | "roofed" | "garage";
+        \\type Before = {
+        \\  model: "hour" | "day";
+        \\  [placeType in PlaceType]: void;
+        \\};
+        ,
+        .expects_error = true,
+        .expected_errors =
+        \\mixedMappedTypeRecovery.ts(3,3): error TS7061: A mapped type may not declare properties or methods.
+        ,
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: contextuallyTypeAsyncFunctionReturnType passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "contextuallyTypeAsyncFunctionReturnType",

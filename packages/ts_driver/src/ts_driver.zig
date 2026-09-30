@@ -6770,6 +6770,23 @@ test "driver: union signature mismatches retain argument and arity diagnostics" 
     try T.expectEqual(@as(usize, 0), overload_mismatches);
 }
 
+test "driver: recovered mixed mapped type emits only TS7061" {
+    var c = try compileSource(T.allocator,
+        \\type PlaceType = "openSky" | "roofed" | "garage";
+        \\type Before = {
+        \\  model: "hour" | "day";
+        \\  [placeType in PlaceType]: void;
+        \\};
+    , .{ .strict = true, .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+
+    try T.expectEqual(@as(usize, 1), c.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 7061), c.diagnostics.items[0].code);
+}
+
 test "driver: tsx self-closing emits createElement" {
     var c = try compileSource(T.allocator, "let v = <Foo bar=\"baz\" />;", .{ .is_tsx = true });
     defer {

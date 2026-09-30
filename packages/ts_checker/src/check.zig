@@ -24725,6 +24725,12 @@ pub const Checker = struct {
         return self.typeAliasDeclForNameAt(rhs_name, key) != null;
     }
 
+    fn computedTypeMemberIsRecoveredMappedSyntax(self: *const Checker, key: NodeId) bool {
+        if (key == hir_mod.none_node_id or self.hir.kindOf(key) != .binary_op) return false;
+        const binary = hir_mod.binopOf(self.hir, key);
+        return binary.op == .in and self.hir.kindOf(binary.lhs) == .identifier;
+    }
+
     /// Returns true when the class field's source text contains a
     /// definite-assignment assertion (`!`) immediately after the
     /// member name and before the `:` type annotation. Examples:
@@ -77888,6 +77894,16 @@ pub const Checker = struct {
                     if (self.hir.kindOf(m) != .interface_member) continue;
                     const im = hir_mod.interfaceMemberOf(self.hir, m);
                     const key_expr = hir_mod.interfaceMemberKeyExpr(self.hir, m);
+                    // When an ordinary member precedes `[K in T]`, the parser
+                    // must recover the whole body as an object type so it can
+                    // retain the first member and anchor TS7061 there.  The
+                    // bracketed tail is still mapped-type syntax, not a value
+                    // expression.  Upstream grammar checking stops semantic
+                    // checking of that recovered member after TS7061; doing
+                    // the same here avoids bogus name and `in`-operator
+                    // diagnostics while preserving the recovered HIR for
+                    // tooling.
+                    if (self.computedTypeMemberIsRecoveredMappedSyntax(key_expr)) continue;
                     if (key_expr != hir_mod.none_node_id) {
                         if (try self.importedNamespaceComputedTypeKeyType(key_expr)) |key_t| {
                             self.hir.setType(key_expr, key_t);
@@ -278967,6 +278983,27 @@ test "checker: mapped syntax in class fields uses TS7061" {
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, 1166));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_find_name));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_only_used_as_value));
+}
+
+test "checker: mapped syntax after a type-literal member stops after TS7061" {
+    const s = try newSetup(
+        \\type PlaceType = "openSky" | "roofed" | "garage";
+        \\type Before = {
+        \\  model: "hour" | "day";
+        \\  [placeType in PlaceType]: void;
+        \\};
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+
+    var grammar_errors: usize = 0;
+    for (s.parser.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == 7061) grammar_errors += 1;
+    }
+    try T.expectEqual(@as(usize, 1), grammar_errors);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.cannot_find_name_did_you_mean));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: standard class decorator arity uses TS1238 diagnostic heads" {
