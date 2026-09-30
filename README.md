@@ -81,16 +81,18 @@ compiler.
 
 | Suite | Result |
 |---|---:|
-| Upstream conformance corpus, **exact byte-for-byte** | **5,907 / 5,907 — 100%** |
+| Upstream conformance corpus, **exact byte-for-byte** | **984 / 1,000 — 98.4%** in the revalidated leading slice; six-slice refresh in progress |
 | Upstream conformance corpus, diagnostic families | **5,907 / 5,907 — 100%** |
 | Baseline-aware `.errors.txt` comparison, 19 folders | **586 / 586 — 100%** |
 | Diagnostic codes the reference compiler can emit | **100% — 0 reachable codes left** ¹ |
 
-Both conformance modes are regression-gated on every pull request. Reproduce
-the exact run with:
+The default smoke/category gates run in the repository test suite. Exact mode
+is opt-in, split into bounded slices, and any diagnostic mismatch now fails the
+test process. Reproduce the revalidated leading slice with:
 
 ```bash
 HOME_TS_CONFORMANCE_FULL=1 HOME_TS_CONFORMANCE_EXACT=1 \
+  HOME_TS_CONFORMANCE_START=0 HOME_TS_CONFORMANCE_LIMIT=1000 \
   ./pantry/.bin/zig build test -Dfilter=ts_conformance
 ```
 
@@ -423,7 +425,7 @@ Conservative on purpose: anything not exercised by an example or a test stays
 |---|---|---|
 | Lexer, parser, type inference | Usable today | [Capability matrix](https://home-lang.org/docs/CAPABILITY_MATRIX) |
 | TypeScript front end (`home tsc`) | Usable today; fastest on 20 / 20 benchmark workloads | [TypeScript performance](docs/docs/TS_PERFORMANCE.md) |
-| TypeScript conformance (coarse + byte-exact) | 5,907 / 5,907 — 100% | [TypeScript parity](https://home-lang.org/docs/PARITY-TYPESCRIPT) |
+| TypeScript conformance (byte-exact) | 984 / 1,000 — 98.4% in revalidated slice 0 | [TypeScript parity](https://home-lang.org/docs/PARITY-STATUS#typescript-parity--home-tsc-vs-tsc--tsgo) |
 | Promise chain and readonly `Promise.all` inference | Exact TS2322 controls; 4,410 / 4,410 checker tests | [Untimed validation](docs/docs/TS_PERFORMANCE.md#promise-chain-and-readonly-promiseall-inference-untimed) |
 | TypeScript diagnostic codes emitted | 1,620 / 2,079; **0 reachable targets left** | [Diagnostic reachability](https://home-lang.org/docs/TS_DIAGNOSTIC_REACHABILITY) |
 | Language-server methods routed (`home lsp`, TypeScript and `.home`) | 76 / ~80 | [Parity status](https://home-lang.org/docs/PARITY-STATUS#lsp--ide-coverage--home-lsp-vs-tsserver) |

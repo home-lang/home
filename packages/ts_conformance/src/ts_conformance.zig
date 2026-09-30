@@ -58005,6 +58005,10 @@ test "conformance: opt-in full local TypeScript corpus survey" {
     } else {
         try T.expect(stats.total() == end - start);
     }
+    // Exact mode is a regression gate, not a reporting-only survey. Keep the
+    // coarse corpus behavior independent, but make every byte-for-byte
+    // diagnostic mismatch fail the test process after its diff is printed.
+    if (want_exact) try T.expectEqual(@as(u32, 0), stats.failed);
 }
 
 test "compiler: opt-in local TypeScript compiler corpus survey" {
