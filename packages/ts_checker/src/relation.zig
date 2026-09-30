@@ -3449,6 +3449,30 @@ test "Engine: object primitive accepts object-like sources only" {
     try T.expect(!try e.isAssignableTo(Primitive.number_t, Primitive.object_t));
 }
 
+test "Engine: registered uppercase Object accepts boxed primitives but rejects strict nullish values" {
+    var ti = try Interner.init(T.allocator);
+    defer ti.deinit();
+    var e = try Engine.init(T.allocator, &ti);
+    defer e.deinit();
+
+    const upper_object = try ti.internObjectType(&.{});
+    try e.registerUpperObjectTarget(upper_object);
+    e.setStrictNullChecks(true);
+
+    inline for (.{
+        Primitive.string_t,
+        Primitive.number_t,
+        Primitive.boolean_t,
+        Primitive.bigint_t,
+        Primitive.symbol_t,
+    }) |primitive| {
+        try T.expect(try e.isAssignableTo(primitive, upper_object));
+    }
+    try T.expect(!try e.isAssignableTo(Primitive.null_t, upper_object));
+    try T.expect(!try e.isAssignableTo(Primitive.undefined_t, upper_object));
+    try T.expect(!try e.isAssignableTo(Primitive.string_t, Primitive.object_t));
+}
+
 test "Engine: structural object — source missing required prop fails" {
     var ti = try Interner.init(T.allocator);
     defer ti.deinit();

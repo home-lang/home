@@ -178492,6 +178492,16 @@ pub const Checker = struct {
         if (try self.sameGenericInstantiationAssignableByVariance(source_ret, target_ret)) |ok| return ok;
         if (try self.contextualReturnLacksRequiredObjectShape(source_ret, target_ret)) return false;
         if (self.engine.isAssignableTo(source_ret, target_ret) catch false) return true;
+        // `presentObjectMembersAssignable` is an object-shape refinement and
+        // therefore returns vacuously true for primitive sources. Once the
+        // primary relation has rejected strict null/undefined, do not let
+        // that object-only fallback reverse the result. Boxable primitives
+        // destined for uppercase `Object` already succeeded above.
+        if (self.strict_flags.strict_null_checks and
+            (source_ret == types.Primitive.null_t or source_ret == types.Primitive.undefined_t))
+        {
+            return false;
+        }
         if (try self.generatorReturnAssignableToTargetReturn(source_ret, target_ret)) return true;
         if (target_ret >= self.interner.pool.typeCount() or
             !self.interner.pool.flagsOf(target_ret).is_object_type)
@@ -178539,6 +178549,13 @@ pub const Checker = struct {
             return false;
         }
         if (!target_flags.is_object_type) return false;
+        // Uppercase `Object` exposes Object.prototype members, but those
+        // members are supplied by the apparent boxed type of every
+        // non-nullish primitive. Do not reject a primitive merely because
+        // it does not carry those members structurally; the relation engine
+        // below applies the actual uppercase-Object/nullish rules. Lowercase
+        // `object` is a primitive sentinel and never reaches this branch.
+        if (self.typeIsGlobalObjectBuiltin(target_ret) or try self.typeIsUpperObject(target_ret)) return false;
         var needs_object_shape = self.class_name_by_instance.contains(target_ret);
         if (!needs_object_shape) {
             for (self.interner.objectMembers(target_ret)) |member| {
@@ -215801,6 +215818,37 @@ test "checker: contextual generic signatures drive interface heritage" {
         if (d.code == TsCodes.interface_incorrectly_extends) heritage_errors += 1;
     }
     try T.expectEqual(@as(usize, 4), heritage_errors);
+}
+
+test "checker: contextual generic heritage boxes primitive returns for uppercase Object" {
+    const b = try newBoundSetup(
+        \\interface UpperCallBase { value: (x: { a: string; b: number }) => Object }
+        \\interface UpperCall extends UpperCallBase { value: <T, U>(x: { a: T; b: U }) => T }
+        \\interface UpperConstructBase { value: new (x: { a: string; b: number }) => Object }
+        \\interface UpperConstruct extends UpperConstructBase { value: new <T, U>(x: { a: T; b: U }) => T }
+        \\interface LowerCallBase { value: (x: { a: string }) => object }
+        \\interface LowerCall extends LowerCallBase { value: <T>(x: { a: T }) => T }
+        \\interface NullCallBase { value: (x: { a: null }) => Object }
+        \\interface NullCall extends NullCallBase { value: <T>(x: { a: T }) => T }
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{
+        .strict_function_types = true,
+        .strict_null_checks = true,
+    });
+    try b.base.checker.checkSourceFile(b.base.root);
+
+    try T.expectEqual(@as(usize, 2), checkerCountCode(b.base, TsCodes.interface_incorrectly_extends));
+    try T.expect(checkerHasCodeAndMessage(
+        b.base,
+        TsCodes.interface_incorrectly_extends,
+        "Interface 'LowerCall' incorrectly extends interface 'LowerCallBase'.",
+    ));
+    try T.expect(checkerHasCodeAndMessage(
+        b.base,
+        TsCodes.interface_incorrectly_extends,
+        "Interface 'NullCall' incorrectly extends interface 'NullCallBase'.",
+    ));
 }
 
 test "checker: generic interface heritage accepts exact and covariant wrapper overrides" {

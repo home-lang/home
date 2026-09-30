@@ -20470,6 +20470,36 @@ test "conformance: contextuallyTypedObjectLiteralMethodDeclaration01 passes clea
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: contextual generic heritage accepts boxed uppercase Object returns" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "contextualGenericHeritageUppercaseObject",
+        .path = "contextualGenericHeritageUppercaseObject.ts",
+        .source =
+        \\// @strict: true
+        \\interface CallBase {
+        \\    value: (x: { a: string; b: number }) => Object;
+        \\}
+        \\interface CallDerived extends CallBase {
+        \\    value: <T, U>(x: { a: T; b: U }) => T;
+        \\}
+        \\interface ConstructBase {
+        \\    value: new (x: { a: string; b: number }) => Object;
+        \\}
+        \\interface ConstructDerived extends ConstructBase {
+        \\    value: new <T, U>(x: { a: T; b: U }) => T;
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: contextuallyTypeAsyncFunctionReturnType passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "contextuallyTypeAsyncFunctionReturnType",
