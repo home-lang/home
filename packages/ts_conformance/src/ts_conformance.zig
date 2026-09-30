@@ -55459,6 +55459,51 @@ test "conformance: spreadObjectOrFalsy generic this predicate matches exact base
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: thisTypeInObjectLiterals2 inferred defineProp receiver passes clean" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "thisTypeInObjectLiterals2",
+        .path = "thisTypeInObjectLiterals2.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: true
+        \\type Point = { x: number; y: number };
+        \\type PropDesc<T> = {
+        \\    value?: T;
+        \\    get?(): T;
+        \\    set?(value: T): void;
+        \\};
+        \\declare function defineProp<T, K extends string, U>(obj: T, name: K, desc: PropDesc<U> & ThisType<T>): T & Record<K, U>;
+        \\declare const point: Point;
+        \\const described = defineProp(point, "bar", {
+        \\    get() {
+        \\        return this.x;
+        \\    },
+        \\    set(value: number) {
+        \\        this.x = value;
+        \\    }
+        \\});
+        \\described.bar = described.bar + 1;
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{
+            .no_implicit_any = true,
+            .no_implicit_this = true,
+            .strict_null_checks = true,
+            .strict_function_types = true,
+        },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    if (result.outcome != .passed) {
+        std.debug.print("thisTypeInObjectLiterals2 detail:\n{s}\n", .{result.detail});
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: initializerReferencingConstructorLocals value-position slice" {
     // Slice of `initializerReferencingConstructorLocals.ts` covering
     // the value-position references — `c = this.z` (TS2339 with the

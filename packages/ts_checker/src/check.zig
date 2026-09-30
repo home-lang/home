@@ -152165,13 +152165,16 @@ pub const Checker = struct {
             if (property.value != cur) return null;
             const object_node = self.hir.parentOf(property_node);
             if (object_node == hir_mod.none_node_id or self.hir.kindOf(object_node) != .object_literal) return null;
-            if (self.contextual_expression_this_types.get(object_node)) |this_t| return this_t;
-            const object_target = self.contextualTargetTypeForExpression(object_node) orelse return null;
+            const cached_this_t = self.contextual_expression_this_types.get(object_node);
+            const object_target = self.contextualTargetTypeForExpression(object_node) orelse
+                return cached_this_t;
             // `ThisType<T>` belongs to the containing object literal and must
-            // win over a receiver synthesized while materializing one mapped
-            // conditional member. The latter describes the partial prototype
-            // shape, whereas methods are contextually bound to the instance T.
+            // win over both an early call-argument cache and a receiver
+            // synthesized while materializing one mapped conditional member.
+            // Generic inference can refine `ThisType<T>` after the cache was
+            // populated, so the final contextual target is authoritative.
             if (self.thisTypeMarkerConstraint(object_target)) |this_t| return this_t;
+            if (cached_this_t) |this_t| return this_t;
             if (!property.is_computed) {
                 if (self.propertyNameFromKeyNode(property.key)) |member_name| {
                     const member_target = self.contextualObjectLiteralMemberTarget(object_target, member_name) catch null;
@@ -154793,10 +154796,10 @@ pub const Checker = struct {
         const props = hir_mod.objectLiteralProps(self.hir, node);
         const this_id = self.string_interner.intern("this") catch return error.OutOfMemory;
         const direct_this_marker = self.thisTypeMarkerConstraint(obj_t);
-        var this_t = if (self.contextual_expression_this_types.get(node)) |expression_this_t|
-            expression_this_t
-        else if (direct_this_marker) |marker_t|
+        var this_t = if (direct_this_marker) |marker_t|
             marker_t
+        else if (self.contextual_expression_this_types.get(node)) |expression_this_t|
+            expression_this_t
         else
             (inherited_this_t orelse obj_t);
         if (self.ancestorObjectLiteralDataReturnType(node)) |data_t| {
@@ -232209,6 +232212,39 @@ test "checker: outer ThisType<T> flows into mapped descriptor object methods" {
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.property_does_not_exist);
+    }
+}
+
+test "checker: inferred generic ThisType<T> uses the instantiated call argument" {
+    const s = try newSetup(
+        \\type Point = { x: number; y: number };
+        \\type PropDesc<T> = {
+        \\  value?: T;
+        \\  get?(): T;
+        \\  set?(value: T): void;
+        \\};
+        \\declare function defineProp<T, K extends string, U>(
+        \\  obj: T,
+        \\  name: K,
+        \\  desc: PropDesc<U> & ThisType<T>,
+        \\): T & Record<K, U>;
+        \\declare const point: Point;
+        \\defineProp(point, "bar", {
+        \\  get() { return this.x; },
+        \\  set(value: number) { this.x = value; },
+        \\});
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{
+        .no_implicit_any = true,
+        .no_implicit_this = true,
+        .strict_null_checks = true,
+        .strict_function_types = true,
+    });
+    try s.checker.checkSourceFile(s.root);
+    for (s.checker.diagnostics.items) |d| {
+        try T.expect(d.code != TsCodes.property_does_not_exist);
+        try T.expect(d.code != TsCodes.this_implicitly_any);
     }
 }
 

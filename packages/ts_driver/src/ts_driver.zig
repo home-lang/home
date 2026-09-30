@@ -5365,6 +5365,29 @@ test "driver: checked interpretation metadata outlives the checker" {
     try T.expectEqual(ts_checker.Primitive.boolean_t, slots.next_type);
 }
 
+test "driver: inferred generic ThisType receiver uses the instantiated argument" {
+    var c = try compileSource(T.allocator,
+        \\type Point = { x: number; y: number };
+        \\type PropDesc<T> = { value?: T; get?(): T; set?(value: T): void };
+        \\declare function defineProp<T, K extends string, U>(
+        \\  obj: T,
+        \\  name: K,
+        \\  desc: PropDesc<U> & ThisType<T>,
+        \\): T & Record<K, U>;
+        \\declare const point: Point;
+        \\defineProp(point, "bar", {
+        \\  get() { return this.x; },
+        \\  set(value: number) { this.x = value; },
+        \\});
+    , .{ .strict = true, .no_emit = true });
+    defer {
+        c.deinit();
+        T.allocator.destroy(c);
+    }
+    try T.expect(!c.has_errors);
+    for (c.diagnostics.items) |d| try T.expect(d.code != 2339);
+}
+
 test "driver: checked nominal origins and nested class metadata outlive the checker" {
     const c = try compileSource(T.allocator,
         \\declare abstract class Base {
