@@ -4867,3 +4867,28 @@ test "LspProject: publishes diagnostics on open and change, answers hover, frees
     defer std.testing.allocator.free(changed);
     try std.testing.expect(std.mem.indexOf(u8, changed, "\"diagnostics\":[]") != null);
 }
+
+test "LspProject: publishes Home diagnostics with HM wire codes" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const io = std.testing.io;
+    {
+        var config_file = try tmp.dir.createFile(io, "tsconfig.json", .{ .truncate = true });
+        defer config_file.close(io);
+        try config_file.writeStreamingAll(io, "{ \"home\": { \"sound\": true } }");
+    }
+    const config_path = try tmp.dir.realPathFileAlloc(io, "tsconfig.json", std.testing.allocator);
+    defer std.testing.allocator.free(config_path);
+
+    const project = try LspProject.create(std.testing.allocator, config_path);
+    defer project.destroy();
+
+    const opened = try project.handle(
+        \\{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///home-lsp-test/sound.ts","languageId":"typescript","version":1,"text":"const value: any = 1;\n"}}}
+    );
+    defer std.testing.allocator.free(opened);
+    try std.testing.expect(std.mem.indexOf(u8, opened, "\"method\":\"textDocument/publishDiagnostics\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, opened, "\"code\":\"HM9001\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, opened, "\"source\":\"home\"") != null);
+}

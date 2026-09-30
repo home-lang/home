@@ -3634,6 +3634,28 @@ fn lspSeverityCode(s: ts_lsp.LspDiagnostic.Severity) u8 {
     };
 }
 
+/// TypeScript keeps its conventional numeric LSP code, while Home diagnostics
+/// use the string form `HMxxxx` so clients can distinguish the namespaces.
+fn appendLspDiagnosticCode(
+    buf: *std.ArrayListUnmanaged(u8),
+    gpa: std.mem.Allocator,
+    diagnostic: ts_lsp.LspDiagnostic,
+) !void {
+    var nbuf: [32]u8 = undefined;
+    switch (diagnostic.code_prefix) {
+        .TS => {
+            const code = try std.fmt.bufPrint(&nbuf, "{d}", .{diagnostic.code});
+            try buf.appendSlice(gpa, code);
+        },
+        .HM => {
+            try buf.appendSlice(gpa, "\"HM");
+            const code = try std.fmt.bufPrint(&nbuf, "{d}", .{diagnostic.code});
+            try buf.appendSlice(gpa, code);
+            try buf.append(gpa, '"');
+        },
+    }
+}
+
 /// Encode a server-to-client `workspace/<kind>/refresh` request body.
 /// Per LSP 3.17+, these are requests (not notifications) — they
 /// carry an integer id and the client responds with `result: null`.
@@ -3751,13 +3773,11 @@ pub fn encodePublishDiagnosticsStructured(
         if (i != 0) try buf.append(gpa, ',');
         try buf.appendSlice(gpa, "{\"range\":");
         try writeRange(&buf, gpa, d.range);
-        var nbuf: [64]u8 = undefined;
-        const sev_code = try std.fmt.bufPrint(
-            &nbuf,
-            ",\"severity\":{d},\"code\":{d},\"source\":\"",
-            .{ lspSeverityCode(d.severity), d.code },
-        );
-        try buf.appendSlice(gpa, sev_code);
+        var nbuf: [32]u8 = undefined;
+        const severity = try std.fmt.bufPrint(&nbuf, ",\"severity\":{d},\"code\":", .{lspSeverityCode(d.severity)});
+        try buf.appendSlice(gpa, severity);
+        try appendLspDiagnosticCode(&buf, gpa, d);
+        try buf.appendSlice(gpa, ",\"source\":\"");
         try writeJsonStringContents(&buf, gpa, d.source);
         try buf.appendSlice(gpa, "\",\"message\":\"");
         try writeJsonStringContents(&buf, gpa, d.message);
@@ -3825,13 +3845,11 @@ pub fn handleDiagnostic(
         if (i != 0) try buf.append(gpa, ',');
         try buf.appendSlice(gpa, "{\"range\":");
         try writeRange(&buf, gpa, d.range);
-        var nbuf: [64]u8 = undefined;
-        const sev_code = try std.fmt.bufPrint(
-            &nbuf,
-            ",\"severity\":{d},\"code\":{d},\"source\":\"",
-            .{ lspSeverityCode(d.severity), d.code },
-        );
-        try buf.appendSlice(gpa, sev_code);
+        var nbuf: [32]u8 = undefined;
+        const severity = try std.fmt.bufPrint(&nbuf, ",\"severity\":{d},\"code\":", .{lspSeverityCode(d.severity)});
+        try buf.appendSlice(gpa, severity);
+        try appendLspDiagnosticCode(&buf, gpa, d);
+        try buf.appendSlice(gpa, ",\"source\":\"");
         try writeJsonStringContents(&buf, gpa, d.source);
         try buf.appendSlice(gpa, "\",\"message\":\"");
         try writeJsonStringContents(&buf, gpa, d.message);
@@ -3888,13 +3906,11 @@ pub fn handleWorkspaceDiagnostic(
             if (i != 0) try buf.append(gpa, ',');
             try buf.appendSlice(gpa, "{\"range\":");
             try writeRange(&buf, gpa, d.range);
-            var nbuf: [64]u8 = undefined;
-            const sev_code = try std.fmt.bufPrint(
-                &nbuf,
-                ",\"severity\":{d},\"code\":{d},\"source\":\"",
-                .{ lspSeverityCode(d.severity), d.code },
-            );
-            try buf.appendSlice(gpa, sev_code);
+            var nbuf: [32]u8 = undefined;
+            const severity = try std.fmt.bufPrint(&nbuf, ",\"severity\":{d},\"code\":", .{lspSeverityCode(d.severity)});
+            try buf.appendSlice(gpa, severity);
+            try appendLspDiagnosticCode(&buf, gpa, d);
+            try buf.appendSlice(gpa, ",\"source\":\"");
             try writeJsonStringContents(&buf, gpa, d.source);
             try buf.appendSlice(gpa, "\",\"message\":\"");
             try writeJsonStringContents(&buf, gpa, d.message);
@@ -4637,6 +4653,31 @@ test "decodeJsonString: handles common escapes" {
     const a = try decodeJsonString(T.allocator, "let s = \\\"hi\\\";\\nlet n = 1;");
     defer T.allocator.free(a);
     try T.expectEqualStrings("let s = \"hi\";\nlet n = 1;", a);
+}
+
+test "encodePublishDiagnosticsStructured: Home codes use HM string namespace" {
+    const diagnostics = [_]ts_lsp.LspDiagnostic{
+        .{
+            .range = .{
+                .file = "/main.ts",
+                .start_line = 1,
+                .start_col = 1,
+                .end_line = 1,
+                .end_col = 4,
+            },
+            .severity = .err,
+            .code = 9001,
+            .code_prefix = .HM,
+            .message = "Explicit 'any' is not permitted in Home sound mode.",
+            .source = "home",
+        },
+    };
+    const out = try encodePublishDiagnosticsStructured(T.allocator, "file:///main.ts", &diagnostics);
+    defer T.allocator.free(out);
+
+    try T.expect(std.mem.indexOf(u8, out, "\"code\":\"HM9001\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"source\":\"home\"") != null);
+    try T.expect(std.mem.indexOf(u8, out, "\"severity\":1") != null);
 }
 
 test "handleDidChange: routes notification to Service.didChangeFile" {

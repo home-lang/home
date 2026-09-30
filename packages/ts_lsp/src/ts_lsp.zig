@@ -432,6 +432,9 @@ pub const LspDiagnostic = struct {
     range: Span,
     severity: Severity,
     code: u32,
+    /// TS codes stay numeric on the wire; Home codes are serialized as the
+    /// string `HMxxxx` so editors cannot confuse the two code spaces.
+    code_prefix: CodePrefix = .TS,
     /// Owned by the diagnostic — `freeLspDiagnostics` frees it.
     message: []const u8,
     /// Diagnostic source identifier (LSP `Diagnostic.source`).
@@ -439,6 +442,7 @@ pub const LspDiagnostic = struct {
     source: []const u8 = "ts",
 
     pub const Severity = enum { err, warning, info, hint };
+    pub const CodePrefix = enum { TS, HM };
 };
 
 /// Free a `[]LspDiagnostic` produced by `Service.diagnosticsStructured`.
@@ -449,7 +453,8 @@ pub fn freeLspDiagnostics(gpa: std.mem.Allocator, diags: []LspDiagnostic) void {
 }
 
 /// FNV-1a 64-bit hash of the content-bearing fields of a diagnostic
-/// set: `(code, severity, range tuple, message)` per entry, in order.
+/// set: `(code, prefix, severity, range tuple, source, message)` per entry,
+/// in order.
 /// Used by `Service.publishDiagnostics` to suppress redundant
 /// `textDocument/publishDiagnostics` notifications when nothing the
 /// editor cares about has changed.
@@ -478,11 +483,14 @@ pub fn hashLspDiagnostics(diags: []const LspDiagnostic) u64 {
     };
     for (diags) |d| {
         mix.u32le(&h, d.code);
+        mix.step(&h, @as(u8, @intFromEnum(d.code_prefix)));
         mix.step(&h, @as(u8, @intFromEnum(d.severity)));
         mix.u32le(&h, d.range.start_line);
         mix.u32le(&h, d.range.start_col);
         mix.u32le(&h, d.range.end_line);
         mix.u32le(&h, d.range.end_col);
+        mix.u32le(&h, @as(u32, @truncate(d.source.len)));
+        mix.bytes(&h, d.source);
         // Length-prefix the message so concatenation can't alias.
         mix.u32le(&h, @as(u32, @truncate(d.message.len)));
         mix.bytes(&h, d.message);
@@ -4448,13 +4456,21 @@ pub const Service = struct {
         const c = f.compilation orelse return buf.toOwnedSlice(gpa);
         for (c.diagnostics.items) |d| {
             const pos = ts_diagnostics.positionToLineCol(f.source, d.pos);
+            const code = if (d.code != 0) d.code else 2300 + @as(u32, @intFromEnum(d.phase));
             const fdiag: ts_diagnostics.Diagnostic = .{
                 .file = f.path,
                 .line = pos.line,
                 .col = pos.col,
-                .code = 2300 + @as(u32, @intFromEnum(d.phase)),
-                .code_prefix = .TS,
-                .severity = .err,
+                .code = code,
+                .code_prefix = switch (d.code_prefix) {
+                    .TS => .TS,
+                    .HM => .HM,
+                },
+                .severity = switch (d.category) {
+                    .error_ => .err,
+                    .warning => .warning,
+                    .suggestion => .suggestion,
+                },
                 .message = d.message,
                 .span_len = 0,
             };
@@ -4496,7 +4512,15 @@ pub const Service = struct {
             // Suggestion-category diagnostics (TS7043-TS7050 "a better
             // type may be inferred from usage") map to LSP Hint
             // severity, mirroring tsc's `getSuggestionDiagnostics`.
-            const severity: LspDiagnostic.Severity = if (d.category == .suggestion) .hint else .err;
+            const severity: LspDiagnostic.Severity = switch (d.category) {
+                .error_ => .err,
+                .warning => .warning,
+                .suggestion => .hint,
+            };
+            const code_prefix: LspDiagnostic.CodePrefix = switch (d.code_prefix) {
+                .TS => .TS,
+                .HM => .HM,
+            };
             try out.append(gpa, .{
                 .range = .{
                     .file = f.path,
@@ -4507,8 +4531,12 @@ pub const Service = struct {
                 },
                 .severity = severity,
                 .code = code,
+                .code_prefix = code_prefix,
                 .message = message,
-                .source = "ts",
+                .source = switch (code_prefix) {
+                    .TS => "ts",
+                    .HM => "home",
+                },
             });
         }
         return out.toOwnedSlice(gpa);
@@ -7760,6 +7788,7 @@ test "Service: diagnosticsStructured returns LspDiagnostic shape" {
     const d = diags[0];
     try T.expectEqualStrings("/main.ts", d.range.file);
     try T.expectEqualStrings("ts", d.source);
+    try T.expectEqual(LspDiagnostic.CodePrefix.TS, d.code_prefix);
     try T.expectEqual(LspDiagnostic.Severity.err, d.severity);
     // Range covers a non-empty extent (single-char fallback).
     try T.expect(d.range.start_line == d.range.end_line);
@@ -7768,6 +7797,36 @@ test "Service: diagnosticsStructured returns LspDiagnostic shape" {
     try T.expect(d.code != 0);
     // Message is non-empty.
     try T.expect(d.message.len > 0);
+}
+
+test "Service: Home diagnostics preserve HM code space and source" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var program = ts_program.Program.init(T.allocator, &resolver);
+    defer program.deinit();
+
+    _ = try program.add("/main.ts", "const value: any = 1;");
+    try program.compileAll(.{ .home_options = .{ .sound = true } });
+
+    var svc = Service.init(T.allocator, &program);
+    const rendered = try svc.diagnostics(T.allocator, "/main.ts");
+    defer T.allocator.free(rendered);
+    try T.expect(std.mem.indexOf(u8, rendered, "error HM9001:") != null);
+
+    const diags = try svc.diagnosticsStructured(T.allocator, "/main.ts");
+    defer freeLspDiagnostics(T.allocator, diags);
+    try T.expectEqual(@as(usize, 1), diags.len);
+    try T.expectEqual(@as(u32, 9001), diags[0].code);
+    try T.expectEqual(LspDiagnostic.CodePrefix.HM, diags[0].code_prefix);
+    try T.expectEqualStrings("home", diags[0].source);
+    try T.expectEqual(LspDiagnostic.Severity.err, diags[0].severity);
+
+    var ts_diagnostic = diags[0];
+    ts_diagnostic.code_prefix = .TS;
+    ts_diagnostic.source = "ts";
+    try T.expect(hashLspDiagnostics(diags) != hashLspDiagnostics(&.{ts_diagnostic}));
 }
 
 test "Service: diagnosticsStructured returns empty on clean / unknown files" {
