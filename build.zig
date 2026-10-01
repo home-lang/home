@@ -1891,6 +1891,13 @@ pub fn build(b: *std.Build) void {
         .filters = ts_conformance_test_filters,
     });
     const run_ts_conformance_tests = b.addRunArtifact(ts_conformance_tests);
+    // The conformance executable selects smoke, category, full-corpus, exact,
+    // slice, and fixture-filter modes from HOME_TS_CONFORMANCE_* at runtime.
+    // Those inherited variables are not inputs to Zig's Run-step cache, so a
+    // cached two-fixture survey could otherwise satisfy a later 1,000-case
+    // exact command without executing it. Every requested conformance gate
+    // must observe the caller's current environment.
+    run_ts_conformance_tests.has_side_effects = true;
     dependOnTest(test_step, &run_ts_conformance_tests.step, test_filter, "ts_conformance");
 
     const ts_watch_tests = b.addTest(.{ .root_module = ts_watch_pkg });

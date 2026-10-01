@@ -82749,9 +82749,16 @@ pub const Checker = struct {
     }
 
     fn conditionalCheckSatisfiesFunction(self: *Checker, check: TypeId, ext: TypeId) CheckError!bool {
-        const function_t = self.lowerBuiltinObjectType("Function") orelse return false;
-        if (ext != function_t) return false;
-        if (check == function_t) return true;
+        // Conditional types may see either the synthetic Function object
+        // lowered for a bare builtin reference or the actual global Function
+        // declaration supplied by lib.d.ts. Object types are not interned by
+        // structural identity, so comparing their TypeIds rejects callables
+        // against the declared form. Resolve the synthetic target to the
+        // declared surface before recognizing it semantically; that also
+        // preserves `interface Function {}` as non-callable.
+        const function_target = self.predicateRelationTarget(ext);
+        if (!self.typeIsBuiltinFunctionObject(function_target)) return false;
+        if (check == ext or check == function_target or self.typeIsBuiltinFunctionObject(check)) return true;
         if (check < self.interner.pool.typeCount() and self.interner.isSignature(check)) return true;
         if (self.firstSignatureType(check) != null) return true;
         return try self.typeIsFunctionObjectLike(check);
@@ -266695,6 +266702,55 @@ test "checker: generic Extract predicate narrows to its constraint through an in
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
+}
+
+test "checker: conditional Function relations recognize the declared callable object" {
+    const s = try newBoundSetup(
+        \\interface Function { call(thisArg: any, ...args: any[]): any }
+        \\type Extract<T, U> = T extends U ? T : never;
+        \\type NonFunctionPropertyNames<T> = {
+        \\  [K in keyof T]: T[K] extends Function ? never : K
+        \\}[keyof T];
+        \\type DeepReadonly<T> = T extends object ? {
+        \\  readonly [P in NonFunctionPropertyNames<T>]: DeepReadonly<T[P]>
+        \\} : T;
+        \\interface Part {
+        \\  name: string;
+        \\  updatePart(newName: string): void;
+        \\}
+        \\declare const part: DeepReadonly<Part>;
+        \\part.updatePart("hello");
+        \\const invalidKey: NonFunctionPropertyNames<Part> = "updatePart";
+        \\function isFunction<T>(value: T): value is Extract<T, Function> {
+        \\  return typeof value === "function";
+        \\}
+        \\function invoke(x: string | (() => string) | undefined) {
+        \\  if (isFunction(x)) {
+        \\    const result: string = x();
+        \\  }
+        \\}
+    );
+    defer destroyBoundSetup(s);
+    s.base.checker.setStrictFlags(.{
+        .strict_null_checks = true,
+        .strict_function_types = true,
+        .no_implicit_any = true,
+    });
+    try s.base.checker.checkSourceFile(s.base.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s.base, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s.base, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s.base, TsCodes.not_callable));
+
+    const empty = try newBoundSetup(
+        \\interface Function {}
+        \\type ExtractFunction<T> = T extends Function ? T : never;
+        \\type Selected = ExtractFunction<() => string>;
+        \\declare const fn: () => string;
+        \\const invalid: Selected = fn;
+    );
+    defer destroyBoundSetup(empty);
+    try empty.base.checker.checkSourceFile(empty.base.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(empty.base, TsCodes.type_not_assignable));
 }
 
 test "checker: generic Extract argument diagnostics preserve symbolic source" {

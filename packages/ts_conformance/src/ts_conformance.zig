@@ -2956,6 +2956,50 @@ test "conformance: clean conditional @types import types route through program" 
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: declared Function drives conditional extraction and mapped key filtering" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "declaredFunctionConditionalRelations",
+        .path = "declaredFunctionConditionalRelations.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: true
+        \\interface Function { call(thisArg: any, ...args: any[]): any }
+        \\type Extract<T, U> = T extends U ? T : never;
+        \\type NonFunctionPropertyNames<T> = {
+        \\  [K in keyof T]: T[K] extends Function ? never : K
+        \\}[keyof T];
+        \\type Assert<T extends true> = T;
+        \\interface Part {
+        \\  name: string;
+        \\  updatePart(newName: string): void;
+        \\}
+        \\type KeysAreOnlyData = Assert<NonFunctionPropertyNames<Part> extends "name" ? true : false>;
+        \\type DataKeySurvives = Assert<"name" extends NonFunctionPropertyNames<Part> ? true : false>;
+        \\function isFunction<T>(value: T): value is Extract<T, Function> {
+        \\  return typeof value === "function";
+        \\}
+        \\function invoke(x: string | (() => string) | undefined) {
+        \\  if (isFunction(x)) {
+        \\    const result: string = x();
+        \\  }
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{
+            .strict_null_checks = true,
+            .strict_function_types = true,
+            .no_implicit_any = true,
+        },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: visible @types ambient modules resolve from multiple node_modules roots" {
     const raw =
         \\// @module: commonjs
