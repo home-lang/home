@@ -42053,6 +42053,26 @@ pub const Checker = struct {
         }
     }
 
+    fn mergedInterfaceTypeForClass(
+        self: *Checker,
+        class_node: NodeId,
+        class_name: hir_mod.StringId,
+    ) ?TypeId {
+        const iface_node = self.last_iface_decl_for_name.get(class_name) orelse return null;
+        if (!self.declarationsShareNamespacePath(class_node, iface_node) or
+            self.nearestDeclarationScope(class_node) != self.nearestDeclarationScope(iface_node))
+        {
+            return null;
+        }
+        const iface_t = self.hir.typeOf(iface_node);
+        if (iface_t >= self.interner.pool.typeCount() or
+            !self.interner.pool.flagsOf(iface_t).is_object_type)
+        {
+            return null;
+        }
+        return iface_t;
+    }
+
     fn intersectionMemberVisibility(left: types.MemberVisibility, right: types.MemberVisibility) types.MemberVisibility {
         // A private constituent keeps the intersection inaccessible. Without
         // one, any public declaration makes the effective property public.
@@ -44655,18 +44675,12 @@ pub const Checker = struct {
                     try self.decl_single_base.put(self.gpa, instance_t, pt);
                 }
             }
-            const merged_iface = self.last_iface_decl_for_name.get(cid.name) orelse hir_mod.none_node_id;
-            const can_merge_interface = merged_iface != hir_mod.none_node_id and
-                self.declarationsShareNamespacePath(node, merged_iface) and
-                self.nearestDeclarationScope(node) == self.nearestDeclarationScope(merged_iface);
-            const final_instance_t = if (can_merge_interface)
-                if (self.type_names.get(cid.name)) |existing_t|
-                    self.mergeInterfaceDeclarationTypePreservingIndexes(existing_t, instance_t) catch instance_t
-                else
-                    instance_t
+            const merged_iface_t = self.mergedInterfaceTypeForClass(node, cid.name);
+            const final_instance_t = if (merged_iface_t) |iface_t|
+                self.mergeInterfaceDeclarationTypePreservingIndexes(iface_t, instance_t) catch instance_t
             else
                 instance_t;
-            if (can_merge_interface and final_instance_t != instance_t) {
+            if (merged_iface_t != null and final_instance_t != instance_t) {
                 try self.merged_class_instance_types.put(self.gpa, instance_t, final_instance_t);
             }
             // Forward-referenced classes resolve through the MERGED
@@ -45520,6 +45534,12 @@ pub const Checker = struct {
         if (changed) {
             try self.checkIndexSignatureMemberCompatibility(node, refined_members.items, string_idx, number_idx, symbol_idx);
             instance_t = self.interner.internObjectTypeWithIndexAndSymbol(refined_members.items, string_idx, number_idx, symbol_idx) catch return error.OutOfMemory;
+            if (c.name != hir_mod.none_node_id and self.hir.kindOf(c.name) == .identifier) {
+                const cid = hir_mod.identifierOf(self.hir, c.name);
+                if (self.mergedInterfaceTypeForClass(node, cid.name)) |iface_t| {
+                    instance_t = self.mergeInterfaceDeclarationTypePreservingIndexes(iface_t, instance_t) catch instance_t;
+                }
+            }
             const construct_name = self.string_interner.intern("__construct") catch return error.OutOfMemory;
             const empty_params: [0]TypeId = .{};
             const ctor_metadata_sig: ?TypeId = if (has_explicit_ctor) ctor_sig else inherited_ctor_sig;
@@ -56079,30 +56099,14 @@ pub const Checker = struct {
             return self.interner.internIndexedAccess(object_t, index_t) catch return t;
         }
         if (flags.is_signature) {
-            const payload_idx = self.interner.pool.payloadOf(t);
-            if (payload_idx >= self.interner.pool.signature_payloads.items.len) return t;
-            const params = self.interner.signatureParams(t);
-            const params_snapshot = try self.gpa.dupe(TypeId, params);
-            defer self.gpa.free(params_snapshot);
-            var new_params: std.ArrayListUnmanaged(TypeId) = .empty;
-            defer new_params.deinit(self.gpa);
-            for (params_snapshot) |param_t| try new_params.append(self.gpa, try self.substituteTypeNoCyclesInner(param_t, subs, visited));
-            const ret = if (self.interner.signatureReturn(t)) |ret_t|
-                try self.substituteTypeNoCyclesInner(ret_t, subs, visited)
-            else
-                types.Primitive.void_t;
-            const sig_payload = self.interner.pool.signature_payloads.items[payload_idx];
-            const new_sig = self.interner.internSignatureWithAbstract(
-                new_params.items,
-                ret,
-                sig_payload.is_construct,
-                sig_payload.is_abstract_construct,
-            ) catch return t;
-            try self.copySignatureParamNames(new_sig, t);
-            try self.copySignatureNullishArrayDefaults(new_sig, t);
-            if (self.rest_signatures.contains(t)) try self.rest_signatures.put(self.gpa, new_sig, {});
-            if (self.signature_min_args.get(t)) |min_required| try self.signature_min_args.put(self.gpa, new_sig, min_required);
-            return new_sig;
+            // Generic class heritage uses this cycle-cutting walker for the
+            // surrounding object graph, but signatures need the full
+            // substitution engine: their own binders, constraints, defaults,
+            // predicates, `this` types, rest/arity metadata, and parameter
+            // names all live in side tables. Rebuilding only the structural
+            // shape turns an inherited `<U>(value: U) => void` into a
+            // non-generic `(value: U) => void`.
+            return try self.substituteTypeWithFreshMemo(t, subs);
         }
         if (flags.is_mapped) {
             if (!self.typeContainsSubstitutionKey(t, subs, 0)) return t;
@@ -57570,6 +57574,15 @@ pub const Checker = struct {
         }
         if (try self.virtualClassicBareModuleExists(node, spec)) return;
         if (self.referenceLibProvidesBareModule(spec)) return;
+        // A declared ambient module is resolved even when it does not map to
+        // a virtual package path (for example `declare module "fs"` inside
+        // `@types/node`). Its named imports still need meaning-space checks:
+        // interfaces and type aliases are not runtime exports in checked JS.
+        // Keep undeclared built-ins on the permissive known-module path below.
+        if (try self.hasExplicitAmbientModuleName(node, spec)) {
+            try self.checkNamedImportSpecifiers(node, imp, spec);
+            return;
+        }
         if (try self.isKnownAmbientModuleName(node, spec)) return;
         // TS2209/TS2210 — the specifier was left unresolved because the
         // project root was ambiguous during `exports`/`imports` resolution
@@ -61741,7 +61754,25 @@ pub const Checker = struct {
                     }
                     continue;
                 }
-                if (try self.ambientModuleExportsNameForSpec(node, spec, sp.imported)) continue;
+                switch (try self.ambientModuleNamedExportRuntimeStatus(node, spec, sp.imported)) {
+                    .value => continue,
+                    .ambient_const_enum => {
+                        if (!imp.is_type_only and !sp.is_type_only) {
+                            try self.reportAmbientConstEnumAccessAt(spec_node, self.hir.spanOf(spec_node).start);
+                        }
+                        continue;
+                    },
+                    .type_only_decl, .type_only_alias => |status| {
+                        if (imp.is_type_only or sp.is_type_only) continue;
+                        if (self.virtualSectionIsJsLike(node)) {
+                            try self.reportJsTypeImportInJs(spec_node, spec, sp.imported);
+                        } else if (self.typeOnlyVerbatimDiagnosticsEnabled(node)) {
+                            try self.reportTypeOnlyImportRequired(spec_node, sp.imported, status);
+                        }
+                        continue;
+                    },
+                    .missing, .unknown => {},
+                }
                 if (try self.virtualBareModuleAmbientConstEnum(node, spec, sp.imported)) {
                     if (!imp.is_type_only and !sp.is_type_only) {
                         try self.reportAmbientConstEnumAccessAt(spec_node, self.hir.spanOf(spec_node).start);
@@ -61775,10 +61806,26 @@ pub const Checker = struct {
                 });
                 continue;
             }
-            if (!std.mem.startsWith(u8, spec, ".") and
-                try self.ambientModuleExportsNameForSpec(node, spec, sp.imported))
-            {
-                continue;
+            if (!std.mem.startsWith(u8, spec, ".")) {
+                switch (try self.ambientModuleNamedExportRuntimeStatus(node, spec, sp.imported)) {
+                    .value => continue,
+                    .ambient_const_enum => {
+                        if (!imp.is_type_only and !sp.is_type_only) {
+                            try self.reportAmbientConstEnumAccessAt(spec_node, self.hir.spanOf(spec_node).start);
+                        }
+                        continue;
+                    },
+                    .type_only_decl, .type_only_alias => |status| {
+                        if (imp.is_type_only or sp.is_type_only) continue;
+                        if (self.virtualSectionIsJsLike(node)) {
+                            try self.reportJsTypeImportInJs(spec_node, spec, sp.imported);
+                        } else if (self.typeOnlyVerbatimDiagnosticsEnabled(node)) {
+                            try self.reportTypeOnlyImportRequired(spec_node, sp.imported, status);
+                        }
+                        continue;
+                    },
+                    .missing, .unknown => {},
+                }
             }
             if (!std.mem.startsWith(u8, spec, ".") and
                 self.programAmbientModuleInterfaceExportsName(spec, sp.imported))
@@ -62315,6 +62362,8 @@ pub const Checker = struct {
                         if (self.programAmbientModuleInterfaceExportsName(spec, sp.imported)) {
                             return .type_only_decl;
                         }
+                        const ambient_status = try self.ambientModuleNamedExportRuntimeStatus(stmt, spec, sp.imported);
+                        if (ambient_status != .unknown and ambient_status != .missing) return ambient_status;
                         const status = self.externalModuleNamedExportRuntimeStatus(stmt, spec, sp.imported);
                         if (status != .unknown and status != .missing) return status;
                         continue;
@@ -66416,18 +66465,36 @@ pub const Checker = struct {
         return false;
     }
 
-    fn ambientModuleExportsNameForSpec(self: *Checker, anchor: NodeId, spec: []const u8, exported_name: hir_mod.StringId) CheckError!bool {
+    fn ambientModuleNamedExportRuntimeStatus(
+        self: *Checker,
+        anchor: NodeId,
+        spec: []const u8,
+        exported_name: hir_mod.StringId,
+    ) CheckError!ModuleExportRuntimeStatus {
         const root = self.rootBlockFor(anchor);
-        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return false;
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return .unknown;
+        var found_module = false;
+        var saw_type_only = false;
         for (hir_mod.blockStmts(self.hir, root)) |stmt| {
             const local = self.unwrapExportDecl(stmt);
-            if (local == hir_mod.none_node_id or self.hir.kindOf(local) != .namespace_decl) continue;
+            if (local == hir_mod.none_node_id) continue;
+            const local_kind = self.hir.kindOf(local);
+            if (local_kind != .namespace_decl and local_kind != .module_decl) continue;
             const ns = hir_mod.namespaceOf(self.hir, local);
             if (!self.namespaceNameMatchesSpecifier(ns.name, spec)) continue;
-            if (self.namespaceExportsName(local, exported_name)) return true;
-            if (try self.ambientModuleExportAssignmentMemberType(local, exported_name) != null) return true;
+            found_module = true;
+            for (hir_mod.namespaceBody(self.hir, local)) |body_stmt| {
+                const decl = self.unwrapExportDecl(body_stmt);
+                const decl_name = self.declarationName(decl) orelse continue;
+                if (decl_name != exported_name) continue;
+                if (self.enumDeclIsAmbientConst(decl)) return .ambient_const_enum;
+                if (self.declCreatesRuntimeValue(decl, 0)) return .value;
+                saw_type_only = true;
+            }
+            if (try self.ambientModuleExportAssignmentMemberType(local, exported_name) != null) return .value;
         }
-        return false;
+        if (saw_type_only) return .type_only_decl;
+        return if (found_module) .missing else .unknown;
     }
 
     fn appendEntityNameExpressionPath(
@@ -165561,7 +165628,13 @@ pub const Checker = struct {
             var signature_subs_changed = false;
             if (self.generic_signature_params.get(t)) |type_params| {
                 for (type_params) |param_t| {
-                    if (subs.contains(param_t)) continue;
+                    if (subs.get(param_t)) |replacement| {
+                        // An identity entry can be introduced while carrying a
+                        // generic member through an enclosing generic class.
+                        // It does not instantiate the member's own binder, so
+                        // keep that binder attached to the rebuilt signature.
+                        if (replacement != param_t) continue;
+                    }
                     if (param_t >= self.interner.pool.typeCount() or
                         !self.interner.pool.flagsOf(param_t).is_type_parameter)
                     {
@@ -230490,6 +230563,50 @@ test "checker: subclasses inherit merged interface base members from classes" {
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
 
+test "checker: merged class heritage keeps transitive interface and generic members" {
+    const b = try newBoundSetup(
+        \\interface BaseInterface { required: number; optional?: number; }
+        \\class BaseClass { baseMethod() {} baseNumber: number; }
+        \\interface Child extends BaseInterface { additional: number; }
+        \\class Child extends BaseClass { classNumber: number; method() {} }
+        \\interface ChildNoBaseClass extends BaseInterface { additional2: string; }
+        \\class ChildNoBaseClass { classString: string; method2() {} }
+        \\class Grandchild extends ChildNoBaseClass {}
+        \\var grandchild: Grandchild;
+        \\grandchild.required;
+        \\grandchild.optional;
+        \\grandchild.additional2;
+        \\grandchild.missing;
+        \\class C { foo: string; thing() {} static other() {} }
+        \\class D extends C { bar: string; }
+        \\var d: D;
+        \\d.foo;
+        \\d.bar;
+        \\d.thing();
+        \\D.other();
+        \\class C2<T> { foo: T; thing(x: T) {} static other<T>(x: T) {} }
+        \\class D2<T> extends C2<T> { bar: string; }
+        \\var d2: D2<string>;
+        \\d2.foo;
+        \\d2.bar;
+        \\d2.thing("");
+        \\var r8 = D2.other(1);
+    );
+    defer destroyBoundSetup(b);
+    const s = b.base;
+    s.checker.setStrictFlags(.{
+        .no_implicit_any = true,
+        .no_implicit_this = true,
+        .strict_function_types = true,
+        .strict_bind_call_apply = true,
+        .strict_null_checks = true,
+        .strict_property_initialization = true,
+    });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
+}
+
 test "checker: type-parameter variance ÃÂ¢ÃÂÃÂ `in` modifier becomes contravariant TypeId" {
     const s = try newSetup("function f<in T>(x: T): void {}");
     defer destroySetup(s);
@@ -261619,6 +261736,32 @@ test "checker: JS imports and re-exports ambient module interfaces as types" {
 
     try T.expectEqual(@as(usize, 2), checkerCountCode(b.base, TsCodes.js_type_import_in_js));
     try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.js_type_export_in_js));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.no_exported_member));
+}
+
+test "checker: JS discovers ambient module type imports without injected metadata" {
+    const b = try newBoundSetup(
+        \\// @target: es2015
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @noEmit: true
+        \\// @Filename: /node_modules/@types/node/index.d.ts
+        \\declare module "fs" {
+        \\  export interface WriteFileOptions {}
+        \\  export function writeFile(path: string): void;
+        \\}
+        \\// @Filename: /index.js
+        \\import { writeFile, WriteFileOptions, WriteFileOptions as OtherName } from "fs";
+        \\/** @typedef {{ x: any }} JSDocType */
+        \\export { JSDocType };
+        \\export { JSDocType as ThisIsFine };
+        \\export { WriteFileOptions };
+    );
+    defer destroyBoundSetup(b);
+    try b.base.checker.checkSourceFile(b.base.root);
+
+    try T.expectEqual(@as(usize, 2), checkerCountCode(b.base, TsCodes.js_type_import_in_js));
+    try T.expectEqual(@as(usize, 3), checkerCountCode(b.base, TsCodes.js_type_export_in_js));
     try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.no_exported_member));
 }
 

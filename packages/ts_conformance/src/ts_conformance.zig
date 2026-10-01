@@ -2425,6 +2425,7 @@ const TsconfigResolverOptions = struct {
     module_resolution: []const u8 = "",
     module_suffixes: []const []const u8 = &.{},
     import_helpers: ?bool = null,
+    check_js: ?bool = null,
     type_roots: []const []const u8 = &.{},
     types: []const []const u8 = &.{},
     types_configured: bool = false,
@@ -2467,6 +2468,7 @@ fn resolverConfigOptionsFromVirtualTsconfig(
         if (options.module_resolution) |value| result.module_resolution = try gpa.dupe(u8, @tagName(value));
         result.module_suffixes = try dupeOptionalStringList(gpa, options.module_suffixes);
         result.import_helpers = options.import_helpers;
+        result.check_js = options.check_js;
         result.type_roots = try dupeOptionalStringList(gpa, options.type_roots);
         result.types = try dupeOptionalStringList(gpa, options.types);
         result.types_configured = options.types != null;
@@ -2904,8 +2906,44 @@ test "conformance: clean ancestor node_modules declaration fixture routes throug
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
-test "conformance: checkJs enables JavaScript program imports" {
-    try T.expect(try virtualFilesAllowJs(T.allocator, "// @checkJs: true", &.{}));
+test "conformance: checkJs propagates into split JavaScript program files" {
+    const raw =
+        \\// @target: es2015
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @noEmit: true
+        \\// @Filename: /node_modules/@types/node/index.d.ts
+        \\declare module "fs" {
+        \\  export interface WriteFileOptions {}
+        \\  export function writeFile(path: string): void;
+        \\}
+        \\// @Filename: /index.js
+        \\import { writeFile, WriteFileOptions, WriteFileOptions as OtherName } from "fs";
+        \\/** @typedef {{ x: any }} JSDocType */
+        \\export { JSDocType };
+        \\export { JSDocType as ThisIsFine };
+        \\export { WriteFileOptions };
+    ;
+    const expected =
+        \\/index.js(1,21): error TS18042: 'WriteFileOptions' is a type and cannot be imported in JavaScript files. Use 'import("fs").WriteFileOptions' in a JSDoc type annotation.
+        \\/index.js(1,39): error TS18042: 'WriteFileOptions' is a type and cannot be imported in JavaScript files. Use 'import("fs").WriteFileOptions' in a JSDoc type annotation.
+        \\/index.js(3,10): error TS18043: Types cannot appear in export declarations in JavaScript files.
+        \\/index.js(4,10): error TS18043: Types cannot appear in export declarations in JavaScript files.
+        \\/index.js(5,10): error TS18043: Types cannot appear in export declarations in JavaScript files.
+    ;
+    const c: Case = .{
+        .name = "checkJsAmbientTypeImports",
+        .source = "",
+        .path = "/index.js",
+        .raw_source = raw,
+        .expected_errors = expected,
+        .strict_flags = .{},
+    };
+    try T.expect(try virtualFilesAllowJs(T.allocator, raw, &.{}));
+    try T.expect(shouldRouteThroughProgram(c));
+    const result = try runProgram(T.allocator, c) orelse return error.TestExpectedEqual;
+    defer if (result.detail.len > 0) T.allocator.free(result.detail);
+    try T.expectEqual(Outcome.passed, result.outcome);
 }
 
 test "conformance: absolute package types stubs are external modules" {
@@ -3026,6 +3064,34 @@ test "conformance: Promise payload context and generic rest callbacks preserve s
             .strict_function_types = true,
             .no_implicit_any = true,
         },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: inherited generic static methods remain callable" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "inheritedGenericStaticMethod",
+        .path = "inheritedGenericStaticMethod.ts",
+        .source =
+        \\// @target: es2015
+        \\class C<T> {
+        \\  value: T;
+        \\  method(value: T) {}
+        \\  static other<U>(value: U) {}
+        \\}
+        \\class D<T> extends C<T> { label: string; }
+        \\let instance: D<string>;
+        \\instance.method("");
+        \\D.other(1);
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{},
     });
     defer {
         T.allocator.free(result.name);
@@ -3872,6 +3938,9 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
     defer freeAmbientModuleResolutions(gpa, ambient_modules);
 
     const allow_js_project = try virtualFilesAllowJs(gpa, c.raw_source, virtual_files.items);
+    const check_js_setting = directiveBool(directive_source, "checkJs") orelse tsconfig_options.check_js;
+    const check_js_project = check_js_setting orelse false;
+    const check_js_disabled = if (check_js_setting) |enabled| !enabled else false;
     var resolver_adapter = CheckerResolverAdapter{
         .resolver = &resolver,
         .ambient_modules = ambient_modules,
@@ -3907,6 +3976,8 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         ),
         .report_deprecated_target_es5 = c.report_deprecated_target_es5,
         .allow_js = allow_js_project,
+        .check_js = check_js_project,
+        .check_js_disabled = check_js_disabled,
         .skip_lib_check = directiveBool(directive_source, "skipLibCheck") orelse
             commentedJsonBoolValue(directive_source, "skipLibCheck", true),
         .suppress_js_check_diagnostics = c.suppress_js_check_diagnostics,
