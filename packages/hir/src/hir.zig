@@ -32,7 +32,8 @@
 //!   - Reserved primitive `TypeId`s in `0..16` (Tier 1 §11.3): commonly
 //!     queried types (`any`, `unknown`, `never`, `void`, `null`,
 //!     `undefined`, `string`, `number`, `boolean`, `bigint`, `symbol`,
-//!     `object`, `true_lit`, `false_lit`, plus two reserved). Comparisons
+//!     `object`, `true_lit`, `false_lit`, plus the checker-internal
+//!     `unmodeled` sentinel). Comparisons
 //!     against these can short-circuit the relation cache entirely.
 //!
 //! Hot/cold split (Tier 1 §11.4): rare fields (JSDoc text, original
@@ -70,6 +71,10 @@ pub const reserved_type_ids = struct {
     pub const object_t: TypeId = 12;
     pub const true_lit: TypeId = 13;
     pub const false_lit: TypeId = 14;
+    /// Checker-synthesized recovery type. It relates like `any` while
+    /// retaining a distinct id so Home can report unmodeled checker paths
+    /// without confusing them with user-written `any`.
+    pub const unmodeled: TypeId = 15;
     /// First TypeId allocated by the interner is 16; everything below is
     /// reserved for primitives. Test assertion enforces this in the
     /// future type-interner.
@@ -3965,6 +3970,7 @@ test "Hir: reserved primitive TypeIds are stable" {
     try t.expectEqual(@as(TypeId, 0), reserved_type_ids.none);
     try t.expectEqual(@as(TypeId, 1), reserved_type_ids.any);
     try t.expectEqual(@as(TypeId, 14), reserved_type_ids.false_lit);
+    try t.expectEqual(@as(TypeId, 15), reserved_type_ids.unmodeled);
     try t.expectEqual(@as(TypeId, 16), reserved_type_ids.first_dynamic);
-    try t.expect(reserved_type_ids.first_dynamic > reserved_type_ids.false_lit);
+    try t.expect(reserved_type_ids.first_dynamic > reserved_type_ids.unmodeled);
 }

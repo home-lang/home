@@ -696,7 +696,7 @@ pub const Engine = struct {
         // `any` is assignable to any type and any type is assignable
         // to `any` (per tsc; this is the source of most "TS doesn't
         // catch X" complaints, but it's what we have to match).
-        if (source == Primitive.any or target == Primitive.any) return true;
+        if (Primitive.isAnyLike(source) or Primitive.isAnyLike(target)) return true;
 
         // `unknown` accepts anything.
         if (target == Primitive.unknown) return true;
@@ -1330,7 +1330,7 @@ pub const Engine = struct {
     }
 
     fn computeUpperObjectAssignable(self: *Engine, source: TypeId, target: TypeId) !bool {
-        if (source == Primitive.never or source == Primitive.any) return true;
+        if (source == Primitive.never or Primitive.isAnyLike(source)) return true;
         if (source == Primitive.unknown) return false;
         if (source == Primitive.null_t or source == Primitive.undefined_t or source == Primitive.void_t) {
             return !self.strict_null_checks;
@@ -2449,7 +2449,7 @@ pub const Engine = struct {
         }
         if (self.strict_null_checks) {
             const source_members_for_index = source_members;
-            const target_has_any_string_index = target_str_idx == Primitive.any;
+            const target_has_any_string_index = Primitive.isAnyLike(target_str_idx);
             if (target_str_idx != Primitive.none and !target_has_any_string_index) {
                 // Prefer a structural indexer; otherwise — but only
                 // when the source actually has named members — every
@@ -2486,7 +2486,7 @@ pub const Engine = struct {
                 }
             }
             if (target_num_idx != Primitive.none and
-                !(target_has_any_string_index and target_num_idx == Primitive.any))
+                !(target_has_any_string_index and Primitive.isAnyLike(target_num_idx)))
             {
                 // Number indexers accept either a matching source
                 // indexer, the source's string indexer (numeric keys
@@ -2610,7 +2610,7 @@ pub const Engine = struct {
         defer self.gpa.free(target_members);
         if (self.strict_null_checks) {
             const target_str_idx = self.interner.objectStringIndex(target);
-            const target_has_any_string_index = target_str_idx == Primitive.any;
+            const target_has_any_string_index = Primitive.isAnyLike(target_str_idx);
             if (target_str_idx != Primitive.none and
                 !target_has_any_string_index and
                 !try self.intersectionObjectAssignableToStringIndex(source, target_str_idx))
@@ -2619,7 +2619,7 @@ pub const Engine = struct {
             }
             const target_num_idx = self.interner.objectNumberIndex(target);
             if (target_num_idx != Primitive.none and
-                !(target_has_any_string_index and target_num_idx == Primitive.any) and
+                !(target_has_any_string_index and Primitive.isAnyLike(target_num_idx)) and
                 !try self.intersectionObjectAssignableToNumberIndex(source, target_num_idx))
             {
                 return false;
@@ -2984,8 +2984,8 @@ pub const Engine = struct {
         if (source == Primitive.never) return true;
         if (target == Primitive.unknown) return true;
         // Crucial difference vs. assignable: `any` is *not* a subtype.
-        if (source == Primitive.any) return false;
-        if (target == Primitive.any) return false;
+        if (Primitive.isAnyLike(source)) return false;
+        if (Primitive.isAnyLike(target)) return false;
 
         switch (self.cache.lookup(.subtype, source, target)) {
             .yes => return true,
@@ -3005,7 +3005,7 @@ pub const Engine = struct {
     /// `A` is assignable to `B` *or* `B` is assignable to `A`.
     pub fn isComparableTo(self: *Engine, a: TypeId, b: TypeId) !bool {
         if (a == b) return true;
-        if (a == Primitive.any or b == Primitive.any) return true;
+        if (Primitive.isAnyLike(a) or Primitive.isAnyLike(b)) return true;
         if (try self.isAssignableTo(a, b)) return true;
         return try self.isAssignableTo(b, a);
     }
@@ -3033,6 +3033,21 @@ test "Engine: any flows in both directions" {
     defer e.deinit();
     try T.expect(try e.isAssignableTo(Primitive.any, Primitive.string_t));
     try T.expect(try e.isAssignableTo(Primitive.string_t, Primitive.any));
+}
+
+test "Engine: unmodeled is distinguishable but relates like any" {
+    var ti = try Interner.init(T.allocator);
+    defer ti.deinit();
+    var e = try Engine.init(T.allocator, &ti);
+    defer e.deinit();
+
+    try T.expect(!try e.isIdenticalTo(Primitive.unmodeled, Primitive.any));
+    try T.expect(try e.isAssignableTo(Primitive.unmodeled, Primitive.string_t));
+    try T.expect(try e.isAssignableTo(Primitive.string_t, Primitive.unmodeled));
+    try T.expect(!try e.isSubtypeOf(Primitive.unmodeled, Primitive.string_t));
+    try T.expect(!try e.isSubtypeOf(Primitive.string_t, Primitive.unmodeled));
+    try T.expect(try e.isComparableTo(Primitive.unmodeled, Primitive.string_t));
+    try T.expect(try e.isComparableTo(Primitive.string_t, Primitive.unmodeled));
 }
 
 test "Engine: never assigns to anything" {

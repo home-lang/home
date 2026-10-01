@@ -42,9 +42,16 @@ pub const Primitive = struct {
     pub const object_t: TypeId = 12;
     pub const true_lit: TypeId = 13;
     pub const false_lit: TypeId = 14;
+    /// Checker-synthesized recovery type. This is intentionally distinct
+    /// from user-written `any` but follows the same type-relation rules.
+    pub const unmodeled: TypeId = 15;
     /// First TypeId allocated by the interner is 16; everything below
     /// is reserved for primitives. Matches `hir.reserved_type_ids.first_dynamic`.
     pub const first_dynamic: TypeId = 16;
+
+    pub inline fn isAnyLike(id: TypeId) bool {
+        return id == any or id == unmodeled;
+    }
 };
 
 /// Bitfield for fast type-category checks. Many relation queries
@@ -111,7 +118,12 @@ pub const TypeFlags = packed struct(u32) {
     /// References retain this identity and an argument list until expansion.
     is_generic_definition: bool = false,
 
-    _padding: u2 = 0,
+    /// Checker recovery inserted because Home does not model a construct yet.
+    /// Kept alongside `is_any` so existing flag-based any handling remains
+    /// parity-compatible while reporting can distinguish the source.
+    is_unmodeled: bool = false,
+
+    _padding: u1 = 0,
 };
 
 /// A union literal-type tag. Lives in the `LiteralData` payload of
@@ -458,7 +470,7 @@ pub const Pool = struct {
         try p.headers.append(gpa, .{ .flags = .{ .is_object = true }, .symbol = 0, .payload = 0 });
         try p.headers.append(gpa, .{ .flags = .{ .is_boolean = true, .is_literal = true }, .symbol = 0, .payload = 0 }); // true_lit
         try p.headers.append(gpa, .{ .flags = .{ .is_boolean = true, .is_literal = true }, .symbol = 0, .payload = 0 }); // false_lit
-        try p.headers.append(gpa, .{ .flags = .{}, .symbol = 0, .payload = 0 }); // reserved 15
+        try p.headers.append(gpa, .{ .flags = .{ .is_any = true, .is_unmodeled = true }, .symbol = 0, .payload = 0 });
 
         std.debug.assert(p.headers.items.len == Primitive.first_dynamic);
 
@@ -516,6 +528,7 @@ test "Pool: primitive ids match hir.reserved_type_ids" {
     try T.expectEqual(hir.reserved_type_ids.any, Primitive.any);
     try T.expectEqual(hir.reserved_type_ids.string_t, Primitive.string_t);
     try T.expectEqual(hir.reserved_type_ids.true_lit, Primitive.true_lit);
+    try T.expectEqual(hir.reserved_type_ids.unmodeled, Primitive.unmodeled);
     try T.expectEqual(hir.reserved_type_ids.first_dynamic, Primitive.first_dynamic);
 }
 
@@ -523,6 +536,12 @@ test "Pool: primitives have the expected flags" {
     var p = try Pool.init(T.allocator);
     defer p.deinit();
     try T.expect(p.flagsOf(Primitive.any).is_any);
+    try T.expect(!p.flagsOf(Primitive.any).is_unmodeled);
+    try T.expect(p.flagsOf(Primitive.unmodeled).is_any);
+    try T.expect(p.flagsOf(Primitive.unmodeled).is_unmodeled);
+    try T.expect(Primitive.isAnyLike(Primitive.any));
+    try T.expect(Primitive.isAnyLike(Primitive.unmodeled));
+    try T.expect(!Primitive.isAnyLike(Primitive.unknown));
     try T.expect(p.flagsOf(Primitive.unknown).is_unknown);
     try T.expect(p.flagsOf(Primitive.never).is_never);
     try T.expect(p.flagsOf(Primitive.string_t).is_string);
