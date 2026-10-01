@@ -204,6 +204,7 @@ pub const HomeRuleDefinition = struct {
 /// emitters only transport the resulting diagnostic.
 pub const HomeRule = enum {
     no_explicit_any,
+    list_unmodeled_any,
 
     pub fn definition(self: HomeRule) HomeRuleDefinition {
         return switch (self) {
@@ -212,6 +213,12 @@ pub const HomeRule = enum {
                 .default_severity = .error_,
                 .gate = .sound,
                 .message = "Explicit 'any' is not permitted in Home sound mode.",
+            },
+            .list_unmodeled_any => .{
+                .code = 9002,
+                .default_severity = .warning,
+                .gate = .list_unmodeled_any,
+                .message = "Home checker synthesized an unmodeled 'any' recovery type.",
             },
         };
     }
@@ -224,7 +231,7 @@ pub const HomeRule = enum {
     }
 };
 
-pub const home_rules = [_]HomeRule{.no_explicit_any};
+pub const home_rules = [_]HomeRule{ .no_explicit_any, .list_unmodeled_any };
 
 /// External module-resolution hook the checker can delegate to.
 ///
@@ -5138,7 +5145,8 @@ pub const Checker = struct {
     function_body_depth: u32 = 0,
     /// Recursion-depth guard for checkExpression — deeply-nested expressions
     /// (generated arithmetic chains, assertions) otherwise blow the native
-    /// stack (SIGABRT). Past the limit we return `any` and emit nothing.
+    /// stack (SIGABRT). Past the limit we return the distinct `unmodeled`
+    /// recovery type and retain the source node for opt-in reporting.
     expression_depth: u32 = 0,
     /// Reentrancy guard while synthesizing the global `Symbol` value.
     /// `interface SymbolConstructor` augmentations may mention `Symbol`
@@ -5151,6 +5159,10 @@ pub const Checker = struct {
     /// Home-only rules are opt-in. TypeScript parity mode therefore does no
     /// extra rule work and cannot gain an HM diagnostic accidentally.
     home_rule_options: HomeRuleOptions = .{},
+    /// Source nodes where the checker deliberately substituted its internal
+    /// `unmodeled` any-like type. This records origins rather than scanning
+    /// propagated types, so one recovery does not produce a diagnostic cascade.
+    unmodeled_any_sites: std.AutoHashMapUnmanaged(NodeId, void) = .empty,
     /// When true, the checker additionally emits `.suggestion`-category
     /// implicit-any diagnostics (TS7043-TS7050, "a better type may be
     /// inferred from usage"). These mirror tsc's
@@ -5762,6 +5774,7 @@ pub const Checker = struct {
             .function_body_depth = 0,
             .expression_depth = 0,
             .symbol_global_building = false,
+            .unmodeled_any_sites = .empty,
             .diagnostics = .empty,
             .diag_arena = std.heap.ArenaAllocator.init(gpa),
         };
@@ -6460,6 +6473,7 @@ pub const Checker = struct {
         self.pattern_binding_source_in_progress.deinit(self.gpa);
         self.return_annotation_in_progress.deinit(self.gpa);
         self.generator_type_info.deinit(self.gpa);
+        self.unmodeled_any_sites.deinit(self.gpa);
         self.lib_cache.deinit(self.gpa);
         self.diagnostics.deinit(self.gpa);
         self.virtual_section_start_cache.deinit(self.gpa);
@@ -6689,6 +6703,7 @@ pub const Checker = struct {
             if (!rule.enabled(self.home_rule_options)) continue;
             switch (rule) {
                 .no_explicit_any => try self.checkNoExplicitAnyRule(rule.definition()),
+                .list_unmodeled_any => try self.checkUnmodeledAnyRule(rule.definition()),
             }
         }
     }
@@ -6718,6 +6733,37 @@ pub const Checker = struct {
                 },
             });
         }
+    }
+
+    /// HM9002 reports only the source nodes where Home itself chose the
+    /// `unmodeled` recovery sentinel. Iterating HIR order makes output stable;
+    /// the origin set prevents any-like propagation from multiplying reports.
+    fn checkUnmodeledAnyRule(self: *Checker, definition: HomeRuleDefinition) CheckError!void {
+        const total = self.hir.nodeCount();
+        var node: NodeId = 1;
+        while (node < total) : (node += 1) {
+            if (!self.unmodeled_any_sites.contains(node)) continue;
+            const span = self.hir.spanOf(node);
+            if (span.start >= span.end) continue;
+            try self.diagnostics.append(self.gpa, .{
+                .node = node,
+                .code = definition.code,
+                .code_prefix = .HM,
+                .message = definition.message,
+                .category = switch (definition.default_severity) {
+                    .error_ => .error_,
+                    .warning => .warning,
+                },
+            });
+        }
+    }
+
+    fn recordUnmodeledAny(self: *Checker, node: NodeId) CheckError!TypeId {
+        if (node != hir_mod.none_node_id) {
+            try self.unmodeled_any_sites.put(self.gpa, node, {});
+            self.hir.setType(node, types.Primitive.unmodeled);
+        }
+        return types.Primitive.unmodeled;
     }
 
     fn removeResolvedConditionalIteratorDiagnostics(self: *Checker) void {
@@ -112781,7 +112827,7 @@ pub const Checker = struct {
         const max_expression_depth: u32 = 150;
         self.expression_depth += 1;
         defer self.expression_depth -= 1;
-        if (self.expression_depth > max_expression_depth) return types.Primitive.any;
+        if (self.expression_depth > max_expression_depth) return self.recordUnmodeledAny(node);
         const t: TypeId = switch (self.hir.kindOf(node)) {
             .literal_string => types.Primitive.string_t,
             .template_literal => try self.checkTemplateLiteralExpression(node),
@@ -198257,6 +198303,51 @@ test "checker: Home sound rule registry emits HM9001 only when enabled" {
         try T.expectEqualStrings(definition.message, diagnostic.message);
     }
     try T.expectEqual(@as(usize, 2), count);
+}
+
+test "checker: unmodeled any rule reports only checker recovery origins" {
+    const definition = HomeRule.list_unmodeled_any.definition();
+    try T.expectEqual(@as(u32, 9002), definition.code);
+    try T.expectEqual(HomeRuleSeverity.warning, definition.default_severity);
+    try T.expectEqual(HomeRuleGate.list_unmodeled_any, definition.gate);
+
+    const recovered = try newSetup("const value = true;");
+    defer destroySetup(recovered);
+    const decl = firstStatement(recovered);
+    const init = hir_mod.varDeclOf(&recovered.hir, decl).init;
+
+    // Enter the production guard at its boundary instead of building a
+    // deliberately unsafe native call stack in the test runner.
+    recovered.checker.expression_depth = 150;
+    try T.expectEqual(types.Primitive.unmodeled, try recovered.checker.checkExpression(init));
+    recovered.checker.expression_depth = 0;
+    try T.expectEqual(@as(u32, 1), recovered.checker.unmodeled_any_sites.count());
+
+    try recovered.checker.checkHomeRules();
+    for (recovered.checker.diagnostics.items) |diagnostic| {
+        try T.expect(diagnostic.code_prefix != .HM or diagnostic.code != definition.code);
+    }
+
+    recovered.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
+    try recovered.checker.checkHomeRules();
+
+    var count: usize = 0;
+    for (recovered.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code_prefix != .HM or diagnostic.code != definition.code) continue;
+        count += 1;
+        try T.expectEqual(Diagnostic.Category.warning, diagnostic.category);
+        try T.expectEqualStrings(definition.message, diagnostic.message);
+        try T.expectEqual(types.Primitive.unmodeled, recovered.hir.typeOf(diagnostic.node));
+    }
+    try T.expectEqual(@as(usize, 1), count);
+
+    const explicit = try newSetup("const userWritten: any = 1;");
+    defer destroySetup(explicit);
+    explicit.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
+    try explicit.checker.checkSourceFile(explicit.root);
+    for (explicit.checker.diagnostics.items) |diagnostic| {
+        try T.expect(diagnostic.code_prefix != .HM or diagnostic.code != definition.code);
+    }
 }
 
 fn newTsxSetup(source: []const u8) !*TestSetup {

@@ -317,6 +317,8 @@ pub const codes = @import("ts_diagnostic_codes.zig");
 pub const HmCodes = struct {
     /// Explicit `any` under Home sound mode.
     pub const explicit_any_in_sound_mode: u32 = 9001;
+    /// Checker-synthesized any-like recovery exposed by the opt-in trace.
+    pub const unmodeled_any_recovery: u32 = 9002;
     /// Home-only feature 'X' used in TS context.
     pub const home_feature_in_ts_context: u32 = 1000;
     /// Cross-frontend type mismatch (HIR-side).
@@ -367,6 +369,25 @@ test "formatDefault: HM prefix for Home-only codes" {
     const out = try formatDefault(T.allocator, d);
     defer T.allocator.free(out);
     try T.expectEqualStrings("x.ts(1,1): warning HM9001: Home-only warning.", out);
+}
+
+test "formatDefault: unmodeled recovery keeps HM9002 identity" {
+    const d: Diagnostic = .{
+        .file = "deep.ts",
+        .line = 1,
+        .col = 151,
+        .code = HmCodes.unmodeled_any_recovery,
+        .code_prefix = .HM,
+        .severity = .warning,
+        .message = "Home checker synthesized an unmodeled 'any' recovery type.",
+        .span_len = 1,
+    };
+    const out = try formatDefault(T.allocator, d);
+    defer T.allocator.free(out);
+    try T.expectEqualStrings(
+        "deep.ts(1,151): warning HM9002: Home checker synthesized an unmodeled 'any' recovery type.",
+        out,
+    );
 }
 
 test "formatDefault: single-entry message chain renders one indented line" {
