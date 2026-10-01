@@ -322,6 +322,15 @@ pub const Engine = struct {
         context: *anyopaque,
         resolve: *const fn (*anyopaque, TypeId) anyerror!?TypeId,
     } = null,
+    /// Writing constraint for an indexed-access target `T[K]`. TypeScript
+    /// relates a source to this constraint only after the checker proves that
+    /// the base object and index are no longer generic. Keeping that proof in
+    /// the checker lets the relation core stay independent of declaration and
+    /// mapped-type metadata.
+    indexed_access_write_constraint: ?struct {
+        context: *anyopaque,
+        resolve: *const fn (*anyopaque, TypeId) anyerror!?TypeId,
+    } = null,
     /// When true, function-type parameters are checked
     /// contravariantly (sound — matches `strictFunctionTypes`).
     /// When false (TS default for method declarations), parameters
@@ -954,6 +963,19 @@ pub const Engine = struct {
             if (self.indexed_access_constraint) |hook| {
                 if (try hook.resolve(hook.context, source)) |constraint| {
                     if (constraint != source and try self.isAssignableTo(constraint, target)) return true;
+                }
+            }
+        }
+        // A source relates to an indexed-access target through the target's
+        // base constraint *for writing*. Unlike the source-side constraint
+        // above, this is intentionally unavailable for a still-generic base:
+        // accepting `number` for `T[P]` would be unsound because an eventual
+        // instantiation can narrow that property. Mirrors TypeScript's
+        // indexed-target branch in `structuredTypeRelatedTo`.
+        if (tf.is_indexed_access) {
+            if (self.indexed_access_write_constraint) |hook| {
+                if (try hook.resolve(hook.context, target)) |constraint| {
+                    if (constraint != target and try self.isAssignableTo(source, constraint)) return true;
                 }
             }
         }

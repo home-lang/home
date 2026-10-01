@@ -6569,6 +6569,7 @@ pub const Checker = struct {
         // comparing against a regular (non-rest) signature.
         self.engine.setRestSignatures(&self.rest_signatures);
         self.engine.indexed_access_constraint = .{ .context = self, .resolve = indexedAccessConstraintForEngine };
+        self.engine.indexed_access_write_constraint = .{ .context = self, .resolve = indexedAccessWriteConstraintForEngine };
         self.engine.setThisTypeMarkers(&self.this_type_markers);
         if (self.source) |src| try self.scanDirectives(src);
         try self.checkReferenceLibDirectives(root);
@@ -110820,6 +110821,45 @@ pub const Checker = struct {
         return constraint;
     }
 
+    /// TypeScript's indexed-target relation first simplifies generic mapped
+    /// accesses, then otherwise resolves `T[K]` for writing only when the base
+    /// object and index constraints are no longer generic. When `T` was
+    /// replaced by a constraint, index signatures are excluded from that
+    /// lookup (`AccessFlags.NoIndexSignatures`) so a dictionary constraint
+    /// cannot make writes to an arbitrarily narrower instantiation sound.
+    fn indexedAccessWriteConstraintForEngine(context: *anyopaque, t: TypeId) anyerror!?TypeId {
+        const self: *Checker = @ptrCast(@alignCast(context));
+        const indexed = self.indexedAccessPayloadOrNull(t) orelse return null;
+
+        const object_flags = if (indexed.object < self.interner.pool.typeCount())
+            self.interner.pool.flagsOf(indexed.object)
+        else
+            std.mem.zeroes(types.TypeFlags);
+
+        const previous_write = self.checking_element_write_target;
+        self.checking_element_write_target = true;
+        defer self.checking_element_write_target = previous_write;
+
+        // `{ [P in Q]: E }[K]` simplifies by substituting/selecting its
+        // template before the ordinary generic-base guard. This is what makes
+        // nested `Partial<Record<keyof T, string>>[K]` reduce to its uniform
+        // value type while keeping an unrelated `T[K]` symbolic.
+        if (object_flags.is_mapped and !object_flags.is_union and !object_flags.is_intersection) {
+            const constraint = (try self.indexedAccessBaseConstraint(t, 0)) orelse return null;
+            return if (constraint == t) null else constraint;
+        }
+
+        const base_object = (try self.indexedAccessBaseConstraint(indexed.object, 0)) orelse indexed.object;
+        const base_index = (try self.indexedAccessBaseConstraint(indexed.index, 0)) orelse indexed.index;
+        if (self.typeIsGenericObjectType(base_object, 0) or self.typeIsGenericIndexType(base_index, 0)) {
+            return null;
+        }
+
+        return try self.resolveObjectIndexedAccessTypeWithOptions(base_object, base_index, .{
+            .no_index_signatures = base_object != indexed.object,
+        });
+    }
+
     fn resolveGenericTypeForEngine(context: *anyopaque, t: TypeId) anyerror!TypeId {
         const self: *Checker = @ptrCast(@alignCast(context));
         return self.resolveGenericType(t);
@@ -165270,6 +165310,33 @@ pub const Checker = struct {
         return false;
     }
 
+    /// TypeScript's `isGenericIndexType`: an instantiable key, a deferred
+    /// `keyof`/indexed/conditional key, or a union/intersection containing one.
+    /// Concrete constraints such as `number` and `"a" | "b"` are deliberately
+    /// not generic even when they came from a type parameter.
+    fn typeIsGenericIndexType(self: *Checker, t: TypeId, depth: u8) bool {
+        if (depth >= 8) return true;
+        if (t < types.Primitive.first_dynamic or t >= self.interner.pool.typeCount()) return false;
+        const flags = self.interner.pool.flagsOf(t);
+        if (flags.is_type_parameter or
+            flags.is_infer or
+            flags.is_keyof or
+            flags.is_indexed_access or
+            flags.is_conditional)
+        {
+            return true;
+        }
+        if (flags.is_union or flags.is_intersection) {
+            const members = if (flags.is_union) self.interner.unionMembers(t) else self.interner.intersectionMembers(t);
+            for (members) |member| {
+                if (self.typeIsGenericIndexType(member, depth + 1)) return true;
+            }
+            return false;
+        }
+        return (flags.is_template_literal or flags.is_string_mapping) and
+            self.containsFreeTypeParameter(t);
+    }
+
     fn substituteTypeUncached(
         self: *Checker,
         t: TypeId,
@@ -175238,9 +175305,22 @@ pub const Checker = struct {
         return self.typeNodesReferenceSameBareName(mapped_keyof.operand, index_keyof.operand);
     }
 
+    const IndexedAccessResolveOptions = struct {
+        no_index_signatures: bool = false,
+    };
+
     fn resolveObjectIndexedAccessType(self: *Checker, object_t: TypeId, index_t: TypeId) CheckError!?TypeId {
+        return self.resolveObjectIndexedAccessTypeWithOptions(object_t, index_t, .{});
+    }
+
+    fn resolveObjectIndexedAccessTypeWithOptions(
+        self: *Checker,
+        object_t: TypeId,
+        index_t: TypeId,
+        options: IndexedAccessResolveOptions,
+    ) CheckError!?TypeId {
         const expanded_object = try self.resolveGenericType(object_t);
-        if (expanded_object != object_t) return self.resolveObjectIndexedAccessType(expanded_object, index_t);
+        if (expanded_object != object_t) return self.resolveObjectIndexedAccessTypeWithOptions(expanded_object, index_t, options);
         const obj = (try self.nonNullableIntersectionConstraint(object_t)) orelse
             self.typeParameterConstraint(object_t) orelse
             object_t;
@@ -175262,7 +175342,7 @@ pub const Checker = struct {
             var values: std.ArrayListUnmanaged(TypeId) = .empty;
             defer values.deinit(self.gpa);
             for (index_members) |index_member| {
-                const resolved = (try self.resolveObjectIndexedAccessType(obj, index_member)) orelse return null;
+                const resolved = (try self.resolveObjectIndexedAccessTypeWithOptions(obj, index_member, options)) orelse return null;
                 try values.append(self.gpa, resolved);
             }
             if (values.items.len == 0) return null;
@@ -175278,7 +175358,7 @@ pub const Checker = struct {
             var vals: std.ArrayListUnmanaged(TypeId) = .empty;
             defer vals.deinit(self.gpa);
             for (members) |member| {
-                const resolved = (try self.resolveObjectIndexedAccessType(member, index_t)) orelse return null;
+                const resolved = (try self.resolveObjectIndexedAccessTypeWithOptions(member, index_t, options)) orelse return null;
                 try vals.append(self.gpa, resolved);
             }
             if (vals.items.len == 0) return null;
@@ -175291,7 +175371,7 @@ pub const Checker = struct {
             var vals: std.ArrayListUnmanaged(TypeId) = .empty;
             defer vals.deinit(self.gpa);
             for (members) |member| {
-                if (try self.resolveObjectIndexedAccessType(member, index_t)) |resolved| {
+                if (try self.resolveObjectIndexedAccessTypeWithOptions(member, index_t, options)) |resolved| {
                     try vals.append(self.gpa, try self.substituteThisTypeParametersInReturn(resolved, obj));
                 }
             }
@@ -175316,7 +175396,7 @@ pub const Checker = struct {
             }
         }
         if (!obj_flags.is_object_type and !obj_flags.is_intersection) return null;
-        if (index_t == types.Primitive.number_t) {
+        if (!options.no_index_signatures and index_t == types.Primitive.number_t) {
             const number_idx = self.interner.objectNumberIndex(obj);
             if (number_idx != types.Primitive.none) return number_idx;
             if (try self.effectiveStringIndexType(obj)) |string_idx| return string_idx;
@@ -175325,12 +175405,14 @@ pub const Checker = struct {
         var keys: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
         defer keys.deinit(self.gpa);
         if (!self.collectKnownStringKeysFromIndexType(index_t, &keys) or keys.items.len == 0) {
-            if (self.typeEntirelyNumberIndexLike(index_t)) {
+            if (!options.no_index_signatures and self.typeEntirelyNumberIndexLike(index_t)) {
                 const number_idx = self.interner.objectNumberIndex(obj);
                 if (number_idx != types.Primitive.none) return number_idx;
             }
-            if (try self.patternIndexValueForIndexType(obj, index_t)) |pattern_idx| return pattern_idx;
-            if (self.typeMaybeStringLike(index_t)) {
+            if (!options.no_index_signatures) {
+                if (try self.patternIndexValueForIndexType(obj, index_t)) |pattern_idx| return pattern_idx;
+            }
+            if (!options.no_index_signatures and self.typeMaybeStringLike(index_t)) {
                 if (try self.effectiveStringIndexType(obj)) |string_idx| return string_idx;
             }
             return null;
@@ -175342,9 +175424,12 @@ pub const Checker = struct {
                 (try self.lookupObjectMember(obj, key)) orelse
                 (try self.arrayLikePrototypeMember(obj, key)) orelse
                 (try self.broadObjectPrototypeMember(key)) orelse
-                (try self.patternIndexValueForStringKey(obj, key)) orelse
-                self.namedPropertyIndexType(obj, key) orelse
-                (try self.effectiveStringIndexType(obj)) orelse
+                (if (!options.no_index_signatures)
+                    (try self.patternIndexValueForStringKey(obj, key)) orelse
+                        self.namedPropertyIndexType(obj, key) orelse
+                        (try self.effectiveStringIndexType(obj))
+                else
+                    null) orelse
                 return null;
             const member_t = try self.substituteThisTypeParametersInReturn(raw_member_t, obj);
             try vals.append(self.gpa, member_t);
@@ -229601,6 +229686,53 @@ test "checker: generic indexed access follows constraint direction" {
     try s.checker.checkSourceFile(s.root);
 
     try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: indexed targets use stable writing constraints without widening dependent targets" {
+    const s = try newSetup(
+        \\type S2 = { a: string; b: string };
+        \\function concrete<K extends keyof S2>() {
+        \\  let value: S2[K] = "hello";
+        \\}
+        \\function arrays<K extends number>() {
+        \\  let mutable: Array<string>[K] = "hello";
+        \\  let readonly: ReadonlyArray<string>[K] = "hello";
+        \\}
+        \\function mapped<T, K extends keyof T>() {
+        \\  let once: Partial<Record<keyof T, string>>[K] = "hello";
+        \\  let nested: Partial<Partial<Partial<Record<keyof T, string>>>>[K] = "hello";
+        \\}
+        \\function dependent<T extends { [key: string]: number }, P extends keyof T>(text: string) {
+        \\  let value: T[P] = text;
+        \\}
+        \\function dictionary<T extends { [key: string]: number }, K extends string>(numberValue: number) {
+        \\  let value: T[K] = numberValue;
+        \\}
+        \\type Mixed = { a: string; b: number };
+        \\function mixed<K extends keyof Mixed>() {
+        \\  let value: Mixed[K] = "hello";
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.type_not_assignable,
+        "Type 'string' is not assignable to type 'T[P]'.",
+    ));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.type_not_assignable,
+        "Type 'number' is not assignable to type 'T[K]'.",
+    ));
+    try T.expect(checkerHasCodeAndMessage(
+        s,
+        TsCodes.type_not_assignable,
+        "Type 'string' is not assignable to type 'Mixed[K]'.",
+    ));
 }
 
 test "checker: generic indexed reads remain symbolic for object relations" {

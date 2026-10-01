@@ -20552,6 +20552,35 @@ test "conformance: mixed mapped type recovery stops after the grammar diagnostic
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: stable generic indexed targets use writing constraints" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "stableGenericIndexedTargets",
+        .path = "stableGenericIndexedTargets.ts",
+        .source =
+        \\type S2 = { a: string; b: string };
+        \\function concrete<K extends keyof S2>() {
+        \\  let value: S2[K] = "hello";
+        \\}
+        \\function arrays<K extends number>() {
+        \\  let mutable: Array<string>[K] = "hello";
+        \\  let readonly: ReadonlyArray<string>[K] = "hello";
+        \\}
+        \\function mapped<T, K extends keyof T>() {
+        \\  let once: Partial<Record<keyof T, string>>[K] = "hello";
+        \\  let nested: Partial<Partial<Partial<Record<keyof T, string>>>>[K] = "hello";
+        \\}
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: contextuallyTypeAsyncFunctionReturnType passes clean" {
     const result = try runOneEntry(T.allocator, .{
         .name = "contextuallyTypeAsyncFunctionReturnType",
