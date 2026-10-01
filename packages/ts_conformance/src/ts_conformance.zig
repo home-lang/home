@@ -2946,6 +2946,68 @@ test "conformance: checkJs propagates into split JavaScript program files" {
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: checked JS logical class expando reports circular inference without recursion" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "defaultPropertyAssignedClassWithPrototype",
+        .path = "defaultPropertyAssignedClassWithPrototype.ts",
+        .source =
+        \\// @target: es2015
+        \\// @noEmit: true
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @Filename: bug39167.js
+        \\var test = {};
+        \\test.K = test.K ||
+        \\    function () {}
+        \\test.K.prototype = {
+        \\    add() {}
+        \\};
+        \\new test.K().add;
+        ,
+        .expects_error = true,
+        .expected_errors = "bug39167.js(2,1): error TS7022: 'K' implicitly has type 'any' because it does not have a type annotation and is referenced directly or indirectly in its own initializer.",
+        .use_exact_errors = true,
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
+test "conformance: untyped package require remains any after TS7016" {
+    const raw =
+        \\// @target: es2015
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @strict: true
+        \\// @outDir: out
+        \\// @declaration: true
+        \\// @filename: node_modules/untyped/index.js
+        \\module.exports = {}
+        \\
+        \\// @filename: bug40140.js
+        \\const u = require('untyped');
+        \\u.assignment.nested = true
+        \\u.noError()
+    ;
+    const result = try runOneEntry(T.allocator, .{
+        .name = "namespaceAssignmentToRequireAlias",
+        .path = "namespaceAssignmentToRequireAlias.ts",
+        .source = raw,
+        .raw_source = raw,
+        .expects_error = true,
+        .expected_errors = "bug40140.js(1,19): error TS7016: Could not find a declaration file for module 'untyped'. 'node_modules/untyped/index.js' implicitly has an 'any' type.",
+        .use_exact_errors = true,
+        .strict_flags = .{ .no_implicit_any = true },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: absolute package types stubs are external modules" {
     const raw =
         \\// @module: commonjs
@@ -9481,7 +9543,6 @@ fn hasHarnessModeledExpectedClean(name: []const u8, source: []const u8) bool {
     if (std.mem.indexOf(u8, name, "contextualTypedSpecialAssignment") != null) return true;
     if (std.mem.eql(u8, name, "moduleExportAlias")) return true;
     if (std.mem.indexOf(u8, name, "annotatedThisPropertyInitializerDoesntNarrow") != null) return true;
-    if (std.mem.indexOf(u8, name, "defaultPropertyAssignedClassWithPrototype") != null) return true;
     if (std.mem.indexOf(u8, name, "circularMultipleAssignmentDeclaration") != null) return true;
     if (std.mem.eql(u8, name, "moduleExportAssignment")) return true;
     if (std.mem.indexOf(u8, name, "inferringClassStaticMembersFromAssignments") != null) return true;

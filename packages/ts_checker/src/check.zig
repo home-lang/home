@@ -96040,7 +96040,7 @@ pub const Checker = struct {
                 if (then_t == else_t) break :blk then_t;
                 // `any` absorbs the other branch, as in `internConditionalUnion`.
                 if (self.unionContainsAny(then_t) or self.unionContainsAny(else_t)) break :blk types.Primitive.any;
-                break :blk try self.internUnionReducingStringSubtypes(&.{ then_t, else_t });
+                break :blk try self.internUnionReducingPrimitiveSubtypes(&.{ then_t, else_t });
             },
             else => fallback,
         };
@@ -126909,6 +126909,14 @@ pub const Checker = struct {
             if (target.object == hir_mod.none_node_id or self.hir.kindOf(target.object) != .identifier) continue;
             if (hir_mod.identifierOf(self.hir, target.object).name != root_name) continue;
             if (a.value == hir_mod.none_node_id) return types.Primitive.any;
+            // `NS.Member = NS.Member || initializer` is a circular inference
+            // edge: resolving either the write target or the same member read
+            // inside its initializer must not recursively re-check the whole
+            // initializer. Break the type query with `any`; the dedicated
+            // expando circularity pass reports TS7022 after statement checking.
+            if (a.target == anchor or self.nodeIsAncestorOf(a.value, anchor)) {
+                return types.Primitive.any;
+            }
             const value_t = self.hir.typeOf(a.value);
             if (value_t != types.Primitive.none and value_t != types.Primitive.unknown) return value_t;
             return try self.checkExpression(a.value);
@@ -157204,7 +157212,7 @@ pub const Checker = struct {
         // A bare package that resolves to JavaScript without declarations is
         // reported as TS7016 and its require result is `any`. Its inferred
         // runtime export table must not reintroduce typed namespace errors.
-        if (try self.bareModuleResolvesToJsImplementation(object, spec)) return false;
+        if (try self.bareModuleResolvesToJsImplementation(object, spec)) return true;
         if (try self.programCommonJsModuleHasWholeExport(object, spec)) return false;
         if (resolver.moduleExport(spec, self.importer_path, "")) |whole| {
             if (whole.call_only_function) {
@@ -160762,7 +160770,7 @@ pub const Checker = struct {
         for (members) |member| {
             if (member == types.Primitive.any) return types.Primitive.any;
         }
-        const u = try self.internUnionReducingStringSubtypes(members);
+        const u = try self.internUnionReducingPrimitiveSubtypes(members);
         if (u >= self.interner.pool.typeCount()) return u;
         if (!self.interner.pool.flagsOf(u).is_union) return u;
         // Methods retain distinct signature identities too. Reduce their
@@ -160812,6 +160820,41 @@ pub const Checker = struct {
             try reduced.append(self.gpa, member);
         }
         if (reduced.items.len == 1) return types.Primitive.string_t;
+        return self.interner.internUnion(reduced.items) catch return error.OutOfMemory;
+    }
+
+    /// Reduce literal constituents already covered by a broad primitive in
+    /// the same conditional union. Fresh literal alternatives remain intact
+    /// when no broad primitive is present (`1 | 2`), while `number | 3.14`
+    /// canonicalizes to `number`, matching TypeScript's subtype reduction.
+    fn internUnionReducingPrimitiveSubtypes(self: *Checker, members: []const TypeId) CheckError!TypeId {
+        const string_reduced = try self.internUnionReducingStringSubtypes(members);
+        if (string_reduced >= self.interner.pool.typeCount() or
+            !self.interner.pool.flagsOf(string_reduced).is_union)
+        {
+            return string_reduced;
+        }
+
+        const union_members = self.interner.unionMembers(string_reduced);
+        var has_number = false;
+        var has_boolean = false;
+        var has_bigint = false;
+        for (union_members) |member| {
+            if (member == types.Primitive.number_t) has_number = true;
+            if (member == types.Primitive.boolean_t) has_boolean = true;
+            if (member == types.Primitive.bigint_t) has_bigint = true;
+        }
+        if (!has_number and !has_boolean and !has_bigint) return string_reduced;
+
+        var reduced: std.ArrayListUnmanaged(TypeId) = .empty;
+        defer reduced.deinit(self.gpa);
+        for (union_members) |member| {
+            const widened = self.widenLiteralType(member);
+            if (member != types.Primitive.number_t and has_number and widened == types.Primitive.number_t) continue;
+            if (member != types.Primitive.boolean_t and has_boolean and widened == types.Primitive.boolean_t) continue;
+            if (member != types.Primitive.bigint_t and has_bigint and widened == types.Primitive.bigint_t) continue;
+            try reduced.append(self.gpa, member);
+        }
         return self.interner.internUnion(reduced.items) catch return error.OutOfMemory;
     }
 
@@ -234363,6 +234406,25 @@ test "checker: exact indexed access requires every union member" {
     try T.expect((try s.checker.resolveExactIndexedAccessForInfer(access_union, 0)) == null);
 }
 
+test "checker: conditional union drops literals covered by broad primitives" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+
+    const pi = try s.ti.internNumberLiteral(3.14);
+    const one = try s.ti.internNumberLiteral(1);
+    const two = try s.ti.internNumberLiteral(2);
+    try T.expectEqual(
+        types.Primitive.number_t,
+        try s.checker.internConditionalUnion(&.{ types.Primitive.number_t, pi }),
+    );
+
+    const literal_union = try s.ti.internUnion(&.{ one, two });
+    try T.expectEqual(
+        literal_union,
+        try s.checker.internConditionalUnion(&.{ one, two }),
+    );
+}
+
 test "checker: callable union reduction respects predicate targets and receiver types" {
     const s = try newSetup("");
     defer destroySetup(s);
@@ -249893,6 +249955,29 @@ test "checker: checked JS whole-object expando inference reports TS7022" {
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.variable_self_reference_implicitly_any));
     try T.expect(hasDiagnosticCodeMessage(s, TsCodes.variable_self_reference_implicitly_any, "'y' implicitly has type 'any' because it does not have a type annotation and is referenced directly or indirectly in its own initializer."));
     try T.expect(hasDiagnosticCodeMessage(s, TsCodes.variable_self_reference_implicitly_any, "'z' implicitly has type 'any' because it does not have a type annotation and is referenced directly or indirectly in its own initializer."));
+}
+
+test "checker: checked JS logical expando initialization reports TS7022 without recursion" {
+    const s = try newSetup(
+        \\// @target: es2015
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: bug39167.js
+        \\var test = {};
+        \\test.K = test.K || function () {};
+        \\test.K.prototype = { add() {} };
+        \\new test.K().add;
+    );
+    defer destroySetup(s);
+    s.checker.setCheckJsEnabled(true);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.variable_self_reference_implicitly_any));
+    try T.expect(hasDiagnosticCodeMessage(
+        s,
+        TsCodes.variable_self_reference_implicitly_any,
+        "'K' implicitly has type 'any' because it does not have a type annotation and is referenced directly or indirectly in its own initializer.",
+    ));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
 }
 
 test "checker: empty-array function expandos report TS7008 unless contextually typed" {
