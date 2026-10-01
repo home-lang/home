@@ -12,6 +12,9 @@ name: TS Conformance Delta Gate
 #     `scripts/gen-ts-diagnostic-status.mjs`). Every `feat(ts-parity):
 #     implement TSxxxx` commit moves the `emitted` row by +1; this gate
 #     catches PRs that drop the count.
+#   - `unmodeled-any`: maximum HM9002 provenance count on the byte-pinned,
+#     106-file Zod 4.5.2 production graph. The ratchet verifies the archive
+#     SHA-512 and fails if checker-synthesized `any` recoveries grow.
 #
 # Together these complement the umbrella `test-count-gate` in ci.yml
 # (which only watches the global pass count) by catching swaps where a
@@ -20,7 +23,10 @@ name: TS Conformance Delta Gate
 # Regenerate the baseline (intentional bumps only) with:
 #   ./tools/ts_parity_snapshot.py generate \
 #       --out .github/conformance-baseline.json
-# Commit the new JSON in the same PR so the bump is reviewable.
+# The Zod provenance ceiling lives in
+# `.github/ts-unmodeled-any-baseline.json`. Commit intentional baseline
+# changes in the same change as the checker evidence so every bump is
+# reviewable.
 
 on:
   pull_request:
@@ -36,7 +42,7 @@ concurrency:
 
 jobs:
   conformance-delta:
-    name: TS conformance per-category delta
+    name: TS conformance and provenance delta
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -77,6 +83,15 @@ jobs:
             --from-log conformance-run.log \
             --write-current conformance-current.json
 
+      - name: Build Home TypeScript frontend
+        run: zig build home-tsc -Doptimize=ReleaseFast -Dhome-tsc-strip=true -j1
+
+      - name: Check pinned Zod unmodeled-any ratchet
+        run: |
+          python3 scripts/ts-unmodeled-any-ratchet.py \
+            --write-current zod-unmodeled-any-current.json \
+            --diagnostics-output zod-unmodeled-any-diagnostics.txt
+
       - name: Upload conformance run artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -85,5 +100,7 @@ jobs:
           path: |
             conformance-run.log
             conformance-current.json
+            zod-unmodeled-any-current.json
+            zod-unmodeled-any-diagnostics.txt
           if-no-files-found: ignore
           retention-days: 14

@@ -184,13 +184,29 @@ project. Reproduce them yourself:
 workload definitions, per-change optimization evidence (rejected probes
 included), and the real-world correctness audits.
 
+### Real-world TypeScript correctness gates
+
+| Gate | Frozen input | Current Home result | Regression policy |
+|---|---|---:|---|
+| Full Zod graph | Zod 4.5.2, 106 production `.ts` files | 198 TypeScript diagnostics (`tsc`: 0) | Every diagnostic reduction is checked against the unchanged graph |
+| Checker-synthesized `any` provenance | Same byte-pinned Zod archive | **0 HM9002** | CI fails if the count exceeds 0 |
+| Zod core proxy | Zod 4.5.2, 21 production `.ts` files | 0 Home-only diagnostics; 1 shared proxy-boundary TS2307 | No Home-only identity may be added |
+
+The provenance row is a correctness ratchet, not a claim that every internal
+fallback has already been classified. The archive SHA-512, project shape, and
+maximum count are enforced by
+[`scripts/ts-unmodeled-any-ratchet.py`](scripts/ts-unmodeled-any-ratchet.py).
+See the [TypeScript parity plan](docs/docs/TS_PARITY_PLAN.md) for migration
+status and [TypeScript performance](docs/docs/TS_PERFORMANCE.md) for the full
+real-project audit history.
+
 ### Where it is not drop-in yet
 
 - **Real-world graphs still surface false positives.** The conformance corpus
-  is saturated, but large library graphs exercise interactions it doesn't. On
-  the full 106-file Zod 4.5.2 graph, `tsc` reports zero diagnostics and Home's
-  last full-graph run reported 348. On the 21-file Zod core shard, Home is
-  down to 3 diagnostics that TypeScript doesn't report.
+  is saturated, but large library graphs exercise interactions it doesn't.
+  The frozen full Zod graph above still has 198 Home diagnostics while `tsc`
+  has zero; the smaller core proxy is clean of Home-only identities but is not
+  a substitute for full-graph parity.
   Each fix is tracked in
   [TypeScript performance](docs/docs/TS_PERFORMANCE.md).
 - **No tagged release yet.** `home tsc` ships inside the `home` binary from
