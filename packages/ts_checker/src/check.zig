@@ -20396,11 +20396,15 @@ pub const Checker = struct {
                     .recursive_then => try self.reportTypeReferencedInOwnThenCallback(self.asyncReturnDiagnosticAnchor(f.body)),
                 }
             }
-            const body_expr_t = if (self.current_async_function_return_check)
+            var body_expr_t = if (self.current_async_function_return_check)
                 self.evalAwaited(expr_t)
             else
                 expr_t;
             if (self.current_function_return_t) |declared| {
+                if (try self.contextualGenericCallResult(f.body, body_expr_t, declared)) |contextual_t| {
+                    try self.checkContextualGenericCallFunctionArgs(f.body, body_expr_t, declared);
+                    body_expr_t = contextual_t;
+                }
                 const object_literal_assignable = self.hir.kindOf(f.body) == .object_literal and
                     (self.objectLiteralAssignableToTarget(f.body, body_expr_t, declared) catch false);
                 if (self.hir.kindOf(f.body) == .satisfies_expr) {
@@ -115383,6 +115387,8 @@ pub const Checker = struct {
                             const fixed_count: usize = param_ts.len - 1;
                             const n = @min(fixed_count, arg_types.items.len);
                             for (0..n) |i| {
+                                if (args.len > fixed_count and
+                                    self.functionExpressionHasContextSensitiveParameters(args[i])) continue;
                                 const param_t = param_ts[i];
                                 if (param_t >= self.interner.pool.typeCount()) continue;
                                 if (self.interner.pool.flagsOf(param_t).is_signature) {
@@ -115461,6 +115467,30 @@ pub const Checker = struct {
                                         }
                                     }
                                 }
+                            }
+                            // A fixed callback can depend on the tuple inferred
+                            // from later rest arguments. Recheck it only after
+                            // that complete tuple is available, then use its
+                            // concrete return as evidence for the remaining
+                            // type parameters. This is the rest-signature form
+                            // of the two-phase inference below.
+                            for (0..n) |i| {
+                                if (!self.functionExpressionHasContextSensitiveParameters(args[i])) continue;
+                                const param_t = param_ts[i];
+                                if (!self.interner.isSignature(param_t)) continue;
+                                const contextual_param_t = self.substituteType(param_t, &call_subs) catch param_t;
+                                if (contextual_param_t == param_t) continue;
+                                var contextual_evidence: TypeId = types.Primitive.none;
+                                try self.checkFunctionWithContextualSignatureMode(
+                                    args[i],
+                                    contextual_param_t,
+                                    false,
+                                    &contextual_evidence,
+                                );
+                                if (contextual_evidence == types.Primitive.none or
+                                    !self.interner.isSignature(contextual_evidence)) continue;
+                                arg_types.items[i] = contextual_evidence;
+                                try self.inferFromPair(contextual_param_t, contextual_evidence, &call_subs);
                             }
                         } else {
                             const n = @min(param_ts.len, arg_types.items.len);
@@ -123226,7 +123256,7 @@ pub const Checker = struct {
         self.removePriorDiagnosticsInNodeSpan(fn_node, TsCodes.yield_star_not_iterable);
         self.removeImplicitAnyDiagnosticsWithin(fn_node);
         self.removeUntypedCallsForContextualCallableParameters(fn_node, params, param_ts);
-        self.removeContextualParameterUnknownDiagnostics(fn_node, params, param_ts);
+        self.removeContextualParameterUnknownDiagnostics(fn_node, params, sig);
         try self.pushNarrowScope();
         defer self.popNarrowScope();
         try self.recordFunctionSelfBinding(fn_node, sig);
@@ -123464,9 +123494,8 @@ pub const Checker = struct {
         self: *Checker,
         fn_node: NodeId,
         params: []const NodeId,
-        param_ts: []const TypeId,
+        sig: TypeId,
     ) void {
-        const count = @min(params.len, param_ts.len);
         var write_i: usize = 0;
         for (self.diagnostics.items) |diagnostic| {
             var remove = false;
@@ -123474,10 +123503,15 @@ pub const Checker = struct {
                 self.nodeIsAncestorOf(fn_node, diagnostic.node))
             {
                 if (self.contextualDiagnosticRootName(diagnostic.node)) |diagnostic_name| {
-                    for (params[0..count], param_ts[0..count]) |param_node, param_t| {
-                        if (param_t == types.Primitive.unknown or param_t == types.Primitive.any) continue;
+                    for (params, 0..) |param_node, param_index| {
                         if (self.hir.kindOf(param_node) != .parameter) continue;
                         const param = hir_mod.parameterOf(self.hir, param_node);
+                        const param_t = self.contextualParameterTypeForSignature(
+                            sig,
+                            param_index,
+                            param.flags.is_rest,
+                        ) orelse continue;
+                        if (param_t == types.Primitive.unknown or param_t == types.Primitive.any) continue;
                         if (param.name == hir_mod.none_node_id or self.hir.kindOf(param.name) != .identifier) continue;
                         if (hir_mod.identifierOf(self.hir, param.name).name == diagnostic_name) {
                             remove = true;
@@ -154531,6 +154565,7 @@ pub const Checker = struct {
     fn contextualGenericCallResult(self: *Checker, node: NodeId, source_t: TypeId, target_t: TypeId) CheckError!?TypeId {
         if (node == hir_mod.none_node_id or self.hir.kindOf(node) != .call_expr) return null;
         if (target_t == types.Primitive.none or target_t == types.Primitive.any or target_t == types.Primitive.unknown) return null;
+        if (try self.contextualPromiseInstanceCallResult(node, target_t)) |contextual_t| return contextual_t;
         if (!self.typeIsOrContainsUnknown(source_t) and !self.containsFreeTypeParameter(source_t)) return null;
         const c = hir_mod.callOf(self.hir, node);
         var callee_t = self.hir.typeOf(c.callee);
@@ -154549,6 +154584,99 @@ pub const Checker = struct {
         if (expected_ret == types.Primitive.never and call_is_optional_chain) expected_ret = target_t;
         if (expected_ret == types.Primitive.none or expected_ret == types.Primitive.never) return null;
         return try self.optionalChainResult(expected_ret, call_is_optional_chain);
+    }
+
+    /// Infer a built-in Promise chain from its result context. TypeScript uses
+    /// the `Promise<TResult>` target to contextually type the return of an
+    /// inline `then`/`catch` callback before widening its literals. Home's
+    /// structural Promise methods intentionally carry `any` returns, so the
+    /// ordinary call pass cannot recover that reverse inference on its own.
+    fn contextualPromiseInstanceCallResult(
+        self: *Checker,
+        node: NodeId,
+        target_t: TypeId,
+    ) CheckError!?TypeId {
+        const target_payload = self.promiseAssignablePayload(target_t) orelse return null;
+        const call = hir_mod.callOf(self.hir, node);
+        if (call.callee == hir_mod.none_node_id or self.hir.kindOf(call.callee) != .member_access) return null;
+        const member = hir_mod.memberOf(self.hir, call.callee);
+        const receiver_t = self.hir.typeOf(member.object);
+        if (receiver_t == types.Primitive.none) return null;
+        const receiver_payload = self.promiseAssignablePayload(receiver_t) orelse return null;
+        const name = self.string_interner.get(member.name);
+        const is_then = std.mem.eql(u8, name, "then");
+        const is_catch = std.mem.eql(u8, name, "catch");
+        if (!is_then and !is_catch) return null;
+
+        const args = hir_mod.callArgs(self.hir, node);
+        if (args.len > 2 or (is_catch and args.len > 1)) return null;
+        const promised_target = try self.buildStructuralPromiseLike(target_payload);
+        const callback_return = self.interner.internUnion(&.{ target_payload, promised_target }) catch
+            return error.OutOfMemory;
+        const fulfilled_sig = self.interner.internSignature(&.{receiver_payload}, callback_return, false) catch
+            return error.OutOfMemory;
+        const rejected_sig = self.interner.internSignature(&.{types.Primitive.any}, callback_return, false) catch
+            return error.OutOfMemory;
+
+        if (is_catch or args.len == 0 or try self.promiseContextCallbackIsNullish(args[0])) {
+            if (!try self.checkerAssignableTo(receiver_payload, target_payload)) return null;
+        } else if (!try self.promiseCallbackMatchesContext(args[0], fulfilled_sig)) {
+            return null;
+        }
+
+        const rejected_index: usize = if (is_then) 1 else 0;
+        if (args.len > rejected_index and
+            !try self.promiseContextCallbackIsNullish(args[rejected_index]) and
+            !try self.promiseCallbackMatchesContext(args[rejected_index], rejected_sig))
+        {
+            return null;
+        }
+        return target_t;
+    }
+
+    fn promiseContextCallbackIsNullish(self: *Checker, node: NodeId) CheckError!bool {
+        var callback_t = self.hir.typeOf(node);
+        if (callback_t == types.Primitive.none) callback_t = try self.checkExpression(node);
+        return callback_t == types.Primitive.undefined_t or callback_t == types.Primitive.null_t;
+    }
+
+    fn promiseCallbackMatchesContext(
+        self: *Checker,
+        node: NodeId,
+        target_sig: TypeId,
+    ) CheckError!bool {
+        if (self.isContextualFunctionExpressionLike(node)) {
+            if (!try self.functionExpressionParametersAssignableToTarget(self.hir.typeOf(node), target_sig)) return false;
+            const function = hir_mod.fnDeclOf(self.hir, node);
+            if (function.body == hir_mod.none_node_id) return false;
+            const target_return = self.interner.signatureReturn(target_sig) orelse types.Primitive.any;
+            if (self.hir.kindOf(function.body) == .block_stmt) {
+                var return_expressions: std.ArrayListUnmanaged(NodeId) = .empty;
+                defer return_expressions.deinit(self.gpa);
+                try self.collectReturnExpressions(function.body, &return_expressions);
+                if (return_expressions.items.len == 0) {
+                    if (self.statementDefinitelyExits(function.body)) return true;
+                    return try self.checkerAssignableTo(types.Primitive.void_t, target_return);
+                }
+                for (return_expressions.items) |return_expression| {
+                    var return_t = self.hir.typeOf(return_expression);
+                    if (return_t == types.Primitive.none) return_t = try self.checkExpression(return_expression);
+                    if (!try self.checkerAssignableExpressionTo(return_expression, return_t, target_return)) return false;
+                }
+                if (self.fnBodyHasBareReturn(function.body) and
+                    !try self.checkerAssignableTo(types.Primitive.undefined_t, target_return))
+                {
+                    return false;
+                }
+                return true;
+            }
+            var body_t = self.hir.typeOf(function.body);
+            if (body_t == types.Primitive.none) body_t = try self.checkExpression(function.body);
+            return try self.checkerAssignableExpressionTo(function.body, body_t, target_return);
+        }
+        var callback_t = self.hir.typeOf(node);
+        if (callback_t == types.Primitive.none) callback_t = try self.checkExpression(node);
+        return try self.checkerAssignableTo(callback_t, target_sig);
     }
 
     fn checkContextualGenericCallFunctionArgs(self: *Checker, node: NodeId, source_t: TypeId, target_t: TypeId) CheckError!void {
@@ -167791,12 +167919,13 @@ pub const Checker = struct {
             var elements: std.ArrayListUnmanaged(TypeId) = .empty;
             defer elements.deinit(self.gpa);
             for (rest_types, 0..) |element_t, index| {
+                const literal_t = try self.expressionLiteralType(rest_args[index], element_t);
                 try elements.append(
                     self.gpa,
                     if (preserve_literals)
-                        try self.expressionLiteralType(rest_args[index], element_t)
+                        literal_t
                     else
-                        self.widenLiteralType(element_t),
+                        self.widenLiteralType(literal_t),
                 );
             }
             return try self.internTupleFromTypes(elements.items, false);
@@ -206497,6 +206626,30 @@ test "checker: Promise statics type their results for then callbacks" {
     try T.expect(std.mem.indexOf(u8, s.checker.diagnostics.items[0].message, "'number'") != null);
 }
 
+test "checker: Promise chain callbacks use their contextual result payload" {
+    const b = try newBoundSetup(
+        \\interface Payload { name: "test"; }
+        \\declare const pending: Promise<Payload>;
+        \\const fulfilled: Promise<Payload> = Promise.resolve().then(() => ({ name: "test" }));
+        \\const recovered: Promise<Payload> = pending.catch(() => ({ name: "test" }));
+        \\const block: Promise<Payload> = Promise.resolve().then(() => { return { name: "test" }; });
+        \\const factory = (): Promise<Payload> => Promise.resolve().then(() => ({ name: "test" }));
+        \\const wrongLiteral: Promise<Payload> = Promise.resolve().then(() => ({ name: "wrong" }));
+        \\const missingProperty: Promise<Payload> = Promise.resolve().then(() => ({}));
+        \\const wrongCatch: Promise<Payload> = pending.catch(() => ({ name: "wrong" }));
+        \\const wrongBlock: Promise<Payload> = Promise.resolve().then(() => { return { name: "wrong" }; });
+        \\const wrongValue = { name: "wrong" };
+        \\const wrongIdentifier: Promise<Payload> = Promise.resolve().then(() => wrongValue);
+        \\const wrongFactory = (): Promise<Payload> => Promise.resolve().then(() => ({ name: "wrong" }));
+    );
+    defer destroyBoundSetup(b);
+    const s = b.base;
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 6), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(usize, 6), s.checker.diagnostics.items.len);
+}
+
 test "checker: Promise chains and all preserve awaited result types" {
     // TypeScript 6.0.3 and 7.0.2 both reject the two deliberately wrong
     // assignments. The chain must infer the fulfilled callback's `string`
@@ -242233,6 +242386,23 @@ test "checker: generic rest inference preserves callback parameter and return ty
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.parameter_implicitly_any));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.argument_type_mismatch));
+}
+
+test "checker: generic rest callbacks wait for complete tuple evidence" {
+    const s = try newSetup(
+        \\function call<T extends unknown[], U>(f: (...args: T) => U, ...args: T) { return f(...args); }
+        \\function callr<T extends unknown[], U>(args: T, f: (...args: T) => U) { return f(...args); }
+        \\declare const pair: [string, number];
+        \\const numeric = call((x, y) => x + y, 10, 20);
+        \\const mixed = call((x, y) => x + y, 10, "hello");
+        \\const reversed = callr(pair, (x, y) => x + y);
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.unknown_catch_variable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.parameter_implicitly_any));
+    try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
 }
 
 test "checker: async callbacks infer promise and async generator returns" {

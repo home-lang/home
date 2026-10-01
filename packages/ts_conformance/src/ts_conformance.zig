@@ -3000,6 +3000,40 @@ test "conformance: declared Function drives conditional extraction and mapped ke
     try T.expectEqual(Outcome.passed, result.outcome);
 }
 
+test "conformance: Promise payload context and generic rest callbacks preserve source types" {
+    const result = try runOneEntry(T.allocator, .{
+        .name = "contextualPromiseAndGenericRestInference",
+        .path = "contextualPromiseAndGenericRestInference.ts",
+        .source =
+        \\// @target: es2015
+        \\// @strict: true
+        \\interface Payload { name: "test" }
+        \\declare const pending: Promise<Payload>;
+        \\const fulfilled: Promise<Payload> = Promise.resolve().then(() => ({ name: "test" }));
+        \\const recovered: Promise<Payload> = pending.catch(() => ({ name: "test" }));
+        \\function call<T extends unknown[], U>(f: (...args: T) => U, ...args: T) { return f(...args); }
+        \\function callr<T extends unknown[], U>(args: T, f: (...args: T) => U) { return f(...args); }
+        \\declare const pair: [string, number];
+        \\const numeric = call((x, y) => x + y, 10, 20);
+        \\const mixed = call((x, y) => x + y, 10, "hello");
+        \\const reversed = callr(pair, (x, y) => x + y);
+        ,
+        .expects_error = false,
+        .expected_errors = "",
+        .use_exact_errors = true,
+        .strict_flags = .{
+            .strict_null_checks = true,
+            .strict_function_types = true,
+            .no_implicit_any = true,
+        },
+    });
+    defer {
+        T.allocator.free(result.name);
+        if (result.detail.len > 0) T.allocator.free(result.detail);
+    }
+    try T.expectEqual(Outcome.passed, result.outcome);
+}
+
 test "conformance: visible @types ambient modules resolve from multiple node_modules roots" {
     const raw =
         \\// @module: commonjs
