@@ -1549,6 +1549,15 @@ pub fn build(b: *std.Build) void {
         type_error.expectExitCode(1);
         tsc_streams_step.dependOn(&type_error.step);
 
+        const home_sound = b.addRunArtifact(home_tsc_exe);
+        home_sound.setCwd(streams_dir);
+        home_sound.clearEnvironment();
+        home_sound.addArgs(&.{ "--noEmit", "--ignoreConfig", "--home-sound", "home_sound.ts" });
+        home_sound.expectStdOutEqual("home_sound.ts(1,14): error HM9001: Explicit 'any' is not permitted in Home sound mode.\n");
+        home_sound.expectStdErrEqual("");
+        home_sound.expectExitCode(1);
+        tsc_streams_step.dependOn(&home_sound.step);
+
         const clean = b.addRunArtifact(home_tsc_exe);
         clean.setCwd(streams_dir);
         clean.clearEnvironment();
@@ -1573,7 +1582,7 @@ pub fn build(b: *std.Build) void {
         const js_uri = "file://plain.js";
         // Plain JavaScript (no checkJs, no `// @ts-check`) is not type-checked.
         const js_text = "let count = 1;\ncount = \"one\";\nexport {};\n";
-        const main_text = "import { double } from \"./util\";\nconst total: number = double(21);\nconst label: string = double(2);\nexport {};\n";
+        const main_text = "import { double } from './util';\nconst total: number = double(21);\nconst label: string = double(2);\nconst loose: any = 1;\nvoid total;\nvoid label;\nvoid loose;\nexport {};\n";
         const bodies = [_][]const u8{
             \\{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}
             ,
@@ -1611,6 +1620,8 @@ pub fn build(b: *std.Build) void {
         // didOpen publishes the TypeScript error.
         lsp.addCheck(.{ .expect_stdout_match = "\"method\":\"textDocument/publishDiagnostics\"" });
         lsp.addCheck(.{ .expect_stdout_match = "\"code\":2322" });
+        lsp.addCheck(.{ .expect_stdout_match = "\"code\":\"HM9001\"" });
+        lsp.addCheck(.{ .expect_stdout_match = "\"source\":\"home\"" });
         lsp.addCheck(.{ .expect_stdout_match = "const total: number" });
         // Definition crosses into the imported file.
         lsp.addCheck(.{ .expect_stdout_match = "util.ts\"" });
