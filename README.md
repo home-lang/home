@@ -22,7 +22,7 @@ Home is two things built from one Zig toolchain:
 - **A TypeScript compiler.** `home tsc` reads your existing `tsconfig.json`,
   accepts `tsc`'s flags, and prints the same `TSxxxx` diagnostics with the same
   exit status. It passes **all 5,907 modeled upstream conformance diagnostic
-  families**, with the leading **2,200 / 2,200 fixtures revalidated
+  families**, with the leading **2,800 / 2,800 fixtures revalidated
   byte-for-byte**, and type-checks **1.6×–11.9× faster than native TypeScript
   7** (`tsgo`) and **4.7×–19× faster than `tsc`** on the benchmark suite below.
 - **A native language.** `.home` files compile to native binaries with no
@@ -82,7 +82,7 @@ compiler.
 
 | Suite | Result |
 |---|---:|
-| Upstream conformance corpus, **exact byte-for-byte** | **2,200 / 2,200 — 100%** in the revalidated leading prefix; bounded refresh in progress |
+| Upstream conformance corpus, **exact byte-for-byte** | **2,800 / 2,800 — 100%** in the revalidated leading prefix; bounded refresh in progress |
 | Upstream conformance corpus, diagnostic families | **5,907 / 5,907 — 100%** |
 | Baseline-aware `.errors.txt` comparison, 19 folders | **586 / 586 — 100%** |
 | Diagnostic codes the reference compiler can emit | **100% — 0 reachable codes left** ¹ |
@@ -92,14 +92,8 @@ is opt-in, split into bounded slices, and any diagnostic mismatch now fails the
 test process. Reproduce the revalidated leading prefix with:
 
 ```bash
-for start in 0 1000; do
-  HOME_TS_CONFORMANCE_FULL=1 HOME_TS_CONFORMANCE_EXACT=1 \
-    HOME_TS_CONFORMANCE_START="$start" HOME_TS_CONFORMANCE_LIMIT=1000 \
-    ./pantry/.bin/zig build test -Dfilter=ts_conformance
-done
-HOME_TS_CONFORMANCE_FULL=1 HOME_TS_CONFORMANCE_EXACT=1 \
-  HOME_TS_CONFORMANCE_START=2000 HOME_TS_CONFORMANCE_LIMIT=200 \
-  ./pantry/.bin/zig build test -Dfilter=ts_conformance
+HOME_RUN_MAX_MB=3840 \
+  scripts/ts-conformance-exact.sh 0 2800 200
 ```
 
 ¹ Home emits 1,620 of the 2,079 codes in TypeScript's message catalog. The
@@ -431,7 +425,7 @@ Conservative on purpose: anything not exercised by an example or a test stays
 |---|---|---|
 | Lexer, parser, type inference | Usable today | [Capability matrix](https://home-lang.org/docs/CAPABILITY_MATRIX) |
 | TypeScript front end (`home tsc`) | Usable today; fastest on 20 / 20 benchmark workloads | [TypeScript performance](docs/docs/TS_PERFORMANCE.md) |
-| TypeScript conformance (byte-exact) | 2,200 / 2,200 — 100% in the revalidated leading prefix | [TypeScript parity](https://home-lang.org/docs/PARITY-STATUS#typescript-parity--home-tsc-vs-tsc--tsgo) |
+| TypeScript conformance (byte-exact) | 2,800 / 2,800 — 100% in the revalidated leading prefix | [TypeScript parity](https://home-lang.org/docs/PARITY-STATUS#typescript-parity--home-tsc-vs-tsc--tsgo) |
 | Promise chain and readonly `Promise.all` inference | Exact TS2322 controls; 4,410 / 4,410 checker tests | [Untimed validation](docs/docs/TS_PERFORMANCE.md#promise-chain-and-readonly-promiseall-inference-untimed) |
 | TypeScript diagnostic codes emitted | 1,620 / 2,079; **0 reachable targets left** | [Diagnostic reachability](https://home-lang.org/docs/TS_DIAGNOSTIC_REACHABILITY) |
 | Language-server methods routed (`home lsp`, TypeScript and `.home`) | 76 / ~80 | [Parity status](https://home-lang.org/docs/PARITY-STATUS#lsp--ide-coverage--home-lsp-vs-tsserver) |
