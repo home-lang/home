@@ -1,0 +1,10 @@
+{
+  "corpus": {
+    "name": "Zod",
+    "production_files": 106,
+    "sha512": "5e46170a8975d3e6daffa17f72e79657e4decd478ea975b485d789b7909d5e34d8780800420e4dd37450749f349a17c513bdbea5b96f60c5b8c32d90a7841bae",
+    "url": "https://registry.npmjs.org/zod/-/zod-4.5.2.tgz",
+    "version": "4.5.2"
+  },
+  "max_unmodeled_any": 0
+}
