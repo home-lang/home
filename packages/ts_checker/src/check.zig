@@ -9688,7 +9688,11 @@ pub const Checker = struct {
                         try self.functionExpressionAssignableToSignatureTarget(r.value, ret_t, declared);
                     var emitted_nullish_return_mismatch = contextual_function_return_assignable or
                         (r.value != hir_mod.none_node_id and
-                            try self.tryReportRecursiveIndexedAliasReturnMismatch(node, r.value, declared));
+                            (try self.tryReportRecursiveIndexedAliasReturnMismatch(node, r.value, declared) or
+                                self.expressionAnnotationHasDiagnostic(
+                                    r.value,
+                                    TsCodes.type_instantiation_excessively_deep,
+                                )));
                     if (self.strict_flags.strict_null_checks and
                         r.value == hir_mod.none_node_id and
                         self.declaredReturnRejectsNullish(declared, types.Primitive.undefined_t))
@@ -128295,6 +128299,22 @@ pub const Checker = struct {
             }
         }
         return null;
+    }
+
+    /// A failed annotation instantiation yields a recovery approximation so
+    /// checking can continue. Do not turn that approximation into a cascade
+    /// at later uses of the declaration; the annotation's diagnostic is the
+    /// authoritative error. This mirrors tsc's error-type recovery without
+    /// weakening ordinary assignability checks.
+    fn expressionAnnotationHasDiagnostic(self: *Checker, node: NodeId, code: u32) bool {
+        const annotation = self.visibleAnnotatedIdentifierTypeNode(node) orelse return false;
+        const span = self.hir.spanOf(annotation);
+        for (self.diagnostics.items) |diagnostic| {
+            if (diagnostic.code != code) continue;
+            const start = self.diagnosticStart(diagnostic);
+            if (start >= span.start and start <= span.end) return true;
+        }
+        return false;
     }
 
     fn indexVisibleAnnotatedValueDecls(
@@ -273624,6 +273644,20 @@ test "checker: recursive indexed access simplification reports upstream recursio
         TsCodes.type_not_assignable,
         "Type '[string, ...Recur<T>[]]' is not assignable to type 'Recur<T>'.",
     ));
+}
+
+test "checker: deep parameter annotation does not cascade into return mismatch" {
+    const s = try newSetup(
+        \\export type Circular<T> = { [P in keyof T]: Circular<T> };
+        \\type Tup = [number, number, number, number];
+        \\function foo(arg: Circular<Tup>): Tup {
+        \\    return arg;
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_instantiation_excessively_deep));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: recursive mapped base constraints report TS2321 with bounded displays" {

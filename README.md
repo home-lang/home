@@ -82,7 +82,7 @@ compiler.
 
 | Suite | Result |
 |---|---:|
-| Upstream conformance corpus, **exact byte-for-byte** | **2,940 / 2,940 — 100%** in the revalidated leading prefix; bounded refresh in progress |
+| Upstream conformance corpus, **exact byte-for-byte** | **2,960 / 2,960 — 100%** in one full leading-prefix run; bounded refresh in progress |
 | Upstream conformance corpus, diagnostic families | **5,907 / 5,907 — 100%** |
 | Baseline-aware `.errors.txt` comparison, 19 folders | **586 / 586 — 100%** |
 | Diagnostic codes the reference compiler can emit | **100% — 0 reachable codes left** ¹ |
@@ -93,7 +93,7 @@ test process. Reproduce the revalidated leading prefix with:
 
 ```bash
 HOME_RUN_MAX_MB=3840 \
-  scripts/ts-conformance-exact.sh 0 2800 200
+  scripts/ts-conformance-exact.sh 0 2960 200
 ```
 
 ¹ Home emits 1,620 of the 2,079 codes in TypeScript's message catalog. The
@@ -442,7 +442,7 @@ Conservative on purpose: anything not exercised by an example or a test stays
 |---|---|---|
 | Lexer, parser, type inference | Usable today | [Capability matrix](https://home-lang.org/docs/CAPABILITY_MATRIX) |
 | TypeScript front end (`home tsc`) | Usable today; fastest on 20 / 20 benchmark workloads | [TypeScript performance](docs/docs/TS_PERFORMANCE.md) |
-| TypeScript conformance (byte-exact) | 2,940 / 2,940 — 100% in the revalidated leading prefix | [TypeScript parity](https://home-lang.org/docs/PARITY-STATUS#typescript-parity--home-tsc-vs-tsc--tsgo) |
+| TypeScript conformance (byte-exact) | 2,960 / 2,960 — 100% in one full leading-prefix run | [TypeScript parity](https://home-lang.org/docs/PARITY-STATUS#typescript-parity--home-tsc-vs-tsc--tsgo) |
 | Promise chain and readonly `Promise.all` inference | Exact TS2322 controls; 4,410 / 4,410 checker tests | [Untimed validation](docs/docs/TS_PERFORMANCE.md#promise-chain-and-readonly-promiseall-inference-untimed) |
 | TypeScript diagnostic codes emitted | 1,620 / 2,079; **0 reachable targets left** | [Diagnostic reachability](https://home-lang.org/docs/TS_DIAGNOSTIC_REACHABILITY) |
 | Language-server methods routed (`home lsp`, TypeScript and `.home`) | 76 / ~80 | [Parity status](https://home-lang.org/docs/PARITY-STATUS#lsp--ide-coverage--home-lsp-vs-tsserver) |

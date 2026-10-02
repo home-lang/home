@@ -784,7 +784,8 @@ pub const Program = struct {
         errdefer result.deinit();
         const compilation = file.compilation orelse return result;
 
-        for (globals.entries.values()) |owners| {
+        for (globals.entries.keys(), globals.entries.values()) |key, owners| {
+            if (!fileNeedsImportedGlobal(file, key, owners.items)) continue;
             for (owners.items) |owner| {
                 if (owner.file == file or owner.file.owner == .none or
                     result.importedFor(owner.file.owner) != null) continue;
@@ -850,6 +851,33 @@ pub const Program = struct {
             });
         }
         return result;
+    }
+
+    /// Type payloads are substantially larger than the presence-only global
+    /// name lists. Import an owner's checked graph only when this file refers
+    /// to that global, or when a same-name local declaration may merge or
+    /// conflict with a completed foreign declaration. Importing every owner
+    /// makes each newly checked script absorb all previous scripts' imported
+    /// payloads, producing transitive growth for otherwise independent files.
+    fn fileNeedsImportedGlobal(file: *const File, key: BoundGlobals.Key, owners: []const BoundGlobal) bool {
+        const compilation = file.compilation orelse return false;
+        // Syntax such as tuple/array types depends on lib declarations even
+        // when the source contains no explicit `Array` type-reference node.
+        // Declaration owners form the semantic environment; unlike checked
+        // script owners, they must remain available for those implicit uses.
+        for (owners) |owner| {
+            if (owner.file != file and owner.file.owner != .none and owner.file.is_declaration) return true;
+        }
+        const local_map = switch (key.space) {
+            .value => &compilation.module.root.values,
+            .type => &compilation.module.root.types,
+            .namespace => &compilation.module.root.namespaces,
+        };
+        if (!local_map.contains(key.name)) return fileReferencesGlobalName(file, key);
+        for (owners) |owner| {
+            if (owner.file != file and owner.file.owner != .none) return true;
+        }
+        return false;
     }
 
     fn compileFileWithTypedGlobals(
@@ -8545,6 +8573,40 @@ test "Program: bound global index preserves declaration owners and meaning space
         }
     };
     try T.checkAllAllocationFailures(T.allocator, AllocationFailures.run, .{&p});
+}
+
+test "Program: unrelated script globals do not transfer prior owner graphs" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var p = Program.init(T.allocator, &resolver);
+    defer p.deinit();
+
+    for (0..12) |index| {
+        const path = try std.fmt.allocPrint(T.allocator, "/async-generator-{d}.ts", .{index});
+        defer T.allocator.free(path);
+        const source = try std.fmt.allocPrint(
+            T.allocator,
+            "const f{d} = async function* () {{ yield {d}; }};",
+            .{ index, index },
+        );
+        defer T.allocator.free(source);
+        _ = try p.add(path, source);
+    }
+
+    try p.compileAll(.{ .no_emit = true, .syntax_target_es2015 = true });
+    var expected_type_count: ?u32 = null;
+    for (p.files.items) |file| {
+        const compilation = file.compilation.?;
+        try T.expectEqual(@as(usize, 0), compilation.diagnostics.items.len);
+        const type_count = compilation.type_interner.pool.typeCount();
+        if (expected_type_count) |expected| {
+            try T.expectEqual(expected, type_count);
+        } else {
+            expected_type_count = type_count;
+        }
+    }
 }
 
 test "Program: bound global index excludes CommonJS modules without hiding shadowed scripts" {
