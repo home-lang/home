@@ -114277,7 +114277,7 @@ pub const Checker = struct {
                     self.newCalleeTargetsSelfReturningFunction(c.callee))
                 {
                     try self.report(node, TsCodes.new_expression_not_void, "Only a void function can be called with the 'new' keyword.");
-                    break :blk types.Primitive.any;
+                    break :blk try self.recordUnmodeledAny(node);
                 }
                 if (self.hir.kindOf(c.callee) == .identifier) {
                     const builtin_id = hir_mod.identifierOf(self.hir, c.callee);
@@ -114684,7 +114684,9 @@ pub const Checker = struct {
                         });
                     }
                 }
-                break :blk if (self.diagnosticExists(node, TsCodes.new_expression_implicitly_any))
+                break :blk if (self.diagnosticExists(node, TsCodes.new_expression_implicitly_any) or
+                    self.diagnosticExists(node, TsCodes.new_expression_not_void) or
+                    self.diagnosticExists(node, TsCodes.new_expression_this_void))
                     try self.recordUnmodeledAny(node)
                 else
                     types.Primitive.any;
@@ -203863,6 +203865,7 @@ test "checker: new expression rejects non-void call signature without construct 
         \\new fn();
     );
     defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
 
     var found = false;
@@ -203870,6 +203873,8 @@ test "checker: new expression rejects non-void call signature without construct 
         if (d.code == TsCodes.new_expression_not_void) found = true;
     }
     try T.expect(found);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, 9002));
+    try T.expectEqual(@as(u32, 1), s.checker.unmodeled_any_sites.count());
 }
 
 test "checker: new expression rejects call signature with this type void" {
@@ -203878,6 +203883,7 @@ test "checker: new expression rejects call signature with this type void" {
         \\new F();
     );
     defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
 
     var found = false;
@@ -203891,6 +203897,8 @@ test "checker: new expression rejects call signature with this type void" {
         }
     }
     try T.expect(found);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, 9002));
+    try T.expectEqual(@as(u32, 1), s.checker.unmodeled_any_sites.count());
 }
 
 test "checker: new expression allows non-void this type on call signature" {
@@ -203899,11 +203907,14 @@ test "checker: new expression allows non-void this type on call signature" {
         \\new F();
     );
     defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
 
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.new_expression_this_void);
     }
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, 9002));
+    try T.expectEqual(@as(u32, 0), s.checker.unmodeled_any_sites.count());
 }
 
 test "checker: noImplicitAny suppresses TS2350 when TS7009 fires on same new-expression" {
@@ -203951,10 +203962,13 @@ test "checker: strict-false checked JS self-new keeps void-function diagnostic" 
         \\function Point() { return new Point(); }
     );
     defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
 
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.new_expression_implicitly_any));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.new_expression_not_void));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, 9002));
+    try T.expectEqual(@as(u32, 1), s.checker.unmodeled_any_sites.count());
 }
 
 test "checker: const enum initializer resolves earlier members" {
@@ -217644,8 +217658,10 @@ test "checker: new with correct constructor args type-checks cleanly" {
         \\let b = new Box(42);
     );
     defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
     try T.expect(s.checker.diagnostics.items.len == 0);
+    try T.expectEqual(@as(u32, 0), s.checker.unmodeled_any_sites.count());
 }
 
 test "checker: TS2855 reports parent class field access through super" {
@@ -268979,10 +268995,13 @@ test "checker: JSDoc class with self-return remains callable under tsgo semantic
     );
     defer destroySetup(s);
     s.checker.setCheckJsEnabled(true);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
 
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.value_only_constructable));
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.new_expression_not_void));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, 9002));
+    try T.expectEqual(@as(u32, 2), s.checker.unmodeled_any_sites.count());
 }
 
 test "checker: Boolean + BigInt global call/static access" {
