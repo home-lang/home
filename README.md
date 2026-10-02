@@ -194,9 +194,10 @@ included), and the real-world correctness audits.
 
 The provenance row currently covers expression-stack exhaustion, invalid
 TypeScript and checked-JS catch-annotation recovery, TS7009 implicit-constructor
-recovery, TS7015 numeric-index mismatch recovery, plus diagnosed TS2589,
-TS2590, and TS2799 recursion/representation recoveries; it is a correctness
-ratchet, not a claim that every internal fallback has already been classified.
+recovery, TS7015 numeric-index mismatch recovery, TS7017 global-`this` index
+recovery, plus diagnosed TS2589, TS2590, and TS2799 recursion/representation
+recoveries; it is a correctness ratchet, not a claim that every internal
+fallback has already been classified.
 The archive SHA-512, project shape, and maximum count are enforced by
 [`scripts/ts-unmodeled-any-ratchet.py`](scripts/ts-unmodeled-any-ratchet.py).
 See the [TypeScript parity plan](docs/docs/TS_PARITY_PLAN.md) for migration

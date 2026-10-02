@@ -107488,7 +107488,7 @@ pub const Checker = struct {
                 current = blk: {
                     if (root_is_this and current_is_global_this) {
                         try self.reportGlobalThisNoIndexSignatureForQualifiedTypeQuery(at_node);
-                        break :blk types.Primitive.any;
+                        break :blk try self.recordUnmodeledAny(at_node);
                     }
                     if (std.mem.eql(u8, root_raw, "this") and self.class_name_by_instance.get(current) != null) {
                         if (try self.allocPropertyMissingTargetTypeName(current)) |target_text| {
@@ -116293,7 +116293,10 @@ pub const Checker = struct {
                     break :blk types.Primitive.any;
                 }
                 if (try self.reportGlobalThisMissingOrReadonlyMember(node, m.object, access_obj_t, m.name)) {
-                    break :blk types.Primitive.any;
+                    break :blk if (self.diagnosticExists(node, TsCodes.global_this_no_index_signature))
+                        try self.recordUnmodeledAny(node)
+                    else
+                        types.Primitive.any;
                 }
                 if (try self.reportCheckJsReboundExportsMember(node, m.object, m.name)) {
                     break :blk types.Primitive.any;
@@ -116810,7 +116813,7 @@ pub const Checker = struct {
                     if (self.memberAccessObjectIsGlobalThisThis(m.object)) {
                         if (self.globalThisHasProperty(node, m.name)) break :blk types.Primitive.any;
                         try self.reportGlobalThisNoIndexSignature(node);
-                        break :blk types.Primitive.any;
+                        break :blk try self.recordUnmodeledAny(node);
                     }
                     // Object-literal methods and accessors have an open
                     // contextual `this` for writes. A setter may establish a
@@ -214595,6 +214598,7 @@ test "checker: nested object-literal computed key inside class computed key supp
 test "checker: global script this missing property reports globalThis index diagnostic" {
     const s = try newSetup("this.R;");
     defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
 
     var saw_global_this = false;
@@ -214607,6 +214611,24 @@ test "checker: global script this missing property reports globalThis index diag
         }
     }
     try T.expect(saw_global_this);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, 9002));
+    try T.expectEqual(@as(u32, 1), s.checker.unmodeled_any_sites.count());
+}
+
+test "checker: typeof global this missing property traces TS7017 recovery" {
+    const s = try newSetup(
+        \\const capture = () => {
+        \\  let value: typeof this.missing = 1;
+        \\};
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true, .no_implicit_this = true });
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.global_this_no_index_signature));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, 9002));
+    try T.expectEqual(@as(u32, 1), s.checker.unmodeled_any_sites.count());
 }
 
 test "checker: global script this computed index reports TS7053 under noImplicitAny" {
@@ -214658,10 +214680,13 @@ test "checker: checked JS global property assignments require declared members" 
     s.checker.setAllowJsEnabled(true);
     s.checker.setCheckJsEnabled(true);
     s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
 
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.global_this_no_index_signature));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, 9002));
+    try T.expectEqual(@as(u32, 2), s.checker.unmodeled_any_sites.count());
 }
 
 test "checker: top exposes sibling global var declarations" {
