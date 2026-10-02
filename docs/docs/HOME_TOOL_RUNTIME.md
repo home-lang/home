@@ -50,3 +50,20 @@ and the cache is populated before evaluation so CommonJS cycles terminate.
 Use `zig build home-tool-smoke` with either engine selection to verify
 TypeScript emission, module loading, filesystem access, process execution, and
 argument setup.
+
+## Representative consumer regression
+
+The zig-js representative benchmark is also an end-to-end checker and runtime
+probe. From a zig-js checkout whose archive was used to build `home-tool`, run:
+
+```sh
+/path/to/home/zig-out/bin/home-tool \
+  run tools/representative-benchmark.ts --self-test
+```
+
+The command must exit zero and print `OK representative benchmark self-test`.
+It covers the full 854-line tool and its imports, including member-call `this`
+checking after contextual diagnostics have been updated. A compiler diagnostic
+is a normal checked failure; a checker panic or signal exit is not. Issue #834
+was verified with this command at a 55 MB supervised peak, in
+addition to the complete checker and normal conformance suites.

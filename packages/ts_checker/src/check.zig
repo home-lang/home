@@ -114917,16 +114917,12 @@ pub const Checker = struct {
                     }
                 }
                 if (self.hir.kindOf(c.callee) == .member_access) {
-                    const this_diag_start = self.diagnostics.items.len;
                     try self.checkMethodThisCompatibility(node, c.callee, callee_t);
-                    var this_context_failed = false;
-                    for (self.diagnostics.items[this_diag_start..]) |diagnostic| {
-                        if (diagnostic.code == TsCodes.this_context_not_assignable) {
-                            this_context_failed = true;
-                            break;
-                        }
-                    }
-                    if (this_context_failed) {
+                    // Receiver checking can remove a diagnostic emitted by
+                    // an earlier contextual pass, so the list is not
+                    // append-only here. Query the call node directly rather
+                    // than retaining an index that can become stale.
+                    if (self.diagnosticExists(node, TsCodes.this_context_not_assignable)) {
                         for (args) |arg| {
                             self.removePriorDiagnosticsInNodeSpan(arg, TsCodes.type_not_assignable);
                         }
@@ -220396,6 +220392,20 @@ test "checker: union receiver method checks explicit this parameter" {
         }
     }
     try T.expect(found);
+}
+
+test "checker: member call finds this mismatch after nested diagnostic updates" {
+    const s = try newSetup(
+        \\interface Receiver {
+        \\  run(this: { left: number; right: number }, value: number): void;
+        \\}
+        \\declare const receiver: Receiver;
+        \\receiver.run("wrong");
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.this_context_not_assignable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
 }
 
 test "checker: declared Array interface augments array member access" {
