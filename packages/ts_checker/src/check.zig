@@ -77436,7 +77436,7 @@ pub const Checker = struct {
         }
         if (self.templateLiteralUnionCrossProductTooLarge(lowered_parts.items)) {
             try self.reportOnce(type_node, TsCodes.expression_union_too_complex, "Expression produces a union type that is too complex to represent.");
-            return types.Primitive.any;
+            return self.recordUnmodeledAny(type_node);
         }
         if (all_literal_parts) {
             var canonical: std.ArrayListUnmanaged(u8) = .empty;
@@ -77539,7 +77539,7 @@ pub const Checker = struct {
     /// safe. `memo_key` is the gpa-owned key produced at lookup time
     /// (null when this instantiation isn't memoizable); ownership
     /// transfers to the map on success, otherwise the caller's `defer`
-    /// frees it. Skips symbolic/error results (`body`, `any`), results
+    /// frees it. Skips symbolic/error results (`body`, any-like recoveries), results
     /// computed while a cycle-deferral/overflow event fired (context-
     /// dependent — see `instantiation_defer_events`), and results that
     /// still carry a free type parameter.
@@ -77551,7 +77551,7 @@ pub const Checker = struct {
         body: TypeId,
     ) void {
         const key = memo_key.* orelse return;
-        if (result == body or result == types.Primitive.any) return;
+        if (result == body or types.Primitive.isAnyLike(result)) return;
         if (self.instantiation_defer_events != defer_baseline) return;
         if (self.type_instantiation_overflow) return;
         if (self.containsFreeTypeParameter(result)) return;
@@ -77569,7 +77569,8 @@ pub const Checker = struct {
     /// and possibly infinite") once for the outer node, and yield the
     /// error type (`any`, matching tsc's `errorType` for downstream
     /// relation checks). The outermost frame owns the count/anchor
-    /// reset so nested expansions accumulate against one budget.
+    /// reset so nested expansions accumulate against one budget. The recovery
+    /// still relates like tsc's `errorType`, but retains Home provenance.
     fn lowererLowerWithTypeParams(self: *Checker, type_node: NodeId) CheckError!TypeId {
         const outermost = self.instantiation_depth == 0;
         if (outermost) {
@@ -77588,7 +77589,7 @@ pub const Checker = struct {
                     self.type_instantiation_overflow = false;
                     self.instantiation_anchor_node = hir_mod.none_node_id;
                 }
-                return types.Primitive.any;
+                return self.recordUnmodeledAny(type_node);
             }
             try self.reportExcessivelyDeepTypeInstantiation();
             if (outermost) {
@@ -77596,7 +77597,7 @@ pub const Checker = struct {
                 self.type_instantiation_overflow = false;
                 self.instantiation_anchor_node = hir_mod.none_node_id;
             }
-            return types.Primitive.any;
+            return self.recordUnmodeledAny(type_node);
         }
         self.instantiation_count +|= 1;
         self.instantiation_depth += 1;
@@ -78085,7 +78086,7 @@ pub const Checker = struct {
                 if (try self.intersectionStringLiteralTemplateReduction(ms.items)) |reduced| return reduced;
                 if (self.intersectionUnionCrossProductTooLarge(ms.items)) {
                     try self.reportOnce(type_node, TsCodes.expression_union_too_complex, "Expression produces a union type that is too complex to represent.");
-                    return types.Primitive.any;
+                    return self.recordUnmodeledAny(type_node);
                 }
                 if (try self.reduceIntersectionBySharedUnitDiscriminant(ms.items)) |reduced| return reduced;
                 return self.interner.internIntersection(ms.items) catch return error.OutOfMemory;
@@ -78784,7 +78785,7 @@ pub const Checker = struct {
                         arg_lower_marked = false;
                         if (self.concreteMappedAliasRecursesWithoutProgress(type_node, r.name, info, &subs)) {
                             try self.reportExcessivelyDeepTypeInstantiationAt(type_node);
-                            return types.Primitive.any;
+                            return self.recordUnmodeledAny(type_node);
                         }
                         if (std.mem.eql(u8, self.string_interner.get(r.name), "Static") and
                             args.len >= 1 and
@@ -82459,7 +82460,7 @@ pub const Checker = struct {
                     if (!inner_has_rest) {
                         if (fixed_types.items.len + inner_elems.len >= max_tuple_representation_elements) {
                             try self.report(e, TsCodes.type_tuple_too_large, "Type produces a tuple type that is too large to represent.");
-                            return types.Primitive.any;
+                            return self.recordUnmodeledAny(e);
                         }
                         for (inner_elems) |raw_ie| {
                             var ie = raw_ie;
@@ -82484,12 +82485,12 @@ pub const Checker = struct {
                 if (rest_count > 1) {
                     if (rest_union_product > (max_union_representation_constituents - 1) / rest_count) {
                         try self.reportOnce(type_node, TsCodes.expression_union_too_complex, "Expression produces a union type that is too complex to represent.");
-                        return types.Primitive.any;
+                        return self.recordUnmodeledAny(type_node);
                     }
                     rest_union_product *= rest_count;
                     if (rest_union_product >= max_union_representation_constituents) {
                         try self.reportOnce(type_node, TsCodes.expression_union_too_complex, "Expression produces a union type that is too complex to represent.");
-                        return types.Primitive.any;
+                        return self.recordUnmodeledAny(type_node);
                     }
                 }
                 if (!self.restParamAnnotationLooksArrayLike(rt.operand) and
@@ -116197,7 +116198,7 @@ pub const Checker = struct {
                 }
                 if (self.genericAliasMemberIsCircularIndexedAccess(obj_t, m.name)) {
                     try self.reportExcessivelyDeepTypeInstantiationAt(node);
-                    break :blk types.Primitive.any;
+                    break :blk try self.recordUnmodeledAny(node);
                 }
                 // Never-intersection reduction (TS18031 / TS18032). When
                 // the receiver is an intersection that tsc reduces to
@@ -266469,6 +266470,14 @@ fn checkerCountCode(s: *TestSetup, code: u32) usize {
     return count;
 }
 
+fn checkerCountHomeCode(s: *TestSetup, code: u32) usize {
+    var count: usize = 0;
+    for (s.checker.diagnostics.items) |d| {
+        if (d.code_prefix == .HM and d.code == code) count += 1;
+    }
+    return count;
+}
+
 test "checker: TS2871 fires for `null ?? 1` (left operand always nullish)" {
     // Positive. Mirrors predicateSemantics.ts `const p03 = null ?? 1;`
     // The left operand is the `null` literal ÃÂ¢ÃÂÃÂ always nullish ÃÂ¢ÃÂÃÂ so tsc
@@ -270296,6 +270305,7 @@ test "checker: TS2799 fires for oversized tuple type spread" {
 
     const s = try newSetup(source.items);
     defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
     var found: usize = 0;
     for (s.checker.diagnostics.items) |d| {
@@ -270305,6 +270315,7 @@ test "checker: TS2799 fires for oversized tuple type spread" {
         }
     }
     try T.expectEqual(@as(usize, 1), found);
+    try T.expectEqual(@as(usize, 1), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: TS2800 fires for oversized const tuple expression spread" {
@@ -273518,6 +273529,24 @@ test "checker: independent expressions reset the instantiation count budget" {
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_instantiation_excessively_deep));
 }
 
+test "checker: type instantiation depth recovery retains unmodeled provenance" {
+    const s = try newSetup("type Value = string;");
+    defer destroySetup(s);
+    const alias = hir_mod.blockStmts(&s.hir, s.root)[0];
+    const type_node = hir_mod.typeAliasOf(&s.hir, alias).aliased;
+
+    s.checker.instantiation_count = Checker.max_instantiation_count;
+    const recovered = try s.checker.lowererLowerWithTypeParams(type_node);
+    try T.expectEqual(types.Primitive.unmodeled, recovered);
+    try T.expectEqual(types.Primitive.unmodeled, s.hir.typeOf(type_node));
+    try T.expectEqual(@as(u32, 1), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_instantiation_excessively_deep));
+
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
+    try s.checker.checkHomeRules();
+    try T.expectEqual(@as(usize, 1), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
+}
+
 test "checker: unresolved type leaves do not add TS2589 at the depth limit" {
     const s = try newSetup("function f(value: MissingType) {}");
     defer destroySetup(s);
@@ -273527,10 +273556,15 @@ test "checker: unresolved type leaves do not add TS2589 at the depth limit" {
 
     try s.checker.reportUnresolvedBodylessSignatureTypeRefs(type_node, &.{});
     s.checker.instantiation_depth = Checker.max_instantiation_depth;
-    _ = try s.checker.lowererLowerWithTypeParams(type_node);
+    try T.expectEqual(types.Primitive.unmodeled, try s.checker.lowererLowerWithTypeParams(type_node));
 
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_find_name));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_instantiation_excessively_deep));
+    try T.expectEqual(@as(u32, 1), s.checker.unmodeled_any_sites.count());
+
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
+    try s.checker.checkHomeRules();
+    try T.expectEqual(@as(usize, 1), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: TS2589 code constant matches upstream diagnostic number" {
@@ -273822,6 +273856,7 @@ test "checker: recursive mapped aliases report declaration and instantiation cyc
     );
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .declaration = true });
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
 
     try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.type_alias_circular));
@@ -273830,6 +273865,7 @@ test "checker: recursive mapped aliases report declaration and instantiation cyc
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.self_referenced_type_annotation));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.mapped_property_circular));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.interface_property_private_name));
+    try T.expectEqual(@as(usize, 1), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
 
     const self_ref = checkerFirstMessageForCode(s, TsCodes.self_referenced_type_annotation) orelse
         return error.MissingDiagnostic;
@@ -276522,6 +276558,7 @@ test "checker: TS2590 fires when an intersection union cross-product reaches the
 
     const s = try newSetup(source.items);
     defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
     var found: usize = 0;
     for (s.checker.diagnostics.items) |d| {
@@ -276531,6 +276568,7 @@ test "checker: TS2590 fires when an intersection union cross-product reaches the
         }
     }
     try T.expectEqual(@as(usize, 1), found);
+    try T.expectEqual(@as(usize, 1), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: TS2590 stays silent below the intersection union cross-product limit" {
@@ -276559,8 +276597,10 @@ test "checker: TS2590 fires when a template literal union cross-product reaches 
         \\type Boom = `${Digits}${Digits}${Digits}${Digits}${Digits}`;
     );
     defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.expression_union_too_complex));
+    try T.expectEqual(@as(usize, 1), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: TS2590 fires when tuple rest union cross-product reaches the representation limit" {
@@ -276569,8 +276609,10 @@ test "checker: TS2590 fires when tuple rest union cross-product reaches the repr
         \\type Boom = [...TDigits, ...TDigits, ...TDigits, ...TDigits, ...TDigits];
     );
     defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.expression_union_too_complex));
+    try T.expectEqual(@as(usize, 1), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: TS2590 counts nested template literal union products" {
@@ -276586,8 +276628,10 @@ test "checker: TS2590 counts nested template literal union products" {
         \\  | `${Spacing} ${Spacing} ${Spacing} ${Spacing}`;
     );
     defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.expression_union_too_complex));
+    try T.expectEqual(@as(usize, 1), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: direct IIFEs omit only trailing untyped parameters" {
