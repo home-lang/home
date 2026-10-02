@@ -107578,15 +107578,15 @@ pub const Checker = struct {
         self.checkThisBeforeSuperInConstructor(node) catch {};
         if (self.thisInsideEnumInitializer(node)) {
             try self.report(node, TsCodes.this_in_current_location, "'this' cannot be referenced in current location.");
-            return types.Primitive.any;
+            return self.recordUnmodeledAny(node);
         }
         if (self.in_computed_property_name) {
             try self.report(node, TsCodes.this_in_computed_property_name, "'this' cannot be referenced in a computed property name.");
-            return types.Primitive.any;
+            return self.recordUnmodeledAny(node);
         }
         if (self.thisInsideStaticDecoratedClassPropertyInitializer(node)) {
             try self.report(node, TsCodes.this_in_static_property_initializer_decorated_class, "Cannot use 'this' in a static property initializer of a decorated class.");
-            return types.Primitive.any;
+            return self.recordUnmodeledAny(node);
         }
 
         const directly_in_namespace = self.thisTypeQueryCapturedFromNamespaceBody(node);
@@ -107619,7 +107619,12 @@ pub const Checker = struct {
         {
             try self.reportThisImplicitlyAny(node);
         }
-        return types.Primitive.any;
+        const has_diagnosed_any_recovery = self.diagnosticExists(node, TsCodes.this_in_namespace_body) or
+            (!self.explicitNoImplicitThisIsDisabled() and self.diagnosticExists(node, TsCodes.this_implicitly_any));
+        return if (has_diagnosed_any_recovery)
+            self.recordUnmodeledAny(node)
+        else
+            types.Primitive.any;
     }
 
     fn thisTypeQueryCapturedFromNamespaceBody(self: *Checker, node: NodeId) bool {
@@ -218227,8 +218232,69 @@ test "checker: typeof this dotted query falls back to any when implicit this is 
         \\}
     );
     defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
+    try T.expectEqual(@as(u32, 0), s.checker.unmodeled_any_sites.count());
+}
+
+test "checker: typeof this implicit-any query traces TS2683 recovery" {
+    const s = try newSetup(
+        \\function f() {
+        \\  let x: typeof this;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true, .no_implicit_this = true });
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.this_implicitly_any));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, 9002));
+    try T.expectEqual(@as(u32, 1), s.checker.unmodeled_any_sites.count());
+}
+
+test "checker: invalid typeof this locations trace any recoveries" {
+    const s = try newSetup(
+        \\// @noImplicitThis: false
+        \\enum E {
+        \\  value = 0 as typeof this,
+        \\}
+        \\namespace N {
+        \\  export let value: typeof this;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.this_in_current_location));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.this_in_namespace_body));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.this_implicitly_any));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, 9002));
+    try T.expectEqual(@as(u32, 2), s.checker.unmodeled_any_sites.count());
+}
+
+test "checker: computed and decorated typeof this queries trace invalid recoveries" {
+    const s = try newSetup(
+        \\// @experimentalDecorators: true
+        \\declare function dec(target: Function): void;
+        \\class A {
+        \\  [0 as typeof this] = 1;
+        \\}
+        \\@dec
+        \\class B {
+        \\  static value = 0 as typeof this;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.this_in_computed_property_name));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.this_in_static_property_initializer_decorated_class));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, 9002));
+    try T.expectEqual(@as(u32, 2), s.checker.unmodeled_any_sites.count());
 }
 
 test "checker: typeof this dotted class field annotation reports missing member" {
