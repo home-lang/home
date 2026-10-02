@@ -119239,7 +119239,20 @@ pub const Checker = struct {
             },
             else => types.Primitive.any,
         };
-        const result_t = try self.resolveGenericType((try self.inlineJsDocCastType(node, t)) orelse t);
+        // TS7052/TS7053 element-access diagnostics are anchored on the
+        // complete access expression. Every such path deliberately falls
+        // back to TypeScript's any-like recovery type, so retain that
+        // provenance at the shared boundary instead of duplicating it across
+        // the many indexed-read and indexed-write branches above. TS7015 is
+        // anchored on the index expression and is recorded at its two source
+        // branches before optional-chain widening.
+        const recovery_t = if (self.hir.kindOf(node) == .element_access and
+            (self.diagnosticExists(node, TsCodes.element_implicitly_any) or
+                self.diagnosticExists(node, TsCodes.element_implicitly_any_no_index_signature_did_you_mean_call)))
+            try self.recordUnmodeledAny(node)
+        else
+            t;
+        const result_t = try self.resolveGenericType((try self.inlineJsDocCastType(node, recovery_t)) orelse recovery_t);
         try self.checkJsDocSatisfiesExpression(node, result_t);
         self.hir.setType(node, result_t);
         return result_t;
@@ -223729,12 +223742,12 @@ test "checker: missing string literal element access reports TS7053 under noImpl
     );
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
-    var found = false;
-    for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.element_implicitly_any) found = true;
-    }
-    try T.expect(found);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.element_implicitly_any));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, 9002));
+    try T.expectEqual(@as(u32, 1), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(types.Primitive.unmodeled, statementVarInitType(s, 2));
 }
 
 test "checker: broad string element access carries TS7054 no-index-signature chain" {
@@ -223745,6 +223758,7 @@ test "checker: broad string element access carries TS7054 no-index-signature cha
     );
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
 
     var found = false;
@@ -223757,6 +223771,9 @@ test "checker: broad string element access carries TS7054 no-index-signature cha
         found = true;
     }
     try T.expect(found);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, 9002));
+    try T.expectEqual(@as(u32, 1), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(types.Primitive.unmodeled, statementVarInitType(s, 2));
 }
 
 test "checker: literal and union string index misses use current property diagnostics" {
@@ -223797,6 +223814,7 @@ test "checker: map-like element read suggests calling get with TS7052" {
     );
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
 
     var found = false;
@@ -223807,6 +223825,9 @@ test "checker: map-like element read suggests calling get with TS7052" {
         found = true;
     }
     try T.expect(found);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, 9002));
+    try T.expectEqual(@as(u32, 1), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(types.Primitive.unmodeled, statementVarInitType(s, 2));
 }
 
 test "checker: map-like element write suggests calling set with TS7052" {
@@ -223817,6 +223838,7 @@ test "checker: map-like element write suggests calling set with TS7052" {
     );
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
 
     var found = false;
@@ -223827,6 +223849,8 @@ test "checker: map-like element write suggests calling set with TS7052" {
         found = true;
     }
     try T.expect(found);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, 9002));
+    try T.expectEqual(@as(u32, 1), s.checker.unmodeled_any_sites.count());
 }
 
 test "checker: numeric-string element access routes through number indexer (no TS7053)" {
@@ -223843,10 +223867,13 @@ test "checker: numeric-string element access routes through number indexer (no T
     );
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.element_implicitly_any);
     }
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, 9002));
+    try T.expectEqual(@as(u32, 0), s.checker.unmodeled_any_sites.count());
 }
 
 test "checker: noPropertyAccessFromIndexSignature emits TS4111" {
