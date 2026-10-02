@@ -119252,13 +119252,23 @@ pub const Checker = struct {
         // branches before optional-chain widening. TS2683 is likewise
         // anchored on the complete `this` expression; the explicit
         // `noImplicitThis: false` source directive makes that `any`
-        // intentional and therefore excludes it from provenance.
+        // intentional and therefore excludes it from provenance. Invalid
+        // enum and namespace `this` expressions also recover through `any`.
+        // Keep the any-like guard because computed-property TS2465 and
+        // legacy-decorated-static TS2816 can retain the owning class type and
+        // are therefore not necessarily any recoveries.
         const expression_kind = self.hir.kindOf(node);
         const has_diagnosed_any_recovery = switch (expression_kind) {
             .element_access => self.diagnosticExists(node, TsCodes.element_implicitly_any) or
                 self.diagnosticExists(node, TsCodes.element_implicitly_any_no_index_signature_did_you_mean_call),
-            .identifier, .this_expr => !self.explicitNoImplicitThisIsDisabled() and
-                self.diagnosticExists(node, TsCodes.this_implicitly_any),
+            .identifier, .this_expr => blk: {
+                const implicit_this = !self.explicitNoImplicitThisIsDisabled() and
+                    self.diagnosticExists(node, TsCodes.this_implicitly_any);
+                const invalid_this = self.typeIsAnyLike(t) and
+                    (self.diagnosticExists(node, TsCodes.this_in_current_location) or
+                        self.diagnosticExists(node, TsCodes.this_in_namespace_body));
+                break :blk implicit_this or invalid_this;
+            },
             else => false,
         };
         const recovery_t = if (has_diagnosed_any_recovery)
@@ -214505,6 +214515,26 @@ test "checker: unbound this expression emits TS2683" {
     try T.expectEqual(types.Primitive.unmodeled, s.hir.typeOf(hir_mod.varDeclOf(&s.hir, body[0]).init));
 }
 
+test "checker: this in enum initializer traces TS2332 any recovery" {
+    const s = try newSetup(
+        \\enum E {
+        \\  value = this,
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.this_in_current_location));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, 9002));
+    try T.expectEqual(@as(u32, 1), s.checker.unmodeled_any_sites.count());
+
+    const enum_decl = firstStatement(s);
+    const member = hir_mod.enumMembers(&s.hir, enum_decl)[0];
+    const initializer = hir_mod.objectPropertyOf(&s.hir, member).value;
+    try T.expectEqual(types.Primitive.unmodeled, s.hir.typeOf(initializer));
+}
+
 test "checker: explicit noImplicitThis false keeps unbound this as ordinary any" {
     const s = try newSetup(
         \\// @noImplicitThis: false
@@ -214576,6 +214606,7 @@ test "checker: this in computed property name emits TS2465 not TS2683" {
         \\}
     );
     defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
     var saw_2465 = false;
     var saw_2683 = false;
@@ -214585,6 +214616,8 @@ test "checker: this in computed property name emits TS2465 not TS2683" {
     }
     try T.expect(saw_2465);
     try T.expect(!saw_2683);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, 9002));
+    try T.expectEqual(@as(u32, 0), s.checker.unmodeled_any_sites.count());
 }
 
 test "checker: nested class computed fields bind this to the inner class" {
@@ -242432,6 +242465,23 @@ test "checker: this in namespace body emits both TS2331 and TS2683" {
     try T.expectEqual(@as(u32, 1), s.checker.unmodeled_any_sites.count());
 }
 
+test "checker: namespace TS2331 traces recovery without TS2683" {
+    const s = try newSetup(
+        \\// @noImplicitThis: false
+        \\namespace N1 {
+        \\    export var y = this;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.this_in_namespace_body));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.this_implicitly_any));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, 9002));
+    try T.expectEqual(@as(u32, 1), s.checker.unmodeled_any_sites.count());
+}
+
 test "checker: this in namespace decorator emits TS2331 and TS2683" {
     const s = try newSetup(
         \\namespace M {
@@ -267085,8 +267135,11 @@ test "checker: TS2816 forbids this in legacy decorated class static field initia
         \\}
     );
     defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.this_in_static_property_initializer_decorated_class));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, 9002));
+    try T.expectEqual(@as(u32, 0), s.checker.unmodeled_any_sites.count());
     const msg = checkerFirstMessageForCode(s, TsCodes.this_in_static_property_initializer_decorated_class) orelse return error.MissingDiagnostic;
     try T.expect(std.mem.indexOf(u8, msg, "decorated class") != null);
 }

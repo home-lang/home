@@ -196,7 +196,7 @@ The provenance row currently covers expression-stack exhaustion, invalid
 TypeScript and checked-JS catch-annotation recovery, TS7009 implicit-constructor
 recovery, TS7015 numeric-index mismatch recovery, TS7017 global-`this` index
 recovery, TS7052/TS7053 implicit element-access recovery, TS2683 implicit-`this`
-recovery, plus diagnosed TS2589, TS2590, and TS2799
+recovery, TS2331/TS2332 invalid-`this` recovery, plus diagnosed TS2589, TS2590, and TS2799
 recursion/representation recoveries; it is a correctness ratchet, not a claim
 that every internal fallback has already been classified.
 The archive SHA-512, project shape, and maximum count are enforced by
