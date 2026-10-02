@@ -167846,6 +167846,21 @@ pub const Checker = struct {
                     else
                         null;
                     const conditional_function_msg = try self.formatConditionalFunctionArgumentNotAssignable(args[i], param_t);
+                    const optional_parameter_names = try self.optionalParameterArgumentDiagnosticNames(
+                        args[i],
+                        diagnostic_arg_t,
+                        sig,
+                        fixed_pos,
+                        display_param_t,
+                    );
+                    const optional_parameter_msg: ?[]const u8 = if (optional_parameter_names) |names|
+                        try std.fmt.allocPrint(
+                            self.diag_arena.allocator(),
+                            "Argument of type '{s}' is not assignable to parameter of type '{s}'.",
+                            .{ names.source, names.target },
+                        )
+                    else
+                        null;
                     const msg = if (generic_keyof_msg) |m|
                         m
                     else if (predicate_msg) |m|
@@ -167883,6 +167898,8 @@ pub const Checker = struct {
                         array_search_msg
                     else if (instantiation_boundary_msg) |boundary_msg|
                         boundary_msg
+                    else if (optional_parameter_msg) |optional_msg|
+                        optional_msg
                     else
                         try self.formatCallArgumentNotAssignable(
                             args[i],
@@ -167890,6 +167907,23 @@ pub const Checker = struct {
                             display_param_t,
                             i,
                         );
+                    const used_optional_parameter_message = if (optional_parameter_msg) |optional_msg|
+                        msg.ptr == optional_msg.ptr and msg.len == optional_msg.len
+                    else
+                        false;
+                    const predicate_chain = try self.buildAssignmentExpressionPredicateElaborationChain(
+                        args[i],
+                        hir_mod.none_node_id,
+                        diagnostic_arg_t,
+                        display_param_t,
+                        declared_param_predicate,
+                    );
+                    const diagnostic_chain = if (predicate_chain) |chain|
+                        chain
+                    else if (used_optional_parameter_message)
+                        try self.optionalParameterArgumentDiagnosticChain(optional_parameter_names.?)
+                    else
+                        self.buildAssignmentAssignabilityElaborationChain(diagnostic_arg_t, display_param_t) catch &.{};
                     const diagnostic_pos = self.contextualRestCallbackArgumentDiagnosticPos(args[i], display_param_t);
                     try self.diagnostics.append(self.gpa, .{
                         .node = args[i],
@@ -167899,13 +167933,7 @@ pub const Checker = struct {
                         else
                             TsCodes.argument_type_mismatch,
                         .message = msg,
-                        .chain = (try self.buildAssignmentExpressionPredicateElaborationChain(
-                            args[i],
-                            hir_mod.none_node_id,
-                            diagnostic_arg_t,
-                            display_param_t,
-                            declared_param_predicate,
-                        )) orelse (self.buildAssignmentAssignabilityElaborationChain(diagnostic_arg_t, display_param_t) catch &.{}),
+                        .chain = diagnostic_chain,
                     });
                     stop_after_arg_mismatch = true;
                 }
@@ -170334,6 +170362,141 @@ pub const Checker = struct {
         _ = self.alias_display_names.remove(return_t);
         try self.registerAliasDisplayNameInner(return_t, alias_name, fallbacks, true);
         return param_t;
+    }
+
+    const OptionalParameterArgumentDiagnosticNames = struct {
+        source: []const u8,
+        target: []const u8,
+    };
+
+    /// Recover the source spelling for an optional parameter passed to a
+    /// required, named parameter. The semantic types remain canonical and
+    /// alias-free; this is intentionally a call-site diagnostic view only.
+    ///
+    /// Both ends are checked against their annotations before their source
+    /// text is used. That prevents an annotation from masking a narrowed or
+    /// otherwise transformed value type while preserving names such as
+    /// `BaselineOptions | undefined` in TS2345.
+    fn optionalParameterArgumentDiagnosticNames(
+        self: *Checker,
+        arg_node: NodeId,
+        arg_t: TypeId,
+        sig: TypeId,
+        param_index: usize,
+        target_t: TypeId,
+    ) CheckError!?OptionalParameterArgumentDiagnosticNames {
+        if (arg_node == hir_mod.none_node_id or self.hir.kindOf(arg_node) != .identifier) return null;
+        const arg_name = hir_mod.identifierOf(self.hir, arg_node).name;
+
+        var source_parameter_node = hir_mod.none_node_id;
+        var current = self.hir.parentOf(arg_node);
+        while (current != hir_mod.none_node_id) : (current = self.hir.parentOf(current)) {
+            const kind = self.hir.kindOf(current);
+            if (kind != .fn_decl and kind != .fn_expr and kind != .arrow_fn) continue;
+            for (hir_mod.fnParams(self.hir, current)) |candidate_node| {
+                if (self.hir.kindOf(candidate_node) != .parameter) continue;
+                const candidate = hir_mod.parameterOf(self.hir, candidate_node);
+                if (candidate.name == hir_mod.none_node_id or self.hir.kindOf(candidate.name) != .identifier) continue;
+                if (hir_mod.identifierOf(self.hir, candidate.name).name != arg_name) continue;
+                source_parameter_node = candidate_node;
+                break;
+            }
+            if (source_parameter_node != hir_mod.none_node_id) break;
+        }
+        if (source_parameter_node == hir_mod.none_node_id) return null;
+        const source_parameter = hir_mod.parameterOf(self.hir, source_parameter_node);
+        if (!source_parameter.flags.is_optional or source_parameter.type_annotation == hir_mod.none_node_id) return null;
+
+        const declared_source_t = self.hir.typeOf(source_parameter.name);
+        if (declared_source_t == types.Primitive.none or
+            (arg_t != declared_source_t and !(self.engine.isIdenticalTo(arg_t, declared_source_t) catch false)))
+        {
+            return null;
+        }
+        if (declared_source_t >= self.interner.pool.typeCount() or
+            !self.interner.pool.flagsOf(declared_source_t).is_union)
+        {
+            return null;
+        }
+        var has_undefined = false;
+        for (self.interner.unionMembers(declared_source_t)) |member| {
+            if (member == types.Primitive.undefined_t) {
+                has_undefined = true;
+                break;
+            }
+        }
+        if (!has_undefined) return null;
+
+        const target_parameters = self.signature_param_nodes.get(sig) orelse return null;
+        if (param_index >= target_parameters.len) return null;
+        const target_parameter_node = target_parameters[param_index];
+        if (self.hir.kindOf(target_parameter_node) != .parameter) return null;
+        const target_parameter = hir_mod.parameterOf(self.hir, target_parameter_node);
+        if (target_parameter.type_annotation == hir_mod.none_node_id) return null;
+        const signature_parameters = self.interner.signatureParams(sig);
+        if (param_index >= signature_parameters.len) return null;
+        const declared_target_t = signature_parameters[param_index];
+        if (target_t != declared_target_t and !(self.engine.isIdenticalTo(target_t, declared_target_t) catch false)) return null;
+
+        const source_kind = self.hir.kindOf(source_parameter.type_annotation);
+        if (source_kind != .identifier and source_kind != .type_ref) return null;
+        const target_kind = self.hir.kindOf(target_parameter.type_annotation);
+        if (target_kind != .identifier and target_kind != .type_ref) return null;
+        const source_type_name: hir_mod.StringId = switch (source_kind) {
+            .identifier => hir_mod.identifierOf(self.hir, source_parameter.type_annotation).name,
+            .type_ref => blk: {
+                const reference = hir_mod.typeRefOf(self.hir, source_parameter.type_annotation);
+                if (reference.qualifier_len != 0) return null;
+                break :blk reference.name;
+            },
+            else => unreachable,
+        };
+        const target_type_name: hir_mod.StringId = switch (target_kind) {
+            .identifier => hir_mod.identifierOf(self.hir, target_parameter.type_annotation).name,
+            .type_ref => blk: {
+                const reference = hir_mod.typeRefOf(self.hir, target_parameter.type_annotation);
+                if (reference.qualifier_len != 0) return null;
+                break :blk reference.name;
+            },
+            else => unreachable,
+        };
+        if (!self.stringIdsHaveSameText(source_type_name, target_type_name)) return null;
+        const source_declaration = self.findVisibleNamedTypeDecl(source_parameter.type_annotation, source_type_name) orelse return null;
+        const target_declaration = self.findVisibleNamedTypeDecl(target_parameter.type_annotation, target_type_name) orelse return null;
+        if (source_declaration != target_declaration) return null;
+        switch (self.hir.kindOf(source_declaration)) {
+            .interface_decl, .class_decl, .class_expr, .enum_decl => {},
+            else => return null,
+        }
+
+        const source_annotation = try self.normalizedTypeAnnotationText(
+            self.nodeSourceTextOrEmpty(source_parameter.type_annotation),
+        );
+        const target_annotation = try self.normalizedTypeAnnotationText(
+            self.nodeSourceTextOrEmpty(target_parameter.type_annotation),
+        );
+        if (source_annotation.len == 0 or target_annotation.len == 0) return null;
+        const source_display = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "{s} | undefined",
+            .{source_annotation},
+        );
+        return .{ .source = source_display, .target = target_annotation };
+    }
+
+    fn optionalParameterArgumentDiagnosticChain(
+        self: *Checker,
+        names: OptionalParameterArgumentDiagnosticNames,
+    ) CheckError![]const DiagnosticChainEntry {
+        const message = try std.fmt.allocPrint(
+            self.diag_arena.allocator(),
+            "Type 'undefined' is not assignable to type '{s}'.",
+            .{names.target},
+        );
+        return try self.diag_arena.allocator().dupe(DiagnosticChainEntry, &.{.{
+            .code = TsCodes.type_not_assignable,
+            .message = message,
+        }});
     }
 
     fn formatCallArgumentNotAssignable(
@@ -281095,8 +281258,15 @@ test "checker: recovered legacy parameters retain optional flow in nested callba
     try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.object_possibly_undefined_18048));
     for (s.checker.diagnostics.items) |diagnostic| {
         if (diagnostic.code != TsCodes.argument_type_mismatch) continue;
-        try T.expect(std.mem.indexOf(u8, diagnostic.message, "Options | undefined") != null);
-        try T.expect(std.mem.indexOf(u8, diagnostic.message, "length") == null);
+        try T.expectEqualStrings(
+            "Argument of type 'Options | undefined' is not assignable to parameter of type 'Options'.",
+            diagnostic.message,
+        );
+        try T.expectEqual(@as(usize, 1), diagnostic.chain.len);
+        try T.expectEqualStrings(
+            "Type 'undefined' is not assignable to type 'Options'.",
+            diagnostic.chain[0].message,
+        );
     }
 }
 

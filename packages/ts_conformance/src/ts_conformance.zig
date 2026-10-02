@@ -56710,7 +56710,7 @@ test "conformance: bare variable scan detects TS7005 shape" {
     try T.expect(!sourceHasBareVariableWithoutTypeOrInitializer("const x = 1;"));
 }
 
-test "conformance: parserharness keeps noImplicitAny under strict-family directive inference" {
+test "conformance: parserharness matches its exact optional-parameter diagnostics" {
     const paths = (try resolveTsCorpusPaths(T.allocator)) orelse return;
     defer {
         T.allocator.free(paths.cases);
@@ -56743,6 +56743,34 @@ test "conformance: parserharness keeps noImplicitAny under strict-family directi
         try T.expect(flags.no_implicit_any);
         try T.expect(flags.strict_null_checks);
         try T.expect(!flags.use_unknown_in_catch_variables);
+        const result = try runOneEntry(T.allocator, .{
+            .name = entry.name,
+            .source = entry.source,
+            .path = entry.path,
+            .expects_error = entry.expects_error,
+            .expected_errors = entry.expected_errors,
+            .use_exact_errors = entry.use_exact_errors,
+            .is_tsx = entry.is_tsx,
+            .is_declaration_file = entry.is_declaration_file,
+            .strict_flags = entry.strict_flags,
+            .always_strict = entry.always_strict,
+            .syntax_target_es2015 = entry.syntax_target_es2015,
+            .target_emit_es5 = entry.target_emit_es5,
+            .emit_target = entry.emit_target,
+            .report_deprecated_target_es5 = entry.report_deprecated_target_es5,
+            .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
+            .baseline_has_no_position_lib_diagnostics = entry.baseline_has_no_position_lib_diagnostics,
+            .raw_source = entry.raw_source,
+            .baseline_module_resolution = entry.baseline_module_resolution,
+            .baseline_module_kind = entry.baseline_module_kind,
+            .allow_importing_ts_extensions = entry.allow_importing_ts_extensions,
+            .deduplicate_packages = entry.deduplicate_packages,
+        });
+        defer {
+            T.allocator.free(result.name);
+            if (result.detail.len > 0) T.allocator.free(result.detail);
+        }
+        try T.expectEqual(Outcome.passed, result.outcome);
         return;
     }
     try T.expect(false);
