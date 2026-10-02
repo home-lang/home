@@ -10426,7 +10426,7 @@ pub const Checker = struct {
                                 TsCodes.catch_variable_annotation_must_be_any_or_unknown,
                                 "Catch clause variable type annotation must be 'any' or 'unknown' if specified.",
                             );
-                            catch_t = types.Primitive.any;
+                            catch_t = try self.recordUnmodeledAny(ts.catch_type);
                         }
                     }
                     if (ck == .identifier) {
@@ -26258,7 +26258,7 @@ pub const Checker = struct {
                     TsCodes.catch_variable_annotation_must_be_any_or_unknown,
                     "Catch clause variable type annotation must be 'any' or 'unknown' if specified.",
                 );
-                return types.Primitive.any;
+                return @as(?TypeId, try self.recordUnmodeledAny(catch_param));
             }
             return catch_t;
         }
@@ -198528,6 +198528,27 @@ test "checker: unmodeled any rule reports only checker recovery origins" {
     for (explicit.checker.diagnostics.items) |diagnostic| {
         try T.expect(diagnostic.code_prefix != .HM or diagnostic.code != definition.code);
     }
+}
+
+test "checker: invalid catch annotations report traced recovery origins" {
+    const s = try newSetup(
+        \\// @checkjs: true
+        \\try {} catch (typed: Error) {}
+        \\try {} catch (safe: any) {}
+        \\try {} catch (/** @type {Error} */ documented) {}
+        \\try {} catch (/** @type {unknown} */ safeDocumented) {}
+    );
+    defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.catch_variable_annotation_must_be_any_or_unknown));
+    var recovery_count: usize = 0;
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code_prefix == .HM and diagnostic.code == 9002) recovery_count += 1;
+    }
+    try T.expectEqual(@as(usize, 2), recovery_count);
+    try T.expectEqual(@as(u32, 2), s.checker.unmodeled_any_sites.count());
 }
 
 fn newTsxSetup(source: []const u8) !*TestSetup {
