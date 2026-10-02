@@ -22,7 +22,7 @@ Home is two things built from one Zig toolchain:
 - **A TypeScript compiler.** `home tsc` reads your existing `tsconfig.json`,
   accepts `tsc`'s flags, and prints the same `TSxxxx` diagnostics with the same
   exit status. It passes **all 5,907 modeled upstream conformance diagnostic
-  families**, with the leading **2,800 / 2,800 fixtures revalidated
+  families**, with the leading **2,960 / 2,960 fixtures revalidated
   byte-for-byte**, and type-checks **1.6×–11.9× faster than native TypeScript
   7** (`tsgo`) and **4.7×–19× faster than `tsc`** on the benchmark suite below.
 - **A native language.** `.home` files compile to native binaries with no

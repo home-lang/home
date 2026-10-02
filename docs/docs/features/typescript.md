@@ -69,7 +69,7 @@ HOME_TS_CONFORMANCE_EXACT=1 \
 | Measurement | Result |
 |---|---|
 | Coarse mode, full corpus | 5,907 / 5,907 |
-| Exact mode, byte for byte | 5,907 / 5,907, 100% |
+| Exact mode, byte for byte | 2,960 / 2,960 leading cases, 100%; the other 2,947 pending revalidation |
 | Baseline-aware exact categories, 19 folders | 586 / 586 |
 | Diagnostic codes emitted | 1,620 / 2,079 |
 
@@ -122,7 +122,7 @@ JavaScriptCore-enabled Home compiler plus LLVM on `PATH`.
 | Area | State |
 |---|---|
 | Parsing and binding | Complete for the documented surface |
-| Type checking | Coarse and byte-for-byte exact conformance saturated at 5,907 / 5,907 |
+| Type checking | Coarse conformance saturated at 5,907 / 5,907; byte-for-byte exact at 2,960 / 2,960 in the revalidated leading prefix |
 | Diagnostics | Reachable code set complete |
 | Language server | `home lsp --stdio` serves TypeScript and `.home`; 76 of about 80 methods routed |
 | JavaScript emit | Working, checked against Bun's printer |

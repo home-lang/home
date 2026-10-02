@@ -342,7 +342,7 @@ folders):
 | Category | Status |
 |---|---|
 | Coarse-mode corpus | 🟢 5,907 / 5,907 (100%) |
-| Exact-mode corpus (byte-for-byte) | 🟢 5,907 / 5,907 (100%; 0 remain) |
+| Exact-mode corpus (byte-for-byte) | 🟡 2,960 / 2,960 leading cases (100%); 2,947 pending revalidation |
 | Baseline-aware category sweep | 🟢 586 / 586 (100%) |
 | Named-category survey | 🟢 86 / 86 (100%) |
 | Smoke gate | 🟢 16 / 16 (100%) |

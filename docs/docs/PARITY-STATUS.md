@@ -22,9 +22,10 @@ scripts/measure-parity.sh --diff       # fail if this page drifted
 
 > Refreshed 2026-09-30. Coarse-mode TS coverage remains the default corpus
 > signal. Exact mode is an opt-in, six-slice regression gate: any mismatch now
-> fails the test process. Slice 0 has been revalidated at 984 / 1,000; the
-> remaining slices must be rerun before publishing a new full-corpus exact
-> aggregate. The Bun port percentage is file-count progress over integrated
+> fails the test process. The leading 2,960 cases (slices 0 and 1, and the
+> first 960 of slice 2) pass byte for byte in one full run, refreshed
+> 2026-10-02; the remaining 2,947 must be rerun before publishing a new
+> full-corpus exact aggregate. The Bun port percentage is file-count progress over integrated
 > Home ports, while raw source presence is reported separately now that the
 > full Bun source backlog has been staged.
 >
@@ -55,7 +56,7 @@ scripts/measure-parity.sh --diff       # fail if this page drifted
 | Area | Coverage | Source |
 |---|---|---|
 | **TypeScript — coarse corpus** | **5,907 / 5,907 — 100%** | `HOME_TS_CONFORMANCE_FULL=1` against upstream conformance corpus |
-| **TypeScript — exact (byte-for-byte)** | **984 / 1,000 — 98.4% in revalidated slice 0** | Canonical tsgo-generated baselines; 16 slice-0 mismatches remain, other slices pending refresh |
+| **TypeScript — exact (byte-for-byte)** | **2,960 / 2,960 — 100% in the revalidated leading prefix** | Canonical tsgo-generated baselines; the remaining 2,947 cases are pending revalidation |
 | **TypeScript — baseline-aware (19 folders)** | **586 / 586 — 100%** | per-fixture `.errors.txt` byte comparison |
 | **TypeScript — named-category survey** | **86 / 86 — 100%** | `assignmentCompatibility` + `comparable` + `inOperator` + `stringLiteral` |
 | **TypeScript — diagnostic codes emitted** | **1,620 / 2,079 — ~77.9%** | [Diagnostic code status](/docs/TS_DIAGNOSTIC_CODE_STATUS) — codes referenced from production source; 459 catalog-only remain, but **0 are reachable parity targets** (the reachable subset is complete) — ~455 are dead-in-reference + 4 blocked, see [Diagnostic reachability](/docs/TS_DIAGNOSTIC_REACHABILITY) |
@@ -65,7 +66,7 @@ scripts/measure-parity.sh --diff       # fail if this page drifted
 | **Bun compat shim — `bun.*` symbols** | **16 / ~103 — ~15.5%** | Tier-0 + Tier-1 (`Output`, `strings`, `String`, `AllocationScope`, `Environment`, `JSError`, `create`, `debugAssert`, `env_var`) lets vendored Bun source compile against Home's stdlib |
 | **Node.js — `node:*` modules JS-callable** | **24 / 47 — ~51% (🟡 subsets)** | callable via Home's own JSC realm (`home eval` / `HOME_NATIVE_RUN`), unit-tested; see [Node.js parity](/docs/PARITY-NODE). Not yet wired into the bun-corpus gate |
 | **JSC bring-up (Phase 12.2)** | **JS-callable bridge live** | `home eval` / `HOME_NATIVE_RUN` run through Home's own JSC; 24 `node:*` modules + a broad `Bun.*` surface (spawn/spawnSync/which/file/write/hash/gzipSync/Glob/…) callable & unit-tested. Native subsystems: zlib (`std.compress`), crypto HMAC/pbkdf2 (`std.crypto`), spawn (`std.process`) |
-| **Language features (capability matrix)** | **19 stable / 42 partial / 2 not-yet — 63 total** | ~30.2% stable, ~66.7% in progress, ~3.2% not yet (includes TS frontend + Runtime/Bun rows) |
+| **Language features (capability matrix)** | **18 stable / 41 partial / 2 not-yet — 61 total** | ~29.5% stable, ~67.2% in progress, ~3.3% not yet (includes TS frontend + Runtime/Bun rows) |
 | **Total test count** | **~8,415 tests** (unit + integration + conformance-pin) | `./pantry/.bin/zig build test --summary all` on Zig 0.17.0-dev.131. Exact TypeScript parity is revalidated slice by slice; the `home_rt` runtime target needs Bun's JSC/uWS C++ artifacts to link. |
 
 ## TypeScript parity — `home tsc` vs `tsc` / `tsgo`
@@ -176,7 +177,7 @@ reproduction commands. Expansion and optimization work is tracked in
 | Measurement | Pass rate | Notes |
 |---|---|---|
 | **Coarse mode (5,907 cases)** | **5,907 / 5,907 — 100%** | Saturated; remains the per-PR merge gate. |
-| **Exact mode (byte-for-byte)** | **984 / 1,000 — 98.4% in revalidated slice 0** | Compared with canonical tsgo-generated baselines; 16 slice-0 mismatches remain. The other five slices await refresh. |
+| **Exact mode (byte-for-byte)** | **2,960 / 2,960 — 100% in the revalidated leading prefix** | Compared with canonical tsgo-generated baselines in one full run (`scripts/ts-conformance-exact.sh 0 2960 200`). The remaining 2,947 cases await refresh. |
 | Baseline-aware exact categories (19 folders, 586 cases) | 586 / 586 — 100% | `apparentType`, `bestCommonType`, `recursiveTypes`, `typeInference`, `keyof`, `conditional`, `instanceOf`, `widenedTypes`, `specifyingTypes`, `primitives`, `any`, `import`, `uniqueSymbol`, `namedTypes`, `localTypes`, `forAwait`, `unknown`, `witness`, `typeAliases`, `asyncGenerators`. |
 | Named-category exact survey (4 folders, 86 cases) | 86 / 86 — 100% | `assignmentCompatibility` 70/70, `comparable` 13/13, `inOperator` 2/2, `stringLiteral` 1/1. |
 | Smoke (3 folders, 16 cases) | 16 / 16 — 100% | Per-PR fast path. |
@@ -187,9 +188,9 @@ the current tree are published):
 
 | Slice | Pass rate | % |
 |---|---|---|
-| `START=0   LIMIT=1000` | 984 / 1,000 | 98.4% |
-| `START=1000 LIMIT=1000` | pending revalidation | — |
-| `START=2000 LIMIT=1000` | pending revalidation | — |
+| `START=0   LIMIT=1000` | 1,000 / 1,000 | 100% |
+| `START=1000 LIMIT=1000` | 1,000 / 1,000 | 100% |
+| `START=2000 LIMIT=1000` | 960 / 960 run so far (cases 2,000–2,959); the last 40 pending | — |
 | `START=3000 LIMIT=1000` | pending revalidation | — |
 | `START=4000 LIMIT=1000` | pending revalidation | — |
 | `START=5000 LIMIT=907`  | pending revalidation | — |

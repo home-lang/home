@@ -128,7 +128,7 @@ print_markdown() {
 | Area | Coverage | Source |
 |---|---|---|
 | **TypeScript — coarse corpus** | **5,907 / 5,907 — 100%** | \`HOME_TS_CONFORMANCE_FULL=1\` against upstream conformance corpus |
-| **TypeScript — exact (byte-for-byte)** | **5,907 / 5,907 — 100%** | Canonical tsgo-generated baselines; 0 exact cases remain |
+| **TypeScript — exact (byte-for-byte)** | **2,960 / 2,960 — 100% in the revalidated leading prefix** | Canonical tsgo-generated baselines; the remaining 2,947 cases are pending revalidation. Not counted here: update from \`scripts/ts-conformance-exact.sh\` |
 | **TypeScript — baseline-aware (19 folders)** | **586 / 586 — 100%** | per-fixture \`.errors.txt\` byte comparison |
 | **TypeScript — named-category survey** | **86 / 86 — 100%** | \`assignmentCompatibility\` + \`comparable\` + \`inOperator\` + \`stringLiteral\` |
 | **TypeScript — diagnostic codes** | **~${TS_DIAG_CODES} entries** | mirrors the full upstream \`diag(code, …)\` table |
