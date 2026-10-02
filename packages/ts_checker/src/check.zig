@@ -117284,7 +117284,7 @@ pub const Checker = struct {
                                 TsCodes.element_implicitly_any_index_not_number,
                                 "Element implicitly has an 'any' type because index expression is not of type 'number'.",
                             );
-                            break :blk types.Primitive.any;
+                            break :blk try self.recordUnmodeledAny(node);
                         }
                     }
                 }
@@ -117717,7 +117717,8 @@ pub const Checker = struct {
                             TsCodes.element_implicitly_any_index_not_number,
                             "Element implicitly has an 'any' type because index expression is not of type 'number'.",
                         );
-                        break :blk try self.optionalChainResult(types.Primitive.any, element_is_optional_chain);
+                        const recovery_t = try self.recordUnmodeledAny(node);
+                        break :blk try self.optionalChainResult(recovery_t, element_is_optional_chain);
                     }
                     if (self.strict_flags.no_implicit_any and
                         self.memberAccessObjectIsGlobalThisThis(e.object) and
@@ -264331,6 +264332,7 @@ test "checker: TS7015 fires indexing a numeric-only index signature with a strin
     const s = try newSetup(source);
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
     var count_7015: usize = 0;
     for (s.checker.diagnostics.items) |d| {
@@ -264343,6 +264345,25 @@ test "checker: TS7015 fires indexing a numeric-only index signature with a strin
         }
     }
     try T.expectEqual(@as(usize, 1), count_7015);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, 9002));
+    try T.expectEqual(@as(u32, 1), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(types.Primitive.unmodeled, statementVarInitType(s, 2));
+}
+
+test "checker: TS7015 traces typeof globalThis index recovery" {
+    const s = try newSetup(
+        \\declare let win: Window & typeof globalThis;
+        \\const value = win["missing"];
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.element_implicitly_any_index_not_number));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, 9002));
+    try T.expectEqual(@as(u32, 1), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(types.Primitive.unmodeled, statementVarInitType(s, 1));
 }
 
 // Negative: the same numeric-only index signature accessed with a
@@ -264358,10 +264379,13 @@ test "checker: TS7015 stays silent for a numeric index on a numeric index signat
     const s = try newSetup(source);
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.element_implicitly_any_index_not_number);
     }
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, 9002));
+    try T.expectEqual(@as(u32, 0), s.checker.unmodeled_any_sites.count());
 }
 
 // Negative: a type that also carries a string index signature can be
