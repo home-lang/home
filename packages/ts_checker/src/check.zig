@@ -114082,14 +114082,14 @@ pub const Checker = struct {
                 const imported_call_only = try self.newCalleeIsImportedCallOnlyFunction(c.callee);
                 if (checked_js_cross_virtual_function_class) {
                     try self.report(node, TsCodes.new_expression_implicitly_any, "'new' expression, whose target lacks a construct signature, implicitly has an 'any' type.");
-                    break :blk types.Primitive.any;
+                    break :blk try self.recordUnmodeledAny(node);
                 }
                 if (self.sourceHasCheckJsDirective() and self.hir.kindOf(c.callee) == .identifier) {
                     const id = hir_mod.identifierOf(self.hir, c.callee);
                     if (self.jsConstructorFunctionDeclForName(c.callee, id.name)) |fn_node| {
                         if (self.fnHasJsDocTemplateTags(fn_node)) {
                             try self.report(node, TsCodes.new_expression_implicitly_any, "'new' expression, whose target lacks a construct signature, implicitly has an 'any' type.");
-                            break :blk types.Primitive.any;
+                            break :blk try self.recordUnmodeledAny(node);
                         }
                     }
                 }
@@ -114099,7 +114099,7 @@ pub const Checker = struct {
                     const id = hir_mod.identifierOf(self.hir, c.callee);
                     if (self.jsConstructorFunctionDeclForName(c.callee, id.name) != null) {
                         try self.report(node, TsCodes.new_expression_implicitly_any, "'new' expression, whose target lacks a construct signature, implicitly has an 'any' type.");
-                        break :blk types.Primitive.any;
+                        break :blk try self.recordUnmodeledAny(node);
                     }
                 }
                 if ((self.strict_flags.no_implicit_any or
@@ -114107,14 +114107,14 @@ pub const Checker = struct {
                     imported_call_only)
                 {
                     try self.report(node, TsCodes.new_expression_implicitly_any, "'new' expression, whose target lacks a construct signature, implicitly has an 'any' type.");
-                    break :blk types.Primitive.any;
+                    break :blk try self.recordUnmodeledAny(node);
                 }
                 if (self.sourceHasCheckJsDirective() and
                     (self.strict_flags.no_implicit_any or !self.sourceHasStrictFalseDirective()) and
                     self.newCalleeTargetsSelfReturningFunction(c.callee))
                 {
                     try self.report(node, TsCodes.new_expression_implicitly_any, "'new' expression, whose target lacks a construct signature, implicitly has an 'any' type.");
-                    break :blk types.Primitive.any;
+                    break :blk try self.recordUnmodeledAny(node);
                 }
                 if (callee_t == types.Primitive.unknown) {
                     if (self.shouldReportUnknownOperand(c.callee)) {
@@ -114228,7 +114228,7 @@ pub const Checker = struct {
                     try self.newCalleeIsImportedChainedPrototypeFunction(c.callee))
                 {
                     try self.report(node, TsCodes.new_expression_implicitly_any, "'new' expression, whose target lacks a construct signature, implicitly has an 'any' type.");
-                    break :blk types.Primitive.any;
+                    break :blk try self.recordUnmodeledAny(node);
                 }
                 if (self.sourceHasCheckJsDirective() and !self.strict_flags.no_implicit_any and
                     self.hir.kindOf(c.callee) == .identifier)
@@ -114675,7 +114675,10 @@ pub const Checker = struct {
                         });
                     }
                 }
-                break :blk types.Primitive.any;
+                break :blk if (self.diagnosticExists(node, TsCodes.new_expression_implicitly_any))
+                    try self.recordUnmodeledAny(node)
+                else
+                    types.Primitive.any;
             },
             .call_expr => blk: {
                 const c = hir_mod.callOf(self.hir, node);
@@ -198549,6 +198552,39 @@ test "checker: invalid catch annotations report traced recovery origins" {
     }
     try T.expectEqual(@as(usize, 2), recovery_count);
     try T.expectEqual(@as(u32, 2), s.checker.unmodeled_any_sites.count());
+}
+
+test "checker: implicit constructor any reports traced recovery origins" {
+    const typed = try newSetup(
+        \\function fnNumber(this: void): number { return 90; }
+        \\new fnNumber();
+        \\class Constructable {}
+        \\new Constructable();
+    );
+    defer destroySetup(typed);
+    typed.checker.setStrictFlags(.{ .no_implicit_any = true });
+    typed.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
+    try typed.checker.checkSourceFile(typed.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(typed, TsCodes.new_expression_implicitly_any));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(typed, 9002));
+    try T.expectEqual(@as(u32, 1), typed.checker.unmodeled_any_sites.count());
+
+    const checked_js = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\function Constructor() { this.value = 1; }
+        \\new Constructor();
+    );
+    defer destroySetup(checked_js);
+    checked_js.checker.setCheckJsEnabled(true);
+    checked_js.checker.setStrictFlags(.{ .no_implicit_any = true });
+    checked_js.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
+    try checked_js.checker.checkSourceFile(checked_js.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(checked_js, TsCodes.new_expression_implicitly_any));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(checked_js, 9002));
+    try T.expectEqual(@as(u32, 1), checked_js.checker.unmodeled_any_sites.count());
 }
 
 fn newTsxSetup(source: []const u8) !*TestSetup {
