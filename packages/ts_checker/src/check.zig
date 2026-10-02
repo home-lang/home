@@ -52264,13 +52264,17 @@ pub const Checker = struct {
         };
     }
 
-    fn applyExplicitNoImplicitThisDirective(self: *Checker) void {
-        const src = self.source orelse return;
+    fn explicitNoImplicitThisIsDisabled(self: *const Checker) bool {
+        const src = self.source orelse return false;
         const marker = "@noImplicitThis";
-        const marker_pos = std.mem.indexOf(u8, src, marker) orelse return;
+        const marker_pos = std.mem.indexOf(u8, src, marker) orelse return false;
         var rest = std.mem.trimStart(u8, src[marker_pos + marker.len ..], " \t");
         if (rest.len > 0 and rest[0] == ':') rest = std.mem.trimStart(u8, rest[1..], " \t");
-        if (rest.len < "false".len or !std.ascii.eqlIgnoreCase(rest[0.."false".len], "false")) return;
+        return rest.len >= "false".len and std.ascii.eqlIgnoreCase(rest[0.."false".len], "false");
+    }
+
+    fn applyExplicitNoImplicitThisDirective(self: *Checker) void {
+        if (!self.explicitNoImplicitThisIsDisabled()) return;
         var i: usize = 0;
         while (i < self.diagnostics.items.len) {
             if (self.diagnostics.items[i].code == TsCodes.this_implicitly_any) {
@@ -119245,10 +119249,19 @@ pub const Checker = struct {
         // provenance at the shared boundary instead of duplicating it across
         // the many indexed-read and indexed-write branches above. TS7015 is
         // anchored on the index expression and is recorded at its two source
-        // branches before optional-chain widening.
-        const recovery_t = if (self.hir.kindOf(node) == .element_access and
-            (self.diagnosticExists(node, TsCodes.element_implicitly_any) or
-                self.diagnosticExists(node, TsCodes.element_implicitly_any_no_index_signature_did_you_mean_call)))
+        // branches before optional-chain widening. TS2683 is likewise
+        // anchored on the complete `this` expression; the explicit
+        // `noImplicitThis: false` source directive makes that `any`
+        // intentional and therefore excludes it from provenance.
+        const expression_kind = self.hir.kindOf(node);
+        const has_diagnosed_any_recovery = switch (expression_kind) {
+            .element_access => self.diagnosticExists(node, TsCodes.element_implicitly_any) or
+                self.diagnosticExists(node, TsCodes.element_implicitly_any_no_index_signature_did_you_mean_call),
+            .identifier, .this_expr => !self.explicitNoImplicitThisIsDisabled() and
+                self.diagnosticExists(node, TsCodes.this_implicitly_any),
+            else => false,
+        };
+        const recovery_t = if (has_diagnosed_any_recovery)
             try self.recordUnmodeledAny(node)
         else
             t;
@@ -198600,8 +198613,9 @@ test "checker: implicit constructor any reports traced recovery origins" {
     try checked_js.checker.checkSourceFile(checked_js.root);
 
     try T.expectEqual(@as(usize, 1), checkerCountCode(checked_js, TsCodes.new_expression_implicitly_any));
-    try T.expectEqual(@as(usize, 1), checkerCountCode(checked_js, 9002));
-    try T.expectEqual(@as(u32, 1), checked_js.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 1), checkerCountCode(checked_js, TsCodes.this_implicitly_any));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(checked_js, 9002));
+    try T.expectEqual(@as(u32, 2), checked_js.checker.unmodeled_any_sites.count());
 }
 
 fn newTsxSetup(source: []const u8) !*TestSetup {
@@ -214480,12 +214494,34 @@ test "checker: unbound this expression emits TS2683" {
         \\}
     );
     defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
-    var found = false;
-    for (s.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.this_implicitly_any) found = true;
-    }
-    try T.expect(found);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.this_implicitly_any));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, 9002));
+    try T.expectEqual(@as(u32, 1), s.checker.unmodeled_any_sites.count());
+
+    const fn_node = firstStatement(s);
+    const body = hir_mod.blockStmts(&s.hir, hir_mod.fnDeclOf(&s.hir, fn_node).body);
+    try T.expectEqual(types.Primitive.unmodeled, s.hir.typeOf(hir_mod.varDeclOf(&s.hir, body[0]).init));
+}
+
+test "checker: explicit noImplicitThis false keeps unbound this as ordinary any" {
+    const s = try newSetup(
+        \\// @noImplicitThis: false
+        \\function f() {
+        \\  var p = this;
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.this_implicitly_any));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, 9002));
+    try T.expectEqual(@as(u32, 0), s.checker.unmodeled_any_sites.count());
+
+    const fn_node = firstStatement(s);
+    const body = hir_mod.blockStmts(&s.hir, hir_mod.fnDeclOf(&s.hir, fn_node).body);
+    try T.expectEqual(types.Primitive.any, s.hir.typeOf(hir_mod.varDeclOf(&s.hir, body[0]).init));
 }
 
 test "checker: this in class constructor parameter default does not emit TS2683" {
@@ -214499,10 +214535,13 @@ test "checker: this in class constructor parameter default does not emit TS2683"
         \\}
     );
     defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.this_implicitly_any);
     }
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, 9002));
+    try T.expectEqual(@as(u32, 0), s.checker.unmodeled_any_sites.count());
 }
 
 test "checker: yield used as a type ref emits TS2304" {
@@ -242379,6 +242418,7 @@ test "checker: this in namespace body emits both TS2331 and TS2683" {
         \\}
     );
     defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
     var saw_2331 = false;
     var saw_2683 = false;
@@ -242388,6 +242428,8 @@ test "checker: this in namespace body emits both TS2331 and TS2683" {
     }
     try T.expect(saw_2331);
     try T.expect(saw_2683);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, 9002));
+    try T.expectEqual(@as(u32, 1), s.checker.unmodeled_any_sites.count());
 }
 
 test "checker: this in namespace decorator emits TS2331 and TS2683" {
@@ -271140,6 +271182,7 @@ test "checker: TS7041 fires when a top-level arrow captures the global this" {
         \\const f = () => { return this; };
     );
     defer destroyBoundSetup(s);
+    s.base.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.base.checker.checkSourceFile(s.base.root);
     var found = false;
     for (s.base.checker.diagnostics.items) |d| {
@@ -271151,6 +271194,8 @@ test "checker: TS7041 fires when a top-level arrow captures the global this" {
         for (s.base.checker.diagnostics.items) |d| std.debug.print("  TS{d}: {s}\n", .{ d.code, d.message });
     }
     try T.expect(found);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s.base, 9002));
+    try T.expectEqual(@as(u32, 0), s.base.checker.unmodeled_any_sites.count());
 }
 
 test "checker: TS7041 fires for a property access on a global-captured this" {
