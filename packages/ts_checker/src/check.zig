@@ -124135,7 +124135,7 @@ pub const Checker = struct {
                 .{type_args.len},
             );
             try self.reportOnce(type_args[0], TsCodes.expected_n_type_arguments, msg);
-            return types.Primitive.any;
+            return self.recordUnmodeledAny(element);
         };
 
         const min_args = self.genericAliasMinTypeArgCount(info);
@@ -124151,7 +124151,7 @@ pub const Checker = struct {
             );
             try self.reportOnce(type_args[0], TsCodes.expected_n_type_arguments, msg);
             for (type_args) |type_arg| _ = self.lowererLowerWithTypeParams(type_arg) catch types.Primitive.unknown;
-            return types.Primitive.any;
+            return self.recordUnmodeledAny(element);
         }
 
         var subs: std.AutoHashMapUnmanaged(TypeId, TypeId) = .empty;
@@ -209128,6 +209128,31 @@ test "checker: JSX class type arguments enforce arity constraints and props" {
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_not_assignable));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.expected_n_type_arguments));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_does_not_satisfy_constraint));
+}
+
+test "checker: JSX class type argument arity recoveries are traced" {
+    const s = try newTsxSetup(
+        \\/// <reference path="/.lib/react.d.ts" />
+        \\import React = require("react");
+        \\interface Props { value: string; }
+        \\declare class Plain extends React.Component<Props, {}> {}
+        \\declare class Generic<P> extends React.Component<P, {}> {}
+        \\const plainRecovery = <Plain<Props> value="plain" />;
+        \\const genericRecovery = <Generic<Props, Props> value="generic" />;
+        \\const validPlain = <Plain value="plain" />;
+        \\const validGeneric = <Generic<Props> value="generic" />;
+    );
+    defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.expected_n_type_arguments));
+    try T.expectEqual(@as(u32, 2), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 2), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code_prefix != .HM or diagnostic.code != HomeRule.list_unmodeled_any.definition().code) continue;
+        try T.expect(s.hir.kindOf(diagnostic.node) == .jsx_self_closing);
+    }
 }
 
 test "checker: JSX spread attributes must be object-like" {
