@@ -119294,6 +119294,11 @@ pub const Checker = struct {
         const has_diagnosed_any_recovery = switch (expression_kind) {
             .element_access => self.diagnosticExists(node, TsCodes.element_implicitly_any) or
                 self.diagnosticExists(node, TsCodes.element_implicitly_any_no_index_signature_did_you_mean_call),
+            .member_access => self.typeIsAnyLike(t) and
+                (self.diagnosticExists(node, TsCodes.property_does_not_exist_did_you_mean) or
+                    self.diagnosticExists(node, TsCodes.property_does_not_exist_static_member) or
+                    self.diagnosticExists(node, TsCodes.property_does_not_exist_dom_library) or
+                    self.diagnosticExists(node, TsCodes.property_does_not_exist_target_library)),
             .identifier, .this_expr => blk: {
                 const implicit_this = !self.explicitNoImplicitThisIsDisabled() and
                     self.diagnosticExists(node, TsCodes.this_implicitly_any);
@@ -148085,7 +148090,7 @@ pub const Checker = struct {
     }
 
     fn computedPropertyKeyTypeIsValid(self: *Checker, t: TypeId) CheckError!bool {
-        if (t == types.Primitive.any or t == types.Primitive.unknown) return true;
+        if (self.typeIsAnyLike(t) or t == types.Primitive.unknown) return true;
         if (t >= self.interner.pool.typeCount()) return false;
         if (try self.reduceDisplayedAliasInstance(t)) |reduced| {
             if (reduced != t) return try self.computedPropertyKeyTypeIsValid(reduced);
@@ -199938,6 +199943,7 @@ test "checker: string includes under target=ES5 emits TS2550" {
         \\s.includes("x");
     );
     defer destroyBoundSetup(b);
+    b.base.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try b.base.checker.checkSourceFile(b.base.root);
 
     var found = false;
@@ -199950,6 +199956,8 @@ test "checker: string includes under target=ES5 emits TS2550" {
         }
     }
     try T.expect(found);
+    try T.expectEqual(@as(u32, 1), b.base.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 1), checkerCountHomeCode(b.base, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: string includes under lib ES2015 does not emit TS2550" {
@@ -257451,6 +257459,7 @@ test "checker: missing window property under lib ES5 emits TS2812" {
         \\window.MobileDetect;
     );
     defer destroyBoundSetup(b);
+    b.base.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try b.base.checker.checkSourceFile(b.base.root);
 
     var found = false;
@@ -257463,6 +257472,8 @@ test "checker: missing window property under lib ES5 emits TS2812" {
         }
     }
     try T.expect(found);
+    try T.expectEqual(@as(u32, 1), b.base.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 1), checkerCountHomeCode(b.base, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: seeded window global exposes customElements" {
@@ -268566,9 +268577,12 @@ test "checker: TS2551 did-you-mean for misspelled property access" {
         \\const w = b.widht;
     );
     defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist_did_you_mean));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(u32, 1), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 1), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
     for (s.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.property_does_not_exist_did_you_mean) {
             try T.expectEqualStrings("Property 'widht' does not exist on type 'Box'. Did you mean 'width'?", d.message);
@@ -268592,6 +268606,28 @@ test "checker: TS2551 suggests primitive string prototype members" {
     );
 }
 
+test "checker: TS2576 static-member suggestion traces member recovery" {
+    const s = try newSetup(
+        \\class Box {
+        \\  static value = 1;
+        \\  own = 2;
+        \\}
+        \\const box = new Box();
+        \\box.value;
+        \\box.own;
+        \\declare const dynamic: any;
+        \\dynamic.missing;
+    );
+    defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist_static_member));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(u32, 1), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 1), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
+}
+
 test "checker: TS2551 does NOT fire when no similar property exists" {
     // A wholly-unrelated property name must stay on bare TS2339.
     const s = try newSetup(
@@ -268600,9 +268636,12 @@ test "checker: TS2551 does NOT fire when no similar property exists" {
         \\const z = b.zzzzzzzz;
     );
     defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist_did_you_mean));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(u32, 0), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 0), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: TS1334 fires for unique symbol on for-of/for-in loop binding" {
