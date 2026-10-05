@@ -115440,7 +115440,7 @@ pub const Checker = struct {
                 // `foo<U, U>(...)` inside `function foo<T, U>` would
                 // otherwise wrongly flag.
                 if (type_arg_nodes.len > 0 and !callee_had_generic_record and
-                    (callee_t == types.Primitive.any or callee_t == types.Primitive.unknown) and
+                    (self.typeIsAnyLike(callee_t) or callee_t == types.Primitive.unknown) and
                     self.hir.kindOf(c.callee) == .identifier)
                 {
                     const callee_name = hir_mod.identifierOf(self.hir, c.callee).name;
@@ -115456,7 +115456,7 @@ pub const Checker = struct {
                     callee_had_generic_record = true;
                 }
                 if (type_arg_nodes.len > 0 and !callee_had_generic_record) {
-                    if (effective_callee_t == types.Primitive.any or effective_callee_t == types.Primitive.unknown) {
+                    if (self.typeIsAnyLike(effective_callee_t) or effective_callee_t == types.Primitive.unknown) {
                         if (!self.callCalleeAlreadyHasUnresolvedNameDiagnostic(c.callee) and
                             !self.callCalleeAlreadyHasMissingPropertyDiagnostic(c.callee))
                         {
@@ -115802,7 +115802,7 @@ pub const Checker = struct {
                     const this_ret = try self.instantiateMemberThisReturn(c.callee, ret);
                     break :blk try self.optionalChainResult(this_ret, call_is_optional_chain);
                 }
-                if (callee_t != types.Primitive.any and callee_t != types.Primitive.unknown) {
+                if (!self.typeIsAnyLike(callee_t) and callee_t != types.Primitive.unknown) {
                     // Union of callables (`typeof f1 | typeof f2`) is
                     // callable when every constituent is callable ÃÂ¢ÃÂÃÂ
                     // tsc only fires TS2349 when at least one branch
@@ -119288,7 +119288,11 @@ pub const Checker = struct {
                 const invalid_this = self.typeIsAnyLike(t) and
                     (self.diagnosticExists(node, TsCodes.this_in_current_location) or
                         self.diagnosticExists(node, TsCodes.this_in_namespace_body));
-                break :blk implicit_this or invalid_this;
+                const type_only_value = expression_kind == .identifier and
+                    self.typeIsAnyLike(t) and
+                    (self.diagnosticExists(node, TsCodes.type_only_import_used_as_value) or
+                        self.diagnosticExists(node, TsCodes.type_only_export_used_as_value));
+                break :blk implicit_this or invalid_this or type_only_value;
             },
             else => false,
         };
@@ -266546,6 +266550,7 @@ test "checker: TS1362 fires for a normally-imported name exported type-only by i
         \\Foo;
     );
     defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     var stub = CrossModuleStubResolver{ .canned_module_name = "\"b\"", .exported_name = "Foo", .exported_type = false, .type_only_export = true };
     try runCrossModuleCheck(s, &stub);
     try T.expect(checkerHasCodeAndMessage(
@@ -266553,6 +266558,8 @@ test "checker: TS1362 fires for a normally-imported name exported type-only by i
         TsCodes.type_only_export_used_as_value,
         "'Foo' cannot be used as a value because it was exported using 'export type'.",
     ));
+    try T.expectEqual(@as(u32, 1), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 1), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: tsgo parity follow-up bare type value export overrides alias metadata" {
@@ -266580,6 +266587,7 @@ test "checker: cross-module import-type origin reports TS1361 without a spurious
         \\function local(fn: (value: number) => number) { return fn(1); }
     );
     defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     var stub = CrossModuleStubResolver{
         .canned_module_name = "\"alias\"",
         .exported_name = "fn",
@@ -266589,8 +266597,36 @@ test "checker: cross-module import-type origin reports TS1361 without a spurious
         .type_only_import = true,
     };
     try runCrossModuleCheck(s, &stub);
-    try T.expectEqual(@as(usize, 1), s.checker.diagnostics.items.len);
-    try T.expectEqual(TsCodes.type_only_import_used_as_value, s.checker.diagnostics.items[0].code);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_only_import_used_as_value));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.not_callable));
+    try T.expectEqual(@as(u32, 1), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 1), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
+}
+
+test "checker: local import-type value use traces TS1361 recovery only" {
+    const b = try newBoundSetup(
+        \\// @filename: /dep.ts
+        \\export function TypeOnlyCall() {}
+        \\export class TypeOnlyConstruct {}
+        \\export class RuntimeValue {}
+        \\// @filename: /index.ts
+        \\import type { TypeOnlyCall, TypeOnlyConstruct } from './dep';
+        \\import { RuntimeValue } from './dep';
+        \\TypeOnlyCall();
+        \\new TypeOnlyConstruct();
+        \\RuntimeValue;
+    );
+    defer destroyBoundSetup(b);
+    const s = b.base;
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_only_import_used_as_value));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_only_export_used_as_value));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.not_callable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, 2351));
+    try T.expectEqual(@as(u32, 2), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 2), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: ambiguous type-only export specifiers publish aliases without TS2661" {
@@ -266644,9 +266680,12 @@ test "checker: no TS1362 when the module exports the name normally (value)" {
         \\Foo;
     );
     defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     var stub = CrossModuleStubResolver{ .canned_module_name = "\"b\"", .exported_name = "Foo", .exported_type = true, .type_only_export = false };
     try runCrossModuleCheck(s, &stub);
     try T.expect(!checkerHasAnyCode(s, TsCodes.type_only_export_used_as_value));
+    try T.expectEqual(@as(u32, 0), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 0), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: default expression exports retain runtime value status" {
