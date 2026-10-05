@@ -114141,6 +114141,7 @@ pub const Checker = struct {
                 if (callee_t == types.Primitive.unknown) {
                     if (self.shouldReportUnknownOperand(c.callee)) {
                         try self.reportUnknownObjectOperand(c.callee);
+                        break :blk try self.recordUnmodeledAny(node);
                     }
                     break :blk types.Primitive.any;
                 }
@@ -114880,6 +114881,7 @@ pub const Checker = struct {
                     }
                     if (self.shouldReportUnknownOperand(c.callee)) {
                         try self.reportUnknownObjectOperand(c.callee);
+                        break :blk try self.recordUnmodeledAny(node);
                     }
                     break :blk types.Primitive.any;
                 }
@@ -116146,6 +116148,7 @@ pub const Checker = struct {
                 if (obj_t == types.Primitive.unknown) {
                     if (self.shouldReportUnknownOperand(m.object)) {
                         try self.reportUnknownObjectOperand(m.object);
+                        break :blk try self.recordUnmodeledAny(node);
                     }
                     break :blk types.Primitive.any;
                 }
@@ -117148,6 +117151,7 @@ pub const Checker = struct {
                 if (obj_t == types.Primitive.unknown) {
                     if (self.shouldReportUnknownOperand(e.object)) {
                         try self.reportUnknownObjectOperand(e.object);
+                        break :blk try self.recordUnmodeledAny(node);
                     }
                     break :blk types.Primitive.any;
                 }
@@ -206160,6 +206164,63 @@ test "checker: strict unknown operands report TS18046 consistently" {
     b.base.checker.setStrictFlags(.{ .strict_null_checks = true });
     try b.base.checker.checkSourceFile(b.base.root);
     try T.expectEqual(@as(usize, 9), checkerCountCode(b.base, TsCodes.unknown_catch_variable));
+}
+
+test "checker: unknown object operations trace TS18046 recoveries" {
+    const s = try newSetup(
+        \\declare const value: unknown;
+        \\value.property;
+        \\value[0];
+        \\value();
+        \\new value();
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.unknown_catch_variable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.object_is_unknown));
+    try T.expectEqual(@as(u32, 4), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 4), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
+}
+
+test "checker: non-entity unknown object operations trace TS2571 recoveries" {
+    const s = try newSetup(
+        \\declare const value: unknown;
+        \\(value as unknown).property;
+        \\(value as unknown)[0];
+        \\(value as unknown)();
+        \\new (value as unknown)();
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.unknown_catch_variable));
+    try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.object_is_unknown));
+    try T.expectEqual(@as(u32, 4), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 4), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
+}
+
+test "checker: explicit any object operations remain ordinary any" {
+    const s = try newSetup(
+        \\declare const value: any;
+        \\value.property;
+        \\value[0];
+        \\value();
+        \\new value();
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.unknown_catch_variable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.object_is_unknown));
+    try T.expectEqual(@as(u32, 0), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 0), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: unknown equality and switch clauses narrow positive branches" {
