@@ -87623,7 +87623,7 @@ pub const Checker = struct {
             if (op.is_computed) {
                 const diagnostics_before_key = self.diagnostics.items.len;
                 const key_t = try self.checkExpression(op.key);
-                if (key_t == types.Primitive.any and self.hir.kindOf(op.key) == .call_expr) {
+                if (self.typeIsAnyLike(key_t) and self.hir.kindOf(op.key) == .call_expr) {
                     var invalid_call_result = false;
                     for (self.diagnostics.items[diagnostics_before_key..]) |diagnostic| {
                         if (diagnostic.code == TsCodes.not_callable) {
@@ -87672,7 +87672,7 @@ pub const Checker = struct {
                         has_dynamic_computed_key = true;
                     }
                 }
-                if (!reported_primitive_computed_key and key_t != types.Primitive.any and
+                if (!reported_primitive_computed_key and !self.typeIsAnyLike(key_t) and
                     try self.reportMissingIndexForComputedBindingKey(op.key, source_t, key_t, true))
                 {
                     has_dynamic_computed_key = true;
@@ -115920,7 +115920,11 @@ pub const Checker = struct {
                         }
                     }
                 }
-                if (self.diagnosticExists(c.callee, TsCodes.get_accessor_not_callable)) {
+                if (self.diagnosticExists(c.callee, TsCodes.get_accessor_not_callable) or
+                    self.diagnosticExists(c.callee, TsCodes.not_callable) or
+                    self.diagnosticExists(c.callee, TsCodes.value_only_constructable) or
+                    self.diagnosticExists(c.callee, TsCodes.missing_comma_between_template_expressions))
+                {
                     const recovery_t = try self.recordUnmodeledAny(node);
                     break :blk try self.optionalChainResult(recovery_t, call_is_optional_chain);
                 }
@@ -270362,6 +270366,43 @@ test "checker: TS6234 does not replace TS2349 for getter calls with arguments" {
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.get_accessor_not_callable));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.not_callable));
+}
+
+test "checker: invalid calls trace TS2348 and TS2349 recoveries" {
+    const s = try newSetup(
+        \\class OnlyConstructable {}
+        \\declare const notCallable: number;
+        \\declare const maybeNotCallable: number | undefined;
+        \\OnlyConstructable();
+        \\notCallable();
+        \\maybeNotCallable?.();
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.value_only_constructable));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.not_callable));
+    try T.expectEqual(@as(u32, 3), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 3), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
+}
+
+test "checker: explicit any calls remain ordinary any" {
+    const s = try newSetup(
+        \\declare const dynamic: any;
+        \\dynamic();
+        \\dynamic?.();
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.value_only_constructable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.not_callable));
+    try T.expectEqual(@as(u32, 0), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 0), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: TS6212 related info suggests calling assigned function values" {
