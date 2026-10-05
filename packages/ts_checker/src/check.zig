@@ -114205,7 +114205,7 @@ pub const Checker = struct {
                 }
                 if (try self.notConstructableMixedUnionChain(callee_t)) |_| {
                     try self.reportNotConstructableWithNoConstructSignatures(c.callee, callee_t);
-                    break :blk types.Primitive.any;
+                    break :blk try self.recordUnmodeledAny(node);
                 }
                 if (try self.resolveUnionSignatureInvocation(
                     node,
@@ -114218,12 +114218,12 @@ pub const Checker = struct {
                 }
                 if (try self.unionHasIncompatibleConstructSignatures(callee_t)) {
                     try self.reportNotConstructableWithNoConstructSignatures(c.callee, callee_t);
-                    break :blk types.Primitive.any;
+                    break :blk try self.recordUnmodeledAny(node);
                 }
                 if (try self.namespaceImportInvocationRelatedInfo(c.callee, true) != null) {
                     const namespace_t = self.interner.internObjectType(&.{}) catch return error.OutOfMemory;
                     try self.reportNotConstructableWithNoConstructSignatures(c.callee, namespace_t);
-                    break :blk types.Primitive.any;
+                    break :blk try self.recordUnmodeledAny(node);
                 }
                 for (hir_mod.callTypeArgs(self.hir, node)) |type_arg_node| {
                     if (try self.firstVisibleStaticClassTypeParamRefIn(type_arg_node, node)) |ref_node| {
@@ -114686,7 +114686,8 @@ pub const Checker = struct {
                 }
                 break :blk if (self.diagnosticExists(node, TsCodes.new_expression_implicitly_any) or
                     self.diagnosticExists(node, TsCodes.new_expression_not_void) or
-                    self.diagnosticExists(node, TsCodes.new_expression_this_void))
+                    self.diagnosticExists(node, TsCodes.new_expression_this_void) or
+                    self.diagnosticExists(c.callee, 2351))
                     try self.recordUnmodeledAny(node)
                 else
                     types.Primitive.any;
@@ -203815,6 +203816,7 @@ test "checker: new expression rejects primitive callee expressions" {
         \\new (a ** b);
     );
     defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
 
     var found = false;
@@ -203822,6 +203824,8 @@ test "checker: new expression rejects primitive callee expressions" {
         if (d.code == 2351) found = true;
     }
     try T.expect(found);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, 9002));
+    try T.expectEqual(@as(u32, 1), s.checker.unmodeled_any_sites.count());
 }
 
 test "checker: parenthesized new anchors TS2351 at callee token" {
@@ -205274,6 +205278,7 @@ test "checker: not-constructable (TS2351) carries TS2761 'no construct signature
         \\new x();
     );
     defer destroyBoundSetup(b);
+    b.base.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try b.base.checker.checkSourceFile(b.base.root);
     var saw_2351 = false;
     var saw_2761_chain = false;
@@ -205286,6 +205291,8 @@ test "checker: not-constructable (TS2351) carries TS2761 'no construct signature
     }
     try T.expect(saw_2351);
     try T.expect(saw_2761_chain);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, 9002));
+    try T.expectEqual(@as(u32, 1), b.base.checker.unmodeled_any_sites.count());
 }
 
 test "checker: construct union with no constructable constituents reports TS2759 chain detail" {
@@ -205294,6 +205301,7 @@ test "checker: construct union with no constructable constituents reports TS2759
         \\new C();
     );
     defer destroyBoundSetup(b);
+    b.base.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try b.base.checker.checkSourceFile(b.base.root);
     var saw_ts2759_chain = false;
     for (b.base.checker.diagnostics.items) |d| {
@@ -205305,6 +205313,8 @@ test "checker: construct union with no constructable constituents reports TS2759
         }
     }
     try T.expect(saw_ts2759_chain);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, 9002));
+    try T.expectEqual(@as(u32, 1), b.base.checker.unmodeled_any_sites.count());
 }
 
 test "checker: construct union with non-constructable branch reports TS2760 chain detail" {
@@ -205314,6 +205324,7 @@ test "checker: construct union with non-constructable branch reports TS2760 chai
         \\new C();
     );
     defer destroyBoundSetup(b);
+    b.base.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try b.base.checker.checkSourceFile(b.base.root);
     var saw_ts2760_chain = false;
     for (b.base.checker.diagnostics.items) |d| {
@@ -205326,6 +205337,8 @@ test "checker: construct union with non-constructable branch reports TS2760 chai
         }
     }
     try T.expect(saw_ts2760_chain);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, 9002));
+    try T.expectEqual(@as(u32, 1), b.base.checker.unmodeled_any_sites.count());
 }
 
 test "checker: any constituent makes a construct union permissive" {
@@ -205336,6 +205349,7 @@ test "checker: any constituent makes a construct union permissive" {
         \\new (dynamic as any | Ctor)<number>();
     );
     defer destroyBoundSetup(b);
+    b.base.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try b.base.checker.checkSourceFile(b.base.root);
     var untyped_type_args_count: usize = 0;
     for (b.base.checker.diagnostics.items) |d| {
@@ -205343,6 +205357,8 @@ test "checker: any constituent makes a construct union permissive" {
         if (d.code == TsCodes.untyped_function_type_args) untyped_type_args_count += 1;
     }
     try T.expectEqual(@as(usize, 1), untyped_type_args_count);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, 9002));
+    try T.expectEqual(@as(u32, 0), b.base.checker.unmodeled_any_sites.count());
 }
 
 test "checker: overloaded construct union with no compatible signatures reports TS2762 chain detail" {
@@ -205359,6 +205375,7 @@ test "checker: overloaded construct union with no compatible signatures reports 
         \\new C("x");
     );
     defer destroyBoundSetup(b);
+    b.base.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try b.base.checker.checkSourceFile(b.base.root);
     var saw_ts2762_chain = false;
     for (b.base.checker.diagnostics.items) |d| {
@@ -205373,6 +205390,8 @@ test "checker: overloaded construct union with no compatible signatures reports 
         }
     }
     try T.expect(saw_ts2762_chain);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, 9002));
+    try T.expectEqual(@as(u32, 1), b.base.checker.unmodeled_any_sites.count());
 }
 
 test "checker: cannot-find node global uses TS2580 (short) under wildcard types, TS2591 otherwise" {
@@ -205520,6 +205539,7 @@ test "checker: namespace import construction carries TS7038 related info" {
         \\new C();
     );
     defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
     var saw_2351 = false;
     var saw_7038 = false;
@@ -205536,6 +205556,8 @@ test "checker: namespace import construction carries TS7038 related info" {
     }
     try T.expect(saw_2351);
     try T.expect(saw_7038);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, 9002));
+    try T.expectEqual(@as(u32, 1), s.checker.unmodeled_any_sites.count());
 }
 
 test "checker: class implements primitive reports TS2864" {

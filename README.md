@@ -194,7 +194,7 @@ included), and the real-world correctness audits.
 
 The provenance row currently covers expression-stack exhaustion, invalid
 TypeScript and checked-JS catch-annotation recovery, TS7009 implicit-constructor
-recovery, TS2350/TS2679 invalid-`new` recovery, TS7015 numeric-index mismatch recovery, TS7017 global-`this` index
+recovery, TS2350/TS2351/TS2679 invalid-`new` recovery, TS7015 numeric-index mismatch recovery, TS7017 global-`this` index
 recovery, TS7052/TS7053 implicit element-access recovery, TS2683 implicit-`this`
 recovery, TS2331/TS2332 invalid-`this` expression recovery, diagnosed
 TS2331/TS2332/TS2465/TS2683/TS2816 `typeof this` recovery, plus TS2589, TS2590, and TS2799
