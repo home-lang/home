@@ -114794,7 +114794,7 @@ pub const Checker = struct {
                             const ka_args = hir_mod.callArgs(self.hir, node);
                             for (ka_args) |arg| _ = try self.checkExpression(arg);
                             try self.report(c.callee, TsCodes.super_call_not_permitted, "Super calls are not permitted outside constructors or in nested functions inside constructors.");
-                            break :blk types.Primitive.any;
+                            break :blk try self.recordUnmodeledAny(node);
                         }
                         if (self.lookupNarrow(id.name) == null) {
                             // Skip TS2335 when the super reference lives inside a
@@ -114810,13 +114810,16 @@ pub const Checker = struct {
                                     const args2 = hir_mod.callArgs(self.hir, node);
                                     for (args2) |arg| _ = try self.checkExpression(arg);
                                     try self.report(node, TsCodes.super_call_when_extends_null, "A constructor cannot contain a 'super' call when its class extends 'null'.");
-                                    break :blk types.Primitive.any;
+                                    break :blk try self.recordUnmodeledAny(node);
                                 }
                                 if (self.nodeInsideDecoratorOnDerivedClassMember(c.callee)) {
                                     try self.report(c.callee, TsCodes.super_not_in_derived_member, "'super' can only be referenced in members of derived classes or object literal expressions.");
                                 } else {
                                     try self.report(c.callee, TsCodes.super_not_derived, "'super' can only be referenced in a derived class.");
                                 }
+                                const args2 = hir_mod.callArgs(self.hir, node);
+                                for (args2) |arg| _ = try self.checkExpression(arg);
+                                break :blk try self.recordUnmodeledAny(node);
                             }
                         } else {
                             const super_t = self.lookupNarrow(id.name) orelse types.Primitive.any;
@@ -217979,6 +217982,39 @@ test "checker: super call in non-derived class emits TS2335" {
         if (d.code == TsCodes.super_not_derived) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: invalid super calls retain unmodeled recovery provenance" {
+    const s = try newSetup(
+        \\class Base {}
+        \\class NoBase {
+        \\  constructor() { super(); }
+        \\}
+        \\class NullBase extends null {
+        \\  constructor() { super(); }
+        \\}
+        \\class WrongMember extends Base {
+        \\  method() { super(); }
+        \\}
+        \\class NestedCall extends Base {
+        \\  constructor() {
+        \\    function nested() { super(); }
+        \\    nested();
+        \\  }
+        \\}
+        \\class Valid extends Base {
+        \\  constructor() { super(); }
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.super_not_derived));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.super_call_not_permitted));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.super_call_when_extends_null));
+    try T.expectEqual(@as(u32, 4), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 4), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: derived constructor super call inside statement suppresses TS2377" {
