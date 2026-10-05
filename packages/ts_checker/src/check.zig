@@ -64593,7 +64593,7 @@ pub const Checker = struct {
         if (try self.virtualCommonJsTypedefAliasType(anchor, spec, leaf)) |type_export| {
             if (space == .value) {
                 try self.reportCommonJsImportTypeMissingExport(anchor, spec, leaf, missing_pos);
-                return types.Primitive.any;
+                return @as(?TypeId, try self.diagnosedAnyRecovery(anchor, TsCodes.namespace_no_exported_member));
             }
             return type_export;
         }
@@ -64622,7 +64622,7 @@ pub const Checker = struct {
                 } else {
                     try self.reportVirtualImportTypeMissingExport(anchor, spec, leaf, missing_pos);
                 }
-                return types.Primitive.any;
+                return @as(?TypeId, try self.diagnosedAnyRecovery(anchor, TsCodes.namespace_no_exported_member));
             }
         } else {
             const spec_id = self.string_interner.intern(spec) catch return error.OutOfMemory;
@@ -64637,7 +64637,7 @@ pub const Checker = struct {
             if (jsdoc_t != value_t) return jsdoc_t;
         }
         try self.reportCommonJsImportTypeMissingExport(anchor, spec, leaf, missing_pos);
-        return types.Primitive.any;
+        return @as(?TypeId, try self.diagnosedAnyRecovery(anchor, TsCodes.namespace_no_exported_member));
     }
 
     fn reportVirtualImportTypeMissingExport(
@@ -246850,9 +246850,12 @@ test "checker: checkjs JSDoc import type resolves CommonJS exported class alias"
         \\}
     );
     defer destroyBoundSetup(b);
+    b.base.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try b.base.checker.checkSourceFile(b.base.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.namespace_no_exported_member));
     try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(u32, 0), b.base.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 0), checkerCountHomeCode(b.base, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: checkjs JSDoc implements resolves ambient namespace interfaces" {
@@ -251970,12 +251973,15 @@ test "checker: CommonJS object export value types render export assignment names
         \\type Missing = import("./mod").Thing;
     );
     defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
     try T.expect(checkerHasCodeAndMessage(
         s,
         TsCodes.namespace_no_exported_member,
         "Namespace '\"mod\".export=' has no exported member 'Thing'.",
     ));
+    try T.expectEqual(@as(u32, 1), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 1), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: checkjs whole-object prototype assignment merges members onto the instance (no TS2339)" {
@@ -280815,9 +280821,31 @@ test "checker: unexported CommonJS JSDoc typedef stays private" {
         \\function use(value) {}
     );
     defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
 
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.namespace_no_exported_member));
+    try T.expectEqual(@as(u32, 1), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 1), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
+}
+
+test "checker: CommonJS runtime-only named export type recovery is traced" {
+    const s = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: mod.js
+        \\exports.value = 1;
+        \\// @filename: use.js
+        \\/** @param {import("./mod").value} value */
+        \\function use(value) {}
+    );
+    defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.namespace_no_exported_member));
+    try T.expectEqual(@as(u32, 1), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 1), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: checked JavaScript initializes ambient namespace interface values" {
