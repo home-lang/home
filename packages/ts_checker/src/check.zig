@@ -6766,6 +6766,16 @@ pub const Checker = struct {
         return types.Primitive.unmodeled;
     }
 
+    /// Preserve an any-like continuation only when the checker actually
+    /// emitted the diagnostic that explains it. Some reporters deliberately
+    /// suppress a diagnostic after discovering type-space meaning; those
+    /// compatibility fallbacks must remain ordinary `any` rather than being
+    /// mislabeled as checker-originated recovery.
+    fn diagnosedAnyRecovery(self: *Checker, node: NodeId, code: u32) CheckError!TypeId {
+        if (self.diagnosticExists(node, code)) return self.recordUnmodeledAny(node);
+        return types.Primitive.any;
+    }
+
     fn removeResolvedConditionalIteratorDiagnostics(self: *Checker) void {
         var write: usize = 0;
         for (self.diagnostics.items) |diagnostic| {
@@ -63533,7 +63543,7 @@ pub const Checker = struct {
                         }
                         if ((try self.virtualRelativeModuleNamedExportRuntimeStatus(anchor, spec_text, sp.imported)) == .value) {
                             try self.reportValueUsedAsTypeDidYouMeanTypeofOnce(anchor, local_name);
-                            return types.Primitive.any;
+                            return @as(?TypeId, try self.diagnosedAnyRecovery(anchor, TsCodes.value_used_as_type_did_you_mean_typeof));
                         }
                     }
                     if (try self.importSpecifierResolvesViaExternal(anchor, spec_text)) return types.Primitive.any;
@@ -78203,7 +78213,7 @@ pub const Checker = struct {
                         try self.reportUnresolvedCallTypeArgumentNodes(args_extra);
                         for (args_extra) |a_node| _ = try self.lowererLowerWithTypeParams(a_node);
                     }
-                    return types.Primitive.any;
+                    return self.diagnosedAnyRecovery(type_node, TsCodes.value_used_as_type_did_you_mean_typeof);
                 }
                 if (try self.programExportedClassInstanceTypeForImportedName(r.name, type_node)) |instance| return instance;
                 if (try self.programExportedTypeForLocal(r.name, type_node)) |instance| return instance;
@@ -78253,7 +78263,7 @@ pub const Checker = struct {
                                 return class_t;
                             }
                             try self.reportValueUsedAsTypeDidYouMeanTypeofOnce(type_node, r.name);
-                            return types.Primitive.any;
+                            return self.diagnosedAnyRecovery(type_node, TsCodes.value_used_as_type_did_you_mean_typeof);
                         }
                     }
                     if (self.enclosingDeclaredTypeParameterType(r.name, type_node)) |t| return t;
@@ -78375,7 +78385,7 @@ pub const Checker = struct {
                             return class_t;
                         }
                         try self.reportValueUsedAsTypeDidYouMeanTypeofOnce(type_node, r.name);
-                        return types.Primitive.any;
+                        return self.diagnosedAnyRecovery(type_node, TsCodes.value_used_as_type_did_you_mean_typeof);
                     }
                     if (self.type_names.get(r.name)) |t| return t;
                     if (try self.reportInvalidUppercasePrimitiveTypeRef(type_node, r.name)) return types.Primitive.any;
@@ -78393,7 +78403,7 @@ pub const Checker = struct {
                     if (is_program_global_type) return types.Primitive.any;
                     if (self.visibleValueOnlyDeclarationExistsAt(type_node, r.name)) {
                         try self.reportValueUsedAsTypeDidYouMeanTypeofOnce(type_node, r.name);
-                        return types.Primitive.any;
+                        return self.diagnosedAnyRecovery(type_node, TsCodes.value_used_as_type_did_you_mean_typeof);
                     }
                     const lowered = try self.lowerer.lower(type_node);
                     if (lowered != types.Primitive.unknown or std.mem.eql(u8, name_str, "unknown")) return lowered;
@@ -79092,11 +79102,14 @@ pub const Checker = struct {
                                 !self.fnHasJsDocClassOrConstructorTag(function_node))
                             {
                                 try self.reportValueUsedAsTypeDidYouMeanTypeofOnce(type_node, r.name);
-                                return types.Primitive.any;
+                                return self.diagnosedAnyRecovery(type_node, TsCodes.value_used_as_type_did_you_mean_typeof);
                             }
                         }
                         if (self.checkJsFunctionVariableInitializer(type_node, r.name)) |_| {
                             try self.reportValueUsedAsTypeDidYouMeanTypeofOnce(type_node, r.name);
+                            if (self.diagnosticExists(type_node, TsCodes.value_used_as_type_did_you_mean_typeof)) {
+                                return self.recordUnmodeledAny(type_node);
+                            }
                             return self.lowerer.lower(type_node);
                         }
                     }
@@ -79115,7 +79128,7 @@ pub const Checker = struct {
                     } else if (!self.typeRefNameAcceptsTypeArgsAt(type_node, r.name, name_str)) {
                         try self.reportCannotFindNameOnce(type_node, r.name);
                     }
-                    return types.Primitive.any;
+                    return self.diagnosedAnyRecovery(type_node, TsCodes.value_used_as_type_did_you_mean_typeof);
                 }
             },
             .typeof_type => {
@@ -80164,7 +80177,7 @@ pub const Checker = struct {
         const decl = self.findVisibleTypeDeclInNamespace(ns_node, r.name, type_node) orelse {
             if (self.findExportedValueDeclInNamespace(ns_node, r.name) != null) {
                 try self.reportQualifiedValueUsedAsTypeDidYouMeanTypeofOnce(type_node);
-                return types.Primitive.any;
+                return @as(?TypeId, try self.diagnosedAnyRecovery(type_node, TsCodes.value_used_as_type_did_you_mean_typeof));
             }
             return null;
         };
@@ -80840,7 +80853,7 @@ pub const Checker = struct {
                 self.externalModuleNamedExportRuntimeStatus(type_node, spec, leaf_name);
             if (status == .value) {
                 try self.reportQualifiedValueUsedAsTypeDidYouMeanTypeofOnce(type_node);
-                return types.Primitive.any;
+                return @as(?TypeId, try self.diagnosedAnyRecovery(type_node, TsCodes.value_used_as_type_did_you_mean_typeof));
             }
         }
         return null;
@@ -96981,10 +96994,10 @@ pub const Checker = struct {
                 return class_t;
             }
         }
-        if (try self.reportJsDocDestructuredRequireValueUsedAsType(src, base)) return types.Primitive.any;
-        if (try self.reportJsDocRequireMemberAliasValueUsedAsType(src, base)) return types.Primitive.any;
-        if (try self.reportJsDocClassExpressionVariableUsedAsType(src, base)) return types.Primitive.any;
-        if (try self.reportJsDocBareFunctionUsedAsType(src, base)) return types.Primitive.any;
+        if (try self.reportJsDocDestructuredRequireValueUsedAsType(src, base)) return @as(?TypeId, try self.recordUnmodeledAny(self.jsdoc_diagnostic_anchor));
+        if (try self.reportJsDocRequireMemberAliasValueUsedAsType(src, base)) return @as(?TypeId, try self.recordUnmodeledAny(self.jsdoc_diagnostic_anchor));
+        if (try self.reportJsDocClassExpressionVariableUsedAsType(src, base)) return @as(?TypeId, try self.recordUnmodeledAny(self.jsdoc_diagnostic_anchor));
+        if (try self.reportJsDocBareFunctionUsedAsType(src, base)) return @as(?TypeId, try self.recordUnmodeledAny(self.jsdoc_diagnostic_anchor));
         if (try self.reportUnsupportedJsConstructorTemplateReference(src, base)) return types.Primitive.any;
         const simple_t = try self.jsDocSimpleNameType(src, base, base.len == trimmed.len);
         if (simple_t) |t| {
@@ -97410,7 +97423,7 @@ pub const Checker = struct {
             if (try self.jsDocTemplateParamTypeForAnchor(anchor, name)) |t| return t;
             if (try self.relativeDefaultImportIsValueOnly(name, anchor)) {
                 try self.reportJsDocImportedValueUsedAsType(src, anchor, base);
-                return types.Primitive.any;
+                return @as(?TypeId, try self.diagnosedAnyRecovery(anchor, TsCodes.value_used_as_type_did_you_mean_typeof));
             }
             if (try self.importedTypeRefForLocal(name, anchor)) |t| return t;
             if (self.type_names.get(name)) |t| {
@@ -97425,7 +97438,7 @@ pub const Checker = struct {
             if (try self.jsDocRequireAliasType(anchor, name, true)) |t| return t;
             if (try self.jsDocSameFileClassInstanceType(anchor, name)) |t| return t;
             if (is_entire_type and
-                try self.reportJsDocSimpleValueUsedAsType(src, anchor, name, base)) return types.Primitive.any;
+                try self.reportJsDocSimpleValueUsedAsType(src, anchor, name, base)) return @as(?TypeId, try self.recordUnmodeledAny(anchor));
         }
         if (narrow_t) |t| return t;
         if (self.isBuiltinName(name)) return types.Primitive.any;
@@ -97992,7 +98005,7 @@ pub const Checker = struct {
                 resolution_mode,
             )) {
                 try self.reportJsDocImportedValueUsedAsType(src, anchor, base);
-                return types.Primitive.any;
+                return @as(?TypeId, try self.diagnosedAnyRecovery(anchor, TsCodes.value_used_as_type_did_you_mean_typeof));
             }
             return (try self.virtualJSDocBareImportMemberByName(
                 anchor,
@@ -98046,7 +98059,7 @@ pub const Checker = struct {
         }
         if (std.mem.eql(u8, base, "event") and self.jsDocTypeTextIsInCheckedJsContext()) {
             try self.reportJsDocImportedValueUsedAsType(src, anchor, base);
-            return types.Primitive.any;
+            return @as(?TypeId, try self.diagnosedAnyRecovery(anchor, TsCodes.value_used_as_type_did_you_mean_typeof));
         }
         if (self.sourceHasVirtualFilenameSections() and
             !jsDocTypePositionIsPropertyTag(src, pos) and
@@ -98158,7 +98171,7 @@ pub const Checker = struct {
         if (try self.jsDocGenericImportTypeTextToType(src, name, args_text, type_text)) |import_t| {
             return import_t;
         }
-        if (try self.reportJsDocBareFunctionUsedAsType(src, name)) return types.Primitive.any;
+        if (try self.reportJsDocBareFunctionUsedAsType(src, name)) return @as(?TypeId, try self.recordUnmodeledAny(self.jsdoc_diagnostic_anchor));
         var args = JsDocTopLevelSplitter.init(args_text, ',');
 
         if (std.mem.eql(u8, name, "Parameters")) {
@@ -239397,8 +239410,13 @@ test "checker: value-only names used as types emit TS2749" {
         \\let d: C;
     );
     defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.value_used_as_type_did_you_mean_typeof));
+    // Only the any-like continuation is a provenance origin; the other
+    // diagnosed reference retains a concrete narrowed value type.
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, 9002));
+    try T.expectEqual(@as(u32, 1), s.checker.unmodeled_any_sites.count());
     var saw_value = false;
     var saw_fn = false;
     for (s.checker.diagnostics.items) |d| {
@@ -239418,8 +239436,11 @@ test "checker: interface and value declarations share constructor type names" {
         \\var nested = new NestedCtor();
     );
     defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.value_used_as_type_did_you_mean_typeof));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, 9002));
+    try T.expectEqual(@as(u32, 0), s.checker.unmodeled_any_sites.count());
 }
 
 test "checker: value bindings do not shadow primitive type refs in unions" {
@@ -239455,8 +239476,11 @@ test "checker: value-only generic-looking type reference emits TS2749" {
         \\let x: make<string>;
     );
     defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.value_used_as_type_did_you_mean_typeof));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, 9002));
+    try T.expectEqual(@as(u32, 1), s.checker.unmodeled_any_sites.count());
     const msg = checkerFirstMessageForCode(s, TsCodes.value_used_as_type_did_you_mean_typeof) orelse return error.MissingDiagnostic;
     try T.expect(std.mem.eql(u8, msg, "'make' refers to a value, but is being used as a type here. Did you mean 'typeof make'?"));
 }
@@ -246684,8 +246708,11 @@ test "checker: checkjs JSDoc bare imports preserve value-only export meaning" {
         \\export function f2() { return 1; }
     );
     defer destroyBoundSetup(b);
+    b.base.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try b.base.checker.checkSourceFile(b.base.root);
     try T.expectEqual(@as(usize, 2), checkerCountCode(b.base, TsCodes.value_used_as_type_did_you_mean_typeof));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(b.base, 9002));
+    try T.expectEqual(@as(u32, 2), b.base.checker.unmodeled_any_sites.count());
     try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.import_attributes_type_only));
 }
 
@@ -246701,10 +246728,13 @@ test "checker: invalid JSDoc import attributes retain type bindings" {
         \\export function f(value) {}
     );
     defer destroyBoundSetup(b);
+    b.base.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try b.base.checker.checkSourceFile(b.base.root);
 
     try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.import_attributes_type_only));
     try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, 9002));
+    try T.expectEqual(@as(u32, 0), b.base.checker.unmodeled_any_sites.count());
 }
 
 test "checker: relative typeof imports with resolution-mode resolve value exports" {
@@ -247991,8 +248021,11 @@ test "checker: tsgo current JSDoc event name remains value-only" {
         \\const q = undefined;
     );
     defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.value_used_as_type_did_you_mean_typeof));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, 9002));
+    try T.expectEqual(@as(u32, 1), s.checker.unmodeled_any_sites.count());
 }
 
 test "checker: tsgo current JS typedef merges with exported alias object class key" {
@@ -251319,8 +251352,16 @@ test "checker: inferred JavaScript constructors remain value-only in JSDoc" {
         \\/** @type {Assigned} */ var second;
     );
     defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.value_used_as_type_did_you_mean_typeof));
+    // The checked-JS constructions contribute two TS7009 origins and their
+    // unbound receivers contribute two TS2683 origins; the JSDoc annotations
+    // contribute the two TS2749 origins under test here.
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.new_expression_implicitly_any));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.this_implicitly_any));
+    try T.expectEqual(@as(usize, 6), checkerCountCode(s, 9002));
+    try T.expectEqual(@as(u32, 6), s.checker.unmodeled_any_sites.count());
 }
 
 test "checker: strict checked JavaScript rejects untagged constructor functions" {
@@ -275631,6 +275672,7 @@ test "checker: exported value namespace used as qualified type reports TS2749" {
         \\declare var assert: Harness.Assert;
     );
     defer destroyBoundSetup(b);
+    b.base.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try b.base.checker.checkSourceFile(b.base.root);
     var saw = false;
     for (b.base.checker.diagnostics.items) |d| {
@@ -275643,6 +275685,8 @@ test "checker: exported value namespace used as qualified type reports TS2749" {
         }
     }
     try T.expect(saw);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, 9002));
+    try T.expectEqual(@as(u32, 1), b.base.checker.unmodeled_any_sites.count());
 }
 
 test "checker: value namespace used as type does not contextualize array callback" {
@@ -282786,8 +282830,11 @@ test "checker: type-only namespace value member used as a type reports TS2749" {
         \\let value: types.Value;
     );
     defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.value_used_as_type_did_you_mean_typeof));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, 9002));
+    try T.expectEqual(@as(u32, 1), s.checker.unmodeled_any_sites.count());
     try T.expect(checkerHasCodeAndMessage(
         s,
         TsCodes.value_used_as_type_did_you_mean_typeof,
