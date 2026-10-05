@@ -79184,7 +79184,7 @@ pub const Checker = struct {
                     }
                     if (std.mem.eql(u8, raw, "null")) {
                         try self.reportCannotFindNamePlainOnce(tt.operand, name);
-                        return types.Primitive.any;
+                        return self.diagnosedAnyRecovery(tt.operand, TsCodes.cannot_find_name);
                     }
                     if (std.mem.eql(u8, raw, "function")) {
                         try self.reportCannotFindNameOnce(tt.operand, name);
@@ -79222,7 +79222,7 @@ pub const Checker = struct {
                             return qualified_t;
                         }
                         if (try self.reportMissingRootForUnresolvedTypeofDottedQuery(tt.operand, raw)) {
-                            return types.Primitive.any;
+                            return self.diagnosedAnyRecovery(tt.operand, TsCodes.cannot_find_name);
                         }
                         // For dotted typeof queries (`typeof E.A`, `typeof Z.foo`)
                         // where the root binding IS visible (enum, import-equals
@@ -218271,18 +218271,37 @@ test "checker: contextual object unions retain declaration and property diagnost
 test "checker: typeof undefined query resolves to undefined type" {
     const s = try newSetup("let x: typeof undefined = null;");
     defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
     const stmts = hir_mod.blockStmts(&s.hir, s.root);
     try T.expectEqual(types.Primitive.undefined_t, s.hir.typeOf(stmts[0]));
+    try T.expectEqual(@as(u32, 0), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 0), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: unresolved dotted typeof query reports missing root" {
     const s = try newSetup("var v: typeof A.B;");
     defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
-    try T.expectEqual(@as(usize, 1), s.checker.diagnostics.items.len);
-    try T.expectEqual(@as(u32, TsCodes.cannot_find_name), s.checker.diagnostics.items[0].code);
-    try T.expectEqualStrings("Cannot find name 'A'.", s.checker.diagnostics.items[0].message);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_find_name));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.cannot_find_name, "Cannot find name 'A'."));
+    try T.expectEqual(@as(u32, 1), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 1), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
+}
+
+test "checker: unresolved typeof null traces its TS2304 recovery" {
+    const s = try newSetup(
+        \\type NullType = typeof null;
+    );
+    defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.cannot_find_name, "Cannot find name 'null'."));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(u32, 1), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 1), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: typeof query reports unresolved simple type argument names" {
@@ -268587,7 +268606,10 @@ test "checker: commentsAfterSpread reproducer does not stack-overflow" {
         \\}
     );
     defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(u32, 0), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 0), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: reservedNameOnInterfaceImport reproducer terminates" {
