@@ -114877,7 +114877,7 @@ pub const Checker = struct {
                 if (raw_callee_t == types.Primitive.unknown) {
                     if (callee_is_zero_arg_getter_access) {
                         try self.reportGetterNotCallable(c.callee, raw_callee_t);
-                        break :blk types.Primitive.any;
+                        break :blk try self.recordUnmodeledAny(node);
                     }
                     if (self.shouldReportUnknownOperand(c.callee)) {
                         try self.reportUnknownObjectOperand(c.callee);
@@ -115919,6 +115919,10 @@ pub const Checker = struct {
                             try self.reportNotCallableWithPossibleMissingSemicolon(node, c.callee, callee_t);
                         }
                     }
+                }
+                if (self.diagnosticExists(c.callee, TsCodes.get_accessor_not_callable)) {
+                    const recovery_t = try self.recordUnmodeledAny(node);
+                    break :blk try self.optionalChainResult(recovery_t, call_is_optional_chain);
                 }
                 break :blk try self.optionalChainResult(types.Primitive.any, call_is_optional_chain);
             },
@@ -270260,9 +270264,12 @@ test "checker: TS6234 reports zero-argument calls to instance getters" {
         \\c.value();
     );
     defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.get_accessor_not_callable));
     try T.expectEqual(@as(usize, 1), checkerCountChainCode(s, TsCodes.type_has_no_call_signatures));
+    try T.expectEqual(@as(u32, 1), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 1), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
     for (s.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.get_accessor_not_callable) {
             try T.expectEqualStrings("This expression is not callable because it is a 'get' accessor. Did you mean to use it without '()'?", d.message);
@@ -270278,8 +270285,11 @@ test "checker: TS6234 reports zero-argument calls to static getters" {
         \\C.value();
     );
     defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.get_accessor_not_callable));
+    try T.expectEqual(@as(u32, 1), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 1), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: TS6234 ignores get/set accessor pairs" {
@@ -270295,9 +270305,12 @@ test "checker: TS6234 ignores get/set accessor pairs" {
         \\C.other();
     );
     defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.get_accessor_not_callable));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.not_callable));
+    try T.expectEqual(@as(u32, 0), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 0), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: TS6234 reports inherited getter calls and preserves concrete setter types" {
