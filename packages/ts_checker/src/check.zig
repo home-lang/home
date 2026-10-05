@@ -78180,7 +78180,7 @@ pub const Checker = struct {
                         !self.importTypeModuleExportAssignmentHasTypeMeaning(type_node, import_spec))
                     {
                         try self.reportImportTypeNotAType(type_node, import_spec);
-                        return types.Primitive.any;
+                        return self.diagnosedAnyRecovery(type_node, TsCodes.module_does_not_refer_to_type);
                     }
                     if (try self.virtualCommonJsImportTypeMember(type_node, .type)) |t| return t;
                     if (r.qualifier_len == 0 and
@@ -79147,7 +79147,7 @@ pub const Checker = struct {
                             try self.importTypeModuleExportAssignmentTargetsTypeOnly(tt.operand, import_spec))
                         {
                             try self.reportImportTypeNotAValue(tt.operand, import_spec);
-                            return types.Primitive.any;
+                            return self.diagnosedAnyRecovery(tt.operand, TsCodes.module_does_not_refer_to_value);
                         }
                         const import_ref = hir_mod.typeRefOf(self.hir, tt.operand);
                         if (self.external_resolver) |resolver| {
@@ -225480,6 +225480,7 @@ test "checker: TS1340 bare import-type used as a type reports value-as-type" {
         \\const x: import("foo") = { x: 0, y: 0 };
     );
     defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
     var found = false;
     for (s.checker.diagnostics.items) |d| {
@@ -225491,6 +225492,8 @@ test "checker: TS1340 bare import-type used as a type reports value-as-type" {
         );
     }
     try T.expect(found);
+    try T.expectEqual(@as(u32, 1), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 1), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: TS1340 not emitted for typeof import" {
@@ -225499,10 +225502,13 @@ test "checker: TS1340 not emitted for typeof import" {
         \\const x: typeof import("foo") = { value: 0 };
     );
     defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.module_does_not_refer_to_type);
     }
+    try T.expectEqual(@as(u32, 0), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 0), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: TS1339 typeof import of type-only export assignment reports value-as-type" {
@@ -225511,6 +225517,7 @@ test "checker: TS1339 typeof import of type-only export assignment reports value
         \\type T = typeof import("foo");
     );
     defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
     var found = false;
     for (s.checker.diagnostics.items) |d| {
@@ -225522,6 +225529,8 @@ test "checker: TS1339 typeof import of type-only export assignment reports value
         );
     }
     try T.expect(found);
+    try T.expectEqual(@as(u32, 1), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 1), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: TS1339 not emitted for typeof import of value export assignment" {
@@ -225530,10 +225539,13 @@ test "checker: TS1339 not emitted for typeof import of value export assignment" 
         \\type T = typeof import("foo");
     );
     defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.module_does_not_refer_to_value);
     }
+    try T.expectEqual(@as(u32, 0), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 0), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: TS1340 not emitted for qualified import-type member" {
