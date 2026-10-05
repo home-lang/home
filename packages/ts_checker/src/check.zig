@@ -79177,7 +79177,7 @@ pub const Checker = struct {
                         std.mem.eql(u8, raw, "void"))
                     {
                         try self.reportTypeOnlyUsedAsValueOnce(tt.operand, name);
-                        return types.Primitive.any;
+                        return self.diagnosedAnyRecovery(tt.operand, TsCodes.type_only_used_as_value);
                     }
                     if (std.mem.eql(u8, raw, "this")) {
                         return try self.typeOfThisForTypeQuery(tt.operand);
@@ -79211,7 +79211,7 @@ pub const Checker = struct {
                                 .code = TsCodes.type_only_used_as_value,
                                 .message = msg,
                             });
-                            return types.Primitive.any;
+                            return self.diagnosedAnyRecovery(tt.operand, TsCodes.type_only_used_as_value);
                         }
                     }
                     if (std.mem.indexOfScalar(u8, raw, '.')) |_| {
@@ -218191,8 +218191,11 @@ test "checker: typeof contextual generic parameter resolves its value binding" {
         \\};
     );
     defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_only_used_as_value));
+    try T.expectEqual(@as(u32, 0), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 0), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: contextual generic Promise conditional returns are alpha-equivalent" {
@@ -239391,12 +239394,37 @@ test "checker: typeof type parameter emits TS2693" {
         \\}
     );
     defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
     var found = false;
     for (s.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.type_only_used_as_value) found = true;
     }
     try T.expect(found);
+    try T.expectEqual(@as(u32, 1), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 1), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
+}
+
+test "checker: typeof primitive type keywords trace TS2693 recoveries" {
+    const s = try newSetup(
+        \\type StringType = typeof string;
+        \\type NumberType = typeof number;
+        \\type BooleanType = typeof boolean;
+        \\type BigIntType = typeof bigint;
+        \\type SymbolType = typeof symbol;
+        \\type ObjectType = typeof object;
+        \\type AnyType = typeof any;
+        \\type UnknownType = typeof unknown;
+        \\type NeverType = typeof never;
+        \\type VoidType = typeof void;
+    );
+    defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 10), checkerCountCode(s, TsCodes.type_only_used_as_value));
+    try T.expectEqual(@as(u32, 10), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 10), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: computed type-literal key for string literal union alias emits TS2690" {
