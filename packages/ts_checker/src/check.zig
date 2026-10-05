@@ -119292,7 +119292,9 @@ pub const Checker = struct {
                     self.typeIsAnyLike(t) and
                     (self.diagnosticExists(node, TsCodes.type_only_import_used_as_value) or
                         self.diagnosticExists(node, TsCodes.type_only_export_used_as_value) or
-                        self.diagnosticExists(node, TsCodes.namespace_as_value));
+                        self.diagnosticExists(node, TsCodes.namespace_as_value) or
+                        self.diagnosticExists(node, TsCodes.cannot_find_name) or
+                        self.diagnosticExists(node, TsCodes.cannot_find_name_did_you_mean));
                 break :blk implicit_this or invalid_this or diagnosed_identifier_any;
             },
             else => false,
@@ -130495,7 +130497,7 @@ pub const Checker = struct {
             return try self.filteredInstantiationExpressionType(node, callee_t, type_arg_nodes);
         }
 
-        if (callee_t == types.Primitive.any or callee_t == types.Primitive.unknown) return callee_t;
+        if (self.typeIsAnyLike(callee_t) or callee_t == types.Primitive.unknown) return callee_t;
         const annotated_type_text: ?[]const u8 = if (!has_applicable and self.hir.kindOf(callee) == .identifier) blk: {
             const annotation = self.visibleAnnotatedIdentifierTypeNode(callee) orelse break :blk null;
             if (self.hir.kindOf(annotation) != .union_type) break :blk null;
@@ -194824,7 +194826,7 @@ pub const Checker = struct {
     }
 
     fn reportForOfExcessComputedBindingKeyIndex(self: *Checker, node: NodeId, source_t: TypeId, key_t: TypeId) CheckError!void {
-        if (key_t == types.Primitive.any) {
+        if (self.typeIsAnyLike(key_t)) {
             try self.report(node, TsCodes.type_cannot_be_used_as_index, "Type 'any' cannot be used as an index type.");
             return;
         }
@@ -203114,12 +203116,16 @@ test "checker: nested conditional types correctly" {
     try T.expectEqual(@as(usize, 0), s.checker.diagnostics.items.len);
 }
 
-test "checker: identifier is any (resolution follow-up)" {
+test "checker: unresolved identifier retains unmodeled recovery type" {
     const s = try newSetup("undeclared;");
     defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
     const top = firstStatement(s);
-    try T.expectEqual(types.Primitive.any, s.hir.typeOf(top));
+    try T.expectEqual(types.Primitive.unmodeled, s.hir.typeOf(top));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(u32, 1), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 1), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: function decl gets a signature type" {
@@ -218328,11 +218334,53 @@ test "checker: typeof import-equals alias to type-only namespace traces TS2708 r
     try T.expectEqual(@as(usize, 1), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
 }
 
+test "checker: unresolved value identifiers trace TS2304 and TS2552 recoveries" {
+    const s = try newSetup(
+        \\MissingValue;
+        \\MissingCall();
+        \\new MissingConstructor();
+        \\MissingObject.property;
+        \\MissingGeneric<string>();
+        \\$ERROR();
+    );
+    defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 5), checkerCountCode(s, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_find_name_did_you_mean));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.not_callable));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.untyped_function_type_args));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, 2351));
+    try T.expectEqual(@as(u32, 6), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 6), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
+}
+
+test "checker: explicit any value identifiers remain ordinary any" {
+    const s = try newSetup(
+        \\declare const Existing: any;
+        \\Existing;
+        \\Existing();
+        \\new Existing();
+    );
+    defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.cannot_find_name_did_you_mean));
+    try T.expectEqual(@as(u32, 0), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 0), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
+}
+
 test "checker: typeof query reports unresolved simple type argument names" {
     const s = try newSetup("var v: typeof A<B>;");
     defer destroySetup(s);
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 2), s.checker.diagnostics.items.len);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.no_signatures_for_type_arg_list));
     try T.expectEqualStrings("Cannot find name 'A'.", s.checker.diagnostics.items[0].message);
     try T.expectEqualStrings("Cannot find name 'B'.", s.checker.diagnostics.items[1].message);
 }
