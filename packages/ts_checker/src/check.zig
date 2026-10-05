@@ -79193,7 +79193,7 @@ pub const Checker = struct {
                     if (self.localImportEqualsDecl(name, tt.operand)) |import_node| {
                         if (!self.importEqualsTargetHasRuntimeValue(import_node, 0)) {
                             try self.reportNamespaceAsValue(tt.operand, name);
-                            return types.Primitive.any;
+                            return self.diagnosedAnyRecovery(tt.operand, TsCodes.namespace_as_value);
                         }
                     }
                     if (self.lookupNarrow(name)) |narrow_t| {
@@ -119288,11 +119288,12 @@ pub const Checker = struct {
                 const invalid_this = self.typeIsAnyLike(t) and
                     (self.diagnosticExists(node, TsCodes.this_in_current_location) or
                         self.diagnosticExists(node, TsCodes.this_in_namespace_body));
-                const type_only_value = expression_kind == .identifier and
+                const diagnosed_identifier_any = expression_kind == .identifier and
                     self.typeIsAnyLike(t) and
                     (self.diagnosticExists(node, TsCodes.type_only_import_used_as_value) or
-                        self.diagnosticExists(node, TsCodes.type_only_export_used_as_value));
-                break :blk implicit_this or invalid_this or type_only_value;
+                        self.diagnosticExists(node, TsCodes.type_only_export_used_as_value) or
+                        self.diagnosticExists(node, TsCodes.namespace_as_value));
+                break :blk implicit_this or invalid_this or diagnosed_identifier_any;
             },
             else => false,
         };
@@ -218308,6 +218309,25 @@ test "checker: unresolved typeof null traces its TS2304 recovery" {
     try T.expectEqual(@as(usize, 1), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
 }
 
+test "checker: typeof import-equals alias to type-only namespace traces TS2708 recovery" {
+    const b = try newBoundSetup(
+        \\namespace Types { export interface Item { value: number } }
+        \\import TypeOnly = Types;
+        \\type Invalid = typeof TypeOnly;
+        \\namespace Values { export const item = 1; }
+        \\import Runtime = Values;
+        \\type Valid = typeof Runtime;
+    );
+    defer destroyBoundSetup(b);
+    const s = b.base;
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.namespace_as_value));
+    try T.expectEqual(@as(u32, 1), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 1), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
+}
+
 test "checker: typeof query reports unresolved simple type argument names" {
     const s = try newSetup("var v: typeof A<B>;");
     defer destroySetup(s);
@@ -252483,12 +252503,11 @@ test "checker: namespace-only declarations cannot be used as values" {
         \\var m = M;
     );
     defer destroyBoundSetup(b);
+    b.base.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try b.base.checker.checkSourceFile(b.base.root);
-    var found = false;
-    for (b.base.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.namespace_as_value) found = true;
-    }
-    try T.expect(found);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.namespace_as_value));
+    try T.expectEqual(@as(u32, 1), b.base.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 1), checkerCountHomeCode(b.base, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: wildcard module declaration provides type for *.svg imports" {
@@ -253308,10 +253327,13 @@ test "checker: `export = N` of a namespace-only binding does not raise TS2708" {
         \\export = N;
     );
     defer destroyBoundSetup(b);
+    b.base.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try b.base.checker.checkSourceFile(b.base.root);
     for (b.base.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.namespace_as_value);
     }
+    try T.expectEqual(@as(u32, 0), b.base.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 0), checkerCountHomeCode(b.base, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: exported import-equals aliases make namespaces usable as values" {
@@ -277057,9 +277079,12 @@ test "checker: class extends a member of a value-less namespace does not emit a 
         \\class D2 extends M.C { }
     );
     defer destroyBoundSetup(b);
+    b.base.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try b.base.checker.checkSourceFile(b.base.root);
     try T.expect(!checkerHasCodeWithMessage(b, TsCodes.property_does_not_exist, "Property 'C' does not exist on type 'typeof M'."));
     try T.expect(checkerHasCode(b, TsCodes.namespace_as_value));
+    try T.expectEqual(@as(u32, 1), b.base.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 1), checkerCountHomeCode(b.base, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: object-literal numeric property violating a number index reports TS2322 (non-strict)" {
