@@ -72664,6 +72664,22 @@ pub const Checker = struct {
             std.mem.eql(u8, name, "NoInfer");
     }
 
+    /// A legal compiler intrinsic uses `any` as Home's internal marker, not as
+    /// an error recovery. Recognize that exact declaration shape before the
+    /// unresolved-type path can emit TS2304 or attach HM9002 provenance.
+    fn typeNodeIsValidIntrinsicAliasBody(self: *Checker, type_node: NodeId) bool {
+        if (!self.typeNodeIsIntrinsicReference(type_node)) return false;
+        const alias_node = self.hir.parentOf(type_node);
+        if (alias_node == hir_mod.none_node_id or self.hir.kindOf(alias_node) != .type_alias_decl) return false;
+        const alias = hir_mod.typeAliasOf(self.hir, alias_node);
+        if (alias.aliased != type_node or !self.typeAliasBodyIsBareIntrinsic(alias_node, type_node)) return false;
+        if (alias.name == hir_mod.none_node_id or self.hir.kindOf(alias.name) != .identifier) return false;
+        const name = self.string_interner.get(hir_mod.identifierOf(self.hir, alias.name).name);
+        const params = self.hir.childSlice(alias.type_params_start, alias.type_params_len);
+        return (params.len == 0 and std.mem.eql(u8, name, "BuiltinIteratorReturn")) or
+            (params.len == 1 and isIntrinsicTypeAliasName(name));
+    }
+
     /// TS2637 gate: a type-alias body whose syntactic form is a direct
     /// anonymous object / function / constructor / mapped type literal. These
     /// are the only bodies for which variance annotations are meaningful;
@@ -72999,13 +73015,7 @@ pub const Checker = struct {
         const ta_type_params = self.hir.childSlice(ta.type_params_start, ta.type_params_len);
         const body_is_bare_intrinsic = self.typeAliasBodyIsBareIntrinsic(node, ta.aliased);
         if (body_is_bare_intrinsic) {
-            const alias_name: []const u8 = if (ta.name != hir_mod.none_node_id and self.hir.kindOf(ta.name) == .identifier)
-                self.string_interner.get(hir_mod.identifierOf(self.hir, ta.name).name)
-            else
-                "";
-            const valid = (ta_type_params.len == 0 and std.mem.eql(u8, alias_name, "BuiltinIteratorReturn")) or
-                (ta_type_params.len == 1 and isIntrinsicTypeAliasName(alias_name));
-            if (!valid) {
+            if (!self.typeNodeIsValidIntrinsicAliasBody(ta.aliased)) {
                 try self.report(ta.aliased, TsCodes.intrinsic_keyword_misuse, "The 'intrinsic' keyword can only be used to declare compiler provided intrinsic types.");
             }
         } else if (self.typeNodeIsIntrinsicReference(ta.aliased)) {
@@ -78427,7 +78437,7 @@ pub const Checker = struct {
                     if (self.namespaceTypeRefIsCrossVirtualSectionOnly(type_node, r.name)) {
                         if (self.classDeclInAnyVirtualSection(r.name) != null) return types.Primitive.any;
                         try self.reportCannotFindNameOnce(type_node, r.name);
-                        return types.Primitive.any;
+                        return self.diagnosedAnyRecovery(type_node, TsCodes.cannot_find_name);
                     }
                     const is_program_global_type = self.programHasGlobalTypeName(r.name);
                     if (!is_program_global_type and self.findVisibleSameNameValueBinding(type_node, r.name) != null and
@@ -78459,19 +78469,20 @@ pub const Checker = struct {
                     }
                     const lowered = try self.lowerer.lower(type_node);
                     if (lowered != types.Primitive.unknown or std.mem.eql(u8, name_str, "unknown")) return lowered;
+                    if (self.typeNodeIsValidIntrinsicAliasBody(type_node)) return types.Primitive.any;
                     if (self.typeNodeIsIntrinsicReference(type_node) and
                         self.diagnosticExists(type_node, TsCodes.intrinsic_keyword_misuse))
                     {
-                        return types.Primitive.any;
+                        return self.diagnosedAnyRecovery(type_node, TsCodes.intrinsic_keyword_misuse);
                     }
                     if (self.isDefaultLibTypeOnlyFallbackName(name_str)) return types.Primitive.any;
                     if (self.isReservedKeywordTypeRefName(r.name)) {
                         try self.reportCannotFindNameOnce(type_node, r.name);
-                        return types.Primitive.any;
+                        return self.diagnosedAnyRecovery(type_node, TsCodes.cannot_find_name);
                     }
                     if (self.unqualifiedTypeRefSourceHasOpenAngle(type_node, r.name)) {
                         try self.reportCannotFindNameOnce(type_node, r.name);
-                        return types.Primitive.any;
+                        return self.diagnosedAnyRecovery(type_node, TsCodes.cannot_find_name);
                     }
                     // Type-assertion target (`<Name>expr`) ÃÂ¢ÃÂÃÂ when the bare
                     // type name isn't a primitive/builtin/declared type
@@ -78490,7 +78501,7 @@ pub const Checker = struct {
                         self.hir.kindOf(parent) == .type_assertion)
                     {
                         try self.reportCannotFindNameOnce(type_node, r.name);
-                        return types.Primitive.any;
+                        return self.diagnosedAnyRecovery(type_node, TsCodes.cannot_find_name);
                     }
                     if (self.nameHasEnclosingTypeParameter(r.name, type_node)) return lowered;
                     if (self.visibleJsDocTypedefNameExistsAt(type_node, r.name)) return types.Primitive.any;
@@ -78503,7 +78514,7 @@ pub const Checker = struct {
                     }
                     if (self.isBuiltinName(r.name)) return types.Primitive.any;
                     try self.reportCannotFindNameOnce(type_node, r.name);
-                    return types.Primitive.any;
+                    return self.diagnosedAnyRecovery(type_node, TsCodes.cannot_find_name);
                 }
                 // `Alias<X, Y>` ÃÂ¢ÃÂÃÂ instantiate the generic alias by
                 // substituting each declared parameter with the
@@ -271689,6 +271700,7 @@ test "checker: TS2795 fires for a bad intrinsic type alias" {
         \\type Foo<T> = intrinsic;
     );
     defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
     var found: usize = 0;
     for (s.checker.diagnostics.items) |d| {
@@ -271698,6 +271710,8 @@ test "checker: TS2795 fires for a bad intrinsic type alias" {
         }
     }
     try T.expectEqual(@as(usize, 1), found);
+    try T.expectEqual(@as(u32, 1), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 1), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: TS2795 fires for a zero-parameter intrinsic alias with a non-builtin name" {
@@ -271705,12 +271719,15 @@ test "checker: TS2795 fires for a zero-parameter intrinsic alias with a non-buil
         \\type Bar = intrinsic;
     );
     defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
     var found: usize = 0;
     for (s.checker.diagnostics.items) |d| {
         if (d.code == TsCodes.intrinsic_keyword_misuse) found += 1;
     }
     try T.expectEqual(@as(usize, 1), found);
+    try T.expectEqual(@as(u32, 1), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 1), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: TS2795 stays silent for the canonical Uppercase intrinsic" {
@@ -271720,10 +271737,14 @@ test "checker: TS2795 stays silent for the canonical Uppercase intrinsic" {
         \\type Uppercase<S extends string> = intrinsic;
     );
     defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.intrinsic_keyword_misuse);
+        try T.expect(d.code != TsCodes.cannot_find_name);
     }
+    try T.expectEqual(@as(u32, 0), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 0), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: TS2795 stays silent for BuiltinIteratorReturn with no parameters" {
@@ -271731,10 +271752,14 @@ test "checker: TS2795 stays silent for BuiltinIteratorReturn with no parameters"
         \\type BuiltinIteratorReturn = intrinsic;
     );
     defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.intrinsic_keyword_misuse);
+        try T.expect(d.code != TsCodes.cannot_find_name);
     }
+    try T.expectEqual(@as(u32, 0), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 0), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: TS2795 stays silent for a normal type alias body" {
@@ -271754,9 +271779,12 @@ test "checker: TS2795 requires a syntactically bare intrinsic body" {
         \\type Shadow<intrinsic> = (intrinsic);
     );
     defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.intrinsic_keyword_misuse));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(u32, 1), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 1), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: TS2737 fires for a BigInt literal under target es5" {
@@ -283084,12 +283112,15 @@ test "checker: parity recovery batch checks diagnosed operands" {
     );
     defer destroyBoundSetup(b);
     b.base.checker.setStrictFlags(.{ .declaration = true, .always_strict = true });
+    b.base.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try b.base.checker.checkSourceFile(b.base.root);
 
     try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.intrinsic_keyword_misuse));
     try T.expectEqual(@as(usize, 2), checkerCountCode(b.base, TsCodes.cannot_find_name));
     try T.expect(checkerHasCodeAndMessage(b.base, TsCodes.cannot_find_name, "Cannot find name 'NamespaceMissing'."));
     try T.expect(checkerHasCodeAndMessage(b.base, TsCodes.cannot_find_name, "Cannot find name 'ActualMissing'."));
+    try T.expectEqual(@as(u32, 3), b.base.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 3), checkerCountHomeCode(b.base, HomeRule.list_unmodeled_any.definition().code));
 }
 
 const AmbientRedirectResolver = struct {
