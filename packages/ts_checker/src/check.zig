@@ -116127,7 +116127,7 @@ pub const Checker = struct {
                 }
                 try self.reportPendingInstantiatedMappedCycleAtMemberAccess(node, m.object);
                 if (try self.reportPrivateIdentifierOutsideClassBody(node, m.object, obj_t, m.name)) {
-                    break :blk types.Primitive.any;
+                    break :blk try self.recordUnmodeledAny(node);
                 }
                 const member_has_optional_syntax = m.optional or self.expressionIsOptionalChain(m.object);
                 const member_is_optional_chain = self.expressionIsOptionalChain(m.object) or
@@ -116206,7 +116206,7 @@ pub const Checker = struct {
                 }
                 if (obj_t == types.Primitive.never) {
                     try self.reportPropertyDoesNotExistOnType(node, m.name, obj_t);
-                    break :blk types.Primitive.any;
+                    break :blk try self.recordUnmodeledAny(node);
                 }
                 if (self.sourceHasCheckJsDirective() and
                     self.nodeIsThisReference(m.object) and
@@ -116306,7 +116306,7 @@ pub const Checker = struct {
                             .message = msg,
                             .chain = chain,
                         });
-                        break :blk types.Primitive.any;
+                        break :blk try self.recordUnmodeledAny(node);
                     }
                 }
                 const intersection_access_handled = try self.checkIntersectionMemberAccessibility(node, access_obj_t, m.name);
@@ -116327,7 +116327,7 @@ pub const Checker = struct {
                     try self.checkPrivateMemberAccess(node, access_obj_t, m.name);
                 }
                 if (try self.reportInheritedStaticEcmaPrivateMissing(node, m.object, access_obj_t, m.name)) {
-                    break :blk types.Primitive.any;
+                    break :blk try self.recordUnmodeledAny(node);
                 }
                 try self.checkEcmaPrivateMemberAccess(node, m.object, access_obj_t, m.name);
                 if (self.privateAccessDiagnosticAlreadyReported(node, TsCodes.ecma_private_not_accessible_outside_class)) {
@@ -273569,6 +273569,56 @@ test "checker: TS18032 reduces a conflicting-private intersection to never on pr
         "The intersection 'A & B' was reduced to 'never' because property 'x' exists in multiple constituents and is private in some.",
         entry.message,
     );
+}
+
+test "checker: irrecoverable member access fallbacks retain unmodeled provenance" {
+    const s = try newSetup(
+        \\declare const bottom: never;
+        \\const neverValue = bottom.missing;
+        \\type Left = { kind: 'left', value: string };
+        \\type Right = { kind: 'right', value: number };
+        \\declare const conflict: Left & Right;
+        \\const conflictingValue = conflict.kind;
+        \\class PrivateLeft { private brand!: unknown; value?: string; }
+        \\class PrivateRight { private brand!: unknown; value?: string; }
+        \\declare const privateConflict: PrivateLeft & PrivateRight;
+        \\const privateValue = privateConflict.value;
+        \\class StaticBase { static #secret = 1; }
+        \\class StaticDerived extends StaticBase {
+        \\  static read(value: typeof StaticDerived) { return value.#secret; }
+        \\}
+        \\declare const plain: {};
+        \\const outsidePrivate = plain.#missing;
+        \\class Legal {
+        \\  #value = 1;
+        \\  read(other: Legal) { return other.#value; }
+        \\}
+        \\declare const dynamic: any;
+        \\const dynamicValue = dynamic.missing;
+        \\declare const modeled: { value: number };
+        \\const validValue = modeled.value;
+    );
+    defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 1), checkerCountChainCode(s, TsCodes.intersection_reduced_never_conflicting));
+    try T.expectEqual(@as(usize, 1), checkerCountChainCode(s, TsCodes.intersection_reduced_never_private));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, 18016));
+    try T.expectEqual(@as(u32, 5), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 5), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == TsCodes.property_does_not_exist) {
+            try T.expectEqual(types.Primitive.unmodeled, s.hir.typeOf(diagnostic.node));
+        }
+    }
+    try T.expectEqual(types.Primitive.unmodeled, statementVarInitType(s, 1));
+    try T.expectEqual(types.Primitive.unmodeled, statementVarInitType(s, 5));
+    try T.expectEqual(types.Primitive.unmodeled, statementVarInitType(s, 9));
+    try T.expectEqual(types.Primitive.unmodeled, statementVarInitType(s, 13));
+    try T.expectEqual(types.Primitive.any, statementVarInitType(s, 16));
+    try T.expectEqual(types.Primitive.number_t, statementVarInitType(s, 18));
 }
 
 test "checker: TS18031 reduces a never-intersection assignment target to never" {
