@@ -119330,6 +119330,7 @@ pub const Checker = struct {
             .element_access => self.typeIsAnyLike(t) and
                 (self.diagnosticExists(node, TsCodes.element_implicitly_any) or
                     self.diagnosticExists(node, TsCodes.element_implicitly_any_no_index_signature_did_you_mean_call) or
+                    self.diagnosticExists(hir_mod.elementOf(self.hir, node).index, TsCodes.type_cannot_be_used_as_index) or
                     self.superPropertyAccessHasDiagnosedAnyRecovery(node)),
             .member_access => self.typeIsAnyLike(t) and
                 (self.diagnosticExists(node, TsCodes.property_does_not_exist_did_you_mean) or
@@ -271668,6 +271669,30 @@ test "checker: TS2538 rejects bigint element access through numeric indexers" {
         }
     }
     try T.expectEqual(@as(usize, 2), found);
+}
+
+test "checker: TS2538 element access retains unmodeled recovery provenance" {
+    const s = try newSetup(
+        \\const values: number[] = [1, 2, 3];
+        \\const bigintValue = values[1n];
+        \\const objectValue = values[{}];
+        \\const functionValue = values[(() => 0)];
+        \\declare const anyIndex: any;
+        \\const anyValue = values[anyIndex];
+        \\const numberValue = values[0];
+    );
+    defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.type_cannot_be_used_as_index));
+    try T.expectEqual(@as(u32, 3), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 3), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
+    try T.expectEqual(types.Primitive.unmodeled, statementVarInitType(s, 1));
+    try T.expectEqual(types.Primitive.unmodeled, statementVarInitType(s, 2));
+    try T.expectEqual(types.Primitive.unmodeled, statementVarInitType(s, 3));
+    try T.expectEqual(types.Primitive.number_t, statementVarInitType(s, 5));
+    try T.expectEqual(types.Primitive.number_t, statementVarInitType(s, 6));
 }
 
 test "checker: a function-typed index emits TS2538 even when a member name matches" {
