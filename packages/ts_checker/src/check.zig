@@ -78351,7 +78351,7 @@ pub const Checker = struct {
                         const is_async = std.mem.eql(u8, name_str, "AsyncGenerator");
                         if (self.sourceOrConfiguredLibExcludesGenerator(is_async)) {
                             try self.reportUnavailableGeneratorType(type_node, r.name, is_async);
-                            return types.Primitive.any;
+                            return self.recordUnmodeledAny(type_node);
                         }
                     }
                     if (std.mem.eql(u8, name_str, "Object")) {
@@ -78516,25 +78516,32 @@ pub const Checker = struct {
                             for (args_extra) |a_node| _ = try self.lowererLowerWithTypeParams(a_node);
                         }
                         if (std.mem.eql(u8, name_str, "Generator") or std.mem.eql(u8, name_str, "AsyncGenerator")) {
-                            const is_async = std.mem.eql(u8, name_str, "AsyncGenerator");
-                            if (self.sourceOrConfiguredLibExcludesGenerator(is_async)) {
-                                try self.reportUnavailableGeneratorType(type_node, r.name, is_async);
-                                return types.Primitive.any;
+                            if (try self.importedTypeRefForLocal(r.name, type_node)) |t| return t;
+                            // A local declaration shadows the ambient library
+                            // type even when the configured library would not
+                            // provide the built-in. Let the ordinary generic
+                            // instantiation path below handle that declaration.
+                            if (self.findVisibleNamedTypeDecl(type_node, r.name) == null) {
+                                const is_async = std.mem.eql(u8, name_str, "AsyncGenerator");
+                                if (self.sourceOrConfiguredLibExcludesGenerator(is_async)) {
+                                    try self.reportUnavailableGeneratorType(type_node, r.name, is_async);
+                                    return self.recordUnmodeledAny(type_node);
+                                }
+                                const args = hir_mod.typeRefArgs(self.hir, type_node);
+                                const yield_t = if (args.len >= 1)
+                                    try self.lowererLowerWithTypeParams(args[0])
+                                else
+                                    types.Primitive.unknown;
+                                const return_t = if (args.len >= 2)
+                                    try self.lowererLowerWithTypeParams(args[1])
+                                else
+                                    types.Primitive.any;
+                                const next_t = if (args.len >= 3)
+                                    try self.lowererLowerWithTypeParams(args[2])
+                                else
+                                    types.Primitive.any;
+                                return try self.synthesizeGeneratorTypeFull(yield_t, return_t, next_t, is_async);
                             }
-                            const args = hir_mod.typeRefArgs(self.hir, type_node);
-                            const yield_t = if (args.len >= 1)
-                                try self.lowererLowerWithTypeParams(args[0])
-                            else
-                                types.Primitive.unknown;
-                            const return_t = if (args.len >= 2)
-                                try self.lowererLowerWithTypeParams(args[1])
-                            else
-                                types.Primitive.any;
-                            const next_t = if (args.len >= 3)
-                                try self.lowererLowerWithTypeParams(args[2])
-                            else
-                                types.Primitive.any;
-                            return try self.synthesizeGeneratorTypeFull(yield_t, return_t, next_t, is_async);
                         }
                         if ((std.mem.eql(u8, name_str, "Map") or std.mem.eql(u8, name_str, "ReadonlyMap")) and r.args_len == 2) {
                             const args = hir_mod.typeRefArgs(self.hir, type_node);
@@ -285061,11 +285068,14 @@ test "checker: default library exposes generator error constructor and base64 gl
     );
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.type_not_assignable));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.cannot_find_name));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.cannot_find_name_did_you_mean));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.cannot_find_name_dom_library));
+    try T.expectEqual(@as(u32, 0), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 0), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
 
     const no_dom = try newSetup(
         \\const decode = atob("YQ==");
@@ -285096,9 +285106,12 @@ test "checker: default library exposes generator error constructor and base64 gl
     );
     defer destroySetup(es5);
     es5.checker.setConfiguredLibraries(&.{"ES5"}, false);
+    es5.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try es5.checker.checkSourceFile(es5.root);
     try T.expectEqual(@as(usize, 2), checkerCountCode(es5, TsCodes.cannot_find_name));
     try T.expectEqual(@as(usize, 1), checkerCountCode(es5, TsCodes.cannot_find_name_target_library));
+    try T.expectEqual(@as(u32, 3), es5.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 3), checkerCountHomeCode(es5, HomeRule.list_unmodeled_any.definition().code));
 
     const target_es5 = try newSetup(
         \\type G = Generator;
@@ -285106,9 +285119,60 @@ test "checker: default library exposes generator error constructor and base64 gl
     );
     defer destroySetup(target_es5);
     target_es5.checker.setConfiguredTargetLibTier(5);
+    target_es5.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try target_es5.checker.checkSourceFile(target_es5.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(target_es5, TsCodes.cannot_find_name));
     try T.expectEqual(@as(usize, 1), checkerCountCode(target_es5, TsCodes.cannot_find_name_target_library));
+    try T.expectEqual(@as(u32, 2), target_es5.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 2), checkerCountHomeCode(target_es5, HomeRule.list_unmodeled_any.definition().code));
+
+    const source_es5 = try newSetup(
+        \\// @lib: es5
+        \\type G = Generator;
+        \\type A = AsyncGenerator;
+        \\type GenericG = Generator<number>;
+        \\type GenericA = AsyncGenerator<number>;
+    );
+    defer destroySetup(source_es5);
+    source_es5.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
+    try source_es5.checker.checkSourceFile(source_es5.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(source_es5, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(source_es5, TsCodes.cannot_find_name_target_library));
+    try T.expectEqual(@as(u32, 4), source_es5.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 4), checkerCountHomeCode(source_es5, HomeRule.list_unmodeled_any.definition().code));
+
+    const shadowed = try newSetup(
+        \\interface Generator<T = unknown> { value: T }
+        \\interface AsyncGenerator<T = unknown> { value: T }
+        \\type G = Generator;
+        \\type A = AsyncGenerator<number>;
+    );
+    defer destroySetup(shadowed);
+    shadowed.checker.setConfiguredLibraries(&.{"ES5"}, false);
+    shadowed.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
+    try shadowed.checker.checkSourceFile(shadowed.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(shadowed, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(shadowed, TsCodes.cannot_find_name_target_library));
+    try T.expectEqual(@as(u32, 0), shadowed.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 0), checkerCountHomeCode(shadowed, HomeRule.list_unmodeled_any.definition().code));
+
+    const imported = try newBoundSetup(
+        \\// @filename: /types.ts
+        \\export interface Generator<T> { value: T }
+        \\export interface AsyncGenerator<T> { value: T }
+        \\// @filename: /index.ts
+        \\import type { Generator, AsyncGenerator } from "./types";
+        \\type G = Generator<number>;
+        \\type A = AsyncGenerator<number>;
+    );
+    defer destroyBoundSetup(imported);
+    imported.base.checker.setConfiguredLibraries(&.{"ES5"}, false);
+    imported.base.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
+    try imported.base.checker.checkSourceFile(imported.base.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(imported.base, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(imported.base, TsCodes.cannot_find_name_target_library));
+    try T.expectEqual(@as(u32, 0), imported.base.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 0), checkerCountHomeCode(imported.base, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: object parameter defaults and Function standard fields follow the active library" {
