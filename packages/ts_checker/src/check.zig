@@ -119338,6 +119338,8 @@ pub const Checker = struct {
                     self.diagnosticExists(node, TsCodes.property_does_not_exist_dom_library) or
                     self.diagnosticExists(node, TsCodes.property_does_not_exist_target_library) or
                     self.superPropertyAccessHasDiagnosedAnyRecovery(node)),
+            .object_literal => self.typeIsAnyLike(t) and
+                self.diagnosticCodeInNodeSpan(node, TsCodes.spread_types_object_only),
             .identifier, .this_expr => blk: {
                 const implicit_this = !self.explicitNoImplicitThisIsDisabled() and
                     self.diagnosticExists(node, TsCodes.this_implicitly_any);
@@ -242645,6 +242647,31 @@ test "checker: primitive spread errors suppress member access cascades" {
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.spread_types_object_only));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+}
+
+test "checker: TS2698 object spread retains unmodeled recovery provenance" {
+    const s = try newSetup(
+        \\const numberSpread = { ...1 };
+        \\const stringSpread = { ..."text" };
+        \\const booleanSpread = { ...true };
+        \\const nested = { item: { ...2 } };
+        \\const objectSpread = { ...{ value: 1 } };
+        \\declare const anyValue: any;
+        \\const anySpread = { ...anyValue };
+    );
+    defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.spread_types_object_only));
+    try T.expectEqual(@as(u32, 4), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 4), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
+    try T.expectEqual(types.Primitive.unmodeled, statementVarInitType(s, 0));
+    try T.expectEqual(types.Primitive.unmodeled, statementVarInitType(s, 1));
+    try T.expectEqual(types.Primitive.unmodeled, statementVarInitType(s, 2));
+    try T.expect(!s.checker.typeIsAnyLike(statementVarInitType(s, 3)));
+    try T.expect(!s.checker.typeIsAnyLike(statementVarInitType(s, 4)));
+    try T.expect(!s.checker.typeIsAnyLike(statementVarInitType(s, 6)));
 }
 
 test "checker: object spread omits class methods and accessors" {
