@@ -6769,6 +6769,14 @@ pub const Checker = struct {
         return types.Primitive.unmodeled;
     }
 
+    /// `typeOfIdentifier` is intentionally non-throwing and already treats
+    /// diagnostic allocation as best effort. Keep provenance recording on the
+    /// same contract: a tracking-allocation failure falls back to ordinary
+    /// `any`, while successful recording retains the distinct internal type.
+    fn recordUnmodeledAnyBestEffort(self: *Checker, node: NodeId) TypeId {
+        return self.recordUnmodeledAny(node) catch types.Primitive.any;
+    }
+
     /// Preserve an any-like continuation only when the checker actually
     /// emitted the diagnostic that explains it. Some reporters deliberately
     /// suppress a diagnostic after discovering type-space meaning; those
@@ -138368,8 +138376,8 @@ pub const Checker = struct {
                             !self.identifierNamesEnclosingClassExpression(node, id.name) and
                             !self.virtualSectionIsJsLike(node))
                         {
-                            self.reportCannotFindNameTargetLibrary(node, id.name, required) catch {};
-                            return types.Primitive.any;
+                            self.reportCannotFindNameTargetLibraryOnce(node, id.name, required) catch {};
+                            return self.recordUnmodeledAnyBestEffort(node);
                         }
                     }
                 }
@@ -138385,7 +138393,7 @@ pub const Checker = struct {
                         !self.virtualSectionIsJsLike(node))
                     {
                         self.reportCannotFindName(node, id.name) catch {};
-                        return types.Primitive.any;
+                        return self.recordUnmodeledAnyBestEffort(node);
                     }
                 }
                 if (self.sourceLibDirectiveExcludesDomElement() and self.domGatedGlobalName(self.string_interner.get(id.name))) {
@@ -138396,7 +138404,7 @@ pub const Checker = struct {
                         !self.virtualSectionIsJsLike(node))
                     {
                         self.reportCannotFindNameDomLibrary(node, id.name) catch {};
-                        return types.Primitive.any;
+                        return self.recordUnmodeledAnyBestEffort(node);
                     }
                 }
             }
@@ -139791,7 +139799,7 @@ pub const Checker = struct {
 
     fn reportUnavailableGeneratorType(self: *Checker, node: NodeId, name: hir_mod.StringId, is_async: bool) CheckError!void {
         if (is_async) {
-            try self.reportCannotFindNameTargetLibrary(node, name, "es2018");
+            try self.reportCannotFindNameTargetLibraryOnce(node, name, "es2018");
         } else {
             try self.reportCannotFindNameOnce(node, name);
         }
@@ -147108,12 +147116,13 @@ pub const Checker = struct {
         });
     }
 
-    fn reportCannotFindNameTargetLibrary(
+    fn reportCannotFindNameTargetLibraryOnce(
         self: *Checker,
         node: NodeId,
         name: hir_mod.StringId,
         required: []const u8,
     ) !void {
+        if (self.diagnosticExists(node, TsCodes.cannot_find_name_target_library)) return;
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
             "Cannot find name '{s}'. Do you need to change your target library? Try changing the 'lib' compiler option to '{s}' or later.",
@@ -199883,11 +199892,14 @@ test "checker: later declarators in a variable declaration list bind" {
 test "checker: console.log does not emit TS2304" {
     const b = try newBoundSetup("console.log(\"hi\");");
     defer destroyBoundSetup(b);
+    b.base.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try b.base.checker.checkSourceFile(b.base.root);
     for (b.base.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.cannot_find_name);
         try T.expect(d.code != TsCodes.cannot_find_name_dom_library);
     }
+    try T.expectEqual(@as(u32, 0), b.base.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 0), checkerCountHomeCode(b.base, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: console under lib ES5 emits TS2584" {
@@ -199896,6 +199908,7 @@ test "checker: console under lib ES5 emits TS2584" {
         \\console.log("hi");
     );
     defer destroyBoundSetup(b);
+    b.base.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try b.base.checker.checkSourceFile(b.base.root);
 
     var found = false;
@@ -199908,22 +199921,30 @@ test "checker: console under lib ES5 emits TS2584" {
         }
     }
     try T.expect(found);
+    try T.expectEqual(@as(u32, 1), b.base.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 1), checkerCountHomeCode(b.base, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: DOM name global is available by default and gated by lib" {
     const available = try newBoundSetup("name;");
     defer destroyBoundSetup(available);
+    available.base.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try available.base.checker.checkSourceFile(available.base.root);
     try T.expectEqual(@as(usize, 0), checkerCountCode(available.base, TsCodes.cannot_find_name));
     try T.expectEqual(@as(usize, 0), checkerCountCode(available.base, TsCodes.cannot_find_name_dom_library));
+    try T.expectEqual(@as(u32, 0), available.base.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 0), checkerCountHomeCode(available.base, HomeRule.list_unmodeled_any.definition().code));
 
     const excluded = try newBoundSetup(
         \\// @lib: es5
         \\name;
     );
     defer destroyBoundSetup(excluded);
+    excluded.base.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try excluded.base.checker.checkSourceFile(excluded.base.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(excluded.base, TsCodes.cannot_find_name_dom_library));
+    try T.expectEqual(@as(u32, 1), excluded.base.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 1), checkerCountHomeCode(excluded.base, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: eval is available under lib ES5" {
@@ -199986,36 +200007,35 @@ test "checker: declare module with two asterisks emits TS5061" {
     try T.expect(found);
 }
 
-test "checker: SharedArrayBuffer under target=ES5 emits TS2583" {
+test "checker: shared-memory globals under target=ES5 emit traced TS2583 recoveries" {
     const b = try newBoundSetup(
         \\// @target: es5
         \\// @lib: es5
         \\var foge = new SharedArrayBuffer(1024);
+        \\const atomicNamespace = Atomics;
     );
     defer destroyBoundSetup(b);
+    b.base.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try b.base.checker.checkSourceFile(b.base.root);
-    var found = false;
-    for (b.base.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.cannot_find_name_target_library and
-            std.mem.indexOf(u8, d.message, "SharedArrayBuffer") != null and
-            std.mem.indexOf(u8, d.message, "es2017") != null)
-        {
-            found = true;
-        }
-    }
-    try T.expect(found);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(b.base, TsCodes.cannot_find_name_target_library));
+    try T.expectEqual(@as(u32, 2), b.base.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 2), checkerCountHomeCode(b.base, HomeRule.list_unmodeled_any.definition().code));
 }
 
-test "checker: SharedArrayBuffer under target=esnext does not emit TS2583" {
+test "checker: shared-memory globals under target=esnext remain modeled" {
     const b = try newBoundSetup(
         \\// @target: esnext
         \\var foge = new SharedArrayBuffer(1024);
+        \\const atomicNamespace = Atomics;
     );
     defer destroyBoundSetup(b);
+    b.base.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try b.base.checker.checkSourceFile(b.base.root);
     for (b.base.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.cannot_find_name_target_library);
     }
+    try T.expectEqual(@as(u32, 0), b.base.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 0), checkerCountHomeCode(b.base, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: string includes under target=ES5 emits TS2550" {
@@ -283452,10 +283472,13 @@ test "checker: explicit es5 lib excludes window and leaves derived updates as an
         \\--w;
     );
     defer destroyBoundSetup(b);
+    b.base.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try b.base.checker.checkSourceFile(b.base.root);
 
     try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.cannot_find_name));
     try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, 2356));
+    try T.expectEqual(@as(u32, 1), b.base.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 1), checkerCountHomeCode(b.base, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: strict false suppresses constructor read and loose globalThis member errors" {
