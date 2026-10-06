@@ -188,8 +188,8 @@ included), and the real-world correctness audits.
 
 | Gate | Frozen input | Current Home result | Regression policy |
 |---|---|---:|---|
-| Full Zod graph | Zod 4.5.2, 106 production `.ts` files | 198 TypeScript diagnostics (`tsc`: 0) | Every diagnostic reduction is checked against the unchanged graph |
-| Checker-synthesized `any` provenance | Same byte-pinned Zod archive | **7 HM9002** | CI fails if the count exceeds the reviewed ceiling of 7 |
+| Full Zod graph | Zod 4.5.2, 106 production `.ts` files | 196 TypeScript diagnostics (`tsc`: 0) | Every diagnostic reduction is checked against the unchanged graph |
+| Checker-synthesized `any` provenance | Same byte-pinned Zod archive | **3 HM9002** | CI fails if the count exceeds the reviewed ceiling of 3 |
 | Zod core proxy | Zod 4.5.2, 21 production `.ts` files | 0 Home-only diagnostics; 1 shared proxy-boundary TS2307 | No Home-only identity may be added |
 
 The provenance row currently covers expression-stack exhaustion, invalid
@@ -200,15 +200,16 @@ recovery, TS1339/TS1340 import-namespace recovery, TS1361/TS1362 type-only value
 TS2693 `typeof` type-only recovery, TS2694 CommonJS import-member recovery, TS2708 namespace-as-value recovery, TS18013/TS18016 ECMAScript-private-member recovery, inherited static-private TS2339 recovery, direct-`never` TS2339 recovery including TS18031/TS18032 intersection reduction, TS2335/TS2337/TS17005 invalid-`super()` recovery, diagnosed invalid-`super` property recovery (TS2335/TS2336/TS17011/TS2340/TS2466/TS2659/TS2660), TS2815 illegal class-`arguments` recovery, TS2550/TS2551/TS2576/TS2812 specialized missing-member recovery, TS2304 unresolved-`typeof` recovery, TS2331/TS2332/TS2465/TS2683/TS2816 `typeof this` recovery, plus TS2589, TS2590, and TS2799
 recursion/representation recoveries; it is a correctness ratchet, not a claim
 that every internal fallback has already been classified.
-The current Zod count comprises the reviewed trio of TS2698-linked object-spread
-recoveries in `classic/schemas.ts` (two sites) and
-`classic/from-json-schema.ts` (one site), plus four direct-`never` TS2339
-recoveries in `classic/from-json-schema.ts` (lines 649, 670 twice, and 671 in
-the pinned source). Those four expose the independent false-`never` flow bug
-tracked in [#835](https://github.com/home-lang/home/issues/835); recording them
-is the #783 signal, not a diagnostic suppression. The pinned production graph
-contains no yield expressions, so adding TS7057 provenance contributes no Zod
-sites; the TS18013 private-access migration likewise leaves the reviewed count unchanged.
+The current Zod count comprises only the reviewed trio of TS2698-linked
+object-spread recoveries in `classic/schemas.ts` (two sites) and
+`classic/from-json-schema.ts` (one site). The four direct-`never` TS2339
+recoveries previously visible at lines 649, 670 twice, and 671 are eliminated
+by the source-independent negative-`typeof` and chained-discriminant flow fix
+tracked in [#835](https://github.com/home-lang/home/issues/835), without
+suppressing diagnostics or widening legitimate `never` values. The pinned
+production graph contains no yield expressions, so adding TS7057 provenance
+contributes no Zod sites; the TS18013 private-access migration likewise leaves
+the reviewed count unchanged.
 The archive SHA-512, project shape, and maximum count are enforced by
 [`scripts/ts-unmodeled-any-ratchet.py`](scripts/ts-unmodeled-any-ratchet.py).
 See the [TypeScript parity plan](docs/docs/TS_PARITY_PLAN.md) for migration
@@ -219,7 +220,7 @@ real-project audit history.
 
 - **Real-world graphs still surface false positives.** The conformance corpus
   is saturated, but large library graphs exercise interactions it doesn't.
-  The frozen full Zod graph above still has 198 Home diagnostics while `tsc`
+  The frozen full Zod graph above still has 196 Home diagnostics while `tsc`
   has zero; the smaller core proxy is clean of Home-only identities but is not
   a substitute for full-graph parity.
   Each fix is tracked in

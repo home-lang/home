@@ -108186,8 +108186,13 @@ pub const Checker = struct {
     fn subtractTypeByPredicate(self: *Checker, current: TypeId, target: TypeId) CheckError!TypeId {
         const relation_target = self.predicateRelationTarget(target);
         if (current == types.Primitive.never or current == target or current == relation_target) return types.Primitive.never;
-        if (self.typeIsAny(current)) return current;
         const current_flags = self.interner.pool.flagsOf(current);
+        // Union flags are the OR of their constituents, so `any | boolean`
+        // carries `is_any` even though the boolean constituent can still be
+        // removed by a negative `typeof` guard. Only apply the bare-any fast
+        // path after ruling out a union; catch-all union members are preserved
+        // individually below because a negative predicate cannot refine them.
+        if (!current_flags.is_union and self.typeIsAny(current)) return current;
         if (self.isBareTypeParameter(current)) {
             const constraint = self.typeParameterConstraint(current) orelse return current;
             if (constraint != current) return try self.subtractTypeByPredicate(constraint, relation_target);
@@ -108204,6 +108209,10 @@ pub const Checker = struct {
             var kept: std.ArrayListUnmanaged(TypeId) = .empty;
             defer kept.deinit(self.gpa);
             for (self.interner.unionMembers(current)) |member| {
+                if (self.typeIsAnyLike(member)) {
+                    try kept.append(self.gpa, member);
+                    continue;
+                }
                 const remove = self.typeMatchesPredicateTarget(member, relation_target) or
                     (!target_is_unit and
                         !self.isNullishType(member) and
@@ -135352,7 +135361,7 @@ pub const Checker = struct {
             },
             .identifier => {
                 const obj_id = hir_mod.identifierOf(self.hir, object);
-                var static_t = self.typeOfIdentifier(object);
+                var static_t = self.lookupNarrow(obj_id.name) orelse self.typeOfIdentifier(object);
                 if (static_t == types.Primitive.never) return;
                 var f = self.interner.pool.flagsOf(static_t);
                 if (self.isBareTypeParameter(static_t)) {
@@ -254582,6 +254591,43 @@ test "checker: truthy property narrowing removes impossible never branches" {
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.parameter_implicitly_any));
+}
+
+test "checker: negative typeof guards preserve catch-all union constituents" {
+    const s = try newSetup("");
+    defer destroySetup(s);
+
+    for ([_]TypeId{ types.Primitive.any, types.Primitive.unknown }) |catch_all| {
+        const union_t = try s.checker.interner.internUnion(&.{ catch_all, types.Primitive.boolean_t });
+        try T.expect(s.checker.interner.pool.flagsOf(union_t).is_union);
+        try T.expectEqual(
+            types.Primitive.boolean_t,
+            try s.checker.narrowTypeByTypeofComparison(union_t, "boolean", types.Primitive.boolean_t, true),
+        );
+        try T.expectEqual(
+            catch_all,
+            try s.checker.narrowTypeByTypeofComparison(union_t, "boolean", types.Primitive.boolean_t, false),
+        );
+    }
+}
+
+test "checker: negative typeof flow reaches later property discriminants" {
+    const s = try newSetup(
+        \\function convert(schema: any | boolean): void {
+        \\  if (typeof schema === "boolean") return;
+        \\  if (schema.default !== undefined) schema.default;
+        \\  if (schema.propertyNames !== undefined && schema.type === "object" && schema.$ref === undefined) {
+        \\    schema.propertyNames;
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(u32, 0), s.checker.unmodeled_any_sites.count());
 }
 
 test "checker: plain member writes use declared types inside null guards" {
