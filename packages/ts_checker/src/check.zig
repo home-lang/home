@@ -6676,7 +6676,6 @@ pub const Checker = struct {
         self.removeContextualReturnDiagnosticsFromDuplicateGetters();
         try self.checkUnusedTopLevelImports(stmts);
         try self.checkUnusedTopLevelFunctions(root, stmts);
-        try self.checkHomeRules();
         self.removeUntypedTypeArgumentCascadesAfterMissingProperty();
         self.removeTypeArgumentCountDiagnosticsInJs();
         self.removeJsDocObjectMethodTypeMismatchCascades();
@@ -6685,6 +6684,10 @@ pub const Checker = struct {
         self.removePropertyMissingDiagnosticsSupersededBySuggestion();
         try self.restoreRecoveredJsxImplicitAnyDiagnostics(root);
         self.applyExplicitNoImplicitThisDirective();
+        // Whole-file cleanup can force deferred expressions and discover new
+        // recovery origins. Run Home rules after those passes, but before
+        // source directives so their suppression behavior stays unchanged.
+        try self.checkHomeRules();
         // Detection passes above append diagnostics in node-id
         // (i.e. AST-construction) order rather than source-position
         // order. Re-sort so the output matches tsc's per-source-line
@@ -119313,6 +119316,7 @@ pub const Checker = struct {
                     (self.diagnosticExists(node, TsCodes.type_only_import_used_as_value) or
                         self.diagnosticExists(node, TsCodes.type_only_export_used_as_value) or
                         self.diagnosticExists(node, TsCodes.namespace_as_value) or
+                        self.diagnosticExists(node, TsCodes.arguments_in_class_field_or_static_block) or
                         self.diagnosticExists(node, TsCodes.cannot_find_name) or
                         self.diagnosticExists(node, TsCodes.cannot_find_name_did_you_mean));
                 break :blk implicit_this or invalid_this or diagnosed_identifier_any;
@@ -260809,6 +260813,7 @@ test "checker: TS2815 covers arguments in class field initializers and static bl
     ;
     const s = try newSetup(source);
     defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
 
     var ts2815: usize = 0;
@@ -260820,6 +260825,8 @@ test "checker: TS2815 covers arguments in class field initializers and static bl
     }
     try T.expectEqual(@as(usize, 4), ts2815);
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.invalid_use_in_class_static_block));
+    try T.expectEqual(@as(u32, 4), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 4), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: TS2815/TS18039 ignore local arguments bindings and ordinary function bodies" {
@@ -260831,12 +260838,15 @@ test "checker: TS2815/TS18039 ignore local arguments bindings and ordinary funct
         \\}
     );
     defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
 
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.arguments_in_class_field_or_static_block);
         try T.expect(d.code != TsCodes.invalid_use_in_class_static_block);
     }
+    try T.expectEqual(@as(u32, 0), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 0), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: nested class static blocks do not capture outer arguments" {

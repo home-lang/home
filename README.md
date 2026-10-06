@@ -197,7 +197,7 @@ TypeScript and checked-JS catch-annotation recovery, TS7009 implicit-constructor
 recovery, TS2350/TS2351/TS2679 invalid-`new` recovery, TS7015 numeric-index mismatch recovery, TS7017 global-`this` index
 recovery, TS7052/TS7053 implicit element-access recovery, TS2683 implicit-`this`
 recovery, TS1339/TS1340 import-namespace recovery, TS1361/TS1362 type-only value-use recovery, TS18046/TS2571 unknown-object recovery, TS2304/TS2552 unresolved-value recovery, TS2331/TS2332 invalid-`this` expression recovery, TS2348/TS2349 invalid-call recovery, TS2558 JSX class type-argument arity recovery, TS2749 value-used-as-type recovery, TS6234 getter-call recovery, diagnosed
-TS2693 `typeof` type-only recovery, TS2694 CommonJS import-member recovery, TS2708 namespace-as-value recovery, TS2335/TS2337/TS17005 invalid-`super()` recovery, TS2550/TS2551/TS2576/TS2812 specialized missing-member recovery, TS2304 unresolved-`typeof` recovery, TS2331/TS2332/TS2465/TS2683/TS2816 `typeof this` recovery, plus TS2589, TS2590, and TS2799
+TS2693 `typeof` type-only recovery, TS2694 CommonJS import-member recovery, TS2708 namespace-as-value recovery, TS2335/TS2337/TS17005 invalid-`super()` recovery, TS2815 illegal class-`arguments` recovery, TS2550/TS2551/TS2576/TS2812 specialized missing-member recovery, TS2304 unresolved-`typeof` recovery, TS2331/TS2332/TS2465/TS2683/TS2816 `typeof this` recovery, plus TS2589, TS2590, and TS2799
 recursion/representation recoveries; it is a correctness ratchet, not a claim
 that every internal fallback has already been classified.
 The archive SHA-512, project shape, and maximum count are enforced by
