@@ -78397,9 +78397,12 @@ pub const Checker = struct {
                     if (std.mem.eql(u8, name_str, "PropertyKey")) {
                         return self.interner.internUnion(&.{ types.Primitive.string_t, types.Primitive.number_t, types.Primitive.symbol_t }) catch return error.OutOfMemory;
                     }
-                    if (self.sourceLibDirectiveExcludesDomElement() and std.mem.eql(u8, name_str, "Element")) {
+                    if (self.sourceLibDirectiveExcludesDomElement() and
+                        std.mem.eql(u8, name_str, "Element") and
+                        !self.visibleTypeDeclarationExistsAt(type_node, r.name))
+                    {
                         try self.reportCannotFindNameOnce(type_node, r.name);
-                        return types.Primitive.any;
+                        return self.recordUnmodeledAny(type_node);
                     }
                     if (std.mem.eql(u8, name_str, "Image")) {
                         return self.seedCtor(self.htmlImageElementType() catch types.Primitive.any) catch types.Primitive.any;
@@ -78483,9 +78486,12 @@ pub const Checker = struct {
                     }
                     if (self.nameHasEnclosingTypeParameter(r.name, type_node)) return lowered;
                     if (self.visibleJsDocTypedefNameExistsAt(type_node, r.name)) return types.Primitive.any;
-                    if (self.sourceLibDirectiveExcludesDomElement() and std.mem.eql(u8, name_str, "Document")) {
+                    if (self.sourceLibDirectiveExcludesDomElement() and
+                        std.mem.eql(u8, name_str, "Document") and
+                        !self.visibleTypeDeclarationExistsAt(type_node, r.name))
+                    {
                         try self.reportCannotFindNameOnce(type_node, r.name);
-                        return types.Primitive.any;
+                        return self.recordUnmodeledAny(type_node);
                     }
                     if (self.isBuiltinName(r.name)) return types.Primitive.any;
                     try self.reportCannotFindNameOnce(type_node, r.name);
@@ -225326,9 +225332,12 @@ test "checker: DOM lib resolves Document in virtual declarations" {
         \\declare var doc: Document;
     );
     defer destroySetup(without_dom);
+    without_dom.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try without_dom.checker.checkSourceFile(without_dom.root);
-    try T.expect(checkerCountCode(without_dom, TsCodes.cannot_find_name) +
-        checkerCountCode(without_dom, TsCodes.cannot_find_name_did_you_mean) > 0);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(without_dom, TsCodes.cannot_find_name) +
+        checkerCountCode(without_dom, TsCodes.cannot_find_name_did_you_mean));
+    try T.expectEqual(@as(u32, 1), without_dom.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 1), checkerCountHomeCode(without_dom, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: namespace re-export satisfies named import" {
@@ -276431,8 +276440,8 @@ test "checker: recursive class reference dotted namespace self type stays off TS
     }
 }
 
-test "checker: lib es5 excludes DOM Element type ref" {
-    const b = try newBoundSetup(
+test "checker: excluded DOM Element ref traces any recovery without shadowing local declarations" {
+    const element = try newBoundSetup(
         \\// @lib: es5
         \\declare namespace Sample.Thing {
         \\  export interface ICodeThing {
@@ -276440,17 +276449,27 @@ test "checker: lib es5 excludes DOM Element type ref" {
         \\  }
         \\}
     );
-    defer destroyBoundSetup(b);
-    try b.base.checker.checkSourceFile(b.base.root);
-    var saw_element = false;
-    for (b.base.checker.diagnostics.items) |d| {
-        if (d.code == TsCodes.cannot_find_name and
-            std.mem.indexOf(u8, d.message, "'Element'") != null)
-        {
-            saw_element = true;
-        }
-    }
-    try T.expect(saw_element);
+    defer destroyBoundSetup(element);
+    element.base.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
+    try element.base.checker.checkSourceFile(element.base.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(element.base, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(u32, 1), element.base.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 1), checkerCountHomeCode(element.base, HomeRule.list_unmodeled_any.definition().code));
+
+    const shadowed = try newBoundSetup(
+        \\// @lib: es5
+        \\interface Element { localElement: string }
+        \\interface Document { localDocument: number }
+        \\declare const element: Element;
+        \\declare const document: Document;
+    );
+    defer destroyBoundSetup(shadowed);
+    shadowed.base.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
+    try shadowed.base.checker.checkSourceFile(shadowed.base.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(shadowed.base, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(shadowed.base, TsCodes.cannot_find_name_did_you_mean));
+    try T.expectEqual(@as(u32, 0), shadowed.base.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 0), checkerCountHomeCode(shadowed.base, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: private namespace class is not exported in qualified type ref" {
