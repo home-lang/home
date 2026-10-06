@@ -116331,7 +116331,7 @@ pub const Checker = struct {
                 }
                 try self.checkEcmaPrivateMemberAccess(node, m.object, access_obj_t, m.name);
                 if (self.privateAccessDiagnosticAlreadyReported(node, TsCodes.ecma_private_not_accessible_outside_class)) {
-                    break :blk types.Primitive.any;
+                    break :blk try self.recordUnmodeledAny(node);
                 }
                 try self.checkPrivateSetOnlyAccessorRead(node, access_obj_t, m.name);
                 if (!intersection_access_handled) {
@@ -221930,6 +221930,52 @@ test "checker: class-derived interfaces use TS18013 outside class bodies" {
         TsCodes.ecma_private_not_accessible_outside_class,
         "Property '#value' is not accessible outside class 'C' because it has a private identifier.",
     ));
+}
+
+test "checker: TS18013 private-access fallbacks retain unmodeled recovery provenance" {
+    const s = try newSetup(
+        \\class Generic<T> {
+        \\  #value!: T;
+        \\  read(other: Generic<T>) { return other.#value; }
+        \\}
+        \\declare const generic: Generic<number>;
+        \\const outside = generic.#value;
+        \\interface Inherited extends Generic<number> {}
+        \\declare const inherited: Inherited;
+        \\inherited.#value = 1;
+        \\class Base {
+        \\  static access() { Derived.#secret; }
+        \\}
+        \\class Derived extends Base {
+        \\  static #secret = 1;
+        \\}
+        \\class Outer {
+        \\  #shadow = 1;
+        \\  nested() {
+        \\    class Inner {
+        \\      #shadow = 2;
+        \\      read(value: Outer) { return value.#shadow; }
+        \\    }
+        \\    return Inner;
+        \\  }
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 3), checkerCountCode(s, TsCodes.ecma_private_not_accessible_outside_class));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.ecma_private_shadowed_by_another));
+    try T.expectEqual(@as(u32, 3), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 3), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code == TsCodes.ecma_private_not_accessible_outside_class) {
+            try T.expectEqual(types.Primitive.unmodeled, s.hir.typeOf(diagnostic.node));
+        }
+        if (diagnostic.code == TsCodes.ecma_private_shadowed_by_another) {
+            try T.expect(!s.checker.typeIsAnyLike(s.hir.typeOf(diagnostic.node)));
+        }
+    }
 }
 
 test "checker: own private member access does not emit TS18014" {
