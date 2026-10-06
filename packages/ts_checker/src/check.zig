@@ -38588,10 +38588,6 @@ pub const Checker = struct {
                     }
                 }
                 if (self.lowerBuiltinObjectType(raw) != null) return;
-                if (std.mem.eql(u8, raw, "Null") or std.mem.eql(u8, raw, "Undefined")) {
-                    try self.reportCannotFindNamePlainOnce(type_node, r.name);
-                    return;
-                }
                 if (std.mem.eql(u8, raw, "any") or
                     std.mem.eql(u8, raw, "unknown") or
                     std.mem.eql(u8, raw, "never") or
@@ -38617,6 +38613,10 @@ pub const Checker = struct {
                 }
                 if (self.typeRefNameExists(r.name)) return;
                 if (self.visibleNonNamespaceTypeDeclarationExistsAt(type_node, r.name)) return;
+                if (std.mem.eql(u8, raw, "Null") or std.mem.eql(u8, raw, "Undefined")) {
+                    try self.reportCannotFindNamePlainOnce(type_node, r.name);
+                    return;
+                }
                 if (self.visibleValueOnlyDeclarationExistsAt(type_node, r.name)) {
                     try self.reportValueUsedAsTypeDidYouMeanTypeofOnce(type_node, r.name);
                     return;
@@ -74880,13 +74880,14 @@ pub const Checker = struct {
 
     fn reportInvalidUppercasePrimitiveTypeRef(self: *Checker, type_node: NodeId, name: hir_mod.StringId) CheckError!bool {
         const raw = self.string_interner.get(name);
+        if (self.visibleTypeDeclarationExistsAt(type_node, name)) return false;
         // `Null` and `Undefined` are not real types; upstream emits a
         // plain TS2304 ("Cannot find name") without offering a
         // `Did you mean 'undefined'?` suggestion because the lowercase
         // forms are value-position keywords, not type-position names.
         // Mirrors fixture `directReferenceToUndefined`.
         if (std.mem.eql(u8, raw, "Null") or std.mem.eql(u8, raw, "Undefined")) {
-            try self.reportCannotFindNamePlain(type_node, name);
+            try self.reportCannotFindNamePlainOnce(type_node, name);
             return true;
         }
         return false;
@@ -77985,7 +77986,11 @@ pub const Checker = struct {
                 if (self.programGlobalType(id.name)) |t| {
                     if (!self.visibleTypeDeclarationExistsAt(type_node, id.name)) return t;
                 }
-                if (try self.reportInvalidUppercasePrimitiveTypeRef(type_node, id.name)) return types.Primitive.any;
+                if (self.visibleTypeDeclarationExistsAt(type_node, id.name)) {
+                    try self.ensureForwardVisibleTypeDeclChecked(type_node, id.name);
+                    if (self.type_names.get(id.name)) |t| return t;
+                }
+                if (try self.reportInvalidUppercasePrimitiveTypeRef(type_node, id.name)) return self.recordUnmodeledAny(type_node);
             },
             .literal_number => {
                 const value = self.literalNumberWithSourceSign(type_node);
@@ -78424,7 +78429,6 @@ pub const Checker = struct {
                         return self.diagnosedAnyRecovery(type_node, TsCodes.value_used_as_type_did_you_mean_typeof);
                     }
                     if (self.type_names.get(r.name)) |t| return t;
-                    if (try self.reportInvalidUppercasePrimitiveTypeRef(type_node, r.name)) return types.Primitive.any;
                     if (try self.currentCommonJsExportsTypeRef(type_node, r.name)) |t| return t;
                     if (self.visibleTypeDeclarationExistsAt(type_node, r.name)) {
                         try self.ensureForwardVisibleTypeDeclChecked(type_node, r.name);
@@ -78437,6 +78441,7 @@ pub const Checker = struct {
                     // including forward and merged declarations.
                     if (self.programGlobalType(r.name)) |t| return t;
                     if (is_program_global_type) return types.Primitive.any;
+                    if (try self.reportInvalidUppercasePrimitiveTypeRef(type_node, r.name)) return self.recordUnmodeledAny(type_node);
                     if (self.visibleValueOnlyDeclarationExistsAt(type_node, r.name)) {
                         try self.reportValueUsedAsTypeDidYouMeanTypeofOnce(type_node, r.name);
                         return self.diagnosedAnyRecovery(type_node, TsCodes.value_used_as_type_did_you_mean_typeof);
@@ -202104,6 +202109,7 @@ test "checker: unresolved identifier with no close match emits TS2304" {
 test "checker: type-position Undefined emits plain TS2304, no TS2552 suggestion" {
     const b = try newBoundSetup("var x: Undefined;");
     defer destroyBoundSetup(b);
+    b.base.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try b.base.checker.checkSourceFile(b.base.root);
     var found_2304 = false;
     var found_2552 = false;
@@ -202113,11 +202119,14 @@ test "checker: type-position Undefined emits plain TS2304, no TS2552 suggestion"
     }
     try T.expect(found_2304);
     try T.expect(!found_2552);
+    try T.expectEqual(@as(u32, 0), b.base.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 0), checkerCountHomeCode(b.base, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: type-position Null emits plain TS2304, no TS2552 suggestion" {
     const b = try newBoundSetup("var x: Null;");
     defer destroyBoundSetup(b);
+    b.base.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try b.base.checker.checkSourceFile(b.base.root);
     var found_2304 = false;
     var found_2552 = false;
@@ -202127,6 +202136,40 @@ test "checker: type-position Null emits plain TS2304, no TS2552 suggestion" {
     }
     try T.expect(found_2304);
     try T.expect(!found_2552);
+    try T.expectEqual(@as(u32, 0), b.base.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 0), checkerCountHomeCode(b.base, HomeRule.list_unmodeled_any.definition().code));
+}
+
+test "checker: uppercase nullish generic arguments trace any recovery" {
+    const b = try newBoundSetup(
+        \\type Box<T> = { value: T };
+        \\type UndefinedBox = Box<Undefined>;
+        \\type NullBox = Box<Null>;
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(b.base, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.cannot_find_name_did_you_mean));
+    try T.expectEqual(@as(u32, 2), b.base.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 2), checkerCountHomeCode(b.base, HomeRule.list_unmodeled_any.definition().code));
+}
+
+test "checker: declared uppercase nullish type names remain modeled" {
+    const b = try newBoundSetup(
+        \\type Null = string;
+        \\interface Undefined { value: number }
+        \\const nullName: Null = "ok";
+        \\const undefinedName: Undefined = { value: 1 };
+        \\type Lowercase = null | undefined;
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.cannot_find_name_did_you_mean));
+    try T.expectEqual(@as(u32, 0), b.base.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 0), checkerCountHomeCode(b.base, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: unresolved class heritage uses value spelling suggestions" {
