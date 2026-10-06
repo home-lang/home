@@ -79198,10 +79198,10 @@ pub const Checker = struct {
                     }
                     if (self.visibleValueOnlyDeclarationExistsAt(type_node, r.name)) {
                         try self.reportValueUsedAsTypeDidYouMeanTypeofOnce(type_node, r.name);
-                    } else if (!self.typeRefNameAcceptsTypeArgsAt(type_node, r.name, name_str)) {
-                        try self.reportCannotFindNameOnce(type_node, r.name);
+                        return self.diagnosedAnyRecovery(type_node, TsCodes.value_used_as_type_did_you_mean_typeof);
                     }
-                    return self.diagnosedAnyRecovery(type_node, TsCodes.value_used_as_type_did_you_mean_typeof);
+                    try self.reportCannotFindNameOnce(type_node, r.name);
+                    return self.diagnosedAnyRecovery(type_node, TsCodes.cannot_find_name);
                 }
             },
             .typeof_type => {
@@ -240073,6 +240073,23 @@ test "checker: value-only generic-looking type reference emits TS2749" {
     try T.expectEqual(@as(u32, 1), s.checker.unmodeled_any_sites.count());
     const msg = checkerFirstMessageForCode(s, TsCodes.value_used_as_type_did_you_mean_typeof) orelse return error.MissingDiagnostic;
     try T.expect(std.mem.eql(u8, msg, "'make' refers to a value, but is being used as a type here. Did you mean 'typeof make'?"));
+}
+
+test "checker: unresolved parameterized type reference retains unmodeled recovery provenance" {
+    const s = try newSetup(
+        \\interface Box<T> { value: T }
+        \\let missing: Missing<string>;
+        \\let modeled: Box<string>;
+        \\let builtin: Array<string>;
+    );
+    defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_find_name));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.cannot_find_name, "Cannot find name 'Missing'."));
+    try T.expectEqual(@as(u32, 1), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 1), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: enum initializer `\"a\" - \"a\"` fires TS2362 + TS2363" {
