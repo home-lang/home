@@ -34983,7 +34983,7 @@ pub const Checker = struct {
                     // turn the inferred generator from `Generator<..., unknown>`
                     // into `Generator<..., any>`.
                     const next_t = if (y.type_node == hir_mod.none_node_id)
-                        if (self.hir.typeOf(node) == types.Primitive.any)
+                        if (self.typeIsAnyLike(self.hir.typeOf(node)))
                             self.contextualNextTypeForYield(node) orelse types.Primitive.none
                         else
                             self.hir.typeOf(node)
@@ -35002,7 +35002,7 @@ pub const Checker = struct {
                     }
                 } else {
                     try yield_types.append(self.gpa, types.Primitive.undefined_t);
-                    const next_t = if (self.hir.typeOf(node) == types.Primitive.any)
+                    const next_t = if (self.typeIsAnyLike(self.hir.typeOf(node)))
                         self.contextualNextTypeForYield(node) orelse types.Primitive.none
                     else
                         self.hir.typeOf(node);
@@ -35132,6 +35132,18 @@ pub const Checker = struct {
         return try self.synthesizeGeneratorTypeFull(yield_t, return_t, next_t, f.flags.is_async);
     }
 
+    /// TS7057 identifies the value sent back into this exact `yield`
+    /// expression as a checker-synthesized implicit `any`. Preserve the
+    /// diagnostic while retaining that provenance on the expression itself.
+    /// The any-like guard prevents a future diagnostic-only path from
+    /// relabeling a concrete sent-value type.
+    fn reportImplicitAnyYield(self: *Checker, node: NodeId) CheckError!void {
+        try self.report(node, TsCodes.yield_implicit_any, "'yield' expression implicitly results in an 'any' type because its containing generator lacks a return-type annotation.");
+        if (self.typeIsAnyLike(self.hir.typeOf(node))) {
+            _ = try self.recordUnmodeledAny(node);
+        }
+    }
+
     fn reportImplicitAnyYieldOperands(self: *Checker, node: NodeId) CheckError!void {
         if (!self.strict_flags.no_implicit_any) return;
         if (node == hir_mod.none_node_id) return;
@@ -35159,18 +35171,18 @@ pub const Checker = struct {
                         !has_binding_default_context and
                         lacks_concrete_context)
                     {
-                        try self.report(node, TsCodes.yield_implicit_any, "'yield' expression implicitly results in an 'any' type because its containing generator lacks a return-type annotation.");
+                        try self.reportImplicitAnyYield(node);
                     }
                 } else {
                     var reported = false;
                     const parent = self.hir.parentOf(node);
                     if (parent != hir_mod.none_node_id and self.hir.kindOf(parent) == .template_literal) {
-                        try self.report(node, TsCodes.yield_implicit_any, "'yield' expression implicitly results in an 'any' type because its containing generator lacks a return-type annotation.");
+                        try self.reportImplicitAnyYield(node);
                         reported = true;
                     } else if (self.hir.kindOf(y.expr) == .yield_expr) {
                         const inner = hir_mod.yieldExprOf(self.hir, y.expr);
                         if (inner.expr == hir_mod.none_node_id) {
-                            try self.report(y.expr, TsCodes.yield_implicit_any, "'yield' expression implicitly results in an 'any' type because its containing generator lacks a return-type annotation.");
+                            try self.reportImplicitAnyYield(y.expr);
                             reported = true;
                         }
                     } else if (self.hir.kindOf(y.expr) == .identifier) {
@@ -35182,12 +35194,12 @@ pub const Checker = struct {
                         if ((self.typeIsAny(expr_t) or self.yieldOperandIsImplicitAnyIdentifier(y.expr)) and
                             !self.yieldOperandIsUnresolvedIdentifier(y.expr))
                         {
-                            try self.report(node, TsCodes.yield_implicit_any, "'yield' expression implicitly results in an 'any' type because its containing generator lacks a return-type annotation.");
+                            try self.reportImplicitAnyYield(node);
                             reported = true;
                         }
                     }
                     if (!reported and self.yieldCallArgumentLacksConcreteContext(node)) {
-                        try self.report(node, TsCodes.yield_implicit_any, "'yield' expression implicitly results in an 'any' type because its containing generator lacks a return-type annotation.");
+                        try self.reportImplicitAnyYield(node);
                     }
                     try self.reportImplicitAnyYieldOperands(y.expr);
                 }
@@ -233475,6 +233487,35 @@ test "checker: generic call context leaves consumed yield result implicitly any"
     try s.checker.checkSourceFile(s.root);
 
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.yield_implicit_any));
+}
+
+test "checker: implicit yield any reports traced recovery origins" {
+    const s = try newSetup(
+        \\declare function generic<T>(value: T): T;
+        \\function* bare() { const value = yield; }
+        \\function* template() { const value = `sent: ${yield 1}`; }
+        \\function* nested() { yield yield; }
+        \\function* loop() {
+        \\  let result;
+        \\  while (1) result = yield result;
+        \\}
+        \\function* genericCall() { generic(yield 1); }
+        \\function* contextual() { const value: string = yield; generic<string>(yield); }
+        \\function* unused() { yield; yield, 0; void yield; }
+        \\function* annotated(): Generator<number, void, any> { const value: any = yield 1; }
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true, .no_implicit_any = true });
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 5), checkerCountCode(s, TsCodes.yield_implicit_any));
+    try T.expectEqual(@as(u32, 5), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 5), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code != TsCodes.yield_implicit_any) continue;
+        try T.expectEqual(types.Primitive.unmodeled, s.hir.typeOf(diagnostic.node));
+    }
 }
 
 test "checker: var bindings are hoisted within function bodies" {
