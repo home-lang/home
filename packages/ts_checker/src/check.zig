@@ -6779,6 +6779,27 @@ pub const Checker = struct {
         return types.Primitive.any;
     }
 
+    /// `super.x` and `super[x]` diagnostics are generally anchored on the
+    /// `super` token, while their any-like recovery belongs to the complete
+    /// access expression. Keep that ownership test in one place so dot and
+    /// element access cannot drift apart again.
+    fn superPropertyAccessHasDiagnosedAnyRecovery(self: *Checker, node: NodeId) bool {
+        const super_node = switch (self.hir.kindOf(node)) {
+            .member_access => hir_mod.memberOf(self.hir, node).object,
+            .element_access => hir_mod.elementOf(self.hir, node).object,
+            else => return false,
+        };
+        if (!self.nodeIsSuperReference(super_node)) return false;
+        return self.diagnosticExists(super_node, TsCodes.super_not_derived) or
+            self.diagnosticExists(super_node, TsCodes.super_not_in_derived_member) or
+            self.diagnosticExists(super_node, TsCodes.super_property_access_only_in_derived) or
+            self.diagnosticExists(super_node, TsCodes.super_in_constructor_arguments) or
+            self.diagnosticExists(super_node, TsCodes.super_before_super_call) or
+            self.diagnosticExists(super_node, TsCodes.super_only_object_literal_methods_es2015) or
+            self.diagnosticExists(super_node, TsCodes.super_in_computed_property_name) or
+            self.diagnosticExists(node, TsCodes.super_only_methods_accessible);
+    }
+
     fn removeResolvedConditionalIteratorDiagnostics(self: *Checker) void {
         var write: usize = 0;
         for (self.diagnostics.items) |diagnostic| {
@@ -117044,6 +117065,14 @@ pub const Checker = struct {
                                 try self.reportSuperPropertyAccessOnlyInDerivedMember(e.object);
                                 break :blk_obj types.Primitive.any;
                             }
+                            if (self.superReferenceInConstructorArgumentInitializer(e.object)) {
+                                _ = try self.checkSuperPropertyBeforeSuperInConstructor(e.object);
+                                try self.report(e.object, TsCodes.super_in_constructor_arguments, "'super' cannot be referenced in constructor arguments.");
+                                break :blk_obj types.Primitive.any;
+                            }
+                            if (try self.checkSuperPropertyBeforeSuperInConstructor(e.object)) {
+                                break :blk_obj types.Primitive.any;
+                            }
                             // NOTE: TS2338 suppressed for `super[x]` in a
                             // PropertyDeclaration ÃÂ¢ÃÂÃÂ upstream
                             // `isLegalUsageOfSuperExpression` (checker.ts)
@@ -119298,13 +119327,16 @@ pub const Checker = struct {
         // are therefore not necessarily any recoveries.
         const expression_kind = self.hir.kindOf(node);
         const has_diagnosed_any_recovery = switch (expression_kind) {
-            .element_access => self.diagnosticExists(node, TsCodes.element_implicitly_any) or
-                self.diagnosticExists(node, TsCodes.element_implicitly_any_no_index_signature_did_you_mean_call),
+            .element_access => self.typeIsAnyLike(t) and
+                (self.diagnosticExists(node, TsCodes.element_implicitly_any) or
+                    self.diagnosticExists(node, TsCodes.element_implicitly_any_no_index_signature_did_you_mean_call) or
+                    self.superPropertyAccessHasDiagnosedAnyRecovery(node)),
             .member_access => self.typeIsAnyLike(t) and
                 (self.diagnosticExists(node, TsCodes.property_does_not_exist_did_you_mean) or
                     self.diagnosticExists(node, TsCodes.property_does_not_exist_static_member) or
                     self.diagnosticExists(node, TsCodes.property_does_not_exist_dom_library) or
-                    self.diagnosticExists(node, TsCodes.property_does_not_exist_target_library)),
+                    self.diagnosticExists(node, TsCodes.property_does_not_exist_target_library) or
+                    self.superPropertyAccessHasDiagnosedAnyRecovery(node)),
             .identifier, .this_expr => blk: {
                 const implicit_this = !self.explicitNoImplicitThisIsDisabled() and
                     self.diagnosticExists(node, TsCodes.this_implicitly_any);
@@ -217853,10 +217885,13 @@ test "checker: ES5 constructor super property access emits TS2340" {
         \\}
     );
     defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
 
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.super_only_methods_accessible));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(u32, 1), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 1), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: nested classes do not inherit an outer class super binding" {
@@ -218019,6 +218054,47 @@ test "checker: invalid super calls retain unmodeled recovery provenance" {
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.super_call_when_extends_null));
     try T.expectEqual(@as(u32, 4), s.checker.unmodeled_any_sites.count());
     try T.expectEqual(@as(usize, 4), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
+}
+
+test "checker: invalid super property accesses retain unmodeled recovery provenance" {
+    const s = try newSetup(
+        \\class Base { value = 1; method() {} }
+        \\class NoBase {
+        \\  dot() { return super.value; }
+        \\  element() { return super["value"]; }
+        \\}
+        \\class BeforeSuper extends Base {
+        \\  constructor() {
+        \\    const dot = super.value;
+        \\    const element = super["value"];
+        \\    super();
+        \\  }
+        \\}
+        \\class Parameter extends Base {
+        \\  constructor(dot = super.value, element = super["value"]) { super(); }
+        \\}
+        \\class Computed extends Base {
+        \\  [super.method()]() {}
+        \\}
+        \\class Valid extends Base {
+        \\  constructor() {
+        \\    super();
+        \\    const dot = super.value;
+        \\    const element = super["value"];
+        \\  }
+        \\  method() { return super.method(); }
+        \\}
+    );
+    defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.super_not_derived));
+    try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.super_before_super_call));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.super_in_constructor_arguments));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.super_in_computed_property_name));
+    try T.expectEqual(@as(u32, 7), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 7), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: derived constructor super call inside statement suppresses TS2377" {
@@ -218206,6 +218282,7 @@ test "checker: ES5 object-literal super reports TS2659 only for methods and acce
     );
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .no_implicit_any = true });
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
     var count_2659: usize = 0;
     var count_2660: usize = 0;
@@ -218217,6 +218294,8 @@ test "checker: ES5 object-literal super reports TS2659 only for methods and acce
     }
     try T.expectEqual(@as(usize, 6), count_2659);
     try T.expectEqual(@as(usize, 5), count_2660);
+    try T.expectEqual(@as(u32, 11), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 11), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: static and instance super resolve separate class sides" {
