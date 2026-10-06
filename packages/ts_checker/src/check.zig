@@ -78405,7 +78405,7 @@ pub const Checker = struct {
                             .code = TsCodes.generic_type_requires_args,
                             .message = try self.diag_arena.allocator().dupe(u8, "Generic type 'Array<T>' requires 1 type argument(s)."),
                         });
-                        return types.Primitive.any;
+                        return self.recordUnmodeledAny(type_node);
                     }
                     if (self.lowerBuiltinObjectType(name_str)) |t| return t;
                     if (self.namespaceTypeRefIsCrossVirtualSectionOnly(type_node, r.name)) {
@@ -98512,7 +98512,9 @@ pub const Checker = struct {
             if (missing_required_arg) {
                 self.diagnostics.shrinkRetainingCapacity(template_diagnostic_start);
                 const pos = self.sliceStartPos(src, name);
-                if (pos != null and self.hasDiagnosticAtPosition(TsCodes.generic_type_requires_args, pos.?)) return types.Primitive.any;
+                if (pos != null and self.hasDiagnosticAtPosition(TsCodes.generic_type_requires_args, pos.?)) {
+                    return @as(?TypeId, try self.recordUnmodeledAny(self.jsdoc_diagnostic_anchor));
+                }
                 const msg = try std.fmt.allocPrint(
                     self.diag_arena.allocator(),
                     "Generic type '{s}' requires {d} type argument(s).",
@@ -98524,7 +98526,7 @@ pub const Checker = struct {
                     .code = TsCodes.generic_type_requires_args,
                     .message = msg,
                 });
-                return types.Primitive.any;
+                return @as(?TypeId, try self.recordUnmodeledAny(self.jsdoc_diagnostic_anchor));
             }
 
             var typedef_t = (try self.jsDocObjectSkeletonFromPropertyTags(src, body)) orelse
@@ -239306,6 +239308,53 @@ test "checker: recursive generic union alias shortcut does not accept non-recurs
         }
     }
     try T.expect(found_instantiation_mismatch);
+}
+
+test "checker: TS2314 traces only generic arity recoveries that substitute any" {
+    const builtin_array = try newSetup(
+        \\type Missing = Array;
+        \\type Concrete = Array<number>;
+    );
+    defer destroySetup(builtin_array);
+    builtin_array.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
+    try builtin_array.checker.checkSourceFile(builtin_array.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(builtin_array, TsCodes.generic_type_requires_args));
+    try T.expectEqual(@as(u32, 1), builtin_array.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 1), checkerCountHomeCode(builtin_array, HomeRule.list_unmodeled_any.definition().code));
+
+    const modeled_aliases = try newSetup(
+        \\interface Box<T> { value: T }
+        \\interface Array<T> { item: T }
+        \\type MissingBox = Box;
+        \\type MissingArray = Array;
+    );
+    defer destroySetup(modeled_aliases);
+    modeled_aliases.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
+    try modeled_aliases.checker.checkSourceFile(modeled_aliases.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(modeled_aliases, TsCodes.generic_type_requires_args));
+    try T.expectEqual(@as(u32, 0), modeled_aliases.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 0), checkerCountHomeCode(modeled_aliases, HomeRule.list_unmodeled_any.definition().code));
+
+    const jsdoc_typedef = try newSetup(
+        \\// @allowJs: true
+        \\// @checkJs: true
+        \\// @filename: index.js
+        \\/**
+        \\ * @template T
+        \\ * @typedef {Object} Box
+        \\ * @property {T} value
+        \\ */
+        \\/** @type {Box} */
+        \\const missing = { value: 1 };
+        \\/** @type {Box<number>} */
+        \\const concrete = { value: 1 };
+    );
+    defer destroySetup(jsdoc_typedef);
+    jsdoc_typedef.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
+    try jsdoc_typedef.checker.checkSourceFile(jsdoc_typedef.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(jsdoc_typedef, TsCodes.generic_type_requires_args));
+    try T.expectEqual(@as(u32, 1), jsdoc_typedef.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 1), checkerCountHomeCode(jsdoc_typedef, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: bare generic type reference without defaults emits TS2314" {
