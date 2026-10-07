@@ -1,8 +1,11 @@
 """Report formatting regressions; measurements are never filtered or changed."""
 
 import json
+import io
+from contextlib import redirect_stdout
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 import compare
@@ -140,6 +143,77 @@ class InterleavedIntegrityTests(unittest.TestCase):
             self.write_round(0, results)
             with self.assertRaisesRegex(ValueError, "invalid or unsuccessful sample"):
                 compare.validate_interleaved_rounds(self.directory, self.metadata)
+
+    def extra_compiler_rounds(self):
+        self.metadata.update(schema=3, runs=5, validation_schema=3, host={
+            "os": "TestOS", "os_release": "1.0", "architecture": "arm64",
+            "cpu_model": "Test CPU", "logical_cores": 8,
+        })
+        self.metadata["compilers"].update(tsc_rs="Version 7.1.0-dev", bun_canary="1.4.3-canary")
+        snapshot = {"compilers": {
+            name: {"executable": {"sha256": "a" * 64, "size": 100}}
+            for name in self.metadata["compilers"]
+        }}
+        self.metadata["provenance"] = {"status": "verified", "before": snapshot, "after": snapshot}
+        names = list(self.metadata["compilers"])
+        for index in range(5):
+            order = names[index:] + names[:index]
+            self.write_round(index, [
+                {"command": f"{name} example", "times": [0.05 if name == "tsc_rs" else 0.1], "exit_codes": [0]}
+                for name in order
+            ])
+
+    def test_five_compilers_keep_complete_rotating_coverage(self):
+        self.extra_compiler_rounds()
+        compare.validate_interleaved_rounds(self.directory, self.metadata)
+        path = self.directory / "example-round-003.json"
+        data = json.loads(path.read_text())
+        data["results"] = data["results"][:-1]
+        path.write_text(json.dumps(data))
+        with self.assertRaisesRegex(ValueError, "compiler coverage/order"):
+            compare.validate_interleaved_rounds(self.directory, self.metadata)
+
+    def test_extra_compilers_require_their_own_verified_executables(self):
+        self.extra_compiler_rounds()
+        self.metadata["schema"] = 2
+        with self.assertRaisesRegex(ValueError, "schema 3"):
+            compare.validate_interleaved_rounds(self.directory, self.metadata)
+        self.metadata["schema"] = 3
+        del self.metadata["provenance"]["before"]["compilers"]["tsc_rs"]
+        with self.assertRaisesRegex(ValueError, "provenance is incomplete"):
+            compare.validate_interleaved_rounds(self.directory, self.metadata)
+
+    def test_extra_compiler_report_uses_every_competitor_and_every_sample(self):
+        self.extra_compiler_rounds()
+        (self.directory / "metadata.json").write_text(json.dumps(self.metadata))
+        output = io.StringIO()
+        with patch("sys.argv", ["compare.py", str(self.directory)]), redirect_stdout(output):
+            self.assertEqual(0, compare.main())
+        table = output.getvalue()
+        self.assertIn("tsc_rs median | bun_canary median", table)
+        self.assertIn("tsc_rs `Version 7.1.0-dev`", table)
+        self.assertIn("| `example` | 100.0 ms | 100.0 ms | 100.0 ms | 50.0 ms | 100.0 ms | 2.00× slower |", table)
+
+    def test_extra_compiler_failure_cannot_be_hidden_from_the_report(self):
+        self.extra_compiler_rounds()
+        path = self.directory / "example-round-004.json"
+        data = json.loads(path.read_text())
+        next(row for row in data["results"] if row["command"] == "bun_canary example")["exit_codes"] = [1]
+        path.write_text(json.dumps(data))
+        with self.assertRaisesRegex(ValueError, "invalid or unsuccessful sample"):
+            compare.validate_interleaved_rounds(self.directory, self.metadata)
+
+    def test_extra_compilers_cannot_use_legacy_unverified_schedules(self):
+        self.extra_compiler_rounds()
+        self.metadata["schedule"] = "sequential"
+        with self.assertRaisesRegex(ValueError, "round-robin interleaved"):
+            compare.validate_interleaved_rounds(self.directory, self.metadata)
+
+    def test_extra_compiler_hashes_must_describe_real_executables(self):
+        self.extra_compiler_rounds()
+        self.metadata["provenance"]["before"]["compilers"]["tsc_rs"]["executable"]["sha256"] = "unknown"
+        with self.assertRaisesRegex(ValueError, "executable provenance is incomplete"):
+            compare.validate_interleaved_rounds(self.directory, self.metadata)
 
 
 if __name__ == "__main__":

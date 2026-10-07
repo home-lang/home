@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import statistics
 import sys
 from pathlib import Path
@@ -86,6 +87,8 @@ def tools_notice(metadata: dict) -> str | None:
 
 def validate_interleaved_rounds(directory: Path, metadata: dict) -> None:
     if metadata.get("schedule") != "round-robin interleaved":
+        if set(metadata.get("compilers", {})) - {"tsc", "tsgo", "home"}:
+            raise ValueError("additional compilers require round-robin interleaved samples")
         return
     provenance = metadata.get("provenance")
     if provenance is not None:
@@ -97,8 +100,23 @@ def validate_interleaved_rounds(directory: Path, metadata: dict) -> None:
     workloads = metadata.get("workloads", [])
     names = list(metadata.get("compilers", {}))
     if (type(runs) is not int or runs < 1 or not workloads or len(set(workloads)) != len(workloads)
-            or set(names) != {"tsc", "tsgo", "home"}):
+            or not {"tsc", "tsgo", "home"}.issubset(names)
+            or any(not isinstance(name, str) or not re.fullmatch(r"[a-z][a-z0-9_]*", name) for name in names)):
         raise ValueError("invalid interleaved measurement metadata")
+    extras = set(names) - {"tsc", "tsgo", "home"}
+    if extras:
+        if metadata.get("schema", 1) < 3 or provenance is None:
+            raise ValueError("additional compilers require schema 3 and verified provenance")
+        recorded = provenance.get("before", {}).get("compilers", {})
+        if not isinstance(recorded, dict) or not set(names).issubset(recorded):
+            raise ValueError("additional compiler provenance is incomplete")
+        for name in extras:
+            entry = recorded[name]
+            artifact = entry.get("executable", {}) if isinstance(entry, dict) else {}
+            if (not isinstance(artifact, dict)
+                    or not re.fullmatch(r"[0-9a-f]{64}", str(artifact.get("sha256", "")))
+                    or type(artifact.get("size")) is not int or artifact["size"] < 1):
+                raise ValueError("additional compiler executable provenance is incomplete")
     if metadata.get("schema", 1) >= 2:
         host = metadata.get("host")
         required = ("os", "os_release", "architecture", "cpu_model")
@@ -138,6 +156,7 @@ def main() -> int:
     except (ValueError, OSError) as error:
         print(f"cannot report {directory}: {error}", file=sys.stderr)
         return 1
+    names = list(metadata.get("compilers") or {"tsc": "?", "tsgo": "?", "home": "?"})
     rows: dict[str, dict[str, dict]] = {}
     interleaved: dict[str, dict[str, list[float]]] = {}
     for path in sorted(directory.glob("*.json")):
@@ -147,12 +166,12 @@ def main() -> int:
             workload = path.stem.rsplit("-round-", 1)[0]
             for result in load_results(path):
                 compiler = result.get("command", "").split(" ", 1)[0]
-                if compiler not in {"tsc", "tsgo", "home"}:
+                if compiler not in names:
                     continue
                 interleaved.setdefault(workload, {}).setdefault(compiler, []).extend(result.get("times", []))
             continue
         workload, separator, compiler = path.stem.rpartition("-")
-        if not separator or compiler not in {"tsc", "tsgo", "home"}:
+        if not separator or compiler not in names:
             continue
         results = load_results(path)
         if results:
@@ -175,33 +194,33 @@ def main() -> int:
     print()
     if metadata:
         versions = metadata.get("compilers", {})
+        version_labels = ", ".join(
+            f"{'Home' if name == 'home' else name} `{versions.get(name, '?')}`"
+            for name in names
+        )
         print(
             f"{host_notice(metadata)}; "
             f"{metadata.get('runs', '?')} runs after {metadata.get('warmup', '?')} warmups; "
-            f"tsc `{versions.get('tsc', '?')}`, tsgo `{versions.get('tsgo', '?')}`, "
-            f"Home `{versions.get('home', '?')}`."
+            f"{version_labels}."
         )
         if tools := tools_notice(metadata):
             print(tools)
         print(provenance_notice(metadata))
         print()
-    print("| Workload | tsc median | tsgo median | Home median | Home vs fastest competitor |")
-    print("|---|---:|---:|---:|---:|")
+    columns = [f"{'Home' if name == 'home' else name} median" for name in names]
+    print("| Workload | " + " | ".join(columns) + " | Home vs fastest competitor |")
+    print("|---|" + "---:|" * (len(names) + 1))
     for workload, compilers in rows.items():
-        tsc = compilers.get("tsc")
-        tsgo = compilers.get("tsgo")
         home = compilers.get("home")
-        competitors = [result["median"] for result in (tsc, tsgo) if result]
+        competitors = [result["median"] for name, result in compilers.items() if name != "home"]
         if home and competitors:
             comparison = format_workload_comparison(workload, home["median"], min(competitors), metadata.get("validation_schema"))
         else:
             comparison = "—"
-        print(
-            f"| `{workload}` | {format_time(tsc)} | {format_time(tsgo)} | "
-            f"{format_time(home)} | {comparison} |"
-        )
+        values = " | ".join(format_time(compilers.get(name)) for name in names)
+        print(f"| `{workload}` | {values} | {comparison} |")
     print()
-    print("Times are medians of all retained fresh-process samples. Comparisons use the faster median of tsc and tsgo.")
+    print("Times are medians of all retained fresh-process samples. Comparisons use the fastest median of every measured competitor.")
     print("Ratios rounding to 1.00× are labeled near ties; this is not a statistical significance test.")
     print("Legacy graph rows without schema-2 rejection controls are retained as timings, not fair speed claims (#487).")
     print("Legacy tuple rows without schema-3 rejection controls are provisional; schema 3 also retains the graph gates.")

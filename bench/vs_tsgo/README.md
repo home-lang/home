@@ -81,6 +81,15 @@ successful samples. The narrowest Home median lead is 1.36× on
 `20261007T141452Z` 8/20 result remains in the historical journal as the
 pre-fix measurement for [#837](https://github.com/home-lang/home/issues/837).
 
+Schema-3 reports can include additional compilers under
+[#838](https://github.com/home-lang/home/issues/838). Every declared compiler
+must appear exactly once in every rotating-order round, with one successful
+sample and verified executable provenance. The table includes every compiler
+and compares Home with the fastest competitor across the entire measured
+set. Older three-compiler archives retain their original validation rules.
+Candidate discovery and admission do not add timing claims to the current
+checkpoint; an expanded measurement run is still required.
+
 The separate global-declaration admission audit is **untimed**:
 
 ```sh
