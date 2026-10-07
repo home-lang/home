@@ -28544,7 +28544,7 @@ pub const Checker = struct {
             }
             return reported;
         }
-        if (key_t == types.Primitive.any or key_t == types.Primitive.unknown) {
+        if (types.Primitive.isAnyLike(key_t) or key_t == types.Primitive.unknown) {
             if (container_t < self.interner.pool.typeCount()) {
                 const flags = self.interner.pool.flagsOf(container_t);
                 if (flags.is_object_type and
@@ -40187,7 +40187,7 @@ pub const Checker = struct {
         signature_unresolved_code: u32,
         kind: []const u8,
     ) CheckError!void {
-        if (sig == types.Primitive.any or sig == types.Primitive.unknown or sig == types.Primitive.none) return;
+        if (types.Primitive.isAnyLike(sig) or sig == types.Primitive.unknown or sig == types.Primitive.none) return;
         if (sig < self.interner.pool.typeCount() and !self.interner.pool.flagsOf(sig).is_signature) {
             const msg = try std.fmt.allocPrint(
                 self.diag_arena.allocator(),
@@ -96745,6 +96745,21 @@ pub const Checker = struct {
         return try self.jsDocTypeTextToType(src, type_text);
     }
 
+    /// JSDoc type leaves share a declaration anchor because they have no
+    /// standalone HIR nodes. Record the recovery origin without replacing
+    /// that declaration's complete type (such as a function signature).
+    fn recordJsDocAnyRecovery(self: *Checker) CheckError!TypeId {
+        if (self.jsdoc_diagnostic_anchor != hir_mod.none_node_id) {
+            try self.unmodeled_any_sites.put(self.gpa, self.jsdoc_diagnostic_anchor, {});
+        }
+        return types.Primitive.unmodeled;
+    }
+
+    fn diagnosedJsDocAnyRecovery(self: *Checker, code: u32) CheckError!TypeId {
+        if (self.diagnosticExists(self.jsdoc_diagnostic_anchor, code)) return self.recordJsDocAnyRecovery();
+        return types.Primitive.any;
+    }
+
     fn jsDocParamTypeTextToTypeAt(
         self: *Checker,
         src: []const u8,
@@ -97174,10 +97189,10 @@ pub const Checker = struct {
                 return class_t;
             }
         }
-        if (try self.reportJsDocDestructuredRequireValueUsedAsType(src, base)) return @as(?TypeId, try self.recordUnmodeledAny(self.jsdoc_diagnostic_anchor));
-        if (try self.reportJsDocRequireMemberAliasValueUsedAsType(src, base)) return @as(?TypeId, try self.recordUnmodeledAny(self.jsdoc_diagnostic_anchor));
-        if (try self.reportJsDocClassExpressionVariableUsedAsType(src, base)) return @as(?TypeId, try self.recordUnmodeledAny(self.jsdoc_diagnostic_anchor));
-        if (try self.reportJsDocBareFunctionUsedAsType(src, base)) return @as(?TypeId, try self.recordUnmodeledAny(self.jsdoc_diagnostic_anchor));
+        if (try self.reportJsDocDestructuredRequireValueUsedAsType(src, base)) return @as(?TypeId, try self.recordJsDocAnyRecovery());
+        if (try self.reportJsDocRequireMemberAliasValueUsedAsType(src, base)) return @as(?TypeId, try self.recordJsDocAnyRecovery());
+        if (try self.reportJsDocClassExpressionVariableUsedAsType(src, base)) return @as(?TypeId, try self.recordJsDocAnyRecovery());
+        if (try self.reportJsDocBareFunctionUsedAsType(src, base)) return @as(?TypeId, try self.recordJsDocAnyRecovery());
         if (try self.reportUnsupportedJsConstructorTemplateReference(src, base)) return types.Primitive.any;
         const simple_t = try self.jsDocSimpleNameType(src, base, base.len == trimmed.len);
         if (simple_t) |t| {
@@ -97603,7 +97618,7 @@ pub const Checker = struct {
             if (try self.jsDocTemplateParamTypeForAnchor(anchor, name)) |t| return t;
             if (try self.relativeDefaultImportIsValueOnly(name, anchor)) {
                 try self.reportJsDocImportedValueUsedAsType(src, anchor, base);
-                return @as(?TypeId, try self.diagnosedAnyRecovery(anchor, TsCodes.value_used_as_type_did_you_mean_typeof));
+                return @as(?TypeId, try self.diagnosedJsDocAnyRecovery(TsCodes.value_used_as_type_did_you_mean_typeof));
             }
             if (try self.importedTypeRefForLocal(name, anchor)) |t| return t;
             if (self.type_names.get(name)) |t| {
@@ -97618,7 +97633,7 @@ pub const Checker = struct {
             if (try self.jsDocRequireAliasType(anchor, name, true)) |t| return t;
             if (try self.jsDocSameFileClassInstanceType(anchor, name)) |t| return t;
             if (is_entire_type and
-                try self.reportJsDocSimpleValueUsedAsType(src, anchor, name, base)) return @as(?TypeId, try self.recordUnmodeledAny(anchor));
+                try self.reportJsDocSimpleValueUsedAsType(src, anchor, name, base)) return @as(?TypeId, try self.recordJsDocAnyRecovery());
         }
         if (narrow_t) |t| return t;
         if (self.isBuiltinName(name)) return types.Primitive.any;
@@ -98185,7 +98200,7 @@ pub const Checker = struct {
                 resolution_mode,
             )) {
                 try self.reportJsDocImportedValueUsedAsType(src, anchor, base);
-                return @as(?TypeId, try self.diagnosedAnyRecovery(anchor, TsCodes.value_used_as_type_did_you_mean_typeof));
+                return @as(?TypeId, try self.diagnosedJsDocAnyRecovery(TsCodes.value_used_as_type_did_you_mean_typeof));
             }
             return (try self.virtualJSDocBareImportMemberByName(
                 anchor,
@@ -98239,7 +98254,7 @@ pub const Checker = struct {
         }
         if (std.mem.eql(u8, base, "event") and self.jsDocTypeTextIsInCheckedJsContext()) {
             try self.reportJsDocImportedValueUsedAsType(src, anchor, base);
-            return @as(?TypeId, try self.diagnosedAnyRecovery(anchor, TsCodes.value_used_as_type_did_you_mean_typeof));
+            return @as(?TypeId, try self.diagnosedJsDocAnyRecovery(TsCodes.value_used_as_type_did_you_mean_typeof));
         }
         if (self.sourceHasVirtualFilenameSections() and
             !jsDocTypePositionIsPropertyTag(src, pos) and
@@ -98351,7 +98366,7 @@ pub const Checker = struct {
         if (try self.jsDocGenericImportTypeTextToType(src, name, args_text, type_text)) |import_t| {
             return import_t;
         }
-        if (try self.reportJsDocBareFunctionUsedAsType(src, name)) return @as(?TypeId, try self.recordUnmodeledAny(self.jsdoc_diagnostic_anchor));
+        if (try self.reportJsDocBareFunctionUsedAsType(src, name)) return @as(?TypeId, try self.recordJsDocAnyRecovery());
         var args = JsDocTopLevelSplitter.init(args_text, ',');
 
         if (std.mem.eql(u8, name, "Parameters")) {
@@ -98650,7 +98665,7 @@ pub const Checker = struct {
                 self.diagnostics.shrinkRetainingCapacity(template_diagnostic_start);
                 const pos = self.sliceStartPos(src, name);
                 if (pos != null and self.hasDiagnosticAtPosition(TsCodes.generic_type_requires_args, pos.?)) {
-                    return @as(?TypeId, try self.recordUnmodeledAny(self.jsdoc_diagnostic_anchor));
+                    return @as(?TypeId, try self.recordJsDocAnyRecovery());
                 }
                 const msg = try std.fmt.allocPrint(
                     self.diag_arena.allocator(),
@@ -98663,7 +98678,7 @@ pub const Checker = struct {
                     .code = TsCodes.generic_type_requires_args,
                     .message = msg,
                 });
-                return @as(?TypeId, try self.recordUnmodeledAny(self.jsdoc_diagnostic_anchor));
+                return @as(?TypeId, try self.recordJsDocAnyRecovery());
             }
 
             var typedef_t = (try self.jsDocObjectSkeletonFromPropertyTags(src, body)) orelse
@@ -101952,10 +101967,10 @@ pub const Checker = struct {
             const prior_annotation = self.var_decl_annotation_nodes.get(key) orelse hir_mod.none_node_id;
             const prior_jsdoc_type_name = self.var_decl_jsdoc_type_names.get(key);
             const qualified_private_text_mismatch = try self.sameTailQualifiedAnnotationMismatch(prior_annotation, v.type_annotation);
-            if (final_type == types.Primitive.any and
+            if (types.Primitive.isAnyLike(final_type) and
                 (!has_annotation or (self.varDeclAnnotationIsQualifiedName(v.type_annotation) and qualified_private_text_mismatch == null))) return;
-            if (prior == types.Primitive.any and !prior_explicit and has_annotation) return;
-            if (prior == types.Primitive.any and !prior_explicit and !has_annotation) return;
+            if (types.Primitive.isAnyLike(prior) and !prior_explicit and has_annotation) return;
+            if (types.Primitive.isAnyLike(prior) and !prior_explicit and !has_annotation) return;
             var annotation_text_mismatch: ?VarAnnotationTextPair = null;
             // Historically we bailed when neither declaration had an
             // explicit annotation (unless the prior was enum-nominal).
@@ -211974,6 +211989,66 @@ test "checker: legacy rest property decorator emits TS1240 header with at-least 
     }
     try T.expect(found_header);
     try T.expect(found_chain);
+}
+
+test "checker: any recovery parity avoids invalid-super decorator cascades" {
+    const s = try newSetup(
+        \\// @experimentaldecorators: true
+        \\class Base { decorate(target: Object, key: string): void {} }
+        \\class Derived extends Base { @(super.decorate) method() {} }
+        \\const badDecorator = 1;
+        \\class Invalid { @badDecorator method() {} }
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.super_not_in_derived_member));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.method_decorator_signature_unresolved));
+}
+
+test "checker: any recovery parity retains computed binding key errors" {
+    const s = try newSetup(
+        \\declare const key: any;
+        \\function explicit({ [key]: value }) {}
+        \\async function recovered({ [missing]: value }) {}
+        \\function indexed({ [key]: value }: { [name: string]: number }) {}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_cannot_be_used_as_index));
+}
+
+test "checker: any recovery parity preserves repeated variable diagnostics" {
+    const s = try newSetup(
+        \\var value = <T>() => 1;
+        \\var value = <Missing>absent;
+        \\var mismatch = 1;
+        \\var mismatch = "wrong";
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.subsequent_var_type_mismatch));
+}
+
+test "checker: any recovery parity retains JSDoc array length" {
+    const s = try newSetup(
+        \\// @checkJs: true
+        \\// @filename: array.js
+        \\function Value() {}
+        \\/** @param {Value[]=} items */
+        \\function size(items) { return items ? items.length : 0; }
+        \\// @filename: usage.ts
+        \\const count: number = size([]);
+        \\const wrong: string = size([]);
+    );
+    defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.value_used_as_type_did_you_mean_typeof));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(u32, 1), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 1), checkerCountHomeCode(s, 9002));
 }
 
 test "checker: non-callable method decorator emits TS1241" {
