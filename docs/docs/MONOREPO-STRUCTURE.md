@@ -1,319 +1,107 @@
-# Home Monorepo Structure
+---
+title: Monorepo Structure
+description: Navigate Home's current repository layout, package conventions, root build files, generated directories, and validation boundaries.
+---
 
-## Overview
+# Monorepo structure
 
-Home now features a Bun/pnpm-style monorepo structure with independent packages that can be developed, tested, and versioned separately while being managed together.
+Home is organized as a Zig-first monorepo. The `packages/` directory currently
+contains many focused subsystems; not every directory is independently
+versioned, build-wired or language-facing.
 
-## Directory Structure
+## Root layout
 
-```
+```text
 home/
-├── ion.toml                    # Root workspace configuration (or ion.json)
-├── packages/                   # All Home packages (22 total)
-│   ├── lexer/                 # Tokenization and scanning
-│   ├── parser/                # Syntax analysis and AST generation
-│   ├── ast/                   # Abstract syntax tree definitions
-│   ├── types/                 # Type system with ownership
-│   ├── interpreter/           # Runtime execution engine
-│   ├── codegen/               # Native code generation
-│   ├── diagnostics/           # Error reporting and diagnostics
-│   ├── formatter/             # Code formatting
-│   ├── async/                 # Async runtime and concurrency
-│   ├── build/                 # Build system (parallel, watch mode)
-│   ├── cache/                 # IR caching
-│   ├── comptime/              # Compile-time execution
-│   ├── generics/              # Generic types and functions
-│   ├── lsp/                   # Language Server Protocol
-│   ├── macros/                # Macro system
-│   ├── modules/               # Module resolution
-│   ├── patterns/              # Pattern matching
-│   ├── safety/                # Unsafe blocks and safety
-│   ├── tools/                 # Developer tools (doc gen, etc.)
-│   ├── traits/                # Trait system
-│   ├── basics/                # Standard library (HTTP, crypto, fs, etc.)
-│   └── pkg/                   # Package manager
-├── src/                       # Main Home CLI and compiler
-│   ├── main.zig              # CLI entry point
-│   └── ion.zig               # Root library module
-├── tests/                     # Integration tests
-├── bench/                     # Benchmarks
-└── examples/                  # Example projects
+├── build.zig             # Zig build graph
+├── package.json          # Documentation and JavaScript tooling scripts
+├── bunfig.toml           # Bun install behavior
+├── pantry.json           # Repository toolchain/dependency bootstrap
+├── src/                  # Main Home CLI and command helpers
+├── packages/             # Compiler, runtime, tooling and subsystem packages
+├── tests/                # Home integration and acceptance fixtures
+├── bench/                # Benchmark drivers and fixtures
+├── examples/             # Example programs
+├── docs/                 # BunPress site source
+└── scripts/              # Reproducible maintenance and measurement commands
 ```
 
-## Root Workspace Configuration
-
-The root `ion.toml` defines the workspace:
-
-```toml
-[package]
-name = "ion"
-version = "0.1.0"
-authors = ["Home Contributors"]
-
-[workspaces]
-packages = [
-  "packages/*"
-]
-
-[scripts]
-build = "./pantry/.bin/zig build"
-test = "./pantry/.bin/zig build test"
-bench = "./pantry/.bin/zig build bench"
-format = "find src packages -name '*.zig' -exec ./pantry/.bin/zig fmt {} +"
-run = "./pantry/.bin/zig build run"
-dev = "./pantry/.bin/zig build run -- run examples/hello.home"
-```
-
-## Package Structure
-
-Each package has its own `ion.toml` with:
-
-### Example: Lexer Package
-
-```toml
-[package]
-name = "home-lexer"
-version = "0.1.0"
-authors = ["Home Contributors"]
-description = "Home Language Lexer - Tokenization and scanning"
-license = "MIT"
+Older documents referred to a root `ion.toml` and `src/ion.zig`. Those are not
+the current repository entrypoints.
 
-[dependencies]
-# No external dependencies
+## Package families
 
-[scripts]
-test = "../../pantry/.bin/zig test src/lexer.zig"
-```
-
-### Example: Parser Package (with dependencies)
-
-```toml
-[package]
-name = "home-parser"
-version = "0.1.0"
-authors = ["Home Contributors"]
-description = "Home Language Parser - AST generation from tokens"
-license = "MIT"
-
-[dependencies]
-home-lexer = { path = "../lexer" }
-home-ast = { path = "../ast" }
+The package graph is easier to understand by role.
 
-[scripts]
-test = "../../pantry/.bin/zig test src/parser.zig"
-```
+### Home language frontend
 
-## Package Dependencies
+`lexer`, `ast`, `parser`, `types`, `compiler`, `interpreter`,
+`optimizer`, `codegen`, `diagnostics`, `comptime`, `modules`,
+`patterns`, `traits` and related packages.
 
-The package dependency graph:
+### TypeScript frontend
 
-```
-home-lexer (no deps)
-    ↓
-home-ast (no deps)
-    ↓
-home-parser → home-lexer, home-ast
-    ↓
-home-types → home-ast
-    ↓
-home-interpreter → home-ast
-    ↓
-home-codegen → home-ast
-    ↓
-home-diagnostics (no deps)
-home-formatter → home-ast
-home-basics → home-ast, home-types
-home-pkg (no deps)
-```
-
-## Benefits of This Structure
-
-### 1. **Clear Separation of Concerns**
-
-Each package has a single, well-defined responsibility:
+`ts_lexer`, `ts_parser`, `binder`, `hir`, `ts_checker`, `ts_program`,
+`ts_resolver`, `ts_driver`, `ts_emit`, `ts_lsp`, `ts_lsp_server` and
+`ts_conformance`.
 
-- `lexer`: Tokenization only
-- `parser`: Syntax analysis only
-- `ast`: Abstract syntax tree definitions
-- `types`: Type checking and inference
-- etc.
-
-### 2. **Independent Development**
-
-- Each package can be developed independently
-- Run tests for a single package: `./pantry/.bin/zig test packages/lexer/src/lexer.zig`
-- Packages can have their own versioning
+### Runtime and compatibility
 
-### 3. **Reusability**
+`runtime`, `compat`, `bundler`, `http`, `net`, `fs`, `io`,
+`websocket` and related runtime subsystems.
 
-- Packages can be used independently
-- Other projects can depend on just the lexer, parser, etc.
-- Easier to create tools that use parts of Home
+### Tooling
 
-### 4. **Better Testing**
+`formatter`, `linter`, `lsp`, `tools`, `docgen`, `pkg`, `registry`
+and `vscode-home`.
 
-- Unit tests stay within each package
-- Integration tests in root `tests/` directory
-- Faster feedback loop when testing specific components
+### Platform work
 
-### 5. **Workspace Features**
+`kernel`, `bootloader`, `drivers`, `syscall`, `usb`, `dtb`, `iommu`
+and other target-specific packages.
 
-Home's package manager supports workspace operations:
-```bash
-# Discover all packages in workspace
-ion pkg tree
+A package directory can be source backlog or experimental work. Check
+`build.zig`, focused tests and the
+[capability matrix](/docs/CAPABILITY_MATRIX) before calling it supported.
 
-# Run scripts across workspace
-ion pkg run test  # Runs tests for all packages
+## Package conventions
 
-# List all available scripts
-ion pkg scripts
-```
+Depending on its role, a package may contain:
 
-## Working with Packages
+- `src/` for implementation.
+- `tests/` for focused Zig tests.
+- `build.zig` for an independently buildable Zig graph.
+- `home.toml` for Home package metadata.
+- `package.json` for JavaScript tooling or generated upstream content.
 
-### Adding a New Package
+These files are not universal. Do not assume every package has all of them.
 
-1. Create directory: `mkdir -p packages/my-package/src`
-2. Create `packages/my-package/ion.toml`:
+## Generated and installed directories
 
-   ```toml
-   [package]
-   name = "home-my-package"
-   version = "0.1.0"
-   authors = ["Your Name"]
-   description = "Description"
-   license = "MIT"
+Common local-only outputs include:
 
-   [dependencies]
-# Add dependencies here
+- `.zig-cache/` and `zig-out/` from Zig.
+- `node_modules/` and `pantry/` for installed dependencies.
+- `dist/` for generated documentation or application output.
+- `.home/` and `.home-cache/` for Home package/compiler state.
 
-   [scripts]
-   test = "../../pantry/.bin/zig test src/main.zig"
-   ```
+Generated output is not evidence that its source is tracked, and installed
+dependencies should not be edited as project source.
 
-3. Add your code to `packages/my-package/src/`
-4. The workspace will automatically discover it
+## Adding or moving a package
 
-### Running Package Scripts
+A package move is complete only when all relevant wiring moves with it:
 
-From the root:
-```bash
-# Run a script across all packages
-ion pkg run test
+1. Update `build.zig` module definitions and imports.
+2. Update package metadata and JavaScript workspace references if present.
+3. Update source imports and tests.
+4. Run the focused package tests.
+5. Run the nearest aggregate build or integration gate.
+6. Update architecture and capability documentation when the public boundary
+   changes.
 
-# List all scripts
-ion pkg scripts
-```
+## Related pages
 
-From within a package:
-```bash
-cd packages/lexer
-../../pantry/.bin/zig test src/lexer.zig
-```
-
-### Managing Dependencies
-
-Packages can depend on each other using path dependencies:
-
-```toml
-[dependencies]
-home-lexer = { path = "../lexer" }
-home-ast = { path = "../ast" }
-```
-
-Or depend on external packages:
-```toml
-[dependencies]
-some-lib = "1.0.0"              # Registry
-user/repo = { git = "..." }     # GitHub
-```
-
-## Current Status
-
-✅ **Completed:**
-
-- Created packages/ directory structure
-- Moved all code to individual packages
-- Created ion.toml for each package
-- Defined package dependencies
-- Root workspace configuration
-- All builds and tests passing
-
-🚧 **Future Work:**
-
-- Migrate build system to fully use packages/ (currently uses src/)
-- Update all imports to use package references
-- Add per-package testing in CI
-- Implement workspace commands (install, update, etc.)
-- Add package publishing workflow
-
-## Transition Plan
-
-The codebase currently maintains both structures:
-
-- `src/` - Original structure (currently active)
-- `packages/` - New structure (ready for migration)
-
-This allows for:
-
-1. Gradual migration without breaking changes
-2. Testing the new structure in parallel
-3. Validating workspace features
-4. Maintaining backwards compatibility
-
-To complete the migration:
-
-1. Update `build.zig` to use packages/ paths
-2. Update all import paths in src/main.zig and src/ion.zig
-3. Remove old src/ subdirectories
-4. Keep src/main.zig and src/ion.zig as the CLI/root entry points
-
-## Workspace Commands
-
-Home's package manager includes workspace support:
-
-```bash
-# Initialize workspace
-ion pkg init
-
-# Show dependency tree
-ion pkg tree
-
-# Run script across workspace
-ion pkg run <script>
-
-# List all available scripts
-ion pkg scripts
-
-# Install all workspace dependencies
-ion pkg install
-```
-
-## Example: Using Packages
-
-Other Home projects can now depend on Home packages:
-
-```toml
-# my-project/ion.toml
-[package]
-name = "my-tool"
-version = "0.1.0"
-
-[dependencies]
-home-lexer = { path = "../home/packages/lexer" }
-home-parser = { path = "../home/packages/parser" }
-```
-
-## Summary
-
-The monorepo structure provides:
-
-- ✅ Clear organization
-- ✅ Independent packages
-- ✅ Workspace management
-- ✅ Better testing
-- ✅ Reusability
-- ✅ Bun-style developer experience
-
-This positions Home for better modularity, easier contribution, and more flexible usage patterns.
+- [Architecture](/docs/ARCHITECTURE)
+- [Compiler pipeline](/docs/COMPILER_PIPELINE)
+- [Tooling index](/docs/TOOLING_INDEX)

@@ -1,201 +1,87 @@
-# Home Tooling
-
-Complete development tooling for the Home programming language.
-
+---
+title: Tooling Index
+description: Find Home's current CLI, formatter, linter, language servers, editor extension, documentation, package, and registry tooling with honest maturity boundaries.
 ---
 
-## 📦 Components
+# Tooling index
 
-### 1. VSCode Extension
+Home's tooling is spread across the main CLI and focused packages. Source
+presence does not make every feature stable; the
+[capability matrix](/docs/CAPABILITY_MATRIX#tooling) remains authoritative.
 
-**Location:** `../packages/vscode-home/`
+## CLI surfaces
 
-Full-featured VSCode extension with:
+| Surface | Entry point | Status boundary |
+|---|---|---|
+| Main CLI | `src/main.zig` | Routes Home, TypeScript, JS runtime, test and package commands. |
+| TypeScript compiler | `home tsc`, `packages/ts_cli/` | Broadly exercised; see [TypeScript parity](/docs/PARITY-TYPESCRIPT). |
+| JavaScript runtime | `home run`, `home test`, `packages/runtime/` | In progress; see [Bun parity](/docs/PARITY-BUN). |
+| Formatter | `home fmt`, `packages/formatter/` | In progress. |
+| Linter | `home lint`, `packages/linter/` | In progress. |
+| Documentation generator | `home docs`, `packages/docgen/` and `packages/tools/` | In progress. |
+| Package commands | `home pkg`, `packages/pkg/` | In progress; some commands delegate to Pantry. |
+| REPL | `home repl` | Native JavaScript REPL path; in progress. |
 
-- Syntax highlighting
-- Language Server Protocol integration
-- Debugging support
-- Performance profiling
-- Package management
-- Code formatting
-- InlayHints
-- CodeLens
+Run `home help` from the binary being tested for its exact command surface.
 
-#### [Documentation](/docs/internal/TOOLING_COMPLETE#vscode-extension)
+## Language servers
 
-### 2. Package Registry
+Home currently has two relevant code areas:
 
-**Location:** `../packages/registry/`
+- `packages/lsp/` contains Home-language LSP work.
+- `packages/ts_lsp/` and `packages/ts_lsp_server/` implement the TypeScript
+  and JavaScript wire surface used by `home lsp --stdio`.
 
-Centralized package hosting and distribution:
+The measured LSP method count lives in
+[parity status](/docs/PARITY-STATUS), not in a hand-maintained feature list.
 
-- RESTful API
-- User authentication
-- Package publishing
-- Search functionality
-- Download statistics
-- MongoDB + Redis backend
+## VS Code extension
 
-#### [Documentation](/docs/internal/TOOLING_COMPLETE#package-registry)
+`packages/vscode-home/` contains extension source for syntax support and
+language-server integration, plus experimental debugging, profiling, code
+action, CodeLens, semantic token and inlay-hint providers.
 
----
+Treat those providers as in progress unless an extension-level integration test
+proves the behavior. The existence of a TypeScript source file alone is not an
+end-user completion claim.
 
-## 🚀 Quick Start
+## Registry
 
-### Install VSCode Extension
+`packages/registry/src/server.ts` contains package-registry server work.
+Authentication, publishing, search and deployment must be verified against a
+running registry before they are documented as available services.
 
-```bash
-cd ../packages/vscode-home
-npm install
-npm run compile
-code --install-extension .
-```
+Package CLI routing is described in
+[package management](/docs/PACKAGE-MANAGEMENT).
 
-### Start Package Registry
+## Developer commands
 
-```bash
-cd ../packages/registry
-npm install
-npm run dev
-```
+The CLI also includes project workflow helpers:
 
----
+- `home doctor` checks local setup.
+- `home clean` removes Home/Zig caches.
+- `home ci` combines project checks.
+- `home symbols` lists public declarations.
+- `home explain` describes diagnostics.
+- `home api-diff` compares `.d.hm` declarations.
+- `home size` reports project or output size.
+- `home completions` emits shell completions.
 
-## 📖 Documentation
+See [DX commands](/docs/DX_COMMANDS) for routing details.
 
-- **[Complete Tooling Documentation](./TOOLING_COMPLETE.md)** - Comprehensive guide
-- **[VSCode Extension Guide](https://github.com/home-lang/home/blob/main/packages/vscode-home/README.md)** - Extension-specific docs
-- **[Package Registry API](https://github.com/home-lang/home/blob/main/packages/registry/README.md)** - API reference
+## Evidence required for a stable tool
 
----
+A tool should be called stable only when:
 
-## ✨ Features
+1. Its public command and flags are documented.
+2. Process-level tests cover success, invalid input and exit codes.
+3. File mutations are fixture-tested.
+4. Platform-sensitive paths run on each supported platform.
+5. The capability matrix is updated from those results.
 
-### IDE Support
+## Related pages
 
-- ✅ Syntax highlighting for `.home` files
-- ✅ Auto-completion
-- ✅ Go to definition
-- ✅ Find references
-- ✅ Hover information
-- ✅ Error diagnostics
-- ✅ Code formatting
-- ✅ InlayHints for types
-
-### Debugging
-
-- ✅ Breakpoints
-- ✅ Step through code
-- ✅ Variable inspection
-- ✅ Call stack
-- ✅ Exception handling
-- ✅ Profiler integration
-
-### Profiling
-
-- ✅ Function timing
-- ✅ Call count tracking
-- ✅ Performance reports
-- ✅ HTML visualization
-- ✅ Timeline view
-
-### Package Management
-
-- ✅ Publish packages
-- ✅ Search packages
-- ✅ Install dependencies
-- ✅ Version management
-- ✅ User authentication
-
----
-
-## 🛠️ Development
-
-### Prerequisites
-
-- Node.js 18+
-- VSCode 1.80+
-- MongoDB (for registry)
-- Redis (for registry)
-
-### Build All
-
-```bash
-# VSCode Extension
-cd ../packages/vscode-home
-npm run compile
-
-# Package Registry
-cd ../packages/registry
-npm run build
-```
-
-### Run Tests
-
-```bash
-# VSCode Extension
-cd ../packages/vscode-home
-npm test
-
-# Package Registry
-cd ../packages/registry
-npm test
-```
-
----
-
-## 🏗️ Architecture
-
-```
-Home Tooling
-├── VSCode Extension
-│   ├── Language Client (LSP)
-│   ├── Debug Adapter (DAP)
-│   ├── Profiler Integration
-│   └── Package Manager Client
-│
-└── Package Registry
-    ├── REST API Server
-    ├── MongoDB Database
-    ├── Redis Cache
-    └── File Storage
-```
-
----
-
-## 📊 Statistics
-
-| Component | Files | Lines of Code | Status |
-|-----------|-------|---------------|--------|
-| VSCode Extension | 7 | ~800 | ✅ Complete |
-| Debugger | Integrated | ~500 | ✅ Complete |
-| Profiler | Integrated | ~400 | ✅ Complete |
-| Package Registry | 10+ | ~1,500 | ✅ Complete |
-| **Total**|**20+**|**~3,200**|**✅ Complete** |
-
----
-
-## 🔗 Links
-
-- [Home Language](https://github.com/home-lang/ion)
-- [VSCode Marketplace](https://marketplace.visualstudio.com/items?itemName=home-lang.home-language)
-- [Package Registry](https://registry.home-lang.org)
-- [Documentation](https://docs.home-lang.org)
-
----
-
-## 📝 License
-
-MIT License - see [LICENSE](https://github.com/home-lang/home/blob/main/LICENSE) for details.
-
----
-
-## 🤝 Contributing
-
-Contributions welcome! See [CONTRIBUTING.md](https://github.com/home-lang/home/blob/main/.github/CONTRIBUTING.md) for guidelines.
-
----
-
-**Status: Production Ready** ✅
-
-All tooling components are complete, tested, and ready for use.
+- [DX commands](/docs/DX_COMMANDS)
+- [TypeScript tooling](/docs/features/tooling)
+- [Package management](/docs/PACKAGE-MANAGEMENT)
+- [Capability matrix](/docs/CAPABILITY_MATRIX)
