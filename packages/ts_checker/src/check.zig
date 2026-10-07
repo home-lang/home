@@ -20366,6 +20366,7 @@ pub const Checker = struct {
         const prev_function_return_from_jsdoc = self.current_function_return_from_jsdoc;
         defer self.current_function_return_from_jsdoc = prev_function_return_from_jsdoc;
         self.current_function_return_from_jsdoc = false;
+        var jsdoc_owner_checks_signature = false;
         const prev_async_return_check = self.current_async_function_return_check;
         defer self.current_async_function_return_check = prev_async_return_check;
         self.current_async_function_return_check = f.flags.is_async and !f.flags.is_generator;
@@ -20436,6 +20437,12 @@ pub const Checker = struct {
                 else
                     try self.jsDocDeclaredReturnForFunction(node);
                 if (jsdoc_return_for_body) |jsdoc_return| {
+                    if (jsdoc_return.origin == .contextual_type_owner and
+                        self.hir.kindOf(f.body) == .block_stmt)
+                    {
+                        jsdoc_owner_checks_signature = true;
+                        break :blk types.Primitive.none;
+                    }
                     if (jsdoc_return.origin != .contextual_type_owner) {
                         declared_from_jsdoc = true;
                         break :blk jsdoc_return.type;
@@ -20570,6 +20577,7 @@ pub const Checker = struct {
         if (f.return_type == hir_mod.none_node_id and
             !self.current_function_return_from_jsdoc and
             (!has_contextual_return_value_body or f.flags.is_generator or
+                jsdoc_owner_checks_signature or
                 self.functionContextReturnDiagnosticOwnedByOuterExpression(node)))
         {
             if (f.flags.is_generator) {
@@ -44454,6 +44462,13 @@ pub const Checker = struct {
                         op.value != hir_mod.none_node_id)
                     {
                         effective_field_t = try self.expressionLiteralType(op.value, field_t);
+                    } else if (!is_field_readonly and
+                        op.type_annotation == hir_mod.none_node_id and
+                        jsdoc_field_t == null and
+                        op.value != hir_mod.none_node_id and
+                        self.mutableInitializerShouldWidenLiteral(op.value, field_t))
+                    {
+                        effective_field_t = try self.widenFreshLiteralType(field_t);
                     }
                     const field_member: types.ObjectMember = .{
                         .name = member_name,
@@ -101654,6 +101669,9 @@ pub const Checker = struct {
                 if (rest.len == 0 or rest[0] != ':') continue;
                 var params: std.ArrayListUnmanaged(TypeId) = .empty;
                 defer params.deinit(self.gpa);
+                var param_names: std.ArrayListUnmanaged(hir_mod.StringId) = .empty;
+                defer param_names.deinit(self.gpa);
+                var names_complete = true;
                 var omittable: std.ArrayListUnmanaged(bool) = .empty;
                 defer omittable.deinit(self.gpa);
                 var has_rest = false;
@@ -101665,6 +101683,11 @@ pub const Checker = struct {
                     const param_type_text = jsDocFunctionParamNormalizeTypeText(jsDocFunctionParamTypeText(param));
                     const param_t = (try self.jsDocTypeTextToType(self.source orelse "", param_type_text)) orelse types.Primitive.any;
                     try params.append(self.gpa, param_t);
+                    if (jsDocFunctionParamName(param)) |name| {
+                        try param_names.append(self.gpa, self.string_interner.intern(name) catch return error.OutOfMemory);
+                    } else {
+                        names_complete = false;
+                    }
                     try omittable.append(self.gpa, jsDocFunctionParamIsOmittable(param));
                 }
                 const ret_text = std.mem.trim(u8, rest[1..], " \t\r");
@@ -101675,6 +101698,11 @@ pub const Checker = struct {
                 const call_name = self.string_interner.intern("__call") catch return error.OutOfMemory;
                 const sig_t = self.interner.internSignature(params.items, ret_t, false) catch return error.OutOfMemory;
                 try self.recordJsDocSignatureArity(sig_t, omittable.items, has_rest);
+                if (names_complete and param_names.items.len == params.items.len and param_names.items.len > 0) {
+                    const owned = param_names.toOwnedSlice(self.gpa) catch return error.OutOfMemory;
+                    if (self.signature_param_names.fetchRemove(sig_t)) |old| self.gpa.free(old.value);
+                    try self.signature_param_names.put(self.gpa, sig_t, owned);
+                }
                 try members.append(self.gpa, .{
                     .name = call_name,
                     .type = sig_t,
@@ -247685,6 +247713,72 @@ test "checker: external resolver satisfies qualified typeof import value export"
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.cannot_find_name);
     }
+}
+
+test "checker: jsdoc contract batch mutable fields widen fresh conditional literals" {
+    const s = try newSetup(
+        \\class Mutable {
+        \\  #value = true ? 1 : "one";
+        \\  constructor(value: number | string) { this.#value = value; }
+        \\}
+        \\class Pinned {
+        \\  value = 1 as const;
+        \\  constructor() { this.value = 2; }
+        \\}
+        \\class Readonly {
+        \\  readonly value = 1;
+        \\  constructor() { this.value = 2; }
+        \\}
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.type_not_assignable));
+}
+
+test "checker: jsdoc contract batch preserves return diagnostic ownership" {
+    const source =
+        \\// @checkJs: true
+        \\// @filename: contracts.js
+        \\/** @type {(x: number) => string} */
+        \\function declared(x) { return x; }
+        \\/** @type {(x: number) => string} */
+        \\var arrow = x => x;
+        \\/** @type {(x: number) => string} */
+        \\var block = x => { return x; };
+        \\/** @type {(x: number) => string} */
+        \\var expression = function (x) { return x; };
+        \\/** @returns {string} */
+        \\function explicit() { return 1; }
+    ;
+    const s = try newSetup(source);
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 5), checkerCountCode(s, TsCodes.type_not_assignable));
+    const positions = [_]u32{
+        @intCast(std.mem.indexOf(u8, source, "return x;").?),
+        @intCast(std.mem.indexOf(u8, source, "=> x;").? + 3),
+        @intCast(std.mem.indexOf(u8, source, "var block").? + 4),
+        @intCast(std.mem.indexOf(u8, source, "var expression").? + 4),
+        @intCast(std.mem.indexOf(u8, source, "return 1;").?),
+    };
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code != TsCodes.type_not_assignable) continue;
+        const pos = diagnostic.pos orelse s.hir.spanOf(diagnostic.node).start;
+        try T.expect(std.mem.indexOfScalar(u32, &positions, pos) != null);
+    }
+}
+
+test "checker: jsdoc contract batch retains call signature parameter names" {
+    const s = try newSetup(
+        \\// @checkJs: true
+        \\// @filename: names.js
+        \\/** @type {{ (input: number): string }} */
+        \\var typed = function (input) { return input; };
+    );
+    defer destroySetup(s);
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.type_not_assignable, "Type '(input: number) => number' is not assignable to type '(input: number) => string'."));
 }
 
 test "checker: checkjs JSDoc returns tag validates returned expression" {
