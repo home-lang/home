@@ -106,27 +106,27 @@ See [diagnostic reachability](https://home-lang.org/docs/TS_DIAGNOSTIC_REACHABIL
 Type-checking time on the reproducible
 [`bench/vs_tsgo`](bench/vs_tsgo) suite: TypeScript 6.0.3 (`tsc`), native
 TypeScript 7.0.2 (`tsgo`), and Home on identical strict, no-emit projects.
-Result `20261007T161511Z` ran on an Apple M2 Pro / Mac14,9 with 10 logical
+Result `20261007T183321Z` ran on an Apple M2 Pro / Mac14,9 with 10 logical
 cores and macOS 26.3.1 arm64. Values are medians of 30 fresh processes after
 three warmups; lower is better.
 
 | Workload | `tsc` 6.0.3 | `tsgo` 7.0.2 | Home 0.1.0 | Home vs fastest competitor |
 |---|---:|---:|---:|---:|
-| Startup (one small file) | 151.9 ms | 87.9 ms | **6.5 ms** | **13.62× faster** |
-| 256 independent files | 271.5 ms | 67.3 ms | **34.3 ms** | **1.96× faster** |
-| 128-module import chain | 156.4 ms | 56.4 ms | **30.5 ms** | **1.85× faster** |
-| 64 modules through 8 barrel re-exports | 146.4 ms | 60.8 ms | **34.7 ms** | **1.75× faster** |
-| Deep conditional / mapped / template types | 162.0 ms | 64.3 ms | **25.5 ms** | **2.52× faster** |
-| Recursive generics | 181.5 ms | 82.2 ms | **17.1 ms** | **4.81× faster** |
-| Checked JavaScript with JSDoc | 241.7 ms | 64.6 ms | **36.2 ms** | **1.79× faster** |
-| Control-flow narrowing (256 unions) | 232.1 ms | 70.7 ms | **32.1 ms** | **2.20× faster** |
-| 256 type-predicate families | 288.2 ms | 85.8 ms | **44.3 ms** | **1.94× faster** |
-| 2,048 type-predicate families | 1,202.1 ms | **412.8 ms** | 593.0 ms | 1.44× slower |
+| Startup (one small file) | 78.0 ms | 47.4 ms | **3.8 ms** | **12.62× faster** |
+| 256 independent files | 253.8 ms | 66.7 ms | **33.0 ms** | **2.02× faster** |
+| 128-module import chain | 156.9 ms | 57.1 ms | **30.9 ms** | **1.85× faster** |
+| 64 modules through 8 barrel re-exports | 118.1 ms | 52.0 ms | **24.5 ms** | **2.13× faster** |
+| Deep conditional / mapped / template types | 157.1 ms | 64.6 ms | **25.7 ms** | **2.52× faster** |
+| Recursive generics | 358.1 ms | 114.1 ms | **33.7 ms** | **3.39× faster** |
+| Checked JavaScript with JSDoc | 261.3 ms | 68.5 ms | **37.8 ms** | **1.81× faster** |
+| Control-flow narrowing (256 unions) | 235.9 ms | 73.2 ms | **31.9 ms** | **2.30× faster** |
+| 256 type-predicate families | 293.9 ms | 88.1 ms | **40.6 ms** | **2.17× faster** |
+| 2,048 type-predicate families | 1,229.8 ms | 419.7 ms | **308.3 ms** | **1.36× faster** |
 
-Home has the lowest median on **19 / 20** admitted workloads. The complete
+Home has the lowest median on **20 / 20** admitted workloads. The complete
 table, methodology, machine and toolchain versions are in
-[TypeScript performance](docs/docs/TS_PERFORMANCE.md). The remaining large
-type-predicate regression is tracked in
+[TypeScript performance](docs/docs/TS_PERFORMANCE.md). The large-predicate
+scaling regression was fixed by the lazy overload index in
 [#837](https://github.com/home-lang/home/issues/837); results from older source
 revisions are not mixed with this current-source snapshot.
 
@@ -153,10 +153,10 @@ project. Reproduce them yourself:
 ./bench/vs_tsgo/run.sh evidence
 ```
 
-The [raw evidence archive](bench/vs_tsgo/evidence/20261007T161511Z.tar.gz)
+The [raw evidence archive](bench/vs_tsgo/evidence/20261007T183321Z.tar.gz)
 contains all 600 byte-for-byte Hyperfine round files, normalized metadata, and
 checksums. Its SHA-256 is
-`3ce9703591f967f081aa35bf1e704b88f83dae412e7ad51699a8bd99e3e79c8e`.
+`de0068831ee0d037b9c103232d7b3eeb51e140c984f8d6be54b866dd355e1cfe`.
 
 ### Real-world TypeScript correctness gates
 
