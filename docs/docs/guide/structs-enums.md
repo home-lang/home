@@ -1,3 +1,8 @@
+---
+title: Structs and Enums
+description: Model data in Home with structs, enums, methods, generics, algebraic variants, visibility, and pattern matching.
+---
+
 # Structs and Enums
 
 Home provides powerful data structures through structs and enums, supporting methods, generics, and algebraic data types.

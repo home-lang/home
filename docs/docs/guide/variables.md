@@ -1,3 +1,8 @@
+---
+title: Variables and Types
+description: Declare immutable and mutable values in Home, add type annotations, and work with core types, ranges, inference, and null safety.
+---
+
 # Variables and Types
 
 Home features a powerful type system with type inference, immutability by default, and compile-time constants.

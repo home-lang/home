@@ -1,3 +1,8 @@
+---
+title: Functions
+description: Define Home functions with inferred or explicit returns, parameter features, generics, closures, methods, recursion, and async.
+---
+
 # Functions
 
 Functions are the building blocks of Home programs. They support type inference, default parameters, generics, and more.

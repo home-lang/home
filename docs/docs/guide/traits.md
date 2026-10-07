@@ -1,3 +1,8 @@
+---
+title: Traits
+description: Define and implement Home traits, defaults, bounds, associated types, inheritance, trait objects, and reusable generic behavior.
+---
+
 # Traits
 
 Traits define shared behavior that types can implement. They enable polymorphism, operator overloading, and generic programming.

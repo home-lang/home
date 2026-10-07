@@ -1,3 +1,8 @@
+---
+title: Control Flow
+description: Learn Home conditionals, loops, match expressions, labels, early returns, and expression-oriented control flow.
+---
+
 # Control Flow
 
 Home provides familiar control flow constructs with some powerful additions like pattern matching and expression-oriented design.
