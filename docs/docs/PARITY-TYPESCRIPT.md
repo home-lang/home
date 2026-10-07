@@ -1,3 +1,8 @@
+---
+title: TypeScript Parity
+description: Track Home's TypeScript parser, checker, emit, diagnostics, LSP, watch mode, and conformance status against upstream baselines.
+---
+
 # TypeScript parity
 
 Detailed per-feature status for Home's TypeScript frontend
@@ -5,10 +10,12 @@ Detailed per-feature status for Home's TypeScript frontend
 section is in the
 [README parity status](/docs/PARITY-STATUS#typescript-parity--home-tsc-vs-tsc--tsgo).
 
-> **Headline:** 5,907 / 5,907 (100%) coarse, 5,907 / 5,907 (100%)
-> exact byte-for-byte against tsgo-generated conformance baselines.
-> Reproduce: `HOME_TS_CONFORMANCE_FULL=1 HOME_TS_CONFORMANCE_EXACT=1
-> ./pantry/.bin/zig build test -Dfilter=ts_conformance`.
+> **Headline:** 5,907 / 5,907 (100%) coarse. Exact mode is 2,960 /
+> 2,960 (100%) in the revalidated leading prefix; the remaining 2,947
+> cases are pending revalidation. Reproduce the coarse gate with
+> `HOME_TS_CONFORMANCE_FULL=1 ./pantry/.bin/zig build test
+> -Dfilter=ts_conformance`, and the exact prefix with
+> `scripts/ts-conformance-exact.sh 0 2960 200`.
 
 Legend:
 
@@ -140,7 +147,7 @@ keeping nullable when union has null.
 
 🟢 `TS2454` (`X is used before being assigned`), `TS2564`
 (`Property X has no initializer and is not definitely assigned in
-the constructor`), `TS2532` / `TS2533` (possibly undefined / null
+the constructor`), `TS2532`/`TS2533` (possibly undefined / null
 object).
 
 ### Evolving any
@@ -307,7 +314,7 @@ assignability), `useUnknownInCatchVariables` (TS18046),
 ## LSP
 
 See [README LSP coverage](/docs/PARITY-STATUS#lsp--ide-coverage--home-lsp-vs-tsserver) for the
-53 / ~70 wire methods routed (~76%). Canonical
+76 / ~80 wire methods routed (~95%). Canonical
 `SUPPORTED_METHODS` list lives in
 [`packages/ts_lsp_server/src/ts_lsp_server.zig`](https://github.com/home-lang/home/blob/main/packages/ts_lsp_server/src/ts_lsp_server.zig).
 
@@ -350,7 +357,7 @@ folders):
 | JS emit | 🟢 substantial |
 | `.d.ts` emit | 🟢 |
 | Source maps V3 | 🟢 |
-| LSP wire surface | 🟡 53 / ~70 (~76%) |
+| LSP wire surface | 🟡 76 / ~80 (~95%) |
 
 Open work tracked in [`docs/TS_PARITY_PLAN.md`](./TS_PARITY_PLAN.md)
 (parity plan + dated journal entries).

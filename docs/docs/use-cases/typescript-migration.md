@@ -1,3 +1,8 @@
+---
+title: TypeScript Migration
+description: Adopt Home alongside an existing TypeScript project in reversible stages, compare diagnostics in CI, and move code only where it pays.
+---
+
 # TypeScript Migration
 
 Most migrations fail because they ask for a rewrite before they deliver

@@ -61,7 +61,7 @@ scripts/measure-parity.sh --diff       # fail if this page drifted
 | **TypeScript — named-category survey** | **86 / 86 — 100%** | `assignmentCompatibility` + `comparable` + `inOperator` + `stringLiteral` |
 | **TypeScript — diagnostic codes emitted** | **1,620 / 2,079 — ~77.9%** | [Diagnostic code status](/docs/TS_DIAGNOSTIC_CODE_STATUS) — codes referenced from production source; 459 catalog-only remain, but **0 are reachable parity targets** (the reachable subset is complete) — ~455 are dead-in-reference + 4 blocked, see [Diagnostic reachability](/docs/TS_DIAGNOSTIC_REACHABILITY) |
 | **LSP wire methods** | **76 / ~80 — ~95%** | `SUPPORTED_METHODS` in `packages/ts_lsp_server/`; LSP 3.17 sync/lifecycle complete, notebook + window meta wired, workspaceSymbol/resolve + $/progress + codeAction/resolve + workspace/textDocumentContent (LSP 3.18) |
-| **Bun runtime — source files present** | **1,438 files in `packages/runtime/src/`** | live count from `scripts/measure-parity.sh --values`; audited Bun baseline is 1,193 files |
+| **Bun runtime — source files present** | **1,449 files in `packages/runtime/src/`** | live count from `scripts/measure-parity.sh --values`; audited Bun baseline is 1,193 files |
 | **Bun runtime — files integrated** | **552 / 1,193 — ~46.3%** | Home-import-rewritten, Zig 0.17-clean, build-wired, and tested |
 | **Bun compat shim — `bun.*` symbols** | **16 / ~103 — ~15.5%** | Tier-0 + Tier-1 (`Output`, `strings`, `String`, `AllocationScope`, `Environment`, `JSError`, `create`, `debugAssert`, `env_var`) lets vendored Bun source compile against Home's stdlib |
 | **Node.js — `node:*` modules JS-callable** | **24 / 47 — ~51% (🟡 subsets)** | callable via Home's own JSC realm (`home eval` / `HOME_NATIVE_RUN`), unit-tested; see [Node.js parity](/docs/PARITY-NODE). Not yet wired into the bun-corpus gate |
@@ -227,12 +227,12 @@ the remaining cross-target matrix is still in progress.
 
 | Measurement | Coverage | % |
 |---|---|---|
-| **Runtime Zig source files present** | **1,438 files** | live `packages/runtime/src/**/*.zig` count; includes Home glue and staged Bun integration backlog |
+| **Runtime Zig source files present** | **1,449 files** | live `packages/runtime/src/**/*.zig` count; includes Home glue and staged Bun integration backlog |
 | **Bun source files integrated** | **552 / 1,193** | **~46.3%** |
 | Subsystems scaffolded | 100 directories under `packages/runtime/src/` | — |
 | Functional runtime | 🟡 JS-callable realm live (`home eval` / `HOME_NATIVE_RUN`); default `home run` + corpus gate still delegate | — |
 | JS-callable realm surface | 24 `node:*` modules + broad `Bun.*` | 🟡 subsets, unit-tested; see [Node.js parity](/docs/PARITY-NODE) / [Bun parity](/docs/PARITY-BUN) |
-| JSC bring-up (Phase 12.2) | 156 files | M1-M6 + JS-callable bridge live (eval/run through Home's own JSC; realm globals: console/process/web/crypto/timers/url/webcore/fetch/Bun/require) |
+| JSC bring-up (Phase 12.2) | 157 files | M1-M6 + JS-callable bridge live (eval/run through Home's own JSC; realm globals: console/process/web/crypto/timers/url/webcore/fetch/Bun/require) |
 | `node:*` substrate (Phase 12.7) | 28 files | round-15 landed (buffer, stream, fs, events, util, assert, os, url, querystring, crypto, process, string_decoder, tty + binding files) |
 
 Upstream pinned at `fd0b6f1a` (see
@@ -247,7 +247,7 @@ Bun's `test/` corpus must pass **100% with no skips** once feature-complete.
 | Sub-phase | Source under `~/Code/bun/src/` | Status |
 |---|---|---|
 | 12.1 — CLI | `cli/` | 🚧 scaffold landed |
-| 12.2 — JSC bring-up | `jsc/`, `bun.js.zig` | 🟡 M6 milestone landed (156 files: JSON + Promise + Iterator + Global helpers); JS-callable bridge live |
+| 12.2 — JSC bring-up | `jsc/`, `bun.js.zig` | 🟡 M6 milestone landed (157 files: JSON + Promise + Iterator + Global helpers); JS-callable bridge live |
 | 12.3 — Event loop / IO / async | `event_loop/`, `io/`, `async/` | 🟡 substrate landing (~30+ leaves ported via wave-19+ grinders) |
 | 12.4 — Module loader | `resolver/`, `module_loader.zig` | 🚧 blocked on 12.2 |
 | 12.5 — Web / HTTP / DNS | `web/`, `http/`, `csrf/`, `dns/` | 🚧 blocked on 12.3 |
@@ -305,14 +305,14 @@ for the per-symbol drill-down, planned Tier-2+ categories
 
 Node's `node:*` namespace lands as part of the Bun runtime port (Bun
 ships `node:*` shims natively, which we vendor verbatim). Numbers
-below are Zig-side only; the JS-visible `node:*` surface attaches once
-JSC's JS-callable bridge ships (Phase 12.2 has reached M6 — JSON +
-Promise + Iterator + Global helpers — across 156 files).
+below distinguish Zig-side substrate from the JS-visible surface. The
+JS-callable bridge is live through `home eval` and opt-in native `home run`,
+with 24 modules exposed as useful subsets across 157 JSC files.
 
 | Measurement | Coverage | Notes |
 |---|---|---|
 | Node binding files ported | 28 files | `path`, `Stat`, `StatFS`, `dir_iterator`, `time_like`, `fs_events`, `os_constants`, `nodejs_error_code`, `node_fs_constant`, `node_net_binding`, `node_error_binding`, `uv_signal_handle_windows`, `types`, `util/parse_args_utils`, `assert/myers_diff`, plus top-level `buffer.zig`, `stream.zig`, `fs.zig`, `events.zig`, `util.zig`, `assert.zig`, `os.zig`, `url.zig`, `querystring.zig`, `crypto.zig`, `process.zig`, `string_decoder.zig`, `tty.zig` (Phase 12.7 round-15). |
-| Functional `node:*` modules | 🚧 Awaiting JSC JS-callable bridge | Pantry CLI replaces `npm install` / `bun install`; everything else routes through the Bun runtime port once JSC ships its JS bridge (Phase 12.2 milestones M3-M6 are in; the JS-callable wire-up is the remaining piece). |
+| Functional `node:*` modules | 🟡 24 / 47 callable subsets | Runs through Home's own JSC realm; unit-tested, but not yet validated against the Node test suite or wired into the bun-corpus gate. |
 
 ## LSP / IDE coverage — `home-lsp` vs `tsserver`
 

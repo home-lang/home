@@ -1,3 +1,8 @@
+---
+title: Bun Runtime Parity
+description: Track Home's Bun runtime port from source integration and JSC bring-up through JS-visible APIs, bundling, package management, and testing.
+---
+
 # Bun runtime parity
 
 Detailed per-API status for Home's Bun-compatible runtime
@@ -9,7 +14,7 @@ workstreams live in [`BUN_PARITY_PLAN.md`](./BUN_PARITY_PLAN.md).
 
 > **Status:** Substrate + JSC bring-up are active, but integrated parity
 > credit is still intentionally conservative. `packages/runtime/src/`
-> currently contains 1,392 Zig source files. Of the audited 1,193-file
+> currently contains 1,449 Zig source files. Of the audited 1,193-file
 > Bun baseline, 552 files are integrated into Home (~46.3%): rewritten
 > for Home imports, Zig 0.17-clean, build-wired, and tested. The remaining
 > staged Bun files are an integration backlog, not parity credit. The
@@ -398,8 +403,8 @@ adapter and wire the copied Bun substrates in `packages/bundler/src/`:
 `linker_context/*` output/metafile/HTML/CSS chunk helpers that are
 currently present under `packages/runtime/src/bundler/linker_context/`.
 
-Current source-presence gap: **closed** in `/private/tmp/home-bun-parser-latest`.
-The 72 previously missing upstream Zig paths are now copied into
+The audited source-presence gap is **closed**. The 72 previously missing
+upstream Zig paths are now copied into
 `packages/runtime/src/` preserving relative paths. They remain
 integration backlog only; they do not affect the integrated 552 / 1193
 baseline until rewritten, build-wired, and tested.
@@ -2078,12 +2083,12 @@ until they are exported or compiled through Home.
 | Metric | Count | Notes |
 |---|---|---|
 | Bun upstream files (excluding test/codegen/jsc/macros) | 1,193 | pinned at `fd0b6f1a` |
-| Runtime Zig files present in `packages/runtime/src/` | 1,391 | live `find packages/runtime/src -type f -name '*.zig'` count |
+| Runtime Zig files present in `packages/runtime/src/` | 1,449 | live `scripts/measure-parity.sh --values` count |
 | Audited Bun baseline files present in `packages/runtime/src/` | 1,193 / 1,193 | existing Home ports plus staged integration backlog |
 | Files integrated into Home | 552 | ~46.3% |
-| Staged Bun Zig files awaiting integration | 797 | from `scripts/measure-parity.sh --values`; not counted as ported |
+| Staged Bun Zig files awaiting integration | 797 | last file-by-file audit; not counted as ported or derived from the raw runtime-file total |
 | Files remaining to integrate | 641 | ~53.7%; excludes raw copy-only files that duplicate already-integrated Home paths |
-| JSC bring-up (`packages/runtime/src/jsc/`) | 128 files | Phase 12.2 M6 milestone + native eval smoke |
+| JSC bring-up (`packages/runtime/src/jsc/`) | 157 files | live `scripts/measure-parity.sh --values` count; Phase 12.2 bridge is JS-callable |
 | Node namespace (`packages/runtime/src/node/`) | 28 files | Phase 12.7 round-15 |
 | Bake lifetime carrier (`packages/runtime/src/runtime/bake/`) | 5 files | DevServer/HmrSocket deinit substrate, JS surface pending |
 | Server lifecycle carrier (`packages/runtime/src/runtime/server/server.zig`) | 1 file | DevServer detach/deinit gate, JS surface pending |

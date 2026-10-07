@@ -1,3 +1,8 @@
+---
+title: Node.js Compatibility
+description: Track which Node.js built-ins and globals are callable through Home's own JavaScriptCore realm, including API gaps and validation status.
+---
+
 # Node.js compatibility
 
 Detailed per-module status for Home's `node:*` namespace. This is the
@@ -324,9 +329,10 @@ complete Node parity; shared-memory admission remains tracked by
 ### [`node:zlib`](https://nodejs.org/api/zlib.html)
 
 🟡 JS-callable, **native** (Zig `std.compress.flate`): `gzipSync`/
-`gunzipSync`/`deflateSync`/`inflateSync`/`deflateRawSync`/`inflateRawSync`
-+ async (callback) `gzip`/`gunzip`/`deflate`/`inflate`. Missing: brotli,
-streaming `Gzip`/`Gunzip` transform classes, options (level/strategy).
+`gunzipSync`/`deflateSync`/`inflateSync`/`deflateRawSync`/`inflateRawSync`,
+plus async callback forms of `gzip`/`gunzip`/`deflate`/`inflate`. Missing:
+brotli, streaming `Gzip`/`Gunzip` transform classes, and options such as
+level and strategy.
 
 ## Node.js globals
 
