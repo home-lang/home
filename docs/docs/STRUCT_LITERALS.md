@@ -1,583 +1,107 @@
-# Struct Literals with Shorthand in Home
-
-Struct literals in Home support multiple convenient syntaxes including field shorthand, making struct initialization concise and readable.
-
-## Table of Contents
-
-- [Basic Syntax](#basic-syntax)
-- [Shorthand Syntax](#shorthand-syntax)
-- [Struct Update Syntax](#struct-update-syntax)
-- [Anonymous Structs](#anonymous-structs)
-- [Tuple Structs](#tuple-structs)
-- [Nested Structs](#nested-structs)
-- [Best Practices](#best-practices)
-
-## Basic Syntax
-
-### Explicit Field Initialization
-
-```home
-struct User {
-    name: string,
-    age: i32,
-    email: string,
-}
-
-// Explicit initialization
-let user = User {
-    name: "Alice",
-    age: 30,
-    email: "alice@example.com",
-}
-```
-
-### Field Order
-
-Fields can be initialized in any order:
-
-```home
-let user = User {
-    email: "bob@example.com",
-    name: "Bob",
-    age: 25,
-}
-```
-
-## Shorthand Syntax
-
-### Field Punning
-
-When a variable name matches the field name, use shorthand:
-
-```home
-let name = "Charlie"
-let age = 35
-let email = "charlie@example.com"
-
-// Shorthand syntax
-let user = User { name, age, email }
-
-// Equivalent to:
-let user = User {
-    name: name,
-    age: age,
-    email: email,
-}
-```
-
-### Mixed Shorthand and Explicit
-
-```home
-let name = "Dave"
-let email = "dave@example.com"
-
-// Mix shorthand and explicit
-let user = User {
-    name,
-    age: 28,
-    email,
-}
-```
-
-### Benefits
-
-1. **Less repetition** - DRY principle
-2. **Cleaner code** - Easier to read
-3. **Refactoring friendly** - Rename once, works everywhere
-
-```home
-// Before shorthand
-fn create_user(name: string, age: i32, email: string): User {
-    User {
-        name: name,
-        age: age,
-        email: email,
-    }
-}
-
-// With shorthand
-fn create_user(name: string, age: i32, email: string): User {
-    User { name, age, email }
-}
-```
-
-## Struct Update Syntax
-
-### Spread Operator
-
-Use `..` to copy fields from another struct:
-
-```home
-let user1 = User {
-    name: "Alice",
-    age: 30,
-    email: "alice@example.com",
-}
-
-// Create new struct with some fields updated
-let user2 = User {
-    age: 31,
-    ..user1  // Copy other fields from user1
-}
-
-// user2 = { name: "Alice", age: 31, email: "alice@example.com" }
-```
-
-### Update Multiple Fields
-
-```home
-let user3 = User {
-    name: "Alice Smith",
-    email: "alice.smith@example.com",
-    ..user1  // age: 30
-}
-```
-
-### Shorthand with Update
-
-```home
-let name = "Bob"
-
-let user = User {
-    name,
-    ..default_user
-}
-```
-
-## Anonymous Structs
-
-### Inline Struct Types
-
-Create structs without defining a type:
-
-```home
-// Anonymous struct literal
-let point = .{ x: 10, y: 20 }
-
-// Type is inferred
-fn draw_at(pos: .{ x: i32, y: i32 }): void {
-    println("Drawing at ({}, {})", pos.x, pos.y)
-}
-
-draw_at(.{ x: 100, y: 200 })
-```
-
-### Return Anonymous Structs
-
-```home
-fn get_bounds(): .{ min: i32, max: i32 } {
-    .{ min: 0, max: 100 }
-}
-
-let bounds = get_bounds()
-println("Range: {} to {}", bounds.min, bounds.max)
-```
-
-### Shorthand in Anonymous Structs
-
-```home
-let x = 10
-let y = 20
-
-let point = .{ x, y }  // Shorthand works here too
-```
-
-## Tuple Structs
-
-### Positional Fields
-
-Tuple structs use positional initialization:
-
-```home
-struct Point(i32, i32)
-struct Color(u8, u8, u8)
-
-// Tuple struct literals
-let point = Point(10, 20)
-let color = Color(255, 128, 0)
-
-// Access by position
-println("Point: ({}, {})", point.0, point.1)
-println("Color: RGB({}, {}, {})", color.0, color.1, color.2)
-```
-
-### Named Tuple Structs
-
-```home
-struct Rgb(r: u8, g: u8, b: u8)
-
-// Can use named or positional
-let color1 = Rgb(255, 128, 0)
-let color2 = Rgb(r: 255, g: 128, b: 0)
-```
-
-## Nested Structs
-
-### Nested Initialization
-
-```home
-struct Address {
-    street: string,
-    city: string,
-    zip: string,
-}
-
-struct Person {
-    name: string,
-    age: i32,
-    address: Address,
-}
-
-// Nested struct literal
-let person = Person {
-    name: "Alice",
-    age: 30,
-    address: Address {
-        street: "123 Main St",
-        city: "Springfield",
-        zip: "12345",
-    },
-}
-```
-
-### Shorthand in Nested Structs
-
-```home
-let name = "Bob"
-let age = 25
-let street = "456 Oak Ave"
-let city = "Portland"
-let zip = "97201"
-
-let person = Person {
-    name,
-    age,
-    address: Address { street, city, zip },
-}
-```
-
-### Update Nested Structs
-
-```home
-let person2 = Person {
-    name: "Charlie",
-    address: Address {
-        street: "789 Pine Rd",
-        ..person.address  // Copy city and zip
-    },
-    ..person  // Copy age
-}
-```
-
-## Best Practices
-
-### 1. Use Shorthand When Possible
-
-```home
-// Good - concise
-fn create_user(name: string, age: i32, email: string): User {
-    User { name, age, email }
-}
-
-// Avoid - repetitive
-fn create_user(name: string, age: i32, email: string): User {
-    User {
-        name: name,
-        age: age,
-        email: email,
-    }
-}
-```
-
-### 2. Consistent Field Order
-
-```home
-// Good - consistent with struct definition
-struct User {
-    name: string,
-    age: i32,
-    email: string,
-}
-
-let user = User {
-    name: "Alice",
-    age: 30,
-    email: "alice@example.com",
-}
-
-// Works but less readable
-let user = User {
-    email: "alice@example.com",
-    name: "Alice",
-    age: 30,
-}
-```
-
-### 3. Use Update Syntax for Defaults
-
-```home
-const DEFAULT_CONFIG: Config = Config {
-    host: "localhost",
-    port: 8080,
-    timeout: 30,
-    debug: false,
-}
-
-// Override specific fields
-let dev_config = Config {
-    port: 3000,
-    debug: true,
-    ..DEFAULT_CONFIG
-}
-```
-
-### 4. Anonymous Structs for One-Off Data
-
-```home
-// Good - simple return value
-fn get_stats(): .{ count: i32, average: f64 } {
-    .{ count: 100, average: 75.5 }
-}
-
-// Avoid - defining struct for single use
-struct Stats {
-    count: i32,
-    average: f64,
-}
-
-fn get_stats(): Stats {
-    Stats { count: 100, average: 75.5 }
-}
-```
-
-### 5. Multiline for Readability
-
-```home
-// Good - readable
-let config = ServerConfig {
-    host: "api.example.com",
-    port: 443,
-    ssl: true,
-    timeout: 60,
-    max_connections: 1000,
-    workers: 8,
-}
-
-// Avoid - hard to read
-let config = ServerConfig { host: "api.example.com", port: 443, ssl: true, timeout: 60, max_connections: 1000, workers: 8 }
-```
-
-## Common Patterns
-
-### Builder Pattern Alternative
-
-```home
-// Instead of builder pattern
-let user = User {
-    name: "Alice",
-    age: 30,
-    ..User::default()
-}
-```
-
-### Configuration Objects
-
-```home
-struct HttpConfig {
-    timeout: i32,
-    retries: i32,
-    verify_ssl: bool,
-}
-
-const DEFAULT_HTTP: HttpConfig = HttpConfig {
-    timeout: 30,
-    retries: 3,
-    verify_ssl: true,
-}
-
-// Easy customization
-let custom = HttpConfig {
-    timeout: 60,
-    ..DEFAULT_HTTP
-}
-```
-
-### Test Data
-
-```home
-fn test_user_creation() {
-    let name = "Test User"
-    let email = "test@example.com"
-
-    let user = User {
-        name,
-        age: 25,
-        email,
-        active: true,
-    }
-
-    assert_eq!(user.name, "Test User")
-}
-```
-
-### Response Objects
-
-```home
-fn handle_request(req: Request): Response {
-    let status = 200
-    let body = "OK"
-
-    Response {
-        status,
-        body,
-        headers: HashMap::new(),
-        ..Response::default()
-    }
-}
-```
-
-## Examples
-
-### Point and Rectangle
+---
+title: Struct Literals
+description: Construct named and anonymous Home structs with the literal forms covered by current parser, diagnostic, interpreter, and native-codegen evidence.
+---
+
+# Struct literals
+
+Struct literals associate field names with expressions. Home accepts the
+regular named form and Zig-style dot-field initializers. Anonymous struct types
+and literals are recognized by the parser but are not yet accepted end to end
+by the main type checker.
+
+## Named structs
 
 ```home
 struct Point {
-    x: i32,
-    y: i32,
+  x: i32,
+  y: i32
 }
 
-struct Rect {
-    top_left: Point,
-    bottom_right: Point,
-}
-
-let x1 = 10
-let y1 = 20
-let x2 = 100
-let y2 = 80
-
-let rect = Rect {
-    top_left: Point { x: x1, y: y1 },
-    bottom_right: Point { x: x2, y: y2 },
-}
-
-// With shorthand
-let rect2 = Rect {
-    top_left: Point { x: x1, y: y1 },
-    bottom_right: Point { x: x2, y: y2 },
-}
+let point = Point { x: 10, y: 20 }
 ```
 
-### User Profile
+The struct feature fixture covers construction, field access, values returned
+from functions, nested structs and arrays of structs.
+
+## Dot-field initializers
+
+The parser also accepts the form used by Home kernel sources:
 
 ```home
-struct Profile {
-    username: string,
-    display_name: string,
-    bio: string,
-    avatar_url: string,
-    verified: bool,
+pub const Pair = struct {
+  left: i32,
+  right: i32
 }
 
-fn create_profile(username: string, display_name: string): Profile {
-    Profile {
-        username,
-        display_name,
-        bio: "",
-        avatar_url: "/default-avatar.png",
-        verified: false,
-    }
-}
-
-// Update profile
-fn verify_profile(profile: Profile): Profile {
-    Profile {
-        verified: true,
-        ..profile
-    }
+fn make_pair(): Pair {
+  return Pair { .left = 1, .right = 2 }
 }
 ```
 
-### Database Record
+Module-qualified type names can precede the literal. The parser accepts `:` as
+well as `=` after a leading dot, but `.field = value` is the canonical
+Zig-compatible spelling.
+
+## Shorthand fields
+
+Once a struct literal has been recognized, a field can use its same-named local
+as the value. Dot shorthand is unambiguous at the first field:
 
 ```home
-struct DbRecord {
-    id: i64,
-    created_at: DateTime,
-    updated_at: DateTime,
-    data: string,
-}
-
-fn create_record(data: string): DbRecord {
-    let now = DateTime::now()
-
-    DbRecord {
-        id: generate_id(),
-        created_at: now,
-        updated_at: now,
-        data,
-    }
-}
-
-fn update_record(record: DbRecord, data: string): DbRecord {
-    DbRecord {
-        data,
-        updated_at: DateTime::now(),
-        ..record
-    }
-}
+let left = 1
+let right = 2
+let pair = Pair { .left, .right }
 ```
 
-### Color Manipulation
+Do not assume that an all-bare form such as `Pair { left, right }` is equivalent.
+The current lookahead recognizes a first bare field only when it is followed by
+`:`, while a leading dot can be recognized as shorthand.
+
+## Anonymous struct parser support
+
+The parser recognizes anonymous struct types in return and local annotations,
+with a dot-prefixed literal supplying the value:
 
 ```home
-struct Color {
-    r: u8,
-    g: u8,
-    b: u8,
-    a: u8,
-}
-
-const RED: Color = Color { r: 255, g: 0, b: 0, a: 255 }
-const GREEN: Color = Color { r: 0, g: 255, b: 0, a: 255 }
-const BLUE: Color = Color { r: 0, g: 0, b: 255, a: 255 }
-
-fn with_alpha(color: Color, alpha: u8): Color {
-    Color {
-        a: alpha,
-        ..color
-    }
-}
-
-let semi_transparent_red = with_alpha(RED, 128)
-```
-
-### Event Data
-
-```home
-struct ClickEvent {
-    x: i32,
-    y: i32,
-    button: MouseButton,
-    modifiers: KeyModifiers,
-    timestamp: i64,
-}
-
-fn handle_click(x: i32, y: i32, button: MouseButton): void {
-    let event = ClickEvent {
-        x,
-        y,
-        button,
-        modifiers: get_modifiers(),
-        timestamp: current_time(),
-    }
-
-    process_event(event)
+fn cursor(): struct { x: usize, y: usize } {
+  return .{ .x = 10, .y = 20 }
 }
 ```
 
-## See Also
+The parser cases also include a clean negative diagnostic for a missing field
+type. The current type checker still reports the anonymous type and its empty
+literal type name as unknown, so this syntax is not yet a usable compiled
+language contract.
 
-- [Structs](STRUCTS.md) - Struct definitions
-- [Pattern Matching](PATTERN_MATCHING.md) - Destructuring structs
-- [Methods](METHODS.md) - Struct methods
+## Evidence map
+
+| Area | Evidence |
+|---|---|
+| Literal grammar | `packages/parser/src/parser.zig` |
+| AST representation | `packages/ast/src/struct_literal_nodes.zig` |
+| Interpreter values | `packages/interpreter/src/interpreter.zig` |
+| Type and native paths | `packages/types/src/type_system.zig` and `packages/codegen/src/` |
+| Language fixtures | `tests/feature/structs.test.home` and `tests/diagnostics/cases/parse/30_struct_literal_dot_field.home` |
+| Anonymous parser cases | `tests/diagnostics/cases/parse/40_anon_struct_return_type.home` and `41_anon_struct_missing_field_type.home` |
+
+## Current boundary
+
+Older versions of this page presented several planned AST forms as completed.
+Do not yet treat these as portable contracts:
+
+- Struct update syntax such as `Point { ..base }`.
+- Object-style spread such as `{ ...base }`.
+- Tuple-struct construction.
+- Automatic default values for omitted fields.
+- Uniform duplicate, unknown, missing and wrong-type field diagnostics.
+- Uniform nested-struct lowering across every native target.
+
+The AST contains helpers for some of these forms, but a helper type is not an
+end-to-end parser, checker and code-generation guarantee.
+
+## Related pages
+
+- [Structs and enums](/docs/guide/structs-enums)
+- [Type inference](/docs/TYPE_INFERENCE)
+- [Capability matrix](/docs/CAPABILITY_MATRIX)

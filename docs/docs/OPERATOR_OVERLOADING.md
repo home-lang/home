@@ -1,341 +1,84 @@
-# Operator Overloading in Home
+---
+title: Operator Overloading Status
+description: Understand Home's built-in operators, operator-trait design scaffolding, and the missing integration required before custom operators are a language contract.
+---
 
-Home supports operator overloading through a trait-based system, similar to Rust. This provides type-safe, explicit operator overloading that integrates seamlessly with the trait system.
+# Operator overloading status
 
-## Overview
+Home implements arithmetic, comparison, logical and bitwise operators for its
+built-in value types. User-defined operator overloading is **not yet an
+end-to-end language feature**.
 
-Operators in Home are implemented via special traits. When you use an operator like `+`, the compiler looks for an implementation of the `Add` trait and desugars the expression into a method call.
+## What works today
+
+Primitive expressions use the compiler's built-in operator rules:
 
 ```home
-// This expression:
-let result = a + b
-
-// Is desugared to:
-let result = a.add(b)
+let total = 20 + 22
+let smaller = total < 100
+let flags = 1 | 4
 ```
 
-## Arithmetic Operators
+These expressions are parsed as unary or binary AST nodes, checked directly by
+the type system, and lowered by the selected execution backend.
 
-### Add (+)
+For user-defined types, use an ordinary named method while the operator path is
+being integrated:
 
 ```home
-trait Add<Rhs = Self> {
-    type Output
-    fn add(self, rhs: Rhs): Self::Output
-}
-
-// Example implementation
 struct Vector2 {
-    x: f64,
-    y: f64,
+  x: i32,
+  y: i32
 }
 
-impl Add for Vector2 {
-    type Output = Vector2
-
-    fn add(self, rhs: Vector2): Vector2 {
-        Vector2 {
-            x: self.x + rhs.x,
-            y: self.y + rhs.y,
-        }
-    }
+impl Vector2 {
+  fn add(self, other: Vector2): Vector2 {
+    return Vector2 { x: self.x + other.x, y: self.y + other.y };
+  }
 }
 
-// Usage
-let v1 = Vector2 { x: 1.0, y: 2.0 }
-let v2 = Vector2 { x: 3.0, y: 4.0 }
-let v3 = v1 + v2  // Calls v1.add(v2)
+let result = left.add(right)
 ```
 
-### Sub (-), Mul (*), Div (/), Rem (%)
+This is normal method dispatch; it does not make `left + right` equivalent.
 
-Similar to `Add`, these traits allow overloading subtraction, multiplication, division, and remainder operations.
+## Existing design scaffolding
 
-```home
-impl Sub for Vector2 {
-    type Output = Vector2
-    fn sub(self, rhs: Vector2): Vector2 { ... }
-}
+`packages/traits/src/operator_traits.zig` defines descriptors and name mappings
+for traits such as `Add`, `Sub`, `Mul`, `Neg`, assignment operators, indexing
+and comparisons. `packages/types/src/operator_resolution.zig` contains a
+resolver and an AST desugarer intended to turn an operator into a method call.
 
-impl Mul<f64> for Vector2 {
-    type Output = Vector2
-    fn mul(self, scalar: f64): Vector2 {
-        Vector2 {
-            x: self.x * scalar,
-            y: self.y * scalar,
-        }
-    }
-}
-```
+Those components express the intended direction, but the resolver is not
+called by the main Home type-checking or code-generation pipeline. The current
+Home-language fixtures also do not contain a passing `impl Add` example that
+proves custom `+` end to end.
 
-## Unary Operators
+## Consequences
 
-### Neg (unary -)
+Do not currently rely on these claims from older documentation:
 
-```home
-trait Neg {
-    type Output
-    fn neg(self): Self::Output
-}
+- `a + b` automatically desugars to `a.add(b)` for structs.
+- Declaring `impl Add for T` enables `+` in compiled Home code.
+- Compound assignment automatically uses `AddAssign`-style traits.
+- `[]`, dereference or comparison operators can be customized through traits.
+- Associated `Output` types are resolved uniformly across backends.
 
-impl Neg for Vector2 {
-    type Output = Vector2
-    fn neg(self): Vector2 {
-        Vector2 { x: -self.x, y: -self.y }
-    }
-}
+Each requires a parser/checker/backend fixture before it can become public
+syntax documentation.
 
-let v = Vector2 { x: 1.0, y: 2.0 }
-let negated = -v  // Calls v.neg()
-```
+## Evidence map
 
-### Not (!)
+| Area | Evidence |
+|---|---|
+| Built-in operator grammar | `packages/parser/src/parser.zig` |
+| Built-in checking | `packages/types/src/type_system.zig` |
+| Trait descriptors | `packages/traits/src/operator_traits.zig` |
+| Unintegrated resolver | `packages/types/src/operator_resolution.zig` |
+| Primitive feature tests | arithmetic and comparison fixtures under `tests/feature/` |
 
-```home
-trait Not {
-    type Output
-    fn not(self): Self::Output
-}
+## Related pages
 
-impl Not for bool {
-    type Output = bool
-    fn not(self): bool {
-        !self  // Built-in implementation
-    }
-}
-```
-
-## Bitwise Operators
-
-### BitAnd (&), BitOr (|), BitXor (^)
-
-```home
-struct Flags {
-    bits: u32,
-}
-
-impl BitOr for Flags {
-    type Output = Flags
-    fn bitor(self, rhs: Flags): Flags {
-        Flags { bits: self.bits | rhs.bits }
-    }
-}
-
-let flags = FLAG*READ | FLAG*WRITE  // Calls FLAG*READ.bitor(FLAG*WRITE)
-```
-
-### Shl (<<), Shr (>>)
-
-```home
-impl Shl<u32> for u64 {
-    type Output = u64
-    fn shl(self, rhs: u32): u64 {
-        self << rhs  // Built-in implementation
-    }
-}
-```
-
-## Compound Assignment Operators
-
-### AddAssign (+=), SubAssign (-=), etc
-
-```home
-trait AddAssign<Rhs = Self> {
-    fn add*assign(&mut self, rhs: Rhs): void
-}
-
-impl AddAssign for Vector2 {
-    fn add*assign(&mut self, rhs: Vector2): void {
-        self.x += rhs.x
-        self.y += rhs.y
-    }
-}
-
-let mut v = Vector2 { x: 1.0, y: 2.0 }
-v += Vector2 { x: 3.0, y: 4.0 }  // Calls v.add*assign(...)
-```
-
-## Indexing Operators
-
-### Index ([])
-
-```home
-trait Index<Idx> {
-    type Output
-    fn index(&self, index: Idx): &Self::Output
-}
-
-trait IndexMut<Idx>: Index<Idx> {
-    fn index*mut(&mut self, index: Idx): &mut Self::Output
-}
-
-// Example: Custom array type
-struct MyArray<T> {
-    data: [T; 10],
-}
-
-impl<T> Index<usize> for MyArray<T> {
-    type Output = T
-
-    fn index(&self, index: usize): &T {
-        &self.data[index]
-    }
-}
-
-impl<T> IndexMut<usize> for MyArray<T> {
-    fn index*mut(&mut self, index: usize): &mut T {
-        &mut self.data[index]
-    }
-}
-
-let arr = MyArray { data: [1, 2, 3, ...] }
-let value = arr[0]  // Calls arr.index(0)
-arr[1] = 42         // Calls arr.index*mut(1)
-```
-
-## Deref Operator
-
-### Deref (*), DerefMut
-
-```home
-trait Deref {
-    type Target
-    fn deref(&self): &Self::Target
-}
-
-trait DerefMut: Deref {
-    fn deref*mut(&mut self): &mut Self::Target
-}
-
-// Smart pointer example
-struct Box<T> {
-    ptr: *T,
-}
-
-impl<T> Deref for Box<T> {
-    type Target = T
-
-    fn deref(&self): &T {
-        unsafe { &*self.ptr }
-    }
-}
-
-let boxed = Box::new(42)
-let value = *boxed  // Calls boxed.deref()
-```
-
-## Generic Operator Implementations
-
-You can implement operators for different right-hand side types:
-
-```home
-// Vector + Vector
-impl Add for Vector2 {
-    type Output = Vector2
-    fn add(self, rhs: Vector2): Vector2 { ... }
-}
-
-// Vector + scalar
-impl Add<f64> for Vector2 {
-    type Output = Vector2
-    fn add(self, scalar: f64): Vector2 {
-        Vector2 {
-            x: self.x + scalar,
-            y: self.y + scalar,
-        }
-    }
-}
-
-let v = Vector2 { x: 1.0, y: 2.0 }
-let v2 = v + Vector2 { x: 3.0, y: 4.0 }  // Vector + Vector
-let v3 = v + 5.0                          // Vector + f64
-```
-
-## Operator Trait Reference
-
-### Binary Operators
-
-| Operator | Trait | Method | Description |
-|----------|-------|--------|-------------|
-| `+` | `Add<Rhs>` | `add(self, rhs: Rhs): Output` | Addition |
-| `-` | `Sub<Rhs>` | `sub(self, rhs: Rhs): Output` | Subtraction |
-| `*` | `Mul<Rhs>` | `mul(self, rhs: Rhs): Output` | Multiplication |
-| `/` | `Div<Rhs>` | `div(self, rhs: Rhs): Output` | Division |
-| `%` | `Rem<Rhs>` | `rem(self, rhs: Rhs): Output` | Remainder |
-| `&` | `BitAnd<Rhs>` | `bitand(self, rhs: Rhs): Output` | Bitwise AND |
-| `\|` | `BitOr<Rhs>` | `bitor(self, rhs: Rhs): Output` | Bitwise OR |
-| `^` | `BitXor<Rhs>` | `bitxor(self, rhs: Rhs): Output` | Bitwise XOR |
-| `<<` | `Shl<Rhs>` | `shl(self, rhs: Rhs): Output` | Left shift |
-| `>>` | `Shr<Rhs>` | `shr(self, rhs: Rhs): Output` | Right shift |
-
-### Unary Operators
-
-| Operator | Trait | Method | Description |
-|----------|-------|--------|-------------|
-| `-` | `Neg` | `neg(self): Output` | Negation |
-| `!` | `Not` | `not(self): Output` | Logical NOT |
-| `*` | `Deref` | `deref(&self): &Target` | Dereference |
-
-### Compound Assignment
-
-| Operator | Trait | Method | Description |
-|----------|-------|--------|-------------|
-| `+=` | `AddAssign<Rhs>` | `add*assign(&mut self, rhs: Rhs)` | Add and assign |
-| `-=` | `SubAssign<Rhs>` | `sub*assign(&mut self, rhs: Rhs)` | Subtract and assign |
-| `*=` | `MulAssign<Rhs>` | `mul*assign(&mut self, rhs: Rhs)` | Multiply and assign |
-| `/=` | `DivAssign<Rhs>` | `div*assign(&mut self, rhs: Rhs)` | Divide and assign |
-| `%=` | `RemAssign<Rhs>` | `rem*assign(&mut self, rhs: Rhs)` | Remainder and assign |
-
-### Indexing
-
-| Operator | Trait | Method | Description |
-|----------|-------|--------|-------------|
-| `[]` | `Index<Idx>` | `index(&self, index: Idx): &Output` | Immutable indexing |
-| `[]` | `IndexMut<Idx>` | `index*mut(&mut self, index: Idx): &mut Output` | Mutable indexing |
-
-## Best Practices
-
-1. **Implement related traits together**: If you implement `Add`, consider implementing `AddAssign` as well.
-
-2. **Use sensible Output types**: The `Output` associated type should make semantic sense for the operation.
-
-3. **Follow mathematical properties**: If possible, make your operators follow expected properties (commutativity, associativity, etc.).
-
-4. **Don't surprise users**: Operators should do what users expect. Don't make `+` do something completely unrelated to addition.
-
-5. **Consider generic implementations**: Use generic parameters to support operations with different types.
-
-## Compiler Desugaring
-
-The Home compiler automatically desugars operator expressions:
-
-```home
-// Source code
-let result = a + b * c
-
-// After desugaring
-let temp = b.mul(c)
-let result = a.add(temp)
-```
-
-This happens during type checking, allowing the compiler to:
-
-- Verify trait implementations exist
-- Resolve the correct method to call
-- Determine the result type
-- Generate efficient code
-
-## Integration with Type System
-
-Operator overloading is fully integrated with Home's type system:
-
-```home
-fn add*vectors<T>(a: T, b: T): T::Output
-where
-    T: Add<T>
-{
-    a + b  // Compiler knows T implements Add
-}
-```
-
-The type checker verifies that all operator trait bounds are satisfied at compile time, ensuring type safety.
+- [Traits](/docs/TRAITS)
+- [Structs and enums](/docs/guide/structs-enums)
+- [Capability matrix](/docs/CAPABILITY_MATRIX)
