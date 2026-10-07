@@ -12,7 +12,7 @@ Ongoing coverage and optimization work is tracked in
 
 ### Current-source full-suite measurement (2026-10-07)
 
-Result `20261007T141452Z` measures source commit `6c2abccbf` with the stripped
+Result `20261007T161511Z` measures source commit `ebffe93d0` with the stripped
 ReleaseFast build. The host was an Apple M2 Pro / Mac14,9 with 10 logical
 cores, running macOS 26.3.1 (Darwin 25.3.0) arm64. The harness admitted all 20
 unchanged generated projects before timing, ran 30 fresh processes per
@@ -22,41 +22,41 @@ hash before admission and after measurement.
 
 | Workload | tsc 6.0.3 median | native TS 7.0.2 median | Home 0.1.0 median | Home vs fastest competitor |
 |---|---:|---:|---:|---:|
-| `checkjs_jsdoc` | 252.4 ms | **65.7 ms** | 166.5 ms | 2.53× slower |
-| `class_hierarchy` | 212.2 ms | **59.4 ms** | 198.7 ms | 3.34× slower |
-| `commonjs_graph` | 183.9 ms | 59.6 ms | **42.2 ms** | **1.41× faster** |
-| `control_flow` | 212.2 ms | **64.3 ms** | 216.8 ms | 3.37× slower |
-| `deep_types` | 143.6 ms | 57.6 ms | **23.0 ms** | **2.50× faster** |
-| `destructuring` | 163.7 ms | **54.1 ms** | 81.2 ms | 1.50× slower |
-| `generic_calls` | 195.4 ms | **59.4 ms** | 84.2 ms | 1.42× slower |
-| `import_graph` | 142.3 ms | 50.7 ms | **28.9 ms** | **1.75× faster** |
-| `interface_composition` | 234.0 ms | **72.2 ms** | 204.2 ms | 2.83× slower |
-| `many_files` | 230.8 ms | 58.5 ms | **30.9 ms** | **1.89× faster** |
-| `null_safe_access` | 238.4 ms | **69.1 ms** | 328.4 ms | 4.75× slower |
-| `overload_resolution` | 237.3 ms | **75.9 ms** | 178.9 ms | 2.36× slower |
-| `recursive_generics` | 183.5 ms | 84.0 ms | **31.6 ms** | **2.66× faster** |
-| `reexport_graph` | 106.5 ms | 45.4 ms | **21.6 ms** | **2.10× faster** |
-| `startup` | 68.5 ms | 40.9 ms | **3.1 ms** | **13.05× faster** |
-| `structural_objects` | 214.4 ms | **65.3 ms** | 121.4 ms | 1.86× slower |
-| `tsx_components` | 181.2 ms | 51.8 ms | **41.2 ms** | **1.26× faster** |
-| `type_predicates` | 268.2 ms | **78.8 ms** | 694.4 ms | 8.81× slower |
-| `type_predicates_large` | 1,211.0 ms | **442.8 ms** | 44,012.1 ms | 99.40× slower |
-| `variadic_tuples` | 287.6 ms | **87.9 ms** | 209.7 ms | 2.38× slower |
+| `checkjs_jsdoc` | 241.7 ms | 64.6 ms | **36.2 ms** | **1.79× faster** |
+| `class_hierarchy` | 229.4 ms | 64.9 ms | **29.3 ms** | **2.22× faster** |
+| `commonjs_graph` | 181.3 ms | 59.2 ms | **33.9 ms** | **1.75× faster** |
+| `control_flow` | 232.1 ms | 70.7 ms | **32.1 ms** | **2.20× faster** |
+| `deep_types` | 162.0 ms | 64.3 ms | **25.5 ms** | **2.52× faster** |
+| `destructuring` | 170.8 ms | 58.1 ms | **18.6 ms** | **3.12× faster** |
+| `generic_calls` | 218.7 ms | 66.7 ms | **28.9 ms** | **2.31× faster** |
+| `import_graph` | 156.4 ms | 56.4 ms | **30.5 ms** | **1.85× faster** |
+| `interface_composition` | 248.9 ms | 76.7 ms | **42.8 ms** | **1.79× faster** |
+| `many_files` | 271.5 ms | 67.3 ms | **34.3 ms** | **1.96× faster** |
+| `null_safe_access` | 229.5 ms | 69.5 ms | **38.5 ms** | **1.81× faster** |
+| `overload_resolution` | 237.5 ms | 76.6 ms | **29.3 ms** | **2.61× faster** |
+| `recursive_generics` | 181.5 ms | 82.2 ms | **17.1 ms** | **4.81× faster** |
+| `reexport_graph` | 146.4 ms | 60.8 ms | **34.7 ms** | **1.75× faster** |
+| `startup` | 151.9 ms | 87.9 ms | **6.5 ms** | **13.62× faster** |
+| `structural_objects` | 228.0 ms | 71.2 ms | **28.8 ms** | **2.48× faster** |
+| `tsx_components` | 201.8 ms | 57.5 ms | **24.2 ms** | **2.38× faster** |
+| `type_predicates` | 288.2 ms | 85.8 ms | **44.3 ms** | **1.94× faster** |
+| `type_predicates_large` | 1,202.1 ms | **412.8 ms** | 593.0 ms | 1.44× slower |
+| `variadic_tuples` | 289.8 ms | 90.1 ms | **39.8 ms** | **2.26× faster** |
 
-Home has the lowest median on **8/20** admitted workloads. This is current
-measurement, not a universal performance claim. The twelve regressions,
-including the 99.40× large-predicate loss, are tracked in
-[#837](https://github.com/home-lang/home/issues/837). Older 20/20 snapshots
-were measured from older compiler sources and are not used as current claims.
+Home has the lowest median on **19/20** admitted workloads. This is current
+measurement, not a universal performance claim. The remaining 1.44×
+large-predicate loss is tracked in
+[#837](https://github.com/home-lang/home/issues/837). Older snapshots were
+measured from older compiler sources and are not used as current claims.
 
-The [evidence archive](https://github.com/home-lang/home/raw/main/bench/vs_tsgo/evidence/20261007T141452Z.tar.gz)
+The [evidence archive](https://github.com/home-lang/home/raw/main/bench/vs_tsgo/evidence/20261007T161511Z.tar.gz)
 contains all 600 byte-for-byte Hyperfine round files, metadata with repository
 paths normalized to `$REPO`, and SHA-256 checksums. Archive SHA-256:
-`7ff6a7a0a7d9ee3cb19269274abe70a79566e5a32c45c0c0ed981488257f4a15`.
+`3ce9703591f967f081aa35bf1e704b88f83dae412e7ad51699a8bd99e3e79c8e`.
 The measured `home-tsc` executable SHA-256 is
-`bbb407f640151df4d15f856d3a78d1e3f42693c3543f5328d985c8975df5564f`.
+`8e13b2e0f2e41e8e3fe1e5d01e1f090a85b85f6ac582555599fd4409e7128e63`.
 Node was 24.4.1, Hyperfine 1.20.0, and Python 3.12.4. The guarded build peaked
-at 3,044 MB tree footprint; benchmark execution peaked at 465 MB.
+at 2,913 MB tree footprint; benchmark execution peaked at 467 MB.
 
 All values above are medians of every retained sample. Ratios use unrounded
 medians and the faster of `tsc` and native TS 7. Schema-3 admission still

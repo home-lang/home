@@ -77,37 +77,37 @@ upstream `.errors.txt` baselines** in exact mode (`HOME_TS_CONFORMANCE_EXACT=1`)
 coarse mode (`HOME_TS_CONFORMANCE_FULL=1` alone) only asserts that we emit
 the same *families* of diagnostics.
 
-**Current frontend performance snapshot** (`20261007T141452Z`, source
-`6c2abccbf`, Apple M2 Pro / Mac14,9, 10 logical cores, macOS 26.3.1 arm64;
+**Current frontend performance snapshot** (`20261007T161511Z`, source
+`ebffe93d0`, Apple M2 Pro / Mac14,9, 10 logical cores, macOS 26.3.1 arm64;
 30 interleaved runs after three warmups; medians, lower is better):
 
 | Workload | tsc 6.0.3 | native TS 7.0.2 | Home 0.1.0 | Home vs fastest competitor |
 |---|---:|---:|---:|---:|
-| Startup | 68.5 ms | 40.9 ms | **3.1 ms** | **13.05× faster** |
-| 256 files | 230.8 ms | 58.5 ms | **30.9 ms** | **1.89× faster** |
-| Deep types | 143.6 ms | 57.6 ms | **23.0 ms** | **2.50× faster** |
-| 128-module import graph | 142.3 ms | 50.7 ms | **28.9 ms** | **1.75× faster** |
-| 64-leaf barrel graph | 106.5 ms | 45.4 ms | **21.6 ms** | **2.10× faster** |
-| 256 typed TSX components | 181.2 ms | 51.8 ms | **41.2 ms** | **1.26× faster** |
-| 256 generic call groups | 195.4 ms | **59.4 ms** | 84.2 ms | 1.42× slower |
-| 256 exhaustive control-flow functions | 212.2 ms | **64.3 ms** | 216.8 ms | 3.37× slower |
-| 256 type-predicate/assertion families | 268.2 ms | **78.8 ms** | 694.4 ms | 8.81× slower |
-| 2,048 type-predicate/assertion families | 1,211.0 ms | **442.8 ms** | 44,012.1 ms | 99.40× slower |
-| 256 null-safe-access families | 238.4 ms | **69.1 ms** | 328.4 ms | 4.75× slower |
-| 128 destructuring/rest/spread families | 163.7 ms | **54.1 ms** | 81.2 ms | 1.50× slower |
-| 128 × 8 overload calls | 237.3 ms | **75.9 ms** | 178.9 ms | 2.36× slower |
-| 128 generic class families | 212.2 ms | **59.4 ms** | 198.7 ms | 3.34× slower |
-| 128 structural object families | 214.4 ms | **65.3 ms** | 121.4 ms | 1.86× slower |
-| 128 interface/namespace families | 234.0 ms | **72.2 ms** | 204.2 ms | 2.83× slower |
-| 256 variadic tuple families | 287.6 ms | **87.9 ms** | 209.7 ms | 2.38× slower |
-| 128 checked-JavaScript/JSDoc families | 252.4 ms | **65.7 ms** | 166.5 ms | 2.53× slower |
-| 128 checked-CommonJS owners + app | 183.9 ms | 59.6 ms | **42.2 ms** | **1.41× faster** |
-| 256 recursive generic payloads | 183.5 ms | 84.0 ms | **31.6 ms** | **2.66× faster** |
+| Startup | 151.9 ms | 87.9 ms | **6.5 ms** | **13.62× faster** |
+| 256 files | 271.5 ms | 67.3 ms | **34.3 ms** | **1.96× faster** |
+| Deep types | 162.0 ms | 64.3 ms | **25.5 ms** | **2.52× faster** |
+| 128-module import graph | 156.4 ms | 56.4 ms | **30.5 ms** | **1.85× faster** |
+| 64-leaf barrel graph | 146.4 ms | 60.8 ms | **34.7 ms** | **1.75× faster** |
+| 256 typed TSX components | 201.8 ms | 57.5 ms | **24.2 ms** | **2.38× faster** |
+| 256 generic call groups | 218.7 ms | 66.7 ms | **28.9 ms** | **2.31× faster** |
+| 256 exhaustive control-flow functions | 232.1 ms | 70.7 ms | **32.1 ms** | **2.20× faster** |
+| 256 type-predicate/assertion families | 288.2 ms | 85.8 ms | **44.3 ms** | **1.94× faster** |
+| 2,048 type-predicate/assertion families | 1,202.1 ms | **412.8 ms** | 593.0 ms | 1.44× slower |
+| 256 null-safe-access families | 229.5 ms | 69.5 ms | **38.5 ms** | **1.81× faster** |
+| 128 destructuring/rest/spread families | 170.8 ms | 58.1 ms | **18.6 ms** | **3.12× faster** |
+| 128 × 8 overload calls | 237.5 ms | 76.6 ms | **29.3 ms** | **2.61× faster** |
+| 128 generic class families | 229.4 ms | 64.9 ms | **29.3 ms** | **2.22× faster** |
+| 128 structural object families | 228.0 ms | 71.2 ms | **28.8 ms** | **2.48× faster** |
+| 128 interface/namespace families | 248.9 ms | 76.7 ms | **42.8 ms** | **1.79× faster** |
+| 256 variadic tuple families | 289.8 ms | 90.1 ms | **39.8 ms** | **2.26× faster** |
+| 128 checked-JavaScript/JSDoc families | 241.7 ms | 64.6 ms | **36.2 ms** | **1.79× faster** |
+| 128 checked-CommonJS owners + app | 181.3 ms | 59.2 ms | **33.9 ms** | **1.75× faster** |
+| 256 recursive generic payloads | 181.5 ms | 82.2 ms | **17.1 ms** | **4.81× faster** |
 
-Home has the lowest median on **8/20 admitted timed workloads**. All 20
+Home has the lowest median on **19/20 admitted timed workloads**. All 20
 workloads passed admission before timing; all 600 round files and 1,800
-successful samples are retained. The current regressions are tracked in
-[#837](https://github.com/home-lang/home/issues/837). See the
+successful samples are retained. The remaining 1.44× large-predicate loss is
+tracked in [#837](https://github.com/home-lang/home/issues/837). See the
 [full results, evidence archive, controls and reproduction](/docs/TS_PERFORMANCE#current-snapshot).
 Older snapshots remain historical and are not mixed with current-source
 figures or relabeled as medians.
