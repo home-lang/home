@@ -1,4 +1,9 @@
-// Complete ELF Loading and Copy-on-Write Implementation
+---
+title: Complete ELF Loading and Copy-on-Write Implementation
+description: Implementation notes for Home's kernel ELF loader, page mapping, and copy-on-write process memory.
+---
+
+# Complete ELF Loading and Copy-on-Write Implementation
 
 ## Overview
 

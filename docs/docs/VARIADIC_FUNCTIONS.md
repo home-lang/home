@@ -1,4 +1,9 @@
-## Variadic Functions in Home
+---
+title: Variadic Functions in Home
+description: Learn how Home handles type-safe variadic parameters, spread syntax, generic varargs, and flexible function APIs.
+---
+
+# Variadic Functions in Home
 
 Variadic functions accept a variable number of arguments, enabling flexible APIs and utility functions. Home supports both type-safe variadic parameters and spread syntax.
 
