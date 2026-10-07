@@ -79263,6 +79263,11 @@ pub const Checker = struct {
                     }
                     if (std.mem.eql(u8, raw, "function")) {
                         try self.reportCannotFindNameOnce(tt.operand, name);
+                        if (self.diagnosticExists(tt.operand, TsCodes.cannot_find_name) or
+                            self.diagnosticExists(tt.operand, TsCodes.cannot_find_name_did_you_mean))
+                        {
+                            return self.recordUnmodeledAny(tt.operand);
+                        }
                         return types.Primitive.any;
                     }
                     if (self.localImportEqualsDecl(name, tt.operand)) |import_node| {
@@ -79465,6 +79470,13 @@ pub const Checker = struct {
                     if (global_key) |key| {
                         if (!self.globalThisHasProperty(type_node, key)) {
                             try self.reportGlobalThisMissingProperty(ia.index, key, "typeof globalThis");
+                            // The TS2339 diagnostic belongs to the index, but
+                            // the any-like recovery belongs to the complete
+                            // indexed-access type. Keep those ownership points
+                            // distinct while requiring the diagnostic to exist.
+                            if (self.diagnosticExists(ia.index, TsCodes.property_does_not_exist)) {
+                                return self.recordUnmodeledAny(type_node);
+                            }
                             return types.Primitive.any;
                         }
                         if (self.program_global_value_types.len > 0) {
@@ -215093,12 +215105,16 @@ test "checker: typeof globalThis excludes ambient external modules" {
         \\}
         \\type GlobalBad1 = (typeof globalThis)["\"ambientModule\""];
         \\const bad1: (typeof globalThis)["\"ambientModule\""] = "ambientModule";
+        \\type GlobalGood = (typeof globalThis)["globalThis"];
     );
     defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
 
     try T.expectEqual(@as(usize, 2), checkerCountCode(s, TsCodes.property_does_not_exist));
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.type_not_assignable));
+    try T.expectEqual(@as(u32, 2), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 2), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: checked JS global property assignments require declared members" {
@@ -218651,6 +218667,20 @@ test "checker: unresolved typeof null traces its TS2304 recovery" {
 
     try T.expect(checkerHasCodeAndMessage(s, TsCodes.cannot_find_name, "Cannot find name 'null'."));
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(u32, 1), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 1), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
+}
+
+test "checker: unresolved typeof function traces its TS2552 recovery" {
+    const s = try newSetup(
+        \\type FunctionType = typeof function;
+    );
+    defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
+    try s.checker.checkSourceFile(s.root);
+
+    try T.expect(checkerHasCodeAndMessage(s, TsCodes.cannot_find_name_did_you_mean, "Cannot find name 'function'. Did you mean 'Function'?"));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_find_name_did_you_mean));
     try T.expectEqual(@as(u32, 1), s.checker.unmodeled_any_sites.count());
     try T.expectEqual(@as(usize, 1), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
 }
