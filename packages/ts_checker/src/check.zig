@@ -78272,7 +78272,7 @@ pub const Checker = struct {
                         try self.reportUnresolvedCallTypeArgumentNodes(args_extra);
                         for (args_extra) |a_node| _ = try self.lowererLowerWithTypeParams(a_node);
                     }
-                    return self.diagnosedAnyRecovery(type_node, TsCodes.value_used_as_type_did_you_mean_typeof);
+                    return self.qualifiedTypeRefDiagnosedAnyRecovery(type_node);
                 }
                 if (try self.programExportedClassInstanceTypeForImportedName(r.name, type_node)) |instance| return instance;
                 if (try self.programExportedTypeForLocal(r.name, type_node)) |instance| return instance;
@@ -80419,6 +80419,35 @@ pub const Checker = struct {
             .code = code,
             .message = msg,
         });
+    }
+
+    /// Preserve the any-like continuation of an unresolved qualified type
+    /// only when that exact reference owns a resolution diagnostic. Missing
+    /// roots are anchored on the first qualifier, while missing members and
+    /// type-as-namespace failures are anchored on the complete type-ref.
+    fn qualifiedTypeRefDiagnosedAnyRecovery(self: *Checker, type_node: NodeId) CheckError!TypeId {
+        if (self.hir.kindOf(type_node) != .type_ref) return types.Primitive.any;
+
+        const type_node_codes = [_]u32{
+            TsCodes.value_used_as_type_did_you_mean_typeof,
+            TsCodes.type_used_as_namespace,
+            TsCodes.cannot_access_type_as_namespace,
+            TsCodes.property_does_not_exist,
+            TsCodes.namespace_no_exported_member,
+        };
+        for (type_node_codes) |code| {
+            if (self.diagnosticExists(type_node, code)) return self.recordUnmodeledAny(type_node);
+        }
+
+        const qualifiers = hir_mod.typeRefQualifier(self.hir, type_node);
+        if (qualifiers.len == 0) return types.Primitive.any;
+        const root = qualifiers[0];
+        if (self.diagnosticExists(root, TsCodes.cannot_find_namespace) or
+            self.diagnosticExists(root, TsCodes.cannot_find_namespace_did_you_mean))
+        {
+            return self.recordUnmodeledAny(type_node);
+        }
+        return types.Primitive.any;
     }
 
     fn jsDocQualifiedTypeRefIsDeclaredTypedef(
@@ -240090,6 +240119,36 @@ test "checker: unresolved parameterized type reference retains unmodeled recover
     try T.expect(checkerHasCodeAndMessage(s, TsCodes.cannot_find_name, "Cannot find name 'Missing'."));
     try T.expectEqual(@as(u32, 1), s.checker.unmodeled_any_sites.count());
     try T.expectEqual(@as(usize, 1), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
+}
+
+test "checker: unresolved qualified type references retain unmodeled recovery provenance" {
+    const b = try newBoundSetup(
+        \\namespace ValueNamespace { export interface Present {} export const marker = 1; }
+        \\declare namespace Ambient { interface Present {} }
+        \\namespace TypeModule2 {}
+        \\class ClassOnly {}
+        \\interface InterfaceOnly {}
+        \\type MissingRoot = Missing.Member;
+        \\type SuggestedRoot = TypeModule1.Member;
+        \\type MissingAmbientMember = Ambient.Absent;
+        \\type MissingValueMember = ValueNamespace.Absent;
+        \\type ClassNamespace = ClassOnly.Member;
+        \\type InterfaceNamespace = InterfaceOnly.Member;
+        \\type ModeledAmbient = Ambient.Present;
+        \\type ModeledValue = ValueNamespace.Present;
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
+    try b.base.checker.checkSourceFile(b.base.root);
+
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.cannot_find_namespace));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.cannot_find_namespace_did_you_mean));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.property_does_not_exist));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.namespace_no_exported_member));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.type_used_as_namespace));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.cannot_access_type_as_namespace));
+    try T.expectEqual(@as(u32, 6), b.base.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 6), checkerCountHomeCode(b.base, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: enum initializer `\"a\" - \"a\"` fires TS2362 + TS2363" {
