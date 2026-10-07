@@ -112,7 +112,7 @@ Instead of hardcoding paths:
 
 ```zig
 // ❌ BAD: Hardcoded path
-const CRAFT_PATH = "/Users/chrisbreuer/Code/craft/packages/zig";
+const CRAFT_PATH = "~/Code/craft/packages/zig";
 ```
 
 Use dynamic resolution:
@@ -300,7 +300,7 @@ fn resolvePantryPackage(allocator: std.mem.Allocator, name: []const u8) ![]const
 
 ```zig
 // ❌ BAD
-const CRAFT_PATH = "/Users/chrisbreuer/Code/craft";
+const CRAFT_PATH = "~/Code/craft";
 
 // ✅ GOOD
 fn getCraftPath(allocator: std.mem.Allocator) ![]const u8 {

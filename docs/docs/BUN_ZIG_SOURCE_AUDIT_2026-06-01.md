@@ -6,7 +6,7 @@ path-by-path and byte-by-byte checks end to end rather than trusting the
 prior count.
 
 Pinned upstream:
-`/Users/chrisbreuer/Code/bun` HEAD
+`~/Code/bun` HEAD
 `fd0b6f1a271fca0b8124b69f230b100f4d636af6`
 matches `packages/runtime/UPSTREAM_SHA.txt`.
 
