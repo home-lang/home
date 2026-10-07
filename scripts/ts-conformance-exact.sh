@@ -23,6 +23,7 @@ fi
 zig_bin="${ZIG_BIN:-./pantry/.bin/zig}"
 timeout_seconds="${HOME_TS_CONFORMANCE_TIMEOUT_SECONDS:-900}"
 max_mb="${HOME_RUN_MAX_MB:-3840}"
+test_filter="conformance: opt-in full local TypeScript corpus survey"
 
 # shellcheck source=scripts/home-bin.sh
 source "$repo_root/scripts/home-bin.sh"
@@ -41,7 +42,9 @@ while ((start < end)); do
     HOME_TS_CONFORMANCE_LIMIT="$limit" \
     HOME_RUN_MAX_MB="$max_mb" \
     HOME_RUN_LABEL="ts-conformance-exact-$start-$limit" \
-    run_bounded "$timeout_seconds" "$zig_bin" build test -Dfilter=ts_conformance
+    run_bounded "$timeout_seconds" "$zig_bin" build test \
+      -Dfilter=ts_conformance \
+      "-Dts-conformance-test-filter=$test_filter"
 
   start=$((start + limit))
 done

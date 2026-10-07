@@ -39,6 +39,7 @@
     "check:docs-paths": "bun scripts/check-docs-paths.mjs",
     "test": "bun test",
     "test:compiler": "./pantry/.bin/zig build test",
+    "test:ts-conformance-exact": "bun test scripts/tests/ts-conformance-exact.test.mjs",
     "typecheck": "bun --bun tsc --noEmit",
     "release": "bunx --bun @stacksjs/bumpx -r --all"
   },
