@@ -4883,6 +4883,13 @@ pub const Checker = struct {
     /// implementation signature lands last and is used to type the
     /// body; call sites resolve against the prior overload signatures.
     overloads: std.AutoHashMapUnmanaged(hir_mod.StringId, std.ArrayListUnmanaged(TypeId)),
+    /// Direct overload declarations grouped by source root. The index is
+    /// built once per root, while signature checking remains lazy at the
+    /// first call site so contextual-typing and diagnostic order stay intact.
+    forward_overload_groups_by_root: std.AutoHashMapUnmanaged(
+        NodeId,
+        std.AutoHashMapUnmanaged(hir_mod.StringId, std.ArrayListUnmanaged(NodeId)),
+    ),
     /// Function names whose overload list includes a concrete
     /// implementation declaration. Ambient overload sets have no
     /// implementation, so every signature remains visible at call
@@ -5723,6 +5730,7 @@ pub const Checker = struct {
             .unknown_empty_object_types = .empty,
             .builtin_object_names = .empty,
             .overloads = .empty,
+            .forward_overload_groups_by_root = .empty,
             .overload_has_implementation = .empty,
             .overload_decls = .empty,
             .inferred_variance = .empty,
@@ -5826,6 +5834,16 @@ pub const Checker = struct {
         self.setSourceWithMarkers(source, source_markers_mod.Index.scan(source));
     }
 
+    fn clearForwardOverloadGroupIndex(self: *Checker) void {
+        var blocks = self.forward_overload_groups_by_root.valueIterator();
+        while (blocks.next()) |groups| {
+            var declarations = groups.valueIterator();
+            while (declarations.next()) |nodes| nodes.deinit(self.gpa);
+            groups.deinit(self.gpa);
+        }
+        self.forward_overload_groups_by_root.clearRetainingCapacity();
+    }
+
     /// Attach source bytes together with the exact marker index already
     /// computed by the driver during preparation.
     pub fn setSourceWithMarkers(
@@ -5859,6 +5877,7 @@ pub const Checker = struct {
         self.source_function_spans_valid = false;
         self.source_var_declaration_names.clearRetainingCapacity();
         self.source_var_declarations_indexed = false;
+        self.clearForwardOverloadGroupIndex();
         var function_decls_it = self.function_decls_by_container.valueIterator();
         while (function_decls_it.next()) |entries| entries.deinit(self.gpa);
         self.function_decls_by_container.clearRetainingCapacity();
@@ -6418,6 +6437,8 @@ pub const Checker = struct {
         var ov_it = self.overloads.valueIterator();
         while (ov_it.next()) |list| list.deinit(self.gpa);
         self.overloads.deinit(self.gpa);
+        self.clearForwardOverloadGroupIndex();
+        self.forward_overload_groups_by_root.deinit(self.gpa);
         self.overload_has_implementation.deinit(self.gpa);
         var od_it = self.overload_decls.valueIterator();
         while (od_it.next()) |list| list.deinit(self.gpa);
@@ -20863,6 +20884,52 @@ pub const Checker = struct {
         }
     }
 
+    const ForwardOverloadCount = struct {
+        declarations: usize = 0,
+        bodyless: usize = 0,
+    };
+
+    fn indexForwardOverloadGroups(self: *Checker, block: NodeId, stmts: []const NodeId) CheckError!void {
+        if (self.forward_overload_groups_by_root.contains(block)) return;
+        var counts: std.AutoHashMapUnmanaged(hir_mod.StringId, ForwardOverloadCount) = .empty;
+        defer counts.deinit(self.gpa);
+
+        for (stmts) |raw| {
+            const declaration = self.unwrapExportDecl(raw);
+            if (declaration == hir_mod.none_node_id or self.hir.kindOf(declaration) != .fn_decl) continue;
+            const function = hir_mod.fnDeclOf(self.hir, declaration);
+            if (function.name == hir_mod.none_node_id or self.hir.kindOf(function.name) != .identifier) continue;
+            const name = hir_mod.identifierOf(self.hir, function.name).name;
+            const entry = try counts.getOrPut(self.gpa, name);
+            if (!entry.found_existing) entry.value_ptr.* = .{};
+            entry.value_ptr.declarations += 1;
+            if (function.body == hir_mod.none_node_id) entry.value_ptr.bodyless += 1;
+        }
+
+        var groups: std.AutoHashMapUnmanaged(hir_mod.StringId, std.ArrayListUnmanaged(NodeId)) = .empty;
+        errdefer {
+            var declarations = groups.valueIterator();
+            while (declarations.next()) |nodes| nodes.deinit(self.gpa);
+            groups.deinit(self.gpa);
+        }
+        for (stmts) |raw| {
+            const declaration = self.unwrapExportDecl(raw);
+            if (declaration == hir_mod.none_node_id or self.hir.kindOf(declaration) != .fn_decl) continue;
+            const function = hir_mod.fnDeclOf(self.hir, declaration);
+            if (function.name == hir_mod.none_node_id or self.hir.kindOf(function.name) != .identifier) continue;
+            const name = hir_mod.identifierOf(self.hir, function.name).name;
+            const count = counts.get(name) orelse continue;
+            if (count.declarations < 2 or count.bodyless == 0) continue;
+            const entry = try groups.getOrPut(self.gpa, name);
+            if (!entry.found_existing) entry.value_ptr.* = .empty;
+            try entry.value_ptr.append(self.gpa, declaration);
+        }
+        try self.forward_overload_groups_by_root.put(self.gpa, block, groups);
+    }
+
+    /// Lazily resolve the requested forward overload group. The immutable
+    /// root index is built once, avoiding the former full sibling scan at
+    /// every ordinary call while preserving call-site checking order.
     fn ensureForwardOverloadSet(
         self: *Checker,
         callee_node: NodeId,
@@ -20871,27 +20938,12 @@ pub const Checker = struct {
         if (self.overloads.get(name)) |overload_list| {
             if (overload_list.items.len > 1) return;
         }
-        const root = self.rootBlockFor(callee_node);
-        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return;
-        const stmts = hir_mod.blockStmts(self.hir, root);
-        var matching_count: usize = 0;
-        var bodyless_count: usize = 0;
-        for (stmts) |raw| {
-            const declaration = self.unwrapExportDecl(raw);
-            if (declaration == hir_mod.none_node_id or self.hir.kindOf(declaration) != .fn_decl) continue;
-            const function = hir_mod.fnDeclOf(self.hir, declaration);
-            if (function.name == hir_mod.none_node_id or self.hir.kindOf(function.name) != .identifier or
-                hir_mod.identifierOf(self.hir, function.name).name != name) continue;
-            matching_count += 1;
-            if (function.body == hir_mod.none_node_id) bodyless_count += 1;
-        }
-        if (matching_count < 2 or bodyless_count == 0) return;
-        for (stmts) |raw| {
-            const declaration = self.unwrapExportDecl(raw);
-            if (declaration == hir_mod.none_node_id or self.hir.kindOf(declaration) != .fn_decl) continue;
-            const function = hir_mod.fnDeclOf(self.hir, declaration);
-            if (function.name == hir_mod.none_node_id or self.hir.kindOf(function.name) != .identifier or
-                hir_mod.identifierOf(self.hir, function.name).name != name) continue;
+        const block = self.rootBlockFor(callee_node);
+        if (block == hir_mod.none_node_id or self.hir.kindOf(block) != .block_stmt) return;
+        try self.indexForwardOverloadGroups(block, hir_mod.blockStmts(self.hir, block));
+        const groups = self.forward_overload_groups_by_root.getPtr(block).?;
+        const declarations = groups.get(name) orelse return;
+        for (declarations.items) |declaration| {
             if (self.hir.typeOf(declaration) == types.Primitive.none) {
                 try self.checkFnSignatureOnlyNoBody(declaration);
             }

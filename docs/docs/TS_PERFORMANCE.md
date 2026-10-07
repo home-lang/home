@@ -70,6 +70,38 @@ The sections below retain dated A/B investigations, including rejected ideas.
 They describe the source revisions named in each section and must not be read
 as the current full-suite result above.
 
+### Lazy forward-overload root index
+
+Issue [#837](https://github.com/home-lang/home/issues/837) traced the remaining
+`type_predicates_large` loss to `ensureForwardOverloadSet`. A call through an
+ordinary identifier scanned every statement in the source root to prove that
+the name was not an overload. The 2,048-family workload contains 8,192 uniquely
+named functions and 8,192 corresponding calls, so the negative lookup became
+quadratic even though no overload group existed.
+
+A source-history bisection separated this from the Zig 1441-to-2163 migration:
+adjacent builds around the toolchain port measured 283.7 and 276.6 ms, while
+the first checker revision containing the repeated scan measured 730.5 ms
+against its 304.9 ms parent in the same screen. All compared binaries exited
+successfully with identical empty output. The first proposed fix eagerly
+prechecked every function signature; it was rejected because it slowed the
+official workload to 922.8 ms and failed two contextual-overload tests.
+
+The accepted implementation builds an immutable source-root index once, keeps
+only genuine duplicate groups with at least one bodyless overload signature,
+and still checks the requested group lazily at the original call site. This
+preserves contextual-typing and diagnostic order while replacing repeated
+root scans with linear indexing. The complete checker suite passes 4,472/4,472,
+and the benchmark harness passes 104/104 tests.
+
+The admitted focused run `20261007T183136Z` retained 30 interleaved rounds and
+measured Home at 305.6 ms, native TS 7.0.2 at 420.3 ms, and tsc 6.0.3 at
+1,192.4 ms: Home is 1.38× faster than the fastest competitor. The independent
+20-workload run `20261007T183321Z` retained all 1,800 samples and confirmed
+308.3 ms versus 419.7 ms on the repaired row, with Home lowest on 20/20
+workloads. The measured stripped binary SHA-256 is
+`2423c443af320c1334a0ad19264ef7d6a9ad7d0a323846baedaf3bb6dc4ae77c`.
+
 ### Contextual cache descendant index
 
 Commit `21e6155d4`, tracked in
