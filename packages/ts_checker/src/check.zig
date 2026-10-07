@@ -36299,7 +36299,7 @@ pub const Checker = struct {
     }
 
     fn isIterableLikeType(self: *Checker, t: TypeId) bool {
-        if (t == types.Primitive.any or t == types.Primitive.unknown) return true;
+        if (self.typeIsAnyLike(t)) return true;
         if (t == types.Primitive.string_t) return true;
         if (t >= self.interner.pool.typeCount()) return false;
         const flags = self.interner.pool.flagsOf(t);
@@ -36345,7 +36345,7 @@ pub const Checker = struct {
     /// has a `next` method. Used to validate `for await … of` sources
     /// (which also accept plain sync iterables — the caller checks both).
     fn isAsyncIterableLikeType(self: *Checker, t: TypeId) bool {
-        if (t == types.Primitive.any or t == types.Primitive.unknown) return true;
+        if (self.typeIsAnyLike(t)) return true;
         if (t >= self.interner.pool.typeCount()) return false;
         const flags = self.interner.pool.flagsOf(t);
         if (flags.is_type_parameter) {
@@ -36381,7 +36381,7 @@ pub const Checker = struct {
     /// union constituent. A mixed `Iterable<T> | AsyncIterable<T>` therefore
     /// succeeds even though the union is neither wholly sync nor wholly async.
     fn isForAwaitIterableLikeType(self: *Checker, t: TypeId) bool {
-        if (t == types.Primitive.any or t == types.Primitive.unknown) return true;
+        if (self.typeIsAnyLike(t)) return true;
         if (t >= self.interner.pool.typeCount()) return false;
         const flags = self.interner.pool.flagsOf(t);
         if (flags.is_type_parameter) {
@@ -36399,7 +36399,7 @@ pub const Checker = struct {
     }
 
     fn isDestructuringIterableSourceType(self: *Checker, t: TypeId) bool {
-        if (t == types.Primitive.any or t == types.Primitive.unknown) return true;
+        if (self.typeIsAnyLike(t)) return true;
         if (t == types.Primitive.string_t) return true;
         if (t < self.interner.pool.typeCount()) {
             const primitive_flags = self.interner.pool.flagsOf(t);
@@ -36453,7 +36453,8 @@ pub const Checker = struct {
     }
 
     fn iterableElementType(self: *Checker, t: TypeId) CheckError!TypeId {
-        if (t == types.Primitive.any or t == types.Primitive.unknown) return types.Primitive.any;
+        if (types.Primitive.isAnyLike(t)) return t;
+        if (t == types.Primitive.unknown) return types.Primitive.any;
         if (self.generator_type_info.get(t)) |iterable| return iterable.yield_type;
         if (t == types.Primitive.string_t) return types.Primitive.string_t;
         if (t >= self.interner.pool.typeCount()) return types.Primitive.any;
@@ -36518,7 +36519,8 @@ pub const Checker = struct {
     }
 
     fn asyncIterableElementType(self: *Checker, t: TypeId) CheckError!TypeId {
-        if (t == types.Primitive.any or t == types.Primitive.unknown) return types.Primitive.any;
+        if (types.Primitive.isAnyLike(t)) return t;
+        if (t == types.Primitive.unknown) return types.Primitive.any;
         if (self.generator_type_info.get(t)) |iterable| return iterable.yield_type;
         if (t >= self.interner.pool.typeCount()) return types.Primitive.any;
         const flags = self.interner.pool.flagsOf(t);
@@ -36569,7 +36571,7 @@ pub const Checker = struct {
     }
 
     fn checkForOfIteratorShape(self: *Checker, node: NodeId, t: TypeId) CheckError!void {
-        if (t == types.Primitive.any or t == types.Primitive.unknown) return;
+        if (self.typeIsAnyLike(t)) return;
         if (t == types.Primitive.string_t) return;
         if (t >= self.interner.pool.typeCount()) return;
         const flags = self.interner.pool.flagsOf(t);
@@ -108523,7 +108525,7 @@ pub const Checker = struct {
     /// index resolves, or `any`/`unknown` (treated as opaque). Falls
     /// back to checking iterable-like for primitives like `string`.
     fn elemIsArrayLikeForForOfDestructure(self: *Checker, t: TypeId) bool {
-        if (t == types.Primitive.any or t == types.Primitive.unknown) return true;
+        if (self.typeIsAnyLike(t)) return true;
         if (t == types.Primitive.string_t) return true;
         if (t >= self.interner.pool.typeCount()) return false;
         const flags = self.interner.pool.flagsOf(t);
@@ -199599,6 +199601,29 @@ test "checker: TS2504 fires for for-await over a non-async-iterable source" {
     }
 }
 
+test "checker: recovered iterator sources retain any semantics and provenance" {
+    const s = try newSetup(
+        \\for (const item of missingSync) { item.field; }
+        \\async function consume() {
+        \\  for await (const item of missingAsync) { item.field; }
+        \\  for await (const [item] of missingNestedAsync) { item.field; }
+        \\}
+        \\for (const [item] of missingNested) { item.field; }
+        \\const [first] = missingDestructure;
+        \\function* generate() { yield* missingYield; }
+        \\for (const item of {}) {}
+        \\async function rejectObject() { for await (const item of {}) {} }
+    );
+    defer destroySetup(s);
+    s.checker.setStrictFlags(.{ .strict_null_checks = true });
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 6), checkerCountCode(s, TsCodes.cannot_find_name));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.yield_star_not_iterable));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.async_iterator_required));
+    try T.expectEqual(types.Primitive.unmodeled, try s.checker.iterableElementType(types.Primitive.unmodeled));
+    try T.expectEqual(types.Primitive.unmodeled, try s.checker.asyncIterableElementType(types.Primitive.unmodeled));
+}
+
 test "checker: TS2504 not emitted for an async-iterable for-await source" {
     // A structural `[Symbol.asyncIterator]` source is accepted by
     // `for await`; no TS2504 (and no spurious TS2488).
@@ -276413,17 +276438,26 @@ test "checker: truthiness narrowing strips undefined from a call-result const un
     ));
 }
 
-test "checker: conditional truthiness narrows any union before array spread" {
-    const s = try newSetup(
+test "checker: array spread absorbs any unions and narrows nullable arrays" {
+    const source =
         \\declare const guarded: any | undefined;
         \\const ok = guarded ? [...guarded] : [];
         \\declare const unguarded: any | undefined;
         \\const bad = [...unguarded];
-    );
+        \\declare const typed: number[] | undefined;
+        \\const typedOk = typed ? [...typed] : [];
+        \\const typedBad = [...typed];
+    ;
+    const s = try newSetup(source);
     defer destroySetup(s);
     s.checker.setStrictFlags(.{ .strict_null_checks = true });
     try s.checker.checkSourceFile(s.root);
     try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.yield_star_not_iterable));
+    const expected_pos: u32 = @intCast(std.mem.lastIndexOf(u8, source, "typed]").?);
+    for (s.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code != TsCodes.yield_star_not_iterable) continue;
+        try T.expectEqual(expected_pos, diagnostic.pos orelse s.hir.spanOf(diagnostic.node).start);
+    }
 }
 
 test "checker: && guard narrows a call-result const union" {
