@@ -23,6 +23,13 @@ Raw Hyperfine JSON and run metadata land under `results/<UTC timestamp>/`.
 The runner rejects installed TS 6 or TS 7 versions that differ from
 `corpus.toml` before creating timing results. Rerun `setup` after changing a pin.
 The native TS 7 compiler is the single `tsgo` entry, not a separate competitor.
+New runs invoke its native payload directly rather than the npm Node launcher.
+Older archived runs retain the command and startup costs they actually measured.
+
+To add byte-pinned native compilers, use `cold --competitor-manifest <file>`.
+The [profile registry](profiles/README.md) documents the schema and current
+Darwin ARM64 Rust/Bun pins. Every added compiler must pass the same positive
+and negative controls before the complete selection is timed.
 
 `evidence [results-directory]` packages a completed verified run as a
 deterministic `evidence/<result-id>.tar.gz`. Every Hyperfine round file is

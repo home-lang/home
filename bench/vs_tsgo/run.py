@@ -21,6 +21,7 @@ import tempfile
 from pathlib import Path
 
 import compare
+import competitors
 
 try:
     import tomllib
@@ -980,13 +981,17 @@ def cmd_setup() -> None:
     )
 
 
-def compiler_commands() -> dict[str, list[str]]:
+def compiler_commands(profiles: dict | None = None) -> dict[str, list[str]]:
     home = Path(os.environ.get("HOME_TSC", ROOT / "zig-out/bin/home-tsc"))
     commands = {
         "tsc": [str(TSC_TOOLS / "node_modules/.bin/tsc")],
-        "tsgo": [str(TSGO_TOOLS / "node_modules/.bin/tsc")],
+        "tsgo": [str(native_tsgo_payload())],
         "home": [str(home)],
     }
+    for name, profile in (profiles or {}).items():
+        if name in commands:
+            raise SystemExit(f"competitor cannot replace a required compiler: {name}")
+        commands[name] = list(profile.command)
     missing = [name for name, command in commands.items() if not Path(command[0]).is_file()]
     if missing:
         raise SystemExit(f"missing {', '.join(missing)}; run './run.sh setup' and build home-tsc")
@@ -1048,7 +1053,7 @@ def resolved_tool(name: str) -> Path:
     return Path(path)
 
 
-def benchmark_provenance(commands: dict[str, list[str]]) -> dict[str, object]:
+def benchmark_provenance(commands: dict[str, list[str]], profiles: dict | None = None) -> dict[str, object]:
     node = resolved_tool("node")
     hyperfine = resolved_tool("hyperfine")
     tsc_payload = TSC_TOOLS / "node_modules" / "typescript" / "lib" / "_tsc.js"
@@ -1085,11 +1090,32 @@ def benchmark_provenance(commands: dict[str, list[str]]) -> dict[str, object]:
             },
         },
     }
+    for name, profile in (profiles or {}).items():
+        if commands.get(name) != list(profile.command):
+            raise SystemExit(f"{name} measured command differs from its profile")
+        records["compilers"][name] = profile.provenance(artifact_provenance)
+    if profiles:
+        records["inputs"] = {
+            "corpus": competitors.payload_inventory(CORPUS),
+            "manifest": artifact_provenance(MANIFEST),
+            "harness": [artifact_provenance(HERE / filename) for filename in ("run.py", "compare.py", "competitors.py")],
+            "cwd": str(Path.cwd().resolve()),
+            "project_context": [artifact_provenance(ROOT / filename) for filename in ("package.json", "bunfig.toml") if (ROOT / filename).is_file()],
+        }
     return records
 
 
-def verified_compiler_versions(commands: dict[str, list[str]]) -> dict[str, str]:
-    versions = {name: version_output(command) for name, command in commands.items()}
+def verified_compiler_versions(commands: dict[str, list[str]], profiles: dict | None = None) -> dict[str, str]:
+    profiles = profiles or {}
+    versions = {name: version_output(command) for name, command in commands.items() if name not in profiles}
+    for name, profile in profiles.items():
+        result = subprocess.run(list(profile.version_command), check=True, capture_output=True, text=True)
+        if result.stdout and result.stderr:
+            raise SystemExit(f"{name} version probe produced conflicting output streams")
+        output = (result.stdout or result.stderr).strip()
+        if output != profile.expected_version:
+            raise SystemExit(f"{name} version mismatch: expected {profile.expected_version!r}, got {output!r}")
+        versions[name] = output
     pinned = manifest()["compilers"]
     for name in ("tsc", "tsgo"):
         expected = f"Version {pinned[name]['version']}"
@@ -1101,32 +1127,48 @@ def verified_compiler_versions(commands: dict[str, list[str]]) -> dict[str, str]
     return versions
 
 
-def validate(commands: dict[str, list[str]], workload: str) -> None:
+def admission_process(name: str, command: list[str], workload: str, *, expected_codes=None,
+                      positive_output="silent", trace: list | None = None):
+    result = subprocess.run(command, capture_output=True, text=True)
+    output = result.stdout + result.stderr
+    codes = sorted(re.findall(r"\berror TS(\d+):", output))
+    if expected_codes is None:
+        passed = result.returncode == 0 and competitors.successful_output(result.stdout, result.stderr, positive_output)
+    else:
+        passed = result.returncode in (1, 2) and codes == sorted(expected_codes)
+    if trace is not None:
+        trace.append({"compiler": name, "workload": workload, "kind": "positive" if expected_codes is None else "negative",
+                      "command": command, "exit_code": result.returncode, "stdout": result.stdout, "stderr": result.stderr,
+                      "positive_output": positive_output, "expected_codes": expected_codes, "codes": codes, "passed": passed})
+    return result, passed
+
+
+def validate(commands: dict[str, list[str]], workload: str, *, profiles: dict | None = None,
+             trace: list | None = None) -> None:
     config = CORPUS / workload / "tsconfig.json"
     for name, command in commands.items():
-        result = subprocess.run(
-            command + ["--noEmit", "-p", str(config)],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0 or result.stdout or result.stderr:
+        profile = (profiles or {}).get(name)
+        result, passed = admission_process(name, command + ["--noEmit", "-p", str(config)], workload,
+                                           positive_output=profile.positive_output if profile else "silent", trace=trace)
+        if not passed:
             details = (result.stdout + result.stderr).strip()
             raise SystemExit(f"{name} failed validation for {workload}:\n{details}")
+    options = {"trace": trace} if trace is not None else {}
     if workload == "destructuring":
-        validate_destructuring_negatives(commands)
+        validate_destructuring_negatives(commands, **options)
     elif workload in ("type_predicates", "type_predicates_large"):
-        validate_type_predicate_negatives(commands, workload)
+        validate_type_predicate_negatives(commands, workload, **options)
     elif workload in ("import_graph", "reexport_graph"):
-        validate_graph_negatives(commands, workload)
+        validate_graph_negatives(commands, workload, **options)
     elif workload == "variadic_tuples":
-        validate_variadic_tuple_negatives(commands)
+        validate_variadic_tuple_negatives(commands, **options)
     elif workload == "commonjs_graph":
-        validate_commonjs_graph_negatives(commands)
+        validate_commonjs_graph_negatives(commands, **options)
     elif workload == "recursive_generics":
-        validate_recursive_generic_negatives(commands)
+        validate_recursive_generic_negatives(commands, **options)
 
 
-def validate_commonjs_graph_negatives(commands: dict[str, list[str]]) -> None:
+def validate_commonjs_graph_negatives(commands: dict[str, list[str]], *, trace: list | None = None) -> None:
     families = manifest()["generated"]["commonjs_graph_families"]
     indices = sorted({0, families // 2, families - 1})
     invalid = "".join(
@@ -1140,19 +1182,15 @@ def validate_commonjs_graph_negatives(commands: dict[str, list[str]]) -> None:
         source_path = project / "src/index.js"
         write(source_path, source_path.read_text(encoding="utf-8") + invalid)
         for name, command in commands.items():
-            result = subprocess.run(
-                command + ["--noEmit", "-p", str(project / "tsconfig.json")],
-                capture_output=True,
-                text=True,
-            )
-            details = result.stdout + result.stderr
-            codes = sorted(re.findall(r"\berror TS(\d+):", details))
             expected = ["2322"] * len(indices) + ["2339"] * len(indices)
-            if result.returncode not in (1, 2) or codes != expected:
+            result, passed = admission_process(name, command + ["--noEmit", "-p", str(project / "tsconfig.json")],
+                                               "commonjs_graph", expected_codes=expected, trace=trace)
+            details = result.stdout + result.stderr
+            if not passed:
                 raise SystemExit(f"{name} failed commonjs_graph negative controls:\n{details}")
 
 
-def validate_recursive_generic_negatives(commands: dict[str, list[str]]) -> None:
+def validate_recursive_generic_negatives(commands: dict[str, list[str]], *, trace: list | None = None) -> None:
     families = manifest()["generated"]["recursive_generic_families"]
     indices = sorted({0, families // 2, families - 1})
     invalid = "".join(
@@ -1167,15 +1205,14 @@ def validate_recursive_generic_negatives(commands: dict[str, list[str]]) -> None
         source_path = project / "src/recursive-generics.ts"
         write(source_path, source_path.read_text(encoding="utf-8") + invalid)
         for name, command in commands.items():
-            result = subprocess.run(command + ["--noEmit", "-p", str(project / "tsconfig.json")],
-                                    capture_output=True, text=True)
+            result, passed = admission_process(name, command + ["--noEmit", "-p", str(project / "tsconfig.json")],
+                                               "recursive_generics", expected_codes=["2322"] * (2 * len(indices)) + ["2339"] * len(indices), trace=trace)
             details = result.stdout + result.stderr
-            codes = sorted(re.findall(r"\berror TS(\d+):", details))
-            if result.returncode not in (1, 2) or codes != ["2322"] * (2 * len(indices)) + ["2339"] * len(indices):
+            if not passed:
                 raise SystemExit(f"{name} failed recursive_generics negative controls:\n{details}")
 
 
-def validate_variadic_tuple_negatives(commands: dict[str, list[str]]) -> None:
+def validate_variadic_tuple_negatives(commands: dict[str, list[str]], *, trace: list | None = None) -> None:
     # Exercise the actual inferred/conditional/spread results from the timed
     # workload. Mutations are confined to a temporary copy and are never timed.
     invalid = """
@@ -1193,15 +1230,14 @@ const invalidTupleBounds = combined0[5];
         source_path = project / "src/variadic-tuples.ts"
         write(source_path, source_path.read_text(encoding="utf-8") + invalid)
         for name, command in commands.items():
-            result = subprocess.run(command + ["--noEmit", "-p", str(project / "tsconfig.json")],
-                                    capture_output=True, text=True)
+            result, passed = admission_process(name, command + ["--noEmit", "-p", str(project / "tsconfig.json")],
+                                               "variadic_tuples", expected_codes=["2322"] * 5 + ["2493", "2540"], trace=trace)
             details = result.stdout + result.stderr
-            codes = sorted(re.findall(r"\berror TS(\d+):", details))
-            if result.returncode not in (1, 2) or codes != ["2322"] * 5 + ["2493", "2540"]:
+            if not passed:
                 raise SystemExit(f"{name} failed variadic_tuples negative controls:\n{details}")
 
 
-def validate_graph_negatives(commands: dict[str, list[str]], workload: str) -> None:
+def validate_graph_negatives(commands: dict[str, list[str]], workload: str, *, trace: list | None = None) -> None:
     # Exercise the imported generic shape itself, not a locally declared
     # equivalent. Accepting the positive graph with imported `any` is not
     # equivalent semantic work and cannot qualify for timing (#487).
@@ -1215,15 +1251,14 @@ def validate_graph_negatives(commands: dict[str, list[str]], workload: str) -> N
         source_path = project / "src/index.ts"
         write(source_path, source_path.read_text(encoding="utf-8") + invalid)
         for name, command in commands.items():
-            result = subprocess.run(command + ["--noEmit", "-p", str(project / "tsconfig.json")],
-                                    capture_output=True, text=True)
+            result, passed = admission_process(name, command + ["--noEmit", "-p", str(project / "tsconfig.json")],
+                                               workload, expected_codes=["2322", "2339"], trace=trace)
             details = result.stdout + result.stderr
-            codes = sorted(re.findall(r"\berror TS(\d+):", details))
-            if result.returncode not in (1, 2) or codes != ["2322", "2339"]:
+            if not passed:
                 raise SystemExit(f"{name} failed {workload} negative controls:\n{details}")
 
 
-def validate_type_predicate_negatives(commands: dict[str, list[str]], workload: str) -> None:
+def validate_type_predicate_negatives(commands: dict[str, list[str]], workload: str, *, trace: list | None = None) -> None:
     # Both guards and assertion functions must narrow to the real object
     # shape, not any or the original union. These mutations are never timed.
     with tempfile.TemporaryDirectory(prefix="home-bench-predicates-") as temporary:
@@ -1242,18 +1277,14 @@ def validate_type_predicate_negatives(commands: dict[str, list[str]], workload: 
             source = source.replace(anchor, anchor + invalid, 1)
         write(source_path, source)
         for name, command in commands.items():
-            result = subprocess.run(
-                command + ["--noEmit", "-p", str(project / "tsconfig.json")],
-                capture_output=True,
-                text=True,
-            )
+            result, passed = admission_process(name, command + ["--noEmit", "-p", str(project / "tsconfig.json")],
+                                               workload, expected_codes=["2322"] * 2 + ["2339"] * 2, trace=trace)
             details = result.stdout + result.stderr
-            codes = sorted(re.findall(r"\berror TS(\d+):", details))
-            if result.returncode not in (1, 2) or codes != ["2322"] * 2 + ["2339"] * 2:
+            if not passed:
                 raise SystemExit(f"{name} failed {workload} negative controls:\n{details}")
 
 
-def validate_destructuring_negatives(commands: dict[str, list[str]]) -> None:
+def validate_destructuring_negatives(commands: dict[str, list[str]], *, trace: list | None = None) -> None:
     # Check the inferred bindings themselves so a checker cannot pass the
     # positive workload by erasing projections to any or retaining removed keys.
     with tempfile.TemporaryDirectory(prefix="home-bench-destructuring-") as temporary:
@@ -1276,14 +1307,10 @@ def validate_destructuring_negatives(commands: dict[str, list[str]]) -> None:
         )
         write(source_path, source.replace(anchor, anchor + invalid, 1))
         for name, command in commands.items():
-            result = subprocess.run(
-                command + ["--noEmit", "-p", str(project / "tsconfig.json")],
-                capture_output=True,
-                text=True,
-            )
+            result, passed = admission_process(name, command + ["--noEmit", "-p", str(project / "tsconfig.json")],
+                                               "destructuring", expected_codes=["2322"] * 4 + ["2339"], trace=trace)
             details = result.stdout + result.stderr
-            codes = sorted(re.findall(r"\berror TS(\d+):", details))
-            if result.returncode not in (1, 2) or codes != ["2322"] * 4 + ["2339"]:
+            if not passed:
                 raise SystemExit(f"{name} failed destructuring negative controls:\n{details}")
 
 
@@ -1301,28 +1328,47 @@ def selected_workloads(requested: list[str] | None) -> list[str]:
     return list(requested)
 
 
-def cmd_cold(runs: int, warmup: int, workloads: list[str] | None = None) -> Path:
+def cmd_cold(runs: int, warmup: int, workloads: list[str] | None = None,
+             competitor_manifest: Path | None = None) -> Path:
     workloads = selected_workloads(workloads)
+    profiles = competitors.load_profiles(competitor_manifest)
     if not shutil.which("hyperfine"):
         raise SystemExit("hyperfine is required (brew install hyperfine)")
     if not CORPUS.is_dir():
         cmd_corpus()
-    commands = compiler_commands()
-    versions = verified_compiler_versions(commands)
-    preflight_provenance = benchmark_provenance(commands)
+    commands = compiler_commands(profiles) if profiles else compiler_commands()
+    versions = verified_compiler_versions(commands, profiles) if profiles else verified_compiler_versions(commands)
+    def provenance():
+        return benchmark_provenance(commands, profiles) if profiles else benchmark_provenance(commands)
+    preflight_provenance = provenance()
     # Validate the entire selection before creating a result directory or
     # timing any workload. A later admission failure must not leave an
     # apparently complete report containing only the earlier/easier cases.
-    for workload in workloads:
-        validate(commands, workload)
-    admitted_provenance = benchmark_provenance(commands)
-    if admitted_provenance != preflight_provenance:
-        raise SystemExit("benchmark artifacts changed during admission; no timing results were created")
+    trace = [] if profiles else None
+    admission_path = None
+    if profiles:
+        stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        admission_path = RESULTS / "admission" / f"{stamp}-{os.getpid()}.json"
+    try:
+        for workload in workloads:
+            if profiles:
+                validate(commands, workload, profiles=profiles, trace=trace)
+            else:
+                validate(commands, workload)
+        admitted_provenance = provenance()
+        if admitted_provenance != preflight_provenance:
+            raise SystemExit("benchmark artifacts changed during admission; no timing results were created")
+    except BaseException as error:
+        if admission_path:
+            write(admission_path, json.dumps({"schema": 1, "passed": False, "error": str(error),
+                                             "records": trace, "before": preflight_provenance}, indent=2) + "\n")
+            print(f"Failed admission retained: {admission_path}", file=sys.stderr)
+        raise
     stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     output = RESULTS / stamp
     output.mkdir(parents=True)
     metadata = {
-        "schema": 2,
+        "schema": 3 if profiles else 2,
         "timestamp_utc": stamp,
         "system": platform.platform(),
         "machine": platform.machine(),
@@ -1341,6 +1387,13 @@ def cmd_cold(runs: int, warmup: int, workloads: list[str] | None = None) -> Path
         },
     }
     metadata_path = output / "metadata.json"
+    if trace is not None:
+        admission = {"schema": 1, "passed": True, "records": trace,
+                     "before": preflight_provenance, "after": admitted_provenance}
+        write(output / "admission.jsonl", json.dumps(admission) + "\n")
+        write(admission_path, json.dumps(admission, indent=2) + "\n")
+        metadata["admission"] = {"path": "admission.jsonl", "sha256": sha256_file(output / "admission.jsonl"),
+                                 "records": len(trace)}
     write(metadata_path, json.dumps(metadata, indent=2) + "\n")
     try:
         for workload in workloads:
@@ -1392,13 +1445,13 @@ def cmd_cold(runs: int, warmup: int, workloads: list[str] | None = None) -> Path
         metadata["provenance"]["status"] = "incomplete"
         metadata["failure"] = {"type": type(error).__name__, "message": str(error)}
         try:
-            metadata["provenance"]["after"] = benchmark_provenance(commands)
+            metadata["provenance"]["after"] = provenance()
         except BaseException as provenance_error:
             metadata["provenance"]["after_error"] = str(provenance_error)
         write(metadata_path, json.dumps(metadata, indent=2) + "\n")
         raise
 
-    final_provenance = benchmark_provenance(commands)
+    final_provenance = provenance()
     metadata["provenance"]["after"] = final_provenance
     if final_provenance != preflight_provenance:
         metadata["provenance"]["status"] = "changed"
@@ -1441,18 +1494,48 @@ def latest_results() -> Path:
     return candidates[-1]
 
 
-def normalize_public_paths(value: object) -> object:
+def normalize_public_paths(value: object, aliases: dict[str, str] | None = None) -> object:
+    aliases = aliases or {str(ROOT.resolve()): "$REPO"}
     if isinstance(value, dict):
-        return {key: normalize_public_paths(item) for key, item in value.items()}
+        return {key: normalize_public_paths(item, aliases) for key, item in value.items()}
     if isinstance(value, list):
-        return [normalize_public_paths(item) for item in value]
+        return [normalize_public_paths(item, aliases) for item in value]
     if isinstance(value, str):
-        root = str(ROOT.resolve())
-        if value == root:
-            return "$REPO"
-        if value.startswith(root + os.sep):
-            return "$REPO/" + value[len(root + os.sep):].replace(os.sep, "/")
+        for root, label in sorted(aliases.items(), key=lambda item: len(item[0]), reverse=True):
+            if value == root:
+                value = label
+            else:
+                value = value.replace(root + os.sep, label + "/")
     return value
+
+
+def publication_aliases(metadata: dict, admission: dict | None) -> dict[str, str]:
+    root = str(ROOT.resolve())
+    aliases = {root: "$REPO"}
+    if admission is None:
+        return aliases
+    for name, entry in metadata["provenance"]["before"]["compilers"].items():
+        for index, payload in enumerate(entry.get("payloads", [])):
+            path = payload["path"]
+            if not Path(path).is_relative_to(root):
+                aliases[path] = f"$COMPILER_{name}_PAYLOAD_{index}"
+        for kind in ("executable", "launcher", "payload", "manifest"):
+            artifact = entry.get(kind, {})
+            for key in ("path", "resolved_path"):
+                path = artifact.get(key)
+                if path and not Path(path).is_relative_to(root):
+                    aliases[path] = "$COMPETITOR_MANIFEST" if kind == "manifest" else f"$COMPILER_{name}_{kind}"
+    for name, entry in metadata["provenance"]["before"].get("tools", {}).items():
+        for key in ("path", "resolved_path"):
+            path = entry.get("executable", {}).get(key)
+            if path and not Path(path).is_relative_to(root):
+                aliases[path] = f"$TOOL_{name}"
+    for record in admission["records"]:
+        if record["kind"] == "negative":
+            directory = Path(record["command"][-1]).parent
+            aliases[str(directory)] = f"$CONTROL_{record['workload']}"
+            aliases[str(directory.resolve())] = f"$CONTROL_{record['workload']}"
+    return aliases
 
 
 def evidence_members(source: Path, metadata: dict) -> dict[str, bytes]:
@@ -1461,11 +1544,18 @@ def evidence_members(source: Path, metadata: dict) -> dict[str, bytes]:
         f"{prefix}/{path.name}": path.read_bytes()
         for path in sorted(source.glob("*-round-*.json"))
     }
-    public_metadata = normalize_public_paths(metadata)
+    admission = json.loads((source / "admission.jsonl").read_text()) if metadata.get("admission") else None
+    aliases = publication_aliases(metadata, admission)
+    public_metadata = normalize_public_paths(metadata, aliases)
+    if admission is not None:
+        published = (json.dumps(normalize_public_paths(admission, aliases)) + "\n").encode()
+        members[f"{prefix}/admission.jsonl"] = published
+        public_metadata["admission"]["sha256"] = hashlib.sha256(published).hexdigest()
     members[f"{prefix}/metadata.json"] = (json.dumps(public_metadata, indent=2) + "\n").encode()
     explanation = (
         "Every *-round-*.json file is the byte-for-byte Hyperfine output from the measured run.\n"
-        "Only repository-local paths in metadata.json are normalized to $REPO before publication.\n"
+        "Known repository, compiler/tool, and temporary-control paths in metadata and admission are normalized before publication.\n"
+        "When present, admission.jsonl retains all commands, exits, stdout and stderr with only those path prefixes normalized.\n"
         "SHA256SUMS covers the published metadata and every raw round file.\n"
     )
     members[f"{prefix}/README.txt"] = explanation.encode()
@@ -1525,6 +1615,7 @@ def main() -> int:
     cold.add_argument("--runs", type=int, default=10)
     cold.add_argument("--warmup", type=int, default=3)
     cold.add_argument("--workload", action="append", help="select a workload; repeat for several (default: all)")
+    cold.add_argument("--competitor-manifest", type=Path, help="add pinned native compilers from a JSON manifest")
     report = sub.add_parser("report", help="render a Markdown report")
     report.add_argument("results", nargs="?", type=Path)
     evidence = sub.add_parser("evidence", help="package verified raw results for publication")
@@ -1537,7 +1628,7 @@ def main() -> int:
     elif args.command == "setup":
         cmd_setup()
     elif args.command == "cold":
-        cmd_cold(args.runs, args.warmup, args.workload)
+        cmd_cold(args.runs, args.warmup, args.workload, args.competitor_manifest)
     elif args.command == "report":
         cmd_report(args.results)
     elif args.command == "evidence":

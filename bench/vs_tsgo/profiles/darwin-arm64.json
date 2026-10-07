@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "compilers": [
+    {
+      "name": "tsc_rs",
+      "command": ["../.tools/extras/tsc_rs/tsc"],
+      "version_command": ["../.tools/extras/tsc_rs/tsc", "--version"],
+      "expected_version": "Version 7.1.0-dev",
+      "repository": "https://github.com/pingdotgg/ts-rust",
+      "revision": "72b339e412f2560549033cea8db337b1bd44c312",
+      "executable_sha256": "3a2736e002cdeaa7a7514adb9c5b2f367021fd8253d1fdfb4058f135ead04b49",
+      "payloads": [{"path": "../.tools/extras/tsc_rs", "sha256": "f696f17e7d406bcc3e9f76912fc35cd1b68e0e8c9ee2e7bde6a7e6dc6cebdb01"}],
+      "positive_output": "silent"
+    },
+    {
+      "name": "bun_canary",
+      "command": ["../.tools/extras/bun_canary/bun", "check", "--no-pretty", "--all"],
+      "version_command": ["../.tools/extras/bun_canary/bun", "--revision"],
+      "expected_version": "1.4.3-canary.1+bd599f5af",
+      "repository": "https://github.com/oven-sh/bun",
+      "revision": "bd599f5af912512b83bba0ef387d1ba3a7d5e550",
+      "executable_sha256": "b0ac9bb272f8e04856d7723a04c3eeb8877a22c62f96f0f5392d94f2d4bf2e73",
+      "payloads": [{"path": "../.tools/extras/bun_canary", "sha256": "3e529782320f35eb5a5352bcd2146d82619fbe641d2862640eec6c54beb8c524"}],
+      "positive_output": "checked-files"
+    }
+  ]
+}

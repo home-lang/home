@@ -4,11 +4,13 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import re
 import statistics
 import sys
 from pathlib import Path
+import competitors
 
 
 def load_results(path: Path) -> list[dict]:
@@ -85,6 +87,60 @@ def tools_notice(metadata: dict) -> str | None:
     return f"Measurement tools: {', '.join(versions)}." if versions else None
 
 
+def validate_admission(directory: Path, metadata: dict, names: list[str], workloads: list[str]) -> None:
+    descriptor = metadata.get("admission", {})
+    if not isinstance(descriptor, dict) or descriptor.get("path") != "admission.jsonl":
+        raise ValueError("additional compilers require retained admission evidence")
+    raw = (directory / "admission.jsonl").read_bytes()
+    if hashlib.sha256(raw).hexdigest() != descriptor.get("sha256"):
+        raise ValueError("admission evidence hash does not match metadata")
+    admission = json.loads(raw)
+    provenance = metadata["provenance"]
+    if (not isinstance(admission, dict) or admission.get("schema") != 1 or admission.get("passed") is not True
+            or admission.get("before") != provenance["before"] or admission.get("after") != provenance["before"]):
+        raise ValueError("admission provenance or success record is invalid")
+    records = admission.get("records")
+    if not isinstance(records, list) or len(records) != descriptor.get("records"):
+        raise ValueError("admission record count is invalid")
+    required_negatives = {"destructuring", "type_predicates", "type_predicates_large", "import_graph",
+                          "reexport_graph", "variadic_tuples", "commonjs_graph", "recursive_generics"}
+    expected = {(name, workload, "positive") for name in names for workload in workloads}
+    expected |= {(name, workload, "negative") for name in names for workload in workloads if workload in required_negatives}
+    seen = set()
+    for record in records:
+        if not isinstance(record, dict):
+            raise ValueError("admission record is invalid")
+        key = (record.get("compiler"), record.get("workload"), record.get("kind"))
+        if key not in expected or key in seen or record.get("passed") is not True:
+            raise ValueError("admission coverage or success is invalid")
+        seen.add(key)
+        entry = provenance["before"]["compilers"][key[0]]
+        prefix = entry.get("command", [])
+        command = record.get("command", [])
+        if (not isinstance(prefix, list) or not prefix or not isinstance(command, list)
+                or command[:len(prefix)] != prefix or command[len(prefix):len(prefix) + 2] != ["--noEmit", "-p"]
+                or len(command) != len(prefix) + 3):
+            raise ValueError("admission command differs from measured command")
+        stdout, stderr = record.get("stdout"), record.get("stderr")
+        if not isinstance(stdout, str) or not isinstance(stderr, str) or type(record.get("exit_code")) is not int:
+            raise ValueError("admission raw process output is invalid")
+        codes = sorted(re.findall(r"\berror TS(\d+):", stdout + stderr))
+        if codes != record.get("codes"):
+            raise ValueError("admission diagnostics differ from retained output")
+        if key[2] == "positive":
+            policy = entry.get("positive_output", "silent")
+            if (record["exit_code"] != 0 or record.get("expected_codes") is not None
+                    or record.get("positive_output") != policy or not competitors.successful_output(stdout, stderr, policy)):
+                raise ValueError("positive admission is invalid")
+        else:
+            expected_codes = record.get("expected_codes")
+            if (record["exit_code"] not in (1, 2) or not isinstance(expected_codes, list)
+                    or not expected_codes or codes != sorted(expected_codes)):
+                raise ValueError("negative admission is invalid")
+    if seen != expected:
+        raise ValueError("admission coverage is incomplete")
+
+
 def validate_interleaved_rounds(directory: Path, metadata: dict) -> None:
     if metadata.get("schedule") != "round-robin interleaved":
         if set(metadata.get("compilers", {})) - {"tsc", "tsgo", "home"}:
@@ -117,6 +173,7 @@ def validate_interleaved_rounds(directory: Path, metadata: dict) -> None:
                     or not re.fullmatch(r"[0-9a-f]{64}", str(artifact.get("sha256", "")))
                     or type(artifact.get("size")) is not int or artifact["size"] < 1):
                 raise ValueError("additional compiler executable provenance is incomplete")
+        validate_admission(directory, metadata, names, workloads)
     if metadata.get("schema", 1) >= 2:
         host = metadata.get("host")
         required = ("os", "os_release", "architecture", "cpu_model")

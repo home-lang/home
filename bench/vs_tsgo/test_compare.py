@@ -1,6 +1,7 @@
 """Report formatting regressions; measurements are never filtered or changed."""
 
 import json
+import hashlib
 import io
 from contextlib import redirect_stdout
 import tempfile
@@ -151,11 +152,19 @@ class InterleavedIntegrityTests(unittest.TestCase):
         })
         self.metadata["compilers"].update(tsc_rs="Version 7.1.0-dev", bun_canary="1.4.3-canary")
         snapshot = {"compilers": {
-            name: {"executable": {"sha256": "a" * 64, "size": 100}}
+            name: {"command": [name], "executable": {"sha256": "a" * 64, "size": 100}}
             for name in self.metadata["compilers"]
         }}
         self.metadata["provenance"] = {"status": "verified", "before": snapshot, "after": snapshot}
         names = list(self.metadata["compilers"])
+        records = [{"compiler": name, "workload": "example", "kind": "positive", "passed": True,
+                    "command": [name, "--noEmit", "-p", "/project/example/tsconfig.json"], "exit_code": 0,
+                    "stdout": "", "stderr": "", "positive_output": "silent", "expected_codes": None, "codes": []}
+                   for name in names]
+        admission = {"schema": 1, "passed": True, "before": snapshot, "after": snapshot, "records": records}
+        raw = (json.dumps(admission) + "\n").encode()
+        (self.directory / "admission.jsonl").write_bytes(raw)
+        self.metadata["admission"] = {"path": "admission.jsonl", "sha256": hashlib.sha256(raw).hexdigest(), "records": len(records)}
         for index in range(5):
             order = names[index:] + names[:index]
             self.write_round(index, [
@@ -213,6 +222,34 @@ class InterleavedIntegrityTests(unittest.TestCase):
         self.extra_compiler_rounds()
         self.metadata["provenance"]["before"]["compilers"]["tsc_rs"]["executable"]["sha256"] = "unknown"
         with self.assertRaisesRegex(ValueError, "executable provenance is incomplete"):
+            compare.validate_interleaved_rounds(self.directory, self.metadata)
+
+    def test_retained_admission_cannot_be_removed_or_changed(self):
+        self.extra_compiler_rounds()
+        (self.directory / "admission.jsonl").write_text("{}\n")
+        with self.assertRaisesRegex(ValueError, "admission evidence hash"):
+            compare.validate_interleaved_rounds(self.directory, self.metadata)
+
+    def test_admission_claims_must_match_the_retained_process_output(self):
+        self.extra_compiler_rounds()
+        path = self.directory / "admission.jsonl"
+        admission = json.loads(path.read_text())
+        admission["records"][0]["stderr"] = "error TS2322: unexpected\n"
+        raw = json.dumps(admission).encode()
+        path.write_bytes(raw)
+        self.metadata["admission"]["sha256"] = hashlib.sha256(raw).hexdigest()
+        with self.assertRaisesRegex(ValueError, "diagnostics differ"):
+            compare.validate_interleaved_rounds(self.directory, self.metadata)
+
+    def test_admission_must_use_the_same_measured_command(self):
+        self.extra_compiler_rounds()
+        path = self.directory / "admission.jsonl"
+        admission = json.loads(path.read_text())
+        admission["records"][0]["command"].insert(1, "--skipChecks")
+        raw = json.dumps(admission).encode()
+        path.write_bytes(raw)
+        self.metadata["admission"]["sha256"] = hashlib.sha256(raw).hexdigest()
+        with self.assertRaisesRegex(ValueError, "command differs"):
             compare.validate_interleaved_rounds(self.directory, self.metadata)
 
 
