@@ -1,23 +1,29 @@
+---
+title: CLI Tools
+description: Build command-line tools with Home's interpreter and maturing native codegen, argument parsing, file I/O, and explicit error handling.
+---
+
 # CLI Tools
 
 Command-line tools are judged on two things: whether they start instantly and
-whether they are one file to install. A native binary with no runtime gets both
-for free.
+whether they are one file to install. Home targets both: the interpreter runs
+CLI programs today, while native builds and multi-file bundling are still
+maturing.
 
 ## Why Home suits this
 
-**One file to ship.** `home build` produces a native executable. Nothing to
-install beside it, no interpreter version to match, no `node_modules` to
-resolve at start-up.
+**One file to ship.** `home build` produces native executables for
+single-entrypoint programs. Bundling an imported module graph into that one
+file is still in progress.
 
-**Start-up you can measure in microseconds.** There is no VM to warm and no
-collector to initialise. For a tool invoked in a loop from a shell script, that
-difference dominates everything else.
+**Native start-up, measured before publication.** A native executable avoids
+interpreter warm-up, but Home does not publish a microsecond claim for this use
+case until the comparison can be reproduced under the site's benchmark
+methodology.
 
-**Errors as values.** A CLI spends most of its code on things that can fail:
-missing files, bad flags, malformed input. Each of them returns a `Result`, so
-the failure path is written explicitly rather than caught somewhere up the
-stack.
+**Errors as values.** Home's developing `Result` model makes missing files,
+bad flags, and malformed input explicit in a function's type instead of hiding
+failure paths behind exceptions.
 
 ## Parsing arguments
 

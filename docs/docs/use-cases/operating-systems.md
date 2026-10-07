@@ -1,21 +1,28 @@
+---
+title: Operating Systems
+description: Explore Home's experimental kernel and freestanding work, including low-level primitives, typed hardware access, and current platform limits.
+---
+
 # Operating Systems
 
 Kernel code has no runtime underneath it. There is no allocator until you
 write one, no standard library assumptions to lean on, and no operating system
-to catch mistakes. Home targets that environment directly, and ships a
-`kernel` package of primitives for it.
+to catch mistakes. Home targets that environment directly and includes an
+experimental `kernel` package; native code generation and the language beneath
+it are still maturing.
 
-## Freestanding by default
+## Freestanding target
 
-A Home program does not require a runtime to start. There is no collector
-thread, no start-up initialisation you did not write, and no hidden
-allocation. That is what makes the language usable before there is an OS to
-run on.
+Home is designed so a native program does not require a collector or hosted
+runtime to start. The current freestanding path is experimental, so verify the
+specific architecture and code-generation features in the
+[capability matrix](/docs/CAPABILITY_MATRIX).
 
 ## The kernel package
 
-The `kernel` package groups the primitives OS work needs, as zero-cost
-abstractions with compile-time checking:
+The `kernel` package is intended to group the primitives OS work needs behind
+typed abstractions. Current coverage is summarized in the [status](#status)
+section:
 
 | Namespace | What it covers |
 |---|---|

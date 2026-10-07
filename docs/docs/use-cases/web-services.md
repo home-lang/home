@@ -1,11 +1,19 @@
+---
+title: Web Services
+description: Explore Home's developing HTTP, JSON, database, async, and TypeScript runtime stack for web services, including current limitations.
+---
+
 # Web Services
 
-A service written in Home is a single native binary. There is no interpreter to
-install in the image, no collector deciding when to pause a request, and no
-start-up cost beyond loading the executable. HTTP, JSON and database access
-are in the standard library.
+Home is working toward web services that ship as one native binary. `std::http`
+and `std::json` are usable through the interpreter today; database access,
+async support, native module-graph bundling, and the Bun-compatible runtime are
+still maturing.
 
 ## A service, end to end
+
+This example shows the intended service surface. Check the [status](#status)
+section before relying on a specific API or deployment shape.
 
 ```home
 import std::http::{Server, Response}

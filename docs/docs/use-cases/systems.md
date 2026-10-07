@@ -1,26 +1,34 @@
+---
+title: Systems Programming
+description: Explore Home's systems-programming model for explicit memory, native code, Result-based failures, direct hardware access, and current maturity.
+---
+
 # Systems Programming
 
 Systems code lives with constraints that most application code never meets: a
 fixed latency budget, a memory ceiling, a machine you have to address
-directly. Home is built for that layer, and tries to make it readable while it
-is there.
+directly. Home is being built for that layer, with the front end and
+interpreter usable today while native codegen, ownership, borrowing, and FFI
+mature.
 
 ## What Home gives you here
 
-**No collector, no runtime.** Ownership and borrowing settle every lifetime at
-compile time. There is no collector to pause your process and nothing to ship
-alongside the binary. See [the memory model](/docs/advanced/memory).
+**Collector-free design goal.** Ownership and borrowing are intended to settle
+every lifetime at compile time. The target model has no collector to pause the
+process and no hosted runtime to ship alongside a native binary. See
+[the memory model](/docs/advanced/memory).
 
-**Native code through LLVM.** `home build` produces a native executable. The
-optimiser sees monomorphized generics and comptime-resolved constants, not a
+**Native code through LLVM.** `home build` produces native executables for the
+currently supported single-entrypoint path. As generic and comptime support
+matures, the optimiser can see specialized constants and types instead of a
 dynamic dispatch table.
 
-**Errors as values.** Nothing unwinds the stack behind your back. A function
-that can fail says so in its type, and `?` propagates without hiding control
-flow. See [error handling](/docs/advanced/error-handling).
+**Errors as values.** In Home's developing `Result` model, a function that can
+fail says so in its type, and `?` propagates without hiding control flow. See
+[error handling](/docs/advanced/error-handling).
 
-**Direct memory access when you need it.** Pointers, slices, alignment control
-and inline assembly are available, and are the exception rather than the
+**Direct-memory-access goal.** Pointers, slices, alignment control, and inline
+assembly are intended to remain available as explicit tools rather than the
 texture of ordinary code.
 
 ## What it looks like

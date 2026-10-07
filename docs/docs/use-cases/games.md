@@ -1,3 +1,8 @@
+---
+title: Game Development
+description: Explore Home's collector-free design goals for game loops, data-oriented layouts, state machines, engine interop, and current codegen limits.
+---
+
 # Game Development
 
 A game at 60 frames per second has 16 milliseconds to do everything. The
@@ -5,25 +10,28 @@ problem with a garbage collector in that loop is not its average cost, it is
 that the cost arrives when the collector decides rather than when you do. One
 20ms pause is a visible stutter no matter how good the average was.
 
-Home has no collector. Memory is settled at compile time, so a frame costs
-what the frame does and nothing else.
+Home targets collector-free memory management, but ownership checking and
+native code generation are still maturing. The examples below describe the
+intended model; the [status](#status) section records what works today.
 
 ## Why the language fits
 
-**Deterministic memory.** Ownership decides when things are freed. Allocation
-happens where you write it, and you can pre-allocate a pool at load time and
-never touch the allocator during play. See [the memory model](/docs/advanced/memory).
+**Deterministic-memory goal.** Ownership decides when things are freed.
+Allocation happens where you write it, and you can pre-allocate a pool at load
+time and never touch the allocator during play. See
+[the memory model](/docs/advanced/memory).
 
-**Data-oriented layout.** Structs have predictable layout, so a component array
-is a real contiguous array and iterating it is a linear scan rather than a
-pointer chase.
+**Data-oriented-layout goal.** Structs have predictable layout, so a component
+array is a real contiguous array and iterating it is a linear scan rather than
+a pointer chase.
 
-**Zero-cost generics.** Generics are monomorphized, so a `Pool<Particle>` is
+**Monomorphized-generics goal.** A `Pool<Particle>` is intended to compile to
 the same machine code you would have written by hand for particles. See
 [generics](/docs/features/generics).
 
-**Comptime specialisation.** Shader permutations, component IDs and dispatch
-tables can be resolved during compilation. See [comptime](/docs/advanced/comptime).
+**Comptime-specialisation goal.** Shader permutations, component IDs and
+dispatch tables can be resolved during compilation. See
+[comptime](/docs/advanced/comptime).
 
 ## A frame, in outline
 
