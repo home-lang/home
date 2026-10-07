@@ -1,482 +1,132 @@
-# Home Package Management
+---
+title: Package Management
+description: Use Home's current `home pkg` command surface, understand which operations are native or delegated to Pantry, and track the manifest and lockfile limitations.
+---
 
-Home comes with a built-in package manager that makes it easy to manage dependencies from multiple sources: registries, GitHub repositories, and direct URLs.
+# Package management
 
-## Table of Contents
+Home's package manager is under active development. The CLI has native
+dependency commands and Pantry-backed ecosystem commands, but the full manifest,
+resolution and reproducibility contract is not yet stable.
 
-- [Quick Start](#quick-start)
-- [Package Sources](#package-sources)
-- [CLI Commands](#cli-commands)
-- [Configurathome File](#configurathome-file)
-- [Lock File](#lock-file)
-- [Examples](#examples)
-
-## Quick Start
-
-Initialize a new Home project:
+## Initialize a package
 
 ```bash
 home pkg init
 ```
 
-This creates an `home.toml` file with default configurathome:
+The command creates:
 
-```toml
-[package]
-name = "my-home-project"
-vershome = "0.1.0"
-authors = []
+- `home.toml`, with package metadata, dependencies, toolchain settings and
+  scripts.
+- `deps.yaml`, which pins the project toolchain for Pantry.
 
-[dependencies]
-# Add your dependencies here
-```
+It does not create source files; use `home init [name]` for a complete
+application scaffold.
 
-Add a dependency:
+## Native dependency commands
 
-```bash
-# From registry
-home pkg add http-router@1.0.0
+| Command | Current behavior |
+|---|---|
+| `home pkg add name@1.2.3` | Adds a registry dependency, resolves it and rewrites the active package manifest. |
+| `home pkg add owner/repository` | Expands the GitHub shortcut to an HTTPS Git URL. |
+| `home pkg add https://example.com/archive.tar.gz` | Adds a direct URL dependency. |
+| `home pkg remove name` | Removes a dependency and resolves again. |
+| `home pkg install` | Resolves configured dependencies, writes `home.lock` and downloads packages. |
+| `home pkg update` | Drops the in-memory lock state and resolves again. |
+| `home pkg login`, `logout`, `whoami` | Manages registry authentication. |
+| `home pkg run name`, `scripts` | Reads the `[scripts]` table from `home.toml`. |
 
-# From GitHub (shortcut)
-home pkg add home-lang/zyte
+The current `add` parser supports a GitHub shortcut or a registry version, but
+not a combined `owner/repository@revision` shortcut. Put a Git URL and `rev`
+in a JSON manifest when a specific Git revision is required.
 
-# From full Git URL
-home pkg add https://github.com/user/package.git
+## Commands delegated to Pantry
 
-# From direct URL
-home pkg add https://example.com/package.tar.gz
-```
+Home forwards these commands to the external `pantry` executable:
 
-Install all dependencies:
+- `search`, `info`, `audit` and `dedupe`
+- `link`, `unlink`, `publish`, `pack` and `version`
+- `doctor` and `clean`
 
-```bash
-home pkg install
-```
+`home pkg tools` and `home pkg toolchain` also delegate tool installation to
+Pantry after checking for `deps.yaml`, `dependencies.yaml` or
+`pantry.yaml`.
 
-## Package Sources
+If Pantry is not installed, delegated commands fail with an explicit
+installation message rather than silently changing behavior.
 
-### Registry Packages
+## Local inspection commands
 
-Install packages from the official Home package registry:
-
-```bash
-home pkg add http-router@1.0.0
-```
-
-In `home.toml`:
-
-```toml
-[dependencies]
-http-router = "1.0.0"
-```
-
-### GitHub Packages
-
-Use GitHub shortcuts for easy access:
+Home implements additional project-facing commands, including:
 
 ```bash
-# Automatically expands to https://github.com/home-lang/zyte.git
-home pkg add home-lang/zyte
+home pkg tree
+home pkg why <package>
+home pkg outdated
+home pkg size [path]
+home pkg declarations
+home pkg declarations --check
+home pkg docs
+home pkg api-diff old.d.hm new.d.hm
 ```
 
-In `home.toml`:
+Some inspection paths are intentionally preliminary. For example, the local
+`tree` fallback currently checks for `home.lock` but does not render the full
+locked dependency graph.
 
-```toml
-[dependencies]
-zyte = { git = "https://github.com/home-lang/zyte" }
-```
+## Manifests and precedence
 
-Specify a specific branch, tag, or commit:
+Package-manager lookup currently checks:
 
-```bash
-home pkg add home-lang/zyte@v1.0.0
-```
+1. `couch.jsonc`
+2. `couch.json`
+3. `home.json`
+4. `package.jsonc`
+5. `package.json`
+6. `home.toml`
+7. `couch.toml`
 
-```toml
-[dependencies]
-zyte = { git = "https://github.com/home-lang/zyte", rev = "v1.0.0" }
-```
+See [project configuration](/docs/CONFIGURATION) for the separate shared-tool
+loader order and current parsing limits.
 
-### URL-Based Packages
+## Dependency sources
 
-Install from any HTTP/HTTPS URL:
+The native data model supports registry, Git and direct URL sources. A local
+source variant exists internally, but the current JSON parser does not yet turn
+a `{ "path": "..." }` entry into a dependency, so local path dependencies
+should not be advertised as complete.
 
-```bash
-home pkg add https://example.com/my-package.tar.gz
-```
+## Lockfile and storage
 
-```toml
-[dependencies]
-my-package = { url = "https://example.com/my-package.tar.gz" }
-```
+The active native package-manager path writes `home.lock`. It installs into
+the project `pantry/` directory and uses `.home/cache` as its cache root.
 
-### Local Packages
+A separate experimental lockfile module describes `.freezer`, but the current
+`home pkg install` implementation does not write that file. Commit
+`home.lock` when using the native package-manager path, and do not commit the
+installed `pantry/` tree.
 
-Use local packages during development:
+Lockfile loading and transitive resolution are still simplified. A generated
+file is useful development evidence, but it should not yet be presented as a
+fully audited reproducible-install guarantee.
 
-```toml
-[dependencies]
-my-local-lib = { path = "../my-local-lib" }
-```
+## Current limitations
 
-## CLI Commands
+- TOML dependency parsing is incomplete.
+- JSONC manifests are readable, but mutating package commands do not yet
+  preserve their format.
+- Full semantic-version range selection is not implemented.
+- Lockfile loading does not yet reconstruct the complete package graph.
+- Workspace hoisting and cross-workspace linking are not complete.
+- Integrity and offline-install behavior need end-to-end acceptance tests.
 
-### `home pkg init`
+Track package-manager maturity in the
+[capability matrix](/docs/CAPABILITY_MATRIX#tooling).
 
-Initialize a new Home project with an `home.toml` file.
+## Related pages
 
-```bash
-home pkg init
-```
-
-### `home pkg add <package>`
-
-Add a dependency to your project. Supports multiple formats:
-
-```bash
-# Registry package with vershome
-home pkg add package-name@1.2.3
-
-# GitHub shortcut
-home pkg add user/repo
-
-# Full Git URL
-home pkg add https://github.com/user/repo.git
-
-# Direct URL
-home pkg add https://example.com/package.tar.gz
-```
-
-### `home pkg remove <package>`
-
-Remove a dependency from your project:
-
-```bash
-home pkg remove package-name
-```
-
-### `home pkg install`
-
-Install all dependencies listed in `home.toml`:
-
-```bash
-home pkg install
-```
-
-Creates/updates `home.lock` for reproducible builds.
-
-### `home pkg update`
-
-Update all dependencies to their latest vershomes:
-
-```bash
-home pkg update
-```
-
-## Configurathome File
-
-The `home.toml` file defines your project and its dependencies.
-
-### Full Example
-
-```toml
-[package]
-name = "my-awesome-app"
-vershome = "1.0.0"
-authors = ["Your Name <you@example.com>"]
-
-[dependencies]
-# Registry packages
-http-router = "1.0.0"
-json-parser = "2.3.1"
-
-# GitHub packages
-zyte = { git = "https://github.com/home-lang/zyte", rev = "main" }
-ui-kit = { git = "https://github.com/user/ui-kit", rev = "v2.0.0" }
-
-# URL-based packages
-custom-lib = { url = "https://cdn.example.com/libs/custom-1.0.tar.gz" }
-
-# Local packages (for development)
-utils = { path = "../shared-utils" }
-```
-
-## Lock File
-
-Home generates an `home.lock` file to ensure reproducible builds. This file contains:
-
-- Exact vershomes of all dependencies
-- Checksums for integrity verificathome
-- Dependency tree with all transitive dependencies
-
-**Never edit `home.lock` manually.** It is automatically generated by `home pkg install` and `home pkg update`.
-
-### Example `home.lock`
-
-```toml
-# This file is generated by home pkg
-vershome = 1
-
-[[package]]
-name = "http-router"
-vershome = "1.0.0"
-checksum = "abc123def456..."
-
-[[package]]
-name = "zyte"
-vershome = "main"
-checksum = "789ghi012jkl..."
-```
-
-## Examples
-
-### Creating a Web Applicathome
-
-```bash
-# Initialize project
-home pkg init
-
-# Add web framework dependencies
-home pkg add http-router@1.0.0
-home pkg add home-lang/zyte
-
-# Install dependencies
-home pkg install
-```
-
-Your `home.toml`:
-
-```toml
-[package]
-name = "my-web-app"
-vershome = "0.1.0"
-authors = []
-
-[dependencies]
-http-router = "1.0.0"
-zyte = { git = "https://github.com/home-lang/zyte" }
-```
-
-### Using Multiple Sources
-
-```toml
-[package]
-name = "multi-source-app"
-vershome = "1.0.0"
-
-[dependencies]
-# Official registry
-http-router = "1.0.0"
-
-# GitHub with specific vershome
-auth-lib = { git = "https://github.com/secure/auth", rev = "v2.1.0" }
-
-# Private Git repository
-internal-tools = { git = "https://gitlab.company.com/tools/internal" }
-
-# Direct download
-legacy-lib = { url = "https://legacy.example.com/lib-1.0.tar.gz" }
-
-# Local development
-my-module = { path = "../my-module" }
-```
-
-### Updating Dependencies
-
-```bash
-# Update all to latest vershomes
-home pkg update
-
-# Or update home.toml manually and reinstall
-home pkg install
-```
-
-### Removing Unused Dependencies
-
-```bash
-# Remove a specific package
-home pkg remove old-package
-
-# Clean install
-rm -rf .home/cache
-home pkg install
-```
-
-## Package Cache
-
-Downloaded packages are cached in `.home/cache` to speed up subsequent installathomes.
-
-Cache structure:
-
-```
-.home/
-└── cache/
-    ├── http-router/
-    │   └── 1.0.0/
-    ├── zyte/
-    │   └── main/
-    └── custom-lib/
-        └── url-based/
-```
-
-### Cleaning the Cache
-
-```bash
-rm -rf .home/cache
-home pkg install
-```
-
-## Best Practices
-
-1. **Commit `home.toml` and `home.lock`** to vershome control
-2. **Don't commit `.home/cache`** - add it to `.gitignore`
-3. **Use semantic vershomeing** for your packages
-4. **Lock specific vershomes** in producthome
-5. **Test after updating** dependencies
-6. **Document** any custom package sources
-
-## Troubleshooting
-
-### Package not found
-
-```bash
-# Make sure you have the correct package name
-home pkg add correct-package-name@1.0.0
-
-# For GitHub packages, verify the repository exists
-home pkg add existing-user/existing-repo
-```
-
-### Git clone fails
-
-```bash
-# Ensure git is installed
-git --vershome
-
-# Check network connectivity
-ping github.com
-
-# Try with full URL instead of shortcut
-home pkg add https://github.com/user/repo.git
-```
-
-### Download fails
-
-```bash
-# Check if curl or wget is available
-curl --vershome
-wget --vershome
-
-# Verify the URL is accessible
-curl -I https://example.com/package.tar.gz
-```
-
-## Future Features
-
-- Dependency vershome resoluthome algorithms
-- Package publishing to official registry
-- Private registry support
-- Package signing and verificathome
-- Workspace support for monorepos
-- Dev dependencies separathome
-
-## Contributing
-
-To contribute to Home's package management system:
-
-1. Check existing issues and discusshomes
-2. Submit bug reports with detailed reproducthome steps
-3. Propose new features with use cases
-4. Contribute code improvements and tests
-
-## Resources
-
-- [Home Documentathome](https://docs.home-lang.org)
-- [Package Registry](https://packages.home-lang.org)
-- [GitHub Repository](https://github.com/home-lang/home)
-- [Community Discord](https://discord.gg/home-lang)
-
-## Package Storage Structure
-
-Home uses a unique directory structure for package management:
-
-### The Pantry (`pantry/`)
-
-All installed dependencies are stored in the `pantry/` directory at your project root:
-
-```
-my-project/
-├── pantry/
-│   ├── home-http@1.2.0/
-│   ├── home-database@2.0.1/
-│   └── home-types@0.1.0/
-├── src/
-├── home.toml
-└── .freezer
-```
-
-**Benefits:**
-
-- Themed naming that fits the Home ecosystem
-- Clear separation from other package managers
-- Easy to identify Home dependencies
-
-### The Freezer (`.freezer`)
-
-The `.freezer` file is Home's lockfile that ensures reproducible builds:
-
-**Purpose:**
-
-- Locks exact versions of all dependencies
-- Stores integrity checksums for security
-- Records the source of each package
-- Tracks transitive dependencies
-
-**Format:**
-```json
-{
-  "version": 1,
-  "packages": {
-    "package-name@version": {
-      "name": "package-name",
-      "version": "1.0.0",
-      "resolved": "https://packages.home-lang.org/...",
-      "integrity": "sha256-...",
-      "source": {
-        "type": "registry",
-        "url": "https://packages.home-lang.org"
-      },
-      "dependencies": {
-        "dep-name": "1.0.0"
-      }
-    }
-  }
-}
-```
-
-**Source Types:**
-
-- `registry` - Official Home package registry
-- `git` - Git repository with exact commit hash
-- `path` - Local file path (for development)
-- `url` - Direct download URL
-
-**Best Practices:**
-
-- ✅ Commit `.freezer` to version control
-- ✅ Use `.freezer` for CI/CD reproducibility
-- ✅ Run `home install` to sync with `.freezer`
-- ❌ Don't manually edit `.freezer`
-- ❌ Don't commit `pantry/` directory
-
-### Gitignore Configuration
-
-Add to your `.gitignore`:
-
-```gitignore
-# Home package manager
-pantry/
-.freezer
-```
-
-Note: You should commit `.freezer` but NOT `pantry/`. The example above shows both for completeness, but in practice, remove `.freezer` from `.gitignore` after your first install.
+- [Configuration](/docs/CONFIGURATION)
+- [Pantry](/docs/PANTRY)
+- [Pantry integration](/docs/PANTRY_INTEGRATION)
+- [Package-manager roadmap](/docs/PACKAGE-MANAGER-IMPROVEMENTS)

@@ -1,57 +1,93 @@
-# Pantry Integration
+---
+title: Pantry Toolchain Management
+description: Understand how Home delegates project toolchain and ecosystem operations to Pantry, which files Home creates, and where native package management remains separate.
+---
 
-## Overview
+# Pantry toolchain management
 
-Home uses **Pantry**for system-level package management. Pantry is kept**separate** from the Home language itself to maintain clean separation of concerns.
+Pantry is an external tool used by Home for project toolchains and selected
+package-ecosystem operations. Home does not embed Pantry's implementation.
 
-## Files
+## Project bootstrap
 
-- `pantry.json` - Declares Home's system dependencies (e.g., Zig compiler)
-- `pantry-lock.json` - Lockfile for reproducible builds
+`home pkg init` writes a `deps.yaml` file like this:
 
-## Usage
+```yaml
+# Project toolchain managed by pantry.
+# Run: home pkg tools
+dependencies:
+  - ziglang.org@0.17.0-dev.2163+89ff10d56
+  - bun
+```
 
-### System Packages
+The exact pinned versions evolve with the repository. Treat the generated file,
+not this example, as authoritative.
 
-Use `pantry` directly (not through Home):
+`home pkg tools` accepts any extra arguments and delegates to:
 
 ```bash
-pantry install nodejs.org
+pantry install [arguments...]
+```
+
+Before delegating, Home requires one of these project files:
+
+- `deps.yaml`
+- `dependencies.yaml`
+- `pantry.yaml`
+
+## Direct Pantry use in this repository
+
+The Home repository currently has a root `pantry.json` and a generated
+`pantry/` install tree. That is the repository's own Pantry setup. It does not
+change which files `home pkg tools` recognizes in a generated Home project.
+
+Use Pantry directly when working with Pantry-specific commands or repository
+bootstrap behavior:
+
+```bash
+pantry install
 pantry list
-pantry search python
-pantry update
+pantry info bun
 ```
 
-### Shell Integration
+Consult the installed Pantry version for its complete command and file-format
+reference.
 
-Pantry integrates with your shell for automatic environment activation on `cd`:
+## Native Home package management is separate
 
-```bash
-# Handled by pantry's zshrc integration
-cd ~/Code/my-project  # Automatically activates environment
-```
+The native `home pkg add`, `remove`, `install` and `update` commands use
+Home's package-manager implementation. Their current paths are:
 
-## Why Separate
+- Package manifests such as `home.toml`, `home.json` or `package.json`.
+- `home.lock` for the active native lockfile.
+- `.home/cache` for the project cache.
+- `pantry/` for installed dependencies.
 
-**Home is a programming language**, not a system management tool.
+The directory name `pantry/` does not mean those commands are automatically
+implemented by the external Pantry CLI. See
+[package management](/docs/PACKAGE-MANAGEMENT) for the exact boundary.
 
-**Pantry is a system package manager**, handling:
+## Delegated ecosystem commands
 
-- System dependencies (Node.js, Python, etc.)
-- Development environments
-- Shell integration for `cd` hooks
+Home forwards these `home pkg` subcommands to Pantry:
 
-Keeping them separate means:
+`search`, `info`, `audit`, `dedupe`, `link`, `unlink`, `publish`,
+`pack`, `version`, `doctor` and `clean`.
 
-- ✅ Home stays focused as a language compiler/interpreter
-- ✅ Pantry handles system concerns independently
-- ✅ No bloat in the language tooling
-- ✅ Clean architecture for home-os future
+A missing Pantry executable is reported as an error. Home does not substitute a
+different registry or fabricate successful output.
 
-## For Home Development
+## Reproducibility guidance
 
-The Pantry lockfile pins what Home itself needs to build: Zig 0.17 dev, installed through Pantry.
+- Commit the project toolchain declaration used by the project.
+- Keep generated install directories out of version control.
+- Run installation in CI from a clean checkout.
+- Record the Pantry version when publishing performance or reproducibility
+  results.
+- Do not copy machine-specific absolute package paths into documentation.
 
-## For Home-OS
+## Related pages
 
-When building the OS, this separation becomes even more important - the OS will have its own package management layer, and Home remains just the programming language.
+- [Pantry integration boundary](/docs/PANTRY_INTEGRATION)
+- [Package management](/docs/PACKAGE-MANAGEMENT)
+- [Project configuration](/docs/CONFIGURATION)
