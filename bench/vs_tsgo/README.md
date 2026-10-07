@@ -12,6 +12,7 @@ identical, deterministic TypeScript projects.
 ./bench/vs_tsgo/run.sh corpus
 ./bench/vs_tsgo/run.sh cold
 ./bench/vs_tsgo/run.sh report
+./bench/vs_tsgo/run.sh evidence
 ```
 
 Set `HOME_TSC=/absolute/path/to/home-tsc` to benchmark a different Home binary.
@@ -22,6 +23,12 @@ Raw Hyperfine JSON and run metadata land under `results/<UTC timestamp>/`.
 The runner rejects installed TS 6 or TS 7 versions that differ from
 `corpus.toml` before creating timing results. Rerun `setup` after changing a pin.
 The native TS 7 compiler is the single `tsgo` entry, not a separate competitor.
+
+`evidence [results-directory]` packages a completed verified run as a
+deterministic `evidence/<result-id>.tar.gz`. Every Hyperfine round file is
+included byte-for-byte. The publisher normalizes only repository-local paths
+in harness metadata to `$REPO`, includes SHA-256 checksums, and refuses a run
+whose round set or before/after executable provenance is incomplete or changed.
 
 Run harness regression tests with
 `python3 -m unittest discover -s bench/vs_tsgo -p 'test_*.py'`.

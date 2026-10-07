@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import gzip
 import hashlib
+import io
 import json
 import os
 import platform
@@ -14,8 +16,11 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 from pathlib import Path
+
+import compare
 
 try:
     import tomllib
@@ -29,6 +34,7 @@ TOOLS = HERE / ".tools"
 TSC_TOOLS = TOOLS / "tsc"
 TSGO_TOOLS = TOOLS / "tsgo"
 RESULTS = HERE / "results"
+EVIDENCE = HERE / "evidence"
 MANIFEST = HERE / "corpus.toml"
 
 
@@ -1435,6 +1441,76 @@ def latest_results() -> Path:
     return candidates[-1]
 
 
+def normalize_public_paths(value: object) -> object:
+    if isinstance(value, dict):
+        return {key: normalize_public_paths(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [normalize_public_paths(item) for item in value]
+    if isinstance(value, str):
+        root = str(ROOT.resolve())
+        if value == root:
+            return "$REPO"
+        if value.startswith(root + os.sep):
+            return "$REPO/" + value[len(root + os.sep):].replace(os.sep, "/")
+    return value
+
+
+def evidence_members(source: Path, metadata: dict) -> dict[str, bytes]:
+    prefix = f"ts-frontend-benchmark-{source.name}"
+    members = {
+        f"{prefix}/{path.name}": path.read_bytes()
+        for path in sorted(source.glob("*-round-*.json"))
+    }
+    public_metadata = normalize_public_paths(metadata)
+    members[f"{prefix}/metadata.json"] = (json.dumps(public_metadata, indent=2) + "\n").encode()
+    explanation = (
+        "Every *-round-*.json file is the byte-for-byte Hyperfine output from the measured run.\n"
+        "Only repository-local paths in metadata.json are normalized to $REPO before publication.\n"
+        "SHA256SUMS covers the published metadata and every raw round file.\n"
+    )
+    members[f"{prefix}/README.txt"] = explanation.encode()
+    checksums = "".join(
+        f"{hashlib.sha256(content).hexdigest()}  {name.removeprefix(prefix + '/')}\n"
+        for name, content in sorted(members.items())
+    )
+    members[f"{prefix}/SHA256SUMS"] = checksums.encode()
+    return members
+
+
+def write_evidence_archive(output: Path, members: dict[str, bytes]) -> None:
+    tar_buffer = io.BytesIO()
+    with tarfile.open(fileobj=tar_buffer, mode="w", format=tarfile.PAX_FORMAT) as archive:
+        for name, content in sorted(members.items()):
+            info = tarfile.TarInfo(name)
+            info.size = len(content)
+            info.mtime = 0
+            info.mode = 0o644
+            info.uid = 0
+            info.gid = 0
+            info.uname = ""
+            info.gname = ""
+            archive.addfile(info, io.BytesIO(content))
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with output.open("wb") as raw:
+        with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as compressed:
+            compressed.write(tar_buffer.getvalue())
+
+
+def cmd_evidence(directory: Path | None, output: Path | None) -> Path:
+    source = directory or latest_results()
+    if not is_completed_result(source):
+        raise SystemExit(f"cannot package incomplete or unverified benchmark results: {source}")
+    try:
+        metadata = json.loads((source / "metadata.json").read_text(encoding="utf-8"))
+        compare.validate_interleaved_rounds(source, metadata)
+    except (json.JSONDecodeError, OSError, ValueError) as error:
+        raise SystemExit(f"cannot package benchmark evidence from {source}: {error}") from error
+    destination = output or EVIDENCE / f"{source.name}.tar.gz"
+    write_evidence_archive(destination, evidence_members(source, metadata))
+    print(f"Evidence: {destination}")
+    return destination
+
+
 def cmd_report(directory: Path | None) -> None:
     source = directory or latest_results()
     run([sys.executable, str(HERE / "compare.py"), str(source)])
@@ -1451,6 +1527,9 @@ def main() -> int:
     cold.add_argument("--workload", action="append", help="select a workload; repeat for several (default: all)")
     report = sub.add_parser("report", help="render a Markdown report")
     report.add_argument("results", nargs="?", type=Path)
+    evidence = sub.add_parser("evidence", help="package verified raw results for publication")
+    evidence.add_argument("results", nargs="?", type=Path)
+    evidence.add_argument("--output", type=Path)
     sub.add_parser("all", help="generate corpus, set up tools, benchmark, and report")
     args = parser.parse_args()
     if args.command == "corpus":
@@ -1461,6 +1540,8 @@ def main() -> int:
         cmd_cold(args.runs, args.warmup, args.workload)
     elif args.command == "report":
         cmd_report(args.results)
+    elif args.command == "evidence":
+        cmd_evidence(args.results, args.output)
     else:
         cmd_corpus()
         cmd_setup()

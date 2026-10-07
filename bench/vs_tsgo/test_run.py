@@ -1,9 +1,11 @@
 """Benchmark preflight regressions; run with unittest discovery in this directory."""
 
+import hashlib
 import json
-import unittest
 import subprocess
+import tarfile
 import tempfile
+import unittest
 from pathlib import Path
 from unittest import mock
 
@@ -85,6 +87,62 @@ class LatestResultsTests(unittest.TestCase):
         (missing_round / "example-round-001.json").unlink()
         with mock.patch.object(run, "RESULTS", self.results):
             self.assertEqual(expected, run.latest_results())
+
+
+class EvidenceArchiveTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.source = self.root / "20261007T141452Z"
+        self.source.mkdir()
+        root_path = str(run.ROOT.resolve())
+        snapshot = {"schema": 1, "compilers": {"home": {"path": f"{root_path}/zig-out/bin/home-tsc"}}}
+        metadata = {
+            "schema": 2,
+            "schedule": "round-robin interleaved",
+            "runs": 1,
+            "warmup": 3,
+            "workloads": ["example"],
+            "compilers": {name: name for name in ("tsc", "tsgo", "home")},
+            "host": {
+                "os": "TestOS",
+                "os_release": "1",
+                "architecture": "arm64",
+                "cpu_model": "Test CPU",
+                "logical_cores": 4,
+            },
+            "provenance": {"status": "verified", "before": snapshot, "after": snapshot},
+        }
+        (self.source / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+        self.round_bytes = json.dumps({
+            "results": [
+                {"command": f"{name} example", "times": [0.1], "exit_codes": [0]}
+                for name in ("tsc", "tsgo", "home")
+            ]
+        }).encode()
+        (self.source / "example-round-000.json").write_bytes(self.round_bytes)
+
+    def test_archive_preserves_rounds_normalizes_metadata_and_is_deterministic(self):
+        output = self.root / "evidence.tar.gz"
+        run.cmd_evidence(self.source, output)
+        first_hash = hashlib.sha256(output.read_bytes()).hexdigest()
+        run.cmd_evidence(self.source, output)
+        self.assertEqual(first_hash, hashlib.sha256(output.read_bytes()).hexdigest())
+
+        prefix = "ts-frontend-benchmark-20261007T141452Z"
+        with tarfile.open(output, "r:gz") as archive:
+            self.assertEqual(self.round_bytes, archive.extractfile(f"{prefix}/example-round-000.json").read())
+            metadata = archive.extractfile(f"{prefix}/metadata.json").read().decode()
+            checksums = archive.extractfile(f"{prefix}/SHA256SUMS").read().decode()
+        self.assertNotIn(str(run.ROOT.resolve()), metadata)
+        self.assertIn("$REPO/zig-out/bin/home-tsc", metadata)
+        self.assertIn(hashlib.sha256(self.round_bytes).hexdigest(), checksums)
+
+    def test_incomplete_result_is_not_packaged(self):
+        (self.source / "example-round-000.json").unlink()
+        with self.assertRaisesRegex(SystemExit, "incomplete or unverified"):
+            run.cmd_evidence(self.source, self.root / "evidence.tar.gz")
 
 
 class HostMetadataTests(unittest.TestCase):
