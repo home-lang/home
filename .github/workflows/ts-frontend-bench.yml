@@ -50,8 +50,12 @@ jobs:
           result_directory=$(find bench/vs_tsgo/results -mindepth 1 -maxdepth 1 -type d | sort | tail -n 1)
           test -n "$result_directory"
           python3 bench/vs_tsgo/compare.py "$result_directory" | tee "$result_directory/report.md" | tee -a "$GITHUB_STEP_SUMMARY"
+          ./bench/vs_tsgo/run.sh evidence "$result_directory"
+          evidence_path="bench/vs_tsgo/evidence/$(basename "$result_directory").tar.gz"
+          test -f "$evidence_path"
           sha256sum zig-out/bin/home-tsc | tee "$result_directory/home-tsc.sha256"
           printf 'result_directory=%s\n' "$result_directory" >> "$GITHUB_ENV"
+          printf 'evidence_path=%s\n' "$evidence_path" >> "$GITHUB_ENV"
 
       - name: Upload complete benchmark evidence
         if: always()
@@ -60,5 +64,6 @@ jobs:
           name: ts-frontend-linux-x64-${{ github.run_id }}
           path: |
             ${{ env.result_directory || 'bench/vs_tsgo/results' }}
+            ${{ env.evidence_path }}
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 90

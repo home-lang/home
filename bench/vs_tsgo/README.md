@@ -50,6 +50,8 @@ entrypoint. The repository is mounted only at run time, and the entrypoint
 installs the exact TS 6.0.3 and native TS 7.0.2 manifest pins, regenerates the
 corpus, runs every admission control, and then measures. Raw results are
 written back to `bench/vs_tsgo/results/<UTC timestamp>/`.
+The manual GitHub Actions workflow also packages the deterministic evidence
+archive, uploads both forms, and retains them for 90 days.
 
 Use a workspace on a native Linux filesystem. A repository shared from macOS
 through VirtioFS is useful for functional diagnostics but is not an eligible
@@ -61,15 +63,15 @@ report refuses results whose provenance changed.
 
 ## Qualified checkpoints
 
-| Platform | Result ID | Historical outcome | Detailed report |
+| Platform | Result ID | Current outcome | Evidence and report |
 |---|---|---:|---|
-| Apple M3 Pro / macOS arm64 | `20260905T225537Z` | 20/20 | [macOS snapshot](../../docs/docs/TS_PERFORMANCE.md#current-snapshot) |
-| Linux arm64 / pinned Bookworm container | `20260829T035150Z` | 20/20 | [Linux checkpoint](../../docs/docs/TS_PERFORMANCE.md#linux-arm64-container-checkpoint) |
+| Apple M2 Pro / macOS arm64 | `20261007T141452Z` | Home lower median on 8/20 | [snapshot](../../docs/docs/TS_PERFORMANCE.md#current-snapshot) · [raw evidence](evidence/20261007T141452Z.tar.gz) |
 
-Both checkpoints compare TS 6.0.3 with the single native TS 7.0.2 (`tsgo`)
-competitor. They retain every measured sample and document narrow rows and
-host-specific variance; they do not replace real-project benchmarking or
-measure unlisted platforms.
+The checkpoint compares TS 6.0.3 with the single native TS 7.0.2 (`tsgo`)
+competitor, retains every measured sample, and does not replace real-project
+benchmarking or measure unlisted platforms. Older macOS and Linux measurements
+remain in the dated optimization journal; they are historical, not mixed into
+the current table, and not relabeled as medians without their raw samples.
 
 The separate global-declaration admission audit is **untimed**:
 
@@ -196,8 +198,8 @@ establish cross-file CommonJS typing.
   and the faster competitor's median. Ratios that round to `1.00×` are
   labeled near ties in either direction; this display rule is not a statistical
   significance test. Directional labels compare medians, not certainty of a
-  win. Historical mean-based checkpoints remain labeled as historical and must
-  not be relabeled as medians without their raw samples.
+  win. Historical mean-based measurements remain labeled as historical and
+  must not be relabeled as medians without their raw samples.
 
 The workloads cover distinct costs rather than repeating one favorable shape:
 

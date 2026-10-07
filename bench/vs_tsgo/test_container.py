@@ -35,6 +35,11 @@ class ContainerHarnessTests(unittest.TestCase):
         self.assertIn("home-ts-frontend-bench .", workflow)
         self.assertIn("cold --runs 30 --warmup 3", workflow)
         self.assertIn("actions/upload-artifact@v4", workflow)
+        self.assertIn('./bench/vs_tsgo/run.sh evidence "$result_directory"', workflow)
+        self.assertIn("${{ env.evidence_path }}", workflow)
+        self.assertNotIn("env.evidence_path ||", workflow)
+        self.assertIn("retention-days: 90", workflow)
+        self.assertNotIn("retention-days: 30", workflow)
 
     def test_root_context_sends_only_the_container_entrypoint(self):
         dockerignore = (ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()
