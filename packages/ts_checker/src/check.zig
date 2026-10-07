@@ -66256,9 +66256,9 @@ pub const Checker = struct {
         return false;
     }
 
-    fn reportMissingImportTypeModule(self: *Checker, node: NodeId) CheckError!bool {
-        const spec = self.importTypeModuleSpecifier(node) orelse return false;
-        if (try self.importTypeModuleExists(node, spec)) return false;
+    fn reportMissingImportTypeModule(self: *Checker, node: NodeId) CheckError!?u32 {
+        const spec = self.importTypeModuleSpecifier(node) orelse return null;
+        if (try self.importTypeModuleExists(node, spec)) return null;
         // tsc anchors TS2307 on the opening quote of the module
         // specifier inside `import("ÃÂ¢ÃÂÃÂ¦")`, not on the `import`
         // keyword. Mirror that for exact-baseline parity.
@@ -66275,7 +66275,7 @@ pub const Checker = struct {
                 .code = TsCodes.cannot_find_module_did_you_mean_nodenext,
                 .message = msg,
             });
-            return true;
+            return TsCodes.cannot_find_module_did_you_mean_nodenext;
         }
         const msg = try std.fmt.allocPrint(
             self.diag_arena.allocator(),
@@ -66288,7 +66288,7 @@ pub const Checker = struct {
             .code = TsCodes.cannot_find_module,
             .message = msg,
         });
-        return true;
+        return TsCodes.cannot_find_module;
     }
 
     /// True when the import-type node is a *bare* module reference —
@@ -78225,7 +78225,9 @@ pub const Checker = struct {
             .template_literal_type => return try self.lowerTemplateLiteralTypeWithTypeParams(type_node),
             .type_ref => {
                 const r = hir_mod.typeRefOf(self.hir, type_node);
-                if (try self.reportMissingImportTypeModule(type_node)) return types.Primitive.any;
+                if (try self.reportMissingImportTypeModule(type_node)) |code| {
+                    return self.diagnosedAnyRecovery(type_node, code);
+                }
                 if (self.importTypeModuleSpecifier(type_node)) |import_spec| {
                     // A bare `import("mod")` (no `.Member`, not `typeof`)
                     // used directly as a type refers to a module's value
@@ -226169,16 +226171,32 @@ test "checker: namespace import resolves direct ambient module class type" {
     try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.value_used_as_type_did_you_mean_typeof));
 }
 
-test "checker: TS1340 not emitted for missing module (TS2307 wins)" {
+test "checker: missing import-type modules retain diagnosed recovery provenance" {
     const s = try newSetup(
         \\declare module "foo" { export interface Point { x: number; } }
         \\const x: import("fo") = { x: 0 };
+        \\let known: import("foo").Point;
     );
     defer destroySetup(s);
+    s.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try s.checker.checkSourceFile(s.root);
     for (s.checker.diagnostics.items) |d| {
         try T.expect(d.code != TsCodes.module_does_not_refer_to_type);
     }
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.cannot_find_module));
+    try T.expectEqual(@as(u32, 1), s.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 1), checkerCountHomeCode(s, HomeRule.list_unmodeled_any.definition().code));
+
+    const classic = try newSetup(
+        \\type Missing = import("missing-package").Member;
+    );
+    defer destroySetup(classic);
+    classic.checker.setModuleResolution("classic");
+    classic.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
+    try classic.checker.checkSourceFile(classic.root);
+    try T.expectEqual(@as(usize, 1), checkerCountCode(classic, TsCodes.cannot_find_module_did_you_mean_nodenext));
+    try T.expectEqual(@as(u32, 1), classic.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 1), checkerCountHomeCode(classic, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: virtual js package without declaration reports TS7016 under noImplicitAny" {
