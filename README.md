@@ -23,8 +23,8 @@ Home is two things built from one Zig toolchain:
   accepts `tsc`'s flags, and prints the same `TSxxxx` diagnostics with the same
   exit status. It passes **all 5,907 modeled upstream conformance diagnostic
   families**, with the leading **2,960 / 2,960 fixtures revalidated
-  byte-for-byte**, and type-checks **1.6×–11.9× faster than native TypeScript
-  7** (`tsgo`) and **4.7×–19× faster than `tsc`** on the benchmark suite below.
+  byte-for-byte**. Its current performance is measured against both `tsc` and
+  native TypeScript 7 (`tsgo`) in the admitted benchmark suite below.
 - **A native language.** `.home` files compile to native binaries with no
   garbage collector and no runtime shipped beside them.
 
@@ -101,67 +101,38 @@ other 459 are not a backlog: about 455 are dead in the reference compiler
 (superseded wording it never produces) and 4 are gated on unwired subsystems.
 See [diagnostic reachability](https://home-lang.org/docs/TS_DIAGNOSTIC_REACHABILITY).
 
-### It is faster than `tsc` and `tsgo`
+### Measured TypeScript frontend performance
 
 Type-checking time on the reproducible
 [`bench/vs_tsgo`](bench/vs_tsgo) suite: TypeScript 6.0.3 (`tsc`), native
 TypeScript 7.0.2 (`tsgo`), and Home on identical strict, no-emit projects.
-Apple M3 Pro, macOS; mean of 30 fresh processes after 3 warmups; lower is
-better.
+Result `20261007T141452Z` ran on an Apple M2 Pro / Mac14,9 with 10 logical
+cores and macOS 26.3.1 arm64. Values are medians of 30 fresh processes after
+three warmups; lower is better.
 
-| Workload | `tsc` 6.0.3 | `tsgo` 7.0.2 | **Home** | vs `tsc` | vs `tsgo` |
-|---|---:|---:|---:|---:|---:|
-| Startup (one small file) | 75.5 ms | 45.8 ms | **3.9 ms** | **19.4×** | **11.87×** |
-| 256 independent files | 267.8 ms | 68.8 ms | **28.7 ms** | **9.3×** | **2.40×** |
-| 128-module import chain | 159.3 ms | 56.8 ms | **27.7 ms** | **5.8×** | **2.05×** |
-| 64 modules through 8 barrel re-exports | 108.1 ms | 45.8 ms | **22.3 ms** | **4.8×** | **2.05×** |
-| 256 typed TSX components | 195.6 ms | 56.9 ms | **22.6 ms** | **8.7×** | **2.52×** |
-| Deep conditional / mapped / template types | 172.5 ms | 66.5 ms | **27.2 ms** | **6.3×** | **2.45×** |
-| Recursive generics | 194.9 ms | 86.4 ms | **18.3 ms** | **10.7×** | **4.73×** |
-| Overload resolution (1,024 calls) | 231.9 ms | 72.2 ms | **26.8 ms** | **8.7×** | **2.70×** |
-| Control-flow narrowing (256 unions) | 213.6 ms | 67.1 ms | **29.5 ms** | **7.2×** | **2.27×** |
-| Checked JavaScript with JSDoc | 273.1 ms | 66.0 ms | **37.7 ms** | **7.2×** | **1.75×** |
-| 2,048 type-predicate families | 1,196.8 ms | 409.2 ms | **255.9 ms** | **4.7×** | **1.60×** |
+| Workload | `tsc` 6.0.3 | `tsgo` 7.0.2 | Home 0.1.0 | Home vs fastest competitor |
+|---|---:|---:|---:|---:|
+| Startup (one small file) | 68.5 ms | 40.9 ms | **3.1 ms** | **13.05× faster** |
+| 256 independent files | 230.8 ms | 58.5 ms | **30.9 ms** | **1.89× faster** |
+| 128-module import chain | 142.3 ms | 50.7 ms | **28.9 ms** | **1.75× faster** |
+| 64 modules through 8 barrel re-exports | 106.5 ms | 45.4 ms | **21.6 ms** | **2.10× faster** |
+| Deep conditional / mapped / template types | 143.6 ms | 57.6 ms | **23.0 ms** | **2.50× faster** |
+| Recursive generics | 183.5 ms | 84.0 ms | **31.6 ms** | **2.66× faster** |
+| Checked JavaScript with JSDoc | 252.4 ms | **65.7 ms** | 166.5 ms | 2.53× slower |
+| Control-flow narrowing (256 unions) | 212.2 ms | **64.3 ms** | 216.8 ms | 3.37× slower |
+| 256 type-predicate families | 268.2 ms | **78.8 ms** | 694.4 ms | 8.81× slower |
+| 2,048 type-predicate families | 1,211.0 ms | **442.8 ms** | 44,012.1 ms | 99.40× slower |
 
-Home had the lowest mean on **20 / 20** workloads and won **600 / 600** paired
-rounds, with every paired 95% confidence interval favoring Home. A separate
-Linux ARM64 run (Debian Bookworm container) also has Home fastest on 20 / 20,
-from **1.02×** (checked JS, a near tie) to **21.7×** (startup) versus `tsgo`.
+Home has the lowest median on **8 / 20** admitted workloads. The complete
+table, methodology, machine and toolchain versions are in
+[TypeScript performance](docs/docs/TS_PERFORMANCE.md). The current regressions
+are tracked in [#837](https://github.com/home-lang/home/issues/837); the older
+20/20 claim has been removed rather than mixed with current-source results.
 
 These numbers were measured with the standalone compiler build
 (`zig build home-tsc`). `home tsc` runs the same compiler from inside the full
 `home` binary, which adds some process-startup cost that has not been
 benchmarked yet. Expect it to show mostly in the `startup` row.
-
-<details>
-<summary>All 20 workloads (macOS ARM64, ± sample standard deviation)</summary>
-
-| Workload | `tsc` 6.0.3 | `tsgo` 7.0.2 | Home | Home vs fastest |
-|---|---:|---:|---:|---:|
-| `checkjs_jsdoc` | 273.1 ± 28.9 ms | 66.0 ± 4.8 ms | **37.7 ± 2.3 ms** | **1.75×** |
-| `class_hierarchy` | 220.9 ± 28.4 ms | 59.1 ± 1.9 ms | **27.5 ± 3.4 ms** | **2.15×** |
-| `commonjs_graph` | 199.1 ± 29.8 ms | 58.5 ± 3.7 ms | **31.2 ± 3.2 ms** | **1.87×** |
-| `control_flow` | 213.6 ± 11.8 ms | 67.1 ± 5.6 ms | **29.5 ± 1.9 ms** | **2.27×** |
-| `deep_types` | 172.5 ± 21.2 ms | 66.5 ± 8.9 ms | **27.2 ± 6.1 ms** | **2.45×** |
-| `destructuring` | 160.8 ± 12.9 ms | 54.9 ± 5.4 ms | **16.8 ± 0.8 ms** | **3.27×** |
-| `generic_calls` | 207.5 ± 17.8 ms | 61.2 ± 2.8 ms | **25.2 ± 1.2 ms** | **2.43×** |
-| `import_graph` | 159.3 ± 19.2 ms | 56.8 ± 6.5 ms | **27.7 ± 6.1 ms** | **2.05×** |
-| `interface_composition` | 238.8 ± 40.9 ms | 74.0 ± 9.5 ms | **39.8 ± 7.2 ms** | **1.86×** |
-| `many_files` | 267.8 ± 27.0 ms | 68.8 ± 5.0 ms | **28.7 ± 7.6 ms** | **2.40×** |
-| `null_safe_access` | 221.6 ± 13.5 ms | 65.8 ± 5.1 ms | **36.2 ± 2.8 ms** | **1.82×** |
-| `overload_resolution` | 231.9 ± 11.4 ms | 72.2 ± 3.5 ms | **26.8 ± 1.1 ms** | **2.70×** |
-| `recursive_generics` | 194.9 ± 26.4 ms | 86.4 ± 8.8 ms | **18.3 ± 2.5 ms** | **4.73×** |
-| `reexport_graph` | 108.1 ± 19.9 ms | 45.8 ± 2.6 ms | **22.3 ± 2.6 ms** | **2.05×** |
-| `startup` | 75.5 ± 4.6 ms | 45.8 ± 3.3 ms | **3.9 ± 0.4 ms** | **11.87×** |
-| `structural_objects` | 212.4 ± 18.0 ms | 65.4 ± 5.7 ms | **25.6 ± 1.3 ms** | **2.56×** |
-| `tsx_components` | 195.6 ± 28.5 ms | 56.9 ± 12.2 ms | **22.6 ± 3.8 ms** | **2.52×** |
-| `type_predicates` | 275.2 ± 22.2 ms | 80.8 ± 5.9 ms | **34.0 ± 2.5 ms** | **2.38×** |
-| `type_predicates_large` | 1196.8 ± 150.0 ms | 409.2 ± 31.1 ms | **255.9 ± 16.6 ms** | **1.60×** |
-| `variadic_tuples` | 307.6 ± 63.5 ms | 89.7 ± 7.6 ms | **37.1 ± 4.1 ms** | **2.42×** |
-
-Measured 2026-09-05 at `e4e9d16c2`, raw result `20260905T225537Z`.
-
-</details>
 
 **How the benchmark stays fair.** Every compiler gets the same generated
 project and `--noEmit -p <same tsconfig.json>` with `strict` on. Before any
@@ -178,11 +149,13 @@ project. Reproduce them yourself:
 ./bench/vs_tsgo/run.sh setup && ./bench/vs_tsgo/run.sh corpus
 ./bench/vs_tsgo/run.sh cold --runs 30 --warmup 3
 ./bench/vs_tsgo/run.sh report
+./bench/vs_tsgo/run.sh evidence
 ```
 
-[TypeScript performance](docs/docs/TS_PERFORMANCE.md) has the Linux results,
-workload definitions, per-change optimization evidence (rejected probes
-included), and the real-world correctness audits.
+The [raw evidence archive](bench/vs_tsgo/evidence/20261007T141452Z.tar.gz)
+contains all 600 byte-for-byte Hyperfine round files, normalized metadata, and
+checksums. Its SHA-256 is
+`7ff6a7a0a7d9ee3cb19269274abe70a79566e5a32c45c0c0ed981488257f4a15`.
 
 ### Real-world TypeScript correctness gates
 
@@ -456,7 +429,7 @@ Conservative on purpose: anything not exercised by an example or a test stays
 | Area | Status | Detail |
 |---|---|---|
 | Lexer, parser, type inference | Usable today | [Capability matrix](https://home-lang.org/docs/CAPABILITY_MATRIX) |
-| TypeScript front end (`home tsc`) | Usable today; fastest on 20 / 20 benchmark workloads | [TypeScript performance](docs/docs/TS_PERFORMANCE.md) |
+| TypeScript front end (`home tsc`) | Usable today; lowest current median on 8 / 20 admitted benchmark workloads | [TypeScript performance](docs/docs/TS_PERFORMANCE.md) |
 | TypeScript conformance (byte-exact) | 2,960 / 2,960 — 100% in one full leading-prefix run | [TypeScript parity](https://home-lang.org/docs/PARITY-STATUS#typescript-parity--home-tsc-vs-tsc--tsgo) |
 | Promise chain and readonly `Promise.all` inference | Exact TS2322 controls; 4,410 / 4,410 checker tests | [Untimed validation](docs/docs/TS_PERFORMANCE.md#promise-chain-and-readonly-promiseall-inference-untimed) |
 | TypeScript diagnostic codes emitted | 1,620 / 2,079; **0 reachable targets left** | [Diagnostic reachability](https://home-lang.org/docs/TS_DIAGNOSTIC_REACHABILITY) |

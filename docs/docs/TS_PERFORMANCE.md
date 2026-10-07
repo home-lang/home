@@ -10,100 +10,65 @@ Ongoing coverage and optimization work is tracked in
 
 ## Current snapshot
 
-### Current-source focused confirmation (2026-09-11)
+### Current-source full-suite measurement (2026-10-07)
 
-Result `20260911T033015Z` measures the two historically narrowest Apple ARM64
-rows using compiler source `18f8dab8a` and the stripped ReleaseFast build path
-published in `11a38aa95`. The host was Mac14,9 with 16 GiB RAM and 10 cores,
-running macOS 26.3.1 arm64. The harness admitted both unchanged generated
-projects before timing, ran 30 fresh processes after three warmups in rotating
-compiler order, retained all 180 samples, and verified compiler and tool hashes
-unchanged before admission and after measurement.
+Result `20261007T141452Z` measures source commit `6c2abccbf` with the stripped
+ReleaseFast build. The host was an Apple M2 Pro / Mac14,9 with 10 logical
+cores, running macOS 26.3.1 (Darwin 25.3.0) arm64. The harness admitted all 20
+unchanged generated projects before timing, ran 30 fresh processes per
+compiler after three warmups in rotating order, retained all 600 round files /
+1,800 successful samples, and verified every compiler and measurement-tool
+hash before admission and after measurement.
 
-| Workload | TypeScript 6.0.3 | Native TypeScript 7.0.2 | Home 0.1.0 | Home vs fastest competitor |
+| Workload | tsc 6.0.3 median | native TS 7.0.2 median | Home 0.1.0 median | Home vs fastest competitor |
 |---|---:|---:|---:|---:|
-| `checkjs_jsdoc` | 270.0 ± 54.1 ms | 69.2 ± 3.7 ms | **39.0 ± 1.4 ms** | **1.77× faster** |
-| `type_predicates_large` | 1257.2 ± 104.6 ms | 421.8 ± 20.1 ms | **288.0 ± 15.3 ms** | **1.46× faster** |
+| `checkjs_jsdoc` | 252.4 ms | **65.7 ms** | 166.5 ms | 2.53× slower |
+| `class_hierarchy` | 212.2 ms | **59.4 ms** | 198.7 ms | 3.34× slower |
+| `commonjs_graph` | 183.9 ms | 59.6 ms | **42.2 ms** | **1.41× faster** |
+| `control_flow` | 212.2 ms | **64.3 ms** | 216.8 ms | 3.37× slower |
+| `deep_types` | 143.6 ms | 57.6 ms | **23.0 ms** | **2.50× faster** |
+| `destructuring` | 163.7 ms | **54.1 ms** | 81.2 ms | 1.50× slower |
+| `generic_calls` | 195.4 ms | **59.4 ms** | 84.2 ms | 1.42× slower |
+| `import_graph` | 142.3 ms | 50.7 ms | **28.9 ms** | **1.75× faster** |
+| `interface_composition` | 234.0 ms | **72.2 ms** | 204.2 ms | 2.83× slower |
+| `many_files` | 230.8 ms | 58.5 ms | **30.9 ms** | **1.89× faster** |
+| `null_safe_access` | 238.4 ms | **69.1 ms** | 328.4 ms | 4.75× slower |
+| `overload_resolution` | 237.3 ms | **75.9 ms** | 178.9 ms | 2.36× slower |
+| `recursive_generics` | 183.5 ms | 84.0 ms | **31.6 ms** | **2.66× faster** |
+| `reexport_graph` | 106.5 ms | 45.4 ms | **21.6 ms** | **2.10× faster** |
+| `startup` | 68.5 ms | 40.9 ms | **3.1 ms** | **13.05× faster** |
+| `structural_objects` | 214.4 ms | **65.3 ms** | 121.4 ms | 1.86× slower |
+| `tsx_components` | 181.2 ms | 51.8 ms | **41.2 ms** | **1.26× faster** |
+| `type_predicates` | 268.2 ms | **78.8 ms** | 694.4 ms | 8.81× slower |
+| `type_predicates_large` | 1,211.0 ms | **442.8 ms** | 44,012.1 ms | 99.40× slower |
+| `variadic_tuples` | 287.6 ms | **87.9 ms** | 209.7 ms | 2.38× slower |
 
-Values are mean ± sample standard deviation. This focused confirmation does
-not replace the complete 20-workload snapshot below and does not establish
-cross-platform leadership. It identifies large type-predicate scaling as the
-narrower current-source lead; follow-up profiling is tracked in
-[#733](https://github.com/home-lang/home/issues/733). The stripped build used
-2,942 MB peak supervised tree footprint; benchmark execution used 452 MB.
-Current-source full-suite execution and the disabled GitHub Actions runner
-remain tracked in [#732](https://github.com/home-lang/home/issues/732).
+Home has the lowest median on **8/20** admitted workloads. This is current
+measurement, not a universal performance claim. The twelve regressions,
+including the 99.40× large-predicate loss, are tracked in
+[#837](https://github.com/home-lang/home/issues/837). Older 20/20 snapshots
+were measured from older compiler sources and are not used as current claims.
 
-### Admission correction: normal diagnostic exits (2026-09-11)
+The [evidence archive](https://github.com/home-lang/home/raw/main/bench/vs_tsgo/evidence/20261007T141452Z.tar.gz)
+contains all 600 byte-for-byte Hyperfine round files, metadata with repository
+paths normalized to `$REPO`, and SHA-256 checksums. Archive SHA-256:
+`7ff6a7a0a7d9ee3cb19269274abe70a79566e5a32c45c0c0ed981488257f4a15`.
+The measured `home-tsc` executable SHA-256 is
+`bbb407f640151df4d15f856d3a78d1e3f42693c3543f5328d985c8975df5564f`.
+Node was 24.4.1, Hyperfine 1.20.0, and Python 3.12.4. The guarded build peaked
+at 3,044 MB tree footprint; benchmark execution peaked at 465 MB.
 
-[Issue #728](https://github.com/home-lang/home/issues/728), under #416, tightens
-the negative controls for `type_predicates`, `type_predicates_large`, and
-`destructuring`. They now require exit status 1 or 2 as well as the exact
-expected diagnostic-code multiset. Previously, any nonzero status qualified
-when the codes matched, including a compiler crash after printing diagnostics.
+All values above are medians of every retained sample. Ratios use unrounded
+medians and the faster of `tsc` and native TS 7. Schema-3 admission still
+requires normal diagnostic exits and exact negative-control code multisets;
+a crash after printing diagnostics does not qualify. No failed or slow sample
+was removed or rerun.
 
-The regression matrix covers all three workloads with complete, incomplete,
-and empty diagnostics at statuses 0, 1, 2, 3, 124, SIGABRT, and SIGSEGV: 63
-admission decisions. Only the six complete-diagnostic cases at status 1 or 2
-qualify. These are untimed harness controls using simulated process outcomes,
-not new compiler measurements. Historical timing samples below are retained;
-this correction does not revalidate them or establish a new speedup.
+### Historical optimization journal
 
-### Retained timing snapshot
-
-Measured 2026-09-05 at commit `e4e9d16c2` on an Apple M3 Pro MacBook Pro
-(11 cores, 18 GB RAM, arm64, macOS 27.0). Each value is the mean and sample
-standard deviation of 30 new compiler processes after three warmup rounds.
-The complete raw-result identifier is `20260905T225537Z`. The runner first
-admitted all 20 selected workloads against version-checked TS **6.0.3**, native
-TS **7.0.2**, and Home. Native TS 7 and `tsgo` are one competitor. All **600
-round files / 1,800 successful finite samples** are retained without filtering.
-
-| Workload | tsc 6.0.3 | native TS 7.0.2 | Home 0.1.0 | Home vs fastest competitor |
-|---|---:|---:|---:|---:|
-| `checkjs_jsdoc` | 273.1 ± 28.9 ms | 66.0 ± 4.8 ms | **37.7 ± 2.3 ms** | **1.75× faster** |
-| `class_hierarchy` | 220.9 ± 28.4 ms | 59.1 ± 1.9 ms | **27.5 ± 3.4 ms** | **2.15× faster** |
-| `commonjs_graph` | 199.1 ± 29.8 ms | 58.5 ± 3.7 ms | **31.2 ± 3.2 ms** | **1.87× faster** |
-| `control_flow` | 213.6 ± 11.8 ms | 67.1 ± 5.6 ms | **29.5 ± 1.9 ms** | **2.27× faster** |
-| `deep_types` | 172.5 ± 21.2 ms | 66.5 ± 8.9 ms | **27.2 ± 6.1 ms** | **2.45× faster** |
-| `destructuring` | 160.8 ± 12.9 ms | 54.9 ± 5.4 ms | **16.8 ± 0.8 ms** | **3.27× faster** |
-| `generic_calls` | 207.5 ± 17.8 ms | 61.2 ± 2.8 ms | **25.2 ± 1.2 ms** | **2.43× faster** |
-| `import_graph` | 159.3 ± 19.2 ms | 56.8 ± 6.5 ms | **27.7 ± 6.1 ms** | **2.05× faster** |
-| `interface_composition` | 238.8 ± 40.9 ms | 74.0 ± 9.5 ms | **39.8 ± 7.2 ms** | **1.86× faster** |
-| `many_files` | 267.8 ± 27.0 ms | 68.8 ± 5.0 ms | **28.7 ± 7.6 ms** | **2.40× faster** |
-| `null_safe_access` | 221.6 ± 13.5 ms | 65.8 ± 5.1 ms | **36.2 ± 2.8 ms** | **1.82× faster** |
-| `overload_resolution` | 231.9 ± 11.4 ms | 72.2 ± 3.5 ms | **26.8 ± 1.1 ms** | **2.70× faster** |
-| `recursive_generics` | 194.9 ± 26.4 ms | 86.4 ± 8.8 ms | **18.3 ± 2.5 ms** | **4.73× faster** |
-| `reexport_graph` | 108.1 ± 19.9 ms | 45.8 ± 2.6 ms | **22.3 ± 2.6 ms** | **2.05× faster** |
-| `startup` | 75.5 ± 4.6 ms | 45.8 ± 3.3 ms | **3.9 ± 0.4 ms** | **11.87× faster** |
-| `structural_objects` | 212.4 ± 18.0 ms | 65.4 ± 5.7 ms | **25.6 ± 1.3 ms** | **2.56× faster** |
-| `tsx_components` | 195.6 ± 28.5 ms | 56.9 ± 12.2 ms | **22.6 ± 3.8 ms** | **2.52× faster** |
-| `type_predicates` | 275.2 ± 22.2 ms | 80.8 ± 5.9 ms | **34.0 ± 2.5 ms** | **2.38× faster** |
-| `type_predicates_large` | 1196.8 ± 150.0 ms | 409.2 ± 31.1 ms | **255.9 ± 16.6 ms** | **1.60× faster** |
-| `variadic_tuples` | 307.6 ± 63.5 ms | 89.7 ± 7.6 ms | **37.1 ± 4.1 ms** | **2.42× faster** |
-
-Home records lower means on **20/20 admitted workloads** and lower paired times
-in **600/600 rounds**. Every row's paired 95% confidence interval for the
-fastest-competitor-minus-Home difference is above zero. The narrowest mean
-lead is **1.60×** on `type_predicates_large`; this is still not evidence of
-universal leadership. These are local
-synthetic results; real projects, other platforms, and broader rejection
-coverage remain separate validation work. Historical snapshots, including
-losses, remain in the checkpoint sections below and are not averaged into this
-table.
-
-One unrelated single-core `zig-js` lifecycle fuzz process ran throughout this
-screen, and the host was not idle. The round-robin order places every compiler
-in every position equally; no sample or workload was rerun or removed. The
-contention is disclosed because absolute times are host-specific even though
-all 600 paired comparisons and their intervals favor Home.
-
-The comparison column always uses the faster of `tsc` and `tsgo`. Ratios
-rounding to `1.00×` are labeled near ties in either direction, not directional
-wins. This is a display-resolution rule, not a statistical significance test;
-other directional labels also compare means, not certainty. These are local
-synthetic measurements, not a claim that every real project or machine has
-the same speedup.
+The sections below retain dated A/B investigations, including rejected ideas.
+They describe the source revisions named in each section and must not be read
+as the current full-suite result above.
 
 ### Contextual cache descendant index
 
