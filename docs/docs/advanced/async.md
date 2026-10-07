@@ -1,6 +1,14 @@
+---
+title: Async Programming
+description: Explore Home's developing async/await model, futures, tasks, channels, streams, synchronization, cancellation, and runtime configuration.
+---
+
 # Async Programming
 
-Home provides first-class async/await support for writing efficient concurrent code. The async runtime is designed for high-performance I/O-bound applications while maintaining the language's safety guarantees.
+Home's async/await implementation is in progress. This guide documents the
+intended concurrency model and the syntax as it lands; check the
+[capability matrix](/docs/CAPABILITY_MATRIX) before relying on a feature in
+production.
 
 ## Overview
 

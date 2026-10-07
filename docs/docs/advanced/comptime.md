@@ -1,6 +1,14 @@
+---
+title: Compile-Time Evaluation
+description: Explore Home's developing compile-time evaluation model, including const functions, comptime blocks, reflection, validation, and code generation.
+---
+
 # Compile-Time Evaluation
 
-Home provides powerful compile-time evaluation capabilities, allowing computation to happen during compilation rather than at runtime. This enables zero-cost abstractions, static verification, and optimized code generation.
+Home's compile-time evaluation implementation is in progress. This guide
+documents the intended const-evaluation and comptime model; check the
+[capability matrix](/docs/CAPABILITY_MATRIX) before relying on a feature in
+production.
 
 ## Overview
 

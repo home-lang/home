@@ -1,6 +1,14 @@
+---
+title: Memory Safety
+description: Explore Home's developing ownership and borrowing model, lifetimes, allocation, smart pointers, interior mutability, and unsafe boundaries.
+---
+
 # Memory Safety
 
-Home provides memory safety without garbage collection through a combination of ownership, borrowing, and lifetime analysis. This approach catches memory errors at compile time while maintaining predictable performance.
+Home's ownership, move checking, and borrow checking are in progress. This
+guide documents the intended memory model and safety boundaries; check the
+[capability matrix](/docs/CAPABILITY_MATRIX) before relying on a feature in
+production.
 
 ## Overview
 

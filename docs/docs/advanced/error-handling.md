@@ -1,6 +1,14 @@
+---
+title: Error Handling
+description: Explore Home's developing Result-based error model, propagation, conversion, context, panic boundaries, try blocks, and recovery patterns.
+---
+
 # Error Handling
 
-Home provides a comprehensive error handling system that combines the explicitness of Result types with the convenience of modern language features. This approach ensures errors are never silently ignored while maintaining ergonomic code.
+Home's Result types and `?` propagation are in progress. This guide documents
+the intended explicit error model and its ergonomic syntax; check the
+[capability matrix](/docs/CAPABILITY_MATRIX) before relying on a feature in
+production.
 
 ## Overview
 

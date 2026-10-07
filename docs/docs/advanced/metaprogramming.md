@@ -1,6 +1,14 @@
+---
+title: Metaprogramming
+description: Explore Home's developing comptime and macro facilities for reflection, code generation, derive behavior, DSLs, and build-time generation.
+---
+
 # Metaprogramming
 
-Metaprogramming in Home enables writing code that generates, analyzes, or transforms other code. This powerful capability allows for reducing boilerplate, creating domain-specific languages, and implementing advanced abstractions.
+Home's comptime and macro facilities are in progress. This guide documents the
+intended reflection and code-generation model; check the
+[capability matrix](/docs/CAPABILITY_MATRIX) before relying on a feature in
+production.
 
 ## Overview
 
