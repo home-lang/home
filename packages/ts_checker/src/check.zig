@@ -78785,7 +78785,7 @@ pub const Checker = struct {
                             const args = hir_mod.typeRefArgs(self.hir, type_node);
                             for (args) |arg| _ = try self.lowererLowerWithTypeParams(arg);
                             try self.reportCannotFindNameOnce(type_node, r.name);
-                            return types.Primitive.any;
+                            return self.diagnosedAnyRecovery(type_node, TsCodes.cannot_find_name);
                         }
                         if (self.type_arg_lower_in_progress.contains(type_node) and
                             !(self.mapped_property_eval_depth > 0 and
@@ -267620,15 +267620,22 @@ test "checker: exported virtual modules do not share generic type aliases withou
         \\export type StringKeyOf<TObj> = Extract<string, keyof TObj>;
         \\
         \\// @filename: /FromFactor.ts
+        \\import type { StringKeyOf as VisibleStringKeyOf } from "./Helpers";
         \\export type RowToColumns<TColumns> = {
         \\  [TName in StringKeyOf<TColumns>]: any;
+        \\}
+        \\export type ImportedRowToColumns<TColumns> = {
+        \\  [TName in VisibleStringKeyOf<TColumns>]: any;
         \\}
     );
     defer destroyBoundSetup(b);
     b.base.checker.setStrictFlags(.{ .declaration = true });
+    b.base.checker.setHomeRuleOptions(.{ .list_unmodeled_any = true });
     try b.base.checker.checkSourceFile(b.base.root);
     try T.expect(checkerHasCodeWithMessage(b, TsCodes.cannot_find_name, "Cannot find name 'StringKeyOf'."));
     try T.expect(!checkerHasCode(b, TsCodes.type_parameter_of_exported_mapped_object_type_private_name));
+    try T.expectEqual(@as(u32, 1), b.base.checker.unmodeled_any_sites.count());
+    try T.expectEqual(@as(usize, 1), checkerCountHomeCode(b.base, HomeRule.list_unmodeled_any.definition().code));
 }
 
 test "checker: namespaced class instance preserves qualified TS2741 target" {
