@@ -17,7 +17,7 @@
 
 The upstream pin is consistent today:
 
-- `/Users/chrisbreuer/Code/bun` HEAD:
+- `~/Code/bun` HEAD:
   `fd0b6f1a271fca0b8124b69f230b100f4d636af6`
 - `packages/runtime/UPSTREAM_SHA.txt`:
   `fd0b6f1a271fca0b8124b69f230b100f4d636af6`
@@ -44,12 +44,12 @@ Honest interpretation:
   `>100%` runtime parity.
 - Upstream Zig source presence is now complete in this main-based
   worktree. The 72-path JSC-adjacent source gap was copied from
-  `/Users/chrisbreuer/Code/bun/src/` into `packages/runtime/src/`,
+  `~/Code/bun/src/` into `packages/runtime/src/`,
   preserving relative paths and leaving zero missing upstream Zig paths.
   See
   [`BUN_ZIG_SOURCE_AUDIT_2026-05-26.md`](./BUN_ZIG_SOURCE_AUDIT_2026-05-26.md).
 - Copied Bun corpus presence is complete for the pinned checkout:
-  `/Users/chrisbreuer/Code/bun/test/**/*.test.{ts,js}` and
+  `~/Code/bun/test/**/*.test.{ts,js}` and
   `packages/runtime/test/test/**/*.test.{ts,js}` both contain
   **1720** files, with zero missing and zero extra copied test paths.
 - The last audited integrated baseline is still **552 / 1193 (~46.3%)**:
@@ -81,7 +81,7 @@ Honest interpretation:
   sys rename/vector/fstat exports, test-runner value/timespec shims, and
   WebCore/Valkey compatibility glue.
 - Verified with
-  `/Users/chrisbreuer/Code/Home/lang/pantry/.bin/zig build test -Dfilter=home_test --summary failures`.
+  `<repo>/pantry/.bin/zig build test -Dfilter=home_test --summary failures`.
   The existing compiled test set still reports **48/48 tests passed**,
   but the `home_test` compile gate is not green: latest visible frontier
   is **4 compile errors**.
@@ -115,7 +115,7 @@ source rather than treating the Rust rewrite as parity source.
 ### Faithful Zig Source Policy
 
 The source of truth for copied runtime behavior is the pinned Zig tree in
-`/Users/chrisbreuer/Code/bun`, not Bun's newer Rust refactors. When Bun
+`~/Code/bun`, not Bun's newer Rust refactors. When Bun
 replaces a Zig subsystem with Rust upstream, Home keeps the last pinned
 Zig implementation as maintained Home source until a deliberate Home
 design decision replaces it.
@@ -143,7 +143,7 @@ Porting rules for source agents:
 ### Process State
 
 **Last updated:** 2026-05-26. Bun source presence is complete for the
-pinned `/Users/chrisbreuer/Code/bun` Zig checkout, but integrated runtime
+pinned `~/Code/bun` Zig checkout, but integrated runtime
 parity remains at the last audited **552 / 1193 (~46.3%)** until a fresh
 integration audit moves it. The executable corpus ratchet has closed the
 copied bundler corpus frontier after `minimal-js`,
@@ -524,7 +524,7 @@ and native-plugin promotion:
 | `bundler/transpiler/transpiler.test.js` | Exact copied corpus file passes through `home-debug`, then joins `bundler-transpiler-bootstrap` |
 
 Fresh single-file probes on 2026-06-16 in
-`/Users/chrisbreuer/Code/Home/lang`:
+`<repo>`:
 
 | Command | Result | Current blocker |
 |---|---|---|
@@ -1158,7 +1158,7 @@ Done when:
 Every parity patch that touches runtime source should state which gate it
 advances:
 
-1. **Pin gate:** `git -C /Users/chrisbreuer/Code/bun rev-parse HEAD`
+1. **Pin gate:** `git -C ~/Code/bun rev-parse HEAD`
    matches `packages/runtime/UPSTREAM_SHA.txt`, or the mismatch is
    resolved in a separate audit/doc patch.
 2. **Copy gate:** copied files retain Bun MIT attribution and are listed

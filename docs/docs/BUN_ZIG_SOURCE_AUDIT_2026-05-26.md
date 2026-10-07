@@ -3,7 +3,7 @@
 Audit workspace: `/tmp/home-bun-parity-main`
 
 Pinned upstream:
-`/Users/chrisbreuer/Code/bun@fd0b6f1a271fca0b8124b69f230b100f4d636af6`
+`~/Code/bun@fd0b6f1a271fca0b8124b69f230b100f4d636af6`
 
 ## Summary
 
@@ -24,7 +24,7 @@ Pinned upstream:
 
 ## SQL / Valkey / DNS JSC Integration Audit
 
-- Fidelity check against `/Users/chrisbreuer/Code/bun/src`:
+- Fidelity check against `~/Code/bun/src`:
   `packages/runtime/src/sql_jsc/**` and
   `packages/runtime/src/runtime/dns_jsc/**` Zig files are byte-identical to
   their Bun upstream counterparts; only Bun's sibling Rust/Cargo files are
@@ -40,7 +40,7 @@ Pinned upstream:
   crypto, and protocol/runtime back-edges), so they should be integrated as
   follow-up chunks after narrow compatibility aliases are identified per leaf.
 - Focused gate run on 2026-05-26:
-  `/Users/chrisbreuer/Code/Home/lang/pantry/.bin/zig build test -Dfilter=home_rt -Denable_jsc=false --summary failures`
+  `<repo>/pantry/.bin/zig build test -Dfilter=home_rt -Denable_jsc=false --summary failures`
   exits 0 with the current worktree. During this audit it briefly stopped
   before the SQL/Valkey/DNS JSC chunk on an unrelated concurrent
   `runtime/cli/test/parallel/Channel.zig` Zig 0.17 whitespace parse issue;
@@ -75,7 +75,7 @@ Pinned upstream:
   invalid free-context handling, first-plugin-wins behavior, concurrency,
   and crash-name reporting.
 - The relevant copied Zig/header substrate is present. Local byte checks
-  against `/Users/chrisbreuer/Code/bun` passed for
+  against `~/Code/bun` passed for
   `packages/runtime/src/bundler/ParseTask.zig`,
   `packages/runtime/src/jsc/NodeModuleModule.zig`, and
   `packages/runtime/upstream/packages/bun-native-bundler-plugin-api/bundler_plugin.h`.
@@ -190,9 +190,9 @@ Copied paths:
 ## Recount Commands
 
 ```sh
-git -C /Users/chrisbreuer/Code/bun rev-parse HEAD
+git -C ~/Code/bun rev-parse HEAD
 cat packages/runtime/UPSTREAM_SHA.txt
 ./scripts/measure-parity.sh --values
-find /Users/chrisbreuer/Code/bun/test -type f \( -name '*.test.ts' -o -name '*.test.js' \) | wc -l
+find ~/Code/bun/test -type f \( -name '*.test.ts' -o -name '*.test.js' \) | wc -l
 find packages/runtime/test/test -type f \( -name '*.test.ts' -o -name '*.test.js' \) | wc -l
 ```

@@ -17,7 +17,7 @@ workstreams live in [`BUN_PARITY_PLAN.md`](./BUN_PARITY_PLAN.md).
 > opt-in native `home run`, and the corpus bootstrap, but the full
 > bun-corpus gate is not yet a no-skip native runtime acceptance gate.
 > Bun's WebCore runtime source is now copied verbatim from
-> `/Users/chrisbreuer/Code/bun/src/runtime/webcore*.zig` into
+> `~/Code/bun/src/runtime/webcore*.zig` into
 > `packages/runtime/src/runtime/webcore*.zig` as source-first backlog;
 > it is not counted as JS-callable parity until wired and tested.
 > Full audit:
@@ -26,7 +26,7 @@ workstreams live in [`BUN_PARITY_PLAN.md`](./BUN_PARITY_PLAN.md).
 > [`BUN_ZIG_SOURCE_AUDIT_2026-05-26.md`](./BUN_ZIG_SOURCE_AUDIT_2026-05-26.md).
 
 Source policy: Home's Bun runtime parity tracks the pinned Zig source in
-`/Users/chrisbreuer/Code/bun` even as upstream Bun moves subsystems to
+`~/Code/bun` even as upstream Bun moves subsystems to
 Rust. Copied Zig stays in the source-presence ledger until it is
 Home-import-rewritten, Zig 0.17-clean, build-wired, and tested. Runtime
 API rows below move only when the behavior is callable through Home's JS
@@ -72,7 +72,7 @@ moving external output.
 is in progress across runtime root aliases, package-manager/patch
 substrate, HTTP/H2/H3 carriers, JSC/webcore/API object surfaces, DNS/file
 poll shims, and Zig 0.17 compatibility. The latest focused gate,
-`/Users/chrisbreuer/Code/Home/lang/pantry/.bin/zig build test -Dfilter=home_test --summary failures`,
+`<repo>/pantry/.bin/zig build test -Dfilter=home_test --summary failures`,
 still has the existing compiled **48/48 tests passing**, but fails the
 `home_test` compile step at **4 visible compile errors** after the
 follow-up runtime tranche landed WebSocket export hooks, generated socket
@@ -313,7 +313,7 @@ remains a separate single-file promotion, not a subset-array member. That
 keeps the **89 green / 0 frontier** ledger accurate while clarifying why
 a raw allowlist diff still reports `native-plugin.test.ts` as unlisted.
 
-Fresh single-file evidence from `/Users/chrisbreuer/Code/Home/lang` on
+Fresh single-file evidence from `<repo>` on
 2026-06-16 promotes the last two files into the passing ledger:
 
 | File | Result | Current blocker |
@@ -899,7 +899,7 @@ the Home corpus runner. The harness now covers `/style/styles.css`,
 HTML while CSS assets are unresolved, and recovery after creating
 `assets/bun.png`. This is still a harness-level model; true Bun parity
 continues to require porting the actual Bake CSS asset graph and HMR
-runtime from the Zig source under `/Users/chrisbreuer/Code/bun`.
+runtime from the Zig source under `~/Code/bun`.
 
 Latest measured full gate after completing the Bake CSS dev file:
 `4,013` files executed, `453` passed, `3,939` failed, `1,492`
