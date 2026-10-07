@@ -57,7 +57,7 @@ Drop-in `tsc` / `tsgo` replacement. Detailed per-feature status:
 | Multi-file program graph + parallel compile | ✅ Stable |
 | Module resolver (5 strategies + paths) | ✅ Stable |
 | Watch mode (`home tsc --watch`) | ✅ Stable |
-| LSP wire surface (`home lsp --stdio`, TypeScript and `.home`) | 🚧 53 / ~70 methods (~76%) |
+| LSP wire surface (`home lsp --stdio`, TypeScript and `.home`) | 🚧 76 / ~80 methods (~95%) |
 | `.d.hm` emit (Home declaration files) | 🚧 Basic framing |
 | Generator state-machine downlevel | 🚧 Partial |
 
@@ -70,13 +70,13 @@ Drop-in Bun replacement. Detailed per-area status:
 
 | Capability | Status |
 |---|---|
-| Bun source files ported | 🚧 552 / 1,193 (~46.3%) |
-| JSC bring-up (Phase 12.2) | 🚧 M1-M6 landed (128 files); JS-callable bridge pending |
+| Bun runtime source | 🚧 1,449 files present; 552 / 1,193 audited files integrated (~46.3%) |
+| JSC bring-up (Phase 12.2) | 🚧 JS-callable bridge live; 157 JSC source files present |
 | `node:*` namespace substrate | 🚧 28 files (`assert`, `buffer`, `events`, `fs`, `path`, `stream`, `util`, `crypto`, `process`, `string_decoder`, `tty` + bindings) |
 | `bun` compat shim (`packages/compat/`) | 🚧 16 / ~103 Tier-0/Tier-1 symbols |
-| Functional runtime (`home run app.ts`) | 🚧 Awaiting JSC JS-callable wire-up |
-| `home test` runner | 🚧 Blocked on JSC + Phase 12.8 |
-| Acceptance gate (Bun `test/` corpus 100%) | ❌ Not yet (becomes enforceable after Phase 12.2 + 12.8) |
+| Functional runtime (`home run app.ts`) | 🚧 Home JSC is live through `home eval` and opt-in native `home run`; full parity remains in progress |
+| `home test` runner | 🚧 Native runner is live; full Bun-corpus coverage remains in progress |
+| Acceptance gate (Bun `test/` corpus 100%) | ❌ Not yet; the native no-skip corpus gate is still incomplete |
 
 ## Codegen targets
 

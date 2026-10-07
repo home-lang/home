@@ -1,552 +1,68 @@
-# Standard Library
+---
+title: Standard Library Status
+description: Understand which Home standard-library capabilities are stable today, which source modules are experimental, and how to verify an API before depending on it.
+---
 
-Home's standard library provides essential modules for building applications, from collections to networking.
+# Standard library status
 
-## Overview
+Home's standard library is still being connected to the language frontend. The
+repository contains broad implementation modules, but source presence does not
+mean that a module is available end to end from a `.home` program.
 
-The standard library is organized into modules:
+The [capability matrix](/docs/CAPABILITY_MATRIX#standard-library) is the source
+of truth for support status. Unless that matrix marks a library capability as
+stable, treat it as experimental.
 
-| Module | Description |
-|--------|-------------|
-| `std::collections` | Data structures (Vec, HashMap, etc.) |
-| `std::io` | Input/output operations |
-| `std::fs` | File system operations |
-| `std::net` | Networking |
-| `std::http` | HTTP client and server |
-| `std::json` | JSON parsing and serialization |
-| `std::sync` | 🚧 Experimental synchronization surface; see the [threading status](https://github.com/home-lang/home/blob/main/packages/threading/THREADING_IMPLEMENTATION.md) |
-| `std::time` | Time and duration |
-| `std::fmt` | String formatting |
+## Stable language-facing capabilities
 
-## Collections
+| Capability | Status | Evidence boundary |
+|---|---|---|
+| Core primitives | Stable | Integers, floats, booleans, strings and arrays are exercised by language tests. |
+| String methods | Stable | Common operations such as `trim`, `upper` and `split` are covered by frontend tests. |
+| Range methods | Stable | Common operations such as `len`, `step` and `contains` are covered by frontend tests. |
 
-### Vec (Dynamic Array)
+## Experimental areas
 
-```home
-import std::collections::Vec
+| Area | Current status |
+|---|---|
+| HTTP and networking | In progress; implementation code exists, but the public Home API is not yet a stable contract. |
+| Database and SQL | In progress; do not infer availability from the Zig packages alone. |
+| Threading and synchronization | In progress; see the [threading implementation status](https://github.com/home-lang/home/blob/main/packages/threading/THREADING_IMPLEMENTATION.md). |
+| FFI and C interop | In progress. |
+| Audio, video and graphics | In progress. |
+| Kernel and OS modules | In progress and target-specific. |
 
-let mut numbers = Vec<int>.new()
-numbers.push(1)
-numbers.push(2)
-numbers.push(3)
+## Source layout
 
-print("Length: {}", numbers.len())     // 3
-print("First: {}", numbers[0])          // 1
-print("Last: {}", numbers.last())       // Some(3)
+The repository uses several layers that serve different audiences:
 
-// Iteration
-for (n in numbers) {
-  print(n)
-}
+- `packages/basics/src/` contains Zig helpers used by Home's implementation.
+- `packages/core/src/` exposes implementation-side core wrappers.
+- Packages such as `packages/net/`, `packages/database/` and
+  `packages/threading/` contain subsystem work.
+- Language examples and tests demonstrate what `.home` programs can use today.
 
-// Methods
-numbers.pop()           // Remove last
-numbers.insert(0, 0)    // Insert at index
-numbers.remove(1)       // Remove at index
-numbers.clear()         // Remove all
-```
+The first three locations are implementation evidence, not by themselves a
+language-level API guarantee. In particular, Zig imports such as
+`@import("basics")` are not Home source syntax.
 
-### HashMap
+## Verify before depending on an API
 
-```home
-import std::collections::HashMap
+For an experimental capability, check all three of these before treating it as
+usable:
 
-let mut users = HashMap<string, User>.new()
-users.insert("alice", User { name: "Alice", age: 30 })
-users.insert("bob", User { name: "Bob", age: 25 })
+1. The capability matrix describes the feature as stable.
+2. A `.home` example or test exercises the same import and call shape.
+3. The relevant test passes through the current Home CLI, not only as a Zig
+   unit test of an implementation package.
 
-// Access
-let alice = users.get("alice")  // Option<&User>
+If any layer is missing, the feature remains in progress. Please report a
+minimal reproducer in the
+[Home issue tracker](https://github.com/home-lang/home/issues).
 
-// Check existence
-if (users.contains_key("alice")) {
-  print("Found Alice")
-}
+## Related references
 
-// Iteration
-for ((key, value) in users) {
-  print("{}: {}", key, value.name)
-}
-
-// Remove
-users.remove("bob")
-```
-
-### HashSet
-
-```home
-import std::collections::HashSet
-
-let mut tags = HashSet<string>.new()
-tags.insert("rust")
-tags.insert("programming")
-tags.insert("rust")  // Duplicate ignored
-
-print("Count: {}", tags.len())  // 2
-
-// Set operations
-let other = HashSet.from(["rust", "golang"])
-let union = tags.union(&other)
-let intersection = tags.intersection(&other)
-let difference = tags.difference(&other)
-```
-
-### LinkedList
-
-```home
-import std::collections::LinkedList
-
-let mut list = LinkedList<int>.new()
-list.push_front(1)
-list.push_back(2)
-list.push_back(3)
-
-print("Front: {}", list.front())  // Some(1)
-print("Back: {}", list.back())    // Some(3)
-
-list.pop_front()  // Remove first
-list.pop_back()   // Remove last
-```
-
-## File System
-
-### Reading Files
-
-```home
-import std::fs
-
-// Read entire file as string
-let content = fs.read_to_string("config.json")?
-
-// Read as bytes
-let bytes = fs.read("image.png")?
-
-// Read lines
-for (line in fs.read_lines("data.txt")?) {
-  print(line)
-}
-```
-
-### Writing Files
-
-```home
-import std::fs
-
-// Write string
-fs.write("output.txt", "Hello, World!")?
-
-// Append
-fs.append("log.txt", "New log entry\n")?
-
-// Write bytes
-fs.write_bytes("data.bin", bytes)?
-```
-
-### File Operations
-
-```home
-import std::fs
-
-// Check existence
-if (fs.exists("config.json")) {
-  // ...
-}
-
-// File metadata
-let meta = fs.metadata("file.txt")?
-print("Size: {} bytes", meta.size)
-print("Modified: {}", meta.modified)
-
-// Copy, move, delete
-fs.copy("source.txt", "dest.txt")?
-fs.rename("old.txt", "new.txt")?
-fs.remove("temp.txt")?
-
-// Directories
-fs.create_dir("new_folder")?
-fs.create_dir_all("path/to/folder")?
-fs.remove_dir("empty_folder")?
-fs.remove_dir_all("folder_with_contents")?
-
-// List directory
-for (entry in fs.read_dir(".")?) {
-  print("{}", entry.name)
-}
-```
-
-## HTTP
-
-### HTTP Client
-
-```home
-import std::http
-
-// GET request
-let response = await http.get("https://api.example.com/users")?
-print("Status: {}", response.status)
-
-let users: []User = await response.json()?
-
-// POST with JSON
-let new_user = User { name: "Alice", email: "alice@example.com" }
-let response = await http.post("https://api.example.com/users")
-  .json(new_user)
-  .send()?
-
-// With headers
-let response = await http.get("https://api.example.com/data")
-  .header("Authorization", "Bearer token123")
-  .header("Accept", "application/json")
-  .send()?
-
-// Timeout
-let response = await http.get("https://api.example.com/slow")
-  .timeout(Duration.seconds(10))
-  .send()?
-```
-
-### HTTP Server
-
-```home
-import std::http::{Server, Response}
-
-fn main(): async {
-  let server = Server.bind(":3000")
-
-  server.get("/", |req| {
-    Response.text("Hello from Home!")
-  })
-
-  server.get("/users/:id", async |req| {
-    let id = req.param("id").parse::<int>()?
-    let user = await database.find_user(id)
-
-    match user {
-      Some(u) => Response.json(u),
-      None => Response.status(404).text("Not found")
-    }
-  })
-
-  server.post("/users", async |req| {
-    let user: User = await req.json()?
-    let created = await database.create_user(user)
-    Response.status(201).json(created)
-  })
-
-  print("Server running on http://localhost:3000")
-  await server.listen()
-}
-```
-
-## JSON
-
-### Parsing JSON
-
-```home
-import std::json
-
-// Parse string to value
-let value = json.parse("{\"name\": \"Alice\", \"age\": 30}")?
-
-// Access fields
-let name = value["name"].as_string()?
-let age = value["age"].as_int()?
-
-// Parse to typed struct
-# [derive(Deserialize)]
-struct User {
-  name: string,
-  age: int
-}
-
-let user: User = json.from_str("{\"name\": \"Alice\", \"age\": 30}")?
-```
-
-### Generating JSON
-
-```home
-import std::json
-
-# [derive(Serialize)]
-struct User {
-  name: string,
-  age: int
-}
-
-let user = User { name: "Alice", age: 30 }
-let json_string = json.to_string(&user)?  // {"name":"Alice","age":30}
-
-// Pretty print
-let pretty = json.to_string_pretty(&user)?
-```
-
-## Networking
-
-### TCP
-
-```home
-import std::net::{TcpListener, TcpStream}
-
-// Server
-fn main(): async {
-  let listener = TcpListener.bind("127.0.0.1:8080")?
-
-  while (let Ok(stream) = await listener.accept()) {
-    spawn(handle_client(stream))
-  }
-}
-
-async fn handle_client(mut stream: TcpStream) {
-  let mut buffer = [0u8; 1024]
-  let n = await stream.read(&mut buffer)?
-  await stream.write(&buffer[..n])?
-}
-
-// Client
-async fn connect() {
-  let mut stream = await TcpStream.connect("127.0.0.1:8080")?
-  await stream.write(b"Hello, server!")?
-
-  let mut buffer = [0u8; 1024]
-  let n = await stream.read(&mut buffer)?
-  print("Response: {}", String.from_utf8(&buffer[..n])?)
-}
-```
-
-### UDP
-
-```home
-import std::net::UdpSocket
-
-let socket = UdpSocket.bind("127.0.0.1:0")?
-socket.send_to(b"Hello", "127.0.0.1:8080")?
-
-let mut buffer = [0u8; 1024]
-let (n, addr) = socket.recv_from(&mut buffer)?
-print("From {}: {}", addr, String.from_utf8(&buffer[..n])?)
-```
-
-## Synchronization
-
-> [!WARNING]
-> `std::sync` is experimental. The examples below describe the intended
-> Home-language surface, not a stable compatibility guarantee. The underlying
-> primitives are currently spin-based, and blocking, fairness, and Send/Sync
-> enforcement remain incomplete; see the
-> [implementation status](https://github.com/home-lang/home/blob/main/packages/threading/THREADING_IMPLEMENTATION.md)
-> and [#806](https://github.com/home-lang/home/issues/806).
-
-### Mutex
-
-```home
-import std::sync::Mutex
-
-let counter = Mutex.new(0)
-
-spawn(|| {
-  let mut num = counter.lock()
-  _num += 1
-})
-
-spawn(|| {
-  let mut num = counter.lock()
-  _num += 1
-})
-```
-
-### RwLock
-
-```home
-import std::sync::RwLock
-
-let data = RwLock.new(vec![1, 2, 3])
-
-// Multiple readers
-spawn(|| {
-  let read = data.read()
-  print("{:?}", _read)
-})
-
-// Single writer
-spawn(|| {
-  let mut write = data.write()
-  write.push(4)
-})
-```
-
-### Channels
-
-```home
-import std::sync::channel
-
-let (tx, rx) = channel<int>()
-
-spawn(|| {
-  for (i in 0..10) {
-    tx.send(i)
-  }
-})
-
-while (let Some(n) = rx.recv()) {
-  print("Received: {}", n)
-}
-```
-
-## Time
-
-### Duration
-
-```home
-import std::time::Duration
-
-let d1 = Duration.seconds(5)
-let d2 = Duration.millis(100)
-let d3 = Duration.micros(1000)
-let d4 = Duration.nanos(1000000)
-
-let total = d1 + d2
-print("Total: {} ms", total.as_millis())
-```
-
-### Instant
-
-```home
-import std::time::Instant
-
-let start = Instant.now()
-
-// Do work...
-
-let elapsed = start.elapsed()
-print("Took {} ms", elapsed.as_millis())
-```
-
-### Sleep
-
-```home
-import std::time::{sleep, Duration}
-
-async fn delayed_action() {
-  await sleep(Duration.seconds(1))
-  print("One second later!")
-}
-```
-
-## String Formatting
-
-```home
-import std::fmt
-
-// Basic formatting
-let s = fmt.format("Hello, {}!", "World")
-
-// Positional arguments
-let s = fmt.format("{0} and {1}, {1} and {0}", "Alice", "Bob")
-
-// Named arguments
-let s = fmt.format("{name} is {age} years old", name: "Alice", age: 30)
-
-// Number formatting
-let s = fmt.format("{:.2}", 3.14159)      // "3.14"
-let s = fmt.format("{:08}", 42)            // "00000042"
-let s = fmt.format("{:x}", 255)            // "ff"
-let s = fmt.format("{:b}", 10)             // "1010"
-
-// Debug formatting
-let s = fmt.format("{:?}", some_struct)
-let s = fmt.format("{:#?}", some_struct)   // Pretty print
-```
-
-## Database
-
-### SQLite
-
-```home
-import std::database::sqlite
-
-let db = sqlite.open("app.db")?
-
-// Create table
-db.exec("CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, name TEXT)")?
-
-// Insert
-let stmt = db.prepare("INSERT INTO users (name) VALUES (?)")?
-stmt.bind(1, "Alice")
-stmt.execute()?
-
-// Query
-let rows = db.query("SELECT _ FROM users WHERE id = ?", [1])?
-for (row in rows) {
-  print("User: {}", row.get::<string>("name")?)
-}
-```
-
-## Environment
-
-```home
-import std::env
-
-// Get environment variable
-let home = env.var("HOME")?
-
-// With default
-let port = env.var("PORT").unwrap_or("8080")
-
-// Set environment variable
-env.set_var("MY_VAR", "value")
-
-// Command line arguments
-let args = env.args()
-for (arg in args) {
-  print(arg)
-}
-```
-
-## Random
-
-```home
-import std::random
-
-// Random integers
-let n = random.int(1, 100)    // 1 to 100 inclusive
-
-// Random float
-let f = random.float()         // 0.0 to 1.0
-
-// Random choice
-let items = ["apple", "banana", "cherry"]
-let choice = random.choice(&items)
-
-// Shuffle
-let mut nums = [1, 2, 3, 4, 5]
-random.shuffle(&mut nums)
-
-// UUID
-let id = random.uuid()
-```
-
-## Paths
-
-```home
-import std::path::Path
-
-let path = Path.new("/home/user/documents/file.txt")
-
-print("File name: {}", path.file_name())     // "file.txt"
-print("Extension: {}", path.extension())      // "txt"
-print("Parent: {}", path.parent())            // "/home/user/documents"
-print("Is absolute: {}", path.is_absolute()) // true
-
-// Join paths
-let new_path = path.parent().join("other.txt")
-
-// Canonicalize
-let absolute = Path.new("./relative").canonicalize()?
-```
-
-## See Also
-
-- [Getting Started](/docs/guide/getting-started) - Installation and setup
-- [Error Handling](/docs/advanced/error-handling) - Working with Result types
-- [Async Programming](/docs/advanced/async) - Async I/O patterns
-- [HomeOS Documentation](https://github.com/home-lang/homeos) - OS-level APIs
+- [Standard-library module inventory](/docs/STDLIB-MODULES)
+- [Implementation-side Basics module](/docs/BASICS_MODULE_GUIDE)
+- [Capability matrix](/docs/CAPABILITY_MATRIX)
+- [Language guide](/docs/guide/getting-started)

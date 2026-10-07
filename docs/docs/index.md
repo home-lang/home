@@ -64,11 +64,12 @@ them.
 
 ## Standard library
 
-- [Standard Library reference](/docs/reference/stdlib) - collections, files,
-  HTTP, JSON, networking, time, database.
-- [Stdlib Modules](/docs/STDLIB-MODULES) - the module-by-module index.
-- [Basics Module](/docs/BASICS_MODULE_GUIDE) - what is available without an
-  import.
+- [Standard Library status](/docs/reference/stdlib) - the stable
+  language-facing boundary and the experimental areas.
+- [Stdlib Modules](/docs/STDLIB-MODULES) - an implementation-source inventory
+  with validation caveats.
+- [Basics Zig Module](/docs/BASICS_MODULE_GUIDE) - the implementation-side Zig
+  wrapper used by explicitly wired packages.
 - [Typed ORM Guide](/docs/TYPED_ORM_GUIDE) - building a data-backed service end
   to end.
 - [Kernel Features](/docs/KERNEL_FEATURES) and
