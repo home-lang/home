@@ -9095,8 +9095,8 @@ tree's `src/v4/locales` shard was deleted by the host's periodic
 `/private/tmp` cleanup during this work, so the graph resolves one fewer
 module: it reproduces every core identity of the #688 run and differs from it
 only by `locales/he.ts:126:47` TS7006 giving way to `core/index.ts:11:26`
-TS2307. The locale shard's own identities are therefore unmeasured here and
-are re-checked when the pinned tree is restored.
+TS2307. The locale shard's own identities were unmeasured at that checkpoint;
+the restored-source audit below closes that outstanding validation item.
 
 The complete Program and checker targets pass (212 and 4,371 tests), as do
 ReleaseSafe and ReleaseFast `home-tsc` builds, `zig fmt --check`, and
@@ -9108,6 +9108,48 @@ An object literal assigned to one of these annotations still leaves its nested
 callback parameters implicitly `any` (`const s: schemas.Schema = { _zod: { run:
 (payload) => ... } }`), which both engines type. That contextual-write
 position is tracked separately.
+
+#### Restored core and locale validation (2026-10-07)
+
+The exact #688 parent `cfdec2ea3` and #751 fix `8c587f6fb` were rebuilt from
+their unchanged Git trees with Zig `0.17.0-dev.1441+d5181a9c9`, ReleaseSafe,
+and the existing symbol-stripping option. The standalone TypeScript target
+uses `enable_jsc=false` on both revisions. Both builds and every project check
+used the same 3,840 MB footprint ceiling. The unstripped parent attempt was
+stopped at 3,868 MB; stripped builds completed at 2,853 and 2,901 MB without
+raising the limit.
+
+A fresh npm Zod 4.5.2 archive matches the checked-in SHA-512 exactly and
+contains all 106 production files. The identical strict NodeNext no-emit
+configurations select the 21 core roots and 63 locale roots separately;
+ordinary import closure discovery remains enabled. Both TypeScript 6.0.3
+and native TypeScript 7.0.2 exit successfully with zero diagnostics on both
+projects. All Home runs exit normally with diagnostic status 1.
+
+| Restored historical #751 gate | Parent `cfdec2ea3` | Fix `8c587f6fb` | Complete identity multiset delta |
+|---|---:|---:|---:|
+| Core roots, all diagnostics / unique identities | 146 / 141 | **146 / 141** | **0 added; 0 removed** |
+| Locale roots, all diagnostics / unique identities | 145 / 140 | **145 / 140** | **0 added; 0 removed** |
+| TypeScript 6.0.3 and native 7.0.2 | 0 diagnostics | 0 diagnostics | both root selections accepted |
+
+The Hebrew identity `src/v4/locales/he.ts:126:47` TS7006 is present on both
+historical revisions, and the missing-module TS2307 from the deleted shard
+is absent. The complete diagnostic multisets match, including duplicates.
+Sorted unique corpus-relative `path:line:column:code` identity hashes are
+`f3d1d7e08a3a587f2b212a518f26d198f52121fff41a5f3317fc1d7674487d7e`
+for core and
+`44e4149a5a7917e0a0f802b4a85dacb42d6feeeffb55f9622daf3bc9a57a0c73`
+for locales. Home project peaks were 2,625 / 2,630 MB for core and
+2,669 / 2,600 MB for locales (parent / fix).
+
+The [checksum-covered evidence archive](https://github.com/home-lang/home/raw/main/bench/vs_tsgo/evidence/20261007T203624Z-zod-restored-751.tar.gz)
+retains all eight project-check logs, both configurations, compiler hashes,
+exit records, counts, and footprint peaks. Private path prefixes in published
+logs are normalized; diagnostic text and source excerpts are retained.
+Archive SHA-256:
+`b74d020f5b7f30507f6b39f8d8637bc32ae4c8c1fbf9649cbd3750f07d49fa91`.
+This closes #751's restored-locale acceptance gap. These historical results
+are untimed and do not replace current-source full-Zod admission under #548.
 
 ### Object literals written against imported Program types (untimed)
 

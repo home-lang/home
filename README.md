@@ -166,6 +166,17 @@ checksums. Its SHA-256 is
 | Checker-synthesized `any` provenance | Same byte-pinned Zod archive | **3 HM9002** | CI fails if the count exceeds the reviewed ceiling of 3 |
 | Zod core proxy | Zod 4.5.2, 21 production `.ts` files | 0 Home-only diagnostics; 1 shared proxy-boundary TS2307 | No Home-only identity may be added |
 
+The separate [restored-source audit for #751](docs/docs/TS_PERFORMANCE.md#restored-core-and-locale-validation-2026-10-07)
+compares the exact historical parent and fix with all locales restored:
+
+| Historical Zod 4.5.2 gate | Parent diagnostics / identities | #751 diagnostics / identities | Added identities |
+|---|---:|---:|---:|
+| Core roots | 146 / 141 | 146 / 141 | **0** |
+| Locale roots | 145 / 140 | 145 / 140 | **0** |
+
+Both pinned TypeScript engines accept these projects with zero diagnostics;
+this correctness check is untimed and does not change the current-source rows.
+
 The provenance row currently covers expression-stack exhaustion, invalid
 TypeScript and checked-JS catch-annotation recovery, TS7009 implicit-constructor
 recovery, TS2350/TS2351/TS2679 invalid-`new` recovery, TS2538 invalid index-type recovery, TS7015 numeric-index mismatch recovery, TS7017 global-`this` index
