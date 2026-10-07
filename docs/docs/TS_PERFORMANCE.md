@@ -10,7 +10,75 @@ Ongoing coverage and optimization work is tracked in
 
 ## Current snapshot
 
-### Current-source full-suite measurement (2026-10-07)
+### Expanded native-compiler measurement (2026-10-07)
+
+Result `20261007T214816Z` uses harness commit `76d1016f4` and a stripped
+ReleaseFast Home build from `9d27218fc`. It measures five compilers on one
+Apple M3 Pro / Mac15,6 with 11 logical cores, Darwin 27.0.0 arm64. Node is
+26.10.0, Hyperfine 1.20.0, and Python 3.9.6. TypeScript 7 runs as its native
+payload directly; Rust and Bun use the exact source, executable, and complete
+payload pins in the [Darwin ARM64 registry](https://github.com/home-lang/home/blob/main/bench/vs_tsgo/profiles/darwin-arm64.json).
+
+All five compilers pass the same 20 positive projects and 8 existing negative
+control projects each: **140/140** process admissions. The retained records
+include every command, exit, stdout, stderr, actual code, and expected code.
+Bun's single zero-error status line is parsed explicitly; diagnostics and
+unknown output are never discarded. A valid top-level throw separately
+confirmed that its canonical project check does not execute source.
+
+The complete run retains 30 fresh processes per compiler and workload after
+three warmups, with command order rotating each round: **600 raw round files
+and 3,000 successful samples**. Executables, payload inventories, generated
+projects, harness code, and project context are unchanged before admission
+and after measurement. No failed or slow sample was removed or rerun.
+
+| Workload | tsc 6.0.3 median | native TS 7.0.2 median | Home median | Rust tsc-rs 0.1.0 median | Bun canary median | Home vs fastest competitor |
+|---|---:|---:|---:|---:|---:|---:|
+| `checkjs_jsdoc` | 195.9 ms | 22.4 ms | 29.4 ms | 21.9 ms | 13.5 ms | 2.17× slower |
+| `class_hierarchy` | 178.8 ms | 20.5 ms | 22.8 ms | 17.1 ms | 13.3 ms | 1.71× slower |
+| `commonjs_graph` | 146.0 ms | 17.5 ms | 24.2 ms | 14.0 ms | 11.8 ms | 2.05× slower |
+| `control_flow` | 186.8 ms | 26.9 ms | 25.6 ms | 23.8 ms | 16.3 ms | 1.57× slower |
+| `deep_types` | 132.7 ms | 21.7 ms | 21.6 ms | 14.2 ms | 13.5 ms | 1.61× slower |
+| `destructuring` | 134.0 ms | 16.2 ms | 14.7 ms | 14.2 ms | 10.7 ms | 1.38× slower |
+| `generic_calls` | 178.5 ms | 23.0 ms | 23.2 ms | 19.2 ms | 14.6 ms | 1.58× slower |
+| `import_graph` | 129.9 ms | 15.0 ms | 20.3 ms | 11.2 ms | 14.8 ms | 1.82× slower |
+| `interface_composition` | 198.0 ms | 31.0 ms | 33.9 ms | 23.2 ms | 17.5 ms | 1.94× slower |
+| `many_files` | 198.2 ms | 22.7 ms | 21.8 ms | 16.0 ms | 13.2 ms | 1.66× slower |
+| `null_safe_access` | 189.0 ms | 26.2 ms | 32.3 ms | 22.5 ms | 16.3 ms | 1.98× slower |
+| `overload_resolution` | 199.1 ms | 32.6 ms | 23.7 ms | 26.5 ms | 20.2 ms | 1.17× slower |
+| `recursive_generics` | 150.2 ms | 39.4 ms | 14.3 ms | 32.3 ms | 9.7 ms | 1.48× slower |
+| `reexport_graph` | 97.7 ms | 10.5 ms | 19.3 ms | 8.9 ms | 8.6 ms | 2.24× slower |
+| `startup` | 64.9 ms | 7.5 ms | **2.9 ms** | 5.8 ms | 6.3 ms | **1.96× faster** |
+| `structural_objects` | 178.7 ms | 25.9 ms | 22.0 ms | 21.6 ms | 16.4 ms | 1.34× slower |
+| `tsx_components` | 164.9 ms | 16.2 ms | 20.5 ms | 14.4 ms | 10.6 ms | 1.93× slower |
+| `type_predicates` | 227.0 ms | 38.9 ms | 31.9 ms | 32.9 ms | 22.9 ms | 1.39× slower |
+| `type_predicates_large` | 1006.0 ms | 305.0 ms | 240.1 ms | 267.6 ms | 159.8 ms | 1.50× slower |
+| `variadic_tuples` | 244.7 ms | 44.8 ms | 31.0 ms | 33.2 ms | 19.1 ms | 1.62× slower |
+
+Home has the lowest median on **1/20** workloads and is faster than the direct
+native TypeScript 7 command on **11/20**. Bun is fastest on 18 workloads and
+Rust on `import_graph`; Home leads `startup`. These counts use unrounded
+medians from every retained sample. Ratios rounded to 1.00× are near ties,
+not directional or statistical-significance claims.
+
+The [evidence archive](https://github.com/home-lang/home/raw/main/bench/vs_tsgo/evidence/20261007T214816Z.tar.gz)
+contains all 600 byte-identical Hyperfine round files, 140 retained admission
+records, metadata, and 603 verified payload checksums. Published metadata and
+admission normalize only known private path prefixes. Archive SHA-256:
+`90d1b8094cc95fe8ab98195f96a8e6d93fe4777003146f28c8124cc49aa4aefc`.
+Home executable SHA-256:
+`e3dc03289ef1e34b2273b9b26951f43bad8940614d032f3e40aceaf461600ab3`.
+The guarded build peaked at 3,027 MB; the full measurement run at 385 MB.
+
+This is the current expanded baseline under
+[#838](https://github.com/home-lang/home/issues/838), not a universal lead.
+The C++ repository selection remains outstanding. Older measurements used
+different hosts, competitor sets, and TypeScript 7 launchers; their numerical
+differences are not regression evidence. The largest measured relative gap
+is the unchanged re-export graph, tracked for profiling and improvement in
+[#839](https://github.com/home-lang/home/issues/839).
+
+### Earlier three-compiler measurement (2026-10-07)
 
 Result `20261007T183321Z` measures source commit `5f90572c7` with the stripped
 ReleaseFast build. The host was an Apple M2 Pro / Mac14,9 with 10 logical
@@ -43,8 +111,9 @@ hash before admission and after measurement.
 | `type_predicates_large` | 1,229.8 ms | 419.7 ms | **308.3 ms** | **1.36× faster** |
 | `variadic_tuples` | 360.1 ms | 95.1 ms | **40.8 ms** | **2.33× faster** |
 
-Home has the lowest median on **20/20** admitted workloads. This is current
-measurement, not a universal performance claim. The large-predicate scaling
+Home had the lowest median on **20/20** admitted workloads in this earlier
+three-compiler run, which used the TypeScript 7 npm launcher. It is retained
+as historical measurement, not a universal performance claim. The large-predicate scaling
 regression tracked in [#837](https://github.com/home-lang/home/issues/837) was
 fixed by the lazy forward-overload root index. Older snapshots were measured
 from older compiler sources and are not used as current claims.

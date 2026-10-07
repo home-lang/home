@@ -72,21 +72,22 @@ report refuses results whose provenance changed.
 
 | Platform | Result ID | Current outcome | Evidence and report |
 |---|---|---:|---|
-| Apple M2 Pro / macOS arm64 | `20261007T183321Z` | Home lower median on **20/20** | [snapshot](../../docs/docs/TS_PERFORMANCE.md#current-snapshot) · [raw evidence](evidence/20261007T183321Z.tar.gz) |
+| Apple M3 Pro / macOS arm64, five compilers | `20261007T214816Z` | Home lower median on **1/20**; faster than native TS 7 on **11/20** | [snapshot](../../docs/docs/TS_PERFORMANCE.md#current-snapshot) · [raw evidence](evidence/20261007T214816Z.tar.gz) |
 
-The checkpoint compares TS 6.0.3 with the single native TS 7.0.2 (`tsgo`)
-competitor, retains every measured sample, and does not replace real-project
+The checkpoint compares TS 6.0.3, direct native TS 7.0.2 (`tsgo`), Home,
+Rust tsc-rs 0.1.0, and pinned Bun canary, retains every sample, and does not replace real-project
 benchmarking or measure unlisted platforms. Older macOS and Linux measurements
 remain in the dated optimization journal; they are historical, not mixed into
 the current table, and not relabeled as medians without their raw samples.
 
-The current run measures source `5f90572c7` on an Apple M2 Pro / Mac14,9 with
-10 logical cores and macOS 26.3.1 arm64. It retains all 30 fresh processes per
-compiler and workload after three warmups, totaling 600 round files and 1,800
-successful samples. The narrowest Home median lead is 1.36× on
-`type_predicates_large`; the widest is 12.62× on `startup`. The earlier
-`20261007T141452Z` 8/20 result remains in the historical journal as the
-pre-fix measurement for [#837](https://github.com/home-lang/home/issues/837).
+The current run uses harness `76d1016f4` and Home source `9d27218fc` on an
+Apple M3 Pro / Mac15,6 with 11 logical cores and Darwin 27.0.0 arm64. It
+retains 30 fresh processes per compiler and workload after three warmups:
+600 round files, 3,000 successful samples, and 140 successful admissions.
+Home leads `startup` by 1.96×; its largest relative loss is `reexport_graph`
+at 2.24× slower. Earlier three-compiler snapshots used different hosts and
+TypeScript 7 launcher modes; they remain dated history rather than regression
+comparisons or current expanded-matrix claims.
 
 Schema-3 reports can include additional compilers under
 [#838](https://github.com/home-lang/home/issues/838). Every declared compiler
@@ -94,8 +95,9 @@ must appear exactly once in every rotating-order round, with one successful
 sample and verified executable provenance. The table includes every compiler
 and compares Home with the fastest competitor across the entire measured
 set. Older three-compiler archives retain their original validation rules.
-Candidate discovery and admission do not add timing claims to the current
-checkpoint; an expanded measurement run is still required.
+Candidate discovery and admission alone do not add timing claims. The current
+checkpoint above is the completed expanded measurement; the C++ repository
+selection remains outstanding under #838.
 
 The separate global-declaration admission audit is **untimed**:
 
