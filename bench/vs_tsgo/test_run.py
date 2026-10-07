@@ -87,6 +87,32 @@ class LatestResultsTests(unittest.TestCase):
             self.assertEqual(expected, run.latest_results())
 
 
+class HostMetadataTests(unittest.TestCase):
+    def test_macos_host_records_cpu_machine_and_core_count(self):
+        values = {"machdep.cpu.brand_string": "Apple M3 Pro", "hw.model": "Mac14,9"}
+        with mock.patch.object(run.platform, "system", return_value="Darwin"), mock.patch.object(
+            run.platform, "release", return_value="25.3.0"
+        ), mock.patch.object(run.platform, "machine", return_value="arm64"), mock.patch.object(
+            run.os, "cpu_count", return_value=10
+        ), mock.patch.object(run, "sysctl_value", side_effect=lambda name: values.get(name)):
+            self.assertEqual(
+                {
+                    "os": "Darwin",
+                    "os_release": "25.3.0",
+                    "architecture": "arm64",
+                    "cpu_model": "Apple M3 Pro",
+                    "logical_cores": 10,
+                    "machine_model": "Mac14,9",
+                },
+                run.host_metadata(),
+            )
+
+    def test_missing_core_count_stops_before_measurement(self):
+        with mock.patch.object(run.os, "cpu_count", return_value=None):
+            with self.assertRaisesRegex(SystemExit, "logical core count"):
+                run.host_metadata()
+
+
 class ProvenanceTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
@@ -168,7 +194,10 @@ class ProvenanceTests(unittest.TestCase):
             run, "verified_compiler_versions", return_value={name: name for name in self.commands}
         ), mock.patch.object(run, "benchmark_provenance", side_effect=[before, before, after]), mock.patch.object(
             run, "validate"
-        ), mock.patch.object(run.platform, "platform", return_value="test-system"), mock.patch.object(
+        ), mock.patch.object(run, "host_metadata", return_value={
+            "os": "TestOS", "os_release": "1", "architecture": "test-machine",
+            "cpu_model": "test-processor", "logical_cores": 4,
+        }), mock.patch.object(run.platform, "platform", return_value="test-system"), mock.patch.object(
             run.platform, "machine", return_value="test-machine"
         ), mock.patch.object(run.platform, "processor", return_value="test-processor"), mock.patch.object(
             run.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)
@@ -180,6 +209,8 @@ class ProvenanceTests(unittest.TestCase):
         self.assertEqual(1, len(directories))
         metadata = run.json.loads((directories[0] / "metadata.json").read_text(encoding="utf-8"))
         self.assertEqual("changed", metadata["provenance"]["status"])
+        self.assertEqual(2, metadata["schema"])
+        self.assertEqual(4, metadata["host"]["logical_cores"])
         self.assertEqual(before, metadata["provenance"]["before"])
         self.assertEqual(after, metadata["provenance"]["after"])
 

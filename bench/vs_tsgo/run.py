@@ -68,6 +68,51 @@ def write(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
+def sysctl_value(name: str) -> str | None:
+    try:
+        result = subprocess.run(
+            ["sysctl", "-n", name],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return None
+    value = result.stdout.strip() if result.returncode == 0 else ""
+    return value or None
+
+
+def cpu_model() -> str:
+    if platform.system() == "Darwin":
+        return sysctl_value("machdep.cpu.brand_string") or platform.processor() or platform.machine()
+    if platform.system() == "Linux":
+        try:
+            for line in Path("/proc/cpuinfo").read_text(encoding="utf-8").splitlines():
+                key, separator, value = line.partition(":")
+                if separator and key.strip() in {"model name", "Hardware"} and value.strip():
+                    return value.strip()
+        except OSError:
+            pass
+    return platform.processor() or platform.machine()
+
+
+def host_metadata() -> dict[str, object]:
+    logical_cores = os.cpu_count()
+    if type(logical_cores) is not int or logical_cores < 1:
+        raise SystemExit("cannot determine benchmark host logical core count")
+    host: dict[str, object] = {
+        "os": platform.system(),
+        "os_release": platform.release(),
+        "architecture": platform.machine(),
+        "cpu_model": cpu_model(),
+        "logical_cores": logical_cores,
+    }
+    if platform.system() == "Darwin":
+        if machine_model := sysctl_value("hw.model"):
+            host["machine_model"] = machine_model
+    return host
+
+
 def shared_config(*, jsx: bool = False, check_js: bool = False) -> str:
     compiler_options: dict[str, object] = {
         "strict": True,
@@ -1271,10 +1316,12 @@ def cmd_cold(runs: int, warmup: int, workloads: list[str] | None = None) -> Path
     output = RESULTS / stamp
     output.mkdir(parents=True)
     metadata = {
+        "schema": 2,
         "timestamp_utc": stamp,
         "system": platform.platform(),
         "machine": platform.machine(),
         "processor": platform.processor(),
+        "host": host_metadata(),
         "runs": runs,
         "warmup": warmup,
         "schedule": "round-robin interleaved",

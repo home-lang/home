@@ -54,7 +54,7 @@ report refuses results whose provenance changed.
 
 ## Qualified checkpoints
 
-| Platform | Result ID | Home lower means | Detailed report |
+| Platform | Result ID | Historical outcome | Detailed report |
 |---|---|---:|---|
 | Apple M3 Pro / macOS arm64 | `20260905T225537Z` | 20/20 | [macOS snapshot](../../docs/docs/TS_PERFORMANCE.md#current-snapshot) |
 | Linux arm64 / pinned Bookworm container | `20260829T035150Z` | 20/20 | [Linux checkpoint](../../docs/docs/TS_PERFORMANCE.md#linux-arm64-container-checkpoint) |
@@ -182,11 +182,15 @@ establish cross-file CommonJS typing.
 - Hyperfine runs three warmups followed by ten measured processes by default.
   Each measured round contains all three compilers, with their order rotated so
   changing workstation load cannot systematically favor one compiler.
-- Compiler versions, host details, timestamp, and run counts are saved beside
-  the raw results.
-- Comparisons use the faster competitor. Ratios that round to `1.00×` are
+- Compiler versions, CPU and machine model, logical core count, operating
+  system, measurement-tool versions, timestamp, and run counts are saved
+  beside the raw results. Schema-2 reports refuse incomplete host metadata.
+- Published comparisons use the median of every retained fresh-process sample
+  and the faster competitor's median. Ratios that round to `1.00×` are
   labeled near ties in either direction; this display rule is not a statistical
-  significance test. Directional labels compare means, not certainty of a win.
+  significance test. Directional labels compare medians, not certainty of a
+  win. Historical mean-based checkpoints remain labeled as historical and must
+  not be relabeled as medians without their raw samples.
 
 The workloads cover distinct costs rather than repeating one favorable shape:
 

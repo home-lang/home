@@ -20,20 +20,22 @@ def load_results(path: Path) -> list[dict]:
 
 
 def summarize_times(times: list[float]) -> dict:
+    if not times or any(type(value) not in (int, float) or not math.isfinite(value) or value <= 0 for value in times):
+        raise ValueError("timing samples must be finite positive numbers")
     return {
-        "mean": statistics.mean(times),
-        "stddev": statistics.stdev(times) if len(times) > 1 else 0.0,
+        "median": statistics.median(times),
+        "samples": len(times),
     }
 
 
 def format_time(result: dict | None) -> str:
     if not result:
         return "—"
-    return f"{result['mean'] * 1000:.1f} ± {result['stddev'] * 1000:.1f} ms"
+    return f"{result['median'] * 1000:.1f} ms"
 
 
-def format_comparison(home_mean: float, competitor_mean: float) -> str:
-    speedup = competitor_mean / home_mean
+def format_comparison(home_median: float, competitor_median: float) -> str:
+    speedup = competitor_median / home_median
     factor = speedup if speedup >= 1 else 1 / speedup
     rounded = f"{factor:.2f}"
     # This is a display-resolution rule, not a statistical significance test.
@@ -43,12 +45,12 @@ def format_comparison(home_mean: float, competitor_mean: float) -> str:
     return f"**{rounded}× faster**" if speedup > 1 else f"{rounded}× slower"
 
 
-def format_workload_comparison(workload: str, home_mean: float, competitor_mean: float, validation_schema=None) -> str:
+def format_workload_comparison(workload: str, home_median: float, competitor_median: float, validation_schema=None) -> str:
     if workload in ("import_graph", "reexport_graph") and validation_schema not in (2, 3):
         return "Ineligible (graph types unvalidated)"
     if workload == "variadic_tuples" and validation_schema != 3:
         return "Provisional (tuple controls unvalidated)"
-    return format_comparison(home_mean, competitor_mean)
+    return format_comparison(home_median, competitor_median)
 
 
 def provenance_notice(metadata: dict) -> str:
@@ -56,6 +58,30 @@ def provenance_notice(metadata: dict) -> str:
     if provenance is None:
         return "Provenance: legacy result; executable identities were not recorded automatically."
     return "Provenance: verified unchanged before admission and after measurement."
+
+
+def host_notice(metadata: dict) -> str:
+    host = metadata.get("host")
+    if not isinstance(host, dict):
+        return f"{metadata.get('system', 'unknown host')} ({metadata.get('machine', 'unknown architecture')})"
+    cpu = host["cpu_model"]
+    machine_model = host.get("machine_model")
+    if machine_model and machine_model != cpu:
+        cpu = f"{cpu} / {machine_model}"
+    return (
+        f"{cpu}; {host['logical_cores']} logical cores; "
+        f"{host['os']} {host['os_release']} ({host['architecture']})"
+    )
+
+
+def tools_notice(metadata: dict) -> str | None:
+    tools = metadata.get("provenance", {}).get("before", {}).get("tools", {})
+    versions = [
+        f"{name} `{details['version']}`"
+        for name, details in tools.items()
+        if isinstance(details, dict) and details.get("version")
+    ]
+    return f"Measurement tools: {', '.join(versions)}." if versions else None
 
 
 def validate_interleaved_rounds(directory: Path, metadata: dict) -> None:
@@ -73,6 +99,14 @@ def validate_interleaved_rounds(directory: Path, metadata: dict) -> None:
     if (type(runs) is not int or runs < 1 or not workloads or len(set(workloads)) != len(workloads)
             or set(names) != {"tsc", "tsgo", "home"}):
         raise ValueError("invalid interleaved measurement metadata")
+    if metadata.get("schema", 1) >= 2:
+        host = metadata.get("host")
+        required = ("os", "os_release", "architecture", "cpu_model")
+        if not isinstance(host, dict) or any(not host.get(key) for key in required):
+            raise ValueError("benchmark host metadata is incomplete")
+        cores = host.get("logical_cores")
+        if type(cores) is not int or cores < 1:
+            raise ValueError("benchmark logical core count is invalid")
     expected = {f"{workload}-round-{index:03d}.json" for workload in workloads for index in range(runs)}
     actual = {path.name for path in directory.glob("*.json") if path.name != "metadata.json"}
     if actual != expected:
@@ -122,7 +156,11 @@ def main() -> int:
             continue
         results = load_results(path)
         if results:
-            rows.setdefault(workload, {})[compiler] = results[0]
+            try:
+                rows.setdefault(workload, {})[compiler] = summarize_times(results[0].get("times", []))
+            except ValueError as error:
+                print(f"cannot report {path}: {error}", file=sys.stderr)
+                return 1
     for workload, compilers in interleaved.items():
         rows[workload] = {
             compiler: summarize_times(times)
@@ -138,22 +176,24 @@ def main() -> int:
     if metadata:
         versions = metadata.get("compilers", {})
         print(
-            f"{metadata.get('machine', 'unknown host')}; "
+            f"{host_notice(metadata)}; "
             f"{metadata.get('runs', '?')} runs after {metadata.get('warmup', '?')} warmups; "
             f"tsc `{versions.get('tsc', '?')}`, tsgo `{versions.get('tsgo', '?')}`, "
             f"Home `{versions.get('home', '?')}`."
         )
+        if tools := tools_notice(metadata):
+            print(tools)
         print(provenance_notice(metadata))
         print()
-    print("| Workload | tsc | tsgo | Home | Home vs fastest competitor |")
+    print("| Workload | tsc median | tsgo median | Home median | Home vs fastest competitor |")
     print("|---|---:|---:|---:|---:|")
     for workload, compilers in rows.items():
         tsc = compilers.get("tsc")
         tsgo = compilers.get("tsgo")
         home = compilers.get("home")
-        competitors = [result["mean"] for result in (tsc, tsgo) if result]
+        competitors = [result["median"] for result in (tsc, tsgo) if result]
         if home and competitors:
-            comparison = format_workload_comparison(workload, home["mean"], min(competitors), metadata.get("validation_schema"))
+            comparison = format_workload_comparison(workload, home["median"], min(competitors), metadata.get("validation_schema"))
         else:
             comparison = "—"
         print(
@@ -161,7 +201,7 @@ def main() -> int:
             f"{format_time(home)} | {comparison} |"
         )
     print()
-    print("Times are mean ± sample standard deviation. Comparisons use the faster of tsc and tsgo.")
+    print("Times are medians of all retained fresh-process samples. Comparisons use the faster median of tsc and tsgo.")
     print("Ratios rounding to 1.00× are labeled near ties; this is not a statistical significance test.")
     print("Legacy graph rows without schema-2 rejection controls are retained as timings, not fair speed claims (#487).")
     print("Legacy tuple rows without schema-3 rejection controls are provisional; schema 3 also retains the graph gates.")
