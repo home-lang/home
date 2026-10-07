@@ -20,6 +20,17 @@ if ((slice_size == 0 || start >= end)); then
   exit 2
 fi
 
+suite_root="${HOME_TS_SUITE_ROOT:-${HOME_TS_CONFORMANCE_ROOT:-_submodules/typescript-go}}"
+for required_directory in \
+  "$suite_root/_submodules/TypeScript/tests/cases/conformance" \
+  "$suite_root/testdata/baselines/reference/submodule/conformance"; do
+  if [[ ! -d "$required_directory" ]]; then
+    echo "ts-conformance-exact: missing corpus directory: $required_directory" >&2
+    echo "Initialize the pinned recursive submodules or set HOME_TS_SUITE_ROOT." >&2
+    exit 2
+  fi
+done
+
 zig_bin="${ZIG_BIN:-./pantry/.bin/zig}"
 timeout_seconds="${HOME_TS_CONFORMANCE_TIMEOUT_SECONDS:-900}"
 max_mb="${HOME_RUN_MAX_MB:-3840}"
@@ -44,7 +55,8 @@ while ((start < end)); do
     HOME_RUN_LABEL="ts-conformance-exact-$start-$limit" \
     run_bounded "$timeout_seconds" "$zig_bin" build test \
       -Dfilter=ts_conformance \
-      "-Dts-conformance-test-filter=$test_filter"
+      "-Dts-conformance-test-filter=$test_filter" \
+      --summary all
 
   start=$((start + limit))
 done

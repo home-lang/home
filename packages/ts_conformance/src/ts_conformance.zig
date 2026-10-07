@@ -58107,6 +58107,16 @@ fn tsSuiteRootSlice() []const u8 {
         default_ts_root;
 }
 
+fn requireTsSuitePaths(paths: ?TsCorpusPaths, family: []const u8) !TsCorpusPaths {
+    return paths orelse {
+        std.debug.print(
+            "[ts_suite] missing {s} corpus or generated baselines under {s}; initialize the pinned recursive submodules or set HOME_TS_SUITE_ROOT\n",
+            .{ family, tsSuiteRootSlice() },
+        );
+        return error.MissingTypeScriptCorpus;
+    };
+}
+
 fn runOptInTsSuiteFamily(
     comptime label: []const u8,
     comptime family: []const u8,
@@ -58122,8 +58132,7 @@ fn runOptInTsSuiteFamily(
         try resolveTsgoTestdataCaseFamilyPaths(T.allocator, family)
     else
         try resolveTsCaseFamilyPaths(T.allocator, family);
-    if (paths_or_null == null) return;
-    const paths = paths_or_null.?;
+    const paths = try requireTsSuitePaths(paths_or_null, family);
     defer {
         T.allocator.free(paths.cases);
         T.allocator.free(paths.baselines);
@@ -58220,17 +58229,15 @@ fn runOptInTsSuiteFamily(
         std.debug.print("  FAIL  {s}: {s}\n", .{ r.name, r.detail });
     }
 
-    if (name_filter != null) {
-        try T.expect(stats.total() > 0);
-    } else if (requested_start == 0 and requested_limit == null) {
-        if (envBoolOne(env_prefix ++ "_TESTDATA")) {
-            try T.expect(stats.total() > 0);
-        } else {
+    try T.expect(stats.total() > 0);
+    if (name_filter == null and requested_start == 0 and requested_limit == null) {
+        if (!envBoolOne(env_prefix ++ "_TESTDATA")) {
             try T.expect(stats.total() > 1000);
         }
-    } else {
+    } else if (name_filter == null) {
         try T.expectEqual(@as(u32, @intCast(corpus.len)), stats.total());
     }
+    if (want_exact) try T.expectEqual(@as(u32, 0), stats.failed);
 }
 
 // NOTE: an always-on exact-baseline ratchet test was prototyped
@@ -58258,8 +58265,7 @@ test "conformance: opt-in full local TypeScript corpus survey" {
     // Discover via shared helper so `HOME_TS_CONFORMANCE_ROOT` works
     // for both this opt-in survey and the always-on slice gate.
     const paths_or_null = try resolveTsCorpusPaths(T.allocator);
-    if (paths_or_null == null) return;
-    const paths = paths_or_null.?;
+    const paths = try requireTsSuitePaths(paths_or_null, "conformance");
     defer {
         T.allocator.free(paths.cases);
         T.allocator.free(paths.baselines);
@@ -58372,11 +58378,10 @@ test "conformance: opt-in full local TypeScript corpus survey" {
         std.debug.print("  FAIL  {s}: {s}\n", .{ r.name, r.detail });
     }
 
-    if (name_filter != null) {
-        try T.expect(stats.total() > 0);
-    } else if (requested_start == 0 and requested_limit == null) {
+    try T.expect(stats.total() > 0);
+    if (name_filter == null and requested_start == 0 and requested_limit == null) {
         try T.expect(stats.total() > 1000);
-    } else {
+    } else if (name_filter == null) {
         try T.expect(stats.total() == end - start);
     }
     // Exact mode is a regression gate, not a reporting-only survey. Keep the

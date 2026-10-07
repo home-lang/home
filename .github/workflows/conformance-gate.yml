@@ -46,6 +46,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          submodules: recursive
 
       # Match the Pantry-pinned Zig version from pantry.json/pantry.lock.
       - name: Setup Zig
@@ -83,6 +85,18 @@ jobs:
             --from-log conformance-run.log \
             --write-current conformance-current.json
 
+      - name: Check corpus survey failure controls
+        run: |
+          set -o pipefail
+          source scripts/home-bin.sh
+          HOME_RUN_MAX_MB=3840 HOME_RUN_LABEL=ts-corpus-control-build \
+            run_bounded 900 zig build test -Dfilter=ts_conformance \
+              -Dts-conformance-test-filter=opt-in --summary all \
+              2>&1 | tee corpus-controls-build.log
+          test_binary="$(python3 -c 'from pathlib import Path; print(max(Path(".zig-cache/o").glob("*/test"), key=lambda p: p.stat().st_mtime).resolve())')"
+          python3 scripts/tests/test-ts-corpus-survey-controls.py \
+            --test-binary "$test_binary" --output corpus-controls-run.log
+
       - name: Build Home TypeScript frontend
         run: zig build home-tsc -Doptimize=ReleaseFast -Dhome-tsc-strip=true -j1
 
@@ -100,6 +114,8 @@ jobs:
           path: |
             conformance-run.log
             conformance-current.json
+            corpus-controls-build.log
+            corpus-controls-run.log
             zod-unmodeled-any-current.json
             zod-unmodeled-any-diagnostics.txt
           if-no-files-found: ignore

@@ -1,0 +1,116 @@
+{
+  "home_source_base": "a27e8e2084a08b469b76562f5003236936140203",
+  "typescript_go": "89d5d5b2849a0db0957065889ca58536fa6d2e4a",
+  "typescript": "5848bc5157b22ff7f4e3369f4645a514a433b15f",
+  "zig": "0.17.0-dev.2163+89ff10d56",
+  "memory_ceiling_mb": 3840,
+  "source_sha256": {
+    "packages/ts_checker/src/check.zig": "71d3e942109529767c3dabb4fcaefb2792c6210a5a020891a3cf00b5e51b676a",
+    "packages/ts_conformance/src/ts_conformance.zig": "c4dd57f6ff97c967433a60883e7136cdf7e107e7a211678c9ae7b9bf86bd9836"
+  },
+  "exact_before": {
+    "total": 3020,
+    "passed": 2985,
+    "failed": 35,
+    "skipped": 0
+  },
+  "exact_after": {
+    "total": 3020,
+    "passed": 3016,
+    "failed": 4,
+    "skipped": 0
+  },
+  "remaining": [
+    "decoratorOnClassMethod12",
+    "asyncFunctionDeclarationParameterEvaluation",
+    "classCanExtendConstructorFunction",
+    "parserCastVersusArrowFunction1"
+  ],
+  "logs": {
+    "01-prefix-before.log.gz": {
+      "raw_sha256": "7670d557e2cce097b51ae75367ec4b2759d712c3ee9c764e493a3b09bba8a3d3",
+      "raw_bytes": 238567
+    },
+    "02-prefix-after.log.gz": {
+      "raw_sha256": "07da68e16cb975044b3cf2b8403e6fc5f907b6064ded7112e1f7e005e1452fe9",
+      "raw_bytes": 227113
+    },
+    "03-checker.log.gz": {
+      "raw_sha256": "79af75d8b133c824e0b901084c7fe59f93a15773f259696463cb12be9bd38401",
+      "raw_bytes": 265
+    },
+    "04-conformance.log.gz": {
+      "raw_sha256": "ef183ef95f668d439a76d48c3e7b44de4e400fe1de88f0e974daedc01bc9d3c6",
+      "raw_bytes": 5310
+    },
+    "05-affected-fixtures.log.gz": {
+      "raw_sha256": "ec4cda04d613af96133d26a994b3d79d178ea1987341a67ff4687a4ff24b9bfb",
+      "raw_bytes": 389
+    },
+    "06-survey-controls.log.gz": {
+      "raw_sha256": "2a4445052111572a7309e0cf3e31f31a1cf6577cfb8ba2371860a4671339ed47",
+      "raw_bytes": 9765
+    },
+    "07-reference-any-spread.log.gz": {
+      "raw_sha256": "fc32cc99cc4ad909ea17b13c5c3f6fb190a969dd1f8446f2732a2b6795ab2c90",
+      "raw_bytes": 127
+    },
+    "08-releasefast-build.log.gz": {
+      "raw_sha256": "4f28e17adc2822f5facd1727e2402cc90e918edb45d697da6411ff266793670f",
+      "raw_bytes": 229
+    },
+    "09-zod-first.log.gz": {
+      "raw_sha256": "cc96a65c8ccc294d1244fadb693df3dfe6ef384ade0731ac84fdf357c35c23a4",
+      "raw_bytes": 43373
+    },
+    "10-zod-second.log.gz": {
+      "raw_sha256": "c17758c0043143e24e845d02fc26d781f72a984b165c958158ed106aabf98784",
+      "raw_bytes": 43373
+    },
+    "11-zod-first-summary.log.gz": {
+      "raw_sha256": "64fc232dac6106d899f31e0937553308e8b7c20fc3943de1197399a5c5f7b723",
+      "raw_bytes": 165
+    },
+    "12-zod-second-summary.log.gz": {
+      "raw_sha256": "baf777a82db8d1450d1ea42bde391cc29d2e438387536167426b5f34ae467704",
+      "raw_bytes": 165
+    }
+  },
+  "zod": {
+    "production_files": 106,
+    "ts_diagnostics": 196,
+    "unmodeled_any": 3,
+    "max_unmodeled_any": 3,
+    "normalized_identical": true,
+    "archive_sha512": "5e46170a8975d3e6daffa17f72e79657e4decd478ea975b485d789b7909d5e34d8780800420e4dd37450749f349a17c513bdbea5b96f60c5b8c32d90a7841bae"
+  },
+  "compiler_sha256": "c510235a37f9012bb7ebb62728e873bc22d927d04c4e81c8d81fcae3400eac9c",
+  "gates": {
+    "checker": {
+      "passed": 4473,
+      "total": 4473,
+      "peak_mb": 2057
+    },
+    "conformance": {
+      "passed": 1432,
+      "total": 1432,
+      "peak_mb": 2248
+    },
+    "affected_fixtures": {
+      "passed": 47,
+      "total": 47
+    },
+    "releasefast_build": {
+      "steps_succeeded": 3,
+      "steps_total": 3,
+      "peak_mb": 2993
+    },
+    "survey_controls": 10,
+    "shell_controls": 4
+  },
+  "reference_compiler": {
+    "package": "@typescript/typescript-darwin-arm64",
+    "version": "7.0.2",
+    "binary_sha256": "a82f731365ad69d5c4c15f5e18fba4584bf3b7b839960172a76c3462b5114bf2"
+  }
+}

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -15,6 +15,9 @@ describe("exact TypeScript conformance runner", () => {
   test("runs only the opt-in corpus test for each bounded slice", () => {
     const temporary = mkdtempSync(join(tmpdir(), "home-ts-conformance-exact-"));
     temporaryDirectories.push(temporary);
+
+    mkdirSync(join(temporary, "_submodules/TypeScript/tests/cases/conformance"), { recursive: true });
+    mkdirSync(join(temporary, "testdata/baselines/reference/submodule/conformance"), { recursive: true });
 
     const log = join(temporary, "calls.jsonl");
     const zig = join(temporary, "zig-stub.mjs");
@@ -39,8 +42,10 @@ appendFileSync(process.env.TS_EXACT_LOG, JSON.stringify({
         cwd: resolve(import.meta.dir, "../.."),
         env: {
           ...process.env,
+          HOME_RUN_LOCK: join(temporary, "stub-machine.lock"),
           HOME_RUN_MAX_MB: "512",
           HOME_TS_CONFORMANCE_TIMEOUT_SECONDS: "30",
+          HOME_TS_SUITE_ROOT: temporary,
           TS_EXACT_LOG: log,
           ZIG_BIN: zig,
         },
@@ -64,6 +69,8 @@ appendFileSync(process.env.TS_EXACT_LOG, JSON.stringify({
           "test",
           "-Dfilter=ts_conformance",
           "-Dts-conformance-test-filter=conformance: opt-in full local TypeScript corpus survey",
+          "--summary",
+          "all",
         ],
         limit: "2",
         maxMb: "512",
@@ -75,6 +82,8 @@ appendFileSync(process.env.TS_EXACT_LOG, JSON.stringify({
           "test",
           "-Dfilter=ts_conformance",
           "-Dts-conformance-test-filter=conformance: opt-in full local TypeScript corpus survey",
+          "--summary",
+          "all",
         ],
         limit: "2",
         maxMb: "512",
@@ -86,6 +95,8 @@ appendFileSync(process.env.TS_EXACT_LOG, JSON.stringify({
           "test",
           "-Dfilter=ts_conformance",
           "-Dts-conformance-test-filter=conformance: opt-in full local TypeScript corpus survey",
+          "--summary",
+          "all",
         ],
         limit: "1",
         maxMb: "512",
@@ -93,4 +104,29 @@ appendFileSync(process.env.TS_EXACT_LOG, JSON.stringify({
       },
     ]);
   });
+
+  for (const available of ["neither", "cases", "baselines"]) {
+    test(`refuses missing corpus input when ${available} is available`, () => {
+      const temporary = mkdtempSync(join(tmpdir(), "home-ts-conformance-missing-"));
+      temporaryDirectories.push(temporary);
+      if (available === "cases") {
+        mkdirSync(join(temporary, "_submodules/TypeScript/tests/cases/conformance"), { recursive: true });
+      }
+      if (available === "baselines") {
+        mkdirSync(join(temporary, "testdata/baselines/reference/submodule/conformance"), { recursive: true });
+      }
+      const invoked = join(temporary, "invoked");
+      const zig = join(temporary, "zig-stub");
+      writeFileSync(zig, `#!/bin/sh\ntouch '${invoked}'\n`);
+      chmodSync(zig, 0o755);
+      const command = Bun.spawnSync(
+        [resolve(import.meta.dir, "../ts-conformance-exact.sh"), "0", "1", "1"],
+        { env: { ...process.env, HOME_TS_SUITE_ROOT: temporary, ZIG_BIN: zig } },
+      );
+      expect(command.exitCode).toBe(2);
+      expect(command.stderr.toString()).toContain("missing corpus directory");
+      expect(command.stdout.toString()).not.toContain("START=");
+      expect(existsSync(invoked)).toBe(false);
+    });
+  }
 });

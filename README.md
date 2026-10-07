@@ -73,7 +73,7 @@ keep working unchanged:
 src/api.ts(12,7): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.
 ```
 
-### It passes the TypeScript test suite
+### TypeScript test-suite parity
 
 Parity is measured against TypeScript's **own** conformance corpus, not tests
 we wrote ourselves. Exact mode diffs every diagnostic — code, message, file,
@@ -82,19 +82,25 @@ compiler.
 
 | Suite | Result |
 |---|---:|
-| Upstream conformance corpus, **exact byte-for-byte** | **2,960 / 2,960 — 100%** in one full leading-prefix run; bounded refresh in progress |
+| Upstream conformance corpus, **exact byte-for-byte** | **3,016 / 3,020 — 99.87%** in one full leading-prefix run; four exact mismatches remain |
 | Upstream conformance corpus, diagnostic families | **5,907 / 5,907 — 100%** |
 | Baseline-aware `.errors.txt` comparison, 19 folders | **586 / 586 — 100%** |
 | Diagnostic codes the reference compiler can emit | **100% — 0 reachable codes left** ¹ |
 
 The default smoke/category gates run in the repository test suite. Exact mode
 is opt-in, split into bounded slices, and any diagnostic mismatch now fails the
-test process. Reproduce the revalidated leading prefix with:
+test process. The current prefix still exits nonzero for the four mismatches
+tracked in [#832](https://github.com/home-lang/home/issues/832). Run bounded exact
+slices with:
 
 ```bash
+git submodule update --init --recursive _submodules/typescript-go
 HOME_RUN_MAX_MB=3840 \
-  scripts/ts-conformance-exact.sh 0 2960 200
+  scripts/ts-conformance-exact.sh 0 3020 200
 ```
+
+Explicit full-corpus runs fail if the pinned cases or generated baselines are
+missing. `HOME_TS_SUITE_ROOT` can select another initialized TypeScript-Go tree.
 
 ¹ Home emits 1,620 of the 2,079 codes in TypeScript's message catalog. The
 other 459 are not a backlog: about 455 are dead in the reference compiler
