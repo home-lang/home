@@ -1,3 +1,8 @@
+---
+title: TypeScript Compiler
+description: Use Home's TypeScript front end to parse, type-check, and emit existing projects, with parity measured against upstream conformance tests.
+---
+
 # TypeScript Compiler
 
 Home ships a full TypeScript front end, built from the same packages as the

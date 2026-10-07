@@ -1,3 +1,8 @@
+---
+title: Getting Started
+description: Install Home's pinned toolchain, build the compiler, and create, compile, and run your first Home program.
+---
+
 # Getting Started
 
 This guide will walk you through installing the Home compiler and writing your first program.

@@ -1,3 +1,8 @@
+---
+title: Pattern Matching
+description: Learn Home's match expressions, destructuring, guards, bindings, range patterns, and exhaustiveness rules.
+---
+
 # Pattern Matching
 
 Pattern matching is one of Home's most powerful features, enabling expressive and safe destructuring of data. It combines the elegance of functional programming with the performance requirements of systems programming.

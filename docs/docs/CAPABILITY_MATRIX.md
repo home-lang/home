@@ -1,3 +1,8 @@
+---
+title: Capability Matrix
+description: Track which Home language, compiler, runtime, standard-library, and tooling capabilities are stable, partial, or not yet implemented.
+---
+
 # Capability Matrix
 
 A conservative, honest view of what works in the Home compiler and stdlib today

@@ -1,3 +1,8 @@
+---
+title: Type System
+description: Explore Home's static types, inference, optionals, unions, constraints, generics, and the current limits of each feature.
+---
+
 # Type System
 
 Home features a powerful, expressive type system that combines the best aspects of modern programming languages. It provides strong static typing with excellent type inference, ensuring both safety and ergonomics.
