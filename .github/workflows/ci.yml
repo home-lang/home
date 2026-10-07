@@ -51,6 +51,9 @@ jobs:
       - name: Install Dependencies
         run: bun install
 
+      - name: Check documentation path portability
+        run: bun run check:docs-paths
+
       - name: Lint
         run: bun run lint
 

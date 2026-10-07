@@ -35,6 +35,7 @@
     "format": "bunx --bun pickier . --format",
     "format:fix": "bunx --bun pickier . --format --write",
     "check:dependencies": "bun scripts/check-dependency-manifests.mjs",
+    "check:docs-paths": "bun scripts/check-docs-paths.mjs",
     "test": "bun test",
     "test:compiler": "./pantry/.bin/zig build test",
     "typecheck": "bun --bun tsc --noEmit",
