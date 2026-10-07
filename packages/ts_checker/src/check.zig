@@ -3863,6 +3863,7 @@ const SourceFacts = struct {
     no_implicit_references_true_directive: ?bool = null,
     explicitly_disables_check_js: ?bool = null,
     strict_false_directive: ?bool = null,
+    no_implicit_this_disabled: ?bool = null,
     legacy_decorators: ?bool = null,
     no_lib_true_directive: ?bool = null,
     contains_import_meta: ?bool = null,
@@ -52318,13 +52319,22 @@ pub const Checker = struct {
         };
     }
 
-    fn explicitNoImplicitThisIsDisabled(self: *const Checker) bool {
-        const src = self.source orelse return false;
+    fn explicitNoImplicitThisIsDisabled(self: *Checker) bool {
+        if (self.source_facts.no_implicit_this_disabled) |cached| return cached;
+        const src = self.source orelse {
+            self.source_facts.no_implicit_this_disabled = false;
+            return false;
+        };
         const marker = "@noImplicitThis";
-        const marker_pos = std.mem.indexOf(u8, src, marker) orelse return false;
+        const marker_pos = self.sourceMarkerPosition(marker) orelse {
+            self.source_facts.no_implicit_this_disabled = false;
+            return false;
+        };
         var rest = std.mem.trimStart(u8, src[marker_pos + marker.len ..], " \t");
         if (rest.len > 0 and rest[0] == ':') rest = std.mem.trimStart(u8, rest[1..], " \t");
-        return rest.len >= "false".len and std.ascii.eqlIgnoreCase(rest[0.."false".len], "false");
+        const result = rest.len >= "false".len and std.ascii.eqlIgnoreCase(rest[0.."false".len], "false");
+        self.source_facts.no_implicit_this_disabled = result;
+        return result;
     }
 
     fn applyExplicitNoImplicitThisDirective(self: *Checker) void {
@@ -214914,6 +214924,21 @@ test "checker: explicit noImplicitThis false keeps unbound this as ordinary any"
     const fn_node = firstStatement(s);
     const body = hir_mod.blockStmts(&s.hir, hir_mod.fnDeclOf(&s.hir, fn_node).body);
     try T.expectEqual(types.Primitive.any, s.hir.typeOf(hir_mod.varDeclOf(&s.hir, body[0]).init));
+}
+
+test "checker: noImplicitThis directive cache resets with the source" {
+    const s = try newSetup(
+        \\// @noImplicitThis: false
+        \\function f() {}
+    );
+    defer destroySetup(s);
+
+    try T.expect(s.checker.explicitNoImplicitThisIsDisabled());
+    try T.expectEqual(true, s.checker.source_facts.no_implicit_this_disabled.?);
+
+    s.checker.setSource("function f() {}");
+    try T.expect(!s.checker.explicitNoImplicitThisIsDisabled());
+    try T.expectEqual(false, s.checker.source_facts.no_implicit_this_disabled.?);
 }
 
 test "checker: this in class constructor parameter default does not emit TS2683" {
