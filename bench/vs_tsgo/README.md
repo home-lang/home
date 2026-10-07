@@ -65,13 +65,21 @@ report refuses results whose provenance changed.
 
 | Platform | Result ID | Current outcome | Evidence and report |
 |---|---|---:|---|
-| Apple M2 Pro / macOS arm64 | `20261007T141452Z` | Home lower median on 8/20 | [snapshot](../../docs/docs/TS_PERFORMANCE.md#current-snapshot) · [raw evidence](evidence/20261007T141452Z.tar.gz) |
+| Apple M2 Pro / macOS arm64 | `20261007T183321Z` | Home lower median on **20/20** | [snapshot](../../docs/docs/TS_PERFORMANCE.md#current-snapshot) · [raw evidence](evidence/20261007T183321Z.tar.gz) |
 
 The checkpoint compares TS 6.0.3 with the single native TS 7.0.2 (`tsgo`)
 competitor, retains every measured sample, and does not replace real-project
 benchmarking or measure unlisted platforms. Older macOS and Linux measurements
 remain in the dated optimization journal; they are historical, not mixed into
 the current table, and not relabeled as medians without their raw samples.
+
+The current run measures source `5f90572c7` on an Apple M2 Pro / Mac14,9 with
+10 logical cores and macOS 26.3.1 arm64. It retains all 30 fresh processes per
+compiler and workload after three warmups, totaling 600 round files and 1,800
+successful samples. The narrowest Home median lead is 1.36× on
+`type_predicates_large`; the widest is 12.62× on `startup`. The earlier
+`20261007T141452Z` 8/20 result remains in the historical journal as the
+pre-fix measurement for [#837](https://github.com/home-lang/home/issues/837).
 
 The separate global-declaration admission audit is **untimed**:
 
