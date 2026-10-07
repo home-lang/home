@@ -1,6 +1,14 @@
+---
+title: Macros
+description: Explore Home's developing macro model for declarative expansion, procedural transforms, derives, attributes, hygiene, and built-ins.
+---
+
 # Macros
 
-Home's macro system provides powerful metaprogramming capabilities, enabling code generation, domain-specific languages, and compile-time computation. Macros operate on the abstract syntax tree, providing type-aware transformations.
+Home's macro implementation is in progress. This guide documents the intended
+declarative, procedural, derive, and attribute-macro surface; check the
+[capability matrix](/docs/CAPABILITY_MATRIX) before relying on a feature in
+production.
 
 ## Overview
 

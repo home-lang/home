@@ -1,6 +1,14 @@
+---
+title: Performance Optimization
+description: Review Home's intended optimization surface for memory layout, allocation, SIMD, concurrency, inlining, profiling, and benchmarking.
+---
+
 # Performance Optimization
 
-Home is designed for high-performance systems programming, providing low-level control while maintaining safety. This guide covers techniques for writing efficient Home code and optimizing critical paths.
+Home's native code generators are in progress. This guide records the intended
+optimization surface and techniques for critical paths; check the
+[capability matrix](/docs/CAPABILITY_MATRIX) to confirm which facilities are
+currently available.
 
 ## Overview
 

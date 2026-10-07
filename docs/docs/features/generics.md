@@ -1,6 +1,14 @@
+---
+title: Generics
+description: Explore Home's developing generic functions and types, trait bounds, associated types, generic implementations, and planned const generics.
+---
+
 # Generics
 
-Generics enable writing flexible, reusable code that works with multiple types while maintaining full type safety. Home's generics are monomorphized at compile time, providing zero runtime overhead.
+Home's generic functions and types are in progress, and const generics are not
+yet implemented. This guide documents the intended generic model; check the
+[capability matrix](/docs/CAPABILITY_MATRIX) before relying on a feature in
+production.
 
 ## Overview
 

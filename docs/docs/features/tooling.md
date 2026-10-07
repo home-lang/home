@@ -1,9 +1,19 @@
+---
+title: Editor and CLI Tooling
+description: Survey Home's unified CLI for checking, formatting, testing, documentation, packages, editor integration, and language-server workflows.
+---
+
 # Editor and CLI Tooling
 
 Home treats the toolchain as part of the language. The formatter, test runner,
 language server, documentation generator and package commands all ship in the
 same binary as the compiler, so there is one thing to install and one version
 to keep straight.
+
+The command entry points below ship together, but individual tools have
+different maturity levels. Check the [capability matrix](/docs/CAPABILITY_MATRIX)
+for the current status of the formatter, test runner, package manager, editor
+extension, and language server.
 
 ## The daily loop
 

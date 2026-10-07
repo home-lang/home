@@ -1,6 +1,14 @@
+---
+title: Foreign Function Interface (FFI)
+description: Explore Home's developing C interop surface for external functions, ABI-compatible data, callbacks, ownership, linking, and exported symbols.
+---
+
 # Foreign Function Interface (FFI)
 
-Home's FFI system enables seamless interoperability with C, C++, and other languages. It provides safe abstractions over foreign code while maintaining Home's safety guarantees at the boundary.
+Home's FFI and C interoperability are in progress. This guide documents the
+intended foreign-function surface and boundary-safety model; check the
+[capability matrix](/docs/CAPABILITY_MATRIX) before relying on a feature in
+production.
 
 ## Overview
 
