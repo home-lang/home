@@ -1,4 +1,9 @@
-# Upstream parity baselines & diff workflow
+---
+title: Upstream Parity Baselines and Diff Workflow
+description: Track Home's pinned Bun and TypeScript reference revisions, reproduce upstream diffs, and triage changes into the correct porting surface.
+---
+
+# Upstream parity baselines and diff workflow
 
 This is the durable index for the "once we reach parity, diff against the
 latest official upstream and plan tasks from that diff" workflow. It records

@@ -54,6 +54,12 @@ jobs:
       - name: Check documentation path portability
         run: bun run check:docs-paths
 
+      - name: Build documentation for metadata checks
+        run: bun run build:docs
+
+      - name: Check generated documentation metadata
+        run: bun run check:docs-metadata
+
       - name: Lint
         run: bun run lint
 
