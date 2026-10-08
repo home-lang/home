@@ -916,9 +916,82 @@ code/admission equivalence. Parent, inline and lazy binary SHA-256:
 `7346fd7bbc264c20a9b32a0da08e8579e615e68795c961f4f91911e6b276063a`,
 `cb451c6a896264aaabc10d601bf69fd31940b339bd468b4e65c9f038d6db22cc`,
 `0ffab1f3a47c2c09a1f6d0abce75304895131bb47aa55e3d4f34a1cc3de3b6d6`.
-Issue [#848](https://github.com/home-lang/home/issues/848) remains open for a design that can
-recover the general CommonJS gain without the observed tradeoff; the full
-benchmark-leadership goal is not achieved.
+At that checkpoint, issue [#848](https://github.com/home-lang/home/issues/848)
+remained open for a design that could recover the general CommonJS gain without
+the observed tradeoff; the full benchmark-leadership goal was not achieved.
+
+### Program-owned canonical CommonJS export table (accepted, 2026-10-08 UTC)
+
+Commit
+[`3c397539e`](https://github.com/home-lang/home/commit/3c397539e0ae54fd5c018b553a7cc7162ab0b74a)
+resolves the repeated whole-export scan without either rejected candidate's
+per-checker state. `Program` stamps each collected record with its original
+position, stably sorts the owned table once by extension-normalized module
+path, and lends that slice to every checker. Named-export, whole-export,
+whole-export-type, and private-name queries binary-search the matching range.
+The original position remains the metadata tiebreaker when external and
+relative-fallback resolutions name different recorded modules, so the index
+does not change first-match behavior. There is no new limit, benchmark-name
+recognition, foreign `TypeId`, or per-source checker allocation.
+
+The exact compiler-tree parent was `774f72f160b9`; the later final commit parent
+`6f753d20f` added only #842 documentation/evidence and had a byte-identical
+compiler, harness, and corpus tree. Parent and candidate were built in the
+same checkout with pinned Zig, stripped ReleaseFast, identical caches and
+flags. Their SHA-256 values are respectively
+`849072fb4e7b03ed1e95d1d018f2932afde06ddefe3dbbdf1b6096694fb733cc`
+and
+`c7990a621cf0695478059068c8e2dcc5754d7338086abf4b6d6a3e24f88fa477`.
+Every phase used three warmups, fresh processes, alternating pair order, and
+all observations without filtering.
+
+Before timing, both binaries passed the unchanged 56 official admissions plus
+four 1,024-family positive/negative admissions. The scale negatives produced
+exactly three TS2322 and three TS2339 diagnostics on each binary. The complete
+20-family screen used ten pairs per workload. It selected `deep_types` under
+the predeclared candidate-median-greater-than-103%-of-parent rule; the prior
+rejected designs' `type_predicates_large` risk was carried forward whether or
+not the screen selected it. Both then received independent 30-pair rechecks.
+
+| Exact-parent phase | Parent median | Candidate median | Faster pairs | Paired mean saving 95% t interval |
+|---|---:|---:|---:|---:|
+| Official `commonjs_graph` confirmation | 34.325 ms | **33.478 ms** | 25/30 | **+0.429 to +1.255 ms** |
+| Scale 1,024, first retained phase | 573.819 ms | 486.144 ms | 7/10 | −173.289 to +125.179 ms |
+| Scale 1,024, independent follow-up | 563.116 ms | **473.763 ms** | 30/30 | **+79.260 to +93.304 ms** |
+| `deep_types` independent recheck | 25.462 ms | 25.678 ms | 14/30 | −0.390 to +0.227 ms |
+| `type_predicates_large` independent recheck | 306.698 ms | 310.473 ms | 12/30 | −12.206 to +3.980 ms |
+
+The first scale phase is not discarded: two candidate observations above
+950 ms make its paired mean and interval inconclusive despite the lower
+median. That outcome triggered an explicitly labeled independent 30-pair
+follow-up, which is retained alongside it and won all 30 pairs. The official
+graph confirmation and scale follow-up have wholly positive saving intervals;
+both independent regression rechecks span zero. Every other screen family
+also has a zero-spanning interval. These are observed exact-parent results,
+not universal equivalence or benchmark-leadership claims.
+
+Correctness on the final source passed checker **4,509/4,509**, Program
+**242/242**, driver **200/200**, CLI **74/74**, and `tsc_main` **35/35**. The
+byte-pinned Zod 4.5.2 gate covered 106 production files: parent and candidate
+both emitted the identical normalized **195 TS + 3 HM9002** multiset and the
+same normalized SHA-256
+`b605370cd3f75e876e7cf9710c6105296e4993e3a0de75a32d43ef7da56e4e5c`.
+The largest guarded tree footprint was 3,097 MB under the 3,840 MB ceiling.
+
+The expanded compiler matrix was attempted but not admitted. The exact
+tsc-rs 0.1.0 archive matched its checked-in SHA-256; the moving Bun canary
+download no longer matched the required `bd599f5af` archive pin, so no
+substitute binary and no matrix samples were accepted. The last accepted
+five-compiler snapshot therefore remains current. Bun check, tsc-rs, native
+TS 7/tsgo, TypeScript 6, and the active C++ TypeScript port remain required
+for the next fully pinned matrix under
+[#838](https://github.com/home-lang/home/issues/838).
+
+The [raw evidence archive](https://github.com/home-lang/home/raw/main/bench/vs_tsgo/evidence/20261008T165919Z-commonjs-sorted-table-848.tar.gz)
+contains 330 original paired rounds plus the 30-pair scale follow-up, all 64
+admission records, exact runners and fingerprints, full test/build/Zod logs,
+the source patch, and 385 payload checksums. Archive SHA-256:
+`ee3d55e06172a84f34f7a5264ccd3ba0d6a6a509b3d04f15bf13f121b2a5f68f`.
 
 ### Lazy forward-overload root index
 

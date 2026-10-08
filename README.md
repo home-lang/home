@@ -192,6 +192,23 @@ All observations and the unaccepted five-compiler run are preserved in the
 under [#848](https://github.com/home-lang/home/issues/848). Compiler behavior
 was restored; only general path-matching tests remain.
 
+A third design now ships: Program owns one canonical, extension-normalized
+CommonJS export table, while each checker borrows it and performs binary-range
+lookups. It preserves original collection order for metadata precedence and
+does not allocate a per-checker index.
+
+| Accepted exact-parent result | Parent | Candidate | Paired evidence |
+|---|---:|---:|---:|
+| Official CommonJS graph | 34.325 ms | **33.478 ms** | 25/30 wins; saving interval **+0.429 to +1.255 ms** |
+| 1,024-family independent follow-up | 563.116 ms | **473.763 ms** | 30/30 wins; saving interval **+79.260 to +93.304 ms** |
+
+The first 10-pair scale phase, including two candidate outliers, is retained
+and reported as inconclusive rather than replaced. The 20-family screen plus
+30-pair deep-type and large-predicate rechecks found no independently
+confirmed regression. See the
+[accepted #848 report](docs/docs/TS_PERFORMANCE.md#program-owned-canonical-commonjs-export-table-accepted-2026-10-08-utc)
+and [raw evidence](bench/vs_tsgo/evidence/20261008T165919Z-commonjs-sorted-table-848.tar.gz).
+
 These numbers were measured with the standalone compiler build
 (`zig build home-tsc`). `home tsc` runs the same compiler from inside the full
 `home` binary, which adds some process-startup cost that has not been
