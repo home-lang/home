@@ -1,0 +1,151 @@
+{
+  "source_base": "1602e3d631435c2f91ee02382959e6fa40c37bf0",
+  "source_commit": "b1242be3ac8649d240e44e237aae32c93c091e0d",
+  "typescript_go": "89d5d5b2849a0db0957065889ca58536fa6d2e4a",
+  "typescript": "5848bc5157b22ff7f4e3369f4645a514a433b15f",
+  "zig": "0.17.0-dev.2163+89ff10d56",
+  "memory_ceiling_mb": 3840,
+  "source_sha256": {
+    "packages/ts_checker/src/check.zig": "4da867eea8c9e022a02b3b220973fe3fd7c1ce0dabf4490730d985a2b8dfd925",
+    "packages/ts_driver/src/ts_driver.zig": "2bbb38a2aa70da7dab35815d069ab7d48853ebf302b02ac2a8b3714f6a25e892",
+    "packages/ts_program/src/ts_program.zig": "cd72251909532331f302619b0a38976eb1414bebb35858fdc55f95b24267d05d",
+    "packages/ts_conformance/src/ts_conformance.zig": "cfa81a8cbcf1a96e6db2bec2b35f73f6dbed9ddb7c72af688a3da322be603410",
+    "packages/ts_checker/src/interner.zig": "02e11fad619fc5e11ed03ac9889f1ee97a719e3cf79c282c0fe739f55ef780ac"
+  },
+  "baseline_controls": {
+    "passed": 4,
+    "failed": 2,
+    "total": 6,
+    "exit_code": 1,
+    "peak_mb": 1731,
+    "test_only_checker_sha256": "4ff50ffaf799f9084ef18c20eabd5ea8432a40aa5d7bffe3bc939947d2148e04",
+    "binary_sha256": "abb5a00b6e3421118f2d9c95fb1328fbfb5fb0d0f75671fd47a7fc378cfd6894"
+  },
+  "gates": {
+    "substitution_controls": {
+      "passed": 6,
+      "total": 6,
+      "exit_code": 0,
+      "peak_mb": 1713
+    },
+    "checker": {
+      "passed": 4488,
+      "total": 4488,
+      "exit_code": 0,
+      "peak_mb": 2069
+    },
+    "driver": {
+      "passed": 198,
+      "total": 198,
+      "exit_code": 0,
+      "peak_mb": 1984
+    },
+    "program": {
+      "passed": 234,
+      "total": 234,
+      "exit_code": 0,
+      "peak_mb": 2045
+    },
+    "opt_in_controls": {
+      "passed": 3,
+      "total": 3,
+      "exit_code": 0,
+      "peak_mb": 2079
+    },
+    "original_react": {
+      "requested_cases": [
+        "intraExpressionInferencesJsx",
+        "contextuallyTypedStringLiteralsInJsxAttributes02"
+      ],
+      "started_cases": [
+        "intraExpressionInferencesJsx"
+      ],
+      "unstarted_cases": [
+        "contextuallyTypedStringLiteralsInJsxAttributes02"
+      ],
+      "aggregate_complete": false,
+      "exit_code": 125,
+      "peak_mb": 3841,
+      "deadline_seconds": 900
+    },
+    "compiler": {
+      "steps": 3,
+      "total_steps": 3,
+      "exit_code": 0,
+      "peak_mb": 3024
+    },
+    "zod": {
+      "ts_diagnostics": 196,
+      "unmodeled_any": 3,
+      "ceiling": 3,
+      "production_files": 106,
+      "exit_code": 0,
+      "compiler_exit_code": 1,
+      "peak_mb": 617,
+      "normalized_output_equals_previous_checkpoint": true
+    },
+    "survey_controls": {
+      "passed": 10,
+      "total": 10,
+      "exit_code": 0
+    }
+  },
+  "opt_in_binary_sha256": "77cd1c795598e1c027390775dfe8d97e5dbe48336c041f391c5622034b3ae7c6",
+  "admission_attempts": [
+    {
+      "gate": "driver",
+      "exit_code": 123,
+      "compilation_started": false,
+      "reason": "free disk below unchanged 1024 MB admission floor; identical-limit retry succeeds"
+    },
+    {
+      "gate": "original_react",
+      "exit_code": 123,
+      "fixtures_started": false,
+      "reason": "751 MB free against unchanged 1024 MB floor; retry uses original limits"
+    },
+    {
+      "gate": "original_react",
+      "exit_code": 123,
+      "fixtures_started": [
+        "intraExpressionInferencesJsx"
+      ],
+      "aggregate_complete": false,
+      "reason": "506 MB free crossed unchanged 512 MB critical disk floor"
+    },
+    {
+      "gate": "compiler",
+      "exit_code": 123,
+      "compilation_started": false,
+      "reason": "506 MB free against unchanged 1024 MB admission floor"
+    }
+  ],
+  "artifact_sha256": {
+    "baseline-controls.log.gz": "9b86855303f3ad7630fb621582dc3ab7689226708f8ed028e975f01a41604051",
+    "baseline-source.json.gz": "22b324af2b30a925bebe4772a15122f96af7ba7f2aa0232f399c57b347ac49da",
+    "baseline-test-only.diff.gz": "01b6973075e56725fb13b85e3598eb5fc441ad778cf7ead75dbfc278f7a96b64",
+    "substitution-controls.log.gz": "73b37522352be4cb9100ed2438efbc0c946155c9e260146fda864f5ace4dc964",
+    "checker.log.gz": "f3ffdc48b6fd77323c1f41e644c15dbbbf678b9fcddbac39a710fdd7de38c8ca",
+    "driver.log.gz": "b0d21bd512c0514bd22ba2ec35adff1ec6a217d8d1fcae1618cca6c0984e4c4e",
+    "program.log.gz": "2075d7701924474542d98413cc3330dc458dc9a169da0b33a3faf7ab0797e8a4",
+    "opt-in-controls.log.gz": "f0ecdb603585f46af0ac69cba06715e0ab289a2531bc2066e669617ce3a44274",
+    "driver-disk-admission.log.gz": "ec311dfc4b675f282c7d1305b5c7a7687166151a88f8919fa77c84d633d52d80",
+    "original-react-disk-admission.log.gz": "05ca5fcedfc0d677d25628c283fb7ce1567615d0811a9d0390cf446ce0d1dc49",
+    "cache-cleanup.json.gz": "9d529b463ad9fe57e1d30fbed7eb2c2fb03f9eedc6dfe55f938726e6eb71e9bc",
+    "original-react-critical-disk-stop.log.gz": "54ee4cfaba09dc160d6b6835554f7cdeda05f9ee379d48dfac2ee1f2b56511db",
+    "original-react-critical-disk-sample.txt.gz": "e02c9cdba298da01a46116843be7f7807a624595a18ef13fdfe885f29e90722d",
+    "compiler-disk-admission.log.gz": "f17b29f107f600809cdc6920a06c8ef8372822b3ae2e898e3fbd893de50fba58",
+    "docs-paths.log.gz": "062df3fa2c9dd1b6c03c2a27a09c52ec5ff55f4679fe753a516e2d0b62243baa",
+    "evidence-lint.log.gz": "870fbb301d14f65b0b7ebbc04aa7a5d3d73851d463e3f4db0b10190d7bf6edc3",
+    "original-react-memory-stop.log.gz": "40763b19f7ceae3a9ea707fb3bb77b8909d50bfde70fa9fa1e0e6b25c818c7a5",
+    "compiler.log.gz": "7e7c81890399a61aa7c3efba4083f88effbd2bb52d79c19b5ae51b07dd87c46a",
+    "zod.log.gz": "a497f546595167a82ba98d0fa9f3d085a75b199cc14519822541e8bf3cc9d954",
+    "zod-diagnostics.log.gz": "0186f0009cf7a73c5426896ee7048ae198ccaee3946fb62d10469887f00a98aa",
+    "zod-current.json.gz": "45132f8bdd201e5000f92a44f4173d843d690f9dd41d4f4179642d7ac0e97bc4",
+    "survey-controls.log.gz": "696d88a959f77d93f65102fc0a782782719e6b01792f1d528fa94afc995c33bb",
+    "survey-controls-details.log.gz": "6fb308da047683cddd6a0e23820288a6ea1d0ee032dc645f0e7ddc0b7add2926",
+    "docs-paths-final.log.gz": "062df3fa2c9dd1b6c03c2a27a09c52ec5ff55f4679fe753a516e2d0b62243baa",
+    "evidence-lint-final.log.gz": "870fbb301d14f65b0b7ebbc04aa7a5d3d73851d463e3f4db0b10190d7bf6edc3"
+  },
+  "compiler_sha256": "5301be658812bd0b9220b9223ec81b34e3706aa2bc3ba933006fa4426396bcaa"
+}
