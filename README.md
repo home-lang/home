@@ -157,13 +157,28 @@ checkpoint is not a new five-compiler matrix and shows no clear graph speedup:
 | Official re-export graph (30 pairs) | 13.802 ms | 14.197 ms | 2.9% slower median; interval spans zero |
 | 4,096-module scale (10 pairs) | 1,384.203 ms | 1,405.088 ms | 1.5% slower median; interval spans zero |
 
-All 30 original TypeScript oracle cases match; a separate ordinary `.ts`
-default-import gate still fails and is tracked in
+All 30 original TypeScript oracle cases match; that earlier snapshot's
+ordinary `.ts` default-import gate failed and is tracked in
 [#845](https://github.com/home-lang/home/issues/845). The large-predicate
 screen's 3.1% slower warning and 0.5% slower independent recheck remain in
 the [full correctness/cost report](docs/docs/TS_PERFORMANCE.md#complete-export-fact-traversal-and-option-diagnostics-2026-10-08-utc).
 Older hosts, competitor sets, and launcher modes are not
 mixed with this snapshot.
+
+Later source `206cdf1aa` (#845/#846) matches all
+**105 native TS 7 oracle cases** and **86 shared-config TS 6 cases**. The 19
+remaining cases retain the documented TS 6/7 option-dialect difference; they
+are not semantic admissions. Its unchanged-workload exact-parent costs show
+no demonstrated speedup:
+
+| Default-owner confirmation versus parent `b6e34fc68` | Parent | Candidate | Outcome |
+|---|---:|---:|---|
+| Official re-export graph (30 pairs) | 13.293 ms | 13.399 ms | 0.8% slower median; interval spans zero |
+| 4,096-module scale (10 pairs) | 1,310.054 ms | 1,299.988 ms | 0.8% faster median; interval spans zero |
+
+The large-predicate 3.5% slower screen and 0.9% slower independent recheck, complete
+oracle/version distinctions and raw evidence are in the
+[default-owner correctness/cost report](docs/docs/TS_PERFORMANCE.md#default-module-owner-correctness-and-cost-checkpoint-2026-10-08-utc).
 
 These numbers were measured with the standalone compiler build
 (`zig build home-tsc`). `home tsc` runs the same compiler from inside the full

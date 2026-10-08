@@ -106,6 +106,15 @@ all observations and the [complete correctness/cost report](../../docs/docs/TS_P
 are retained in [raw evidence](evidence/20261008-export-fact-worklist-843.tar.gz).
 That archive retains 592 pair rounds, 448 passing admissions across eight
 old/final phases and 6,206 verified checksums, including the failed CLI gate.
+Source `206cdf1aa` fixes that original default-import gate using retained
+module-owner facts (#845/#846): all 105 native TS7 primary diagnostic cases
+and 86 shared-config TS6 cases match, with the 19 option-dialect cases kept
+separate. Exact-parent graph/scale confirmation is inconclusive; the 3.5%
+slower large-predicate screen and 0.9% slower independent recheck are both
+retained. [Report](../../docs/docs/TS_PERFORMANCE.md#default-module-owner-correctness-and-cost-checkpoint-2026-10-08-utc)
+and [evidence](evidence/20261008-default-module-owners-845.tar.gz): 296 pair
+rounds, 224 admissions, 6,271 verified checksums. This is not a new expanded
+matrix, a production admission or a universal regression-freedom claim.
 Earlier three-compiler snapshots used different hosts and
 TypeScript 7 launcher modes; they remain dated history rather than regression
 comparisons or current expanded-matrix claims.

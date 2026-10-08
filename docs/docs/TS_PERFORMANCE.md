@@ -10,6 +10,145 @@ Ongoing coverage and optimization work is tracked in
 
 ## Current snapshot
 
+### Default module-owner correctness and cost checkpoint (2026-10-08 UTC)
+
+Source [`206cdf1aa`](https://github.com/home-lang/home/commit/206cdf1aae079699d1e7dceab3aa2897bf30b3e4)
+([#845](https://github.com/home-lang/home/issues/845),
+[#846](https://github.com/home-lang/home/issues/846)) is measured against
+exact parent `b6e34fc68`, with
+retained declaration/source facts rather than a filename-only default-import
+check. This is **not a new five-compiler matrix or a demonstrated speedup**.
+The latest expanded matrix below still records Home leading only 2/20
+workloads; the #416 leadership goal remains incomplete.
+
+Default eligibility now separates actual value/type defaults from synthetic
+defaults, using declaration/JS source kind, ESM syntax, export assignment,
+`__esModule`, and package-implied module format. Declaration owners retain
+their actual `.d.ts`/`.d.mts`/`.d.cts` parse context. Package format provenance
+follows TypeScript's file/strategy/package rules; it is not used to admit JS.
+JS is a typed inference source only when JS sources are enabled **and that
+path is actually in the Program inventory**. An explicit admitted
+`node_modules` JS root and an unadmitted sibling are both unit controls, so
+the admission decision is not a folder-name heuristic. Build, normal CLI and
+LSP/edit paths share this borrowed inventory.
+
+Real default checks cover relative and package imports, including type-only
+bindings and type-space defaults. Untyped JS retains genuine TS7016 rather
+than receiving an extra missing-default error; its primary report now anchors
+to the module literal. Named-import suggestions remain distinct from TS1192.
+
+| Same-input correctness gate | Candidate outcome |
+|---|---|
+| 95 source/option cases versus native TS 7.0.2 | All 95 match primary code/count/position/message and success/error exit classes |
+| The 76 configurations shared with TS 6.0.3 | All 76 match exactly; includes the previously failed star-barrel default import |
+| 19 CommonJS/node10 configurations | TS 6 accepts the deprecated option with `ignoreDeprecations: "6.0"`; native TS 7 and Home reject with located TS5108, not semantic passes |
+| 10 additional package/default/untyped-JS controls | All 10 match TS 6 and native TS 7 exactly |
+| Initial declaration-owner and package gates | Failures retained, not relabeled successful |
+
+The 95-case matrix covers ESNext, CommonJS, Preserve and NodeNext ESM/CJS
+package scopes, TS/MTS/CTS/declaration/JS sources, direct/named/namespace/type
+defaults, star barrels, value/type imports and interop markers. The separate
+package matrix preserves unadmitted-JS negatives. Config locations are from
+upstream [#847](https://github.com/home-lang/home/issues/847), not an option
+suppression in this patch. Oracle normalization only canonicalizes known
+fixture path prefixes, including config paths; it preserves every code,
+count, source coordinate, message and original raw output. Primary diagnostic
+parity is not a claim that every related-info/hint format or all TS projects
+are correct. Broader #843/#844/#845/#846 acceptance remains open.
+
+#### Exact-parent costs and adverse observations
+
+Parent and candidate use Zig `0.17.0-dev.2163+89ff10d56`, stripped ReleaseFast,
+`-Denable_jsc=false` for the independent standalone target. The host is Apple
+M3 Pro / Mac15,6, 11 logical cores, Darwin 27.0.0 arm64. Each phase admits both
+compilers on the 20 unchanged official workloads and their existing negatives
+(56 admissions), requires the unchanged 4,096-module scale project to exit
+zero without output, and retains all fresh-process samples after three
+warmups. Pair order alternates and reverses; binary/input/harness/tool/runner
+hashes are unchanged before and after. No compiler failing admission is timed.
+
+| Exact-parent confirmation | Parent median | Candidate median | Faster pairs | Paired mean saving 95% t interval |
+|---|---:|---:|---:|---:|
+| Official re-export graph | 13.293 ms | 13.399 ms | 12/30 | −0.724 to +0.250 ms |
+| 4,096-module scale | 1,310.054 ms | 1,299.988 ms | 5/10 | −42.673 to +72.428 ms |
+| Large-predicate family screen | 266.172 ms | 275.544 ms | 1/10 | **−14.135 to −1.550 ms** |
+| Independent large-predicate recheck | 267.171 ms | 269.456 ms | 11/30 | −3.735 to +4.465 ms |
+
+Graph and scale confirmation medians are respectively **0.8% slower / 0.8%
+faster**, with intervals spanning zero: inconclusive, not equivalence or a
+speedup. The large-predicate screen is **3.5% slower**, with an entirely
+negative saving interval. The predeclared >3%-slower median rule requires an
+independent 30-pair recheck. That recheck is **0.9% slower**, with an interval
+spanning zero. Both observations are retained, without substituting a
+favorable rerun for the adverse screen; neither establishes universal
+regression freedom or a permanent slowdown.
+
+All 20 ten-pair family screens remain visible:
+
+| Workload | Parent median (ms) | Candidate median (ms) | Faster pairs |
+|---|---:|---:|---:|
+| Startup | 3.298 | 3.059 | 9/10 |
+| Many files | 23.334 | 23.233 | 6/10 |
+| Deep types | 23.597 | 23.446 | 7/10 |
+| Import graph | 22.269 | 22.305 | 5/10 |
+| Re-export graph | 15.529 | 14.665 | 7/10 |
+| TSX components | 22.009 | 21.801 | 8/10 |
+| Generic calls | 25.509 | 25.654 | 2/10 |
+| Control flow | 28.182 | 28.157 | 4/10 |
+| Type predicates | 35.523 | 35.401 | 7/10 |
+| Large type predicates | 266.172 | 275.544 | 1/10 |
+| Null-safe access | 35.288 | 35.091 | 5/10 |
+| Destructuring | 16.113 | 16.095 | 6/10 |
+| Overloads | 25.951 | 26.161 | 3/10 |
+| Class hierarchy | 25.705 | 25.609 | 7/10 |
+| Structural objects | 24.490 | 24.745 | 3/10 |
+| Interface composition | 37.519 | 37.375 | 6/10 |
+| Variadic tuples | 36.378 | 34.992 | 8/10 |
+| Checked JS / JSDoc | 32.058 | 32.252 | 3/10 |
+| CommonJS graph | 27.813 | 28.309 | 3/10 |
+| Recursive generics | 15.928 | 15.932 | 3/10 |
+
+An earlier 26-round screen used source parent `aed1dad3b` / compiler
+`929d46a67` and the pre-integration prototype, not these current binaries.
+Its graph medians were 13.440 → 13.329 ms (13/20 faster pairs; saving interval
+−0.585 to +0.487 ms), scale 1,292.996 → 1,293.756 ms (2/6; −27.656 to
++23.536 ms): also inconclusive. It stays separately labeled history, not a
+patch comparison with the subsequent inheritance/config integration.
+
+#### Verification and evidence
+
+Final full standalone checker **4,501**, Program **238**, CLI **74**,
+entrypoint **35** and driver **199** tests passed; harness **128/128**.
+No named filters exclude tests. Zig formatting and diff checks pass.
+Pinned unmodified Zod 4.5.2, all 106 production files, retains the exact
+**195 TS errors + 3 HM9002** multiset against this parent: zero additions or
+removals. Guarded observed footprints are 520 MiB parent / 501 MiB candidate,
+not a universal memory claim or production admission. The older 196-error
+snapshot is not the exact parent after unrelated inheritance integration.
+
+The full pickier run exits 1 with **22,075 problems (11,462 errors / 10,613
+warnings)**. One was a prose line beginning with a bare issue number in the
+earlier report; that Markdown error is corrected. This is not a lint pass,
+and unrelated files/generated controls are not auto-fixed. Three machine-lock
+admission timeouts (exit 121, before command execution) remain alongside their
+actual retries, not counted as passes. Native builds/tests/timings retain the
+3,840 MiB tree ceiling, 600-second execution limit and 1,024/512 MiB disk floors.
+The corrected README/performance-doc scope passes a targeted pickier check;
+the full repository run remains failed as stated above.
+
+The [raw evidence archive](https://github.com/home-lang/home/raw/main/bench/vs_tsgo/evidence/20261008-default-module-owners-845.tar.gz)
+retains **296 pair rounds**, **224 passing admissions** across the earlier
+screen and three current-parent phases, all initial/red/final oracle records
+and fixture bytes, source patches, scripts, official/scale inputs, semantic
+logs and complete Zod diagnostics. All **6,271 checksums** are verified; its
+verifier recomputes every median, saving interval and win count, checks the
+exact primary diagnostic identities and retains the explicit TS 6/7 dialect
+differences. Archive SHA-256:
+`4a77c9f4a49cd86c0e4e4097189041f6a8622073423f7479467e6ad0babccee0`.
+Parent/candidate binary SHA-256:
+`cd120ba9a36bf8d7326f26a4b231211a47250151f7ec819549f50031304f6df9` /
+`7346fd7bbc264c20a9b32a0da08e8579e615e68795c961f4f91911e6b276063a`.
+
 ### Complete export-fact traversal and option diagnostics (2026-10-08 UTC)
 
 Source [`929d46a67`](https://github.com/home-lang/home/commit/929d46a678c30e30970c80ba039ae1875b53d392)
@@ -52,7 +191,7 @@ The last row is a separate real-project checker coverage gap: its default
 import check only queries `.mts`/`.mjs` targets. Correct Program facts alone
 do not make that CLI path diagnose ordinary `.ts` imports. The failed final
 oracle is **not counted among the 30 passing cases**, and neither #843 nor
-#844 is claimed to satisfy its entire broader acceptance scope. Those issues
+[#844](https://github.com/home-lang/home/issues/844) is claimed to satisfy its entire broader acceptance scope. Those issues
 and #845 remain open. The parent fails the new deep valid projects, so these
 projects are not used for an A/B speed claim.
 
