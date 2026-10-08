@@ -416,7 +416,14 @@ built `typescript.d.ts` and the 35 fixtures using removed compiler options.
 Both pinned reason-group controls report one skip and no pass/failure, while
 the named category gate remains **87/87**. Evidence is recorded in
 [the static-skip checkpoint](./bun-port-evidence/2026-10-08-ts-static-skips/README.md).
-Default-library/compiler-API input fidelity remains open in
+The program's default-library selector now matches the pinned native runner:
+an unspecified target uses `lib.es2025.full.d.ts`, ES2015 uses the intentional
+`lib.es6.d.ts` compatibility name, ES2016 through ESNext use their `.full`
+entry points, and ES3/ES5 fall back to `lib.d.ts`. The complete target table
+and guarded package regression are recorded in
+[the default-library selection checkpoint](./bun-port-evidence/2026-10-08-ts-default-lib-selection/README.md).
+Mounting those pinned library bytes into every applicable conformance program
+and compiler-API input fidelity remain open in
 [#841](https://github.com/home-lang/home/issues/841).
 
 The previous exact-baseline category sweep covered 586 fixtures across 19
