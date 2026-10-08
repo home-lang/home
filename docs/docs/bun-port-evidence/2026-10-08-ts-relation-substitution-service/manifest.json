@@ -1,0 +1,282 @@
+{
+  "source_base": "6f753d20fe9ac5ec177df23dbc5570d119aedfea",
+  "preintegration_source": {
+    "source_base": "6f753d20fe9ac5ec177df23dbc5570d119aedfea",
+    "source_sha256": {
+      "packages/ts_checker/src/check.zig": "6475a22fd3325e5a948bd457068bce6d8922ad28d824046a564c4d38118639cb",
+      "packages/ts_checker/src/relation.zig": "c9a49b660f68b3dea674f0123f0e14c965f37ff4aa996d20dc454ebe54841b4e",
+      "packages/ts_checker/src/interner.zig": "41fe2631b08641d3fedf117c0dfbb767ddc58957bba61cda376ef8ec4ca62766",
+      "packages/ts_driver/src/ts_driver.zig": "ae80696d2ab0322fdc3fd447ebbcaa2c620a1856a4de0646525eef8c95fb9d42",
+      "packages/ts_program/src/ts_program.zig": "75cd6417e0b1344370e933c95cb8834c20b76f466c9ba46e2bcc0f9906a7f49e",
+      "packages/ts_conformance/src/ts_conformance.zig": "8d39c8bb2206629542255916a08445cec47075a5e9787914b08ad86d75a48449"
+    },
+    "preintegration_commit": "a169dc4f43547bfd22d0c49454d58eeca60fde69",
+    "published_integrated_commit": "d1b893abfcbc501bb658eddce33d8929048cbab9",
+    "test_binary_sha256": "04ce40734af1d8d879a124b7d3d8b204acb4cc60d2b779b53bc4eb3b568da8d3"
+  },
+  "integrated_source": {
+    "source_commit": "d1b893abfcbc501bb658eddce33d8929048cbab9",
+    "source_sha256": {
+      "packages/ts_checker/src/check.zig": "fa0a673a4ba815a502fb68f65cfb0c9da4f3486f0c53059bc59cd50e639a1d81",
+      "packages/ts_checker/src/relation.zig": "c9a49b660f68b3dea674f0123f0e14c965f37ff4aa996d20dc454ebe54841b4e",
+      "packages/ts_checker/src/interner.zig": "41fe2631b08641d3fedf117c0dfbb767ddc58957bba61cda376ef8ec4ca62766",
+      "packages/ts_driver/src/ts_driver.zig": "0ae84a08f11a7460e59e216e222f794041bfa985ec7c87ccc6d847adb6e64907",
+      "packages/ts_program/src/ts_program.zig": "64e892d38226fb3d61b45cb24ca350179f0b1948a8ffaf68809b4df37b331167",
+      "packages/ts_conformance/src/ts_conformance.zig": "8d39c8bb2206629542255916a08445cec47075a5e9787914b08ad86d75a48449"
+    },
+    "test_binary_sha256": "4a723c75f1fdf89a26fabc3540d857219c978b73848929b2828d195671fdc010"
+  },
+  "typescript_go": "89d5d5b2849a0db0957065889ca58536fa6d2e4a",
+  "typescript": "5848bc5157b22ff7f4e3369f4645a514a433b15f",
+  "zig": "0.17.0-dev.2163+89ff10d56",
+  "memory_ceiling_mb": 3840,
+  "baseline_graph": {
+    "passed": 1,
+    "failed": 3,
+    "total": 4,
+    "exit_code": 1,
+    "peak_mb": 264
+  },
+  "baseline_metadata": {
+    "passed": 1,
+    "failed": 1,
+    "total": 2,
+    "exit_code": 1,
+    "peak_mb": 1625
+  },
+  "baseline_cycle": {
+    "passed": 1,
+    "failed": 1,
+    "total": 2,
+    "exit_code": 1,
+    "peak_mb": 258
+  },
+  "initial_compile_failure": {
+    "tests_executed": 0,
+    "compile_errors": 1,
+    "exit_code": 1,
+    "peak_mb": 201
+  },
+  "disk_admission_stop": {
+    "exit_code": 123,
+    "reported_free_mb": 399,
+    "unchanged_minimum_mb": 1024
+  },
+  "allocation_failure_negative": {
+    "passed": 6,
+    "failed": 1,
+    "total": 7,
+    "leaks": 1,
+    "leak_bytes": 32768,
+    "fail_index": 24,
+    "allocation_count": 52,
+    "exit_code": 1,
+    "peak_mb": 286
+  },
+  "completion_negative": {
+    "passed": 1,
+    "failed": 1,
+    "total": 2,
+    "exit_code": 1,
+    "peak_mb": 311
+  },
+  "recovery_negative": {
+    "passed": 1,
+    "failed": 1,
+    "total": 2,
+    "exit_code": 1,
+    "peak_mb": 1750
+  },
+  "graph_controls": {
+    "passed": 8,
+    "total": 8,
+    "exit_code": 0,
+    "peak_mb": 320
+  },
+  "metadata_controls": {
+    "passed": 4,
+    "total": 4,
+    "exit_code": 0,
+    "peak_mb": 1706
+  },
+  "preintegration_gates": {
+    "checker": {
+      "passed": 4518,
+      "total": 4518,
+      "peak_mb": 2016,
+      "exit_code": 0
+    },
+    "driver": {
+      "passed": 200,
+      "total": 200,
+      "peak_mb": 1889,
+      "exit_code": 0
+    },
+    "program": {
+      "passed": 241,
+      "total": 241,
+      "peak_mb": 1913,
+      "exit_code": 0
+    },
+    "optin": {
+      "passed": 3,
+      "total": 3,
+      "peak_mb": 2104,
+      "exit_code": 0
+    },
+    "compiler": {
+      "steps": 3,
+      "total_steps": 3,
+      "peak_mb": 2888,
+      "exit_code": 0
+    },
+    "zod": {
+      "ts_diagnostics": 195,
+      "unmodeled_any": 3,
+      "ceiling": 3,
+      "production_files": 106,
+      "compiler_exit_code": 1,
+      "exit_code": 0,
+      "peak_mb": 490,
+      "normalized_matches_preceding_checkpoint": true
+    },
+    "survey_controls": {
+      "passed": 10,
+      "total": 10,
+      "exit_code": 0
+    },
+    "original_react": {
+      "exit_code": 130,
+      "deliberately_interrupted_for_integrated_source_validation": true,
+      "aggregate_complete": false,
+      "started_cases": [
+        "intraExpressionInferencesJsx"
+      ],
+      "unstarted_cases": [
+        "contextuallyTypedStringLiteralsInJsxAttributes02"
+      ],
+      "deadline_seconds": 900,
+      "passing_case_credit": 0
+    }
+  },
+  "artifact_sha256": {
+    "baseline-graph.log.gz": "b1c7b29d75673a00add020ab39a226a23b5a30c86509c3c492327a02f037ea5c",
+    "baseline-metadata.log.gz": "0a637a37aab039ce74f66a2bbb24738829328174b8005e250679dcefe7c3bf12",
+    "baseline-cycle.log.gz": "d49d8e93b77ad47c37a9e8038f8dbec663eab964e07d9ae4f919ffd1cbef8760",
+    "baseline-source.json.gz": "505bc12f9c97d760e068988bc21082fb72eb64abf31561e2d80faadbd909abbb",
+    "baseline-test-only.diff.gz": "4552ef225ac0641af19b83441f0300792c1ef13af9c13aabc34f7eb8a78a6c6e",
+    "initial-compile-failure.log.gz": "f4df87cba9cd14c04e6bd8ed318cccc070929c0ba4466bfed903ef4ee0b98990",
+    "initial-metadata-compile-failure.log.gz": "bb8860d74d059fb9ed533845b4eaaeafa0731671b1dcde3b39eb75104478d0af",
+    "disk-admission-stop.log.gz": "977d0717ec84d20ce0e41d7fd06107955699ced8f2eedce26d93477ec4b2e050",
+    "first-graph-controls.log.gz": "4980edb2a30d5dfe9e1817b4917feaffc14a13b27bd36774d1ecc52a89b57b30",
+    "first-metadata-controls.log.gz": "52fffbb1c34fc93d4c3db38f0512f5fc6c93ad1754ec8a2702160599b4bcd729",
+    "scoped-graph-controls.log.gz": "d03d117612a664bd5605af0b70cdbab899e430c67e387f161d29e645fb052f4d",
+    "owner-controls.log.gz": "936647e84756e3184dd79a4b68a5a99a861c45ce1d658c848edb7aa7f8e094d7",
+    "allocation-leak-negative.log.gz": "11227efed1fdaacbd7f651b05b44500eb768bd3376db730f44cbb2961d5e3d15",
+    "completion-negative.log.gz": "0022bcd6030a985811f1883d661c588d82977fcbf8399400fa41556054f81dcb",
+    "recovery-negative.log.gz": "b159c68168523d269aa70d0d0f64e8f4dbe24dfc535a4aed9f665055dcf661e7",
+    "pre-completion-source.json.gz": "7e1aad0ef8be80aafa75df73e6fa421ff209f77ecac2660ee301738c2bf4e140",
+    "pre-completion.diff.gz": "cc4abed16a699bb372a2117bf003b746c5458f060cb83eab49562a5432d99556",
+    "graph-controls.log.gz": "8a92645569a202cf67cd08576202bf9edf7c4344f5f2448c050b8f36d015396a",
+    "metadata-controls.log.gz": "5d7a38e37eac1727aaf80495d0379ded5fe21378670d64ba7ad64c2bc26eb083",
+    "preintegration-source.json.gz": "ed78bf1d72c0f015714362353b172f1abdeb427d47df60a6124afe3ee4eca7a1",
+    "preintegration.diff.gz": "52ff3e2c4de41f1d317c860cda099772d638fd4febbe962d2865fec681144a3d",
+    "preintegration-checker.log.gz": "863afdae070234b2de8755e9d4c14d2cf653ce1e3655d59bd8247370eac39f3a",
+    "preintegration-driver.log.gz": "33c88fbe91ca8333c08f8bc327d9e1bd5c91a8513eee66e7dda9d099b2e3bb16",
+    "preintegration-program.log.gz": "b95aebfc4c30bd9534f8ed416dd40f861c4b817ba4af94da09de402ab50f3ec0",
+    "preintegration-optin.log.gz": "eea1c4725facf365f801d7d77c59e15bc97919fec93b61888b0ca6559656bd4d",
+    "preintegration-compiler.log.gz": "3adf889ae907eb0bc525ad45f73419656cc5c7b2ddb06d50b4d82e13f36aafe5",
+    "preintegration-zod.log.gz": "514145dae4c31ecc3cee80265a87e651df8b22abda76f392b3815a13c1fb9c2a",
+    "preintegration-zod-diagnostics.log.gz": "33d8dce140832c14f0b3d05d795e674d6004c6b97d67744908ac0d8ff133eddb",
+    "preintegration-zod-current.json.gz": "45132f8bdd201e5000f92a44f4173d843d690f9dd41d4f4179642d7ac0e97bc4",
+    "preintegration-survey-controls.log.gz": "696d88a959f77d93f65102fc0a782782719e6b01792f1d528fa94afc995c33bb",
+    "preintegration-survey-controls-details.log.gz": "f91ed57fc7483352db1feb02911fb7decce307f1550ef01d2a24ba7b5bbf569d",
+    "preintegration-react-interrupted.log.gz": "3c1a96c3c074036c0534a9f80e222829dda840bb4d178187d38365634a63fd25",
+    "integrated-source.json.gz": "591bc4036a66dfe7785e024baa7de2f58b7ca30855cd7ccc92a1332f30fbbf90",
+    "integrated-checker.log.gz": "c3c08d0e6dea60a3cb57ddb19a83d27b7ffe75101e364cfdbb047fdec6c714fb",
+    "integrated-driver.log.gz": "88018c57090b6b458db7fb41f799742089fb43fe5df7d277972c063afadc3607",
+    "integrated-program.log.gz": "1c00a6e09ac1de474747010c08f65eb5a80c9eb52102ab2c5fdb694456eefe20",
+    "integrated-optin.log.gz": "fb0d154921f4a33b2c8331e6be0faf8106ccde97e124fd4d0a7187e21680f57d",
+    "integrated-compiler.log.gz": "a1b3e2133ecf628bc4b94f2baef1a2ebd8329117f758e7233dd228eed5445776",
+    "integrated-zod.log.gz": "71248afe4406aa79ba47190466d3af22d15471475cf037850bef9fafadc2cc9d",
+    "integrated-zod-diagnostics.log.gz": "8c975d47e731db0475781202d84921ac3719f1962d3811ee3243abc50b133eec",
+    "integrated-zod-current.json.gz": "45132f8bdd201e5000f92a44f4173d843d690f9dd41d4f4179642d7ac0e97bc4",
+    "integrated-survey-controls.log.gz": "696d88a959f77d93f65102fc0a782782719e6b01792f1d528fa94afc995c33bb",
+    "integrated-survey-controls-details.log.gz": "f0bdcce0030ae9843582a657d48d849a8891adc5ef34fa507eee4579d6260018",
+    "integrated-react-sample.txt.gz": "db9f748e338208763df1bc7b5d45bda1ce5da3796f6c45316bb304881043bdc1",
+    "integrated-react-sample-command.log.gz": "1229c1a2eb80199bbb8a541246502cb6422643e66c7b8fa3666055d3e8c91bec",
+    "integrated-original-react.log.gz": "3c1a96c3c074036c0534a9f80e222829dda840bb4d178187d38365634a63fd25"
+  },
+  "integrated_gates": {
+    "checker": {
+      "passed": 4519,
+      "total": 4519,
+      "exit_code": 0,
+      "peak_mb": 2293
+    },
+    "driver": {
+      "passed": 200,
+      "total": 200,
+      "exit_code": 0,
+      "peak_mb": 1777
+    },
+    "program": {
+      "passed": 242,
+      "total": 242,
+      "exit_code": 0,
+      "peak_mb": 2165
+    },
+    "optin": {
+      "passed": 3,
+      "total": 3,
+      "exit_code": 0,
+      "peak_mb": 2115
+    },
+    "compiler": {
+      "steps": 3,
+      "total_steps": 3,
+      "exit_code": 0,
+      "peak_mb": 2901,
+      "binary_sha256": "050cfb8ffabfffba861f7495bd3a821fcef322d7103e7abb938fe6c72cbda11c"
+    },
+    "zod": {
+      "ts_diagnostics": 195,
+      "unmodeled_any": 3,
+      "ceiling": 3,
+      "production_files": 106,
+      "exit_code": 0,
+      "compiler_exit_code": 1,
+      "peak_mb": 478,
+      "normalized_matches_preceding_checkpoint": true
+    },
+    "survey_controls": {
+      "passed": 10,
+      "total": 10,
+      "exit_code": 0
+    },
+    "original_react": {
+      "status_at_snapshot": "running",
+      "snapshot_utc": "2026-10-08 18:06:59 UTC",
+      "supervisor_pid": 83327,
+      "test_pid": 83333,
+      "exec_session_id": 31708,
+      "deadline_seconds": 900,
+      "memory_ceiling_mb": 3840,
+      "aggregate_complete": false,
+      "started_cases": [
+        "intraExpressionInferencesJsx"
+      ],
+      "unstarted_cases": [
+        "contextuallyTypedStringLiteralsInJsxAttributes02"
+      ],
+      "passing_case_credit": 0,
+      "exit_code": null
+    }
+  },
+  "integrated_react_sample": {
+    "seconds_after_launch": 246,
+    "observed_phase": "interface checking with repeated UMD namespace source scans",
+    "sampled_physical_footprint": "1.1G",
+    "not_final_peak": true
+  }
+}
