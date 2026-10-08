@@ -36,7 +36,7 @@ ceiling, with exit 125. `intraExpressionInferencesJsx` started;
 `contextuallyTypedStringLiteralsInJsxAttributes02` is unstarted. No complete
 aggregate or passing-case credit exists. The process sample is from the earlier
 disk-stopped attempt on this same source and places work in declaration member
-lowering and recursive receiver-predicate substitution. Stable signature sharing
+lowering and recursive inheritance-base metadata substitution. Stable signature sharing
 does not resolve that remaining recursive work.
 
 This fixes stable signature-map sharing. Recursive substitution and faithful

@@ -1,0 +1,134 @@
+{
+  "source_base": "0b0339a213910fae94231d748b1a946ea5fd3daa",
+  "source_commit": "0b8d584c1c38ef4b965d2130938dac03880f8315",
+  "typescript_go": "89d5d5b2849a0db0957065889ca58536fa6d2e4a",
+  "typescript": "5848bc5157b22ff7f4e3369f4645a514a433b15f",
+  "zig": "0.17.0-dev.2163+89ff10d56",
+  "memory_ceiling_mb": 3840,
+  "source_sha256": {
+    "packages/ts_checker/src/check.zig": "b09bd67f77946d27780c87365ce97b543539da47726793cccba845f2b96ed964",
+    "packages/ts_driver/src/ts_driver.zig": "2bbb38a2aa70da7dab35815d069ab7d48853ebf302b02ac2a8b3714f6a25e892",
+    "packages/ts_program/src/ts_program.zig": "cd72251909532331f302619b0a38976eb1414bebb35858fdc55f95b24267d05d",
+    "packages/ts_conformance/src/ts_conformance.zig": "cfa81a8cbcf1a96e6db2bec2b35f73f6dbed9ddb7c72af688a3da322be603410"
+  },
+  "baseline_controls": {
+    "passed": 2,
+    "failed": 1,
+    "total": 3,
+    "exit_code": 1,
+    "peak_mb": 1765,
+    "checker_sha256": "a81eaa6bb7ecf9ff7423aa6a4881873affd03e3b5f8a29a74dec2a0eb5eb29b1",
+    "test_binary_sha256": "11499ca66e9ab6379b07c3c7f553789638f6eb11f745028d7ecbf2a9d8165c3d"
+  },
+  "intermediate_controls": {
+    "passed": 3,
+    "total": 3,
+    "exit_code": 0,
+    "peak_mb": 1748
+  },
+  "intermediate_override_control": {
+    "passed": 3,
+    "failed": 1,
+    "total": 4,
+    "exit_code": 1,
+    "peak_mb": 1753,
+    "checker_sha256": "3ef77e517774bc582154d4d97f6fdb0cc4fb3648b4e05b0adcd23aca257338fa",
+    "test_binary_sha256": "b8fab3e079ca170399ce70c70931735e2fe4139fe35434273fd878d4bfd5a128"
+  },
+  "gates": {
+    "predicate_controls": {
+      "passed": 4,
+      "total": 4,
+      "exit_code": 0,
+      "peak_mb": 1755
+    },
+    "checker": {
+      "passed": 4491,
+      "total": 4491,
+      "exit_code": 0,
+      "peak_mb": 2227
+    },
+    "driver": {
+      "passed": 198,
+      "total": 198,
+      "exit_code": 0,
+      "peak_mb": 1848
+    },
+    "program": {
+      "passed": 234,
+      "total": 234,
+      "exit_code": 0,
+      "peak_mb": 2052
+    },
+    "opt_in_controls": {
+      "passed": 3,
+      "total": 3,
+      "exit_code": 0,
+      "peak_mb": 2072
+    },
+    "original_react": {
+      "requested_cases": [
+        "intraExpressionInferencesJsx",
+        "contextuallyTypedStringLiteralsInJsxAttributes02"
+      ],
+      "started_cases": [
+        "intraExpressionInferencesJsx"
+      ],
+      "unstarted_cases": [
+        "contextuallyTypedStringLiteralsInJsxAttributes02"
+      ],
+      "aggregate_complete": false,
+      "exit_code": 125,
+      "peak_mb": 3844,
+      "deadline_seconds": 900,
+      "sample_dominant_call": "substituteTypeUncached -> decl_single_base inheritance metadata substitution at check.zig:166393"
+    },
+    "compiler": {
+      "steps": 3,
+      "total_steps": 3,
+      "exit_code": 0,
+      "peak_mb": 2993
+    },
+    "zod": {
+      "ts_diagnostics": 196,
+      "unmodeled_any": 3,
+      "ceiling": 3,
+      "production_files": 106,
+      "exit_code": 0,
+      "compiler_exit_code": 1,
+      "peak_mb": 615,
+      "normalized_output_equals_previous_checkpoint": true
+    },
+    "survey_controls": {
+      "passed": 10,
+      "total": 10,
+      "exit_code": 0
+    }
+  },
+  "opt_in_binary_sha256": "5091aa0ee4b04af1b95f031e404828e6d39518174230c91656499abea086f165",
+  "artifact_sha256": {
+    "baseline-controls.log.gz": "cec19dad8b46561a69f8da7aacbf50a3f997f267fb3b933f0c20d7939c91badc",
+    "baseline-source.json.gz": "6f95862ee3a038aa02f321375bb325f6fa45837b93fbba62eb12e53e846a1b86",
+    "baseline-test-only.diff.gz": "1c2a5af8c77fade49f6d4efbc0d206de68183eb07ea857b3ae557fca8f4d3fab",
+    "intermediate-controls.log.gz": "d1f49088db3b77ef8a7377a7cb00da0a87dff633e809390fe7510c524d50074c",
+    "intermediate-override-failure.log.gz": "bf9920b950803cace7bec989802c67bc625c98b3817c126cd16601374f5b5a48",
+    "intermediate-source.json.gz": "d44cf9c15f3dd5e5b8633a2d8453fd1028469ff275bd80da7961ae0a4f93084a",
+    "intermediate.diff.gz": "1314ee873c2e2170589a3612dff0c8f83679596d8c1a8bf75d348635f58888b0",
+    "predicate-controls.log.gz": "6ed99fd95124457280ffc34b03a05c5efdd2e575745180116f69674574b1867b",
+    "checker.log.gz": "5a3a95c09abc4ba65f0ae0f17cc4697dda83b139fa3fe1f10816fc49a4dda582",
+    "driver.log.gz": "df1a7db87acb6b61b356ba8479097961a70905ef7141dc872fc8250ce8c831dc",
+    "program.log.gz": "dac388dfde75d487bb6213117f6f0ed1c6b815820136f78f999d050ecef12350",
+    "opt-in-controls.log.gz": "faaaa8ccd3b5ecce701fae91a72b2d1f8274dd7eb77fb1275c64974716f6d45d",
+    "original-react-memory-stop.log.gz": "15803b4082c4ceb37f2e03170c920d2f7a4635bf8858c68b68c8a26955b9ba9d",
+    "original-react-process-sample.txt.gz": "f8201075b97d748edf8e4d8f641f8835703ed4554c5bafd104cd4b86db69b54a",
+    "compiler.log.gz": "56e9b4f125eae759dcb9681ed2a9df43817a8fe35a428ea7a4573dde99e5f5a1",
+    "zod.log.gz": "6b5e0679ffa87ffb2d94f63e055b11b7d3b9d33fa145d152713fcf6e59c4075e",
+    "zod-diagnostics.log.gz": "b527b4c523788c5be33c13caa2ed25249c1662a6063719a62091097b4958e767",
+    "zod-current.json.gz": "45132f8bdd201e5000f92a44f4173d843d690f9dd41d4f4179642d7ac0e97bc4",
+    "survey-controls.log.gz": "696d88a959f77d93f65102fc0a782782719e6b01792f1d528fa94afc995c33bb",
+    "survey-controls-details.log.gz": "661e6cf313ce0f1422a70d68746a41d58073414e5ceb8641f8a32a25e9436068",
+    "docs-paths.log.gz": "0b88df517974a41504cb60db96f65a7c786ac9bd1e55a347d516c8dc420399cb",
+    "evidence-lint.log.gz": "870fbb301d14f65b0b7ebbc04aa7a5d3d73851d463e3f4db0b10190d7bf6edc3"
+  },
+  "compiler_sha256": "1ef97a5f083c870c6f68b5917c0d1005a306c771006ad5402179a7436dbe4226"
+}
