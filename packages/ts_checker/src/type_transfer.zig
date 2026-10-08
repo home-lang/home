@@ -104,6 +104,17 @@ const Builder = struct {
     names: Names,
     relocation: Relocation,
     signatures: []types.TypeId,
+    // Borrowed results remain valid until the next operation on that buffer.
+    // Interner builders copy them into destination-owned storage before reuse.
+    type_scratch: std.ArrayListUnmanaged(types.TypeId) = .empty,
+    text_scratch: std.ArrayListUnmanaged(types.StringId) = .empty,
+    tuple_scratch: std.ArrayListUnmanaged(types.TupleElement) = .empty,
+
+    fn deinit(self: *Builder) void {
+        self.type_scratch.deinit(self.target.gpa);
+        self.text_scratch.deinit(self.target.gpa);
+        self.tuple_scratch.deinit(self.target.gpa);
+    }
 
     fn string(self: *Builder, id: types.StringId) Error!types.StringId {
         return self.names.string(self.names.context, id);
@@ -134,11 +145,10 @@ const Builder = struct {
         return values[start..][0..len];
     }
 
-    fn mappedTypes(self: *Builder, values: []const types.TypeId) Error![]types.TypeId {
-        const result = try self.target.gpa.alloc(types.TypeId, values.len);
-        errdefer self.target.gpa.free(result);
-        for (values, result) |value, *mapped| mapped.* = try self.typeId(value);
-        return result;
+    fn mappedTypes(self: *Builder, values: []const types.TypeId) Error![]const types.TypeId {
+        try self.type_scratch.resize(self.target.gpa, values.len);
+        for (values, self.type_scratch.items) |value, *mapped| mapped.* = try self.typeId(value);
+        return self.type_scratch.items;
     }
 
     fn dependencies(self: *Builder, id: types.TypeId, output: *std.ArrayListUnmanaged(types.TypeId)) Error!void {
@@ -230,13 +240,11 @@ const Builder = struct {
             .union_payloads => blk: {
                 const p = try self.payload(.union_payloads, id);
                 const members = try self.mappedTypes(try self.slice(.member_pool, p.members_start, p.members_len));
-                defer allocator.free(members);
                 break :blk try target.internUnion(members);
             },
             .intersection_payloads => blk: {
                 const p = try self.payload(.intersection_payloads, id);
                 const members = try self.mappedTypes(try self.slice(.member_pool, p.members_start, p.members_len));
-                defer allocator.free(members);
                 break :blk try target.internIntersection(members);
             },
             .conditional_payloads => blk: {
@@ -264,11 +272,10 @@ const Builder = struct {
             .template_literal_payloads => blk: {
                 const p = try self.payload(.template_literal_payloads, id);
                 const source_texts = try self.slice(.string_id_pool, p.texts_start, p.texts_len);
-                const texts = try allocator.alloc(types.StringId, source_texts.len);
-                defer allocator.free(texts);
-                for (source_texts, texts) |text, *mapped| mapped.* = try self.string(text);
+                try self.text_scratch.resize(allocator, source_texts.len);
+                for (source_texts, self.text_scratch.items) |text, *mapped| mapped.* = try self.string(text);
+                const texts = self.text_scratch.items;
                 const args = try self.mappedTypes(try self.slice(.type_arg_pool, p.types_start, p.types_len));
-                defer allocator.free(args);
                 break :blk try target.internTemplateLiteral(texts, args);
             },
             .string_mapping_payloads => blk: {
@@ -277,8 +284,10 @@ const Builder = struct {
             },
             .tuple_payloads => blk: {
                 const p = try self.payload(.tuple_payloads, id);
-                const elements = try allocator.dupe(types.TupleElement, try self.slice(.tuple_element_pool, p.elements_start, p.elements_len));
-                defer allocator.free(elements);
+                const source_elements = try self.slice(.tuple_element_pool, p.elements_start, p.elements_len);
+                try self.tuple_scratch.resize(allocator, source_elements.len);
+                @memcpy(self.tuple_scratch.items, source_elements);
+                const elements = self.tuple_scratch.items;
                 for (elements) |*element| element.type = try self.typeId(element.type);
                 break :blk try target.internTupleType(elements);
             },
@@ -286,10 +295,8 @@ const Builder = struct {
                 const p = try self.payload(.signature_payloads, id);
                 if (p.has_this_type != (p.this_type != types.Primitive.none)) return error.InvalidTypeGraph;
                 const params = try self.mappedTypes(try self.slice(.type_arg_pool, p.params_start, p.params_len));
-                defer allocator.free(params);
                 const result = try target.internSignatureWithThisType(params, try self.typeId(p.return_type), p.is_construct, p.is_abstract_construct, try self.typeId(p.this_type));
                 const generics = try self.mappedTypes(try self.slice(.type_arg_pool, p.type_params_start, p.type_params_len));
-                defer allocator.free(generics);
                 const index = target.pool.payloadOf(result);
                 if (result < self.relocation.destination_start) {
                     const existing = target.pool.signature_payloads.items[index];
@@ -306,7 +313,6 @@ const Builder = struct {
             .instantiation_payloads => blk: {
                 const p = try self.payload(.instantiation_payloads, id);
                 const args = try self.mappedTypes(try self.slice(.type_arg_pool, p.args_start, p.args_len));
-                defer allocator.free(args);
                 break :blk try target.internInstantiation(try self.typeId(p.origin), args);
             },
             else => error.InvalidTypeGraph,
@@ -327,7 +333,6 @@ const Builder = struct {
                 const p = try self.payload(.generic_definition_payloads, id);
                 if (p.body == types.Primitive.none) return error.InvalidTypeGraph;
                 const parameters = try self.mappedTypes(try self.slice(.type_arg_pool, p.parameters_start, p.parameters_len));
-                defer target.gpa.free(parameters);
                 try target.completeGenericDefinition(mapped_id, parameters, try self.typeId(p.body));
                 const symbol = self.source.typeSymbol(id);
                 if (symbol != 0) target.setTypeSymbol(mapped_id, try self.node(symbol));
@@ -348,13 +353,16 @@ const Builder = struct {
                 const p = try self.payload(.object_type_payloads, id);
                 const source_members = try self.slice(.object_member_pool, p.members_start, p.members_len);
                 const members_start: u32 = @intCast(target.pool.object_member_pool.items.len);
+                // Name/provenance callbacks cannot mutate either type pool.
+                // Reserve once while retaining rollback on every callback error.
+                try target.pool.object_member_pool.ensureUnusedCapacity(target.gpa, source_members.len);
                 for (source_members) |member| {
                     var mapped = member;
                     mapped.name = try self.string(member.name);
                     mapped.type = try self.typeId(member.type);
                     mapped.decl_node = try self.node(member.decl_node);
                     if (member.declaration_origin != 0) mapped.declaration_origin = try self.string(member.declaration_origin);
-                    try target.pool.object_member_pool.append(target.gpa, mapped);
+                    target.pool.object_member_pool.appendAssumeCapacity(mapped);
                 }
                 target.pool.object_type_payloads.items[target.pool.payloadOf(mapped_id)] = .{
                     .members_start = if (source_members.len == 0) 0 else members_start,
@@ -445,6 +453,7 @@ pub fn prepare(target: *interner.Interner, source: *const interner.Interner, nam
     defer allocator.free(signatures);
     @memset(signatures, 0);
     var builder: Builder = .{ .source = source, .target = target, .names = names, .relocation = relocation, .signatures = signatures };
+    defer builder.deinit();
     errdefer rollback(target, lengths);
     // Allocate declaration-scoped identities before walking any structural
     // keys. Their constraints/members are filled only after all IDs resolve.
@@ -1002,6 +1011,78 @@ test "type transfer: immutable keys stay canonical while callable identities sta
     const repeated = try canonicalGraph(&target);
     try T.expectEqualSlices(types.TypeId, existing[0..13], repeated[0..13]);
     try T.expect(existing[13] != repeated[13]);
+}
+
+test "type transfer: varied borrowed payloads remain owned after source destruction" {
+    var source = try interner.Interner.init(T.allocator);
+    var source_live = true;
+    defer if (source_live) source.deinit();
+    var counted = std.testing.FailingAllocator.init(T.allocator, .{});
+    var target = try interner.Interner.init(counted.allocator());
+    defer target.deinit();
+    const parameter = try source.internFreshTypeParameterWithFlags(1, types.Primitive.unknown, types.Primitive.none, .covariant, true);
+    const definition = try source.reserveGenericDefinition();
+    const body = try source.internObjectType(&.{.{ .name = 2, .type = parameter, .is_optional = false, .is_readonly = true, .is_method = false }});
+    try source.completeGenericDefinition(definition, &.{parameter}, body);
+    const reference = try source.internInstantiation(definition, &.{parameter});
+    const Row = struct { signature: types.TypeId, tuple: types.TypeId, template: types.TypeId, count: usize };
+    var rows: [64]Row = undefined;
+    for (&rows, 0..) |*row, index| {
+        const count = 1 + (index * 7 % 16);
+        var parameters: [16]types.TypeId = undefined;
+        var elements: [16]types.TupleElement = undefined;
+        var texts: [17]types.StringId = undefined;
+        for (0..count) |i| {
+            parameters[i] = if (i % 2 == 0) parameter else reference;
+            elements[i] = .{ .type = parameters[i], .is_optional = i % 2 == 1, .is_rest = false };
+            texts[i] = @intCast(10 + i);
+        }
+        texts[count] = @intCast(10 + count);
+        const signature = try source.internSignatureWithThisType(parameters[0..count], reference, index % 2 == 0, false, parameter);
+        const start: u32 = @intCast(source.pool.type_arg_pool.items.len);
+        try source.pool.type_arg_pool.append(T.allocator, parameter);
+        source.pool.signature_payloads.items[source.pool.payloadOf(signature)].type_params_start = start;
+        source.pool.signature_payloads.items[source.pool.payloadOf(signature)].type_params_len = 1;
+        row.* = .{
+            .signature = signature,
+            .tuple = try source.internTupleType(elements[0..count]),
+            .template = try source.internTemplateLiteral(texts[0 .. count + 1], parameters[0..count]),
+            .count = count,
+        };
+    }
+    var names: TestNames = .{};
+    const allocations_before = counted.alloc_index;
+    var relocated = try append(&target, &source, names.names());
+    defer relocated.deinit();
+    const transfer_allocations = counted.alloc_index - allocations_before;
+    source.deinit();
+    source_live = false;
+    names.string_base = 900;
+    names.node_base = 9000;
+    const mapped_parameter = try relocated.typeId(parameter);
+    const mapped_reference = try relocated.typeId(reference);
+    for (rows, 0..) |row, index| {
+        const signature = try relocated.typeId(row.signature);
+        const payload = target.pool.signature_payloads.items[target.pool.payloadOf(signature)];
+        try T.expectEqual(row.count, target.signatureParams(signature).len);
+        for (target.signatureParams(signature), 0..) |param, i| try T.expectEqual(if (i % 2 == 0) mapped_parameter else mapped_reference, param);
+        try T.expectEqual(mapped_parameter, payload.this_type);
+        try T.expectEqual(mapped_reference, payload.return_type);
+        try T.expectEqual(index % 2 == 0, payload.is_construct);
+        try T.expectEqual(@as(u32, 1), payload.type_params_len);
+        try T.expectEqual(mapped_parameter, target.pool.type_arg_pool.items[payload.type_params_start]);
+        const tuple = target.pool.tuple_payloads.items[target.pool.payloadOf(try relocated.typeId(row.tuple))];
+        try T.expectEqual(row.count, @as(usize, tuple.elements_len));
+        for (target.pool.tuple_element_pool.items[tuple.elements_start..][0..tuple.elements_len], 0..) |element, i| {
+            try T.expectEqual(if (i % 2 == 0) mapped_parameter else mapped_reference, element.type);
+            try T.expectEqual(i % 2 == 1, element.is_optional);
+        }
+        const template = try relocated.typeId(row.template);
+        try T.expectEqual(row.count + 1, target.templateLiteralTexts(template).len);
+        for (target.templateLiteralTexts(template), 0..) |text, i| try T.expectEqual(@as(types.StringId, @intCast(110 + i)), text);
+        for (target.templateLiteralTypes(template), 0..) |part, i| try T.expectEqual(if (i % 2 == 0) mapped_parameter else mapped_reference, part);
+    }
+    std.debug.print("transfer-owned-payload-control: rows=64 allocations={d}\n", .{transfer_allocations});
 }
 
 test "type transfer: deep forward references are iterative and unanchored key cycles are rejected" {
