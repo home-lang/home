@@ -3449,14 +3449,33 @@ const NamedShapeCandidate = struct {
 const LocalValueContainerIndex = struct {
     const Entry = struct { declaration: NodeId, ordinal: usize };
     const StatementKey = struct { node: NodeId, virtual_section_start: usize };
+    const RequireCandidateBucket = struct {
+        head: usize = std.math.maxInt(usize),
+        tail: usize = std.math.maxInt(usize),
+    };
+    const RequireCandidate = struct {
+        specifier: []const u8,
+        statement_start: u32,
+        virtual_section_start: usize,
+        next: usize = std.math.maxInt(usize),
+    };
 
     declarations: std.AutoHashMapUnmanaged(DeclarationKey, Entry) = .empty,
     statement_ordinals: std.AutoHashMapUnmanaged(StatementKey, usize) = .empty,
+    require_candidate_buckets: std.AutoHashMapUnmanaged(hir_mod.StringId, RequireCandidateBucket) = .empty,
+    require_candidates: std.ArrayListUnmanaged(RequireCandidate) = .empty,
 
     fn deinit(self: *LocalValueContainerIndex, gpa: std.mem.Allocator) void {
         self.declarations.deinit(gpa);
         self.statement_ordinals.deinit(gpa);
+        self.require_candidate_buckets.deinit(gpa);
+        self.require_candidates.deinit(gpa);
     }
+};
+
+const RequireBinding = struct {
+    name: hir_mod.StringId,
+    specifier: []const u8,
 };
 
 const JsDocGlobalDeclEntry = struct {
@@ -104957,6 +104976,9 @@ pub const Checker = struct {
     fn indexLocalValueDeclarations(self: *Checker, container: NodeId, stmts: []const NodeId, has_sections: bool) !void {
         var index: LocalValueContainerIndex = .{};
         errdefer index.deinit(self.gpa);
+        const collect_require_candidates =
+            self.hir.parentOf(container) == hir_mod.none_node_id and
+            (self.source == null or self.source_may_have_require_binding);
         for (stmts, 0..) |stmt, ordinal| {
             const section = if (has_sections) self.virtualSectionStartForNode(stmt) else 0;
             const decl = if (self.hir.kindOf(stmt) == .export_decl) hir_mod.exportOf(self.hir, stmt).decl else stmt;
@@ -104969,6 +104991,24 @@ pub const Checker = struct {
                     .virtual_section_start = section,
                 });
                 if (!boundary.found_existing) boundary.value_ptr.* = ordinal;
+            }
+            if (collect_require_candidates) {
+                if (self.requireBindingForStatement(stmt)) |binding| {
+                    const bucket = try index.require_candidate_buckets.getOrPut(self.gpa, binding.name);
+                    if (!bucket.found_existing) bucket.value_ptr.* = .{};
+                    const candidate_index = index.require_candidates.items.len;
+                    try index.require_candidates.append(self.gpa, .{
+                        .specifier = binding.specifier,
+                        .statement_start = self.hir.spanOf(stmt).start,
+                        .virtual_section_start = section,
+                    });
+                    if (bucket.value_ptr.tail != std.math.maxInt(usize)) {
+                        index.require_candidates.items[bucket.value_ptr.tail].next = candidate_index;
+                    } else {
+                        bucket.value_ptr.head = candidate_index;
+                    }
+                    bucket.value_ptr.tail = candidate_index;
+                }
             }
             if (decl == hir_mod.none_node_id) continue;
             switch (self.hir.kindOf(decl)) {
@@ -131938,37 +131978,77 @@ pub const Checker = struct {
         if (self.source != null and !self.source_may_have_require_binding) return null;
         const root = self.rootBlockFor(anchor);
         if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
-        const section = self.virtualSectionStartForNode(anchor);
+        const stmts = hir_mod.blockStmts(self.hir, root);
+        if (stmts.len <= 1) return self.requireSpecifierForLocalSlow(local_name, anchor);
+        const has_sections = self.sourceHasVirtualFilenameSections();
+        const index = self.local_value_decls_by_container.getPtr(root) orelse blk: {
+            self.indexLocalValueDeclarations(root, stmts, has_sections) catch
+                return self.requireSpecifierForLocalSlow(local_name, anchor);
+            break :blk self.local_value_decls_by_container.getPtr(root).?;
+        };
+        const bucket = index.require_candidate_buckets.get(local_name) orelse return null;
+        const section = if (has_sections) self.virtualSectionStartForNode(anchor) else 0;
+        const anchor_start = self.hir.spanOf(anchor).start;
         var fallback: ?[]const u8 = null;
-        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
-            var candidate: ?[]const u8 = null;
-            if (self.hir.kindOf(stmt) == .import_decl and self.importDeclIsRequireAssignment(stmt)) {
-                const import = hir_mod.importOf(self.hir, stmt);
-                if (import.default_binding != hir_mod.none_node_id and
-                    self.hir.kindOf(import.default_binding) == .identifier and
-                    hir_mod.identifierOf(self.hir, import.default_binding).name == local_name)
-                {
-                    candidate = self.string_interner.get(import.module);
-                }
-            } else {
-                const decl = self.unwrapExportDecl(stmt);
-                const kind = self.hir.kindOf(decl);
-                if (kind != .var_decl and kind != .let_decl and kind != .const_decl) continue;
-                const variable = hir_mod.varDeclOf(self.hir, decl);
-                if (variable.name == hir_mod.none_node_id or self.hir.kindOf(variable.name) != .identifier) continue;
-                if (hir_mod.identifierOf(self.hir, variable.name).name != local_name) continue;
-                candidate = self.requireCallSpecifier(variable.init);
-            }
-            const specifier = candidate orelse continue;
-            if (self.hir.spanOf(stmt).start > self.hir.spanOf(anchor).start) continue;
-            if (self.virtualSectionStartForNode(stmt) == section) return specifier;
+        var candidate_index = bucket.head;
+        while (candidate_index != std.math.maxInt(usize)) {
+            const candidate = index.require_candidates.items[candidate_index];
+            candidate_index = candidate.next;
+            if (candidate.statement_start > anchor_start) continue;
+            if (candidate.virtual_section_start == section) return candidate.specifier;
             if (fallback) |existing| {
-                if (!std.mem.eql(u8, existing, specifier)) return null;
+                if (!std.mem.eql(u8, existing, candidate.specifier)) return null;
             } else {
-                fallback = specifier;
+                fallback = candidate.specifier;
             }
         }
         return fallback;
+    }
+
+    fn requireSpecifierForLocalSlow(
+        self: *Checker,
+        local_name: hir_mod.StringId,
+        anchor: NodeId,
+    ) ?[]const u8 {
+        if (self.source != null and !self.source_may_have_require_binding) return null;
+        const root = self.rootBlockFor(anchor);
+        if (root == hir_mod.none_node_id or self.hir.kindOf(root) != .block_stmt) return null;
+        const section = self.virtualSectionStartForNode(anchor);
+        var fallback: ?[]const u8 = null;
+        for (hir_mod.blockStmts(self.hir, root)) |stmt| {
+            const binding = self.requireBindingForStatement(stmt) orelse continue;
+            if (binding.name != local_name) continue;
+            if (self.hir.spanOf(stmt).start > self.hir.spanOf(anchor).start) continue;
+            if (self.virtualSectionStartForNode(stmt) == section) return binding.specifier;
+            if (fallback) |existing| {
+                if (!std.mem.eql(u8, existing, binding.specifier)) return null;
+            } else {
+                fallback = binding.specifier;
+            }
+        }
+        return fallback;
+    }
+
+    fn requireBindingForStatement(self: *Checker, stmt: NodeId) ?RequireBinding {
+        if (self.hir.kindOf(stmt) == .import_decl and self.importDeclIsRequireAssignment(stmt)) {
+            const import = hir_mod.importOf(self.hir, stmt);
+            if (import.default_binding == hir_mod.none_node_id or
+                self.hir.kindOf(import.default_binding) != .identifier) return null;
+            return .{
+                .name = hir_mod.identifierOf(self.hir, import.default_binding).name,
+                .specifier = self.string_interner.get(import.module),
+            };
+        }
+        const decl = self.unwrapExportDecl(stmt);
+        const kind = self.hir.kindOf(decl);
+        if (kind != .var_decl and kind != .let_decl and kind != .const_decl) return null;
+        const variable = hir_mod.varDeclOf(self.hir, decl);
+        if (variable.name == hir_mod.none_node_id or self.hir.kindOf(variable.name) != .identifier) return null;
+        const specifier = self.requireCallSpecifier(variable.init) orelse return null;
+        return .{
+            .name = hir_mod.identifierOf(self.hir, variable.name).name,
+            .specifier = specifier,
+        };
     }
 
     fn importedCommonJsExportAssignmentClassName(self: *Checker, object: NodeId) ?[]const u8 {
@@ -199360,6 +199440,34 @@ fn firstStatement(s: *TestSetup) NodeId {
     return hir_mod.blockStmts(&s.hir, s.root)[0];
 }
 
+fn identifierNodeAtMarker(s: *TestSetup, marker: []const u8) !NodeId {
+    const source = s.checker.source orelse return error.TestUnexpectedResult;
+    const marker_start = std.mem.indexOf(u8, source, marker) orelse return error.TestUnexpectedResult;
+    var node: NodeId = 1;
+    while (node < s.hir.nodeCount()) : (node += 1) {
+        if (s.hir.kindOf(node) == .identifier and s.hir.spanOf(node).start == marker_start) return node;
+    }
+    return error.TestUnexpectedResult;
+}
+
+fn expectRequireSpecifierAtMarker(
+    s: *TestSetup,
+    name_text: []const u8,
+    marker: []const u8,
+    expected: ?[]const u8,
+) !void {
+    const name = try s.sint.intern(name_text);
+    const anchor = try identifierNodeAtMarker(s, marker);
+    const slow = s.checker.requireSpecifierForLocalSlow(name, anchor);
+    const indexed = s.checker.requireSpecifierForLocal(name, anchor);
+    try T.expectEqual(expected == null, slow == null);
+    try T.expectEqual(expected == null, indexed == null);
+    if (expected) |specifier| {
+        try T.expectEqualStrings(specifier, slow.?);
+        try T.expectEqualStrings(specifier, indexed.?);
+    }
+}
+
 fn statementVarType(s: *TestSetup, index: usize) TypeId {
     return s.hir.typeOf(hir_mod.blockStmts(&s.hir, s.root)[index]);
 }
@@ -214516,6 +214624,124 @@ test "checker: local value declaration index retains scanner on allocation failu
         try T.expectEqual(failing.allocated_bytes, failing.freed_bytes);
         try T.expectEqual(expected, s.checker.findLocalValueDeclBeforeExpression(use, name));
     }
+}
+
+test "checker: require binding index preserves ordered scanner semantics" {
+    const s = try newSetup(
+        \\// @filename: first.ts
+        \\declare const moduleName: string;
+        \\declare const loader: { require(name: string): unknown };
+        \\const duplicate = 0;
+        \\const duplicate = require("./duplicate");
+        \\duplicate.use;
+        \\const repeated = require("./first");
+        \\const repeated = require("./second");
+        \\repeated.use;
+        \\import imported = require("./imported");
+        \\imported.use;
+        \\const dynamic = require(moduleName);
+        \\dynamic.use;
+        \\const member = loader.require("./member");
+        \\member.use;
+        \\export const wrapped = require("./wrapped");
+        \\wrapped.use;
+        \\late.before;
+        \\const late = require("./late");
+        \\late.after;
+        \\const fallback = require("./shared");
+        \\const conflict = require("./left");
+        \\function nested() {
+        \\  const nestedOnly = require("./nested");
+        \\  nestedOnly.use;
+        \\  repeated.nested;
+        \\}
+        \\// @filename: second.ts
+        \\const fallback = require("./shared");
+        \\const conflict = require("./right");
+        \\// @filename: third.ts
+        \\fallback.crossSection;
+        \\conflict.crossSection;
+        \\const thirdOnly = require("./third");
+        \\thirdOnly.sameSection;
+    );
+    defer destroySetup(s);
+
+    try expectRequireSpecifierAtMarker(s, "duplicate", "duplicate.use", "./duplicate");
+    try expectRequireSpecifierAtMarker(s, "repeated", "repeated.use", "./first");
+    try expectRequireSpecifierAtMarker(s, "imported", "imported.use", "./imported");
+    try expectRequireSpecifierAtMarker(s, "dynamic", "dynamic.use", null);
+    try expectRequireSpecifierAtMarker(s, "member", "member.use", null);
+    try expectRequireSpecifierAtMarker(s, "wrapped", "wrapped.use", "./wrapped");
+    try expectRequireSpecifierAtMarker(s, "late", "late.before", null);
+    try expectRequireSpecifierAtMarker(s, "late", "late.after", "./late");
+    try expectRequireSpecifierAtMarker(s, "nestedOnly", "nestedOnly.use", null);
+    try expectRequireSpecifierAtMarker(s, "repeated", "repeated.nested", "./first");
+    try expectRequireSpecifierAtMarker(s, "fallback", "fallback.crossSection", "./shared");
+    try expectRequireSpecifierAtMarker(s, "conflict", "conflict.crossSection", null);
+    try expectRequireSpecifierAtMarker(s, "thirdOnly", "thirdOnly.sameSection", "./third");
+
+    const names = [_][]const u8{
+        "duplicate", "repeated",   "imported", "dynamic",  "member",    "wrapped",
+        "late",      "nestedOnly", "fallback", "conflict", "thirdOnly", "missing",
+    };
+    var node: NodeId = 1;
+    while (node < s.hir.nodeCount()) : (node += 1) {
+        for (names) |text| {
+            const name = try s.sint.intern(text);
+            const expected = s.checker.requireSpecifierForLocalSlow(name, node);
+            const actual = s.checker.requireSpecifierForLocal(name, node);
+            try T.expectEqual(expected == null, actual == null);
+            if (expected) |specifier| try T.expectEqualStrings(specifier, actual.?);
+            const cached = s.checker.requireSpecifierForLocal(name, node);
+            try T.expectEqual(expected == null, cached == null);
+            if (expected) |specifier| try T.expectEqualStrings(specifier, cached.?);
+        }
+    }
+    const index = s.checker.local_value_decls_by_container.getPtr(s.root) orelse
+        return error.TestUnexpectedResult;
+    try T.expect(index.require_candidate_buckets.count() > 0);
+    s.checker.setSource("const next = 1;");
+    try T.expectEqual(@as(u32, 0), s.checker.local_value_decls_by_container.count());
+}
+
+test "checker: require binding index retains scanner on allocation failure" {
+    var induced_failures: usize = 0;
+    var reached_success = false;
+    for (0..32) |fail_index| {
+        const s = try newSetup(
+            \\const first = 1;
+            \\const target = require("./target");
+            \\target.value;
+            \\const other = require("./other");
+        );
+        defer destroySetup(s);
+        const name = try s.sint.intern("target");
+        const anchor = try identifierNodeAtMarker(s, "target.value");
+        const expected = s.checker.requireSpecifierForLocalSlow(name, anchor) orelse
+            return error.TestUnexpectedResult;
+        const allocator = s.checker.gpa;
+        var failing = std.testing.FailingAllocator.init(allocator, .{ .fail_index = fail_index });
+        const actual = blk: {
+            s.checker.gpa = failing.allocator();
+            defer s.checker.gpa = allocator;
+            break :blk s.checker.requireSpecifierForLocal(name, anchor);
+        };
+        try T.expect(actual != null);
+        try T.expectEqualStrings(expected, actual.?);
+        if (!failing.has_induced_failure) {
+            reached_success = true;
+            try T.expectEqual(@as(u32, 1), s.checker.local_value_decls_by_container.count());
+            break;
+        }
+        induced_failures += 1;
+        try T.expectEqual(@as(u32, 0), s.checker.local_value_decls_by_container.count());
+        try T.expectEqual(failing.allocated_bytes, failing.freed_bytes);
+        const retried = s.checker.requireSpecifierForLocal(name, anchor) orelse
+            return error.TestUnexpectedResult;
+        try T.expectEqualStrings(expected, retried);
+    }
+    try T.expect(reached_success);
+    try T.expect(induced_failures >= 4);
 }
 
 test "checker: registered type ID index preserves rebinding aliases and source lifetime" {

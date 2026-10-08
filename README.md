@@ -209,6 +209,24 @@ confirmed regression. See the
 [accepted #848 report](docs/docs/TS_PERFORMANCE.md#program-owned-canonical-commonjs-export-table-accepted-2026-10-08-utc)
 and [raw evidence](bench/vs_tsgo/evidence/20261008T165919Z-commonjs-sorted-table-848.tar.gz).
 
+A grouped require-binding index now removes another source-root scan without
+changing the ordered scanner's result. The index stores candidates in a flat
+arena with per-local-name linked buckets, preserves same-section precedence and
+cross-section conflict handling, and falls back to the complete scanner if an
+allocation fails.
+
+| Accepted #849 exact-parent result | Parent | Candidate | Paired evidence |
+|---|---:|---:|---:|
+| Official CommonJS graph | 40.968 ms | 40.719 ms | 15/30 wins; interval −1.995 to +1.931 ms |
+| 1,024-family independent follow-up | 529.868 ms | 519.387 ms | 19/30 wins; interval −16.975 to +30.202 ms |
+| 4,096-family independent confirmation | 6,103.936 ms | **5,980.145 ms** | 22/30 wins; saving interval **+23.185 to +209.313 ms** |
+
+The official and 1,024-family observations are retained as inconclusive; only
+the 4,096-family result demonstrates a gain. Seven independent regression
+rechecks all span zero. See the
+[accepted #849 report](docs/docs/TS_PERFORMANCE.md#grouped-require-binding-candidates-accepted-2026-10-08-utc)
+and [raw evidence](bench/vs_tsgo/evidence/20261008T181346Z-require-binding-index-849.tar.gz).
+
 These numbers were measured with the standalone compiler build
 (`zig build home-tsc`). `home tsc` runs the same compiler from inside the full
 `home` binary, which adds some process-startup cost that has not been
