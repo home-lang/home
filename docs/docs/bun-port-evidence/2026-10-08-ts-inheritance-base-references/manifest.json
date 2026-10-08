@@ -1,0 +1,274 @@
+{
+  "source_base": "53167b7e5b553de4ad4065119da9e5190ec2f6e4",
+  "preintegration_source": {
+    "commit": "d5d7fad2c747fd7fa82378b7329b0b48045edba1",
+    "source_sha256": {
+      "packages/ts_checker/src/check.zig": "5f7928beff2ab2e26fc966a71d5471f3c9d57fccb41796ff093d440fa04d978c",
+      "packages/ts_checker/src/interner.zig": "41fe2631b08641d3fedf117c0dfbb767ddc58957bba61cda376ef8ec4ca62766",
+      "packages/ts_driver/src/ts_driver.zig": "2bbb38a2aa70da7dab35815d069ab7d48853ebf302b02ac2a8b3714f6a25e892",
+      "packages/ts_program/src/ts_program.zig": "cd72251909532331f302619b0a38976eb1414bebb35858fdc55f95b24267d05d"
+    }
+  },
+  "source_commit": "4656fcaf36ebd5919ab0b01f12cd5a3c843f5fdd",
+  "source_sha256": {
+    "packages/ts_checker/src/check.zig": "f55ad4f345b3caddb59a85f313ab8b46f218cbcc02c714975eae728d92f3eb64",
+    "packages/ts_checker/src/interner.zig": "41fe2631b08641d3fedf117c0dfbb767ddc58957bba61cda376ef8ec4ca62766",
+    "packages/ts_driver/src/ts_driver.zig": "e7155febf7f3bc98959309b92c5f7fde3696319418777e9219b7b6a5c767c059",
+    "packages/ts_program/src/ts_program.zig": "003fda2df50b2f4525e19d636114d8b702abf0f6b9e254125c8443d0317c4508"
+  },
+  "typescript_go": "89d5d5b2849a0db0957065889ca58536fa6d2e4a",
+  "typescript": "5848bc5157b22ff7f4e3369f4645a514a433b15f",
+  "zig": "0.17.0-dev.2163+89ff10d56",
+  "memory_ceiling_mb": 3840,
+  "baseline_controls": {
+    "passed": 2,
+    "failed": 1,
+    "total": 3,
+    "exit_code": 1,
+    "peak_mb": 1728,
+    "source": {
+      "base_commit": "53167b7e5b553de4ad4065119da9e5190ec2f6e4",
+      "checker_sha256": "2a7f1afe0c2d390e288aae7810a2a3d8f60245e92201f4b2fc9f243a44aa0597",
+      "test_binary_sha256": "19a7a47435e1e24b103a99b62773dc4fd95e679a817c477b454f90d8b3c35da3"
+    }
+  },
+  "initial_controls": {
+    "passed": 1,
+    "failed": 1,
+    "crashed": 1,
+    "total": 3,
+    "exit_code": 1,
+    "peak_mb": 1730
+  },
+  "preintegration_gates": {
+    "lifetime_controls": {
+      "passed": 3,
+      "total": 3,
+      "peak_mb": 1694
+    },
+    "owned_base_controls": {
+      "passed": 4,
+      "total": 4,
+      "peak_mb": 1687
+    },
+    "borrowed_member_control": {
+      "passed": 2,
+      "total": 2,
+      "peak_mb": 231
+    },
+    "checker": {
+      "passed": 4495,
+      "total": 4495,
+      "peak_mb": 2070
+    },
+    "driver": {
+      "passed": 198,
+      "total": 198,
+      "peak_mb": 2024
+    },
+    "program": {
+      "passed": 234,
+      "total": 234,
+      "peak_mb": 2080
+    },
+    "opt_in_controls": {
+      "passed": 3,
+      "total": 3,
+      "peak_mb": 2009
+    }
+  },
+  "gates": {
+    "checker": {
+      "passed": 4497,
+      "total": 4497,
+      "exit_code": 0,
+      "peak_mb": 2146
+    },
+    "driver": {
+      "passed": 199,
+      "total": 199,
+      "exit_code": 0,
+      "peak_mb": 2019
+    },
+    "program": {
+      "passed": 237,
+      "total": 237,
+      "exit_code": 0,
+      "peak_mb": 2208
+    },
+    "opt_in_controls": {
+      "passed": 3,
+      "total": 3,
+      "exit_code": 0,
+      "peak_mb": 2084
+    },
+    "original_react": {
+      "requested_cases": [
+        "intraExpressionInferencesJsx",
+        "contextuallyTypedStringLiteralsInJsxAttributes02"
+      ],
+      "started_cases": [
+        "intraExpressionInferencesJsx"
+      ],
+      "unstarted_cases": [
+        "contextuallyTypedStringLiteralsInJsxAttributes02"
+      ],
+      "aggregate_complete": false,
+      "exit_code": 125,
+      "peak_mb": 3842,
+      "deadline_seconds": 900
+    },
+    "compiler": {
+      "steps": 3,
+      "total_steps": 3,
+      "exit_code": 0,
+      "peak_mb": 3021
+    },
+    "zod": {
+      "ts_diagnostics": 195,
+      "unmodeled_any": 3,
+      "ceiling": 3,
+      "production_files": 106,
+      "exit_code": 0,
+      "compiler_exit_code": 1,
+      "peak_mb": 487,
+      "normalized_output_equals_previous_checkpoint": false
+    },
+    "survey_controls": {
+      "passed": 10,
+      "total": 10,
+      "exit_code": 0
+    }
+  },
+  "opt_in_binary_sha256": "6c247c1656806fcfad854b73037cc61ad1d496809488c1a38a32c3831c9893fb",
+  "artifact_sha256": {
+    "baseline-controls.log.gz": "d817d9370a0372e60db31d9dc6d2eab084672f119f09c4ae63f21766b7167c5b",
+    "baseline-source.json.gz": "f4cf76808920b0342538542993ccd818987e87b8680d3b6c4e1da965e22d187b",
+    "baseline-test-only.diff.gz": "7d7cc6b92b5334113539e7c592edcf1b3bc807fff98167d2133f6db37244e3a6",
+    "initial-controls-failures.log.gz": "f4f27f7ed8b100e7904c098d0508cd26e40a763907acf0d3fe0f411ecf1b2cfd",
+    "initial-source.json.gz": "aadfe9760d0eaca146ca177c9c7d19a61eff3dfdf6a2782b4da240b841aeefd8",
+    "initial.diff.gz": "29df6d25578b0b2425c2a0dc6c371445f1a09636f0e783d96e4b22f991c24173",
+    "lifetime-controls.log.gz": "2829601e0a75dba026754d796dea30fdf9cca12c1f628fa9ae468d7b5cdbbcb1",
+    "owned-base-controls.log.gz": "4eb5b827ca42359717b6a050879485e9d82aabfda63baf3ddf41c1acfe3a094c",
+    "borrowed-member-control.log.gz": "c0044fa77b8c2f49ee535d6e794f1d4549b6e22006e9bef6b6439d669356215e",
+    "preintegration-checker.log.gz": "17bf6eb388c20aeb8b7d9cd8b220433af56a9f39fd5e216fe4109a293c3c9791",
+    "preintegration-driver.log.gz": "a8a2339adc546a9979e94ea7d189b90d0c095653ec57094e6e436d6cebc0e23d",
+    "preintegration-program.log.gz": "732952661382fa5b580c7a1832e0a0c276d1857703bb80912184ee6c2da4bdb2",
+    "preintegration-optin.log.gz": "c91efc4ba96322df6eb033ab34e85bd8401f0377d94a864c82d5e83b61935b3e",
+    "preintegration-source.json.gz": "53fb4e19f2493ddc5b882537ccc41c48bae3cbf70198cd2ed92fce3f79b6b953",
+    "checker.log.gz": "9188fb25f8f5cc5703c974ec05579d629fef293f1d3385a29fe9f5566befda70",
+    "driver.log.gz": "e022f21cb3b0f85dfd90b9ed11827e261f9bf19a774545d8a26d6d67da411ded",
+    "program.log.gz": "52eb75fc7fc17f43113674234874f34a1a49f1ba5aa3a269366d030d80527f31",
+    "opt-in-controls.log.gz": "d00ed4026d4ec137dd4efb0bd62e31c04cb227a15588954e5cc0d757c80c7b20",
+    "original-react-memory-stop.log.gz": "8bb4c43bac69dc85fcb9a2bb7a7e9657e976e85ba5152011c67d4f62f98dd911",
+    "diagnostic-replay-memory-stop.log.gz": "02b3c790c844ecf4c3045b9ac97ad49ff0d2d27891975a0dc218b4ff03dda2b2",
+    "diagnostic-replay-process-sample.txt.gz": "5a9adad8a3b772074fbf8144c293cb34511181ba93cd51357ffa1d02a3ede90f",
+    "compiler.log.gz": "23a2e88d2611e058bae07642d29eb6449d39a8a6173fdbb74b08d97bdbeb3e3c",
+    "zod.log.gz": "aef5e7d2fae589b115f2da50f6e90882c43ed8168c1c1a0fcd9fa78d5f2056df",
+    "zod-diagnostics.log.gz": "821f8672518ffe2a4ec0e76ca8a7bd93d45b47dfe7ac03162826801082ffa9cf",
+    "zod-current.json.gz": "45132f8bdd201e5000f92a44f4173d843d690f9dd41d4f4179642d7ac0e97bc4",
+    "survey-controls.log.gz": "696d88a959f77d93f65102fc0a782782719e6b01792f1d528fa94afc995c33bb",
+    "survey-controls-details.log.gz": "bc241fe4c612643c00669ca8d73d6282f4e262f91b9487e7bb3c5c49e8bbea27",
+    "zod-normalized-diff.log.gz": "64db9981c21cd86f2ce234276c4da9d3b9ab3b791d7f273174ed9e7ab9aa3903",
+    "docs-paths.log.gz": "36d4f62492c3f055aa50a701b73e3ef978bee5e2919a2ff5ed1c7850c5925919",
+    "evidence-lint.log.gz": "870fbb301d14f65b0b7ebbc04aa7a5d3d73851d463e3f4db0b10190d7bf6edc3",
+    "latest-source.json.gz": "897b6b731df1e448670a36b6a26404db5b289ab4148ebe6e4973b249a658ca7e",
+    "latest-checker.log.gz": "66450b95b5dbdd2a506155d3f210de6debd1dda8103dfc416112da366eb9fa66",
+    "latest-driver.log.gz": "328bd2620566cc2ba26e26e5eee0d558c8b043e5fb0c47c8286c5325dcb9ccbb",
+    "latest-program.log.gz": "531b5717d4afdb3d799f24a5886a96c4bde6fd301206c04c242516a24efc111b",
+    "latest-optin.log.gz": "aebbcbf3ea7dc86229f4d0cf8f141ce77523a4b27aa1682ac55aef9ba6b72d98",
+    "latest-compiler.log.gz": "3784981179d34309a5cf0b2fc5c7f05172bba823e363524c47c1d6df17909f42",
+    "latest-zod.log.gz": "a39446af649cf7b99270c61f507954669892095feefefea21ee971466deafe1a",
+    "latest-zod-diagnostics.log.gz": "b67e1eca41448a93a7f2d4905a739df858b9d70c7093b655a43f12cfc02c3350",
+    "latest-zod-current.json.gz": "45132f8bdd201e5000f92a44f4173d843d690f9dd41d4f4179642d7ac0e97bc4",
+    "final-optin.log.gz": "d97308ae4f89559089e2170d28e63fd4a5118eecd97c1c5dea17281508af9b07",
+    "final-survey-controls.log.gz": "696d88a959f77d93f65102fc0a782782719e6b01792f1d528fa94afc995c33bb",
+    "final-survey-controls-details.log.gz": "1497f0e861b43ec2f43f8a6920e272688f962fbd830c5b2a117ed3ea72543d25"
+  },
+  "diagnostic_replay": {
+    "purpose": "capture remaining work after deferred inheritance metadata change",
+    "requested_cases": [
+      "intraExpressionInferencesJsx",
+      "contextuallyTypedStringLiteralsInJsxAttributes02"
+    ],
+    "started_cases": [
+      "intraExpressionInferencesJsx"
+    ],
+    "unstarted_cases": [
+      "contextuallyTypedStringLiteralsInJsxAttributes02"
+    ],
+    "aggregate_complete": false,
+    "exit_code": 125,
+    "peak_mb": 3844,
+    "deadline_seconds": 900,
+    "sample_dominant_call": "refreshGenericInterfaceExtendsInstantiation -> substituteTypeUncached structural member/union graph at check.zig:166407 and 166164"
+  },
+  "compiler_sha256": "7d64104836cd1c0de70314a80262b8e2da50825110429f271b42181bdc13fa7b",
+  "latest_validated_source": {
+    "commit": "980532fdf132a5f420a1dd3d83685a200ff0a260",
+    "source_sha256": {
+      "packages/ts_checker/src/check.zig": "3f3174afa87618efa2e4d28fac43dea5b1a49b796929c6c1b06a605dc98116b4",
+      "packages/ts_checker/src/interner.zig": "41fe2631b08641d3fedf117c0dfbb767ddc58957bba61cda376ef8ec4ca62766",
+      "packages/ts_driver/src/ts_driver.zig": "ffbd6b90879ac882233be02dc8369adad6038a7ead5168f77542a2e91d651cb1",
+      "packages/ts_program/src/ts_program.zig": "63ef2f493004495ca7dd93c1e30a2b24deced45b566c608ca4fa897a7f8a4515",
+      "packages/ts_conformance/src/ts_conformance.zig": "783be3df514e26b868a5ed23d1d8cbf85603917e6269dde5d9273c1e2acb817d"
+    },
+    "published_source_parent": "ab5d774e45bf456f6a34ba86d654585412bbc436"
+  },
+  "latest_gates": {
+    "checker": {
+      "passed": 4501,
+      "total": 4501,
+      "exit_code": 0,
+      "peak_mb": 2103
+    },
+    "driver": {
+      "passed": 199,
+      "total": 199,
+      "exit_code": 0,
+      "peak_mb": 2031
+    },
+    "program": {
+      "passed": 238,
+      "total": 238,
+      "exit_code": 0,
+      "peak_mb": 2231
+    },
+    "opt_in_controls": {
+      "passed": 3,
+      "total": 3,
+      "exit_code": 0,
+      "peak_mb": 2108
+    },
+    "compiler": {
+      "steps": 3,
+      "total_steps": 3,
+      "exit_code": 0,
+      "peak_mb": 3047
+    },
+    "zod": {
+      "ts_diagnostics": 195,
+      "unmodeled_any": 3,
+      "ceiling": 3,
+      "production_files": 106,
+      "exit_code": 0,
+      "compiler_exit_code": 1,
+      "peak_mb": 534,
+      "normalized_output_equals_first_inheritance_reference_build": true
+    }
+  },
+  "final_conformance_controls": {
+    "source_commit": "a36c113f31e3bd9674641e8bad840ba325ca36f5",
+    "passed": 3,
+    "total": 3,
+    "exit_code": 0,
+    "peak_mb": 2035,
+    "binary_sha256": "b1530e67435ed57b35cfb0d2eba4643e60814d8ef98ac1f8d413ec5819641a0a",
+    "published_source_parent": "773ca888fe4940965c0556cc4ac6bdc9fe6bc69f",
+    "survey_controls": {
+      "passed": 10,
+      "total": 10,
+      "exit_code": 0
+    }
+  }
+}
