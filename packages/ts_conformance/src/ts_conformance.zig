@@ -269,6 +269,7 @@ const CheckerResolverAdapter = struct {
             .module_name = module_name,
             .exported_type = exported or if (ambient) |query| query.facts.exported_type else false,
             .exported_value = exported_value or if (ambient) |query| query.facts.exported_value else false,
+            .namespace_meaning = resolved_facts.namespace_meaning,
             .declares_local = local_facts.declares_local,
             .local_exported_as = if (local_facts.exported_as.len != 0)
                 arena.dupe(u8, local_facts.exported_as) catch return null

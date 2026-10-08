@@ -2519,6 +2519,7 @@ const CheckerResolverAdapter = struct {
                 .module_name = module_name,
                 .exported_type = exported,
                 .exported_value = facts.exported_value,
+                .namespace_meaning = facts.namespace_meaning,
                 .declares_local = local_facts.declares_local,
                 .local_exported_as = if (local_facts.exported_as.len != 0)
                     arena.dupe(u8, local_facts.exported_as) catch return null
@@ -2590,6 +2591,7 @@ const CheckerResolverAdapter = struct {
                 .module_name = ts_program.renderModuleDisplayName(arena, resolved.path) catch return null,
                 .exported_type = facts.exported_type,
                 .exported_value = facts.exported_value,
+                .namespace_meaning = facts.namespace_meaning,
                 .declares_local = local_facts.declares_local,
                 .local_exported_as = if (local_facts.exported_as.len != 0)
                     arena.dupe(u8, local_facts.exported_as) catch return null

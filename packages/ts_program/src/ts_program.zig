@@ -5780,6 +5780,7 @@ fn moduleExportsTypeOnlyNamespaceNameFromCompilation(
 pub const ModuleExportFacts = struct {
     exported_type: bool = false,
     exported_value: bool = false,
+    namespace_meaning: ?bool = null,
     exported_value_readonly: bool = false,
     ambient_const_enum: bool = false,
     type_only_pos: ?u32 = null,
@@ -6220,6 +6221,13 @@ fn moduleExportFactsFromCompilationDepth(
     facts.cannot_be_named = !facts.exported_type and
         moduleExportNestedTypeSpaceNameFromCompilation(compilation, name);
     if (compilation.hir.kindOf(compilation.root) != .block_stmt) return facts;
+    var origin_query = export_origins.Query.init(gpa, resolver);
+    defer origin_query.deinit();
+    try origin_query.borrow(module_path, compilation);
+    const resolved_origins = try origin_query.resolve(module_path, name);
+    if (resolved_origins.complete and !resolved_origins.ambiguous) {
+        facts.namespace_meaning = resolved_origins.namespace != null;
+    }
     facts.module_is_external = moduleRootIsExternalOrCommonJsModule(
         &compilation.hir,
         &compilation.interner,
@@ -7589,6 +7597,21 @@ const T = std.testing;
 
 test "Program: export origin resolver" {
     _ = export_origins;
+}
+
+test "Program: erased aliases retain independent namespace meaning" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/value.ts", "const A = {}; export { A };");
+    try vfs.addFile("/types.ts", "import { A } from './value'; type A = any; export type { A };");
+    try vfs.addFile("/enum.ts", "export const enum E { One = 1 }");
+    try vfs.addFile("/enum-alias.ts", "export type { E } from './enum';");
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    const alias = moduleExportFactsFromResolvedModule(T.allocator, &resolver, "/types.ts", "A");
+    try T.expectEqual(@as(?bool, false), alias.namespace_meaning);
+    const enumeration = moduleExportFactsFromResolvedModule(T.allocator, &resolver, "/enum-alias.ts", "E");
+    try T.expectEqual(@as(?bool, true), enumeration.namespace_meaning);
 }
 
 test "Program: re-export facts retain the original import-type restriction" {

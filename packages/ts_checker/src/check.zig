@@ -309,6 +309,10 @@ pub const ExternalResolver = struct {
         // and enums are both type/value exports; interfaces and type
         // aliases are type-only declarations.
         exported_value: bool = false,
+        /// Namespace declaration-space meaning of the resolved target.
+        /// Null means the resolver could not prove it. Runtime availability
+        /// is separate: erased aliases can still carry namespace meaning.
+        namespace_meaning: ?bool = null,
         /// True when the requested name is a top-level binding in the
         /// resolved owner even though it is absent from that owner's public
         /// export table. Named-import checking refines a trusted TS2305 miss
@@ -15893,6 +15897,16 @@ pub const Checker = struct {
             if (local_kind == .type_alias_decl or local_kind == .interface_decl) continue;
             if (try self.ambientModuleExportsName(stmts, import_info.module, name)) continue;
             if (import_info.value_space_only and !self.declCreatesRuntimeValue(local, 0)) continue;
+            if ((local_kind == .namespace_decl or local_kind == .module_decl) and
+                !self.declCreatesRuntimeValue(local, 0) and
+                !self.sourceHasVirtualFilenameSections())
+            {
+                if (self.externalModuleExportInfo(import_info.node, self.string_interner.get(import_info.module), name)) |info| {
+                    if (info.namespace_meaning) |has_namespace_meaning| {
+                        if (!has_namespace_meaning) continue;
+                    }
+                }
+            }
             // If the source module exports `name` as type-only
             // (`export type { A }`), the imported binding is type-only and may
             // coexist with a local value declaration — no TS2440. Mirrors
@@ -29543,15 +29557,23 @@ pub const Checker = struct {
     /// `computedPropertyName.ts` (typeOnly/) where TS suppresses the
     /// diagnostic on abstract methods and `declare class` members.
     fn isComputedKeyInAmbientClassMember(self: *Checker, node: NodeId) bool {
-        const parent = self.hir.parentOf(node);
+        var key = node;
+        var parent = self.hir.parentOf(key);
+        while (parent != hir_mod.none_node_id and self.hir.kindOf(parent) == .member_access and
+            hir_mod.memberOf(self.hir, parent).object == key)
+        {
+            key = parent;
+            parent = self.hir.parentOf(key);
+        }
         if (parent == hir_mod.none_node_id) return false;
         const parent_kind = self.hir.kindOf(parent);
+        if (parent_kind == .interface_member and hir_mod.interfaceMemberKeyExpr(self.hir, parent) == key) return true;
         // Class methods are represented as `fn_decl` nodes carrying the
         // computed-name identifier as their `name` slot. Abstract
         // methods have no body and are not emitted; suppress here.
         if (parent_kind == .fn_decl or parent_kind == .fn_expr) {
             const f = hir_mod.fnDeclOf(self.hir, parent);
-            if (f.name != node) return false;
+            if (f.name != key) return false;
             if (f.flags.is_abstract) return true;
             // Ambient class methods: check the enclosing `class_decl`.
             const grand = self.hir.parentOf(parent);
@@ -29568,7 +29590,7 @@ pub const Checker = struct {
         // for abstract/declare on the enclosing class declaration.
         if (parent_kind != .object_property) return false;
         const op = hir_mod.objectPropertyOf(self.hir, parent);
-        if (!op.is_computed or op.key != node) return false;
+        if (!op.is_computed or op.key != key) return false;
         const grand = self.hir.parentOf(parent);
         if (grand == hir_mod.none_node_id) return false;
         if (self.hir.kindOf(grand) != .class_decl and self.hir.kindOf(grand) != .class_expr) return false;
@@ -29581,11 +29603,13 @@ pub const Checker = struct {
         // the per-member `abstract` modifier (carried by `fn_decl`
         // above; for fields, fall back to a line-level keyword scan
         // since `object_property` has no dedicated flag).
-        if (self.objectPropertyLineHasAbstract(parent)) return true;
+        if (self.objectPropertyLineHasAbstract(parent) or
+            self.classMemberSourceHasModifierBeforeKey(parent, op.key, "abstract")) return true;
         // Per-field `declare` modifier: `declare [name]: T;` inside a
         // concrete class. The computed expression isn't evaluated at
         // runtime because the field is ambient-only.
-        if (self.declarationLineHasDeclare(parent)) return true;
+        if (self.declarationLineHasDeclare(parent) or
+            self.classMemberSourceHasModifierBeforeKey(parent, op.key, "declare")) return true;
         return false;
     }
 
@@ -205259,6 +205283,53 @@ test "checker: namespace declaration conflicts with imported local" {
         if (d.code == TsCodes.import_conflicts_with_local) found = true;
     }
     try T.expect(found);
+}
+
+test "checker: type-only spaces batch separates erased aliases from namespaces" {
+    const b = try newBoundSetup(
+        \\// @Filename: value.ts
+        \\const A = {};
+        \\export { A };
+        \\// @Filename: types.ts
+        \\import { A } from "./value";
+        \\type A = any;
+        \\export type { A };
+        \\// @Filename: merge.ts
+        \\import { A } from "./types";
+        \\namespace A {}
+        \\export { A };
+        \\// @Filename: use.ts
+        \\import { A } from "./merge";
+        \\A;
+    );
+    defer destroyBoundSetup(b);
+    const s = b.base;
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(s, TsCodes.import_conflicts_with_local));
+    try T.expectEqual(@as(usize, 1), checkerCountCode(s, TsCodes.type_only_export_used_as_value));
+}
+
+test "checker: type-only spaces batch distinguishes erased and emitted computed keys" {
+    const b = try newBoundSetup(
+        \\// @target: esnext
+        \\// @Filename: hooks.ts
+        \\export const key = Symbol("key");
+        \\// @Filename: use.ts
+        \\import type { key } from "./hooks";
+        \\interface Shape { [key]?(): void; }
+        \\type Alias = { [key]: any };
+        \\const object = { [key]: 0 };
+        \\class Field { [key]: any; }
+        \\class Value { [key] = 0; }
+        \\class Method { [key]() {} }
+        \\abstract class Abstract { abstract [key](): void; }
+        \\class Declared { declare [key]: any; }
+        \\declare class Ambient { [key]: any; }
+    );
+    defer destroyBoundSetup(b);
+    const s = b.base;
+    try s.checker.checkSourceFile(s.root);
+    try T.expectEqual(@as(usize, 4), checkerCountCode(s, TsCodes.type_only_import_used_as_value));
 }
 
 test "checker: const enum import conflicts with a same-name namespace merge" {
