@@ -1,0 +1,259 @@
+{
+  "source_base": "028386ff35f90ede201aa5e63a4730da5079394f",
+  "initial_source": {
+    "base_commit": "028386ff35f90ede201aa5e63a4730da5079394f",
+    "source_sha256": {
+      "packages/ts_checker/src/check.zig": "e8bf367db068aac55c2d3df371673237b4336515c7f674ab10f25da2a26a2f49",
+      "packages/ts_checker/src/interner.zig": "41fe2631b08641d3fedf117c0dfbb767ddc58957bba61cda376ef8ec4ca62766",
+      "packages/ts_driver/src/ts_driver.zig": "ae80696d2ab0322fdc3fd447ebbcaa2c620a1856a4de0646525eef8c95fb9d42",
+      "packages/ts_program/src/ts_program.zig": "75cd6417e0b1344370e933c95cb8834c20b76f466c9ba46e2bcc0f9906a7f49e",
+      "packages/ts_conformance/src/ts_conformance.zig": "8d39c8bb2206629542255916a08445cec47075a5e9787914b08ad86d75a48449"
+    },
+    "source_commit": "9e98f427d857b999e12468d5dac8852ea9550223",
+    "test_binary_sha256": "fa67f20468122c15abe9ecd19a97d77816db820ddac1c9cf3c6c76884b2b7bf7"
+  },
+  "final_source": {
+    "base_commit": "9e98f427d857b999e12468d5dac8852ea9550223",
+    "source_sha256": {
+      "packages/ts_checker/src/check.zig": "de6a358b2126489bf7ed528bf69ef0b7e66774a45f9f7d0f1f8a2cba2d36ce59",
+      "packages/ts_checker/src/interner.zig": "41fe2631b08641d3fedf117c0dfbb767ddc58957bba61cda376ef8ec4ca62766",
+      "packages/ts_driver/src/ts_driver.zig": "ae80696d2ab0322fdc3fd447ebbcaa2c620a1856a4de0646525eef8c95fb9d42",
+      "packages/ts_program/src/ts_program.zig": "75cd6417e0b1344370e933c95cb8834c20b76f466c9ba46e2bcc0f9906a7f49e",
+      "packages/ts_conformance/src/ts_conformance.zig": "8d39c8bb2206629542255916a08445cec47075a5e9787914b08ad86d75a48449"
+    },
+    "source_commit": "774f72f160b9a767240ab6a0e0767e83b5e69ba7",
+    "test_binary_sha256": "16896d710f099cb3fb761981c4e979914db881df74149cd3e5d5e1715bcdf3c2"
+  },
+  "typescript_go": "89d5d5b2849a0db0957065889ca58536fa6d2e4a",
+  "typescript": "5848bc5157b22ff7f4e3369f4645a514a433b15f",
+  "zig": "0.17.0-dev.2163+89ff10d56",
+  "memory_ceiling_mb": 3840,
+  "baseline_controls": {
+    "passed": 1,
+    "failed": 3,
+    "total": 4,
+    "exit_code": 1,
+    "peak_mb": 1741
+  },
+  "initial_owned_controls": {
+    "passed": 4,
+    "total": 4,
+    "exit_code": 0,
+    "peak_mb": 1717
+  },
+  "initial_gates": {
+    "checker": {
+      "passed": 4506,
+      "total": 4506,
+      "peak_mb": 2227,
+      "exit_code": 0
+    },
+    "driver": {
+      "passed": 200,
+      "total": 200,
+      "peak_mb": 1882,
+      "exit_code": 0
+    },
+    "program": {
+      "passed": 241,
+      "total": 241,
+      "peak_mb": 1982,
+      "exit_code": 0
+    },
+    "opt_in": {
+      "passed": 3,
+      "total": 3,
+      "peak_mb": 1933,
+      "exit_code": 0
+    },
+    "compiler": {
+      "steps": 3,
+      "total_steps": 3,
+      "peak_mb": 2899,
+      "exit_code": 0
+    },
+    "zod": {
+      "ts_diagnostics": 195,
+      "unmodeled_any": 3,
+      "ceiling": 3,
+      "production_files": 106,
+      "compiler_exit_code": 1,
+      "exit_code": 0,
+      "peak_mb": 490,
+      "normalized_output_equals_preceding_checkpoint": true
+    },
+    "survey_controls": {
+      "passed": 10,
+      "total": 10,
+      "exit_code": 0
+    },
+    "original_react": {
+      "exit_code": 130,
+      "aggregate_complete": false,
+      "started_cases": [
+        "intraExpressionInferencesJsx"
+      ],
+      "unstarted_cases": [
+        "contextuallyTypedStringLiteralsInJsxAttributes02"
+      ],
+      "deadline_seconds": 900,
+      "deliberately_interrupted_for_binder_regression": true
+    }
+  },
+  "binder_negative_control": {
+    "passed": 4,
+    "failed": 1,
+    "total": 5,
+    "exit_code": 1,
+    "peak_mb": 1726
+  },
+  "initial_scope_compile_failure": {
+    "compile_errors": 2,
+    "tests_executed": 0,
+    "exit_code": 1,
+    "peak_mb": 489
+  },
+  "scope_controls": {
+    "passed": 5,
+    "total": 5,
+    "exit_code": 0,
+    "peak_mb": 1761
+  },
+  "final_controls": {
+    "passed": 6,
+    "total": 6,
+    "exit_code": 0,
+    "peak_mb": 1581
+  },
+  "artifact_sha256": {
+    "baseline-selected.log.gz": "91acafba755a82d083c1e35aec108a7de9c174e1dcf41b72d1015d5b885c08ca",
+    "baseline-source.json.gz": "c28e0f2dae1b6f922a23b28d6b2be01f9fef3e38cb7760bc50e380199fbf3606",
+    "baseline-test-only.diff.gz": "6e14bae2aec405041f5172ddcb2318a48f63a7aa0dc96e354c732e3163d43545",
+    "owned-controls.log.gz": "d1d2251e2b9489b1b352ecc9720031db4c37e8140ec3be97f4f7046f21a4dfe6",
+    "source.json.gz": "d037b9d0c84f225d1773c3b8df9ea63592f6de849d13687b8ebe1e7f305eafa7",
+    "checker.log.gz": "fecea9b2ffc639f95821a0900a79fb31540155388f7f338eed8f91d25f512256",
+    "driver.log.gz": "ac216abd157da19a37c1d65cd27e2cf3016007b66116d0d1a5a1cbe6acd2d7e2",
+    "program.log.gz": "bc9f9a6c38c30f48774f0c23ddbe34bfd27d2bd58bcffef59ab29c8525213700",
+    "all-optin.log.gz": "db5c76cc894b19f4dc496308c05d34b04dbffdb9b17e575d076ba05d8f5f1741",
+    "compiler.log.gz": "47a04e23f6ebd70bd5841a5e79378c35869734775280bd732f5f4af40f2cceae",
+    "zod.log.gz": "9845def435b7d27d05d5e88aa48c5b36c4be2dcb2ec8dd9d41af9c4a997e58a2",
+    "zod-diagnostics.log.gz": "c97e2b3ac269a8b508ca364afce82851360aa863413ba0491151a6d8485efedf",
+    "zod-current.json.gz": "45132f8bdd201e5000f92a44f4173d843d690f9dd41d4f4179642d7ac0e97bc4",
+    "survey-controls.log.gz": "696d88a959f77d93f65102fc0a782782719e6b01792f1d528fa94afc995c33bb",
+    "survey-controls-details.log.gz": "1e3e8124b1974739b4c447bef66fb99ebd4a80a84e537ff7751dc8a50f9ded10",
+    "original-react.log.gz": "3c1a96c3c074036c0534a9f80e222829dda840bb4d178187d38365634a63fd25",
+    "binder-negative.log.gz": "7b9c33215dc4db89e7f6474d859cac078794a926a27505251fa7dc03c47e08a9",
+    "binder-negative-source.json.gz": "67c593e99fcded7ae9976936b3a249ea237e64ff04a58a1173cc64cbc44f7fca",
+    "binder-negative-test-only.diff.gz": "58cddd64b2173037d51d2a4be2e6a134bd88fb9ac4d9a52cbb5dfc1b0c34ad7e",
+    "scoped-controls.log.gz": "505dedeb309c74a9ba3eda1683cefd583bbd9ebbfd01464d6311f9f15d1222df",
+    "final-controls.log.gz": "9caf8fd5ffcf82e240b9976b3014f3f19924cf36f2f952d5b76918b9c011ec8e",
+    "final-all-controls.log.gz": "d86317aef9874bc22511f1e7d26b9463f4889f698163db643228abe7f397b717",
+    "final-source.json.gz": "cd7217bcc76c5e0ddece1d3f48146edc93a6d9aba4d668c8e84e1a52d90afd67",
+    "checker-sample.txt.gz": "c18ed39457840f2a6ae39b112646768096542fd607042722bb52fe346206ae3a",
+    "checker-sample-command.log.gz": "4ea3392bf67bbf6d7517a8f3f6f23010d094dfe538f8fba2de6158753584f773",
+    "final-checker.log.gz": "6424eed5864d6363a4dfcab5045ad2f7790273af6712c2bde0fa6214b2d46671",
+    "final-driver.log.gz": "fdac4b169c8a7cce4b50f82d45bface16245757c5134f199d55282b7ab7ba2aa",
+    "final-program.log.gz": "171538a0c62c8ec3d5f1fb988e972e8021117cc2000a20f52df36c848c68e12a",
+    "final-optin.log.gz": "16cb44acfbccc6093d7c6f71a69d1b846b1818a38069cea28eb03f115b6b3ea8",
+    "final-compiler.log.gz": "d6b1398c10bdcf28e8bcaea8291e054af16ba29f27ff898eb5e2c0300a3737e2",
+    "final-zod.log.gz": "b37684d60b19218fa8afb8701e5fe98d3152197db2dbfef2df6189a5f9809468",
+    "final-zod-diagnostics.log.gz": "ece6f2ce75ef9d2c041f020c9838987a1c72f24433ef8d976b1907f899fa2a65",
+    "final-zod-current.json.gz": "45132f8bdd201e5000f92a44f4173d843d690f9dd41d4f4179642d7ac0e97bc4",
+    "final-zod-normalized-diff.log.gz": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+    "final-survey-controls.log.gz": "696d88a959f77d93f65102fc0a782782719e6b01792f1d528fa94afc995c33bb",
+    "final-survey-controls-details.log.gz": "793ef52f3df6468a2b5a629d3ae64fce308a67a5dec24735aa15bc8a3322aeea",
+    "final-react-early-sample.txt.gz": "e6351c485a35a9093803bc236db03b8e49ef9d409b9b65eb09e0ac8a05bde81d",
+    "final-react-early-sample-command.log.gz": "cde806ac8c33cc9e5a02fd9da1fc5feecc98a1029c586bde46dad4a2d976065c",
+    "final-react-mid-sample.txt.gz": "74e524151462d3dfaeb10be9643359bc91f426e0caa88128f36ec852a0ad9da8",
+    "final-react-mid-sample-command.log.gz": "d442ed9359c5b4e072bc142210db4625f2d53e23029b4d040930557ea3135c6a",
+    "final-react-late-sample.txt.gz": "72290ee448eff4a55d51560513a25aec9f1ee586274fa84485ab37398057fe64",
+    "final-react-late-sample-command.log.gz": "00d1fa7d3126603bf399dc09405916f7513d80e0453df910becd9e16bacff73a",
+    "final-original-react.log.gz": "969635d6030bdb3de61e24d4c8a0f9436ef334409d3aadd4023f94aea5e62f24"
+  },
+  "final_gates": {
+    "checker": {
+      "passed": 4508,
+      "total": 4508,
+      "exit_code": 0,
+      "peak_mb": 2165
+    },
+    "driver": {
+      "passed": 200,
+      "total": 200,
+      "exit_code": 0,
+      "peak_mb": 1879
+    },
+    "program": {
+      "passed": 241,
+      "total": 241,
+      "exit_code": 0,
+      "peak_mb": 2135
+    },
+    "optin": {
+      "passed": 3,
+      "total": 3,
+      "exit_code": 0,
+      "peak_mb": 2116
+    },
+    "compiler": {
+      "steps": 3,
+      "total_steps": 3,
+      "exit_code": 0,
+      "peak_mb": 2896,
+      "sha256": "21ba2e0076ba929758d40b886b5ce1a951e5391cfd8a60e33382c74d408eafa8"
+    },
+    "zod": {
+      "ts_diagnostics": 195,
+      "unmodeled_any": 3,
+      "ceiling": 3,
+      "production_files": 106,
+      "exit_code": 0,
+      "compiler_exit_code": 1,
+      "peak_mb": 512,
+      "normalized_output_equals_first_reference_build": true,
+      "normalized_output_equals_preceding_checkpoint": true
+    },
+    "survey_controls": {
+      "passed": 10,
+      "total": 10,
+      "exit_code": 0
+    },
+    "original_react": {
+      "exit_code": 124,
+      "deadline_seconds": 900,
+      "memory_ceiling_mb": 3840,
+      "aggregate_complete": false,
+      "started_cases": [
+        "intraExpressionInferencesJsx"
+      ],
+      "unstarted_cases": [
+        "contextuallyTypedStringLiteralsInJsxAttributes02"
+      ],
+      "final_peak_mb": null,
+      "final_peak_not_reported_by_timeout_path": true,
+      "passing_case_credit": 0
+    }
+  },
+  "react_samples": {
+    "early": {
+      "seconds_after_launch": 62,
+      "observed_phase": "owner-specific type transfer",
+      "physical_footprint": "679.8M"
+    },
+    "mid": {
+      "seconds_after_launch": 421,
+      "observed_phase": "interface checking, repeated base refresh and UMD source scans",
+      "physical_footprint": "1.1G"
+    },
+    "late": {
+      "seconds_after_launch": 620,
+      "physical_footprint": "1.3G",
+      "observed_phase": "generic constraint comparison -> relation.Engine.substituteTpDeepLimit structural graph walk"
+    }
+  },
+  "original_fixture_sha256": {
+    "_submodules/typescript-go/_submodules/TypeScript/tests/cases/conformance/types/typeRelationships/typeInference/intraExpressionInferencesJsx.tsx": "f271f61d3b23545ab6b70e36ce3460d5556af1ae924b1fadd4b079a72baebb22",
+    "_submodules/typescript-go/_submodules/TypeScript/tests/cases/conformance/types/contextualTypes/jsxAttributes/contextuallyTypedStringLiteralsInJsxAttributes02.tsx": "40769aa7e1f87e582f861012dbad5cb28f533f731b0124af77341eed98aa6f1c",
+    "_submodules/typescript-go/_submodules/TypeScript/tests/lib/react16.d.ts": "b0c6dad63ec7918e061c89d5b35d0e77f332207cfcfc22cc8d72a9077e24532c"
+  }
+}
