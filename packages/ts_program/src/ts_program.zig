@@ -6036,7 +6036,7 @@ pub fn moduleExportFactsFromResolvedModule(
     module_path: []const u8,
     name: []const u8,
 ) ModuleExportFacts {
-    return moduleExportFactsFromResolvedModuleDepth(gpa, resolver, module_path, name, 0) catch .{};
+    return moduleExportFactsFromResolvedModuleDepth(gpa, resolver, module_path, name, 0, null) catch .{};
 }
 
 /// Build the reusable module compilation consumed by export-fact queries.
@@ -6187,8 +6187,13 @@ fn moduleExportFactsFromResolvedModuleDepth(
     module_path: []const u8,
     name: []const u8,
     depth: u8,
+    shared_query: ?*export_origins.Query,
 ) !ModuleExportFacts {
     if (depth >= 8) return .{};
+    if (shared_query) |query| {
+        const compilation = try query.compilation(module_path) orelse return error.ExportModuleUnavailable;
+        return moduleExportFactsFromCompilationDepth(gpa, resolver, module_path, compilation, name, depth, query);
+    }
     const src = try resolver.fs.readFile(gpa, module_path);
     defer gpa.free(src);
     var compilation = try compileModuleForExportFacts(gpa, module_path, src);
@@ -6375,7 +6380,7 @@ fn moduleExportFactsFromCompilationDepth(
                 const target = resolver.resolve(specifier, module_path) catch continue;
                 if (std.mem.eql(u8, target.path, module_path)) continue;
                 const imported_name = compilation.interner.get(export_spec.imported);
-                const nested = try moduleExportFactsFromResolvedModuleDepth(gpa, resolver, target.path, imported_name, depth + 1);
+                const nested = try moduleExportFactsFromResolvedModuleDepth(gpa, resolver, target.path, imported_name, depth + 1, origin_query);
                 if (ex.is_type_only or export_spec.is_type_only) {
                     if (nested.exported_type) {
                         facts.exported_type = true;
@@ -6400,7 +6405,7 @@ fn moduleExportFactsFromCompilationDepth(
         if (!std.mem.startsWith(u8, specifier, ".") or exportStarTargetPrefersIndex(specifier)) continue;
         const target = resolver.resolve(specifier, module_path) catch continue;
         if (std.mem.eql(u8, target.path, module_path)) continue;
-        const nested = try moduleExportFactsFromResolvedModuleDepth(gpa, resolver, target.path, name, depth + 1);
+        const nested = try moduleExportFactsFromResolvedModuleDepth(gpa, resolver, target.path, name, depth + 1, origin_query);
         if (ex.is_type_only) {
             if (nested.exported_type) {
                 facts.exported_type = true;
@@ -8568,6 +8573,45 @@ test "Program: retained origin query preserves complete local export facts witho
     fs.deny_source_reads = true;
     for (names, 0..) |name, index| {
         const actual = moduleExportFactsFromCompilationWithQuery(T.allocator, &resolver, "/p/bridge.ts", compilation, name, &query);
+        try T.expectEqualDeep(expected[index], actual);
+    }
+    try T.expectEqual(source_reads, fs.source_reads);
+}
+
+test "Program: nested export facts reuse complete bound owners for named and star edges" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/p/owner.d.ts", "export interface Shape { value: number; } export declare const enum Code { A } export declare function make<T>(): T; export declare const value: number;");
+    try vfs.addFile("/p/named.ts", "export { make as Alias, Code, value } from './owner'; export type { Shape as Type } from './owner';");
+    try vfs.addFile("/p/star.ts", "export * from './named';");
+    try vfs.addFile("/p/root.ts", "export * from './star';");
+    var fs: ExportQueryReadControlFs = .{ .inner = vfs.fs() };
+    var resolver = ts_resolver.Resolver.init(T.allocator, .{ .ptr = &fs, .vtable = &ExportQueryReadControlFs.vt }, .{});
+    defer resolver.deinit();
+    var query = export_origins.Query.init(T.allocator, &resolver);
+    defer query.deinit();
+    const exported = try moduleExportNamesFromQuery(T.allocator, &resolver, &query, "/p/root.ts");
+    defer {
+        for (exported) |name| T.allocator.free(name);
+        T.allocator.free(exported);
+    }
+    _ = try query.resolve("/p/root.ts", "Alias");
+    try T.expectEqual(@as(usize, 4), fs.source_reads);
+    const compilation = try query.compilation("/p/root.ts") orelse return error.TestUnexpectedResult;
+    const names = [_][]const u8{ "Alias", "Type", "Code", "value", "Missing" };
+    var expected: [names.len]ModuleExportFacts = undefined;
+    for (names, 0..) |name, index| {
+        expected[index] = moduleExportFactsFromCompilation(T.allocator, &resolver, "/p/root.ts", compilation, name);
+    }
+    try T.expect(expected[0].generic_function and expected[0].exported_value);
+    try T.expect(expected[1].exported_type and !expected[1].exported_value and expected[1].type_only_pos != null);
+    try T.expect(expected[2].ambient_const_enum and expected[2].exported_value);
+    try T.expect(expected[3].exported_value);
+    try T.expect(!expected[4].exported_type and !expected[4].exported_value);
+    const source_reads = fs.source_reads;
+    fs.deny_source_reads = true;
+    for (names, 0..) |name, index| {
+        const actual = moduleExportFactsFromCompilationWithQuery(T.allocator, &resolver, "/p/root.ts", compilation, name, &query);
         try T.expectEqualDeep(expected[index], actual);
     }
     try T.expectEqual(source_reads, fs.source_reads);
