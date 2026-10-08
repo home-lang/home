@@ -20,6 +20,8 @@ and validation protocol **4** under
 `c16c8caaf52d35180a7fcd53b87cac0dd71ff7b86526ef285e09bb4e088335f4`.
 This strengthens admission, not compiler speed, and does not attribute
 cross-run timing changes to a source patch.
+This full matrix predates the later [#853 index](#classinterface-modifier-merge-index-2026-10-08-utc);
+its exact-parent A/B is not a fresh five-compiler ranking.
 
 All five byte-pinned compilers pass the same 20 positive and nine negative
 projects: **145/145 admissions**. The new checked-JS control plants 15 errors
@@ -107,6 +109,159 @@ runners/logs, row statistics, provenance and full harness log. Its **50**
 payload checksums verify. SHA-256:
 `db598c898ebbd9ef69ad3b3e5a043049780086ac51e237c150cb9c812aa9d5c0`.
 Admission probes peak at 95/74 MB and profiling at 308 MB, under the same guard.
+
+## Class/interface modifier-merge index (2026-10-08 UTC)
+
+Source [`bbabc2f4dd2417b4a71460b722b0a07930136c88`](https://github.com/home-lang/home/commit/bbabc2f4dd2417b4a71460b722b0a07930136c88)
+lands the first measured optimization in
+[#853](https://github.com/home-lang/home/issues/853). The declaration-space
+sample offset 12,656 maps to `checkClassInterfaceMemberModifierMerges`'s
+inner whole-statement scan: export unwrapping, interface kind, virtual section
+and declaration-name comparisons. This mapping uses the actual sampled
+instructions and original source, not a guessed library/benchmark shortcut.
+
+The implementation builds a complete, pass-local ordered index of interfaces
+by the exact existing `(name, virtual_section_start)` key. Classes and each
+same-key interface list retain statement order; the existing member-level
+diagnostic checker is unchanged. A complete absence of eligible interfaces
+ends this one merge check naturally. Partial construction frees every group
+and falls back to the complete original scan on OOM. No persistent checker
+fields, foreign TypeIds, semantic limits or diagnostic suppression are added.
+
+Parent source is `6004a2634c71da0fdf13571ca94e117f8b23504a`, reusing the
+accepted native parent SHA-256
+`c16c8caaf52d35180a7fcd53b87cac0dd71ff7b86526ef285e09bb4e088335f4`.
+Candidate SHA-256 is
+`9e9cc2a1d108640694c066b7afb36e2b286a73a03d92271d30b3fa657c54f8ea`,
+built with pinned Zig `0.17.0-dev.2163+89ff10d56`, stripped ReleaseFast,
+`-Denable_jsc=false`. The frozen source/test diff SHA-256 is
+`c83cf3f0e2fa3fcf80c9be499e43f94c6786e0bb9077b98c1ad1a9e82ab51422`;
+the live working-tree diff matched it before commit. Host/tools are the same
+M3 Pro / Mac15,6, Darwin 27 arm64, Hyperfine 1.20.0 and Python 3.9.6.
+
+Every phase passes **66 admissions** before timing: both binaries on the
+20 official positive/nine negative projects, plus positive/negative projects
+at 512 and 8,192 unchanged-generator JSDoc families. Each checked-JS negative
+control requires all 15 expected errors (TS2322×9, TS2339×3, TS2345×3), not
+silent acceptance or erased types. Binary/input/harness/patch fingerprints
+match before and after every phase. Each round retains one fresh process per
+binary, with equally alternating command order and three warmups per binary.
+
+Because 8,192-family processes take about 18–21 seconds, before confirmation
+we declared **five separate six-pair batches**, each with its own admissions,
+warmups and fingerprints. All 30 pairs remain; this is not represented as
+one continuous 30-pair run or a best-of selection. The 600-second execution
+bound, 3,840 MB tree guard, 900-second lock wait and disk floors are unchanged.
+The original screen runner and subsequent batching revision are both retained.
+
+Intervals below describe paired **parent-minus-candidate mean** savings,
+not differences between the displayed medians. No observation is filtered.
+
+| Measurement | Parent median | Candidate median | Candidate faster | Paired mean-saving 95% interval |
+|---|---:|---:|---:|---:|
+| Official checked JS, 20-pair screen | 31.074 ms | 31.055 ms | 7/20 | -0.414 to +0.342 ms |
+| 512 families, six-pair screen | 161.638 ms | 159.119 ms | 5/6 | -0.195 to +7.932 ms |
+| 8,192 families, six-pair screen | 20,893.870 ms | 20,300.335 ms | 4/6 | -2,184.677 to +1,717.159 ms |
+| Official checked JS, 30-pair confirmation | 29.197 ms | 29.176 ms | 16/30 | -0.086 to +0.566 ms |
+| 512 families, 30-pair confirmation | 156.808 ms | 155.196 ms | 22/30 | +0.268 to +2.385 ms |
+| 8,192 families, confirmation batch 1 (six pairs) | 18,267.311 ms | 18,952.048 ms | 1/6 | -1,060.826 to +250.589 ms |
+| 8,192 families, confirmation batch 2 (six pairs) | 18,528.940 ms | 18,090.819 ms | 6/6 | +277.837 to +574.783 ms |
+| 8,192 families, confirmation batch 3 (six pairs) | 18,389.790 ms | 18,035.703 ms | 6/6 | +258.045 to +451.751 ms |
+| 8,192 families, confirmation batch 4 (six pairs) | 18,382.151 ms | 18,062.660 ms | 6/6 | +204.821 to +522.891 ms |
+| 8,192 families, confirmation batch 5 (six pairs) | 18,524.941 ms | 17,902.198 ms | 6/6 | +232.601 to +834.960 ms |
+| 8,192 families, all five batches (30 pairs total) | 18,406.634 ms | 18,069.441 ms | 25/30 | +84.799 to +424.692 ms |
+
+Independent confirmation supports small gains at **512 families (~1.0%)**
+and **class hierarchy (~1.0%)**. Official checked JS remains inconclusive.
+The pooled large-input interval is positive, but the supplemental **five-batch**
+t interval (df=4) is **−211.693 to +721.184 ms**, spanning zero. Its batch
+mean savings are −405.119, +426.310, +354.898, +363.856 and +533.780 ms.
+The adverse first batch is not discarded; cross-batch uncertainty remains,
+so the pooled interval is not claimed as universal/scaling proof.
+
+| Family screen (10 pairs each) | Parent median | Candidate median | Candidate faster | Paired mean-saving 95% interval |
+|---|---:|---:|---:|---:|
+| `checkjs_jsdoc` | 29.290 ms | 29.230 ms | 6/10 | -0.179 to +0.250 ms |
+| `class_hierarchy` | 23.214 ms | 23.071 ms | 7/10 | -0.009 to +0.344 ms |
+| `commonjs_graph` | 24.156 ms | 24.169 ms | 4/10 | -0.387 to +0.827 ms |
+| `control_flow` | 25.641 ms | 25.548 ms | 6/10 | -0.710 to +0.493 ms |
+| `deep_types` | 20.943 ms | 20.947 ms | 5/10 | -0.194 to +0.253 ms |
+| `destructuring` | 14.605 ms | 14.695 ms | 6/10 | -0.223 to +0.286 ms |
+| `generic_calls` | 22.469 ms | 22.516 ms | 7/10 | -0.072 to +0.610 ms |
+| `import_graph` | 20.757 ms | 20.525 ms | 6/10 | -0.596 to +0.609 ms |
+| `interface_composition` | 33.553 ms | 33.746 ms | 4/10 | -0.392 to +0.009 ms |
+| `many_files` | 21.359 ms | 21.261 ms | 5/10 | -0.546 to +0.438 ms |
+| `null_safe_access` | 31.870 ms | 32.273 ms | 2/10 | -0.567 to +0.036 ms |
+| `overload_resolution` | 23.418 ms | 23.394 ms | 5/10 | -0.302 to +0.447 ms |
+| `recursive_generics` | 14.415 ms | 14.472 ms | 5/10 | -0.257 to +0.230 ms |
+| `reexport_graph` | 11.811 ms | 11.728 ms | 7/10 | -0.363 to +1.866 ms |
+| `startup` | 2.593 ms | 2.622 ms | 5/10 | -0.068 to +0.064 ms |
+| `structural_objects` | 22.406 ms | 22.506 ms | 5/10 | -0.348 to +0.256 ms |
+| `tsx_components` | 19.959 ms | 20.330 ms | 2/10 | -0.416 to +0.413 ms |
+| `type_predicates` | 32.623 ms | 32.934 ms | 4/10 | -0.669 to +0.353 ms |
+| `type_predicates_large` | 248.194 ms | 245.774 ms | 7/10 | -10.769 to +5.873 ms |
+| `variadic_tuples` | 31.357 ms | 31.417 ms | 5/10 | -0.381 to +0.315 ms |
+
+No screen median is more than 3% slower and no screen interval is wholly
+negative. The carried #848/#851 risks still receive independent 30-pair
+rechecks. Source review additionally motivated class/interface-family checks:
+the eager index can allocate even when no class can merge, and the interface
+screen's small adverse observation needed confirmation rather than omission.
+
+| Independent carried-risk recheck (30 pairs each) | Parent median | Candidate median | Candidate faster | Paired mean-saving 95% interval |
+|---|---:|---:|---:|---:|
+| `reexport_graph` | 11.802 ms | 11.680 ms | 16/30 | -0.539 to +0.966 ms |
+| `type_predicates_large` | 244.421 ms | 243.934 ms | 15/30 | -2.647 to +0.748 ms |
+
+| Independent declaration-risk check (30 pairs each) | Parent median | Candidate median | Candidate faster | Paired mean-saving 95% interval |
+|---|---:|---:|---:|---:|
+| `class_hierarchy` | 23.198 ms | 22.970 ms | 22/30 | +0.074 to +0.447 ms |
+| `interface_composition` | 33.957 ms | 33.823 ms | 20/30 | -0.087 to +0.522 ms |
+
+The interface/carried-risk intervals span zero, not proof of equivalence or
+regression freedom. All **442** original paired rounds (**884** timing samples)
+and **660** admissions remain. The verifier recomputes raw sample order,
+arrays, medians, intervals, fingerprints and complete negative code counts.
+
+Full checker/Program/driver/CLI/entrypoint pass **4,531 / 247 / 200 / 74 / 35**;
+the benchmark harness passes **136/136**. New controls compare complete
+diagnostic slices with the original scanner across exports, duplicates,
+namespace containers and virtual sections; fail every construction allocation,
+verify partial-group cleanup/full fallback, and test allocation-free absence
+of interfaces. The first OOM-control test used a hardcoded failure range that
+also hit diagnostic allocation: its original draft and full logged failing
+repeat (**4,530 passed / one failed**) remain. The corrected test measures
+the construction allocation count; no test is filtered or skipped.
+
+Pinned, unmodified Zod's 106 production files retain the same complete primary
+message/position/code multiset: **195 TS + 3 HM9002**, zero added/removed.
+Normalized SHA-256 is
+`6bf2feb527d91c651631642e523da6d28cd2b0c7ae4898cac0888aa7b420874f`.
+This is not Zod production admission. Checker peak is 3,113 MB, build 2,951 MB;
+measurement phases peak at 232–276 MB under the unchanged guard.
+
+The [evidence archive](https://github.com/home-lang/home/raw/main/bench/vs_tsgo/evidence/20261008-class-interface-index-accepted-853.tar.gz)
+has **1,563** verified payload checksums; SHA-256:
+`68abb2117c469dcbf4a6d66f48a530fa767f72ed3a5eeb476f7edaf7f9607613`.
+It includes every phase/round/admission, both runner revisions and the
+independent risk runner, exact positive/scale-negative projects, source diffs,
+assembly mappings, full test/build/Zod logs and the recalculation scripts.
+Official negative temporary copies were deleted by the unchanged harness;
+their complete actual process records remain. Separately labeled archived
+generator replays reconstruct those inputs without invoking a compiler and
+are not mislabeled as the original directories or new admissions.
+
+The separate late `checkSourceFile` sample is now mapped to
+`reportClassLocalTypedefTemplateReferences`, called per typed typedef by
+`checkJSDocTypedefTypeTags`: instruction kinds 8/52 are class declarations/
+expressions, and the loop selects the shortest class strictly containing the
+comment before reading its leading JSDoc. This whole-HIR scan per typedef is
+**not optimized by this commit**. An archived exhaustive interval design model
+is exploratory, not a compiler correctness/performance result. #853 stays
+open for this next source-derived change; #416/#838/#548 stay open. The latest
+full matrix remains Home first **1/20**, faster than native TS7 **12/20**;
+no fresh ranking, universal leadership, C++ admission or other-platform result
+is established by this A/B.
 
 ## Historical compiler matrices
 

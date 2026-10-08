@@ -144,7 +144,8 @@ performance gaps. Export-owner reuse in
 [#839](https://github.com/home-lang/home/issues/839) improves the unchanged
 re-export graph by **1.232×** in independent same-parent paired confirmation.
 The current validation-protocol-4 matrix measures source `3491cdb45` (compiler `db28b2e10`), including
-landed #842/#850 work; it is not a patch A/B. The earlier nested-owner
+landed #842/#850 work; it is not a patch A/B and predates the later #853
+index below. That A/B does not establish a new competitor ranking. The earlier nested-owner
 experiment measures source `30d3824da`, against exact parent `eaaddf213`.
 The initial overload regression warning and all ten targeted rechecks are
 retained in the docs; CommonJS's recheck has a 0.7% slower median. Cross-run
@@ -272,6 +273,25 @@ Production resolution is restored; the rebuilt native binary matches the
 accepted parent exactly. General ownership/condition controls remain. See the
 [rejection report](docs/docs/TS_PERFORMANCE.md#borrowed-resolver-key-lookup-rejected-2026-10-08-utc)
 and [all raw evidence](bench/vs_tsgo/evidence/20261008-resolver-borrowed-keys-rejected-851.tar.gz).
+
+A class/interface modifier-merge index is now
+[landed](https://github.com/home-lang/home/commit/bbabc2f4dd2417b4a71460b722b0a07930136c88)
+under [#853](https://github.com/home-lang/home/issues/853), preserving the complete
+original diagnostic scan on allocation failure:
+
+| #853 exact-parent confirmation | Parent | Candidate | Paired mean-saving 95% interval |
+|---|---:|---:|---:|
+| Official checked JS, 30 pairs | 29.197 ms | 29.176 ms | −0.086 to +0.566 ms; inconclusive |
+| 512 JSDoc families, 30 pairs | 156.808 ms | 155.196 ms | **+0.268 to +2.385 ms** |
+| Class hierarchy, 30 pairs | 23.198 ms | 22.970 ms | **+0.074 to +0.447 ms** |
+| 8,192 families, five six-pair batches | 18,406.634 ms | 18,069.441 ms | +84.799 to +424.692 ms pooled; batch interval spans zero |
+
+The ~1% confirmed smaller-scale/class gains do not establish universal speedups.
+All **442 paired rounds / 660 admissions**, the adverse first large batch and
+inconclusive risk checks remain in the
+[full report](docs/docs/TS_PERFORMANCE.md#classinterface-modifier-merge-index-2026-10-08-utc)
+and [raw evidence](bench/vs_tsgo/evidence/20261008-class-interface-index-accepted-853.tar.gz).
+The separate whole-file JSDoc class-owner scan remains open in #853.
 
 These numbers were measured with the standalone compiler build
 (`zig build home-tsc`). `home tsc` runs the same compiler from inside the full
