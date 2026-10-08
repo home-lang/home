@@ -6047,7 +6047,11 @@ pub fn moduleExportFactsFromResolvedModule(
     module_path: []const u8,
     name: []const u8,
 ) ModuleExportFacts {
-    return moduleExportFactsFromResolvedModuleDepth(gpa, resolver, module_path, name, 0, null) catch .{};
+    var query = export_origins.Query.init(gpa, resolver);
+    defer query.deinit();
+    var traversal = ExportFactTraversal.init(gpa, resolver, &query);
+    defer traversal.deinit();
+    return traversal.run(module_path, name) catch .{};
 }
 
 /// Build the reusable module compilation consumed by export-fact queries.
@@ -6192,31 +6196,100 @@ fn putOwnedExportName(
     };
 }
 
-fn moduleExportFactsFromResolvedModuleDepth(
+/// Request-local facts form a finite dependency graph keyed by owner/name.
+/// Changed children wake their parents; no graph depth or native call stack
+/// bounds the reachable surface. Bound owners remain in the caller's query.
+const ExportFactTraversal = struct {
+    const Key = struct { path: []const u8, name: []const u8 };
+    const KeyContext = struct {
+        pub fn hash(_: @This(), key: Key) u64 {
+            var h = std.hash.Wyhash.init(0);
+            h.update(key.path);
+            h.update(&.{0});
+            h.update(key.name);
+            return h.final();
+        }
+        pub fn eql(_: @This(), left: Key, right: Key) bool {
+            return std.mem.eql(u8, left.path, right.path) and std.mem.eql(u8, left.name, right.name);
+        }
+    };
+    const Node = struct {
+        key: Key,
+        compilation: *ts_driver.Compilation,
+        facts: ModuleExportFacts = .{},
+        parents: std.ArrayList(usize) = .empty,
+        queued: bool = false,
+    };
     gpa: std.mem.Allocator,
     resolver: *ts_resolver.Resolver,
-    module_path: []const u8,
-    name: []const u8,
-    depth: u8,
-    shared_query: ?*export_origins.Query,
-) !ModuleExportFacts {
-    if (depth >= 8) return .{};
-    if (shared_query) |query| {
-        const compilation = try query.compilation(module_path) orelse return error.ExportModuleUnavailable;
-        return moduleExportFactsFromCompilationDepth(gpa, resolver, module_path, compilation, name, depth, query);
+    query: *export_origins.Query,
+    nodes: std.ArrayList(Node) = .empty,
+    indexes: std.HashMapUnmanaged(Key, usize, KeyContext, 80) = .empty,
+    pending: std.ArrayList(usize) = .empty,
+    current: usize = 0,
+
+    fn init(gpa: std.mem.Allocator, resolver: *ts_resolver.Resolver, query: *export_origins.Query) ExportFactTraversal {
+        return .{ .gpa = gpa, .resolver = resolver, .query = query };
     }
-    const src = try resolver.fs.readFile(gpa, module_path);
-    defer gpa.free(src);
-    var compilation = try compileModuleForExportFacts(gpa, module_path, src);
-    defer {
-        compilation.deinit();
-        gpa.destroy(compilation);
+    fn deinit(self: *ExportFactTraversal) void {
+        for (self.nodes.items) |*entry| entry.parents.deinit(self.gpa);
+        self.nodes.deinit(self.gpa);
+        self.indexes.deinit(self.gpa);
+        self.pending.deinit(self.gpa);
     }
-    return moduleExportFactsFromCompilationDepth(gpa, resolver, module_path, compilation, name, depth, null);
-}
+    fn enqueue(self: *ExportFactTraversal, index: usize) !void {
+        if (self.nodes.items[index].queued) return;
+        try self.pending.append(self.gpa, index);
+        self.nodes.items[index].queued = true;
+    }
+    fn node(self: *ExportFactTraversal, path: []const u8, name: []const u8) !usize {
+        const key: Key = .{ .path = path, .name = name };
+        if (self.indexes.get(key)) |index| return index;
+        const compilation = try self.query.compilation(path) orelse return error.ExportModuleUnavailable;
+        const index = self.nodes.items.len;
+        try self.nodes.append(self.gpa, .{ .key = key, .compilation = compilation });
+        try self.indexes.put(self.gpa, key, index);
+        try self.enqueue(index);
+        return index;
+    }
+    fn reference(self: *ExportFactTraversal, path: []const u8, name: []const u8) !ModuleExportFacts {
+        const index = try self.node(path, name);
+        const parents = &self.nodes.items[index].parents;
+        if (std.mem.indexOfScalar(usize, parents.items, self.current) == null)
+            try parents.append(self.gpa, self.current);
+        return self.nodes.items[index].facts;
+    }
+    fn sameFacts(left: ModuleExportFacts, right: ModuleExportFacts) bool {
+        const info = @typeInfo(ModuleExportFacts).@"struct";
+        inline for (info.field_names, info.field_types) |name, FieldType| {
+            if (comptime FieldType == []const u8) {
+                if (!std.mem.eql(u8, @field(left, name), @field(right, name))) return false;
+            } else if (!std.meta.eql(@field(left, name), @field(right, name))) return false;
+        }
+        return true;
+    }
+    fn run(self: *ExportFactTraversal, path: []const u8, name: []const u8) !ModuleExportFacts {
+        const root = try self.node(path, name);
+        var cursor: usize = 0;
+        while (cursor < self.pending.items.len) : (cursor += 1) {
+            const index = self.pending.items[cursor];
+            self.nodes.items[index].queued = false;
+            // Copy stable owner/key handles: discovering children may move
+            // the node array, but cannot move any retained compilation.
+            const key = self.nodes.items[index].key;
+            const compilation = self.nodes.items[index].compilation;
+            self.current = index;
+            const facts = try evaluateModuleExportFacts(self, key.path, compilation, key.name);
+            if (sameFacts(facts, self.nodes.items[index].facts)) continue;
+            self.nodes.items[index].facts = facts;
+            for (self.nodes.items[index].parents.items) |parent| try self.enqueue(parent);
+        }
+        return self.nodes.items[root].facts;
+    }
+};
 
 /// Query export facts from a module compilation that the caller already owns.
-/// Re-export targets still resolve recursively through the normal resolver.
+/// Re-export targets use the normal resolver and the dependency worklist.
 pub fn moduleExportFactsFromCompilation(
     gpa: std.mem.Allocator,
     resolver: *ts_resolver.Resolver,
@@ -6224,7 +6297,9 @@ pub fn moduleExportFactsFromCompilation(
     compilation: *ts_driver.Compilation,
     name: []const u8,
 ) ModuleExportFacts {
-    return moduleExportFactsFromCompilationDepth(gpa, resolver, module_path, compilation, name, 0, null) catch .{};
+    var query = export_origins.Query.init(gpa, resolver);
+    defer query.deinit();
+    return moduleExportFactsFromCompilationWithQuery(gpa, resolver, module_path, compilation, name, &query);
 }
 
 /// Query the same export facts while reusing immutable owners and bound origin
@@ -6238,18 +6313,20 @@ pub fn moduleExportFactsFromCompilationWithQuery(
     name: []const u8,
     query: *export_origins.Query,
 ) ModuleExportFacts {
-    return moduleExportFactsFromCompilationDepth(gpa, resolver, module_path, compilation, name, 0, query) catch .{};
+    if (!query.files.contains(module_path)) query.borrow(module_path, compilation) catch return .{};
+    var traversal = ExportFactTraversal.init(gpa, resolver, query);
+    defer traversal.deinit();
+    return traversal.run(module_path, name) catch .{};
 }
 
-fn moduleExportFactsFromCompilationDepth(
-    gpa: std.mem.Allocator,
-    resolver: *ts_resolver.Resolver,
+fn evaluateModuleExportFacts(
+    traversal: *ExportFactTraversal,
     module_path: []const u8,
     compilation: *ts_driver.Compilation,
     name: []const u8,
-    depth: u8,
-    shared_query: ?*export_origins.Query,
 ) !ModuleExportFacts {
+    const resolver = traversal.resolver;
+    const origin_query = traversal.query;
     var facts: ModuleExportFacts = .{
         .exported_type = moduleExportsTypeSpaceNameFromCompilation(compilation, name) or
             moduleExportsTypeOnlyNamespaceNameFromCompilation(compilation, name),
@@ -6260,10 +6337,6 @@ fn moduleExportFactsFromCompilationDepth(
     facts.cannot_be_named = !facts.exported_type and
         moduleExportNestedTypeSpaceNameFromCompilation(compilation, name);
     if (compilation.hir.kindOf(compilation.root) != .block_stmt) return facts;
-    var local_query = export_origins.Query.init(gpa, resolver);
-    defer local_query.deinit();
-    const origin_query = shared_query orelse &local_query;
-    if (!origin_query.files.contains(module_path)) try origin_query.borrow(module_path, compilation);
     const resolved_origins = try origin_query.resolve(module_path, name);
     if (resolved_origins.complete and !resolved_origins.ambiguous) {
         facts.namespace_meaning = resolved_origins.namespace != null;
@@ -6389,9 +6462,8 @@ fn moduleExportFactsFromCompilationDepth(
                     continue;
                 }
                 const target = resolver.resolve(specifier, module_path) catch continue;
-                if (std.mem.eql(u8, target.path, module_path)) continue;
                 const imported_name = compilation.interner.get(export_spec.imported);
-                const nested = try moduleExportFactsFromResolvedModuleDepth(gpa, resolver, target.path, imported_name, depth + 1, origin_query);
+                const nested = try traversal.reference(target.path, imported_name);
                 if (ex.is_type_only or export_spec.is_type_only) {
                     if (nested.exported_type) {
                         facts.exported_type = true;
@@ -6413,10 +6485,11 @@ fn moduleExportFactsFromCompilationDepth(
             }
         }
         if (!ex.is_namespace or compilation.interner.get(ex.namespace_alias).len != 0) continue;
+        // ECMAScript star exports forward named exports, never the default.
+        if (std.mem.eql(u8, name, "default")) continue;
         if (!std.mem.startsWith(u8, specifier, ".") or exportStarTargetPrefersIndex(specifier)) continue;
         const target = resolver.resolve(specifier, module_path) catch continue;
-        if (std.mem.eql(u8, target.path, module_path)) continue;
-        const nested = try moduleExportFactsFromResolvedModuleDepth(gpa, resolver, target.path, name, depth + 1, origin_query);
+        const nested = try traversal.reference(target.path, name);
         if (ex.is_type_only) {
             if (nested.exported_type) {
                 facts.exported_type = true;
@@ -6435,6 +6508,13 @@ fn moduleExportFactsFromCompilationDepth(
             facts.type_only_path = if (nested.type_only_path.len != 0) nested.type_only_path else target.path;
             facts.type_only_import = nested.type_only_import;
         }
+    }
+    // Provenance comes from the complete origin worklist, not from which
+    // dependency happened to publish its provisional facts first.
+    if (resolved_origins.restriction) |restriction| {
+        facts.type_only_pos = restriction.position;
+        facts.type_only_path = if (restriction.kind == .export_type and std.mem.eql(u8, restriction.path, module_path)) "" else restriction.path;
+        facts.type_only_import = restriction.kind == .import_type;
     }
     return facts;
 }
@@ -13954,6 +14034,91 @@ test "module export facts preserve generic function exports through reexports" {
     try T.expect(generic.generic_function);
     try T.expect(!plain.generic_function);
     try T.expect(reexport.generic_function);
+}
+
+test "module export facts preserve deep cyclic reexport meanings without a cutoff" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/p/leaf.d.ts", "export declare function make<T>(): T; export declare const enum Code { A } export interface Shape { value: number; }");
+    for (0..32) |index| {
+        const path = try std.fmt.allocPrint(T.allocator, "/p/chain{d}.ts", .{index});
+        defer T.allocator.free(path);
+        const target = if (index == 31)
+            try T.allocator.dupe(u8, "./leaf")
+        else
+            try std.fmt.allocPrint(T.allocator, "./chain{d}", .{index + 1});
+        defer T.allocator.free(target);
+        const source = if (index == 16)
+            try std.fmt.allocPrint(T.allocator, "export * from './cycle'; export * from '{s}';", .{target})
+        else if (index % 2 == 0)
+            try std.fmt.allocPrint(T.allocator, "export {{ make, Code, Shape }} from '{s}';", .{target})
+        else
+            try std.fmt.allocPrint(T.allocator, "export * from '{s}';", .{target});
+        defer T.allocator.free(source);
+        try vfs.addFile(path, source);
+    }
+    try vfs.addFile("/p/cycle.ts", "export * from './chain0';");
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    const callable = moduleExportFactsFromResolvedModule(T.allocator, &resolver, "/p/chain0.ts", "make");
+    try T.expect(callable.exported_value and callable.generic_function and callable.call_only_function);
+    const enumeration = moduleExportFactsFromResolvedModule(T.allocator, &resolver, "/p/chain0.ts", "Code");
+    try T.expect(enumeration.exported_value and enumeration.ambient_const_enum);
+    const shape = moduleExportFactsFromResolvedModule(T.allocator, &resolver, "/p/chain0.ts", "Shape");
+    try T.expect(shape.exported_type and !shape.exported_value);
+    const missing = moduleExportFactsFromResolvedModule(T.allocator, &resolver, "/p/chain0.ts", "Missing");
+    try T.expect(!missing.exported_type and !missing.exported_value);
+}
+
+test "module export facts retain type restriction provenance through cycles and repeated queries" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/p/leaf.ts", "export class Box {} export const value = 1;");
+    try vfs.addFile("/p/restricted.ts", "import type { Box } from './leaf'; export { Box }; export * from './root';");
+    try vfs.addFile("/p/root.ts", "export * from './restricted'; export * from './cycle';");
+    try vfs.addFile("/p/cycle.ts", "export * from './root';");
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var query = export_origins.Query.init(T.allocator, &resolver);
+    defer query.deinit();
+    const compilation = try query.compilation("/p/root.ts") orelse return error.TestUnexpectedResult;
+    const expected = moduleExportFactsFromCompilationWithQuery(T.allocator, &resolver, "/p/root.ts", compilation, "Box", &query);
+    try T.expect(expected.exported_type and expected.type_only_import and expected.type_only_pos != null);
+    try T.expectEqualStrings("/p/restricted.ts", expected.type_only_path);
+    for (0..16) |_| {
+        const missing = moduleExportFactsFromCompilationWithQuery(T.allocator, &resolver, "/p/root.ts", compilation, "Missing", &query);
+        try T.expect(!missing.exported_type and !missing.exported_value);
+        const actual = moduleExportFactsFromCompilationWithQuery(T.allocator, &resolver, "/p/root.ts", compilation, "Box", &query);
+        try T.expectEqualDeep(expected, actual);
+    }
+}
+
+test "module export facts distinguish shared diamond origins from ambiguous declarations" {
+    var vfs = ts_resolver.VirtualFs.init(T.allocator);
+    defer vfs.deinit();
+    try vfs.addFile("/p/leaf.ts", "export function make<T>(value: T): T { return value; } export default make;");
+    try vfs.addFile("/p/other.ts", "export const make = 1;");
+    try vfs.addFile("/p/left.ts", "export { make as Alias } from './leaf'; export * from './root';");
+    try vfs.addFile("/p/right.ts", "export { make as Alias } from './leaf';");
+    try vfs.addFile("/p/root.ts", "export * from './left'; export * from './right';");
+    try vfs.addFile("/p/ambiguous.ts", "export * from './leaf'; export * from './other';");
+    try vfs.addFile("/p/star-default.ts", "export * from './leaf';");
+    var resolver = ts_resolver.Resolver.init(T.allocator, vfs.fs(), .{});
+    defer resolver.deinit();
+    var query = export_origins.Query.init(T.allocator, &resolver);
+    defer query.deinit();
+    const shared = try query.resolve("/p/root.ts", "Alias");
+    try T.expect(shared.complete and !shared.ambiguous and shared.value != null);
+    const facts = moduleExportFactsFromResolvedModule(T.allocator, &resolver, "/p/root.ts", "Alias");
+    try T.expect(facts.exported_value and facts.generic_function and facts.call_only_function);
+    const excluded = moduleExportFactsFromResolvedModule(T.allocator, &resolver, "/p/root.ts", "default");
+    try T.expect(!excluded.exported_type and !excluded.exported_value);
+    const direct_star_default = moduleExportFactsFromResolvedModule(T.allocator, &resolver, "/p/star-default.ts", "default");
+    try T.expect(!direct_star_default.exported_type and !direct_star_default.exported_value);
+    const conflicting = try query.resolve("/p/ambiguous.ts", "make");
+    try T.expect(conflicting.complete and conflicting.ambiguous);
+    const ambiguous = moduleExportFactsFromResolvedModule(T.allocator, &resolver, "/p/ambiguous.ts", "make");
+    try T.expectEqual(@as(?bool, null), ambiguous.namespace_meaning);
 }
 
 test "module export facts parse JSX-bearing JavaScript modules" {
