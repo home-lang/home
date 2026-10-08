@@ -390,9 +390,8 @@ pub const ExternalResolver = struct {
         /// fact to preserve TS7009 instead of treating the member as `any`.
         call_only_function: bool = false,
         /// True when the exported value is an ambient const enum. Under
-        /// isolatedModules-like flags (including verbatimModuleSyntax),
-        /// TypeScript rejects value imports/re-exports of these symbols with
-        /// TS2748 even though they are value-space exports.
+        /// verbatimModuleSyntax, value imports/re-exports report TS2748;
+        /// isolatedModules reports it at actual value accesses instead.
         ambient_const_enum: bool = false,
         /// Whether the resolved source is an external module. Null means
         /// the resolver does not expose module-shape facts. JSDoc import
@@ -17342,7 +17341,8 @@ pub const Checker = struct {
     }
 
     fn checkAmbientConstEnumReExports(self: *Checker, node: NodeId, ex: hir_mod.ExportPayload) CheckError!void {
-        if (!self.isolatedModulesLikeEnabled(node) or ex.named_len == 0 or ex.is_namespace or ex.is_type_only) return;
+        if (!self.effectiveVerbatimModuleSyntax() or self.exportAssignmentInAmbientContext(node) or
+            ex.named_len == 0 or ex.is_namespace or ex.is_type_only) return;
         const spec = self.string_interner.get(ex.module);
         if (spec.len == 0) return;
         for (hir_mod.exportNamed(self.hir, node)) |spec_node| {
@@ -61846,7 +61846,7 @@ pub const Checker = struct {
                 switch (try self.virtualRelativeModuleNamedExportRuntimeStatus(node, spec, sp.imported)) {
                     .value => continue,
                     .ambient_const_enum => {
-                        if (!imp.is_type_only and !sp.is_type_only) {
+                        if (self.effectiveVerbatimModuleSyntax() and !imp.is_type_only and !sp.is_type_only) {
                             try self.reportAmbientConstEnumAccessAt(spec_node, self.hir.spanOf(spec_node).start);
                         }
                         continue;
@@ -61977,7 +61977,7 @@ pub const Checker = struct {
                 switch (try self.ambientModuleNamedExportRuntimeStatus(node, spec, sp.imported)) {
                     .value => continue,
                     .ambient_const_enum => {
-                        if (!imp.is_type_only and !sp.is_type_only) {
+                        if (self.effectiveVerbatimModuleSyntax() and !imp.is_type_only and !sp.is_type_only) {
                             try self.reportAmbientConstEnumAccessAt(spec_node, self.hir.spanOf(spec_node).start);
                         }
                         continue;
@@ -61994,7 +61994,7 @@ pub const Checker = struct {
                     .missing, .unknown => {},
                 }
                 if (try self.virtualBareModuleAmbientConstEnum(node, spec, sp.imported)) {
-                    if (!imp.is_type_only and !sp.is_type_only) {
+                    if (self.effectiveVerbatimModuleSyntax() and !imp.is_type_only and !sp.is_type_only) {
                         try self.reportAmbientConstEnumAccessAt(spec_node, self.hir.spanOf(spec_node).start);
                     }
                     continue;
@@ -62030,7 +62030,7 @@ pub const Checker = struct {
                 switch (try self.ambientModuleNamedExportRuntimeStatus(node, spec, sp.imported)) {
                     .value => continue,
                     .ambient_const_enum => {
-                        if (!imp.is_type_only and !sp.is_type_only) {
+                        if (self.effectiveVerbatimModuleSyntax() and !imp.is_type_only and !sp.is_type_only) {
                             try self.reportAmbientConstEnumAccessAt(spec_node, self.hir.spanOf(spec_node).start);
                         }
                         continue;
@@ -62076,7 +62076,7 @@ pub const Checker = struct {
             switch (external_status) {
                 .value => continue,
                 .ambient_const_enum => {
-                    if (!imp.is_type_only and !sp.is_type_only) {
+                    if (self.effectiveVerbatimModuleSyntax() and !imp.is_type_only and !sp.is_type_only) {
                         try self.reportAmbientConstEnumAccessAt(spec_node, self.hir.spanOf(spec_node).start);
                     }
                     continue;
@@ -72254,11 +72254,15 @@ pub const Checker = struct {
         chain: []const hir_mod.StringId,
         pos: ?u32,
     ) CheckError!bool {
-        if (!self.isolatedModulesLikeEnabled(node)) return false;
+        if (!self.effectiveIsolatedModules() or self.exportAssignmentInAmbientContext(node)) return false;
         if (chain.len < 2) return false;
         const enum_name = chain[chain.len - 2];
         const prop_name = chain[chain.len - 1];
-        if (chain.len == 2 and self.valueImportBindingInSection(node, enum_name)) return false;
+        if (try self.importedAmbientConstEnumForAccess(node, chain)) {
+            try self.reportAmbientConstEnumAccessAt(node, pos orelse self.hir.spanOf(node).start);
+            return true;
+        }
+        if (self.localImportBindingExistsAt(chain[0], node)) return false;
         if (self.ambientConstEnumDeclForQualifiedAccess(node, chain)) |decl| {
             if (!self.enumHasMemberInScope(decl, enum_name, prop_name)) return false;
         } else {
@@ -72292,6 +72296,37 @@ pub const Checker = struct {
         defer chain.deinit(self.gpa);
         if (!try self.collectMemberAccessIdentifierChain(node, &chain)) return false;
         return try self.reportAmbientConstEnumAccessForChain(node, chain.items, self.hir.spanOf(node).start);
+    }
+
+    fn importedAmbientConstEnumForAccess(self: *Checker, anchor: NodeId, chain: []const hir_mod.StringId) CheckError!bool {
+        if (chain.len < 2 or self.typeOnlyImportLocal(chain[0], anchor) or self.valueNameShadowsImport(chain[0], anchor)) return false;
+        const info = try self.localImportModuleInfo(chain[0], anchor) orelse return false;
+        const import = hir_mod.importOf(self.hir, info.import_node);
+        if (import.is_type_only) return false;
+        var specifier = self.string_interner.get(info.specifier);
+        var enum_name = chain[chain.len - 2];
+        var component: usize = 1;
+        if (info.exported_root) |exported| {
+            if (chain.len == 2) {
+                enum_name = exported;
+                component = chain.len - 2;
+            } else {
+                const namespace = self.externalModuleExportInfo(anchor, specifier, exported) orelse return false;
+                if (namespace.namespace_module_path.len == 0) return false;
+                specifier = namespace.namespace_module_path;
+            }
+        }
+        while (component < chain.len - 2) : (component += 1) {
+            const namespace = self.externalModuleExportInfo(anchor, specifier, chain[component]) orelse return false;
+            if (namespace.namespace_module_path.len == 0) return false;
+            specifier = namespace.namespace_module_path;
+        }
+        if (self.externalModuleNamedExportRuntimeStatus(anchor, specifier, enum_name) == .ambient_const_enum) return true;
+        if (std.mem.startsWith(u8, specifier, ".")) {
+            return try self.virtualRelativeModuleNamedExportRuntimeStatus(anchor, specifier, enum_name) == .ambient_const_enum;
+        }
+        if (try self.ambientModuleNamedExportRuntimeStatus(anchor, specifier, enum_name) == .ambient_const_enum) return true;
+        return self.sourceHasVirtualFilenameSections() and try self.virtualBareModuleAmbientConstEnum(anchor, specifier, enum_name);
     }
 
     fn valueImportBindingInSection(self: *Checker, anchor: NodeId, name: hir_mod.StringId) bool {
@@ -204532,6 +204567,45 @@ test "checker: type-only imports do not access ambient const enums" {
     try b.base.checker.checkSourceFile(b.base.root);
 
     try T.expectEqual(@as(usize, 1), checkerCountCode(b.base, TsCodes.ambient_const_enum_isolated_access));
+}
+
+test "checker: isolated ambient enum imports report accesses not bindings" {
+    const b = try newBoundSetup(
+        \\// @filename: /leaf.d.ts
+        \\export declare const enum Code { A }
+        \\// @filename: /main.ts
+        \\import { Code as E } from './leaf';
+        \\import * as ns from './leaf';
+        \\import type { Code as TypeCode } from './leaf';
+        \\E.A;
+        \\E['A'];
+        \\ns.Code.A;
+        \\type T = TypeCode;
+        \\function shadow(E: { A: number }) { return E.A; }
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{ .isolated_modules = true });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 3), checkerCountCode(b.base, TsCodes.ambient_const_enum_isolated_access));
+    for (b.base.checker.diagnostics.items) |diagnostic| {
+        if (diagnostic.code != TsCodes.ambient_const_enum_isolated_access) continue;
+        const kind = b.base.hir.kindOf(diagnostic.node);
+        try T.expect(kind == .member_access or kind == .element_access);
+    }
+}
+
+test "checker: unused ambient enum bindings are allowed without verbatim mode" {
+    const b = try newBoundSetup(
+        \\// @filename: /leaf.d.ts
+        \\export declare const enum Code { A }
+        \\// @filename: /main.ts
+        \\import { Code } from './leaf';
+        \\export { Code } from './leaf';
+    );
+    defer destroyBoundSetup(b);
+    b.base.checker.setStrictFlags(.{ .isolated_modules = true });
+    try b.base.checker.checkSourceFile(b.base.root);
+    try T.expectEqual(@as(usize, 0), checkerCountCode(b.base, TsCodes.ambient_const_enum_isolated_access));
 }
 
 test "checker: else-if static numeric condition reports truthiness" {

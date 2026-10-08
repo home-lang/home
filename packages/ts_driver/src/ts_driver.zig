@@ -2449,6 +2449,7 @@ pub fn checkPreparedSource(c: *Compilation, options: CompileOptions) CompileErro
             .strict_property_initialization = strict_property_initialization,
             .no_unchecked_indexed_access = co.no_unchecked_indexed_access orelse false,
             .isolated_modules = co.isolated_modules orelse false,
+            .verbatim_module_syntax = co.verbatim_module_syntax orelse false,
             .isolated_declarations = co.isolated_declarations orelse false,
             // `composite` implies `declaration` in tsc (unless the user
             // explicitly disables it, which tsconfig validation rejects).
@@ -8450,6 +8451,40 @@ test "driver: @module: esnext does not emit TS5107" {
     }
     for (c.diagnostics.items) |d| {
         try T.expect(d.code != 5107);
+    }
+}
+
+test "driver: config verbatimModuleSyntax reaches checker binding diagnostics" {
+    for ([_]bool{ false, true }) |enabled| {
+        var arena = std.heap.ArenaAllocator.init(T.allocator);
+        defer arena.deinit();
+        const json = try std.fmt.allocPrint(
+            T.allocator,
+            "{{\"compilerOptions\":{{\"module\":\"esnext\",\"verbatimModuleSyntax\":{s}}}}}",
+            .{if (enabled) "true" else "false"},
+        );
+        defer T.allocator.free(json);
+        const cfg = try tsconfig_mod.parseString(T.allocator, arena.allocator(), json);
+        var options = optionsFromConfig(&cfg);
+        options.no_emit = true;
+        const compilation = try compileSource(T.allocator,
+            \\// @filename: /leaf.d.ts
+            \\export declare const enum Code { A }
+            \\// @filename: /chain.ts
+            \\export { Code } from './leaf';
+            \\// @filename: /index.ts
+            \\import { Code } from './chain';
+            \\export const result = 1;
+        , options);
+        defer {
+            compilation.deinit();
+            T.allocator.destroy(compilation);
+        }
+        var count: usize = 0;
+        for (compilation.diagnostics.items) |diagnostic| {
+            if (diagnostic.code == 2748) count += 1;
+        }
+        try T.expectEqual(@as(usize, if (enabled) 2 else 0), count);
     }
 }
 
