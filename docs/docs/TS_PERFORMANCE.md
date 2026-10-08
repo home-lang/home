@@ -1171,9 +1171,9 @@ payload inventories. All **9,794** payload checksums verify. Archive SHA-256:
 ### Per-pass global-reference candidate (2026-10-08 UTC)
 
 Issue [#850](https://github.com/home-lang/home/issues/850) follows the current
-source profile above. This is a **frozen candidate checkpoint, not a landed
-compiler optimization**. Integration verification is pending after main's
-independent type-transfer change
+source profile above. The implementation is now landed in
+[`00a9dcf8f`](https://github.com/home-lang/home/commit/00a9dcf8fd4cf6ce4505803f6a699e1dec6c2650)
+after correctness verification with main's independent type-transfer change
 [`bdb366c03`](https://github.com/home-lang/home/commit/bdb366c03ae740267f0be5315a26dc5a651caf3a).
 The experiment below is not relabeled as a measurement of the combined changes
 and does not replace the current five-compiler ranking.
@@ -1267,8 +1267,40 @@ the four full scale/control corpora, official inputs, 116 exact semantic-audit
 projects, complete test/build/Zod logs, source snapshots/patches, and statistics
 verifiers. All **11,754** payload checksums verify. Archive SHA-256:
 `ddbc0e6cc1346872078a1202290a236bc52fa0f7a0fcaefac18814231ac211ed`.
-The archive explicitly records integration as pending; it is not evidence
-that the later combined source passed or has these timings.
+The frozen archive records integration as pending **at its initial publication**
+in `28b7134d3`; it is preserved unchanged, not reused as proof that the combined
+source passed or has these timings.
+
+#### Integrated-source verification
+
+Source `00a9dcf8f` passed the complete checker **4,527/4,527**, Program
+**247/247**, and the supported stripped ReleaseFast native build after
+integration with `bdb366c03`. The concurrent `aef8f1dd0` rebase added only
+evidence and did not change compiler inputs. Frozen-source driver/CLI/entrypoint
+results above retain their actual source scope; they are not relabeled as new
+integrated test runs.
+
+The integrated native executable SHA-256 is
+`c16c8caaf52d35180a7fcd53b87cac0dd71ff7b86526ef285e09bb4e088335f4`.
+All **32** integrated official/scale admissions pass with unchanged fingerprints.
+All **116** semantic global cases pass on each of TypeScript 6.0.3, direct
+native TypeScript 7.0.2, the earlier profile baseline, and the integrated
+binary: another **464** retained process records. These are untimed semantic
+controls, not a new exact-parent performance comparison. Integrated Zod retains
+the identical **195 TS + 3 HM9002** full primary diagnostic multiset and
+normalized SHA-256 `6bf2feb527d91c651631642e523da6d28cd2b0c7ae4898cac0888aa7b420874f`.
+
+Integrated checker/Program/build footprints peak at **3,080/3,210/3,023 MB**,
+under the unchanged 3,840 MB guard. The largest admission footprint is 976 MB;
+semantic auditing and Zod peak at 58/532 MB. No integrated timing samples or
+new competitor ranking are claimed. The next full pinned matrix remains
+under #838; the overall #416 and real-project #548 goals remain open.
+
+The [separate integration archive](https://github.com/home-lang/home/raw/main/bench/vs_tsgo/evidence/20261008-per-pass-global-reference-integration-850.tar.gz)
+retains full new test/build/Zod logs, 32 admissions, 464 audit process records,
+all 116 exact audit projects, source snapshots, runners and fingerprints.
+All **492** payload checksums verify. Archive SHA-256:
+`acd2390d230a7c2bd29f65a0e9c7e804069dc97bcacdb05336128c647e9d553a`.
 
 ### Lazy forward-overload root index
 

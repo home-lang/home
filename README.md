@@ -239,8 +239,9 @@ and Rust payload pins still verify locally. See the
 [admission and current-profile report](docs/docs/TS_PERFORMANCE.md#cpp-admission-and-current-source-profile-2026-10-08-utc)
 and [raw evidence](bench/vs_tsgo/evidence/20261008-current-profile-cpp-admission-838-850.tar.gz).
 
-A per-pass global-reference candidate has completed its frozen-parent A/B;
-it is **not yet landed**, pending integrated-source verification:
+A per-pass global-reference index is now
+[landed](https://github.com/home-lang/home/commit/00a9dcf8fd4cf6ce4505803f6a699e1dec6c2650).
+Its frozen-parent A/B predates the separate transfer optimization:
 
 | #850 candidate confirmation | Parent | Candidate | Paired mean-saving 95% interval |
 |---|---:|---:|---:|
@@ -249,10 +250,12 @@ it is **not yet landed**, pending integrated-source verification:
 | 4,096 families, 30 pairs | 3,505.488 ms | 3,064.615 ms | **+377.701 to +575.922 ms** |
 
 The full family screen and adverse large-predicate observations remain in the
-[candidate report](docs/docs/TS_PERFORMANCE.md#per-pass-global-reference-candidate-2026-10-08-utc).
+[version-scoped report](docs/docs/TS_PERFORMANCE.md#per-pass-global-reference-candidate-2026-10-08-utc).
 Its independent predicate recheck spans zero, not equivalence.
 [Raw evidence](bench/vs_tsgo/evidence/20261008-per-pass-global-reference-candidate-850.tar.gz)
-retains 332 paired rounds. This does not replace the compiler ranking above.
+retains 332 paired rounds;
+[integration evidence](bench/vs_tsgo/evidence/20261008-per-pass-global-reference-integration-850.tar.gz)
+verifies the combined source without timing it. Neither replaces the ranking above.
 
 These numbers were measured with the standalone compiler build
 (`zig build home-tsc`). `home tsc` runs the same compiler from inside the full
