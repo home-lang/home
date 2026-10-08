@@ -115,31 +115,36 @@ Type-checking time on the reproducible
 [`bench/vs_tsgo`](bench/vs_tsgo) suite: TypeScript 6.0.3 (`tsc`), native
 TypeScript 7.0.2 (`tsgo`), Home, Rust tsc-rs 0.1.0 (TypeScript 7.1.0-dev),
 and Bun 1.4.3-canary.1+bd599f5af on identical strict, no-emit projects.
-Result `20261007T214816Z` ran on an Apple M3 Pro / Mac15,6 with 11 logical
+Result `20261008T000856Z` ran on an Apple M3 Pro / Mac15,6 with 11 logical
 cores and Darwin 27.0.0 arm64. TypeScript 7 runs directly as a native binary.
 Values are medians of 30 fresh processes after three warmups; lower is better.
 
 | Workload | `tsc` 6.0.3 | Native `tsgo` 7.0.2 | Home | Rust tsc-rs | Bun canary | Home vs fastest competitor |
 |---|---:|---:|---:|---:|---:|---:|
-| Startup (one small file) | 64.9 ms | 7.5 ms | **2.9 ms** | 5.8 ms | 6.3 ms | **1.96× faster** |
-| 256 independent files | 198.2 ms | 22.7 ms | 21.8 ms | 16.0 ms | 13.2 ms | 1.66× slower |
-| 128-module import chain | 129.9 ms | 15.0 ms | 20.3 ms | 11.2 ms | 14.8 ms | 1.82× slower |
-| 64 modules through 8 barrel re-exports | 97.7 ms | 10.5 ms | 19.3 ms | 8.9 ms | 8.6 ms | 2.24× slower |
-| Deep conditional / mapped / template types | 132.7 ms | 21.7 ms | 21.6 ms | 14.2 ms | 13.5 ms | 1.61× slower |
-| Recursive generics | 150.2 ms | 39.4 ms | 14.3 ms | 32.3 ms | 9.7 ms | 1.48× slower |
-| Checked JavaScript with JSDoc | 195.9 ms | 22.4 ms | 29.4 ms | 21.9 ms | 13.5 ms | 2.17× slower |
-| Control-flow narrowing (256 unions) | 186.8 ms | 26.9 ms | 25.6 ms | 23.8 ms | 16.3 ms | 1.57× slower |
-| 256 type-predicate families | 227.0 ms | 38.9 ms | 31.9 ms | 32.9 ms | 22.9 ms | 1.39× slower |
-| 2,048 type-predicate families | 1006.0 ms | 305.0 ms | 240.1 ms | 267.6 ms | 159.8 ms | 1.50× slower |
+| Startup (one small file) | 64.7 ms | 7.4 ms | **2.9 ms** | 5.8 ms | 6.2 ms | **2.00× faster** |
+| 256 independent files | 200.2 ms | 24.1 ms | 22.0 ms | 17.6 ms | 13.5 ms | 1.62× slower |
+| 128-module import chain | 129.5 ms | 15.2 ms | 20.4 ms | 11.2 ms | 14.9 ms | 1.82× slower |
+| 64 modules through 8 barrel re-exports | 96.6 ms | 10.6 ms | 16.5 ms | 9.0 ms | 8.5 ms | 1.94× slower |
+| Deep conditional / mapped / template types | 130.8 ms | 21.6 ms | 21.1 ms | 14.2 ms | 13.3 ms | 1.59× slower |
+| Recursive generics | 149.9 ms | 38.9 ms | 14.1 ms | 31.7 ms | 9.5 ms | 1.48× slower |
+| Checked JavaScript with JSDoc | 194.1 ms | 22.6 ms | 28.9 ms | 21.6 ms | 13.4 ms | 2.16× slower |
+| Control-flow narrowing (256 unions) | 188.9 ms | 27.4 ms | 25.4 ms | 23.7 ms | 16.0 ms | 1.59× slower |
+| 256 type-predicate families | 228.3 ms | 39.4 ms | 32.0 ms | 32.9 ms | 22.8 ms | 1.40× slower |
+| 2,048 type-predicate families | 968.6 ms | 294.2 ms | 234.6 ms | 259.3 ms | 155.1 ms | 1.51× slower |
 
 Home has the lowest median on **1 / 20** admitted workloads and is faster
-than native TypeScript 7 on **11 / 20**. The complete
+than native TypeScript 7 on **12 / 20**. The complete
 table, methodology, machine and toolchain versions are in
 [TypeScript performance](docs/docs/TS_PERFORMANCE.md). The large-predicate
 scaling regression was fixed by the lazy overload index in
 [#837](https://github.com/home-lang/home/issues/837); the expanded competitor
 matrix in [#838](https://github.com/home-lang/home/issues/838) exposes the next
-performance gaps. Older hosts, competitor sets, and launcher modes are not
+performance gaps. Export-owner reuse in
+[#839](https://github.com/home-lang/home/issues/839) improves the unchanged
+re-export graph by **1.158×** in independent same-parent paired confirmation.
+This snapshot measures frozen parent `ef0174c05` plus that patch, before its
+rebase as `b18f19203`; intervening compiler changes are not measured here.
+Older hosts, competitor sets, and launcher modes are not
 mixed with this snapshot.
 
 These numbers were measured with the standalone compiler build
@@ -148,7 +153,9 @@ These numbers were measured with the standalone compiler build
 benchmarked yet. Expect it to show mostly in the `startup` row.
 
 **How the benchmark stays fair.** Every compiler gets the same generated
-project and `--noEmit -p <same tsconfig.json>` with `strict` on. Before any
+strict project in its canonical check-only mode: `--noEmit -p <same tsconfig.json>`
+for tsc/native TS 7/Home/Rust, and `bun check --no-pretty --all` in that same
+project directory. Before any
 timing, each compiler must accept the valid project cleanly, and on workloads
 with negative controls it must also reject planted type errors with exactly
 the expected diagnostic codes, so no compiler can win by skipping work. Compiler order rotates every round, all samples are
@@ -167,10 +174,10 @@ project. Reproduce them yourself:
 ./bench/vs_tsgo/run.sh evidence
 ```
 
-The [raw evidence archive](bench/vs_tsgo/evidence/20261007T214816Z.tar.gz)
+The [raw evidence archive](bench/vs_tsgo/evidence/20261008T000856Z.tar.gz)
 contains all 600 byte-for-byte Hyperfine round files (3,000 samples), 140
 admission records, normalized metadata, and checksums. Its SHA-256 is
-`90d1b8094cc95fe8ab98195f96a8e6d93fe4777003146f28c8124cc49aa4aefc`.
+`20d645283831bd360212267cbc27be7c54590c83fda2e9a02b6af6316d1e6672`.
 
 ### Real-world TypeScript correctness gates
 

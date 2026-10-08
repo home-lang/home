@@ -10,7 +10,127 @@ Ongoing coverage and optimization work is tracked in
 
 ## Current snapshot
 
-### Expanded native-compiler measurement (2026-10-07)
+### Export-owner reuse checkpoint (2026-10-08 UTC)
+
+Result `20261008T000856Z` measures the frozen export-owner reuse candidate:
+parent `ef0174c05b9ca978ec5f5887c86bd4e8def670cd` plus the exact
+`candidate-initial.patch` in the paired evidence below. The source change was
+subsequently rebased and pushed as
+[`b18f19203`](https://github.com/home-lang/home/commit/b18f192035260d2a9e6bd0324c32e952a0679a62).
+Intervening compiler changes are **not** measured by this frozen result.
+The harness is `76d1016f4`; Home is stripped ReleaseFast, built with Zig
+`0.17.0-dev.2163+89ff10d56`. Host: Apple M3 Pro / Mac15,6, 11 logical cores,
+Darwin 27.0.0 arm64. Tools: Node 26.10.0, Hyperfine 1.20.0, Python 3.9.6.
+Compiler commands and complete payload pins are in the
+[Darwin ARM64 registry](https://github.com/home-lang/home/blob/main/bench/vs_tsgo/profiles/darwin-arm64.json).
+
+All five compilers pass the same 20 positive and 8 negative-control projects:
+**140/140** admissions. Thirty fresh processes per compiler and workload,
+after three warmups with rotating command order, retain **600 raw rounds /
+3,000 samples**. Every sample is kept, including outliers. Executables,
+payloads, projects, harness, and project context match before and after.
+Native TS 7 is invoked directly; Bun's canonical check is check-only, with
+its complete zero-error status line validated rather than discarded.
+
+| Workload | tsc 6.0.3 median | native TS 7.0.2 median | Home median | Rust tsc-rs 0.1.0 median | Bun canary median | Home vs fastest competitor |
+|---|---:|---:|---:|---:|---:|---:|
+| `checkjs_jsdoc` | 194.1 ms | 22.6 ms | 28.9 ms | 21.6 ms | 13.4 ms | 2.16× slower |
+| `class_hierarchy` | 178.0 ms | 20.4 ms | 22.6 ms | 16.9 ms | 13.2 ms | 1.71× slower |
+| `commonjs_graph` | 146.4 ms | 17.7 ms | 24.5 ms | 14.2 ms | 11.8 ms | 2.08× slower |
+| `control_flow` | 188.9 ms | 27.4 ms | 25.4 ms | 23.7 ms | 16.0 ms | 1.59× slower |
+| `deep_types` | 130.8 ms | 21.6 ms | 21.1 ms | 14.2 ms | 13.3 ms | 1.59× slower |
+| `destructuring` | 135.8 ms | 16.4 ms | 15.1 ms | 14.5 ms | 10.9 ms | 1.39× slower |
+| `generic_calls` | 179.4 ms | 22.9 ms | 22.8 ms | 19.0 ms | 14.4 ms | 1.58× slower |
+| `import_graph` | 129.5 ms | 15.2 ms | 20.4 ms | 11.2 ms | 14.9 ms | 1.82× slower |
+| `interface_composition` | 196.7 ms | 30.5 ms | 33.5 ms | 23.1 ms | 17.4 ms | 1.93× slower |
+| `many_files` | 200.2 ms | 24.1 ms | 22.0 ms | 17.6 ms | 13.5 ms | 1.62× slower |
+| `null_safe_access` | 184.4 ms | 26.0 ms | 31.4 ms | 21.7 ms | 16.0 ms | 1.97× slower |
+| `overload_resolution` | 193.9 ms | 32.0 ms | 23.1 ms | 25.7 ms | 19.9 ms | 1.16× slower |
+| `recursive_generics` | 149.9 ms | 38.9 ms | 14.1 ms | 31.7 ms | 9.5 ms | 1.48× slower |
+| `reexport_graph` | 96.6 ms | 10.6 ms | 16.5 ms | 9.0 ms | 8.5 ms | 1.94× slower |
+| `startup` | 64.7 ms | 7.4 ms | 2.9 ms | 5.8 ms | 6.2 ms | **2.00× faster** |
+| `structural_objects` | 178.8 ms | 25.8 ms | 22.0 ms | 21.4 ms | 16.3 ms | 1.35× slower |
+| `tsx_components` | 164.0 ms | 16.3 ms | 20.2 ms | 14.3 ms | 10.4 ms | 1.94× slower |
+| `type_predicates` | 228.3 ms | 39.4 ms | 32.0 ms | 32.9 ms | 22.8 ms | 1.40× slower |
+| `type_predicates_large` | 968.6 ms | 294.2 ms | 234.6 ms | 259.3 ms | 155.1 ms | 1.51× slower |
+| `variadic_tuples` | 238.2 ms | 43.5 ms | 30.3 ms | 32.3 ms | 18.9 ms | 1.61× slower |
+
+Home has the lowest unrounded median on **1/20** workloads and beats direct
+native TS 7 on **12/20**. Bun leads 18; Rust leads `import_graph`; Home leads
+`startup`. These are descriptive medians, not significance claims or a
+universal lead. Full Zod production admission, additional platforms, and C++
+repository selection remain outstanding under
+[#548](https://github.com/home-lang/home/issues/548),
+[#416](https://github.com/home-lang/home/issues/416), and
+[#838](https://github.com/home-lang/home/issues/838).
+
+The [matrix evidence archive](https://github.com/home-lang/home/raw/main/bench/vs_tsgo/evidence/20261008T000856Z.tar.gz)
+has 600 byte-identical raw rounds, 140 admissions, and **603 verified payload
+checksums**. Only known private path prefixes in metadata/admission are
+normalized. Archive SHA-256:
+`20d645283831bd360212267cbc27be7c54590c83fda2e9a02b6af6316d1e6672`.
+Home executable SHA-256:
+`2972a61a93d99b04844db10e4c018caddf581cf0fc9f928251e129ffd950e6e1`.
+Candidate build peak: 2,984 MB; complete matrix peak: 390 MB.
+
+#### Same-parent optimization acceptance (#839)
+
+The CLI's export-name callback previously reread and rebound each module in
+every traversal while holding the shared resolver mutex. It now obtains
+immutable bound owners from its existing `export_origins.Query`. Full
+per-enumeration traversal, cycle handling, owned results, default exclusion,
+quoted aliases, namespace aliases, and type-only exports are unchanged.
+There are no compiler/library/benchmark-name checks or approximate types.
+
+Both frozen binaries use the same Zig, ReleaseFast, strip flags, and parent.
+Parent executable SHA-256:
+`c510235a37f9012bb7ebb62728e873bc22d927d04c4e81c8d81fcae3400eac9c`.
+Every pair reverses order relative to the previous pair; three warmups and all
+samples are retained. Independent confirmation fingerprints every input file
+and both executables before and after; all fingerprints match.
+
+| Workload / stage | Pairs | Parent median | Candidate median | Candidate wins | Median improvement |
+|---|---:|---:|---:|---:|---:|
+| Official 64 leaves / 8 per barrel, initial screen | 20 | 21.566 ms | 17.993 ms | 19/20 | 1.199× |
+| Official unchanged graph, independent confirmation | 30 | 20.178 ms | 17.430 ms | 27/30 | 1.158× |
+| Same generator at 4,096 leaves, initial screen | 6 | 1.715 s | 1.534 s | 6/6 | 1.118× |
+| Same generator at 4,096 leaves, independent confirmation | 10 | 1.701 s | 1.538 s | 10/10 | 1.106× |
+
+Confirmation paired mean savings have two-sided 95% t intervals of
+**1.565–3.403 ms** (official, 29 degrees of freedom) and
+**131.280–226.124 ms** (scale, 9 degrees of freedom). The secondary scale
+project is diagnostic, not an enlarged official row or competitor lead claim.
+The 10-pair screen across all 20 families detects no regression whose paired
+mean saving interval is wholly below zero; this is **not** statistical
+equivalence. Cross-run matrix changes are not attributed to this patch.
+
+Full Program **228/228**, checker **4,473/4,473**, CLI **74/74**, and harness
+**128/128** pass. The new no-reread test preserves the complete cyclic,
+quoted-name, namespace, type-only, and default-filtered surface after source
+reads are denied. Both binaries pass all 20 positive and 8 negative controls.
+On the byte-pinned, unmodified 106-file Zod 4.5.2 graph, both retain exactly
+**196 TS diagnostics + 3 HM9002**, with identical complete diagnostic identity
+multisets: zero additions/removals. This is regression evidence, not Zod
+admission. Parent/candidate Zod peaks: 943/936 MB.
+
+Unstripped test builds exceeded the unchanged 3,840 MB footprint cap before
+execution. Complete ReleaseFast module suites were retried with native symbol
+emission stripped, without test-name filters or source exclusions. Program,
+checker, and CLI peaks: 3,159 / 3,263 / 2,735 MB. Resource and disk floors
+were not raised or relaxed. Zig formatting and `git diff --check` pass;
+Pickier reports existing repository debt: 22,074 findings (11,461 errors,
+10,613 warnings), not a clean lint pass.
+
+The [paired evidence archive](https://github.com/home-lang/home/raw/main/bench/vs_tsgo/evidence/20261008-export-owner-reuse-839.tar.gz)
+retains all 266 raw pair rounds, exact patch, scripts, source/semantic logs,
+Zod diagnostics, and complete scale inputs, with **4,902 verified checksums**.
+Its recomputed summary includes every pair and normalized diagnostic identity.
+Archive SHA-256:
+`2c59c9f4781daae166031d43af2ece2d17e9180083e4b6a15eace89b9d37bd9a`.
+[#839](https://github.com/home-lang/home/issues/839) remains open: export-owner
+reuse improves Home, but does not close the measured competitor gap.
+
+### Earlier expanded native-compiler measurement (2026-10-07)
 
 Result `20261007T214816Z` uses harness commit `76d1016f4` and a stripped
 ReleaseFast Home build from `9d27218fc`. It measures five compilers on one
@@ -70,7 +190,7 @@ Home executable SHA-256:
 `e3dc03289ef1e34b2273b9b26951f43bad8940614d032f3e40aceaf461600ab3`.
 The guarded build peaked at 3,027 MB; the full measurement run at 385 MB.
 
-This is the current expanded baseline under
+This is the earlier expanded baseline under
 [#838](https://github.com/home-lang/home/issues/838), not a universal lead.
 The C++ repository selection remains outstanding. Older measurements used
 different hosts, competitor sets, and TypeScript 7 launchers; their numerical
