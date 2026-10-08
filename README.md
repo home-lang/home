@@ -115,25 +115,26 @@ Type-checking time on the reproducible
 [`bench/vs_tsgo`](bench/vs_tsgo) suite: TypeScript 6.0.3 (`tsc`), native
 TypeScript 7.0.2 (`tsgo`), Home, Rust tsc-rs 0.1.0 (TypeScript 7.1.0-dev),
 and Bun 1.4.3-canary.1+bd599f5af on identical strict, no-emit projects.
-Result `20261008T031844Z` ran on an Apple M3 Pro / Mac15,6 with 11 logical
+Result `20261008T042639Z` ran on an Apple M3 Pro / Mac15,6 with 11 logical
 cores and Darwin 27.0.0 arm64. TypeScript 7 runs directly as a native binary.
 Values are medians of 30 fresh processes after three warmups; lower is better.
 
 | Workload | `tsc` 6.0.3 | Native `tsgo` 7.0.2 | Home | Rust tsc-rs | Bun canary | Home vs fastest competitor |
 |---|---:|---:|---:|---:|---:|---:|
-| Startup (one small file) | 81.7 ms | 9.4 ms | **3.8 ms** | 8.0 ms | 8.1 ms | **2.11× faster** |
-| 256 independent files | 226.4 ms | 24.9 ms | 24.2 ms | 18.4 ms | 15.0 ms | 1.61× slower |
-| 128-module import chain | 141.6 ms | 16.9 ms | 22.5 ms | 12.7 ms | 16.9 ms | 1.77× slower |
-| 64 modules through 8 barrel re-exports | 107.1 ms | 12.2 ms | 19.4 ms | 10.2 ms | 9.8 ms | 1.99× slower |
-| Deep conditional / mapped / template types | 154.2 ms | 24.1 ms | 23.6 ms | 16.7 ms | 15.3 ms | 1.54× slower |
-| Recursive generics | 312.4 ms | 65.6 ms | 23.2 ms | 54.1 ms | 16.0 ms | 1.45× slower |
-| Checked JavaScript with JSDoc | 475.2 ms | 39.4 ms | 47.4 ms | 35.7 ms | 21.6 ms | 2.20× slower |
-| Control-flow narrowing (256 unions) | 230.6 ms | 31.6 ms | 29.4 ms | 28.4 ms | 18.7 ms | 1.57× slower |
-| 256 type-predicate families | 273.1 ms | 46.4 ms | 36.1 ms | 38.1 ms | 25.7 ms | 1.41× slower |
-| 2,048 type-predicate families | 1164.5 ms | 356.3 ms | 263.6 ms | 295.4 ms | 176.8 ms | 1.49× slower |
+| Startup (one small file) | 94.5 ms | 14.8 ms | **6.4 ms** | 12.6 ms | 12.5 ms | **1.97× faster** |
+| 256 independent files | 392.4 ms | 40.3 ms | 34.7 ms | 28.9 ms | 22.3 ms | 1.56× slower |
+| 128-module import chain | 240.7 ms | 27.6 ms | 36.4 ms | 21.0 ms | 37.7 ms | 1.73× slower |
+| 64 modules through 8 barrel re-exports | 169.3 ms | 19.7 ms | 20.7 ms | 17.0 ms | 16.2 ms | 1.27× slower |
+| Deep conditional / mapped / template types | 237.1 ms | 43.7 ms | 30.3 ms | 28.3 ms | 26.7 ms | 1.14× slower |
+| Recursive generics | 299.8 ms | 66.6 ms | 23.5 ms | 51.8 ms | 20.7 ms | 1.13× slower |
+| Checked JavaScript with JSDoc | 451.1 ms | 55.2 ms | 47.3 ms | 44.7 ms | 29.8 ms | 1.59× slower |
+| Control-flow narrowing (256 unions) | 702.2 ms | 55.6 ms | 51.3 ms | 55.2 ms | 32.4 ms | 1.58× slower |
+| 256 type-predicate families | 601.6 ms | 95.8 ms | 58.8 ms | 77.0 ms | 52.6 ms | 1.12× slower |
+| 2,048 type-predicate families | 2826.6 ms | 647.0 ms | 529.1 ms | 639.2 ms | 359.4 ms | 1.47× slower |
 
-Home has the lowest median on **1 / 20** admitted workloads and is faster
-than native TypeScript 7 on **12 / 20**. The complete
+Home has the lowest median on **2 / 20** admitted workloads (startup and
+overloads) and is faster than native TypeScript 7 on **15 / 20**. These are
+descriptive medians, not statistical-significance claims. The complete
 table, methodology, machine and toolchain versions are in
 [TypeScript performance](docs/docs/TS_PERFORMANCE.md). The large-predicate
 scaling regression was fixed by the lazy overload index in
@@ -141,11 +142,12 @@ scaling regression was fixed by the lazy overload index in
 matrix in [#838](https://github.com/home-lang/home/issues/838) exposes the next
 performance gaps. Export-owner reuse in
 [#839](https://github.com/home-lang/home/issues/839) improves the unchanged
-re-export graph by **1.313×** in independent same-parent paired confirmation.
-This snapshot measures source `69c3d28ee`; the documented paired experiment
-uses exact parent `3318885fb`. Startup's targeted recheck has a 0.7% slower
-median, and retained metadata increases the observed Zod footprint; those
-tradeoffs are documented, not hidden. Cross-run differences are not patch A/Bs.
+re-export graph by **1.232×** in independent same-parent paired confirmation.
+This snapshot measures source `30d3824da`, against exact parent `eaaddf213`.
+The initial overload regression warning and all ten targeted rechecks are
+retained in the docs; CommonJS's recheck has a 0.7% slower median. Cross-run
+differences are not patch A/Bs. The existing export-fact depth limit remains
+outstanding in [#843](https://github.com/home-lang/home/issues/843).
 Older hosts, competitor sets, and launcher modes are not
 mixed with this snapshot.
 
@@ -176,10 +178,10 @@ project. Reproduce them yourself:
 ./bench/vs_tsgo/run.sh evidence
 ```
 
-The [raw evidence archive](bench/vs_tsgo/evidence/20261008T031844Z.tar.gz)
+The [raw evidence archive](bench/vs_tsgo/evidence/20261008T042639Z.tar.gz)
 contains all 600 byte-for-byte Hyperfine round files (3,000 samples), 140
 admission records, normalized metadata, and checksums. Its SHA-256 is
-`50ea6212fdf1de7b6884a83d298c3a654a023ad1712e877a53163e70107f90ce`.
+`ed253feb8650bcb68995ba7c21ad83c07c2ed6652fc4747a879c00f35c60c8fd`.
 
 ### Real-world TypeScript correctness gates
 

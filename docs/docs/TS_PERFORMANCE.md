@@ -10,6 +10,148 @@ Ongoing coverage and optimization work is tracked in
 
 ## Current snapshot
 
+### Nested export-owner checkpoint (2026-10-08 UTC)
+
+Result `20261008T042639Z` measures source
+[`30d3824da`](https://github.com/home-lang/home/commit/30d3824da0cb58c943377418f8a6454f2ca2122e),
+exact parent `eaaddf213` plus the retained nested-owner reuse patch. The parent
+compiler inputs are byte-identical to `69c3d28ee`: only docs/evidence differ.
+No upstream source landed during rebase. Build: Zig
+`0.17.0-dev.2163+89ff10d56`, stripped ReleaseFast; harness `76d1016f4`.
+Host: Apple M3 Pro / Mac15,6, 11 logical cores, Darwin 27.0.0 arm64. Tools:
+Node 26.10.0, Hyperfine 1.20.0, Python 3.9.6. Compiler/payload pins remain in
+the [Darwin ARM64 registry](https://github.com/home-lang/home/blob/main/bench/vs_tsgo/profiles/darwin-arm64.json).
+
+All five compilers pass the same 20 positive and 8 negative-control projects:
+**140/140 admissions**. Thirty fresh processes per compiler/workload after
+three warmups, with rotating command order, retain **600 raw rounds / 3,000
+samples**. Every observation is retained; executables, payloads, projects,
+harness, and project context match before/after. Native TS 7 runs directly;
+Bun uses its validated canonical check-only mode.
+
+| Workload | tsc 6.0.3 median | native TS 7.0.2 median | Home median | Rust tsc-rs 0.1.0 median | Bun canary median | Home vs fastest competitor |
+|---|---:|---:|---:|---:|---:|---:|
+| `checkjs_jsdoc` | 451.1 ms | 55.2 ms | 47.3 ms | 44.7 ms | 29.8 ms | 1.59× slower |
+| `class_hierarchy` | 416.6 ms | 47.3 ms | 45.2 ms | 36.8 ms | 31.5 ms | 1.44× slower |
+| `commonjs_graph` | 292.1 ms | 36.7 ms | 46.8 ms | 31.2 ms | 24.7 ms | 1.89× slower |
+| `control_flow` | 702.2 ms | 55.6 ms | 51.3 ms | 55.2 ms | 32.4 ms | 1.58× slower |
+| `deep_types` | 237.1 ms | 43.7 ms | 30.3 ms | 28.3 ms | 26.7 ms | 1.14× slower |
+| `destructuring` | 282.0 ms | 35.6 ms | 24.0 ms | 30.6 ms | 22.8 ms | 1.05× slower |
+| `generic_calls` | 576.6 ms | 52.3 ms | 44.9 ms | 43.4 ms | 30.0 ms | 1.50× slower |
+| `import_graph` | 240.7 ms | 27.6 ms | 36.4 ms | 21.0 ms | 37.7 ms | 1.73× slower |
+| `interface_composition` | 457.8 ms | 70.9 ms | 59.5 ms | 48.5 ms | 36.8 ms | 1.62× slower |
+| `many_files` | 392.4 ms | 40.3 ms | 34.7 ms | 28.9 ms | 22.3 ms | 1.56× slower |
+| `null_safe_access` | 522.0 ms | 54.1 ms | 56.7 ms | 52.6 ms | 36.5 ms | 1.56× slower |
+| `overload_resolution` | 465.9 ms | 69.2 ms | 41.4 ms | 48.2 ms | 43.4 ms | **1.05× faster** |
+| `recursive_generics` | 299.8 ms | 66.6 ms | 23.5 ms | 51.8 ms | 20.7 ms | 1.13× slower |
+| `reexport_graph` | 169.3 ms | 19.7 ms | 20.7 ms | 17.0 ms | 16.2 ms | 1.27× slower |
+| `startup` | 94.5 ms | 14.8 ms | 6.4 ms | 12.6 ms | 12.5 ms | **1.97× faster** |
+| `structural_objects` | 464.3 ms | 61.0 ms | 44.6 ms | 51.2 ms | 41.4 ms | 1.08× slower |
+| `tsx_components` | 430.9 ms | 28.3 ms | 35.5 ms | 30.7 ms | 22.0 ms | 1.61× slower |
+| `type_predicates` | 601.6 ms | 95.8 ms | 58.8 ms | 77.0 ms | 52.6 ms | 1.12× slower |
+| `type_predicates_large` | 2826.6 ms | 647.0 ms | 529.1 ms | 639.2 ms | 359.4 ms | 1.47× slower |
+| `variadic_tuples` | 555.3 ms | 88.9 ms | 54.1 ms | 63.2 ms | 40.5 ms | 1.34× slower |
+
+Home has the lowest unrounded median on **2/20** workloads (`startup` and
+`overload_resolution`) and beats direct native TS 7 on **15/20**. Bun leads
+17; Rust leads imports. These counts and small margins are descriptive, not
+statistical-significance claims or proof that this patch caused every change
+from earlier runs. Host conditions and timing vary across runs; no earlier
+number is merged here. Only the same-parent paired experiment below isolates
+the source change. The guard's full-run host low-water mark is 26%.
+
+The [matrix archive](https://github.com/home-lang/home/raw/main/bench/vs_tsgo/evidence/20261008T042639Z.tar.gz)
+contains all 600 byte-identical rounds, 140 admissions, and **603 verified
+payload checksums**. Only known private metadata/admission paths are
+normalized. Archive SHA-256:
+`ed253feb8650bcb68995ba7c21ad83c07c2ed6652fc4747a879c00f35c60c8fd`.
+Home executable SHA-256:
+`92338a9715ef01c3bf7e7238f980e9df72e856340f6684daabf98924ceea4960`.
+Candidate build peak: 3,043 MiB; complete matrix: 409 MiB. Re-exports still
+trail Bun by **1.27×**; #839 stays open. Other platforms, full production
+admission and canonical C++ selection remain outstanding under
+[#416](https://github.com/home-lang/home/issues/416),
+[#548](https://github.com/home-lang/home/issues/548), and
+[#838](https://github.com/home-lang/home/issues/838).
+
+#### Nested-owner reuse acceptance and adverse observations (#839)
+
+Named/star recursive fact requests now obtain immutable bound owners from the
+existing origin query instead of reopening and binding each nested target.
+CLI-shared and standalone request-local lifetimes retain their ownership
+rules. Field propagation, target resolution, and traversal order are
+unchanged. No library/compiler/benchmark-name handling, diagnostic
+suppression, approximate types, or new cutoff is introduced. The inherited
+eight-level fact cutoff is **not fixed or certified** by this optimization:
+[#843](https://github.com/home-lang/home/issues/843) tracks complete cycle-safe
+traversal without an arbitrary depth bound as outstanding correctness work.
+
+Parent executable SHA-256:
+`4b4af24fdb57dcfdba69de49a460014a1800cacdda7164a4fc8614e727e9ec2d`.
+Both binaries share the same Zig/build flags. Each stage retains all **56
+admissions**, runner/binary/input/harness/Hyperfine fingerprints, all samples,
+three warmups and reversed pair order.
+
+| Workload / stage | Pairs | Parent median | Candidate median | Candidate wins | Median improvement |
+|---|---:|---:|---:|---:|---:|
+| Official unchanged 64-leaf graph, initial screen | 20 | 25.467 ms | 20.504 ms | 20/20 | 1.242× |
+| Official graph, independent confirmation | 30 | 25.546 ms | 20.730 ms | 25/30 | 1.232× |
+| Same generator at 4,096 leaves, initial screen | 6 | 2.506 s | 2.000 s | 6/6 | 1.253× |
+| Same generator at 4,096 leaves, independent confirmation | 10 | 2.888 s | 2.351 s | 10/10 | 1.228× |
+
+Independent paired mean saving 95% t intervals: **+2.446 to +9.779 ms**
+(official, 29 degrees of freedom), **+375.313 to +791.154 ms** (scale, 9
+degrees of freedom). The secondary scale uses the same generator/eight leaves
+per barrel; the official project is unchanged and not enlarged for a win.
+
+The all-20-family 10-pair screen records an adverse overload result:
+**34.391 → 42.957 ms**, 2/10 paired wins, saving interval **−9.375 to −0.516
+ms**. Acceptance was held. Every family with a >3% slower screen median was
+selected by the predefined rule for independent 30-pair confirmation:
+
+| Workload | Parent median | Candidate median | Candidate wins | Paired mean saving 95% t interval |
+|---|---:|---:|---:|---:|
+| `deep_types` | 22.010 ms | 22.023 ms | 17/30 | −0.142 to +0.135 ms |
+| `control_flow` | 26.806 ms | 26.813 ms | 16/30 | −0.078 to +0.233 ms |
+| `overload_resolution` | 25.054 ms | 25.050 ms | 15/30 | −0.319 to +0.096 ms |
+| `class_hierarchy` | 24.445 ms | 24.358 ms | 20/30 | −0.039 to +0.300 ms |
+| `structural_objects` | 23.583 ms | 23.679 ms | 14/30 | −2.719 to +1.082 ms |
+| `interface_composition` | 35.413 ms | 35.275 ms | 20/30 | −0.074 to +0.331 ms |
+| `variadic_tuples` | 32.395 ms | 32.460 ms | 14/30 | −0.198 to +0.152 ms |
+| `checkjs_jsdoc` | 30.673 ms | 30.649 ms | 16/30 | −0.220 to +0.185 ms |
+| `commonjs_graph` | 26.798 ms | 26.983 ms | 11/30 | −0.819 to +0.026 ms |
+| `recursive_generics` | 15.288 ms | 15.106 ms | 19/30 | −0.008 to +0.447 ms |
+
+The overload warning and >3% median slowdowns do not reproduce in these
+independent rechecks. CommonJS still has a **0.7% slower observed median**.
+Overlapping intervals are not equivalence or proof of no regression; all
+initial adverse samples and rechecks are retained, not selected away.
+
+Full Program **231/231**, checker **4,483/4,483**, core CLI **74/74**,
+entrypoint **33/33**, and harness **128/128** pass. The new full-record control
+covers nested named/star edges, generic callable aliases, type-only
+interfaces, ambient const enums, ordinary values and missing names after
+source reads are denied. Program/core CLI/entrypoint peaks: 3,185 / 2,617 /
+2,855 MiB. The exact unchanged checker test artifact executes from cache
+(21 MiB); this is not a new checker compilation peak. Complete explicit
+module/import graphs have native symbols stripped, without named filters or
+source exclusions. Formatting, AST checks, and diff checks pass. Pickier
+exits 1 with 22,082 findings (11,469 errors / 10,613 warnings), not a clean
+lint pass; generated controls are not auto-fixed.
+
+The pinned, unmodified 106-file Zod graph retains identical complete
+**196 TS + 3 HM9002** diagnostic multisets, zero additions/removals. Guarded footprint
+observations are **1,087 MiB parent / 936 MiB candidate**, not a universal
+memory improvement or production admission claim. Guard ceilings/floors are
+unchanged. Source/binary/runner/input/harness/tool hashes are verified stable.
+
+The [paired archive](https://github.com/home-lang/home/raw/main/bench/vs_tsgo/evidence/20261008-nested-export-owners-839.tar.gz)
+retains **566 byte-identical pair rounds**, every stage's admissions and
+observations, complete scale inputs, exact source patch/scripts, semantic
+logs, and normalized Zod identities, with **5,209 verified checksums**.
+Its verifier recomputes every median, saving interval and win count. SHA-256:
+`37199143215b6a03705bf3cba9975de232c43c8f4e0e9693ea0b8699a80e53bb`.
+
 ### Shared export-fact origins checkpoint (2026-10-08 UTC)
 
 Result `20261008T031844Z` measures source
