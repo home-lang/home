@@ -10,6 +10,95 @@ Ongoing coverage and optimization work is tracked in
 
 ## Current snapshot
 
+### Landed global-reference matrix (2026-10-08 UTC)
+
+Result `20261008T202953Z` measures source
+[`211d28ce3`](https://github.com/home-lang/home/commit/211d28ce32d96c8b88656966ce40ce0730034b9d),
+whose compiler tree equals
+[`00a9dcf8f`](https://github.com/home-lang/home/commit/00a9dcf8fd4cf6ce4505803f6a699e1dec6c2650)
+([#850](https://github.com/home-lang/home/issues/850)), including main's separate
+owned-transfer change in #842. This is a fresh same-host compiler matrix, not
+an exact-parent experiment attributing every difference to those changes.
+
+All five compilers pass the identical 20 positive projects and eight
+negative-control projects: **140/140 admissions**. Thirty fresh processes per
+compiler/workload follow three warmups, with rotating order balanced across
+all five commands: **600 raw rounds / 3,000 retained samples**. Executables,
+complete Rust/Bun payloads, generated projects, harness and project context
+match before admission and after measurement. No outlier or compiler is
+removed to improve the ranking.
+
+Host: Apple M3 Pro / Mac15,6, 11 logical cores, Darwin 27.0.0 arm64. Tools:
+Node 26.10.0, Hyperfine 1.20.0, Python 3.9.6. Home uses pinned Zig
+`0.17.0-dev.2163+89ff10d56`, stripped ReleaseFast, `-Denable_jsc=false`.
+The standalone native executable is byte-pinned at SHA-256
+`c16c8caaf52d35180a7fcd53b87cac0dd71ff7b86526ef285e09bb4e088335f4`.
+Native TypeScript 7 runs directly; Rust and Bun use the unchanged
+[Darwin ARM64 registry](https://github.com/home-lang/home/blob/main/bench/vs_tsgo/profiles/darwin-arm64.json).
+The surviving cached Bun payload matches the original executable and full
+inventory pins; no moving-canary substitution was made.
+
+| Workload | tsc 6.0.3 median | native TS 7.0.2 median | Home median | Rust tsc-rs 0.1.0 median | Bun canary median | Home vs fastest competitor |
+|---|---:|---:|---:|---:|---:|---:|
+| `checkjs_jsdoc` | 205.2 ms | 23.4 ms | 29.7 ms | 22.6 ms | 13.5 ms | 2.19× slower |
+| `class_hierarchy` | 187.6 ms | 21.4 ms | 23.6 ms | 18.0 ms | 14.1 ms | 1.68× slower |
+| `commonjs_graph` | 149.2 ms | 18.2 ms | 24.1 ms | 14.6 ms | 11.8 ms | 2.04× slower |
+| `control_flow` | 185.3 ms | 26.5 ms | 25.0 ms | 23.5 ms | 15.9 ms | 1.58× slower |
+| `deep_types` | 127.9 ms | 20.4 ms | 20.4 ms | 13.5 ms | 12.7 ms | 1.61× slower |
+| `destructuring` | 132.2 ms | 16.2 ms | 14.4 ms | 14.0 ms | 10.8 ms | 1.34× slower |
+| `generic_calls` | 176.3 ms | 22.2 ms | 22.4 ms | 18.4 ms | 14.1 ms | 1.59× slower |
+| `import_graph` | 125.9 ms | 14.1 ms | 19.4 ms | 10.5 ms | 13.9 ms | 1.84× slower |
+| `interface_composition` | 202.4 ms | 32.3 ms | 34.1 ms | 23.7 ms | 17.5 ms | 1.95× slower |
+| `many_files` | 191.5 ms | 21.1 ms | 20.3 ms | 15.0 ms | 12.3 ms | 1.65× slower |
+| `null_safe_access` | 185.3 ms | 26.0 ms | 31.9 ms | 22.0 ms | 16.2 ms | 1.97× slower |
+| `overload_resolution` | 195.6 ms | 32.3 ms | 23.5 ms | 26.0 ms | 20.1 ms | 1.17× slower |
+| `recursive_generics` | 152.4 ms | 40.0 ms | 14.5 ms | 32.4 ms | 9.4 ms | 1.54× slower |
+| `reexport_graph` | 93.7 ms | 10.0 ms | 11.2 ms | 8.3 ms | 8.2 ms | 1.36× slower |
+| `startup` | 63.2 ms | 7.2 ms | **2.8 ms** | 5.7 ms | 6.2 ms | **2.02× faster** |
+| `structural_objects` | 189.6 ms | 27.3 ms | 23.0 ms | 22.8 ms | 17.0 ms | 1.35× slower |
+| `tsx_components` | 160.3 ms | 15.5 ms | 19.4 ms | 13.7 ms | 10.1 ms | 1.93× slower |
+| `type_predicates` | 228.5 ms | 38.7 ms | 32.0 ms | 32.9 ms | 22.7 ms | 1.41× slower |
+| `type_predicates_large` | 979.7 ms | 295.4 ms | 240.0 ms | 262.3 ms | 156.6 ms | 1.53× slower |
+| `variadic_tuples` | 246.4 ms | 45.9 ms | 31.7 ms | 34.1 ms | 19.3 ms | 1.64× slower |
+
+Home has the lowest unrounded median on **1/20** workloads (`startup`) and
+beats native TypeScript 7 on **11/20**. Bun leads 18 and Rust leads imports.
+`deep_types` rounds both Home and native TS 7 to 20.4 ms; the count uses the
+actual unrounded medians. These are descriptive comparisons, not significance
+tests, equivalence claims, or a causal regression from the earlier 2/20
+snapshot. All compilers' absolute times changed across those runs; earlier
+numbers are retained below as dated history and are never mixed into this table.
+
+The largest relative gaps are checked JavaScript/JSDoc (**2.19×**), CommonJS
+(**2.04×**), null-safe access (**1.97×**), interface composition (**1.95×**),
+and TSX (**1.93×**). The separate #850 exact-parent measurements remain the
+evidence for that patch's gains, including its inconclusive 1,024-family
+confirmation and adverse observations. This matrix identifies remaining
+work; it does not demonstrate the #416 all-benchmark leadership goal.
+
+The C++ OnlySpecs candidate stays excluded: its unmodified pinned CLI exits
+zero silently on all eight negative-control projects. Canonical active C++
+selection and other platforms remain open under #838; no excluded compiler
+gets a timing row. Full pinned Zod still emits **195 TS + 3 HM9002** (#548),
+so this synthetic admission is not real-project production admission.
+
+The [matrix archive](https://github.com/home-lang/home/raw/main/bench/vs_tsgo/evidence/20261008T202953Z.tar.gz)
+retains all 600 round files byte-for-byte, all admissions, and **603 verified
+payload checksums**. Archive SHA-256:
+`516ab0004c30e366d76395a4ac7d522f597a6c87ffc88089dc1a5103d790cb75`.
+The shared-lock run stayed below the unchanged 3,840 MB guard, with a 391 MB
+peak tree footprint and 40% host low-water mark. No resource limit or disk
+floor was relaxed.
+
+The [run-context archive](https://github.com/home-lang/home/raw/main/bench/vs_tsgo/evidence/20261008T202953Z-context-838-850.tar.gz)
+retains the exact guarded runner/log, source-tree equivalence proof, all
+recomputed medians/leader counts, row verifier and passing **128/128** harness
+log, plus the linked integrated compiler build record. Its **12** payload
+checksums verify. SHA-256:
+`3e0e7637a5bff6562f25bf706ddfa2fcea8d4a52ca6d920e8ded4af9fa8f14ba`.
+
+## Historical correctness and performance checkpoints
+
 ### Default module-owner correctness and cost checkpoint (2026-10-08 UTC)
 
 Source [`206cdf1aa`](https://github.com/home-lang/home/commit/206cdf1aae079699d1e7dceab3aa2897bf30b3e4)
@@ -18,8 +107,9 @@ Source [`206cdf1aa`](https://github.com/home-lang/home/commit/206cdf1aae079699d1
 exact parent `b6e34fc68`, with
 retained declaration/source facts rather than a filename-only default-import
 check. This is **not a new five-compiler matrix or a demonstrated speedup**.
-The latest expanded matrix below still records Home leading only 2/20
-workloads; the #416 leadership goal remains incomplete.
+At that checkpoint, the expanded matrix below recorded Home leading only 2/20
+workloads. It is historical; the current matrix is above. The #416 leadership
+goal remains incomplete.
 
 Default eligibility now separates actual value/type defaults from synthetic
 defaults, using declaration/JS source kind, ESM syntax, export assignment,
@@ -159,8 +249,9 @@ diagnostic/config fix in
 ([#844](https://github.com/home-lang/home/issues/844)). Its exact integrated
 parent is `53167b7e5`. This is a correctness checkpoint and same-parent cost
 experiment, **not a new five-compiler matrix or a demonstrated speedup**.
-The latest expanded matrix remains `20261008T042639Z` below: Home leads only
-2/20 workloads. The goal in #416 remains incomplete.
+At that checkpoint the expanded matrix was `20261008T042639Z` below, with Home
+leading 2/20 workloads. That matrix is now historical. The goal in #416 remains
+incomplete.
 
 The previous recursive fact evaluator stopped after eight layers. The new
 request-local dependency worklist keys states by module path and export name,
@@ -981,8 +1072,8 @@ The largest guarded tree footprint was 3,097 MB under the 3,840 MB ceiling.
 The expanded compiler matrix was attempted but not admitted. The exact
 tsc-rs 0.1.0 archive matched its checked-in SHA-256; the moving Bun canary
 download no longer matched the required `bd599f5af` archive pin, so no
-substitute binary and no matrix samples were accepted. The last accepted
-five-compiler snapshot therefore remains current. Bun check, tsc-rs, native
+substitute binary and no matrix samples were accepted. At that checkpoint the
+previous accepted five-compiler snapshot therefore remained current. Bun check, tsc-rs, native
 TS 7/tsgo, TypeScript 6, and the active C++ TypeScript port remain required
 for the next fully pinned matrix under
 [#838](https://github.com/home-lang/home/issues/838).

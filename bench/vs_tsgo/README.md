@@ -72,7 +72,7 @@ report refuses results whose provenance changed.
 
 | Platform | Result ID | Current outcome | Evidence and report |
 |---|---|---:|---|
-| Apple M3 Pro / macOS arm64, five compilers | `20261008T042639Z` | Home lower median on **2/20**; faster than native TS 7 on **15/20** | [snapshot](../../docs/docs/TS_PERFORMANCE.md#current-snapshot) · [raw evidence](evidence/20261008T042639Z.tar.gz) |
+| Apple M3 Pro / macOS arm64, five compilers | `20261008T202953Z` | Home lower median on **1/20**; faster than native TS 7 on **11/20** | [snapshot](../../docs/docs/TS_PERFORMANCE.md#current-snapshot) · [raw evidence](evidence/20261008T202953Z.tar.gz) |
 
 The checkpoint compares TS 6.0.3, direct native TS 7.0.2 (`tsgo`), Home,
 Rust tsc-rs 0.1.0, and pinned Bun canary, retains every sample, and does not replace real-project
@@ -80,7 +80,18 @@ benchmarking or measure unlisted platforms. Older macOS and Linux measurements
 remain in the dated optimization journal; they are historical, not mixed into
 the current table, and not relabeled as medians without their raw samples.
 
-The current run uses harness `76d1016f4` and Home source `30d3824da`.
+The current run uses source/harness `211d28ce3`, with compiler inputs equal to
+`00a9dcf8f` and frozen native SHA-256
+`c16c8caaf52d35180a7fcd53b87cac0dd71ff7b86526ef285e09bb4e088335f4`.
+All 140 admissions, 600 rotating-order rounds / 3,000 samples and 603 archive
+checksums verify. Home leads startup only; Bun leads 18 families and Rust leads
+imports. The largest gap is checked JS/JSDoc at 2.19× slower. These are
+descriptive same-run medians, not causal comparisons with earlier snapshots.
+The 3,840 MB guard is unchanged; the run peaks at 391 MB. The exact Bun/Rust
+cached payloads match their existing pins. The C++ candidate remains excluded
+for failed negative controls, with no timing row or canonical selection.
+
+The earlier `20261008T042639Z` run uses harness `76d1016f4` and Home source `30d3824da`.
 The [paired evidence](evidence/20261008-nested-export-owners-839.tar.gz) compares
 its exact parent `eaaddf213` and retains all 566 pair rounds, including
 unfavorable observations and targeted regression rechecks.
