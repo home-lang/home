@@ -10,12 +10,13 @@ Detailed per-feature status for Home's TypeScript frontend
 section is in the
 [README parity status](/docs/PARITY-STATUS#typescript-parity--home-tsc-vs-tsc--tsgo).
 
-> **Headline:** 5,907 / 5,907 (100%) coarse. Exact mode is 2,960 /
-> 2,960 (100%) in the revalidated leading prefix; the remaining 2,947
-> cases are pending revalidation. Reproduce the coarse gate with
-> `HOME_TS_CONFORMANCE_FULL=1 ./pantry/.bin/zig build test
-> -Dfilter=ts_conformance`, and the exact prefix with
-> `scripts/ts-conformance-exact.sh 0 2960 200`.
+> Corrected 2026-10-07: previous TypeScript corpus pass counts are withdrawn.
+> The harness contained fixture-name expected-result replacements, copied
+> baseline diagnostics, mismatch rescues and diagnostic filtering. Fresh actual
+> measurements and the remaining input/options/library audit are tracked in
+> [#840](https://github.com/home-lang/home/issues/840) and
+> [#832](https://github.com/home-lang/home/issues/832). Feature statuses below
+> also require revalidation wherever their evidence relied on this harness.
 
 Legend:
 
@@ -326,17 +327,12 @@ skips unchanged files; persistent on-disk compilation cache.
 
 ## Conformance by 1,000-case slice
 
-| Slice | Pass rate | % |
-|---|---|---|
-| `START=0   LIMIT=1000` | 1,000 / 1,000 | 100% |
-| `START=1000 LIMIT=1000` | 1,000 / 1,000 | 100% |
-| `START=2000 LIMIT=1000` | 1,000 / 1,000 | 100% |
-| `START=3000 LIMIT=1000` | 1,000 / 1,000 | 100% |
-| `START=4000 LIMIT=1000` | 1,000 / 1,000 | 100% |
-| `START=5000 LIMIT=906`  | 906 / 906   | 100% |
+Previous green slice counts are withdrawn. All slices require fresh execution
+after removing result substitutions and auditing compiler options and library
+inputs. Retained historical logs describe the old harness's output only.
 
-100%-passing exact-baseline category sweeps (586 fixtures across 19
-folders):
+The previous exact-baseline category sweep covered 586 fixtures across 19
+folders; its passing count also requires revalidation:
 
 `apparentType`, `bestCommonType`, `recursiveTypes`, `typeInference`,
 `keyof`, `conditional`, `instanceOf`, `widenedTypes`, `specifyingTypes`,
@@ -348,11 +344,11 @@ folders):
 
 | Category | Status |
 |---|---|
-| Coarse-mode corpus | 🟢 5,907 / 5,907 (100%) |
-| Exact-mode corpus (byte-for-byte) | 🟡 2,960 / 2,960 leading cases (100%); 2,947 pending revalidation |
-| Baseline-aware category sweep | 🟢 586 / 586 (100%) |
-| Named-category survey | 🟢 86 / 86 (100%) |
-| Smoke gate | 🟢 16 / 16 (100%) |
+| Coarse-mode corpus | Previous pass count withdrawn; fresh validation pending |
+| Exact-mode corpus (byte-for-byte) | Previous pass count withdrawn; fresh validation pending |
+| Baseline-aware category sweep | Previous pass count withdrawn; fresh validation pending |
+| Named-category survey | Previous pass count withdrawn; fresh validation pending |
+| Smoke gate | Previous pass count withdrawn; fresh validation pending |
 | Diagnostic-code catalogue | 🟢 ~2,000 entries |
 | JS emit | 🟢 substantial |
 | `.d.ts` emit | 🟢 |

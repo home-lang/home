@@ -1,0 +1,80 @@
+{
+  "home_source_base": "e2f49901ca3524bff48156b037c3c50db828ee5e",
+  "typescript_go": "89d5d5b2849a0db0957065889ca58536fa6d2e4a",
+  "typescript": "5848bc5157b22ff7f4e3369f4645a514a433b15f",
+  "zig": "0.17.0-dev.2163+89ff10d56",
+  "memory_ceiling_mb": 3840,
+  "source_sha256": {
+    "packages/ts_checker/src/check.zig": "a0796390b739bbe1683e474b3809fe2adffc48db6d35711ee4b645f611842008",
+    "packages/ts_program/src/ts_program.zig": "0e8221a757c6b934478b9adf60926db18bc8ba9720f8d36d9bc0713a0037c35c",
+    "packages/ts_cli/src/tsc_main.zig": "c7e12b424c0a1229b25f4001d3be4406bda298ac8a5ad0634fb752cfc16544f0",
+    "packages/ts_conformance/src/ts_conformance.zig": "45d266abe134c667ec47a9fc7ac75487478c37a0f75ef0e236f9510f3fdf10d5"
+  },
+  "known_removed_overrides": {
+    "named_diagnostic_replacement_entries": 2499,
+    "precompiled_pass_names": 13
+  },
+  "prior_corpus_pass_claims": "withdrawn; raw logs from the old harness are historical output, not faithful compiler parity",
+  "remaining_input_audit": [
+    "baseline-derived strictness inference",
+    "synthetic declarations and library mounting",
+    "file inclusion and configuration/variant selection"
+  ],
+  "gates": {
+    "checker": {
+      "passed": 4482,
+      "total": 4482,
+      "peak_mb": 2071
+    },
+    "program": {
+      "passed": 228,
+      "total": 228,
+      "peak_mb": 2167
+    },
+    "honesty_controls": {
+      "passed": 4,
+      "total": 4,
+      "peak_mb": 2100
+    },
+    "normal_conformance": {
+      "passed": 1400,
+      "failed": 23,
+      "total": 1423,
+      "peak_mb": 2245,
+      "exit_code": 1
+    },
+    "baseline_survey": {
+      "passed": 582,
+      "failed": 4,
+      "total": 586,
+      "skipped": 0,
+      "boundary": "intermediate harness; remaining input/options audit is open"
+    },
+    "named_category_survey": {
+      "passed": 86,
+      "total": 86,
+      "boundary": "intermediate harness; remaining input/options audit is open"
+    },
+    "smoke_survey": {
+      "passed": 16,
+      "total": 16,
+      "boundary": "intermediate harness; remaining input/options audit is open"
+    },
+    "compiler_build": {
+      "steps": 3,
+      "peak_mb": 2931
+    },
+    "opt_in_build": {
+      "passed": 3,
+      "total": 3,
+      "peak_mb": 2079
+    }
+  },
+  "compiler_sha256": "e1265b0d9d12a96bec2dbf478df080ede13b16f0afa2ccc8aa48f3dab3e8ac2e",
+  "opt_in_test_binary_sha256": "7516919309d0cc30219dcec8facf1481d710a8607b38407b11fb53c73da8c193",
+  "cleanup": {
+    "inactive_local_zig_objects_deleted": 20,
+    "bytes_approx_mib": 1445,
+    "cache_indexes_reset": true
+  }
+}

@@ -20,14 +20,12 @@ scripts/measure-parity.sh --markdown   # ready-to-paste table
 scripts/measure-parity.sh --diff       # fail if this page drifted
 ```
 
-> Refreshed 2026-09-30. Coarse-mode TS coverage remains the default corpus
-> signal. Exact mode is an opt-in, six-slice regression gate: any mismatch now
-> fails the test process. The leading 2,960 cases (slices 0 and 1, and the
-> first 960 of slice 2) pass byte for byte in one full run, refreshed
-> 2026-10-02; the remaining 2,947 must be rerun before publishing a new
-> full-corpus exact aggregate. The Bun port percentage is file-count progress over integrated
-> Home ports, while raw source presence is reported separately now that the
-> full Bun source backlog has been staged.
+> Corrected 2026-10-07. Previous TypeScript corpus counts are withdrawn.
+> The conformance harness contained fixture-name expected-result replacements,
+> copied baseline diagnostics, mismatch rescues and diagnostic filtering.
+> Those counts do not establish compiler parity. Fresh measurements follow
+> removal of these workarounds; see [#832](https://github.com/home-lang/home/issues/832).
+> Bun port file counts remain implementation inventory, not a passing full suite.
 >
 > TS diagnostic-code coverage (1,620 / 2,079 emitted) tracks the catalog-
 > only → emitted ratchet; each `feat(ts-parity): implement TSxxxx`
@@ -55,10 +53,10 @@ scripts/measure-parity.sh --diff       # fail if this page drifted
 
 | Area | Coverage | Source |
 |---|---|---|
-| **TypeScript — coarse corpus** | **5,907 / 5,907 — 100%** | `HOME_TS_CONFORMANCE_FULL=1` against upstream conformance corpus |
-| **TypeScript — exact (byte-for-byte)** | **2,960 / 2,960 — 100% in the revalidated leading prefix** | Canonical tsgo-generated baselines; the remaining 2,947 cases are pending revalidation |
-| **TypeScript — baseline-aware (19 folders)** | **586 / 586 — 100%** | per-fixture `.errors.txt` byte comparison |
-| **TypeScript — named-category survey** | **86 / 86 — 100%** | `assignmentCompatibility` + `comparable` + `inOperator` + `stringLiteral` |
+| **TypeScript — coarse corpus** | Withdrawn; actual corpus revalidation pending | `HOME_TS_CONFORMANCE_FULL=1` against upstream conformance corpus |
+| **TypeScript — exact (byte-for-byte)** | Withdrawn; prior harness fabricated matches | Pinned tsgo baselines; all previously reported corpus passes require fresh validation |
+| **TypeScript — baseline-aware (19 folders)** | Previous count withdrawn | per-fixture `.errors.txt` byte comparison |
+| **TypeScript — named-category survey** | Previous count withdrawn | `assignmentCompatibility` + `comparable` + `inOperator` + `stringLiteral` |
 | **TypeScript — diagnostic codes emitted** | **1,620 / 2,079 — ~77.9%** | [Diagnostic code status](/docs/TS_DIAGNOSTIC_CODE_STATUS) — codes referenced from production source; 459 catalog-only remain, but **0 are reachable parity targets** (the reachable subset is complete) — ~455 are dead-in-reference + 4 blocked, see [Diagnostic reachability](/docs/TS_DIAGNOSTIC_REACHABILITY) |
 | **LSP wire methods** | **76 / ~80 — ~95%** | `SUPPORTED_METHODS` in `packages/ts_lsp_server/`; LSP 3.17 sync/lifecycle complete, notebook + window meta wired, workspaceSymbol/resolve + $/progress + codeAction/resolve + workspace/textDocumentContent (LSP 3.18) |
 | **Bun runtime — source files present** | **1,449 files in `packages/runtime/src/`** | live count from `scripts/measure-parity.sh --values`; audited Bun baseline is 1,193 files |
@@ -168,24 +166,17 @@ reproduction commands. Expansion and optimization work is tracked in
 
 | Measurement | Pass rate | Notes |
 |---|---|---|
-| **Coarse mode (5,907 cases)** | **5,907 / 5,907 — 100%** | Saturated; remains the per-PR merge gate. |
-| **Exact mode (byte-for-byte)** | **2,960 / 2,960 — 100% in the revalidated leading prefix** | Compared with canonical tsgo-generated baselines in one full run (`scripts/ts-conformance-exact.sh 0 2960 200`). The remaining 2,947 cases await refresh. |
-| Baseline-aware exact categories (19 folders, 586 cases) | 586 / 586 — 100% | `apparentType`, `bestCommonType`, `recursiveTypes`, `typeInference`, `keyof`, `conditional`, `instanceOf`, `widenedTypes`, `specifyingTypes`, `primitives`, `any`, `import`, `uniqueSymbol`, `namedTypes`, `localTypes`, `forAwait`, `unknown`, `witness`, `typeAliases`, `asyncGenerators`. |
-| Named-category exact survey (4 folders, 86 cases) | 86 / 86 — 100% | `assignmentCompatibility` 70/70, `comparable` 13/13, `inOperator` 2/2, `stringLiteral` 1/1. |
-| Smoke (3 folders, 16 cases) | 16 / 16 — 100% | Per-PR fast path. |
+| **Coarse mode (5,907 cases)** | Withdrawn; actual corpus revalidation pending | Previous expected-result overrides invalidate the earlier aggregate. |
+| **Exact mode (byte-for-byte)** | Withdrawn; prior harness fabricated matches | Rerun against pinned baselines without expected-output substitutions. |
+| Baseline-aware exact categories (19 folders, 586 cases) | Previous count withdrawn | `apparentType`, `bestCommonType`, `recursiveTypes`, `typeInference`, `keyof`, `conditional`, `instanceOf`, `widenedTypes`, `specifyingTypes`, `primitives`, `any`, `import`, `uniqueSymbol`, `namedTypes`, `localTypes`, `forAwait`, `unknown`, `witness`, `typeAliases`, `asyncGenerators`. |
+| Named-category exact survey (4 folders, 86 cases) | Previous count withdrawn | `assignmentCompatibility` 70/70, `comparable` 13/13, `inOperator` 2/2, `stringLiteral` 1/1. |
+| Smoke (3 folders, 16 cases) | Previous count withdrawn | Per-PR fast path. |
 | TS diagnostic-code catalogue | **1,620 / 2,079 emitted — ~77.9%** | Mirrors the full upstream code → message table; powers `home-lsp` hover-on-`TS1234`. 459 catalog-only entries remain, but **0 are reachable parity targets** (the reachable subset is complete): ~455 are dead-in-reference + 4 blocked/subsystem-gated; see [Diagnostic code status](/docs/TS_DIAGNOSTIC_CODE_STATUS) + [Diagnostic reachability](/docs/TS_DIAGNOSTIC_REACHABILITY). |
 
-**Exact mode by bounded slice** (current audit; only results observed against
-the current tree are published):
-
-| Slice | Pass rate | % |
-|---|---|---|
-| `START=0   LIMIT=1000` | 1,000 / 1,000 | 100% |
-| `START=1000 LIMIT=1000` | 1,000 / 1,000 | 100% |
-| `START=2000 LIMIT=1000` | 960 / 960 run so far (cases 2,000–2,959); the last 40 pending | — |
-| `START=3000 LIMIT=1000` | pending revalidation | — |
-| `START=4000 LIMIT=1000` | pending revalidation | — |
-| `START=5000 LIMIT=907`  | pending revalidation | — |
+**Exact mode by bounded slice:** earlier green slice counts are withdrawn.
+Retained historical logs document what the old harness reported; they do not
+prove faithful compiler diagnostics. Publish new counts only after a fresh run
+with result substitutions and baseline-derived output removed.
 
 Reproduce locally:
 

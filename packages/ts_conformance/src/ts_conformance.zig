@@ -888,7 +888,7 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
     // true source of duplicate diagnostics belongs in the checker
     // and is tracked as a §3.A follow-up; harness-side dedup is the
     // safe first cut.
-    const exact_mode = c.expected_errors.len > 0;
+    const exact_mode = true;
     const directive_offset: u32 = if (exact_mode) countLeadingDirectiveLines(c.source) else 0;
     // For multi-file fixtures (`// @filename: foo.ts` markers split a
     // single file into virtual sub-files), upstream `.errors.txt`
@@ -952,7 +952,7 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
             const total_strip = m.line + m.extra_strip;
             diag_line = if (pos.line > total_strip) pos.line - total_strip else 1;
         }
-        var code = if (d.code != 0) d.code else mapPhaseToCode(d.phase);
+        const code = if (d.code != 0) d.code else mapPhaseToCode(d.phase);
         const prefix: ts_diagnostics.Diagnostic.CodePrefix = switch (d.code_prefix) {
             .TS => .TS,
             .HM => .HM,
@@ -968,19 +968,7 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
                 diag_col = col_pair.col;
             }
         }
-        var message = d.message;
-        if (shouldDropTsgoOmittedOutFileAmbientDiagnostic(
-            code,
-            diag_file,
-            directive_source,
-            c.expected_errors,
-        )) continue;
-        if (exact_mode) {
-            if (baselineObjectFewTypesRoot(c.expected_errors, diag_file, diag_line, diag_col, code, d.chain)) |root_message| {
-                code = 2696;
-                message = root_message;
-            }
-        }
+        const message = d.message;
         const fdiag: ts_diagnostics.Diagnostic = .{
             .file = if (d.is_global) "" else diag_file,
             .line = diag_line,
@@ -993,20 +981,6 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
         };
         const formatted = try ts_diagnostics.formatDefault(gpa, fdiag);
         defer gpa.free(formatted);
-        // Mirror the baseline-side filter for option-validation
-        // diagnostics on the actual stream: TS5101 / TS5107
-        // (module=AMD/System/UMD) are emitted by the driver but the
-        // baseline drops them via `isOptionValidationDiagnostic`, so
-        // comparing them in apples-to-apples mode requires the same
-        // drop here. Without it, exact-mode would diff against an
-        // empty header set and the rescue path (`hasHarnessModeled…`)
-        // would have to keep covering for them indefinitely. The
-        // expected-clean variant (`expected_errors` is empty because
-        // `baselineHasOnlyOptionDeprecation` filtered the only
-        // baseline entry, or because the fixture genuinely has no
-        // baseline) shares the same need: any spurious TS5107 in the
-        // actual stream must drop so the empty/empty comparison wins.
-        if (shouldDropActualOptionValidationDiagnostic(formatted, c.expected_errors)) continue;
         if (exact_mode and exactDiagnosticShouldDedup(code)) {
             const gop = try seen_keys.getOrPut(gpa, formatted);
             if (gop.found_existing) continue;
@@ -1088,21 +1062,18 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
         try actual.appendSlice(gpa, e.line);
         try actual.append(gpa, '\n');
     }
-    try appendMissingNoPositionLibEs5Headers(gpa, c.expected_errors, &actual, &actual_count);
 
     // Strip trailing newlines for stable comparison.
     const expected_trimmed = trimRightNewlines(c.expected_errors);
-    const use_named_exact_replacement = compilerCorpusUsesNamedExactDiagnosticReplacement(c.name);
-    const actual_trimmed = if (use_named_exact_replacement) expected_trimmed else trimRightNewlines(actual.items);
+    const actual_trimmed = trimRightNewlines(actual.items);
     const expected_count = countLines(expected_trimmed);
-    const reported_actual_count: u32 = if (use_named_exact_replacement) expected_count else actual_count;
 
     if (std.mem.eql(u8, actual_trimmed, expected_trimmed)) {
         return .{
             .name = c.name,
             .outcome = .passed,
             .expected_diag_count = expected_count,
-            .actual_diag_count = reported_actual_count,
+            .actual_diag_count = actual_count,
         };
     }
 
@@ -1112,7 +1083,7 @@ pub fn run(gpa: std.mem.Allocator, c: Case) !Result {
         .outcome = .failed,
         .detail = detail,
         .expected_diag_count = expected_count,
-        .actual_diag_count = reported_actual_count,
+        .actual_diag_count = actual_count,
     };
 }
 
@@ -1582,89 +1553,15 @@ fn freeStringSet(gpa: std.mem.Allocator, set: *std.StringHashMapUnmanaged(void))
     set.deinit(gpa);
 }
 
-/// Predicate: does this case benefit from routing through `ts_program`?
-///
-/// Expected-error virtual fixtures need TypeScript's per-file parse
-/// semantics: `@filename` boundaries reset scanner/parser state,
-/// module classification, and ASI context. The legacy single-source
-/// path still handles single-file cases, but virtual expected-error
-/// cases route through `ts_program` so pure parser fixtures and
-/// resolver-driven fixtures both see real file boundaries.
+/// Each upstream virtual file is a physical compilation unit. Routing is
+/// determined only by input layout, independently of names or expected output.
 fn shouldRouteThroughProgram(c: Case) bool {
     if (c.raw_source.len == 0) return false;
-    if (caseNeedsProgramRouteByName(c.name)) return true;
-    if (rawSourceHasShadowedDeclarationRoot(c.raw_source)) return true;
-    // Relative module augmentation is inherently program-wide, including
-    // accepted-clean fixtures. The concatenated path cannot synthesize the
-    // augmentation summary consumed by prototype writes and importers.
-    if (rawSourceHasRelativeModuleAugmentation(c.raw_source)) return true;
-    // Only route fixtures with explicit expected diagnostics. Fixtures
-    // upstream treats as clean (no `.errors.txt` baseline) work today
-    // via the legacy concatenated source — the checker sees all
-    // virtual sections in one buffer and resolves modules through its
-    // own virtual-section scan. Routing those through `ts_program`
-    // splits each file into its own compilation, which loses the
-    // shared-source ambient resolution and surfaces brand-new
-    // "Cannot find module" diagnostics they should not have.
-    if (c.expected_errors.len == 0) {
-        if (rawSourceHasTypeReferenceProgramRoute(c.raw_source)) return true;
-        // Exception: a clean fixture whose `node_modules/<pkg>/
-        // package.json` points `types`/`typings` at an ABSOLUTE path
-        // (the harness-mounted-lib shape, e.g.
-        // `"types": "/.ts/typescript.d.ts"`) cannot resolve that bare
-        // import on the legacy concatenated path — the non-code
-        // package.json section is stripped before the checker sees it,
-        // so the import surfaces a spurious TS2307. The program path
-        // rebuilds the full VFS (including the synthesized declaration
-        // stub) and resolves it correctly. Mirrors `APISample_*`.
-        if (rawSourceHasAbsoluteTypesPackageJson(c.raw_source)) return true;
-        // Clean package self-name fixtures with `exports` pointing at
-        // emitted `outDir`/`declarationDir` files need the full VFS and
-        // tsconfig-derived resolver options. The legacy path strips
-        // package.json/tsconfig and then reports a spurious TS2307 for
-        // the package's own name.
-        if (rawSourceHasProjectSelfNameOutputMapping(c.raw_source)) return true;
-        if (rawSourceHasProjectImportsOutputMapping(c.raw_source)) return true;
-        // Clean virtual fixtures with declaration files under an
-        // ancestor node_modules directory and bare imports need the
-        // resolver-backed VFS. The legacy concatenated path cannot
-        // model the containing-file-specific node_modules walk, so it
-        // reports spurious TS2307s. Mirrors cachedModuleResolution2.
-        if (rawSourceHasNodeModulesDeclarationAndBareImport(c.raw_source)) return true;
-        // Shebang legality is per physical source file. A clean
-        // `@filename:` fixture with `#!` at the top of a virtual file
-        // must be parsed through the program path so scanner byte-zero
-        // state resets for every section.
-        if (rawSourceHasVirtualFileShebang(c.raw_source)) return true;
-        return false;
+    var lines = std.mem.splitScalar(u8, c.raw_source, '\n');
+    while (lines.next()) |line| {
+        if (virtualFilename(std.mem.trim(u8, line, " \t\r")) != null) return true;
     }
-    if (rawSourceHasAmbientExternalModuleAndBareImport(c.raw_source)) return true;
-    if (rawSourceHasCommonJsNamedExportsAndRelativeImport(c.raw_source)) return true;
-    if (rawSourceHasExplicitUmdDependency(c.raw_source)) return true;
-    if (!rawSourceHasNonCodeMarker(c.raw_source) and rawSourceHasJsLikeCodeMarker(c.raw_source)) return false;
-    // Pure-code multi-file fixtures (only `.ts` / `.tsx` / `.d.ts`,
-    // no non-code package.json / tsconfig / node_modules markers) work
-    // BETTER through the legacy concatenated path because cross-file
-    // ambient declarations (`declare namespace JSX { ... }` in a
-    // sibling `react.d.ts` virtual section) stay visible to the
-    // checker — `virtualSectionIsDeclarationFile` still scopes
-    // per-section behavior via the `@filename:` markers. Splitting
-    // these through `ts_program` lost that visibility and made
-    // `tsxAttributeResolution10/11/12` and similar fixtures fall back
-    // to `any`-typed JSX targets, suppressing the structural TS2322
-    // tsc expects at the failing attribute.
-    if (!rawSourceHasNonCodeMarker(c.raw_source)) {
-        if (parserSuiteNeedsVirtualFileBoundaries(c)) return true;
-        if (rawSourceHasTypeReferenceProgramRoute(c.raw_source)) return true;
-        if ((directiveBool(c.raw_source, "declaration") orelse false) and
-            rawSourceHasNodeModulesCodeMarker(c.raw_source)) return true;
-        return false;
-    }
-    return true;
-}
-
-fn parserSuiteNeedsVirtualFileBoundaries(c: Case) bool {
-    return std.mem.startsWith(u8, c.name, "parser.") and rawSourceHasMultipleCodeMarkers(c.raw_source);
+    return false;
 }
 
 fn rawSourceHasVirtualFileShebang(raw: []const u8) bool {
@@ -4080,7 +3977,7 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
     // Format diagnostics in tsc's default `(file, line, col): code: msg`
     // shape — same renderer as the legacy path so EXACT-mode baseline
     // comparison stays apples-to-apples.
-    const exact_mode = c.expected_errors.len > 0;
+    const exact_mode = true;
     var actual: std.ArrayListUnmanaged(u8) = .empty;
     defer actual.deinit(gpa);
     var actual_lines: std.ArrayListUnmanaged(ActualDiagnosticLine) = .empty;
@@ -4195,15 +4092,6 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
                 if (cannotFindNameDiagnosticName(message)) |missing_name| {
                     if (script_globals.hasValue(missing_name)) {
                         continue;
-                    } else if (std.mem.eql(u8, missing_name, "SCRIPT") and
-                        std.mem.indexOf(u8, c.expected_errors, "Cannot find name 'SCRIPT'. Did you mean 'WScript'?") != null)
-                    {
-                        code = 2552;
-                        rewritten_message = try gpa.dupe(
-                            u8,
-                            "Cannot find name 'SCRIPT'. Did you mean 'WScript'?",
-                        );
-                        message = rewritten_message.?;
                     } else if (script_globals.isTypeOnly(missing_name)) {
                         code = 2693;
                         rewritten_message = try std.fmt.allocPrint(
@@ -4223,18 +4111,6 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
             // script-global table used for TS2304 suppression proves that
             // this diagnostic is invalid.
             if (code == 2874 and prefix == .TS and script_globals.hasValue("React")) continue;
-            if (shouldDropTsgoOmittedOutFileAmbientDiagnostic(
-                code,
-                pf.diag_path,
-                directive_source,
-                c.expected_errors,
-            )) continue;
-            if (exact_mode) {
-                if (baselineObjectFewTypesRoot(c.expected_errors, pf.diag_path, diag_line, diag_col, code, d.chain)) |root_message| {
-                    code = 2696;
-                    message = root_message;
-                }
-            }
             const fdiag: ts_diagnostics.Diagnostic = .{
                 .file = if (d.is_global) "" else pf.diag_path,
                 .line = diag_line,
@@ -4246,20 +4122,6 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
                 .span_len = d.span_len,
             };
             const formatted = try ts_diagnostics.formatDefault(gpa, fdiag);
-            // Mirror the baseline-side option-validation filter on the
-            // program path too — the driver emits TS5101 / TS5107 per
-            // file now, but the baseline drops them in
-            // `isOptionValidationDiagnostic`. See the matching guard
-            // in the legacy `compileSource` path. The expected-clean
-            // variant (no expected_errors lines, because
-            // `baselineHasOnlyOptionDeprecation` filtered them out)
-            // also needs the actual stream cleaned of these
-            // option-validation entries so the empty/empty compare
-            // succeeds.
-            if (shouldDropActualOptionValidationDiagnostic(formatted, c.expected_errors)) {
-                gpa.free(formatted);
-                continue;
-            }
             if (exact_mode) {
                 const gop = try seen_keys.getOrPut(gpa, formatted);
                 if (gop.found_existing) {
@@ -4297,20 +4159,17 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         try actual.appendSlice(gpa, line.text);
         try actual.append(gpa, '\n');
     }
-    try appendMissingNoPositionLibEs5Headers(gpa, c.expected_errors, &actual, &actual_count);
 
     const expected_trimmed = trimRightNewlines(c.expected_errors);
-    const use_named_exact_replacement = compilerCorpusUsesNamedExactDiagnosticReplacement(c.name);
-    const actual_trimmed = if (use_named_exact_replacement) expected_trimmed else trimRightNewlines(actual.items);
+    const actual_trimmed = trimRightNewlines(actual.items);
     const expected_count = countLines(expected_trimmed);
-    const reported_actual_count: u32 = if (use_named_exact_replacement) expected_count else actual_count;
 
     if (std.mem.eql(u8, actual_trimmed, expected_trimmed)) {
         return Result{
             .name = c.name,
             .outcome = .passed,
             .expected_diag_count = expected_count,
-            .actual_diag_count = reported_actual_count,
+            .actual_diag_count = actual_count,
         };
     }
 
@@ -4320,2582 +4179,8 @@ fn runProgram(gpa: std.mem.Allocator, c: Case) !?Result {
         .outcome = .failed,
         .detail = detail,
         .expected_diag_count = expected_count,
-        .actual_diag_count = reported_actual_count,
+        .actual_diag_count = actual_count,
     };
-}
-
-fn appendMissingNoPositionLibEs5Headers(
-    gpa: std.mem.Allocator,
-    expected_errors: []const u8,
-    actual: *std.ArrayListUnmanaged(u8),
-    actual_count: *u32,
-) !void {
-    const prefix = "lib.es5.d.ts(--,--): error ";
-    var expected_lines = std.mem.splitScalar(u8, expected_errors, '\n');
-    while (expected_lines.next()) |line_with_cr| {
-        const line = std.mem.trim(u8, line_with_cr, "\r");
-        if (!std.mem.startsWith(u8, line, prefix)) continue;
-        const expected_count = countExactLineOccurrences(expected_errors, line);
-        var actual_seen = countExactLineOccurrences(actual.items, line);
-        while (actual_seen < expected_count) : (actual_seen += 1) {
-            try actual.appendSlice(gpa, line);
-            try actual.append(gpa, '\n');
-            actual_count.* += 1;
-        }
-    }
-}
-
-fn countExactLineOccurrences(haystack: []const u8, needle: []const u8) u32 {
-    var count: u32 = 0;
-    var lines = std.mem.splitScalar(u8, haystack, '\n');
-    while (lines.next()) |line_with_cr| {
-        const line = std.mem.trim(u8, line_with_cr, "\r");
-        if (std.mem.eql(u8, line, needle)) count += 1;
-    }
-    return count;
-}
-
-test "conformance: synthesizes all no-position lib.es5 diagnostic headers" {
-    const expected =
-        "case.ts(1,1): error TS2411: fixture error\n" ++
-        "lib.es5.d.ts(--,--): error TS2411: first lib error\n" ++
-        "lib.es5.d.ts(--,--): error TS2411: second lib error";
-    var actual: std.ArrayListUnmanaged(u8) = .empty;
-    defer actual.deinit(std.testing.allocator);
-    try actual.appendSlice(std.testing.allocator, "case.ts(1,1): error TS2411: fixture error\n");
-    var count: u32 = 1;
-
-    try appendMissingNoPositionLibEs5Headers(std.testing.allocator, expected, &actual, &count);
-
-    try std.testing.expectEqual(@as(u32, 3), count);
-    try std.testing.expectEqualStrings(
-        expected,
-        trimRightNewlines(actual.items),
-    );
-}
-
-fn compilerCorpusUsesNamedExactDiagnosticReplacement(name: []const u8) bool {
-    const names = [_][]const u8{
-        "dissallowSymbolAsWeakType",
-        "jsxClassAttributeResolution",
-        "optionalPropertiesSyntax",
-        "bases",
-        "superCallInStaticMethod",
-        "amdDependencyCommentName3",
-        "overloadOnConstNoAnyImplementation2",
-        "esNextWeakRefs_IterableWeakMap",
-        "indexSignatureTypeCheck2",
-        "compareTypeParameterConstrainedByLiteralToLiteral",
-        "reachabilityChecks3",
-        "nonInferrableTypePropagation1",
-        "arrayBestCommonTypes",
-        "subclassThisTypeAssignable01",
-        "exportDefaultTypeAndFunctionOverloads",
-        "letDeclarations-scopes-duplicates5",
-        "jsElementAccessNoContextualTypeCrash",
-        "nameCollisions",
-        "unclosedExportClause01",
-        "moduleAssignmentCompat4",
-        "outModuleConcatUmd",
-        "destructuringAssignmentWithDefault2",
-        "APISample_jsdoc",
-        "arrowFunctionErrorSpan",
-        "varianceRepeatedlyPropegatesWithUnreliableFlag",
-        "pathMappingBasedModuleResolution2_classic",
-        "incorrectNumberOfTypeArgumentsDuringErrorReporting",
-        "dottedModuleName",
-        "unusedTypeParameters_infer",
-        "arrayFind",
-        "jsFileCompilationReturnTypeSyntaxOfFunction",
-        "unionOfClassCalls",
-        "jsFileCompilationBindDeepExportsAssignment",
-        "discriminantsAndPrimitives",
-        "constWithNonNull",
-        "arrayAssignmentTest2",
-        "jsxNamespacePrefixInNameReact",
-        "inheritance1",
-        "inferFromGenericFunctionReturnTypes2",
-        "unusedVariablesinForLoop3",
-        "implementsIncorrectlyNoAssertion",
-        "aliasOnMergedModuleInterface",
-        "unusedSingleParameterInContructor",
-        "constEnumExternalModule",
-        "assignmentCompatability35",
-        "parseCommaSeparatedNewlineNew",
-        "es2018ObjectAssign",
-        "duplicateObjectLiteralProperty",
-        "implicitAnyFunctionInvocationWithAnyArguements",
-        "recursiveConditionalCrash3",
-        "pathsValidation5",
-        "multipleExportAssignmentsInAmbientDeclaration",
-        "contextualSignatureInArrayElementLibEs2015",
-        "destructuringTuple",
-        "contextualSignatureInstatiationCovariance",
-        "restParameterAssignmentCompatibility",
-        "import_unneeded-require-when-referenecing-aliased-type-throug-array",
-        "enumWithNonLiteralStringInitializer",
-        "genericWithOpenTypeParameters1",
-        "moduleWithNoValuesAsType",
-        "aliasDoesNotDuplicateSignatures",
-        "genericFunduleInModule2",
-        "untypedModuleImport_withAugmentation2",
-        "qualify",
-        "callOverloads5",
-        "unusedTypeParameters_templateTag2",
-        "compositeWithNodeModulesSourceFile",
-        "callExpressionWithMissingTypeArgument1",
-        "classFieldSuperAccessible",
-        "amdModuleConstEnumUsage",
-        "contextualTypeAny",
-        "invalidConstraint1",
-        "enumMemberResolution",
-        "unusedImports12",
-        "pathMappingBasedModuleResolution3_node",
-        "moduleCrashBug1",
-        "unusedSingleParameterInFunctionDeclaration",
-        "sourceMapValidationDestructuringParameterNestedObjectBindingPatternDefaultValues",
-        "interfaceImplementation7",
-        "exhaustiveSwitchImplicitReturn",
-        "es5-commonjs7",
-        "sourceMapValidationForIn",
-        "objectLiteralIndexerErrors",
-        "unionOfArraysFilterCall",
-        "subtypeReductionUnionConstraints",
-        "reservedNameOnInterfaceImport",
-        "parserUnparsedTokenCrash2",
-        "betterErrorForUnionCall",
-        "partialDiscriminatedUnionMemberHasGoodError",
-        "elaboratedErrorsOnNullableTargets01",
-        "assignmentCompatability44",
-        "staticAnonymousTypeNotReferencingTypeParameter",
-        "mergeWithImportedType",
-        "constIndexedAccess",
-        "moduleResolutionPackageIdWithRelativeAndAbsolutePath",
-        "classImplementsImportedInterface",
-        "conditionalTypeDiscriminatingLargeUnionRegularTypeFetchingSpeedReasonable",
-        "noErrorUsingImportExportModuleAugmentationInDeclarationFile1",
-        "genericRestArgs",
-        "enumPropertyAccess",
-        "blockScopedBindingUsedBeforeDef",
-        "augmentedTypesModules",
-        "namespacesWithTypeAliasOnlyExportsMerge",
-        "genericCallWithinOwnBodyCastTypeParameterIdentity",
-        "duplicateIdentifierRelatedSpans6",
-        "typeParameterEquality",
-        "exportAssignedNamespaceIsVisibleInDeclarationEmit",
-        "inferObjectTypeFromStringLiteralToKeyof",
-        "tsxStatelessComponentDefaultProps",
-        "innerAliases2",
-        "genericConstraint2",
-        "classIndexer5",
-        "duplicateClassElements",
-        "implicitIndexSignatures",
-        "fileReferencesWithNoExtensions",
-        "expandoFunctionSymbolProperty",
-        "unknownTypeErrors",
-        "thislessFunctionsNotContextSensitive2",
-        "unusedLocalsAndParametersTypeAliases2",
-        "intersectionsAndOptionalProperties",
-        "symlinkedWorkspaceDependenciesNoDirectLinkPeerGeneratesNonrelativeName",
-        "fixCrashAliasLookupForDefauledImport",
-        "inferTypePredicates",
-        "crashInEmitTokenWithComment",
-        "jsxImportSourceNonPragmaComment",
-        "typeParameterDiamond3",
-        "bigintArbirtraryIdentifier",
-        "staticClassProps",
-        "keyofDoesntContainSymbols",
-        "jsdocRestParameter",
-        "unusedMultipleParameter1InContructor",
-        "unusedNamespaceInNamespace",
-        "typeGuardConstructorNarrowPrimitivesInUnion",
-        "duplicateIdentifierDifferentSpelling",
-        "setMethods",
-        "augmentedTypesClass",
-        "unusedDestructuringParameters",
-        "moduleResolutionWithSymlinks_preserveSymlinks",
-        "destructuringUnspreadableIntoRest",
-        "contextualTyping4",
-        "blockScopedEnumVariablesUseBeforeDef",
-        "commonJsImportClassExpression",
-        "unusedPrivateMethodInClass1",
-        "extendPrivateConstructorClass",
-        "indexerSignatureWithRestParam",
-        "exportSpecifierAndLocalMemberDeclaration",
-        "thisInFunctionCallJs",
-        "jsxNamespaceNoElementChildrenAttributeReactJsx",
-        "duplicateLocalVariable3",
-        "duplicateTypeParameters3",
-        "ambientClassDeclarationWithExtends",
-        "overloadOnConstantsInvalidOverload1",
-        "captureSuperPropertyAccessInSuperCall01",
-        "numericEnumMappedType",
-        "topLevelLambda4",
-        "taggedTemplatesWithIncompleteTemplateExpressions5",
-        "metadataImportType",
-        "sourceMap-LineBreaks",
-        "inferStringLiteralUnionForBindingElement",
-        "narrowingOfQualifiedNames",
-        "useBeforeDeclaration_jsx",
-        "systemModuleConstEnumsSeparateCompilation",
-        "argumentsPropertyNameInJsMode2",
-        "declarationEmitBindingPatterns",
-        "assignmentToAnyArrayRestParameters",
-        "controlFlowFinallyNoCatchAssignments",
-        "assignmentCompatability40",
-        "enumAssignmentCompat6",
-        "typeGuardNarrowByMutableUntypedField",
-        "constructorOverloads4",
-        "subSubClassCanAccessProtectedConstructor",
-        "declarationFilesWithTypeReferences2",
-        "exportImport",
-        "privacyClassExtendsClauseDeclFile",
-        "objectCreate2",
-        "isolatedDeclarationsRequiresDeclaration",
-        "controlFlowInstanceofWithSymbolHasInstance",
-        "evolvingArrayResolvedAssert",
-        "useBeforeDeclaration_propertyAssignment",
-        "inferrenceInfiniteLoopWithSubtyping",
-        "overloadOnConstNoStringImplementation2",
-        "narrowByClauseExpressionInSwitchTrue3",
-        "switchStatementsWithMultipleDefaults",
-        "multiImportExport",
-        "varArgParamTypeCheck",
-        "noCrashOnImportShadowing",
-        "requiredMappedTypeModifierTrumpsVariance",
-        "jsxIntrinsicElementsCompatability",
-        "contextualTypeAppliedToVarArgs",
-        "errorRecoveryWithDotFollowedByNamespaceKeyword",
-        "mappedTypeInferenceCircularity",
-        "tslibReExportHelpers2",
-        "indexedAccessAndNullableNarrowing",
-        "typeParameterWithInvalidConstraintType",
-        "unusedVariablesinForLoop2",
-        "spreadUnionPropOverride",
-        "promisesWithConstraints",
-        "varianceProblingAndZeroOrderIndexSignatureRelationsAlign2",
-        "inferFromGenericFunctionReturnTypes3",
-        "overloadResolutionTest1",
-        "recursiveBaseConstructorCreation3",
-        "indexedAccessWithVariableElement",
-        "selfRef",
-        "pathsValidation4",
-        "unknownSymbols1",
-        "declarationEmitDestructuringArrayPattern5",
-        "moduleResolutionWithExtensions_notSupported",
-        "nestedUnaryExpressionHang",
-        "checkJsTypeDefNoUnusedLocalMarked",
-        "iterableTReturnTNext",
-        "fatarrowfunctionsOptionalArgs",
-        "divergentAccessorsTypes8",
-        "pathMappingBasedModuleResolution7_classic",
-        "blockScopedEnumVariablesUseBeforeDef_preserve",
-        "slightlyIndirectedDeepObjectLiteralElaborations",
-        "varArgsOnConstructorTypes",
-        "tupleTypes",
-        "exportDefaultInterfaceAndValue",
-        "callOverloads4",
-        "exportAsNamespace_augment",
-        "unicodeIdentifierNames",
-        "implementClausePrecedingExtends",
-        "promiseTry",
-        "restParameterWithBindingPattern3",
-        "tslibNotFoundDifferentModules",
-        "destructuringInitializerContextualTypeFromContext",
-        "staticInstanceResolution5",
-        "noImplicitReturnsExclusions",
-        "mappedTypeNoTypeNoCrash",
-        "invalidUseOfTypeAsNamespace",
-        "checkJsFiles6",
-        "importAssertionsDeprecatedIgnored",
-        "contextualTypingWithFixedTypeParameters1",
-        "jsxFactoryQualifiedNameWithEs5",
-        "externalModuleExportingGenericClass",
-        "contravariantOnlyInferenceFromAnnotatedFunctionJs",
-        "tryCatchFinallyControlFlow",
-        "globalIsContextualKeyword",
-        "tooFewArgumentsInGenericFunctionTypedArgument",
-        "genericSpecializations1",
-        "symbolLinkDeclarationEmitModuleNamesImportRef",
-        "genericObjectSpreadResultInSwitch",
-        "unusedLocalsAndObjectSpread",
-        "assignToModule",
-        "functionCall11",
-        "interfaceImplementation6",
-        "decoratorMetadataConditionalType",
-        "moduleAugmentationExtendAmbientModule2",
-        "unusedVariablesinModules1",
-        "instanceofOperator",
-        "pathMappingBasedModuleResolution2_node",
-        "deepElaborationsIntoArrowExpressions",
-        "doubleUnderscoreExportStarConflict",
-        "importAssertionsDeprecated",
-        "incompatibleExports2",
-        "tsxResolveExternalModuleExportsTypes",
-        "typeAssignabilityErrorMessage",
-        "checkingObjectDefinePropertyOnFunctionNonexistentPropertyNoCrash1",
-        "duplicateIdentifierRelatedSpans7",
-        "pathMappingBasedModuleResolution_rootImport_aliasWithRoot_differentRootTypes",
-        "typeParameterExplicitlyExtendsAny",
-        "privacyFunctionCannotNameParameterTypeDeclFile",
-        "moduleAugmentationCollidingNamesInAugmentation1",
-        "es6ImportDefaultBindingFollowedWithNamedImport",
-        "dottedModuleName2",
-        "requireOfJsonFileWithModuleEmitNone",
-        "pathMappingWithoutBaseUrl1",
-        "scopeCheckExtendedClassInsidePublicMethod2",
-        "interMixingModulesInterfaces1",
-        "aliasesInSystemModule2",
-        "emitSkipsThisWithRestParameter",
-        "thislessFunctionsNotContextSensitive3",
-        "symlinkedWorkspaceDependenciesNoDirectLinkGeneratesNonrelativeName",
-        "jsFileCompilationBindMultipleDefaultExports",
-        "listFailure",
-        "classExtendsInterface",
-        "capturedLetConstInLoop14",
-        "systemDefaultImportCallable",
-        "indexTypeCheck",
-        "jsxImportForSideEffectsNonExtantNoError",
-        "inferParameterWithMethodCallInitializer",
-        "unusedInterfaceinNamespace1",
-        "typeParameterDiamond2",
-        "typeGuardNarrowsIndexedAccessOfKnownProperty10",
-        "declarationEmitUsingTypeAlias1",
-        "classSideInheritance3",
-        "recursiveComplicatedClasses",
-        "genericTupleWithSimplifiableElements",
-        "circularBaseConstraint",
-        "collisionExportsRequireAndInternalModuleAlias",
-        "typeArgumentDefaultUsesConstraintOnCircularDefault",
-        "bom-utf16le",
-        "genericInheritedDefaultConstructors",
-        "jsxExcessPropsAndAssignability",
-        "pathMappingBasedModuleResolution_rootImport_aliasWithRoot",
-        "es6ImportWithoutFromClauseInEs5",
-        "functionWithThrowButNoReturn1",
-        "declarationMapsWithoutDeclaration",
-        "spreadExpressionContextualType",
-        "strictModeReservedWordInImportEqualDeclaration",
-        "mappedTypeInferenceToMappedType",
-        "contextualTyping5",
-        "superPropertyAccess2",
-        "optionsOutAndNoModuleGen",
-        "lateBoundAssignmentCandidateJS3",
-        "exportEqualsDefaultProperty",
-        "ctsFileInEsnextHelpers",
-        "assignmentCompatability24",
-        "thisInPropertyBoundDeclarations",
-        "renamingDestructuredPropertyInFunctionType",
-        "privateFieldAssignabilityFromUnknown",
-        "duplicateLocalVariable2",
-        "privacyImportParseErrors",
-        "correctOrderOfPromiseMethod",
-        "circularInlineMappedGenericTupleTypeNoCrash",
-        "letDeclarations-scopes",
-        "namedImportNonExistentName",
-        "exportAsNamespaceConflict",
-        "incorrectRecursiveMappedTypeConstraint",
-        "argumentsSpreadRestIterables",
-        "errorWithSameNameType",
-        "taggedTemplatesWithIncompleteTemplateExpressions4",
-        "internalAliasClassInsideLocalModuleWithoutExportAccessError",
-        "noUnusedLocals_writeOnlyProperty",
-        "declarationEmitRecursiveConditionalAliasPreserved",
-        "assignmentCompatability10",
-        "readonlyTupleAndArrayElaboration",
-        "genericAssignmentCompatWithInterfaces1",
-        "genericCloneReturnTypes2",
-        "grammarAmbiguities1",
-        "moduleAugmentationInDependency2",
-        "ambientClassDeclaredBeforeBase",
-        "enumAssignmentCompat7",
-        "assignmentCompatability41",
-        "importedEnumMemberMergedWithExportedAliasIsError",
-        "noImplicitReturnsInAsync2",
-        "referenceSatisfiesExpression",
-        "missingCloseParenStatements",
-        "classExtendsInterface_not",
-        "duplicateIdentifierEnum",
-        "typeofSimple",
-        "declarationFilesWithTypeReferences3",
-        "moduleVisibilityTest3",
-        "exportStarFromEmptyModule",
-        "tripleSlashInCommentNotParsed",
-        "constDeclarations-validContexts",
-        "arrayDestructuringInSwitch1",
-        "tsxInferenceShouldNotYieldAnyOnUnions",
-        "prettyFileWithErrorsAndTabs",
-        "functionAndPropertyNameConflict",
-        "letAsIdentifierInStrictMode",
-        "noCheckRequiresEmitDeclarationOnly",
-        "noImplicitAnyParametersInAmbientFunctions",
-        "multipleBaseInterfaesWithIncompatibleProperties2",
-        "modulePreserve5",
-        "nodeNextPackageSelfNameWithOutDirDeclDir",
-        "jsFileCompilationModuleSyntax",
-        "typeVariableConstraintIntersections",
-        "readonlyMembers",
-        "staticsInConstructorBodies",
-        "indexedAccessPrivateMemberOfGenericConstraint",
-        "superAccess",
-        "deleteExpressionMustBeOptional_exactOptionalPropertyTypes",
-        "intersectionTypeNormalization",
-        "shadowedFunctionScopedVariablesByBlockScopedOnes",
-        "letDeclarations-invalidContexts",
-        "jsxFragReactReferenceErrors",
-        "checkJsdocTypeTagOnExportAssignment3",
-        "restParamModifier",
-        "substitutionTypeForNonGenericIndexedAccessType",
-        "templateStringsArrayTypeRedefinedInES6Mode",
-        "genericConditionalConstrainedToUnknownNotAssignableToConcreteObject",
-        "implicitConstParameters",
-        "silentNeverPropagation",
-        "conflictingDeclarationsImportFromNamespace2",
-        "moduleAssignmentCompat1",
-        "commonSourceDir2",
-        "destructuringControlFlowNoCrash",
-        "reachabilityChecks6",
-        "superCallFromClassThatDerivesNonGenericTypeButWithTypeArguments1",
-        "tslibMissingHelper",
-        "mergedModuleDeclarationCodeGen2",
-        "commonSourceDirectory_dts",
-        "parseBigInt",
-        "staticOffOfInstance2",
-        "narrowByClauseExpressionInSwitchTrue7",
-        "mappedTypeIndexedAccess",
-        "recursiveInheritance2",
-        "collisionExportsRequireAndAlias",
-        "importNonExportedMember6",
-        "computedPropertyBindingElementDeclarationNoCrash1",
-        "moduleNoneErrors",
-        "constDeclarations-access4",
-        "forwardRefInEnum",
-        "indexSignatureTypeCheck",
-        "functionCall15",
-        "matchReturnTypeInAllBranches",
-        "moduleAugmentationsImports3",
-        "typeArgumentConstraintResolution1",
-        "evalAfter0",
-        "trivialSubtypeReductionNoStructuralCheck",
-        "recursiveTupleTypes2",
-        "moduleKeywordDeprecated",
-        "importInsideModule",
-        "namespacesDeclaration2",
-        "importEqualsError45874",
-        "unknownSymbolOffContextualType1",
-        "commaOperator1",
-        "constDeclarations-scopes",
-        "cachedModuleResolution3",
-        "exportAssignmentEnum",
-        "jsdocBracelessTypeTag1",
-        "excessPropertyErrorForFunctionTypes",
-        "assignmentCompatability9",
-        "noUnusedLocals_selfReference",
-        "contextualSignatureConditionalTypeInstantiationUsingDefault",
-        "es6ImportEqualsExportModuleCommonJsError",
-        "declarationEmitBundleWithAmbientReferences",
-        "exportAssignmentMembersVisibleInAugmentation",
-        "regexpExecAndMatchTypeUsages",
-        "mappedTypeTupleConstraintAssignability",
-        "augmentExportEquals1_1",
-        "multipleClassPropertyModifiersErrors",
-        "moduleSharesNameWithImportDeclarationInsideIt3",
-        "declarationEmitMonorepoBaseUrl",
-        "namespaceNotMergedWithFunctionDefaultExport",
-        "distributiveConditionalTypeConstraints",
-        "isolatedModulesConstEnum",
-        "assignmentNonObjectTypeConstraints",
-        "staticsInAFunction",
-        "implicitAnyAmbients",
-        "cloduleTest1",
-        "jsFileAlternativeUseOfOverloadTag",
-        "taggedTemplateWithoutDeclaredHelper",
-        "invalidUnicodeEscapeSequance",
-        "propertiesAndIndexersForNumericNames",
-        "overEagerReturnTypeSpecialization",
-        "typeGuardConstructorClassAndNumber",
-        "destructuredDeclarationEmit",
-        "declarationEmitExpressionWithNonlocalPrivateUniqueSymbol",
-        "sourceMapValidationDestructuringVariableStatementArrayBindingPatternDefaultValues3",
-        "callOfConditionalTypeWithConcreteBranches",
-        "genericsWithoutTypeParameters1",
-        "strictModeReservedWordInClassDeclaration",
-        "jsxChildrenWrongType",
-        "moduleResolutionWithSuffixes_oneNotFound",
-        "unusedParametersThis",
-        "parseGenericArrowRatherThanLeftShift",
-        "gettersAndSettersErrors",
-        "nonexistentPropertyOnUnion",
-        "jsExtendsImplicitAny",
-        "libTypeScriptOverrideSimple",
-        "moduleInTypePosition1",
-        "typedArraysCrossAssignability01",
-        "mixinPrivateAndProtected",
-        "genericArgumentCallSigAssignmentCompat",
-        "declareAlreadySeen",
-        "inferenceShouldFailOnEvolvingArrays",
-        "checkingObjectWithThisInNamePositionNoCrash",
-        "declarationEmitComputedPropertyNameEnum3",
-        "sourceMap-Comments",
-        "declarationEmitNestedGenerics",
-        "unmetTypeConstraintInJSDocImportCall",
-        "staticMemberOfClassAndPublicMemberOfAnotherClassAssignment",
-        "identityForSignaturesWithTypeParametersSwitched",
-        "isDeclarationVisibleNodeKinds",
-        "implicitAnyDeclareVariablesWithoutTypeAndInit",
-        "assignmentCompatability45",
-        "enumAssignmentCompat3",
-        "interfaceClassMerging",
-        "parametersSyntaxErrorNoCrash1",
-        "decoratorInJsFile",
-        "jsFileFunctionOverloads2",
-        "promiseChaining1",
-        "jsFileCompilationDuplicateVariableErrorReported",
-        "getAndSetNotIdenticalType2",
-        "typeMatch1",
-        "intersectionTypeInference1",
-        "constEnumNoPreserveDeclarationReexport",
-        "internalAliasWithDottedNameEmit",
-        "narrowByInstanceof",
-        "functionOverloads2",
-        "constructorOverloads1",
-        "interfaceMemberValidation",
-        "optionalChainWithInstantiationExpression2",
-        "declFileForInterfaceWithRestParams",
-        "typeVariableConstraintedToAliasNotAssignableToUnion",
-        "styledComponentsInstantiaionLimitNotReached",
-        "noImplicitSymbolToString",
-        "maxConstraints",
-        "isolatedDeclarationLazySymbols",
-        "parseInvalidNames",
-        "arrowFunctionsMissingTokens",
-        "destructuringWithConstraint",
-        "overloadOnConstConstraintChecks1",
-        "collisionExportsRequireAndModule",
-        "declarationEmitComputedPropertyNameSymbol1",
-        "declFileTypeofFunction",
-        "narrowingDestructuring",
-        "declarationEmitClassAccessorsJs1",
-        "computedPropertiesWithSetterAssignment",
-        "unusedPrivateMethodInClass4",
-        "declarationEmitForGlobalishSpecifierSymlink2",
-        "circularBaseTypes",
-        "inheritedConstructorWithRestParams2",
-        "spreadBooleanRespectsFreshness",
-        "uniqueSymbolJs2",
-        "concatClassAndString",
-        "unusedImports2",
-        "recursiveTypeRelations",
-        "pathMappingInheritedBaseUrl",
-        "superCallFromFunction1",
-        "deeplyNestedAssignabilityIssue",
-        "enumConflictsWithGlobalIdentifier",
-        "amdDependencyCommentName2",
-        "unusedSingleParameterInFunctionExpression",
-        "genericCallInferenceUsingThisTypeNoInvalidCacheReuseAfterMappedTypeApplication1",
-        "noImplicitAnyIndexingSuppressed",
-        "mixingStaticAndInstanceOverloads",
-        "importAliasFromNamespace",
-        "genericCallAtYieldExpressionInGenericCall2",
-        "tsxFragmentChildrenCheck",
-        "inheritedStringIndexersFromDifferentBaseTypes2",
-        "decoratorMetadataWithImportDeclarationNameCollision7",
-        "importHelpersNoHelpersForPrivateFields",
-        "errorMessageOnObjectLiteralType",
-        "genericArrayAssignmentCompatErrors",
-        "overrideBaseIntersectionMethod",
-        "nestedCallbackErrorNotFlattened",
-        "constDeclarations-useBeforeDefinition",
-        "declarationEmitForGlobalishSpecifierSymlink",
-        "genericAssignmentCompatOfFunctionSignatures1",
-        "assigningFromObjectToAnythingElse",
-        "classVarianceResolveCircularity2",
-        "asyncIteratorExtraParameters",
-        "esModuleIntersectionCrash",
-        "optionalParamAssignmentCompat",
-        "mapUpsert",
-        "genericFunctionsWithOptionalParameters1",
-        "errorsOnUnionsOfOverlappingObjects01",
-        "inDoesNotOperateOnPrimitiveTypes",
-        "instantiateContextualTypes",
-        "contextualTupleTypeParameterReadonly",
-        "typeOfEnumAndVarRedeclarations",
-        "deprecatedCompilerOptions4",
-        "jsxFragmentWrongType",
-        "accessorWithoutBody1",
-        "assertInWrapSomeTypeParameter",
-        "genericArrayExtenstions",
-        "arrayIterationLibES5TargetDifferent",
-        "typeReferenceDirectives11",
-        "abstractPropertyInConstructor",
-        "fatarrowfunctionsOptionalArgsErrors2",
-        "ipromise4",
-        "superInConstructorParam1",
-        "useBeforeDeclaration_classDecorators.2",
-        "letDeclarations-scopes-duplicates",
-        "identicalGenericConditionalsWithInferRelated",
-        "argumentsObjectIterator03_ES5",
-        "enumLiteralAssignableToEnumInsideUnion",
-        "typeArgInference2WithError",
-        "classImplementsPrimitive",
-        "declarationEmitInvalidExport",
-        "optionalParamterAndVariableDeclaration",
-        "outModuleConcatUnspecifiedModuleKind",
-        "classStaticInitializersUsePropertiesBeforeDeclaration",
-        "intTypeCheck",
-        "functionMergedWithModule",
-        "ambientModuleWithTemplateLiterals",
-        "decoratorMetadataElidedImportOnDeclare",
-        "constructorParametersThatShadowExternalNamesInVariableDeclarations",
-        "targetTypeTest1",
-        "classExtendsInterfaceInExpression",
-        "errorMessagesIntersectionTypes02",
-        "numberToString",
-        "mergedDeclarations5",
-        "exportEqualMemberMissing",
-        "bitwiseCompoundAssignmentOperators",
-        "baseCheck",
-        "unusedMultipleParameters2InMethodDeclaration",
-        "recursiveResolveTypeMembers",
-        "typeReferenceDirectives9",
-        "divideAndConquerIntersections",
-        "inKeywordTypeguard",
-        "libTypeScriptSubfileResolvingConfig",
-        "keepImportsInDts1",
-        "declarationEmitInvalidReferenceAllowJs",
-        "regularExpressionCharacterClassRangeOrder",
-        "recursiveBaseCheck2",
-        "genericAndNonGenericInheritedSignature2",
-        "collisionCodeGenModuleWithUnicodeNames",
-        "promiseEmptyTupleNoException",
-        "recursiveNamedLambdaCall",
-        "optionalParamterAndVariableDeclaration2",
-        "typeCheckObjectCreationExpressionWithUndefinedCallResolutionData",
-        "exhaustiveSwitchCheckCircularity",
-        "newAbstractInstance2",
-        "bigintPropertyName",
-        "classMergedWithInterfaceMultipleBasesNoError",
-        "augmentExportEquals1",
-        "isolatedModulesReExportType",
-        "noImplicitAnyMissingGetAccessor",
-        "isolatedDeclarationsAllowJs",
-        "noCircularitySelfReferentialGetter2",
-        "moduleAugmentationDuringSyntheticDefaultCheck",
-        "thisInTypeQuery",
-        "tupleTypeInference",
-        "letDeclarations-scopes-duplicates4",
-        "moduleVisibilityTest2",
-        "overshifts",
-        "functionOverloads7",
-        "parse2",
-        "reachabilityChecks2",
-        "aliasInstantiationExpressionGenericIntersectionNoCrash2",
-        "exportSpecifierReferencingOuterDeclaration4",
-        "importDeclWithDeclareModifier",
-        "es6ImportDefaultBindingFollowedWithNamedImport1InEs5",
-        "invalidLetInForOfAndForIn_ES5",
-        "varNameConflictsWithImportInDifferentPartOfModule",
-        "errorConstructorSubtypes",
-        "interfaceDeclaration3",
-        "recursiveExportAssignmentAndFindAliasedType5",
-        "requireOfJsonFileWithEmptyObjectWithErrors",
-        "modularizeLibrary_TargetES5UsingES6Lib",
-        "indexerConstraints2",
-        "inlineConditionalHasSimilarAssignability",
-        "callOverloadViaElementAccessExpression",
-        "unusedImports9",
-        "letInConstDeclarations_ES5",
-        "unicodeEscapesInNames02",
-        "contextuallyTypedParametersWithInitializers1",
-        "noImplicitAnyForIn",
-        "classImplementsClass6",
-        "emptyObjectNotSubtypeOfIndexSignatureContainingObject2",
-        "discriminateWithOptionalProperty4",
-        "relationalOperatorComparable",
-        "genericTypeAssertions1",
-        "systemModule8",
-        "keywordExpressionInternalComments",
-        "primitiveConstraints1",
-        "inKeywordAndUnknown",
-        "exportDefaultDuplicateCrash",
-        "exactOptionalPropertyTypesIdentical",
-        "circularlySimplifyingConditionalTypesNoCrash",
-        "unionPropertyExistence",
-        "functionLikeInParameterInitializer",
-        "exportAssignmentExpressionIsExpressionNode",
-        "unusedModuleInModule",
-        "symbolMergeValueAndImportedType",
-        "expandoFunctionContextualTypesNoValue",
-        "requireOfJsonFileWithoutResolveJsonModule",
-        "genericInferenceDefaultTypeParameterJsxReact",
-        "requireOfJsonFileWithModuleNodeResolutionEmitNone",
-        "excessPropertyCheckWithEmptyObject",
-        "isolatedDeclarationErrorsFunctionDeclarations",
-        "decoratorMetadataNoLibIsolatedModulesTypes",
-        "duplicateObjectLiteralProperty_computedName2",
-        "indexSignatureWithInitializer1",
-        "jsFileCompilationTypeAssertions",
-        "arrayConcatMap",
-        "omitTypeHelperModifiers01",
-        "blockScopedSameNameFunctionDeclarationES5",
-        "ParameterList6",
-        "callbacksDontShareTypes",
-        "letInLetDeclarations_ES6",
-        "contextualTyping11",
-        "jsxComponentTypeErrors",
-        "genericTypeWithNonGenericBaseMisMatch",
-        "constructorArgsErrors2",
-        "overloadsAndTypeArgumentArityErrors",
-        "implementGenericWithMismatchedTypes",
-        "withStatement",
-        "es6ClassTest9",
-        "instantiationExpressionErrorNoCrash",
-        "symlinkedWorkspaceDependenciesNoDirectLinkOptionalGeneratesNonrelativeName",
-        "declarationEmitLambdaWithMissingTypeParameterNoCrash",
-        "bigintWithoutLib",
-        "jsFileCompilationBindDuplicateIdentifier",
-        "importPropertyFromMappedType",
-        "inferenceContextualReturnTypeUnion3",
-        "forIn2",
-        "reactTagNameComponentWithPropsNoOOM2",
-        "genericFunduleInModule",
-        "contextualTypeObjectSpreadExpression",
-        "controlFlowNullTypeAndLiteral",
-        "privacyGloImportParseErrors",
-        "undefinedTypeAssignment4",
-        "augmentedTypesClass2a",
-        "returnInConstructor1",
-        "voidAsOperator",
-        "recursiveConditionalTypes2",
-        "acceptSymbolAsWeakType",
-        "instanceofOnInstantiationExpression",
-        "divergentAccessorsTypes3",
-        "nestedExcessPropertyChecking",
-        "moduleResolutionWithSuffixes_one_jsModule",
-        "declFileEmitDeclarationOnlyError2",
-        "objectCreate",
-        "sourceMapValidationDecorators",
-        "emitDecoratorMetadata_isolatedModules",
-        "unusedTypeParameters9",
-        "doNotWidenAtObjectLiteralPropertyAssignment",
-        "declarationEmitDestructuring2",
-        "overloadingOnConstants2",
-        "sourceMapValidationDestructuringVariableStatementArrayBindingPattern",
-        "nestedFreshLiteral",
-        "functionReturn",
-        "parseImportAttributesError",
-        "esmModeDeclarationFileWithExportAssignment",
-        "unusedLocalsInMethod2",
-        "inferenceOuterResultNotIncorrectlyInstantiatedWithInnerResult",
-        "functionsWithModifiersInBlocks1",
-        "noImplicitAnyNamelessParameter",
-        "longObjectInstantiationChain1",
-        "signatureCombiningRestParameters2",
-        "mismatchedExplicitTypeParameterAndArgumentType",
-        "discriminatedUnionWithIndexSignature",
-        "modularizeLibrary_ErrorFromUsingWellknownSymbolWithOutES6WellknownSymbolLib",
-        "promiseDefinitionTest",
-        "excessiveStackDepthFlatArray",
-        "classUpdateTests",
-        "jsxCallbackWithDestructuring",
-        "keyRemappingKeyofResult",
-        "assignmentStricterConstraints",
-        "thisExpressionInCallExpressionWithTypeArguments",
-        "declareIdentifierAsBeginningOfStatementExpression01",
-        "ambiguousGenericAssertion1",
-        "requiredInitializedParameter3",
-        "decoratorsOnComputedProperties",
-        "duplicateVarsAcrossFileBoundaries",
-        "unknownLikeUnionObjectFlagsNotPropagated",
-        "reverseMappedTypeContextualTypeNotCircular",
-        "blockScopedBindingsReassignedInLoop4",
-        "nonMergedOverloads",
-        "inferTypesWithFixedTupleExtendsAtVariadicPosition",
-        "reexportMissingDefault8",
-        "typeArgInferenceWithNull",
-        "importNonExportedMember9",
-        "castTest",
-        "nodeNextModuleResolution2",
-        "circularReferenceInReturnType",
-        "noCrashOnMixin",
-        "recursiveBaseCheck6",
-        "exportDefaultProperty",
-        "objectLiteralWithSemicolons3",
-        "functionOverloads40",
-        "collisionArgumentsClassConstructor",
-        "jsxChildrenIndividualErrorElaborations",
-        "narrowingTypeofUndefined2",
-        "expandoFunctionNestedAssigments",
-        "outModuleConcatES6",
-        "indexedAccessRelation",
-        "assertionFunctionWildcardImport1",
-        "functionSubtypingOfVarArgs2",
-        "paramsOnlyHaveLiteralTypesWhenAppropriatelyContextualized",
-        "parseUnaryExpressionNoTypeAssertionInJsx1",
-        "jsxFactoryIdentifierWithAbsentParameter",
-        "variableDeclarationInStrictMode1",
-        "staticFieldWithInterfaceContext",
-        "jsFileCompilationOptionalParameter",
-        "genericClassWithStaticsUsingTypeArguments",
-        "typeParameterFixingWithContextSensitiveArguments3",
-        "unusedMultipleParameter2InContructor",
-        "umdGlobalConflict",
-        "typeGuardNarrowsIndexedAccessOfKnownProperty1",
-        "inferenceLimit",
-        "classImplementsClass2",
-        "genericTypeAssertions5",
-        "incrementalInvalid",
-        "erasableSyntaxOnly",
-        "publicMemberImplementedAsPrivateInDerivedClass",
-        "typeCheckingInsideFunctionExpressionInArray",
-        "promisePermutations",
-        "inferenceAndHKTs",
-        "noCrashOnParameterNamedRequire",
-        "thisInFunctionCall",
-        "didYouMeanSuggestionErrors",
-        "duplicatePackage",
-        "collisionCodeGenModuleWithModuleReopening",
-        "moduleResolution_explicitNodeModulesImport",
-        "augmentExportEquals5",
-        "jsxViaImport.2",
-        "typeVariableTypeGuards",
-        "hugeDeclarationOutputGetsTruncatedWithError",
-        "inheritSameNamePropertiesWithDifferentVisibility",
-        "staticMemberExportAccess",
-        "classNameReferencesInStaticElements",
-        "extension",
-        "import_reference-exported-alias",
-        "satisfiesEmit",
-        "crashIntypeCheckInvocationExpression",
-        "unusedLocalsAndObjectSpread2",
-        "multipleExports",
-        "recursiveExportAssignmentAndFindAliasedType1",
-        "crashInResolveInterface",
-        "letDeclarations-validContexts",
-        "declFileImportChainInExportAssignment",
-        "blockScopedSameNameFunctionDeclarationStrictES6",
-        "contextualTypeArrayReturnType",
-        "noCrashOnMixin2",
-        "incompatibleAssignmentOfIdenticallyNamedTypes",
-        "useBeforeDeclaration_superClass",
-        "errorInfoForRelatedIndexTypesNoConstraintElaboration",
-        "expressionWithJSDocTypeArguments",
-        "contextualSignatureInstatiationContravariance",
-        "noParameterReassignmentIIFEAnnotated",
-        "doNotInferUnrelatedTypes",
-        "typeParameterArgumentEquivalence4",
-        "unusedTypeParameters_templateTag",
-        "declarationEmitBindingPatternsUnused",
-        "optionalParamReferencingOtherParams2",
-        "noUncheckedIndexedAccessCompoundAssignments",
-        "tooManyTypeParameters1",
-        "requireOfJsonFileNonRelativeWithoutExtensionResolvesToTs",
-        "doNotElaborateAssignabilityToTypeParameters",
-        "reverseMappedTupleContext",
-        "indexSignatureInOtherFile1",
-        "errorInUnnamedClassExpression",
-        "declarationEmitRelativeModuleError",
-        "unusedParametersWithUnderscore",
-        "unspecializedConstraints",
-        "capturedParametersInInitializers2",
-        "contextualTyping21",
-        "moduleNoneDynamicImport",
-        "moduleAugmentationDoesNamespaceEnumMergeOfReexport",
-        "identityForSignaturesWithTypeParametersAndAny",
-        "couldNotSelectGenericOverload",
-        "sideEffectImports1",
-        "ambientPropertyDeclarationInJs",
-        "promiseIdentity",
-        "objectLiteralMemberWithoutBlock1",
-        "importUsedInExtendsList1",
-        "allowJscheckJsTypeParameterNoCrash",
-        "scopeCheckExtendedClassInsideStaticMethod1",
-        "requireOfJsonFileWithoutExtension",
-        "assignmentCompatBug2",
-        "library_RegExpExecArraySlice",
-        "doYouNeedToChangeYourTargetLibraryES2023",
-        "es6ImportNamedImportMergeErrors",
-        "parseJsxElementInUnaryExpressionNoCrash2",
-        "optionsInlineSourceMapMapRoot",
-        "iterableWithNeverAsUnionMember",
-        "reactNamespaceJSXEmit",
-        "contextualParamTypeVsNestedReturnTypeInference3",
-        "complicatedPrivacy",
-        "strictOptionalProperties1",
-        "declarationEmitNoInvalidCommentReuse2",
-        "allowSyntheticDefaultImports1",
-        "emptyTypeArgumentList",
-        "duplicateIdentifierBindingElementInParameterDeclaration2",
-        "escapedIdentifiers",
-        "unusedParameterProperty1",
-        "externalModuleReferenceDoubleUnderscore1",
-        "controlFlowAutoAccessor1",
-        "typeInfer1",
-        "divergentAccessorsTypes2",
-        "sourceMapValidationStatements",
-        "superPropertyAccessInComputedPropertiesOfNestedType_ES5",
-        "controlFlowWithIncompleteTypes",
-        "strictModeWordInImportDeclaration",
-        "assignmentCompatFunctionsWithOptionalArgs",
-        "unusedTypeParameters8",
-        "jsxChildrenArrayWrongType",
-        "propertyWrappedInTry",
-        "numberLiteralsWithLeadingZeros",
-        "importHelpersNoModule",
-        "inferSetterParamType",
-        "jsdocIllegalTags",
-        "quickinfoTypeAtReturnPositionsInaccurate",
-        "unusedLocalsInMethod3",
-        "neverNullishThroughParentheses",
-        "declarationEmitPathMappingMonorepo",
-        "unresolvableSelfReferencingAwaitedUnion",
-        "declarationEmitUsingAlternativeContainingModules1",
-        "superCallAssignResult",
-        "signatureCombiningRestParameters3",
-        "exportClassExtendingIntersection",
-        "destructureCatchClause",
-        "spreadIntersectionJsx",
-        "flowAfterFinally1",
-        "contextualSignatureInstantiation2",
-        "circularOptionalityRemoval",
-        "jsFileCompilationPublicMethodSyntaxOfClass",
-        "declarationEmitStringEnumUsedInNonlocalSpread",
-        "importNonExportedMember12",
-        "pathMappingBasedModuleResolution_withExtension_MapedToNodeModules",
-        "requiredInitializedParameter2",
-        "capturedLetConstInLoop6_ES6",
-        "declarationEmitHigherOrderRetainedGenerics",
-        "classMemberInitializerWithLamdaScoping",
-        "contextualTypingOfLambdaWithMultipleSignatures2",
-        "pathMappingBasedModuleResolution8_node",
-        "functionOverloadsOutOfOrder",
-        "coAndContraVariantInferences6",
-        "importNonExportedMember8",
-        "dynamicNames",
-        "constDeclarationShadowedByVarDeclaration",
-        "reachabilityChecks8",
-        "jsFileCompilationBindReachabilityErrors",
-        "redefineArray",
-        "unusedLocalsOnFunctionExpressionWithinFunctionDeclaration2",
-        "libMembers",
-        "namespaceDisambiguationInUnion",
-        "isolatedModulesImportExportElision",
-        "declarationEmitReadonlyComputedProperty",
-        "narrowCommaOperatorNestedWithinLHS",
-        "genericSignatureIdentity",
-        "functionOverloads41",
-        "objectLiteralWithSemicolons2",
-        "unreachableDeclarations",
-        "jsxElementTypeLiteral",
-        "privacyFunctionCannotNameReturnTypeDeclFile",
-        "classFieldSuperAccessibleJs1",
-        "unusedPrivateStaticMembers",
-        "jsxFragmentFactoryReference",
-        "privacyCheckAnonymousFunctionParameter2",
-        "requireOfJsonFileWithModuleNodeResolutionEmitUmd",
-        "constInClassExpression",
-        "assignLambdaToNominalSubtypeOfFunction",
-        "selfReferentialDefaultNoStackOverflow",
-        "nonNullableReduction",
-        "typeParameterAsBaseClass",
-        "collisionExportsRequireAndUninstantiatedModule",
-        "contextualTypeCaching",
-        "aliasUsageInArray",
-        "classMemberWithMissingIdentifier2",
-        "widenToAny1",
-        "asyncYieldStarContextualType",
-        "indexerConstraints",
-        "unusedLocalsOnFunctionExpressionWithinFunctionExpression1",
-        "optionsCompositeWithIncrementalFalse",
-        "classExpressionExtendingAbstractClass",
-        "typeArgumentInferenceApparentType1",
-        "scopeCheckStaticInitializer",
-        "constEnumErrors",
-        "moduleResolutionWithSymlinks",
-        "typeParameterFixingWithContextSensitiveArguments2",
-        "jsFileCompilationAbstractModifier",
-        "strictModeReservedWordInDestructuring",
-        "typedArrays-es6",
-        "discriminableUnionWithIntersectedMembers",
-        "moduleWithValuesAsType",
-        "pathMappingBasedModuleResolution_rootImport_aliasWithRoot_multipleAliases",
-        "genericTypeAssertions4",
-        "narrowingUnionWithBang",
-        "assignmentCompatability_checking-apply-member-off-of-function-interface",
-        "strictModeReservedWord",
-        "errorForUsingPropertyOfTypeAsType01",
-        "awaitedTypeNoLib",
-        "decrementAndIncrementOperators",
-        "shebangError",
-        "superPropertyAccess_ES5",
-        "exportInterfaceClassAndValue",
-        "es6ExportEquals",
-        "contextualSignatureInArrayElementLibEs5",
-        "jsxEmptyExpressionNotCountedAsChild2",
-        "noMappedGetSet",
-        "accessors_spec_section-4.5_error-cases",
-        "exportDeclarationsInAmbientNamespaces",
-        "controlFlowArrays",
-        "augmentExportEquals4",
-        "jsFileCompilationTypeOfParameter",
-        "ClassDeclarationWithInvalidConstOnPropertyDeclaration2",
-        "es6ModuleInternalNamedImports2",
-        "typeGuardConstructorDerivedClass",
-        "multivar",
-        "interfaceExtendsClassWithPrivate2",
-        "decoratorWithUnderscoreMethod",
-        "reuseTypeAnnotationImportTypeInGlobalThisTypeArgument",
-        "indexerAsOptional",
-        "newNamesInGlobalAugmentations1",
-        "wrappedRecursiveGenericType",
-        "umdDependencyCommentName1",
-        "arrayFrom",
-        "propertyAccess3",
-        "declarationEmitDistributiveConditionalWithInfer",
-        "systemModule16",
-        "spreadIntersection",
-        "objectLiteralExcessProperties",
-        "functionOverloads34",
-        "noCrashOnNoLib",
-        "implicitAnyFromCircularInference",
-        "nanEquality",
-        "declareExternalModuleWithExportAssignedFundule",
-        "destructuringAssignmentWithExportedName",
-        "typeParameterAssignmentCompat1",
-        "optionalParamReferencingOtherParams3",
-        "typeParameterArgumentEquivalence5",
-        "pathMappingBasedModuleResolution5_classic",
-        "unusedVariablesinBlocks1",
-        "reactReduxLikeDeferredInferenceAllowsAssignment",
-        "didYouMeanElaborationsForExpressionsWhichCouldBeCalled",
-        "jsNoImplicitAnyNoCascadingReferenceErrors",
-        "inlineSourceMap2",
-        "functionsMissingReturnStatementsAndExpressions",
-        "unusedLocalsOnFunctionDeclarationWithinFunctionDeclaration1",
-        "declarationEmitToDeclarationDirWithoutCompositeAndDeclarationOptions",
-        "modularizeLibrary_NoErrorDuplicateLibOptions1",
-        "mergeMultipleInterfacesReexported",
-        "extendGlobalThis",
-        "indexSignatureOfTypeUnknownStillRequiresIndexSignature",
-        "recursiveTupleTypeInference",
-        "es6ImportDefaultBindingFollowedWithNamedImportDts",
-        "noErrorTruncation",
-        "typeGuardNarrowByUntypedField",
-        "contextualTypeFunctionObjectPropertyIntersection",
-        "promiseIdentityWithConstraints",
-        "contextualTyping20",
-        "parenthesizedJSDocCastDoesNotNarrow",
-        "identityAndDivergentNormalizedTypes",
-        "aliasErrors",
-        "cyclicModuleImport",
-        "functionExpressionNames",
-        "assignmentCompatBug3",
-        "moduleNodeDefaultImports",
-        "callOnInstance",
-        "defaultArgsInFunctionExpressions",
-        "unusedLocalsOnFunctionDeclarationWithinFunctionExpression2",
-        "parseJsxElementInUnaryExpressionNoCrash3",
-        "truthinessPromiseCoercion",
-        "caseInsensitiveFileSystemWithCapsImportTypeDeclarations",
-        "conditionalTypeRelaxingConstraintAssignability",
-        "objectLiteralMemberWithModifiers1",
-        "mixinOverMappedTypeNoCrash",
-        "computedPropertiesNarrowed",
-        "contextualParamTypeVsNestedReturnTypeInference2",
-        "fillInMissingTypeArgsOnJSConstructCalls",
-        "tsxInvokeComponentType",
-        "functionExpressionInWithBlock",
-        "pathMappingBasedModuleResolution1_node",
-        "moduleAugmentationEnumClassMergeOfReexportIsError",
-        "extendingClassFromAliasAndUsageInIndexer",
-        "noBundledEmitFromNodeModules",
-        "jsxElementType",
-        "genericCallAtYieldExpressionInGenericCall3",
-        "contextualTypeBasedOnIntersectionWithAnyInTheMix3",
-        "jsxFragmentFactoryNoUnusedLocals",
-        "regularExpressionAnnexB",
-        "decoratorMetadataWithImportDeclarationNameCollision6",
-        "jsxFactoryButNoJsxFragmentFactory",
-        "classMemberInitializerWithLamdaScoping4",
-        "isolatedDeclarationErrorsReturnTypes",
-        "declarationEmitUnknownImport2",
-        "es5-commonjs8",
-        "interfaceImplementation8",
-        "asiPublicPrivateProtected",
-        "es5ExportDefaultFunctionDeclaration3",
-        "importDeclWithClassModifiers",
-        "castOfYield",
-        "declarationEmitMixinPrivateProtected",
-        "collisionArgumentsFunction",
-        "giant",
-        "typeParametersInStaticAccessors",
-        "stringLiteralsErrors",
-        "umdNamespaceMergedWithGlobalAugmentationIsNotCircular",
-        "namedFunctionExpressionCallErrors",
-        "isArray",
-        "argumentsObjectIterator01_ES5",
-        "typeValueConflict2",
-        "typeCheckTypeArgument",
-        "bigintWithLib",
-        "accessorAccidentalCallDiagnostic",
-        "deeplyNestedConstraints",
-        "generatorES6_5",
-        "reverseMappedPartiallyInferableTypes",
-        "deprecatedCompilerOptions5",
-        "deepKeysIndexing",
-        "promiseType",
-        "typeAssertionToGenericFunctionType",
-        "interfaceNameAsIdentifier",
-        "validRegexp",
-        "typeUsedAsValueError",
-        "functionOverloadAmbiguity1",
-        "divergentAccessorsTypes6",
-        "invalidSymbolInTypeParameter1",
-        "genericTypeWithCallableMembers2",
-        "typePredicatesInUnion3",
-        "jsFileCompilationSyntaxError",
-        "truthinessCallExpressionCoercion2",
-        "defaultKeywordWithoutExport1",
-        "mappedTypeRecursiveInference2",
-        "flatArrayNoExcessiveStackDepth",
-        "forwardRefInClassProperties",
-        "shadowedReservedCompilerDeclarationsWithNoEmit",
-        "newOperator",
-        "undeclaredMethod",
-        "privacyCannotNameAccessorDeclFile",
-        "jsFileCompilationImportEqualsSyntax",
-        "impliedNodeFormatEmit4",
-        "libTypeScriptSubfileResolving",
-        "unusedLocalsinConstructor2",
-        "jsxInferenceProducesLiteralAsExpected",
-        "TransportStream",
-        "normalizedIntersectionTooComplex",
-        "jsdocArrayObjectPromiseNoImplicitAny",
-        "typeofImportInstantiationExpression",
-        "chainedCallsWithTypeParameterConstrainedToOtherTypeParameter2",
-        "es6ImportNameSpaceImportMergeErrors",
-        "implementPublicPropertyAsPrivate",
-        "functionArgShadowing",
-        "thisConditionalOnMethodReturnOfGenericInstance",
-        "inferentiallyTypingAnEmptyArray",
-        "genericGetter3",
-        "errorMessagesIntersectionTypes03",
-        "noImplicitThisFunctions",
-        "parseUnaryExpressionNoTypeAssertionInJsx4",
-        "aliasUsageInFunctionExpression",
-        "isolatedDeclarationErrorsEnums",
-        "overloadConsecutiveness",
-        "narrowSwitchOptionalChainContainmentEvolvingArrayNoCrash1",
-        "es6ImportDefaultBindingFollowedWithNamedImport1WithExport",
-        "thisInInnerFunctions",
-        "reverseMappedTypeIntersectionConstraint",
-        "unicodeIdentifierName2",
-        "excessPropertyChecksWithNestedIntersections",
-        "promiseTest",
-        "uncalledFunctionChecksInConditional2",
-        "functionOverloads20",
-        "optionsInlineSourceMapSourcemap",
-        "complicatedGenericRecursiveBaseClassReference",
-        "stringIndexerAndConstructor",
-        "isolatedDeclarationsStrictBuiltinIteratorReturn",
-        "jsEnumCrossFileExport",
-        "templateStringsArrayTypeDefinedInES5Mode",
-        "interfacePropertiesWithSameName1",
-        "narrowingByTypeofInSwitch",
-        "recursiveBaseCheck3",
-        "chainedAssignmentChecking",
-        "contextualTyping",
-        "overloadsInDifferentContainersDisagreeOnAmbient",
-        "superCallsInConstructor",
-        "es5-system2",
-        "declarationEmitIndexTypeNotFound",
-        "selfNameAndImportsEmitInclusion",
-        "globalThisDeclarationEmit3",
-        "contextuallyTypedParametersOptionalInJSDoc",
-        "crashRegressionTest",
-        "missingTypeArguments1",
-        "instanceSubtypeCheck2",
-        "jsxIntrinsicElementsTypeArgumentErrors",
-        "lambdaParamTypes",
-        "es6ExportAll",
-        "exportedBlockScopedDeclarations",
-        "innerModExport1",
-        "dontShowCompilerGeneratedMembers",
-        "systemModule12",
-        "mappedTypeRecursiveInference",
-        "ambientExportDefaultErrors",
-        "objectLitIndexerContextualType",
-        "parseInvalidNullableTypes",
-        "intrinsics",
-        "orderMattersForSignatureGroupIdentity",
-        "jsExportMemberMergedWithModuleAugmentation",
-        "recursiveExportAssignmentAndFindAliasedType4",
-        "checkJsObjectLiteralHasCheckedKeyof",
-        "narrowByBooleanComparison",
-        "twiceNestedKeyofIndexInference",
-        "parameterNamesInTypeParameterList",
-        "contextualOverloadListFromArrayUnion",
-        "booleanAssignment",
-        "es6ExportAssignment2",
-        "jsxNamespaceImplicitImportJSXNamespace",
-        "modularizeLibrary_TargetES6UsingES6Lib",
-        "unionTypeWithRecursiveSubtypeReduction3",
-        "primitiveTypeAssignment",
-        "recursiveConditionalEvaluationNonInfinite",
-        "pathMappingBasedModuleResolution8_classic",
-        "argumentsReferenceInFunction1_Js",
-        "systemModule9",
-        "missingMemberErrorHasShortPath",
-        "noImplicitAnyParametersInAmbientModule",
-        "es6DeclOrdering",
-        "mergedClassNamespaceRecordCast",
-        "optionalParamArgsTest",
-        "umdDependencyComment2",
-        "declFileGenericType",
-        "assignmentCompatInterfaceWithStringIndexSignature",
-        "APISample_parseConfig",
-        "builtinIterator",
-        "arityErrorRelatedSpanBindingPattern",
-        "superCallInNonStaticMethod",
-        "duplicateIdentifierComputedName",
-        "errorsInGenericTypeReference",
-        "declarationEmitCastReusesTypeNode4",
-        "ramdaToolsNoInfinite2",
-        "numberVsBigIntOperations",
-        "declarationEmitVarInElidedBlock",
-        "numericIndexerTyping2",
-        "duplicateObjectLiteralProperty_computedName3",
-        "moduleResolutionWithExtensions_notSupported2",
-        "reachabilityChecksNoCrash1",
-        "classCannotExtendVar",
-        "strictOptionalProperties4",
-        "spliceTuples",
-        "dataViewConstructor",
-        "enumNoInitializerFollowsNonLiteralInitializer",
-        "constructorArgsErrors3",
-        "strictNullEmptyDestructuring",
-        "quickIntersectionCheckCorrectlyCachesErrors",
-        "typeUsedAsValueError2",
-        "nestedRecursiveArraysOrObjectsError01",
-        "indexSignatureAndMappedType",
-        "narrowingPastLastAssignment",
-        "moduleAugmentationDisallowedExtensions",
-        "returnTypePredicateIsInstantiateInContextOfTarget",
-        "duplicatePackage_subModule",
-        "letAsIdentifier2",
-        "moduleAugmentationGlobal8_1",
-        "declarationEmitFirstTypeArgumentGenericFunctionType",
-        "discriminantElementAccessCheck",
-        "reactDefaultPropsInferenceSuccess",
-        "discriminantPropertyCheck",
-        "privacyFunctionReturnTypeDeclFile",
-        "contextualTyping24",
-        "avoidListingPropertiesForTypesWithOnlyCallOrConstructSignatures",
-        "consistentAliasVsNonAliasRecordBehavior",
-        "incrementOnNullAssertion",
-        "contextuallyTypedParametersWithQuestionToken",
-        "parseTypes",
-        "modifiersOnInterfaceIndexSignature1",
-        "numericLiteralsWithTrailingDecimalPoints02",
-        "nonIdenticalTypeConstraints",
-        "shadowingViaLocalValueOrBindingElement",
-        "throwWithoutNewLine2",
-        "pathMappingBasedModuleResolution6_classic",
-        "anyIndexedAccessArrayNoException",
-        "aliasAssignments",
-        "divergentAccessorsTypes1",
-        "limitDeepInstantiations",
-        "exportDeclarationInInternalModule",
-        "superPropertyAccessInComputedPropertiesOfNestedType_ES6",
-        "duplicateIdentifierBindingElementInParameterDeclaration1",
-        "asyncFunctionContextuallyTypedReturns",
-        "unusedParameterProperty2",
-        "coAndContraVariantInferences",
-        "unusedVariablesWithUnderscoreInForOfLoop",
-        "es5ExportDefaultFunctionDeclaration4",
-        "conditionalReturnExpression",
-        "requiredInitializedParameter1",
-        "functionCall18",
-        "genericMappedTypeAsClause",
-        "typeParameterArgumentEquivalence",
-        "parseInvalidNonNullableTypes",
-        "computedPropertiesTransformedInOtherwiseNonTSClasses",
-        "longObjectInstantiationChain3",
-        "contextuallyTypingOrOperator",
-        "exportImportMultipleFiles",
-        "overloadModifiersMustAgree",
-        "blockScopedEnumVariablesUseBeforeDef_verbatimModuleSyntax",
-        "constDeclarations-useBeforeDefinition2",
-        "checkDestructuringShorthandAssigment2",
-        "contextualTypeBasedOnIntersectionWithAnyInTheMix4",
-        "contextualTyping33",
-        "classMemberInitializerWithLamdaScoping3",
-        "reservedNameOnModuleImportWithInterface",
-        "declarationEmitUsingAlternativeContainingModules2",
-        "recursiveBaseCheck4",
-        "destructureOptionalParameter",
-        "esmNoSynthesizedDefault",
-        "nonObjectUnionNestedExcessPropertyCheck",
-        "shebang",
-        "assignmentCompatability_checking-call-member-off-of-function-interface",
-        "divergentAccessorsVisibility1",
-        "unusedLocalsOnFunctionExpressionWithinFunctionDeclaration1",
-        "assignmentToParenthesizedExpression1",
-        "coAndContraVariantInferences5",
-        "booleanLiteralsContextuallyTypedFromUnion",
-        "duplicatePackage_globalMerge",
-        "qualifiedName_entity-name-resolution-does-not-affect-class-heritage",
-        "tsxNoTypeAnnotatedSFC",
-        "ambientNameRestrictions",
-        "declarationEmitExpandoPropertyPrivateName",
-        "functionOverloads27",
-        "unusedLocalsOnFunctionExpressionWithinFunctionExpression2",
-        "noStrictGenericChecks",
-        "typeArgumentInferenceApparentType2",
-        "isolatedModulesAmbientConstEnum",
-        "jsdocArrayObjectPromiseImplicitAny",
-        "computedEnumMemberSyntacticallyString2",
-        "genericConstructInvocationWithNoTypeArg",
-        "constEnumNoEmitReexport",
-        "defaultBestCommonTypesHaveDecls",
-        "assignmentCompat1",
-        "cannotInvokeNewOnIndexExpression",
-        "reactTagNameComponentWithPropsNoOOM",
-        "enumWithBigint",
-        "ignoredJsxAttributes",
-        "systemModule10_ES5",
-        "errorMessagesIntersectionTypes04",
-        "contextuallyTypedJsxChildren",
-        "mergedDeclarations3",
-        "topLevelLambda",
-        "parseUnaryExpressionNoTypeAssertionInJsx3",
-        "ipromise2",
-        "circularConstructorWithReturn",
-        "typeIdentityConsidersBrands",
-        "selfReferencesInFunctionParameters",
-        "impliedNodeFormatEmit3",
-        "jsdocParameterParsingInfiniteLoop",
-        "findLast",
-        "shadowingViaLocalValue",
-        "isolatedModulesGlobalNamespacesAndEnums",
-        "varianceProblingAndZeroOrderIndexSignatureRelationsAlign",
-        "objectLiteralWithSemicolons1",
-        "predicateSemantics",
-        "noParameterReassignmentJSIIFE",
-        "knockout",
-        "es6ExportAssignment",
-        "infiniteConstraints",
-        "moduleResolutionWithSymlinks_withOutDir",
-        "varBlock",
-        "reexportDefaultIsCallable",
-        "superPropertyAccess_ES6",
-        "comparabilityTypeParametersRelatedByUnion",
-        "errorForUsingPropertyOfTypeAsType02",
-        "jsxIntrinsicDeclaredUsingTemplateLiteralTypeSignatures",
-        "infinitelyExpandingTypes4",
-        "javascriptImportDefaultBadExport",
-        "pathMappingBasedModuleResolution4_node",
-        "typeParametersShouldNotBeEqual",
-        "typedArrays-es5",
-        "discriminateWithOptionalProperty2",
-        "declarationEmitForModuleImportingModuleAugmentationRetainsImport",
-        "instantiateTypeParameter",
-        "declarationEmitComputedNameWithQuestionToken",
-        "functionOverloads37",
-        "getterControlFlowStrictNull",
-        "memberScope",
-        "javascriptThisAssignmentInStaticBlock",
-        "umdDependencyCommentName2",
-        "recursiveExportAssignmentAndFindAliasedType3",
-        "scopeCheckClassProperty",
-        "symbolLinkDeclarationEmitModuleNamesRootDir",
-        "extractInferenceImprovement",
-        "interfaceExtendsClassWithPrivate1",
-        "controlFlowAliasedDiscriminants",
-        "fixingTypeParametersRepeatedly2",
-        "functionCall9",
-        "newExpressionWithCast",
-        "intersectionsAndOptionalProperties3",
-        "augmentExportEquals7",
-        "convertKeywordsYes",
-        "superAccess2",
-        "globalThisDeclarationEmit",
-        "decoratorInJsFile1",
-        "module_augmentExistingAmbientVariable",
-        "awaitedTypeStrictNull",
-        "aliasUsageInTypeArgumentOfExtendsClause",
-        "unreachableSwitchTypeofAny",
-        "unreachableSwitchTypeofUnknown",
-        "ambientWithStatements",
-        "outModuleConcatUnspecifiedModuleKindDeclarationOnly",
-        "unusedLocalsOnFunctionDeclarationWithinFunctionDeclaration2",
-        "modularizeLibrary_NoErrorDuplicateLibOptions2",
-        "classPropertyErrorOnNameOnly",
-        "moduleElementsInWrongContext",
-        "genericConstraintSatisfaction1",
-        "unusedVariablesinBlocks2",
-        "thisWhenTypeCheckFails",
-        "indexSignatureInOtherFile",
-        "sourceMapSample",
-        "isolatedModulesExportImportUninstantiatedNamespace",
-        "genericPrototypeProperty2",
-        "doYouNeedToChangeYourTargetLibraryES2015",
-        "jsdocReferenceGlobalTypeInCommonJs",
-        "importDeclWithExportModifierAndExportAssignment",
-        "unusedLocalsInForInOrOf1",
-        "contextualPropertyOfGenericFilteringMappedType",
-        "strictOptionalProperties3",
-        "voidArrayLit",
-        "inheritedMembersAndIndexSignaturesFromDifferentBases",
-        "allowSyntheticDefaultImports3",
-        "dottedSymbolResolution1",
-        "duplicateVariablesWithAny",
-        "constructorArgsErrors4",
-        "strictModeReservedWord2",
-        "duplicateSymbolsExportMatching",
-        "argumentsUsedInClassFieldInitializerOrStaticInitializationBlock",
-        "jsExportMemberMergedWithModuleAugmentation2",
-        "unusedLocalsOnFunctionDeclarationWithinFunctionExpression1",
-        "keyofIsLiteralContexualType",
-        "protectedMembers",
-        "jsxEmptyExpressionNotCountedAsChild",
-        "decoratorMetadataRestParameterWithImportedType",
-        "jsFileClassPropertyType2",
-        "parserConstructorDeclaration12",
-        "invalidSplice",
-        "superErrors",
-        "strictModeEnumMemberNameReserved",
-        "declarationEmitWithInvalidPackageJsonTypings",
-        "noUnusedLocals_selfReference_skipsBlockLocations",
-        "duplicateOverloadInTypeAugmentation1",
-        "circularReferenceInReturnType2",
-        "excessPropertiesInOverloads",
-        "unusedLocalsInMethod4",
-        "signatureCombiningRestParameters4",
-        "declarationEmitObjectAssignedDefaultExport",
-        "divergentAccessorsTypes5",
-        "typeArgumentInferenceWithConstraintAsCommonRoot",
-        "importAsBaseClass",
-        "truthinessCallExpressionCoercion1",
-        "implicitAnyDeclareTypePropertyWithoutType",
-        "functionVariableInReturnTypeAnnotation",
-        "reorderProperties",
-        "import_var-referencing-an-imported-module-alias",
-        "checkSuperCallBeforeThisAccessing5",
-        "defaultKeywordWithoutExport2",
-        "augmentedTypesVar",
-        "inheritedStringIndexersFromDifferentBaseTypes",
-        "alwaysStrictModule2",
-        "externalModuleImmutableBindings",
-        "argumentsBindsToFunctionScopeArgumentList",
-        "deprecatedCompilerOptions6",
-        "undefinedTypeAssignment2",
-        "genericClassesRedeclaration",
-        "protectedAccessThroughContextualThis",
-        "templateLiteralIntersection2",
-        "genericFunctionsWithOptionalParameters3",
-        "clodulesDerivedClasses",
-        "typeValueConflict1",
-        "declarationEmitInterfaceWithNonEntityNameExpressionHeritage",
-        "moduleProperty2",
-        "spreadOfParamsFromGeneratorMakesRequiredParams",
-        "sourceMapValidationEnums",
-        "fakeInfinity1",
-        "typePredicateWithThisParameter",
-        "conditionalAnyCheckTypePicksBothBranches",
-        "literalsInComputedProperties1",
-        "overloadresolutionWithConstraintCheckingDeferred",
-        "mergedDeclarations7",
-        "voidAsNonAmbiguousReturnType",
-        "es6ImportParseErrors",
-        "destructuringAssignment_private",
-        "typeParameterFixingWithContextSensitiveArguments5",
-        "classExtendsInterfaceInModule",
-        "objectLiteralWithSemicolons5",
-        "contextuallyTypedJsxChildren2",
-        "privateNameJsx",
-        "methodSignatureHandledDeclarationKindForSymbol",
-        "unusedLocalsinConstructor1",
-        "overloadOnConstNoStringImplementation",
-        "assignmentCompatability39",
-        "assignToExistingClass",
-        "newMap",
-        "scopeCheckInsideStaticMethod1",
-        "stringIndexerAndConstructor1",
-        "argumentsObjectCreatesRestForJs",
-        "enumBasics2",
-        "mappedTypeInferenceAliasSubstitution",
-        "staticPrototypeProperty",
-        "targetTypeArgs",
-        "jsFileCompilationTypeSyntaxOfVar",
-        "mutuallyRecursiveGenericBaseTypes2",
-        "autoLift2",
-        "overloadOnConstNoAnyImplementation",
-        "interfacePropertiesWithSameName2",
-        "ensureNoCrashExportAssignmentDefineProperrtyPotentialMerge",
-        "jsFileClassPropertyType",
-        "inheritedGenericCallSignature",
-        "contravariantInferenceAndTypeGuard",
-        "nestedLoopTypeGuards",
-        "keepImportsInDts3",
-        "mappedTypeIndexedAccessConstraint",
-        "maxNodeModuleJsDepthDefaultsToZero",
-        "augmentExportEquals4_1",
-        "modularizeLibrary_Worker.asynciterable",
-        "letDeclarations-scopes2",
-        "sourceMapValidationDestructuringForArrayBindingPatternDefaultValues2",
-        "promiseWithResolvers",
-        "weakType",
-        "genericRecursiveImplicitConstructorErrors2",
-        "requireOfJsonFileWithNoContent",
-        "missingDomElements",
-        "interfaceDeclaration1",
-        "jsdocImportTypeNodeNamespace",
-        "accessorBodyInTypeContext",
-        "systemModule11",
-        "classStaticPropertyAccess",
-        "augmentExportEquals3",
-        "returnTypeTypeArguments",
-        "indexedAccessWithFreshObjectLiteral",
-        "innerModExport2",
-        "declarationEmitReexportedSymlinkReference3",
-        "expressionTypeNodeShouldError",
-        "resolutionCandidateFromPackageJsonField2",
-        "typeParametersShouldNotBeEqual3",
-        "missingTypeArguments2",
-        "declarationEmitPrivatePromiseLikeInterface",
-        "rectype",
-        "esModuleInteropTslibHelpers",
-        "isolatedDeclarationErrorsClassesExpressions",
-        "moduleAugmentationGlobal8",
-        "declarationFileNoCrashOnExtraExportModifier",
-        "typeGuardNarrowsIndexedAccessOfKnownProperty7",
-        "dynamicNamesErrors",
-        "classImplementsClass4",
-        "controlFlowInstanceof",
-        "declarationEmitReexportedSymlinkReference",
-        "collisionArgumentsFunctionExpressions",
-        "switchCaseCircularRefeference",
-        "duplicateIdentifierRelatedSpans_moduleAugmentation",
-        "renamingDestructuredPropertyInFunctionType3",
-        "contextuallyTypedParametersWithInitializers3",
-        "out-flag2",
-        "conditionalTypeContextualTypeSimplificationsSuceeds",
-        "regularExpressionWithNonBMPFlags",
-        "unionTypeErrorMessageTypeRefs01",
-        "excessPropertyCheckWithMultipleDiscriminants",
-        "optionalParameterProperty",
-        "visibilityOfCrossModuleTypeUsage",
-        "declarationEmitMappedTypeTemplateTypeofSymbol",
-        "modularizeLibrary_ErrorFromUsingES6ArrayWithOnlyES6ArrayLib",
-        "classExpressionTest2",
-        "commaOperatorLeftSideUnused",
-        "deduplicateImportsInSystem",
-        "classExpressionNames",
-        "noCrashWithVerbatimModuleSyntaxAndImportsNotUsedAsValues",
-        "typeReferenceDirectiveWithFailedFromTypeRoot",
-        "typeInferenceWithExcessPropertiesJsx",
-        "numericIndexerTyping1",
-        "moduleResolutionWithSuffixes_empty",
-        "this_inside-enum-should-not-be-allowed",
-        "symlinkedWorkspaceDependenciesNoDirectLinkGeneratesDeepNonrelativeName",
-        "contextualTypingArrayDestructuringWithDefaults",
-        "thisInConstructorParameter2",
-        "signatureLengthMismatchCall",
-        "identifierStartAfterNumericLiteral",
-        "parseArrowFunctionWithFunctionReturnType",
-        "numericLiteralsWithTrailingDecimalPoints01",
-        "generativeRecursionWithTypeOf",
-        "disallowedBlockScopedInPresenceOfParseErrors1",
-        "parseEntityNameWithReservedWord",
-        "asiAbstract",
-        "moduleMemberWithoutTypeAnnotation1",
-        "jsxFactoryQualifiedNameResolutionError",
-        "selfReferencingFile",
-        "pathMappingBasedModuleResolution_rootImport_noAliasWithRoot",
-        "noUnusedLocals_writeOnlyProperty_dynamicNames",
-        "typeParameterArgumentEquivalence2",
-        "templateStringsArrayTypeNotDefinedES5Mode",
-        "invalidContinueInDownlevelAsync",
-        "awaitInNonAsyncFunction",
-        "functionAssignment",
-        "noImplicitAnyInCastExpression",
-        "chainedCallsWithTypeParameterConstrainedToOtherTypeParameter",
-        "assignmentToObject",
-        "accessStaticMemberFromInstanceMethod01",
-        "overloadAssignmentCompat",
-        "sourceMapValidationDestructuringForOfArrayBindingPatternDefaultValues2",
-        "operationsAvailableOnPromisedType",
-        "arrowExpressionBodyJSDoc",
-        "forInStrictNullChecksNoError",
-        "errorOnEnumReferenceInCondition",
-        "noTypeArgumentOnReturnType1",
-        "useUnknownInCatchVariables01",
-        "exportDefaultTypeAndClass",
-        "genericCallAtYieldExpressionInGenericCall1",
-        "targetTypeVoidFunc",
-        "tsxSpreadDoesNotReportExcessProps",
-        "noImplicitAnyParametersInAmbientClass",
-        "jsdocTypedefNoCrash2",
-        "classWithMultipleBaseClasses",
-        "indexedAccessImplicitlyAny",
-        "signatureCombiningRestParameters5",
-        "es5ModuleInternalNamedImports",
-        "declarationEmitComputedNameCausesImportToBePainted",
-        "isolatedDeclarationErrorsObjects",
-        "contextualSignatureInstantiation4",
-        "jsDeclarationsWithDefaultAsNamespaceLikeMerge",
-        "divergentAccessorsTypes4",
-        "typeReferenceDirectives12",
-        "strictNullNotNullIndexTypeNoLib",
-        "elaborationForPossiblyCallableTypeStillReferencesArgumentAtTopLevel",
-        "typeInterfaceDeclarationsInBlockStatements1",
-        "fatarrowfunctionsOptionalArgsErrors1",
-        "nodeNextPackageSelfNameWithOutDirRootDir",
-        "tsxDeepAttributeAssignabilityError",
-        "deepExcessPropertyCheckingWhenTargetIsIntersection",
-        "spyComparisonChecking",
-        "metadataOfClassFromAlias",
-        "es6ExportEqualsInterop",
-        "parseShortform",
-        "readonlyInNonPropertyParameters",
-        "multiLinePropertyAccessAndArrowFunctionIndent1",
-        "accessorWithoutBody2",
-        "optionalParameterInDestructuringWithInitializer",
-        "externSyntax",
-        "namespaceMergedWithFunctionWithOverloadsUsage",
-        "undefinedTypeAssignment3",
-        "nestedThisContainer",
-        "jsFileCompilationOptionalClassElementSyntaxOfClass",
-        "checkJsFiles_skipDiagnostics",
-        "import_reference-to-type-alias",
-        "genericFunctionsWithOptionalParameters2",
-        "destructureOfVariableSameAsShorthand",
-        "modularizeLibrary_ErrorFromUsingES6FeaturesWithOnlyES5Lib",
-        "errorMessagesIntersectionTypes01",
-        "controlFlowUnionContainingTypeParameter1",
-        "declarationEmitUnknownImport",
-        "indirectSelfReferenceGeneric",
-        "recursiveLetConst",
-        "declarationEmitInvalidReference",
-        "importDeclWithExportModifier",
-        "objectLiteralWithSemicolons4",
-        "useBeforeDeclaration_classDecorators.1",
-        "enumBasics3",
-        "intersectionPropertyCheck",
-        "fallbackToBindingPatternForTypeInference",
-        "complicatedIndexesOfIntersectionsAreInferencable",
-        "functionWithSameNameAsField",
-        "aliasUsageInIndexerOfClass",
-        "parseErrorIncorrectReturnToken",
-        "genericAndNonGenericInheritedSignature1",
-        "defaultValueInFunctionTypes",
-        "circularGetAccessor",
-        "tslibInJs",
-        "importAliasInModuleAugmentation",
-        "unusedMultipleParameters2InFunctionDeclaration",
-        "recursiveFunctionTypes",
-        "conditionalTypeVarianceBigArrayConstraintsPerformance",
-        "typeReferenceDirectiveScopedPackageCustomTypeRoot",
-        "circularModuleImports",
-        "multiExtendsSplitInterfaces1",
-        "jsFileCompilationDuplicateFunctionImplementationFileOrderReversed",
-        "emptyGenericParamList",
-        "propertyOrdering",
-        "moduleResolutionWithExtensions_unexpected",
-        "isolatedModulesSketchyAliasLocalMerge",
-        "invalidLetInForOfAndForIn_ES6",
-        "jsxIssuesErrorWhenTagExpectsTooManyArguments",
-        "recursiveExportAssignmentAndFindAliasedType6",
-        "genericRecursiveImplicitConstructorErrors3",
-        "genericIsNeverEmptyObject",
-        "unusedDestructuring",
-        "arrayToLocaleStringES5",
-        "systemModule10",
-        "arithmeticOnInvalidTypes",
-        "amdModuleName2",
-        "nestedIfStatement",
-        "interfaceWithMultipleDeclarations",
-        "augmentExportEquals2",
-        "strictModeReservedWordInModuleDeclaration",
-        "typePredicateInherit",
-        "nodeColonModuleResolution2",
-        "typeResolution",
-        "regularExpressionUnicodePropertyValueExpressionSuggestions",
-        "staticVisibility2",
-        "declarationEmitReexportedSymlinkReference2",
-        "recursiveMods",
-        "stringLiteralPropertyNameWithLineContinuation1",
-        "typeParametersShouldNotBeEqual2",
-        "checkSuperCallBeforeThisAccess",
-        "incompleteDottedExpressionAtEOF",
-        "isolatedDeclarationErrorsExpressions",
-        "indexSignatureWithAccessibilityModifier",
-        "jsdocPropertyTagInvalid",
-        "augmentedClassWithPrototypePropertyOnModule",
-        "primitiveConstraints2",
-        "undefinedAssignableToGenericMappedIntersection",
-        "statics",
-        "recursiveTypeParameterConstraintReferenceLacksTypeArgs",
-        "nodeNextImportModeImplicitIndexResolution2",
-        "multipleBaseInterfaesWithIncompatibleProperties",
-        "classImplementsClass5",
-        "emptyObjectNotSubtypeOfIndexSignatureContainingObject1",
-        "arithAssignTyping",
-        "typeArgInference2",
-        "exportAssignmentWithDeclareAndExportModifiers",
-        "genericTypeAssertions2",
-        "promiseIdentityWithAny2",
-        "transformNestedGeneratorsWithTry",
-        "out-flag3",
-        "infinitelyExpandingTypes1",
-        "unicodeEscapesInNames01",
-        "exportEqualsProperty",
-        "letInConstDeclarations_ES6",
-        "inheritSameNamePrivatePropertiesFromDifferentOrigins",
-        "renamingDestructuredPropertyInFunctionType2",
-        "blockScopedSameNameFunctionDeclarationES6",
-        "parseJsxExtends2",
-        "ParameterList5",
-        "letInLetDeclarations_ES5",
-        "contextualTyping12",
-        "typeGuardConstructorPrimitiveTypes",
-        "bindingPatternCannotBeOnlyInferenceSource",
-        "jsxFactoryNotIdentifierOrQualifiedName",
-        "classUsedBeforeInitializedVariables",
-        "assignmentToFunction",
-        "esModuleInteropImportTSLibHasImport",
-        "typeUsedAsTypeLiteralIndex",
-        "exportDefaultClassAndValue",
-        "contextualParamTypeVsNestedReturnTypeInference4",
-        "blockScopedVariablesUseBeforeDef",
-        "allowSyntheticDefaultImports6",
-        "es6ImportNamedImportIdentifiersParsing",
-        "useBeforeDeclaration_destructuring",
-        "moduleVariableArrayIndexer",
-        "superInLambdas",
-        "modifiersInObjectLiterals",
-        "es6ImportWithoutFromClauseNonInstantiatedModule",
-        "jsxFactoryAndReactNamespace",
-        "assignmentToInstantiationExpression",
-        "duplicateObjectLiteralProperty_computedName1",
-        "narrowByEquality",
-        "assignmentCompatBug5",
-        "bluebirdStaticThis",
-        "importAnImport",
-        "pushTypeGetTypeOfAlias",
-        "bigIntWithTargetLessThanES2016",
-        "reactReadonlyHOCAssignabilityReal",
-        "indexedAccessKeyofNestedSimplifiedSubstituteUnwrapped",
-        "genericDefaultsErrors",
-        "spellingSuggestionLeadingUnderscores01",
-        "isolatedModulesImportConstEnum",
-        "jsDocDeclarationEmitDoesNotUseNodeModulesPathWithoutError",
-        "declarationEmitExpressionInExtends",
-        "indexAt",
-        "mergeSymbolReexportInterface",
-        "declarationEmitPathMappingMonorepo2",
-        "controlFlowForIndexSignatures",
-        "typeParameterArgumentEquivalence3",
-        "extendFromAny",
-        "assignToObjectTypeWithPrototypeProperty",
-        "jsFileCompilationInterfaceSyntax",
-        "emitMemberAccessExpression",
-        "overloadingOnConstants1",
-        "untypedFunctionCallsWithTypeParameters1",
-        "declFileEmitDeclarationOnlyError1",
-        "nestedGlobalNamespaceInClass",
-        "getterSetterNonAccessor",
-        "assertionFunctionsCanNarrowByDiscriminant",
-        "typeOfOnTypeArg",
-        "commentsOnJSXExpressionsArePreserved",
-        "commonJsExportTypeDeclarationError",
-        "prettyContextNotDebugAssertion",
-        "mappedTypeNotMistakenlyHomomorphic",
-        "enumPropertyAccessBeforeInitalisation",
-        "deprecatedCompilerOptions3",
-        "letDeclarations-useBeforeDefinition2",
-        "controlFlowDestructuringVariablesInTryCatch",
-        "asyncFunctionReturnType",
-        "duplicatePackage_withErrors",
-        "nullableFunctionError",
-        "declarationsWithRecursiveInternalTypesProduceUniqueTypeParams",
-        "objectLiteralsAgainstUnionsOfArrays01",
-        "importNonExportedMember10",
-        "genericIndexedAccessVarianceComparisonResultCorrect",
-        "baseConstraintOfDecorator",
-        "longObjectInstantiationChain2",
-        "signatureCombiningRestParameters1",
-        "jsxFactoryMissingErrorInsideAClass",
-        "genericDefaults",
-        "constEnums",
-        "sourceMapValidationFor",
-        "declarationEmitExpressionInExtends4",
-        "relationComplexityError",
-        "parserPrivateIdentifierInArrayAssignment",
-        "functionOverloads",
-        "errorForwardReferenceForwadingConstructor",
-        "classMemberInitializerWithLamdaScoping2",
-        "unusedLocalsInMethod1",
-        "recursiveBaseCheck5",
-        "jsFileCompilationBindStrictModeErrors",
-        "unparenthesizedConstructorTypeInUnionOrIntersection",
-        "null",
-        "mergedClassWithNamespacePrototype",
-        "unionErrorMessageOnMatchingDiscriminant",
-        "incompatibleTypes",
-        "nonNullableReductionNonStrict",
-        "nodeNextModuleResolution1",
-        "pathMappingBasedModuleResolution3_classic",
-        "libTypeScriptOverrideSimpleConfig",
-        "identicalTypesNoDifferByCheckOrder",
-        "typeofUsedBeforeBlockScoped",
-        "emptyModuleName",
-        "restUnion3",
-        "expressionsForbiddenInParameterInitializers",
-        "importTypeAssertionDeprecation",
-        "constructorWithIncompleteTypeAnnotation",
-        "extendArray",
-        "classImplementsMethodWIthTupleArgs",
-        "circularAccessorAnnotations",
-        "parseUnaryExpressionNoTypeAssertionInJsx2",
-        "unusedVariablesinForLoop",
-        "undeclaredModuleError",
-        "conflictMarkerTrivia3",
-        "ipromise3",
-        "collisionExportsRequireAndAmbientModule",
-        "errorRecoveryInClassDeclaration",
-        "impliedNodeFormatEmit2",
-        "duplicateIdentifiersAcrossContainerBoundaries",
-        "functionOverloads43",
-        "jsFileFunctionParametersAsOptional2",
-        "classWithDuplicateIdentifier",
-        "decoratorUsedBeforeDeclaration",
-        "inheritedFunctionAssignmentCompatibility",
-        "narrowingTypeofUndefined1",
-        "noCheckNoEmit",
-        "mismatchedGenericArguments1",
-        "evalOrArgumentsInDeclarationFunctions",
-        "webworkerIterable",
-        "duplicateIdentifierInCatchBlock",
-        "jsxFactoryAndJsxFragmentFactoryErrorNotIdentifier",
-        "functionTypeArgumentArityErrors",
-        "prototypes",
-        "specialIntersectionsInMappedTypes",
-        "experimentalDecoratorMetadataUnresolvedTypeObjectInEmit",
-        "declarationEmitNameConflicts3",
-        "collisionArgumentsClassMethod",
-        "templateLiteralEscapeSequence",
-        "staticAsIdentifier",
-        "unusedSingleParameterInMethodDeclaration",
-        "errorForUsingPropertyOfTypeAsType03",
-        "publicGetterProtectedSetterFromThisParameter",
-        "collisionArgumentsInType",
-        "arrayCast",
-        "moduleResolutionAsTypeReferenceDirective",
-        "internalImportUnInstantiatedModuleMergedWithClassNotReferencingInstance",
-        "classMemberInitializerScoping2",
-        "exportEqualsClassRedeclarationError",
-        "genericTypeAssertions6",
-        "systemModule14",
-        "checkInheritedProperty",
-        "blockScopedSameNameFunctionDeclarationStrictES5",
-        "functionTypeArgumentAssignmentCompat",
-        "objectCreate-errors",
-        "spreadInvalidArgumentType",
-        "recursiveExportAssignmentAndFindAliasedType2",
-        "ClassDeclarationWithInvalidConstOnPropertyDeclaration",
-        "promiseIdentity2",
-        "interfaceDeclaration4",
-        "functionCall8",
-        "exportImportCanSubstituteConstEnumForValue",
-        "jsFileMethodOverloads2",
-        "collisionExportsRequireAndClass",
-        "genericCallbackInvokedInsideItsContainingFunction1",
-        "jsdocInTypeScript",
-        "intersectionsAndOptionalProperties2",
-        "typeofExternalModules",
-        "pathMappingBasedModuleResolution5_node",
-        "augmentExportEquals6",
-        "objectLiteralFunctionArgContextualTyping",
-        "capturedParametersInInitializers1",
-        "declFileTypeAnnotationVisibilityErrorReturnTypeOfFunction",
-        "noImplicitReturnsWithoutReturnExpression",
-        "importHelpersNoHelpersForAsyncGenerators",
-        "errorSpanForUnclosedJsxTag",
-        "jsxFactoryNotIdentifierOrQualifiedName2",
-        "varianceMeasurement",
-        "module_augmentExistingVariable",
-        "jsdocTypedef_propertyWithNoType",
-        "contextualTypingOfLambdaReturnExpression",
-        "exportEqualErrorType",
-        "jsdocTypeCast",
-        "ambientExternalModuleInAnotherExternalModule",
-        "objectGroupBy",
-        "genericIndexTypeHasSensibleErrorMessage",
-        "inferenceContextualReturnTypeUnion4",
-        "protoAssignment",
-        "declarationEmitSymlinkPaths",
-        "regularExpressionGroupNameSuggestions",
-        "augmentedTypesModules3b",
-        "importHelpersWithLocalCollisions",
-        "allowSyntheticDefaultImports2",
-        "moduleImport",
-        "moduleResolution_explicitNodeModulesImport_implicitAny",
-        "genericConstructorFunction1",
-        "genericWithNoConstraintComparableWithCurlyCurly",
-        "jsxNamespacedNameNotComparedToNonMatchingIndexSignature",
-        "capturedLetConstInLoop9",
-        "lateBoundDestructuringImplicitAnyError",
-        "isolatedDeclarationErrorsClasses",
-        "recursiveReverseMappedType",
-        "mixedExports",
-        "emitClassExpressionInDeclarationFile2",
-        "parseJsxElementInUnaryExpressionNoCrash1",
-        "jsxElementTypeLiteralWithGeneric",
-        "jsxNamespaceElementChildrenAttributeIgnoredWhenReactJsx",
-        "jsFileCompilationTypeArgumentSyntaxOfCall",
-        "superCallWithMissingBaseClass",
-        "jsFileClassPropertyType3",
-        "ClassDeclaration26",
-        "controlFlowForCatchAndFinally",
-        "jsFileCompilationLetDeclarationOrder2",
-        "contextualTypesNegatedTypeLikeConstraintInGenericMappedType2",
-        "divergentAccessors1",
-        "constDeclarations-access3",
-        "expandoFunctionExpressionsWithDynamicNames2",
-        "expandoFunctionSymbolPropertyJs",
-        "prototypeInstantiatedWithBaseConstraint",
-        "aliasBug",
-        "letDeclarations-scopes-duplicates7",
-        "jsxLibraryManagedAttributesUnusedGeneric",
-        "lastPropertyInLiteralWins",
-        "requireOfJsonFileWithAmd",
-        "destructureComputedProperty",
-        "correlatedUnions",
-        "deepComparisons",
-        "badArraySyntax",
-        "reachabilityChecks1",
-        "aliasInstantiationExpressionGenericIntersectionNoCrash1",
-        "commonSourceDir5",
-        "es6ImportDefaultBindingFollowedWithNamedImportDts1",
-        "importDeclRefereingExternalModuleWithNoResolve",
-        "mergedModuleDeclarationCodeGen5",
-        "mappedTypeUnionConstrainTupleTreatedAsArrayLike",
-        "functionOverloads19",
-        "unknownSymbols2",
-        "moduleAsBaseType",
-        "mismatchedClassConstructorVariable",
-        "jsxNamespaceGlobalReexport",
-        "sourceMapValidationDestructuringVariableStatementArrayBindingPattern3",
-        "inexistentPropertyInsideToStringType",
-        "moduleAndInterfaceSharingName2",
-        "exportAssignmentOfDeclaredExternalModule",
-        "modulePreserve2",
-        "unusedImports10",
-        "es6ImportDefaultBindingFollowedWithNamedImportInEs5",
-        "es6ClassTest",
-        "bom-utf16be",
-        "genericChainedCalls",
-        "exportDefaultInterfaceClassAndFunctionOverloads",
-        "contextualComputedNonBindablePropertyType",
-        "importTypeWithUnparenthesizedGenericFunctionParsed",
-        "literalTypeNameAssertionNotTriggered",
-        "allowSyntheticDefaultImports10",
-        "exportAssignmentImportMergeNoCrash",
-        "protectedMembersThisParameter",
-        "decoratorMetadataElidedImport",
-        "wideningWithTopLevelTypeParameter",
-        "promiseTypeStrictNull",
-        "controlFlowFunctionLikeCircular1",
-        "uniqueSymbolJs",
-        "selfReferencingFile2",
-        "unusedImports_entireImportDeclaration",
-        "memberVariableDeclarations1",
-        "aliasUsageInObjectLiteral",
-        "arrayToLocaleStringES2020",
-        "commonSourceDirectory",
-        "cachedModuleResolution4",
-        "typeParametersInStaticMethods",
-        "errorsWithInvokablesInUnions01",
-        "incompatibleExports1",
-        "baseExpressionTypeParameters",
-        "commonJsUnusedLocals",
-        "moduleAugmentationsImports4",
-        "conditionalEqualityOnLiteralObjects",
-        "conflictingMemberTypesInBases",
-        "objectLiteralEnumPropertyNames",
-        "controlFlowSelfReferentialLoop",
-        "exportDefaultFunctionInNamespace",
-        "invalidUnicodeEscapeSequance2",
-        "amdDependencyComment2",
-        "genericSpecializations2",
-        "es6ImportWithoutFromClauseWithExport",
-        "augmentedTypesInterface",
-        "augmentExportEquals2_1",
-        "readonlyAssignmentInSubclassOfClassExpression",
-        "reactNamespaceMissingDeclaration",
-        "aliasesInSystemModule1",
-        "contravariantOnlyInferenceWithAnnotatedOptionalParameterJs",
-        "es6ClassTest5",
-        "moduleAugmentationOfAlias",
-        "unusedTypeParameterInLambda3",
-        "overloadingStaticFunctionsInFunctions",
-        "nativeToBoxedTypes",
-        "moduleWithTryStatement1",
-        "unusedVariablesWithUnderscoreInBindingElement",
-        "privacyAccessorDeclFile",
-        "modularizeLibrary_Dom.asynciterable",
-        "pathMappingWithoutBaseUrl2",
-        "pathMappingBasedModuleResolution4_classic",
-        "capturedLetConstInLoop9_ES6",
-        "lift",
-        "indexSignatureWithInitializer",
-        "genericTypeParameterEquivalence2",
-        "commonMissingSemicolons",
-        "noErrorUsingImportExportModuleAugmentationInDeclarationFile3",
-        "didYouMeanStringLiteral",
-        "conditionalExpression1",
-        "forwardRefInTypeDeclaration",
-        "indexerAssignability",
-        "keyRemappingKeyofResult2",
-        "contextualTypingWithGenericSignature",
-        "duplicateIdentifiersAcrossFileBoundaries",
-        "contextualSigInstantiationRestParams",
-        "parseUnmatchedTypeAssertion",
-        "contextuallyTypingRestParameters",
-        "truthinessCallExpressionCoercion",
-        "useBeforeDefinitionInDeclarationFiles",
-        "exportDefaultAlias_excludesEverything",
-        "constructorAsType",
-        "declFileImportedTypeUseInTypeArgPosition",
-        "jsFileCompilationDuplicateFunctionImplementation",
-        "stringTrim",
-        "unusedInterfaceinNamespace2",
-        "typeParameterDiamond1",
-        "outModuleConcatCommonjs",
-        "nodeNextPackageSelfNameWithOutDirDeclDirRootDir",
-        "abstractPropertyBasics",
-        "literalWideningWithCompoundLikeAssignments",
-        "staticModifierAlreadySeen",
-        "destructuringAssignmentWithDefault",
-        "typeGuardNarrowsIndexedAccessOfKnownProperty9",
-        "reexportedMissingAlias",
-        "duplicateLocalVariable1",
-        "localTypeParameterInferencePriority",
-        "noSymbolForMergeCrash",
-        "moduleResolutionWithSymlinks_notInNodeModules",
-        "functionTypesLackingReturnTypes",
-        "destructuringFromUnionSpread",
-        "restArgAssignmentCompat",
-        "chainedAssignment1",
-        "complexClassRelationships",
-        "jsxPropsAsIdentifierNames",
-        "superPropertyAccess1",
-        "unusedPrivateMethodInClass3",
-        "excessPropertyCheckIntersectionWithIndexSignature",
-        "signatureLengthMismatchInOverload",
-        "arrayDestructuringInSwitch2",
-        "externalModuleRefernceResolutionOrderInImportDeclaration",
-        "jsFileCompilationAmbientVarDeclarationSyntax",
-        "baseClassImprovedMismatchErrors",
-        "classExtendsClauseClassNotReferringConstructor",
-        "errorElaboration",
-        "propertiesAndIndexers2",
-        "inferentialTypingWithObjectLiteralProperties",
-        "assignmentCompatability42",
-        "noUnusedLocals_writeOnly",
-        "functionParameterArityMismatch",
-        "selfReferencingSpreadInLoop",
-        "contextualExpressionTypecheckingDoesntBlowStack",
-        "intraBindingPatternReferences",
-        "controlFlowForStatementContinueIntoIncrementor1",
-        "jsdocFunctionTypeFalsePositive",
-        "pathsValidation3",
-        "varianceCallbacksAndIndexedAccesses",
-        "newLineInTypeofInstantiation",
-        "newNonReferenceType",
-        "classExtendsInterfaceThatExtendsClassWithPrivates1",
-        "jsdocClassMissingTypeArguments",
-        "importHelpersES6",
-        "cloduleWithDuplicateMember2",
-        "mutuallyRecursiveCallbacks",
-        "arrayAssignmentTest4",
-        "deeplyNestedCheck",
-        "narrowingMutualSubtypes",
-        "classDeclarationShouldBeOutOfScopeInComputedNames",
-        "unparenthesizedFunctionTypeInUnionOrIntersection",
-        "unusedMultipleParameter1InFunctionExpression",
-        "parameterListAsTupleType",
-        "deleteReadonly",
-        "functionOverloads29",
-        "checkerInitializationCrash",
-        "reexportMissingDefault4",
-        "importNonExportedMember5",
-        "typeInferenceTypePredicate",
-        "contextualTypeForInitalizedVariablesFiltersUndefined",
-        "jsFileCompilationEnumSyntax",
-        "exportSpecifierReferencingOuterDeclaration3",
-        "reachabilityChecks5",
-        "letDeclarations-scopes-duplicates3",
-        "requireOfJsonFileNonRelativeWithoutExtension",
-        "conflictingDeclarationsImportFromNamespace1",
-        "moduleAssignmentCompat2",
-        "isolatedDeclarationErrorsAugmentation",
-        "controlFlowForFunctionLike1",
-        "exportInterfaceClassAndValueWithDuplicatesInImportList",
-        "contextualTypingWithGenericAndNonGenericSignature",
-        "undefinedTypeArgument1",
-        "excessPropertyCheckWithUnions",
-        "exportDefaultInterfaceAndFunctionOverloads",
-        "recursiveTupleTypes1",
-        "privateAccessInSubclass1",
-        "mergeSymbolReexportedTypeAliasInstantiation",
-        "genericCloduleInModule2",
-        "classMemberInitializerScoping",
-        "declFileTypeAnnotationVisibilityErrorAccessors",
-        "interfaceImplementation1",
-        "unusedMultipleParameters1InFunctionDeclaration",
-        "noInferUnionExcessPropertyCheck1",
-        "dynamicImportInDefaultExportExpression",
-        "typeInferenceReturnTypeCallback",
-        "cf",
-        "typePredicateInLoop",
-        "mappedTypeInferenceFromApparentType",
-        "arrayFromAsync",
-        "typeofAmbientExternalModules",
-        "discriminantNarrowingCouldBeCircular",
-        "primaryExpressionMods",
-        "accessorInAmbientContextES5",
-        "intersectionsOfLargeUnions2",
-        "narrowedImports",
-        "genericFunctionTypedArgumentsAreFixed",
-        "genericTypeArgumentInference1",
-        "invariantGenericErrorElaboration",
-        "inferenceFromIncompleteSource",
-        "signatureLengthMismatchWithOptionalParameters",
-        "privateInterfaceProperties",
-        "typePredicateStructuralMatch",
-        "contextualTypingOfConditionalExpression2",
-        "unusedTypeParameters5",
-        "moduleElementsInWrongContext3",
-        "functionSignatureAssignmentCompat1",
-        "customAsyncIterator",
-        "doYouNeedToChangeYourTargetLibraryES2016Plus",
-        "callOverloads3",
-        "recursivelyExpandingUnionNoStackoverflow",
-        "nodeNextPackageImportMapRootDir",
-        "objectFreeze",
-        "moduleAugmentationImportsAndExports2",
-        "genericConstraintOnExtendedBuiltinTypes2",
-        "assignmentToReferenceTypes",
-        "discriminatedUnionErrorMessage",
-        "noUnusedLocals_typeParameterMergedWithParameter",
-        "reservedWords3",
-        "classExtendsClauseClassMergedWithModuleNotReferingConstructor",
-        "optionalArgsWithDefaultValues",
-        "importTypeTypeofClassStaticLookup",
-        "dynamicImportsDeclaration",
-        "capturedLetConstInLoop6",
-        "returnTypeParameter",
-        "tsxNotUsingApparentTypeOfSFC",
-        "spellingSuggestionModule",
-        "pathMappingBasedModuleResolution1_amd",
-        "cloduleTest2",
-        "inferenceDoesNotAddUndefinedOrNull",
-        "varianceReferences",
-        "initializerWithThisPropertyAccess",
-        "checkJsxNotSetError",
-        "complicatedIndexedAccessKeyofReliesOnKeyofNeverUpperBound",
-        "staticVisibility",
-        "strictNullLogicalAndOr",
-        "tslibMultipleMissingHelper",
-        "exportDefaultInterfaceAndTwoFunctions",
-        "functionCallOnConstrainedTypeVariable",
-        "constDeclarations-invalidContexts",
-        "contextualReturnTypeOfIIFE",
-        "jsxNestedWithinTernaryParsesCorrectly",
-        "redeclareParameterInCatchBlock",
-        "omittedExpressionForOfLoop",
-        "optionalChainWithInstantiationExpression1",
-        "neverAsDiscriminantType",
-        "errorOnUnionVsObjectShouldDeeplyDisambiguate",
-        "functionCall7",
-        "moduleVisibilityTest4",
-        "es6ImportDefaultBindingFollowedWithNamedImportWithExport",
-        "functionOverloads1",
-        "metadataOfClassFromAlias2",
-        "indexedAccessNormalization",
-        "promiseChaining2",
-        "typeMatch2",
-        "classExtendsNull3",
-        "conflictingTypeParameterSymbolTransfer",
-        "unusedSetterInClass",
-        "parametersSyntaxErrorNoCrash2",
-        "jsxCallElaborationCheckNoCrash1",
-        "jsEmitIntersectionProperty",
-        "jsxNamespacePrefixInName",
-        "bigintAmbientMinimal",
-        "downlevelLetConst16",
-        "pathMappingBasedModuleResolution7_node",
-        "jsdocAccessEnumType",
-        "externModule",
-        "yieldStarContextualType",
-        "taggedTemplatesWithIncompleteTemplateExpressions3",
-        "internalAliasUninitializedModuleInsideLocalModuleWithoutExportAccessError",
-        "typeName1",
-        "typeParamExtendsOtherTypeParam",
-        "unusedImports1",
-        "requireOfJsonFileInJsFile",
-        "declarationEmitComputedPropertyNameSymbol2",
-        "mappedTypeAndIndexSignatureRelation",
-        "fileWithNextLine2",
-        "spreadTypeRemovesReadonly",
-        "varianceAnnotationValidation",
-        "emitClassExpressionInDeclarationFile",
-        "esModuleInteropEnablesSyntheticDefaultImports",
-        "argumentsObjectIterator02_ES5",
-        "mergedModuleDeclarationCodeGen",
-        "importAndVariableDeclarationConflict3",
-        "simpleRecursionWithBaseCase1",
-        "typedArraysSubarray",
-        "asyncFunctionReturnExpressionErrorSpans",
-        "objectFreezeLiteralsDontWiden",
-        "initializedDestructuringAssignmentTypes",
-        "pathsValidation2",
-        "recursiveConditionalCrash4",
-        "prefixUnaryOperatorsOnExportedVariables",
-        "instantiateContextuallyTypedGenericThis",
-        "deeplyNestedConditionalTypes",
-        "constantEnumAssert",
-        "noImplicitAnyParametersInInterface",
-        "genericsWithDuplicateTypeParameters1",
-        "moduleResolutionWithSuffixes_one_jsonModule",
-        "genericClassWithStaticFactory",
-        "unusedVariablesinForLoop4",
-        "temporal",
-        "withStatementNestedScope",
-        "arrayOfSubtypeIsAssignableToReadonlyArray",
-        "indirectDiscriminantAndExcessProperty",
-        "multiLineContextDiagnosticWithPretty",
-        "jsxNamespacePrefixIntrinsics",
-        "class2",
-        "importNonExportedMember4",
-        "destructionAssignmentError",
-        "genericFunctionInference1",
-        "narrowByClauseExpressionInSwitchTrue5",
-        "reexportMissingDefault5",
-        "erasableSyntaxOnlyDeclaration",
-        "arraySigChecking",
-        "nonExportedElementsOfMergedModules",
-        "objectLiteralFunctionArgContextualTyping2",
-        "reachabilityChecks4",
-        "excessPropertyCheckIntersectionWithRecursiveType",
-        "typedArrays",
-        "es6ImportDefaultBindingFollowedWithNamedImport1",
-        "letDeclarations-scopes-duplicates2",
-        "exportDefaultStripsFreshness",
-        "moduleAssignmentCompat3",
-        "parameterPropertyInConstructor2",
-        "restInvalidArgumentType",
-        "genericConstraintOnExtendedBuiltinTypes",
-        "mutrec",
-        "isolatedModulesExportDeclarationType",
-        "indexWithUndefinedAndNullStrictNullChecks",
-        "conditionalTypesASI",
-        "typeofInternalModules",
-        "unusedMultipleParameter2InFunctionExpression",
-        "varArgWithNoParamName",
-        "misspelledNewMetaProperty",
-        "collisionExportsRequireAndFunction",
-        "unionPropertyOfProtectedAndIntersectionProperty",
-        "importAssertionNonstring",
-        "collisionArgumentsArrowFunctions",
-        "propagationOfPromiseInitialization",
-        "parseErrorInHeritageClause1",
-        "emptyTypeArgumentListWithNew",
-        "aliasInaccessibleModule2",
-        "reactImportDropped",
-        "exportObjectRest",
-        "noCircularDefinitionOnExportOfPrivateInMergedNamespace",
-        "errorOnUnionVsObjectShouldDeeplyDisambiguate2",
-        "excessPropertyCheckWithSpread",
-        "underscoreMapFirst",
-        "inheritedModuleMembersForClodule",
-        "reassignStaticProp",
-        "assignmentIndexedToPrimitives",
-        "noImplicitAnyLoopCrash",
-        "recursiveGenericUnionType2",
-        "jsdocTypeNongenericInstantiationAttempt",
-        "promisePermutations2",
-        "classExtendingAny",
-        "optionalFunctionArgAssignability",
-        "nodeResolution6",
-        "implementArrayInterface",
-        "moduleElementsInWrongContext2",
-        "indexedAccessCanBeHighOrder",
-        "unusedTypeParameters4",
-        "intersectionsOfLargeUnions",
-        "importDeclWithExportModifierAndExportAssignmentInAmbientContext",
-        "duplicateErrorNameNotFound",
-        "innerAliases",
-        "constEnumNamespaceReferenceCausesNoImport2",
-        "typePartameterConstraintInstantiatedWithDefaultWhenCheckingDefault",
-        "checkIndexConstraintOfJavascriptClassExpression",
-        "recursiveIdenticalOverloadResolution",
-        "overloadsWithConstraints",
-        "assignmentCompatWithOverloads",
-        "invalidStaticField",
-        "moduleResolutionWithSuffixes_one_externalModule_withPaths",
-        "moduleAugmentationImportsAndExports3",
-        "reservedWords2",
-        "noCheckDoesNotReportError",
-        "typeParameterConstrainedToOuterTypeParameter",
-        "excessivelyLargeTupleSpread",
-        "errorElaborationDivesIntoApparentlyPresentPropsOnly",
-        "jsFileImportPreservedWhenUsed",
-        "capturedLetConstInLoop7",
-        "typeParameterDiamond4",
-        "emitClassMergedWithConstNamespaceNotElided",
-        "genericMemberFunction",
-        "controlFlowLoopAnalysis",
-        "declarationEmitComputedPropertyNameEnum1",
-        "crashDeclareGlobalTypeofExport",
-        "cannotIndexGenericWritingError",
-        "superNewCall1",
-        "errorsOnImportedSymbol",
-        "typeArgumentsOnFunctionsWithNoTypeParameters",
-        "mappedTypeAsStringTemplate",
-        "privacyVarDeclFile",
-        "es6ImportDefaultBindingMergeErrors",
-        "inKeywordNarrowingWithNoUncheckedIndexedAccess",
-        "useBeforeDeclaration",
-        "indexingTypesWithNever",
-        "contextualTypeIterableUnions",
-        "emitCapturingThisInTupleDestructuring1",
-        "emitBundleWithShebang1",
-        "uncalledFunctionChecksInConditional",
-        "circularConstraintYieldsAppropriateError",
-        "homomorphicMappedTypeWithNonHomomorphicInstantiationSpreadable1",
-        "classWithOverloadImplementationOfWrongName2",
-        "pathMappingBasedModuleResolution6_node",
-        "unusedIdentifiersConsolidated1",
-        "indexWithUndefinedAndNull",
-        "superInObjectLiterals_ES6",
-        "ambientExternalModuleWithRelativeModuleName",
-        "blockScopedEnumVariablesUseBeforeDef_isolatedModules",
-        "controlFlowArrayErrors",
-        "classExtendsNull2",
-        "strictSubtypeAndNarrowing",
-        "iteratorsAndStrictNullChecks",
-        "namespaceMergedWithImportAliasNoCrash",
-        "moduleResolution_relativeImportJsFile_noImplicitAny",
-        "fuzzy",
-        "checkMergedGlobalUMDSymbol",
-        "parametersSyntaxErrorNoCrash3",
-        "implicitAnyGetAndSetAccessorWithAnyReturnType",
-        "unusedNamespaceInModule",
-        "funClodule",
-        "abstractPropertyNegative",
-        "duplicateLocalVariable4",
-        "letDeclarations-useBeforeDefinition",
-        "enumUsedBeforeDeclaration",
-        "inheritanceMemberFuncOverridingAccessor",
-        "superPropertyAccess",
-        "topLevelLambda3",
-        "jsDeclarationsInheritedTypes",
-        "typeParameterHasSelfAsConstraint",
-        "taggedTemplatesWithIncompleteTemplateExpressions2",
-        "fileWithNextLine3",
-        "getterSetterSubtypeAssignment",
-        "controlFlowCaching",
-        "elidedJSImport1",
-        "declarationEmitOverloadedPrivateInference",
-        "exportDefaultTypeClassAndValue",
-        "genericRestTypes",
-        "es6ImportWithoutFromClause",
-        "extendConstructSignatureInInterface",
-        "inheritFromGenericTypeParameter",
-        "privateFieldsInClassExpressionDeclaration",
-        "contextualTypingOfGenericFunctionTypedArguments1",
-        "constDeclarations-access2",
-        "letAndVarRedeclaration",
-        "inferenceOfNullableObjectTypesWithCommonBase",
-        "uniqueSymbolAllowsIndexInObjectWithIndexSignature",
-        "typeAliasDeclarationEmit3",
-        "errorCause",
-        "inferenceExactOptionalProperties2",
-        "objectLitGetterSetter",
-        "moduledecl",
-        "letDeclarations-scopes-duplicates6",
-        "crashInsourcePropertyIsRelatableToTargetProperty",
-        "unusedSwitchStatement",
-        "computedEnumMemberSyntacticallyString",
-        "unclosedExportClause02",
-        "constEnumSyntheticNodesComments",
-        "commonSourceDir4",
-        "doubleUnderStringLiteralAssignability",
-        "subclassThisTypeAssignable02",
-        "mergedModuleDeclarationCodeGen4",
-        "conditionalTypesSimplifyWhenTrivial",
-        "noImplicitAnyIndexing",
-        "functionOverloads18",
-        "genericCallOnMemberReturningClosedOverObject",
-        "constDeclarations-errors",
-        "exportDefaultForNonInstantiatedModule",
-        "unusedLocalsStartingWithUnderscore",
-        "exportDefaultClassInNamespace",
-        "arrayAssignmentTest1",
-        "destructureTupleWithVariableElement",
-        "mappedTypeWithAsClauseAndLateBoundProperty",
-        "sourceMapValidationDestructuringVariableStatementArrayBindingPattern2",
-        "inferFromGenericFunctionReturnTypes1",
-        "importHelpersNoHelpers",
-        "potentiallyUncalledDecorators",
-        "contextualOverloadListFromUnionWithPrimitiveNoImplicitAny",
-        "jsEnumTagOnObjectFrozen",
-        "es6ImportEqualsDeclaration",
-        "newOnInstanceSymbol",
-        "moduleSharesNameWithImportDeclarationInsideIt5",
-        "importWithTrailingSlash",
-        "inKeywordAndIntersection",
-        "recursiveObjectLiteral",
-        "arrayToLocaleStringES2015",
-        "privacyCannotNameVarTypeDeclFile",
-        "nodeNextPackageSelfNameWithOutDir",
-        "narrowingAssignmentReadonlyRespectsAssertion",
-        "jsxChildrenGenericContextualTypes",
-        "noInferCommonPropertyCheck1",
-        "symbolObserverMismatchingPolyfillsWorkTogether",
-        "library_ObjectPrototypeProperties",
-        "returnTypeInferenceContextualParameterTypesInGenerator1",
-        "privacyGloImport",
-        "unusedLocalsAndParameters",
-        "functionAssignabilityWithArrayLike01",
-        "accessorInferredReturnTypeErrorInReturnStatement",
-        "manyCompilerErrorsInTheTwoFiles",
-        "nodeResolution2",
-        "classExpressionWithDecorator1",
-        "selfReferencingFile3",
-        "methodChainError",
-        "extendGlobalThis2",
-        "mixedStaticAndInstanceClassMembers",
-        "objectLitStructuralTypeMismatch",
-        "nonNullableTypes1",
-        "targetTypeBaseCalls",
-        "lambdaArgCrash",
-        "parserUnparsedTokenCrash1",
-        "crashInYieldStarInAsyncFunction",
-        "heterogeneousArrayAndOverloads",
-        "es6ImportEqualsExportModuleEs2015Error",
-        "unmetTypeConstraintInImportCall",
-        "constraintWithIndexedAccess",
-        "amdLikeInputDeclarationEmit",
-        "destructuredLateBoundNameHasCorrectTypes",
-        "forOfStringConstituents",
-        "genericSpecializations3",
-        "invalidUnicodeEscapeSequance3",
-        "jsxRuntimePragma",
-        "isolatedDeclarationErrorsDefault",
-        "blockScopedFunctionDeclarationES5",
-        "declarationEmitModuleWithScopeMarker",
-        "thislessFunctionsNotContextSensitive1",
-        "moduleResolutionWithExtensions_unexpected2",
-        "symbolLinkDeclarationEmitModuleNames",
-        "parameterReferenceInInitializer1",
-        "reachabilityChecks11",
-        "overload1",
-        "capturedLetConstInLoop7_ES6",
-        "classFieldSuperNotAccessibleJs",
-        "esModuleInteropDefaultImports",
-        "genericConstraint1",
-        "requireOfJsonFileWithModuleNodeResolutionEmitSystem",
-        "augmentExportEquals3_1",
-        "controlFlowPropertyDeclarations",
-        "mergeSymbolRexportFunction",
-        "circularResolvedSignature",
-        "jsxNamespaceGlobalReexportMissingAliasTarget",
-        "anonymousModules",
-        "arrayBindingPatternOmittedExpressions",
-        "noErrorUsingImportExportModuleAugmentationInDeclarationFile2",
-        "genericClassInheritsConstructorFromNonGenericClass",
-        "exportInFunction",
-        "newAbstractInstance",
-        "letAsIdentifier",
-        "conditionalDoesntLeakUninstantiatedTypeParameter",
-        "isolatedModulesRequiresPreserveConstEnum",
-        "spellingSuggestionJSXAttribute",
-        "constEnumBadPropertyNames",
-        "autoTypeAssignedUsingDestructuringFromNeverNoCrash",
-        "reactNamespaceInvalidInput",
-        "spreadOfObjectLiteralAssignableToIndexSignature",
-        "circularlyConstrainedMappedTypeContainingConditionalNoInfiniteInstantiationDepth",
-        "nodeNextImportModeImplicitIndexResolution",
-        "classSideInheritance1",
-        "conflictMarkerTrivia4",
-        "unusedMultipleParameters1InMethodDeclaration",
-        "forwardDeclaredCommonTypes01",
-        "allowSyntheticDefaultImports8",
-        "iteratorExtraParameters",
-        "jsxViaImport",
-        "interfaceInheritance",
-        "spreadsAndContextualTupleTypes",
-        "unexpectedStatementBlockTerminator",
-        "unusedInterfaceinNamespace3",
-        "propertiesAndIndexers",
-        "regularExpressionScanning",
-        "augmentedTypesEnum2",
-        "thisAssignmentInNamespaceDeclaration1",
-        "taggedTemplatesWithIncompleteTemplateExpressions6",
-        "typeInferenceConflictingCandidates",
-        "collisionArgumentsInterfaceMembers",
-        "amdDependencyCommentName4",
-        "typeGuardNarrowsIndexedAccessOfKnownProperty8",
-        "withStatementErrors",
-        "isolatedDeclarationErrors",
-        "noIterationTypeErrorsInCFA",
-        "jsxAttributeWithoutExpressionReact",
-        "parseAssertEntriesError",
-        "dynamicImportTrailingComma",
-        "unusedPrivateMethodInClass2",
-        "tsxTypeArgumentPartialDefinitionStillErrors",
-        "deleteExpressionMustBeOptional",
-        "regExpWithOpenBracketInCharClass",
-        "jsxPartialSpread",
-        "genericFunctionCallSignatureReturnTypeMismatch",
-        "constructorOverloads7",
-        "typeofProperty",
-        "accessorDeclarationOrder",
-        "promiseIdentityWithAny",
-        "argumentsPropertyNameInJsMode1",
-        "stringIndexerAssignments2",
-        "assignmentToObjectAndFunction",
-        "awaitedType",
-        "indexedAccessConstraints",
-        "unusedInvalidTypeArguments",
-        "abstractClassUnionInstantiation",
-        "umdGlobalAugmentationNoCrash",
-    };
-    for (names) |candidate| {
-        if (std.mem.eql(u8, name, candidate)) return true;
-    }
-    return false;
-}
-
-fn compilerCorpusUsesPrecompiledExactResult(name: []const u8) bool {
-    return std.mem.eql(u8, name, "variableDeclaratorResolvedDuringContextualTyping") or
-        std.mem.eql(u8, name, "unionSubtypeReductionErrors") or
-        std.mem.eql(u8, name, "recursiveTypeComparison2") or
-        std.mem.eql(u8, name, "cyclicTypeInstantiation") or
-        std.mem.eql(u8, name, "elaboratedErrors") or
-        std.mem.eql(u8, name, "complexRecursiveCollections") or
-        std.mem.eql(u8, name, "recursiveConditionalTypes") or
-        std.mem.eql(u8, name, "conditionalTypeDoesntSpinForever") or
-        std.mem.eql(u8, name, "underscoreTest1") or
-        std.mem.eql(u8, name, "resolvingClassDeclarationWhenInBaseTypeResolution") or
-        std.mem.eql(u8, name, "promisePermutations3") or
-        std.mem.eql(u8, name, "largeControlFlowGraph") or
-        std.mem.eql(u8, name, "recursiveBaseCheck");
 }
 
 /// Returned by `specifierColumnForImportDiagnostic`: the 1-based
@@ -6987,39 +4272,6 @@ fn trimTrailingDot(s: []const u8) []const u8 {
 fn diagnosticHeaderMessage(message: []const u8) []const u8 {
     if (std.mem.indexOfScalar(u8, message, '\n')) |idx| return message[0..idx];
     return message;
-}
-
-fn baselineObjectFewTypesRoot(
-    expected_headers: []const u8,
-    file: []const u8,
-    line: u32,
-    col: u32,
-    code: u32,
-    chain: []const ts_driver.DiagnosticChainEntry,
-) ?[]const u8 {
-    if (code != 2322 or chain.len == 0 or chain[0].code != 2696) return null;
-    if (!exactHeadersContainCodeAt(expected_headers, file, line, col, 2696)) return null;
-    return chain[0].message;
-}
-
-fn exactHeadersContainCodeAt(
-    headers: []const u8,
-    file: []const u8,
-    line: u32,
-    col: u32,
-    code: u32,
-) bool {
-    var prefix_buf: [512]u8 = undefined;
-    const prefix = std.fmt.bufPrint(
-        &prefix_buf,
-        "{s}({d},{d}): error TS{d}:",
-        .{ file, line, col, code },
-    ) catch return false;
-    var lines = std.mem.splitScalar(u8, headers, '\n');
-    while (lines.next()) |header| {
-        if (std.mem.startsWith(u8, header, prefix)) return true;
-    }
-    return false;
 }
 
 /// Resolve `specifier` (relative or bare) from `from_path` via the
@@ -7225,7 +4477,6 @@ pub const CorpusEntry = struct {
     /// default library rather than the fixture source. The single-source
     /// coarse runner does not compile lib.es5.d.ts, so this remains the
     /// authoritative expected-error signal for that mode.
-    baseline_has_no_position_lib_diagnostics: bool = false,
     /// Raw upstream source bytes (pre-strip). See `Case.raw_source`.
     raw_source: []const u8 = "",
     /// See `Case.baseline_module_resolution`. Empty means the baseline
@@ -7255,7 +4506,6 @@ pub const OwnedCorpusEntry = struct {
     emit_target: ts_driver.EsTarget = .esnext,
     report_deprecated_target_es5: bool = false,
     suppress_js_check_diagnostics: bool = false,
-    baseline_has_no_position_lib_diagnostics: bool = false,
     /// Raw upstream source bytes (pre-strip), owned. Empty when
     /// there is no separate raw source (single-file fixtures).
     raw_source: []u8 = "",
@@ -7435,16 +4685,8 @@ pub fn loadDirectoryWithOptions(
             null;
         defer if (emit_baseline_path) |p| gpa.free(p);
         const selected_baseline_path = baseline_path orelse emit_baseline_path;
-        const baseline_only_option_deprecation = if (baseline_path) |bp|
-            try baselineHasOnlyOptionDeprecation(gpa, bp)
-        else
-            false;
-        const baseline_has_no_position_lib_diagnostics = if (baseline_path) |bp|
-            try baselineHasNoPositionLibDiagnostic(gpa, bp)
-        else
-            false;
         const expects_error = std.mem.indexOf(u8, entry.basename, ".errors.") != null or
-            (baseline_path != null and !baseline_only_option_deprecation);
+            baseline_path != null;
         const directive_source = if (raw_source.len != 0) raw_source else case_src;
         const directive_state = parseStrictDirectiveState(directive_source);
         // Per-fixture strict-state inference. We previously
@@ -7604,16 +4846,14 @@ pub fn loadDirectoryWithOptions(
         if (options.exact_error_headers) {
             use_exact_errors = true;
             if (baseline_path) |bp| {
-                if (!baseline_only_option_deprecation) {
-                    const baseline = try readFileAlloc(gpa, bp);
-                    defer gpa.free(baseline);
-                    expected_errors = try extractDiagnosticHeaders(gpa, baseline);
-                    errdefer if (expected_errors.len > 0) gpa.free(expected_errors);
-                    if (firstDiagnosticPath(expected_errors)) |first_path| {
-                        if (!std.mem.startsWith(u8, first_path, "lib.")) {
-                            gpa.free(diag_path);
-                            diag_path = try gpa.dupe(u8, first_path);
-                        }
+                const baseline = try readFileAlloc(gpa, bp);
+                defer gpa.free(baseline);
+                expected_errors = try extractDiagnosticHeaders(gpa, baseline);
+                errdefer if (expected_errors.len > 0) gpa.free(expected_errors);
+                if (firstDiagnosticPath(expected_errors)) |first_path| {
+                    if (!std.mem.startsWith(u8, first_path, "lib.")) {
+                        gpa.free(diag_path);
+                        diag_path = try gpa.dupe(u8, first_path);
                     }
                 }
             }
@@ -7656,10 +4896,9 @@ pub fn loadDirectoryWithOptions(
             .syntax_target_es2015 = emit_target != .es5,
             .target_emit_es5 = emit_target == .es5,
             .emit_target = emit_target,
-            .report_deprecated_target_es5 = use_exact_errors and !baseline_only_option_deprecation and
+            .report_deprecated_target_es5 = use_exact_errors and
                 target_selection_explicit and emit_target == .es5,
             .suppress_js_check_diagnostics = shouldSuppressJsCheckDiagnostics(diag_path, directive_source),
-            .baseline_has_no_position_lib_diagnostics = baseline_has_no_position_lib_diagnostics,
             .raw_source = raw_source,
             .baseline_module_resolution = baseline_mr,
             .baseline_module_kind = baseline_module,
@@ -8805,43 +6044,6 @@ fn readFileAlloc(gpa: std.mem.Allocator, path: []const u8) ![]u8 {
     return buf[0..read_total];
 }
 
-fn baselineHasOnlyOptionDeprecation(gpa: std.mem.Allocator, path: []const u8) !bool {
-    const baseline = try readFileAlloc(gpa, path);
-    defer gpa.free(baseline);
-    var saw_diagnostic = false;
-    var lines = std.mem.splitScalar(u8, baseline, '\n');
-    while (lines.next()) |raw| {
-        const line = std.mem.trim(u8, raw, "\r");
-        if (!isDiagnosticHeader(line)) continue;
-        saw_diagnostic = true;
-        // Three upstream codes belong to the option-validation family
-        // the single-source runner can't reproduce — treat all of
-        // them as "harness gap" so the fixture flips to expected-clean
-        // instead of expected-error:
-        //   - TS5101 "Option 'X' is deprecated and will stop functioning…"
-        //   - TS5102 "Option 'X' has been removed. Please remove it…"
-        //   - TS5107 "Option 'target=X' is deprecated and will stop functioning…"
-        if (std.mem.indexOf(u8, line, "error TS5101:") == null and
-            std.mem.indexOf(u8, line, "error TS5102:") == null and
-            std.mem.indexOf(u8, line, "error TS5107:") == null)
-        {
-            return false;
-        }
-    }
-    return saw_diagnostic;
-}
-
-fn baselineHasNoPositionLibDiagnostic(gpa: std.mem.Allocator, path: []const u8) !bool {
-    const baseline = try readFileAlloc(gpa, path);
-    defer gpa.free(baseline);
-    var lines = std.mem.splitScalar(u8, baseline, '\n');
-    while (lines.next()) |raw| {
-        const line = std.mem.trim(u8, raw, "\r");
-        if (std.mem.startsWith(u8, line, "lib.es5.d.ts(--,--): error TS")) return true;
-    }
-    return false;
-}
-
 fn extractDiagnosticHeaders(gpa: std.mem.Allocator, baseline: []const u8) ![]u8 {
     var out: std.ArrayListUnmanaged(u8) = .empty;
     errdefer out.deinit(gpa);
@@ -8866,7 +6068,6 @@ fn extractDiagnosticHeaders(gpa: std.mem.Allocator, baseline: []const u8) ![]u8 
         // commented-out demo text.
         if (std.mem.startsWith(u8, line, "====") and std.mem.endsWith(u8, line, "====")) break;
         if (!isDiagnosticHeader(line)) continue;
-        if (isOptionValidationDiagnostic(line)) continue;
         if (out.items.len > 0) try out.append(gpa, '\n');
         try out.appendSlice(gpa, line);
     }
@@ -8929,148 +6130,6 @@ fn appendCanonicalDiagnosticHeader(
     try out.appendSlice(gpa, column_text);
     try out.appendSlice(gpa, "): ");
     try out.appendSlice(gpa, line[separator + " - ".len ..]);
-}
-
-/// Filter the option-validation / tsconfig-aware diagnostic family
-/// from baseline header extraction. These diagnostics fire from tsc's
-/// option-parsing layer and the single-source conformance runner cannot
-/// reproduce them: they appear either as path-less `error TSxxxx:`
-/// headers or as `tsconfig.json`-scoped headers we cannot bind without
-/// a full tsconfig parse. Filtering is consistent with our existing
-/// `baselineHasOnlyOptionDeprecation` short-circuit.
-///
-/// TS5107 is special-cased: the `Option 'target=X' is deprecated …`
-/// shape IS reproduced by the driver via `report_deprecated_target_es5`,
-/// so we keep that one. Only the `Option 'moduleResolution=X' is
-/// deprecated …` shape gets filtered.
-fn isOptionValidationDiagnostic(line: []const u8) bool {
-    if (std.mem.indexOf(u8, line, "error TS5107:") != null) {
-        // Filter the deprecation diagnostics for options the in-memory
-        // runner doesn't reproduce. Keep the `target=` variant since
-        // the driver reports that one via `report_deprecated_target_es5`.
-        if (std.mem.indexOf(u8, line, "moduleResolution=") != null) return true;
-        if (std.mem.indexOf(u8, line, "module=UMD") != null) return true;
-        if (std.mem.indexOf(u8, line, "module=AMD") != null) return true;
-        if (std.mem.indexOf(u8, line, "module=System") != null) return true;
-        if (std.mem.indexOf(u8, line, "esModuleInterop=") != null) return true;
-        return false;
-    }
-    return std.mem.indexOf(u8, line, "error TS-1:") != null or
-        std.mem.indexOf(u8, line, "error TS5055:") != null or
-        std.mem.indexOf(u8, line, "error TS5095:") != null or
-        std.mem.indexOf(u8, line, "error TS5098:") != null or
-        std.mem.indexOf(u8, line, "error TS5101:") != null or
-        std.mem.indexOf(u8, line, "error TS5102:") != null or
-        std.mem.indexOf(u8, line, "error TS5109:") != null or
-        std.mem.indexOf(u8, line, "error TS5110:") != null or
-        std.mem.indexOf(u8, line, "error TS6504:") != null or
-        std.mem.indexOf(u8, line, "error TS5056:") != null or
-        std.mem.indexOf(u8, line, "error TS6054:") != null;
-}
-
-/// tsgo does not publish an errors baseline for the legacy `outFile` variant
-/// of this declaration-emit fixture. Its compiler corpus therefore treats the
-/// case as clean even though the inherited TypeScript parser reports TS1038
-/// inside the input declaration file. Keep the compiler diagnostic intact and
-/// reconcile only the exact tsgo corpus stream at this unsupported boundary.
-fn shouldDropTsgoOmittedOutFileAmbientDiagnostic(
-    code: u32,
-    diagnostic_path: []const u8,
-    source: []const u8,
-    expected_errors: []const u8,
-) bool {
-    return code == 1038 and
-        expected_errors.len == 0 and
-        std.mem.endsWith(u8, diagnostic_path, ".d.ts") and
-        directiveValue(source, "outFile") != null and
-        (std.mem.indexOf(u8, source, "@filename: declFile.d.ts") != null or
-            std.mem.indexOf(u8, source, "@Filename: declFile.d.ts") != null);
-}
-
-test "conformance: parity 551 tsgo outFile omission only drops ambient input diagnostics" {
-    const source =
-        \\// @outFile: out.js
-        \\// @Filename: declFile.d.ts
-        \\declare namespace M { declare var x; }
-        \\// @Filename: client.ts
-        \\new M.C();
-    ;
-    try T.expect(shouldDropTsgoOmittedOutFileAmbientDiagnostic(1038, "declFile.d.ts", source, ""));
-    try T.expect(!shouldDropTsgoOmittedOutFileAmbientDiagnostic(1038, "client.ts", source, ""));
-    try T.expect(!shouldDropTsgoOmittedOutFileAmbientDiagnostic(1038, "declFile.d.ts", source, "expected"));
-    try T.expect(!shouldDropTsgoOmittedOutFileAmbientDiagnostic(2304, "declFile.d.ts", source, ""));
-}
-
-/// Drop option-validation diagnostics that do not belong to the selected
-/// tsgo baseline. Most option diagnostics are always filtered by
-/// `isOptionValidationDiagnostic`; target deprecations are retained only
-/// when the selected baseline explicitly contains the same TS5107 family.
-/// This matters for target matrices where emit selection and the accepted
-/// diagnostic variant are intentionally different.
-fn shouldDropActualOptionValidationDiagnostic(
-    line: []const u8,
-    expected_errors: []const u8,
-) bool {
-    if (isOptionValidationDiagnostic(line)) return true;
-    if (std.mem.indexOf(u8, line, "error TS5107:") == null or
-        std.mem.indexOf(u8, line, "Option 'target=") == null)
-    {
-        return false;
-    }
-    return std.mem.indexOf(u8, expected_errors, "error TS5107: Option 'target=") == null;
-}
-
-/// Returns true when a checker/driver diagnostic belongs to the
-/// option-validation family that upstream baselines drop. Operates on
-/// the raw (code, message) shape — callers that already have the
-/// formatted text use `isOptionValidationDiagnostic` instead.
-fn diagnosticIsOptionValidation(d: anytype) bool {
-    switch (d.code) {
-        5055, 5056, 5095, 5098, 5101, 5102, 5109, 5110, 6054, 6504 => return true,
-        5107 => {
-            // Same shape as `isOptionValidationDiagnostic` for line text:
-            // keep target= (driver-emitted via `report_deprecated_target_es5`)
-            // and drop the moduleResolution / module=AMD/System / UMD /
-            // esModuleInterop variants.
-            const m = d.message;
-            if (std.mem.indexOf(u8, m, "moduleResolution=") != null) return true;
-            if (std.mem.indexOf(u8, m, "module=UMD") != null) return true;
-            if (std.mem.indexOf(u8, m, "module=AMD") != null) return true;
-            if (std.mem.indexOf(u8, m, "module=System") != null) return true;
-            if (std.mem.indexOf(u8, m, "esModuleInterop=") != null) return true;
-            return false;
-        },
-        else => return false,
-    }
-}
-
-/// Coarse-mode helper: does this compilation contain any diagnostic
-/// outside the option-validation family that upstream baselines drop?
-/// Used by `runOneEntry` so a fixture whose only emissions are
-/// `TS5101 outFile` / `TS5107 module=AMD` still counts as clean.
-fn countNonOptionValidationDiagnostics(compilation: anytype) u32 {
-    var count: u32 = 0;
-    for (compilation.diagnostics.items) |d| {
-        if (!diagnosticIsOptionValidation(d)) count += 1;
-    }
-    return count;
-}
-
-/// Return the first diagnostic that should be surfaced in failure
-/// detail rendering. For expected-clean fixtures, option-validation
-/// diagnostics are not real failures; surfacing one of them would
-/// mislead the post-run summary. For expected-error fixtures we keep
-/// the first diagnostic regardless.
-fn firstNonOptionValidationDiagnostic(
-    compilation: anytype,
-    expects_error: bool,
-) ?@TypeOf(compilation.diagnostics.items[0]) {
-    if (compilation.diagnostics.items.len == 0) return null;
-    if (expects_error) return compilation.diagnostics.items[0];
-    for (compilation.diagnostics.items) |d| {
-        if (!diagnosticIsOptionValidation(d)) return d;
-    }
-    return null;
 }
 
 fn isDiagnosticHeader(line: []const u8) bool {
@@ -9416,268 +6475,6 @@ fn isNodeResolutionFullProgramFixture(name: []const u8, source: []const u8) bool
         std.mem.startsWith(u8, name, "nodeAllowJsPackage") or
         std.mem.startsWith(u8, name, "esmModuleExports") or
         std.mem.startsWith(u8, name, "legacyNodeModules");
-}
-
-fn hasHarnessModeledExpectedError(name: []const u8, source: []const u8) bool {
-    // Node16/NodeNext package-resolution fixtures assert diagnostics
-    // through a full program graph: package.json mode selection,
-    // conditional exports/imports, declaration emit redirection, and
-    // per-file CJS/ESM boundaries. The current ratchet still feeds a
-    // stripped single source into the checker, so keep these as an
-    // explicitly named harness gap until ts_driver owns that graph.
-    if (isNodeResolutionFullProgramFixture(name, source)) return true;
-    // Higher-order generic-call inference with fixed inference sites
-    // requires the checker to preserve candidate type arguments
-    // through contextual function-expression typing — not yet
-    // implemented, so this fixture stays modeled until the broader
-    // generic-call machinery lands.
-    if (std.mem.eql(u8, name, "genericCallWithGenericSignatureArguments2")) return true;
-    return false;
-}
-
-fn hasHarnessModeledExpectedClean(name: []const u8, source: []const u8) bool {
-    // The same Node full-program fixtures can also look falsely dirty
-    // in the single-source runner: flattened package.json contents,
-    // import attributes on import-type nodes, and missing node_modules
-    // resolution all belong to the future multi-file harness.
-    if (isNodeResolutionFullProgramFixture(name, source)) return true;
-    // Multi-file default-export CommonJS fixtures concatenate separate
-    // `@filename` virtual files in the stripped runner. Per-file default
-    // export uniqueness belongs to the full multi-source harness, not the
-    // single-source checker path used by this ratchet.
-    if (std.mem.eql(u8, name, "anonymousDefaultExportsCommonjs")) return true;
-    if (std.mem.eql(u8, name, "defaultExportsGetExportedCommonjs")) return true;
-
-    // Abstract mixin constructor intersections require declaration-level
-    // constructor synthesis and abstractness propagation that the current
-    // checker does not model. The parser now accepts the syntax; keep the
-    // corpus ratchet moving while that semantic work remains tracked.
-    if (std.mem.indexOf(u8, name, "mixinAbstractClasses") != null and
-        std.mem.indexOf(u8, name, "mixinAbstractClasses.2") == null)
-    {
-        return true;
-    }
-    if (std.mem.indexOf(u8, name, "mixinClassesAnnotated") != null) return true;
-    if (std.mem.indexOf(u8, name, "defineProperty") != null) return true;
-    if (std.mem.indexOf(u8, name, "extendClassExpressionFromModule") != null) return true;
-    if (std.mem.indexOf(u8, name, "derivedClassSuperProperties") != null) return true;
-    if (std.mem.eql(u8, name, "thisAndSuperInStaticMembers1")) return true;
-    if (std.mem.eql(u8, name, "thisAndSuperInStaticMembers2")) return true;
-    if (std.mem.indexOf(u8, name, "mixinClassesAnonymous") != null) return true;
-    if (std.mem.indexOf(u8, name, "mixinAccessors5") != null) return true;
-    if (std.mem.indexOf(u8, name, "constructorFunctionTypeIsAssignableToBaseType") != null) return true;
-    if (std.mem.indexOf(u8, name, "typeOfThisInStaticMembers8") != null) return true;
-    if (std.mem.indexOf(u8, name, "derivedClassOverridesProtectedMembers2") != null) return true;
-    if (std.mem.indexOf(u8, name, "protectedInstanceMemberAccessibility") != null) return true;
-    if (std.mem.indexOf(u8, name, "protectedClassPropertyAccessibleWithinNestedSubclass") != null and
-        std.mem.indexOf(u8, name, "protectedClassPropertyAccessibleWithinNestedSubclass1") == null) return true;
-    if (std.mem.indexOf(u8, name, "protectedClassPropertyAccessibleWithinNestedClass") != null) return true;
-    if (std.mem.indexOf(u8, name, "privateInstanceMemberAccessibility") != null) return true;
-    if (std.mem.indexOf(u8, name, "privateClassPropertyAccessibleWithinNestedClass") != null) return true;
-    if (std.mem.indexOf(u8, name, "mixinClassesMembers") != null) return true;
-    if (std.mem.indexOf(u8, name, "classStaticBlock28") != null) return true;
-    if (std.mem.indexOf(u8, name, "classStaticBlock22") != null) return true;
-    if (std.mem.indexOf(u8, name, "classStaticBlock26") != null) return true;
-    if (std.mem.indexOf(u8, name, "intlNumberFormatES2020") != null) return true;
-    if (std.mem.indexOf(u8, name, "es2018IntlAPIs") != null) return true;
-    if (std.mem.indexOf(u8, name, "localesObjectArgument") != null) return true;
-    if (std.mem.indexOf(u8, name, "useSharedArrayBuffer") != null and
-        std.mem.indexOf(u8, name, "useSharedArrayBuffer3") == null) return true;
-    if (std.mem.indexOf(u8, name, "assignSharedArrayBufferToArrayBuffer") != null) return true;
-    if (std.mem.indexOf(u8, name, "exportAsNamespace1") != null) return true;
-    if (std.mem.indexOf(u8, name, "asyncFunctionDeclaration8_es5") != null) return true;
-    if (std.mem.indexOf(u8, name, "asyncFunctionDeclaration9_es5") != null) return true;
-    if (std.mem.indexOf(u8, name, "asyncFunctionDeclaration10_es5") != null) return true;
-    if (std.mem.indexOf(u8, name, "asyncArrowFunction8_es5") != null) return true;
-    if (std.mem.indexOf(u8, name, "enumExportMergingES6") != null) return true;
-    if (std.mem.indexOf(u8, name, "enumClassification") != null) return true;
-    if (std.mem.indexOf(u8, name, "enumBasics") != null) return true;
-    if (std.mem.indexOf(u8, name, "esDecorators-classDeclaration-commentPreservation") != null) return true;
-    if (std.mem.indexOf(u8, name, "esDecorators-classExpression-namedEvaluation") != null) return true;
-    if (std.mem.indexOf(u8, name, "esDecorators-classExpression-commentPreservation") != null) return true;
-    if (std.mem.indexOf(u8, name, "esDecorators-decoratorExpression") != null) return true;
-    if (std.mem.eql(u8, name, "importMeta")) return true;
-    if (std.mem.indexOf(u8, name, "logicalAssignment") != null) return true;
-    if (std.mem.indexOf(u8, name, "es2021LocalesObjectArgument") != null) return true;
-    if (std.mem.indexOf(u8, name, "intlDateTimeFormatRangeES2021") != null) return true;
-    if (std.mem.indexOf(u8, name, "ambientShorthand") != null) return true;
-    if (std.mem.eql(u8, name, "ambientDeclarations")) return true;
-    if (std.mem.indexOf(u8, name, "ambientDeclarationsExternal") != null) return true;
-    if (std.mem.indexOf(u8, name, "ambientEnumDeclaration") != null) return true;
-    if (std.mem.indexOf(u8, name, "typeFromPropertyAssignment") != null and
-        std.mem.indexOf(u8, name, "typeFromPropertyAssignment21") == null and
-        std.mem.indexOf(u8, name, "typeFromPropertyAssignment31") == null and
-        std.mem.indexOf(u8, name, "typeFromPropertyAssignment26") == null and
-        std.mem.indexOf(u8, name, "typeFromPropertyAssignment36") == null and
-        std.mem.indexOf(u8, name, "typeFromPropertyAssignment22") == null and
-        std.mem.indexOf(u8, name, "typeFromPropertyAssignment32") == null and
-        std.mem.indexOf(u8, name, "typeFromPropertyAssignment33") == null and
-        std.mem.indexOf(u8, name, "typeFromPropertyAssignment28") == null and
-        std.mem.indexOf(u8, name, "typeFromPropertyAssignment29") == null) return true;
-    if (std.mem.indexOf(u8, name, "commonJSImport") != null) return true;
-    if (std.mem.indexOf(u8, name, "requireAssertsFromTypescript") != null) return true;
-    if (std.mem.indexOf(u8, name, "moduleExportNestedNamespaces") != null) return true;
-    if (std.mem.indexOf(u8, name, "moduleExportAssignment5") != null) return true;
-    if (std.mem.eql(u8, name, "exportNestedNamespaces")) return true;
-    if (std.mem.indexOf(u8, name, "inferringClassMembersFromAssignments") != null and
-        !std.mem.eql(u8, name, "inferringClassMembersFromAssignments")) return true;
-    if (std.mem.indexOf(u8, name, "requireTwoPropertyAccesses") != null) return true;
-    if (std.mem.indexOf(u8, name, "moduleExportAlias4") != null) return true;
-    if (std.mem.indexOf(u8, name, "moduleExportAlias5") != null) return true;
-    if (std.mem.indexOf(u8, name, "moduleExportAssignment4") != null) return true;
-    if (std.mem.indexOf(u8, name, "binderUninitializedModuleExportsAssignment") != null) return true;
-    if (std.mem.indexOf(u8, name, "sourceFileMergeWithFunction") != null) return true;
-    if (std.mem.indexOf(u8, name, "propertyAssignmentUseParentType1") != null) return true;
-    if (std.mem.indexOf(u8, name, "varRequireFromJavascript") != null) return true;
-    if (std.mem.indexOf(u8, name, "nestedPrototypeAssignment") != null) return true;
-    if (std.mem.indexOf(u8, name, "propertyAssignmentOnImportedSymbol") != null) return true;
-    if (std.mem.indexOf(u8, name, "moduleExportAssignment6") != null) return true;
-    if (std.mem.indexOf(u8, name, "thisPropertyAssignmentCircular") != null) return true;
-    if (std.mem.eql(u8, name, "thisPrototypeMethodCompoundAssignment")) return true;
-    if (std.mem.indexOf(u8, name, "jsContainerMergeJsContainer") != null) return true;
-    if (std.mem.indexOf(u8, name, "typeFromParamTagForFunction") != null) return true;
-    if (std.mem.eql(u8, name, "returnTagTypeGuard")) return true;
-    if (std.mem.eql(u8, name, "jsdocTypeReferenceToImportOfFunctionExpression")) return true;
-    if (std.mem.eql(u8, name, "typedefTagNested")) return true;
-    if (std.mem.eql(u8, name, "callbackTagVariadicType")) return true;
-    if (std.mem.eql(u8, name, "exportAssignDottedName")) return true;
-    if (std.mem.indexOf(u8, name, "contextualTypedSpecialAssignment") != null) return true;
-    if (std.mem.eql(u8, name, "moduleExportAlias")) return true;
-    if (std.mem.indexOf(u8, name, "annotatedThisPropertyInitializerDoesntNarrow") != null) return true;
-    if (std.mem.indexOf(u8, name, "circularMultipleAssignmentDeclaration") != null) return true;
-    if (std.mem.eql(u8, name, "moduleExportAssignment")) return true;
-    if (std.mem.indexOf(u8, name, "inferringClassStaticMembersFromAssignments") != null) return true;
-    if (std.mem.indexOf(u8, name, "spellingUncheckedJS") != null) return true;
-    if (std.mem.indexOf(u8, name, "privateIdentifierExpando") != null) return true;
-    // Homomorphic mapped-type reverse inference still needs the full
-    // TS inference pass that reconstructs T from Boxified<T>-style
-    // arguments. Keep this one explicitly modeled until that semantic
-    // path exists; tuple/nullish widening and object-rest assignment
-    // cases in this cluster now run through the checker.
-    if (std.mem.eql(u8, name, "isomorphicMappedTypeInference")) return true;
-    // Auto-accessor emit/checking still exposes synthetic storage names
-    // to the checker in this fixture; exact accessor backing-field
-    // privacy is tracked with the decorator/auto-accessor gap bucket.
-    if (std.mem.eql(u8, name, "autoAccessor10")) return true;
-    if (std.mem.indexOf(u8, name, "parserForOfStatement18") != null) return true;
-    if (std.mem.indexOf(u8, name, "parserForOfStatement19") != null) return true;
-    if (std.mem.indexOf(u8, name, "parserAstSpans1") != null) return true;
-    if (std.mem.indexOf(u8, name, "parserAmbiguityWithBinaryOperator") != null and
-        std.mem.indexOf(u8, name, "parserAmbiguityWithBinaryOperator4") == null) return true;
-    if (std.mem.indexOf(u8, name, "parserRegularExpression1") != null) return true;
-    if (std.mem.indexOf(u8, name, "parserRegularExpression6") != null) return true;
-    if (std.mem.eql(u8, name, "parser645086_3")) return true;
-    if (std.mem.eql(u8, name, "parser645086_4")) return true;
-    if (std.mem.eql(u8, name, "parser630933")) return true;
-    if (std.mem.eql(u8, name, "parserES5ComputedPropertyName2")) return true;
-    if (std.mem.eql(u8, name, "parserES5ComputedPropertyName3")) return true;
-    if (std.mem.eql(u8, name, "parserES5ComputedPropertyName4")) return true;
-    if (std.mem.indexOf(u8, name, "parserStatementIsNotAMemberVariableDeclaration1") != null) return true;
-    if (std.mem.indexOf(u8, name, "parserGetAccessorWithTypeParameters1") != null) return true;
-    if (std.mem.indexOf(u8, name, "parserSetAccessorWithTypeParameters1") != null) return true;
-    if (std.mem.indexOf(u8, name, "parserAccessors10") != null) return true;
-    if (std.mem.indexOf(u8, name, "parserUnicodeWhitespaceCharacter1") != null) return true;
-    if (std.mem.indexOf(u8, name, "parserSbp_7.9_A9_T3") != null) return true;
-    if (std.mem.indexOf(u8, name, "parserInterfaceKeywordInEnum") != null) return true;
-    if (std.mem.indexOf(u8, name, "parserEnumDeclaration6") != null) return true;
-    if (std.mem.indexOf(u8, name, "parserMemberAccessorDeclaration2") != null) return true;
-    if (std.mem.indexOf(u8, name, "parserMemberAccessorDeclaration3") != null) return true;
-    if (std.mem.indexOf(u8, name, "parserMemberAccessorDeclaration5") != null) return true;
-    if (std.mem.indexOf(u8, name, "parserMemberAccessorDeclaration6") != null) return true;
-    if (std.mem.indexOf(u8, name, "parserModuleDeclaration11") != null) return true;
-    if (std.mem.indexOf(u8, name, "parserES5ForOfStatement1.d") != null) return true;
-    if (std.mem.indexOf(u8, name, "parserES5ForOfStatement2") != null) return true;
-    if (std.mem.indexOf(u8, name, "parserES5ForOfStatement3") != null) return true;
-    if (std.mem.indexOf(u8, name, "parserES5ForOfStatement4") != null) return true;
-    if (std.mem.indexOf(u8, name, "parserES5ForOfStatement5") != null) return true;
-    if (std.mem.indexOf(u8, name, "parserES5ForOfStatement6") != null) return true;
-    if (std.mem.indexOf(u8, name, "parserES5ForOfStatement7") != null) return true;
-    if (std.mem.indexOf(u8, name, "parserES5ForOfStatement8") != null) return true;
-    if (std.mem.indexOf(u8, name, "parserES5ForOfStatement9") != null) return true;
-    if (std.mem.indexOf(u8, name, "parserES5ForOfStatement10") != null) return true;
-    if (std.mem.indexOf(u8, name, "parserES5ForOfStatement11") != null) return true;
-    if (std.mem.indexOf(u8, name, "parserES5ForOfStatement12") != null) return true;
-    if (std.mem.indexOf(u8, name, "parserES5ForOfStatement13") != null) return true;
-    if (std.mem.indexOf(u8, name, "parserES5ForOfStatement14") != null) return true;
-    if (std.mem.indexOf(u8, name, "parserES5ForOfStatement15") != null) return true;
-    if (std.mem.indexOf(u8, name, "parserES5ForOfStatement16") != null) return true;
-    if (std.mem.indexOf(u8, name, "parserES5ForOfStatement18") != null) return true;
-    if (std.mem.indexOf(u8, name, "parserES5ForOfStatement19") != null) return true;
-    if (std.mem.indexOf(u8, name, "parserParenthesizedVariableAndParenthesizedFunctionInTernary") != null) return true;
-    if (std.mem.indexOf(u8, name, "parserParenthesizedVariableAndFunctionInTernary") != null) return true;
-    if (std.mem.indexOf(u8, name, "parserClassDeclaration23") != null) return true;
-    if (std.mem.indexOf(u8, name, "parserClassDeclaration26") != null) return true;
-    if (std.mem.indexOf(u8, name, "exportAsNamespace2") != null) return true;
-    if (std.mem.indexOf(u8, name, "exportAsNamespace5") != null) return true;
-    if (std.mem.indexOf(u8, name, "privateNamesAndMethods") != null) return true;
-    if (std.mem.indexOf(u8, name, "privateNamesAndFields") != null) return true;
-    if (std.mem.indexOf(u8, name, "privateNameStaticsAndStaticMethods") != null) return true;
-    if (std.mem.indexOf(u8, name, "privateNamesAndStaticMethods") != null) return true;
-    if (std.mem.indexOf(u8, name, "privateNameJsBadDeclaration") != null) return true;
-    if (std.mem.indexOf(u8, name, "privateNameComputedPropertyName2") != null) return true;
-    if (std.mem.indexOf(u8, name, "privateNameInInExpression") != null) return true;
-    if (std.mem.indexOf(u8, name, "privateNameInInExpressionUnused") != null) return true;
-    if (std.mem.indexOf(u8, name, "privateNameInInExpressionTransform") != null) return true;
-    if (std.mem.indexOf(u8, name, "privateNameBadDeclaration") != null) return true;
-    if (std.mem.indexOf(u8, name, "privateNameFieldDestructuredBinding") != null) return true;
-    if (std.mem.indexOf(u8, name, "privateNameStaticFieldDestructuredBinding") != null) return true;
-    // External-module fixtures in this slice rely on preserved
-    // `@Filename` boundaries plus resolver/import binding data. The
-    // current full-corpus ratchet still flattens those files into one
-    // virtual source, so unresolved imports and per-file export
-    // assignment rules can appear as false positives here.
-    if (std.mem.eql(u8, name, "nameWithRelativePaths")) return true;
-    if (std.mem.eql(u8, name, "verbatimModuleSyntaxRestrictionsESM")) return true;
-    if (std.mem.eql(u8, name, "topLevelFileModule")) return true;
-    if (std.mem.eql(u8, name, "moduleScoping")) return true;
-    if (std.mem.eql(u8, name, "emit")) return true;
-    if (std.mem.eql(u8, name, "reexportClassDefinition")) return true;
-    if (std.mem.eql(u8, name, "verbatimModuleSyntaxDeclarationFile")) return true;
-    if (std.mem.eql(u8, name, "umd-augmentation-1")) return true;
-    if (std.mem.eql(u8, name, "umd9")) return true;
-    if (std.mem.eql(u8, name, "exportDeclaredModule")) return true;
-    if (std.mem.eql(u8, name, "exportDeclaration")) return true;
-    if (std.mem.eql(u8, name, "preserveValueImports")) return true;
-    if (std.mem.eql(u8, name, "umd-augmentation-2")) return true;
-    if (std.mem.eql(u8, name, "moduleResolutionWithExtensions")) return true;
-    if (std.mem.eql(u8, name, "esnextmodulekindWithES5Target10")) return true;
-    if (std.mem.eql(u8, name, "exportAssignImportedIdentifier")) return true;
-    if (std.mem.eql(u8, name, "umd7")) return true;
-    if (std.mem.eql(u8, name, "mergedWithLocalValue")) return true;
-    if (std.mem.eql(u8, name, "es6modulekindWithES5Target10")) return true;
-    if (std.mem.eql(u8, name, "exportAssignTypes")) return true;
-    if (std.mem.eql(u8, name, "umd6")) return true;
-    if (std.mem.eql(u8, name, "exportAssignmentMergedModule")) return true;
-    if (std.mem.eql(u8, name, "typesVersionsDeclarationEmit.multiFileBackReferenceToUnmapped")) return true;
-    if (std.mem.eql(u8, name, "exportAssignmentTopLevelClodule")) return true;
-    if (std.mem.eql(u8, name, "exportAssignmentTopLevelIdentifier")) return true;
-    if (std.mem.eql(u8, name, "exportAssignmentCircularModules")) return true;
-    // `var` declarations inside top-level blocks are function/global
-    // scoped in TypeScript's binder. The fixture exports such a `var`
-    // after flattening module variants into one virtual source; Home's
-    // coarse checker still treats the block as a lexical boundary.
-    if (std.mem.eql(u8, name, "usingDeclarationsTopLevelOfModule.3")) return true;
-    // This fixture only has target-suffixed `.errors.txt` baselines.
-    // The current full-corpus loader can still pick the unsuffixed
-    // logical case as expected-clean even though both real variants
-    // expect TS2491/TS2802 diagnostics.
-    if (std.mem.eql(u8, name, "for-inStatementsDestructuring")) return true;
-    // Statement-recovery fixtures with malformed template literals
-    // exercise tsc's scanner recovery. Home currently reports the
-    // unterminated template; keep the clean ratchet explicit until
-    // template-rescan/recovery is matched.
-    if (std.mem.eql(u8, name, "labeledStatementDeclarationListInLoopNoCrash1")) return true;
-    if (std.mem.eql(u8, name, "labeledStatementDeclarationListInLoopNoCrash3")) return true;
-    if (std.mem.eql(u8, name, "labeledStatementDeclarationListInLoopNoCrash4")) return true;
-    // For-await/downlevel for-of clean fixtures expose remaining binder
-    // scoping gaps in the coarse single-source runner: multi-variable
-    // declarations in flattened `@filename` sections, catch bindings,
-    // and `var` declarations introduced by `for...of` headers.
-    if (std.mem.eql(u8, name, "emitter.forAwait")) return true;
-    if (std.mem.eql(u8, name, "ES5For-of37")) return true;
-    if (std.mem.eql(u8, name, "ES5For-of4")) return true;
-    if (std.mem.eql(u8, name, "ES5For-of7")) return true;
-    return false;
 }
 
 const StrictDirectiveState = struct {
@@ -10361,7 +7158,6 @@ pub fn runOwnedCorpus(
             .emit_target = entry.emit_target,
             .report_deprecated_target_es5 = entry.report_deprecated_target_es5,
             .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
-            .baseline_has_no_position_lib_diagnostics = entry.baseline_has_no_position_lib_diagnostics,
             .raw_source = entry.raw_source,
             .baseline_module_resolution = entry.baseline_module_resolution,
             .baseline_module_kind = entry.baseline_module_kind,
@@ -10483,19 +7279,6 @@ pub fn combineCategoryStats(cats: []const CategoryResult) Stats {
     return out;
 }
 
-fn coarseExpectedErrorNeedsProgramRoute(entry: CorpusEntry) bool {
-    return caseNeedsProgramRouteByName(entry.name);
-}
-
-fn caseNeedsProgramRouteByName(name: []const u8) bool {
-    return std.mem.eql(u8, name, "resolvesWithoutExportsDiagnostic1") or
-        std.mem.eql(u8, name, "moduleResolutionWithoutExtension3") or
-        std.mem.eql(u8, name, "typeOnlyMerge2") or
-        std.mem.eql(u8, name, "bundlerCommonJS") or
-        std.mem.eql(u8, name, "jsxCheckJsxNoTypeArgumentsAllowed") or
-        std.mem.eql(u8, name, "jsxInvalidEsprimaTestSuite");
-}
-
 test "conformance: malformed JSX virtual files route independently" {
     const raw =
         \\// @filename: first.tsx
@@ -10519,157 +7302,46 @@ test "conformance: malformed JSX virtual files route independently" {
 }
 
 fn runOneEntry(gpa: std.mem.Allocator, entry: CorpusEntry) !Result {
-    if (entry.use_exact_errors) {
-        if (compilerCorpusUsesPrecompiledExactResult(entry.name)) {
-            const expected_count = countLines(trimRightNewlines(entry.expected_errors));
-            return Result{
-                .name = try gpa.dupe(u8, entry.name),
-                .outcome = .passed,
-                .expected_diag_count = expected_count,
-                .actual_diag_count = expected_count,
-            };
-        }
-        var exact = try run(gpa, .{
-            .name = entry.name,
-            .source = entry.source,
-            .path = if (entry.path.len > 0) entry.path else entry.name,
-            .expected_errors = entry.expected_errors,
-            .is_tsx = entry.is_tsx,
-            .is_declaration_file = entry.is_declaration_file,
-            .strict_flags = entry.strict_flags,
-            .always_strict = entry.always_strict,
-            // Honor an embedded `// @target: es2015`(+) directive even when
-            // the pinned entry didn't set the flag explicitly, so
-            // target-gated diagnostics (e.g. TS18028 private identifiers)
-            // don't fire on fixtures that target ES2015 or higher.
-            .syntax_target_es2015 = if (entry.target_emit_es5)
-                false
-            else
-                entry.syntax_target_es2015 or directiveTargetEs2015OrLater(entry.source),
-            .target_emit_es5 = entry.target_emit_es5,
-            .emit_target = entry.emit_target,
-            .report_deprecated_target_es5 = entry.report_deprecated_target_es5,
-            .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
-            .raw_source = entry.raw_source,
-            .baseline_module_resolution = entry.baseline_module_resolution,
-            .baseline_module_kind = entry.baseline_module_kind,
-            .allow_importing_ts_extensions = entry.allow_importing_ts_extensions,
-            .deduplicate_packages = entry.deduplicate_packages,
-        });
-        errdefer if (exact.detail.len > 0) gpa.free(exact.detail);
-        exact.name = try gpa.dupe(u8, entry.name);
-        if (exact.outcome == .failed and
-            ((entry.expects_error and hasHarnessModeledExpectedError(entry.name, entry.source)) or
-                (!entry.expects_error and hasHarnessModeledExpectedClean(entry.name, entry.source))))
-        {
-            if (exact.detail.len > 0) gpa.free(exact.detail);
-            exact.detail = "";
-            exact.outcome = .passed;
-        }
-        return exact;
-    }
-
-    const name_owned = try gpa.dupe(u8, entry.name);
-    if (entry.expects_error and entry.raw_source.len != 0 and
-        (rawSourceHasTypeReferenceProgramRoute(entry.raw_source) or coarseExpectedErrorNeedsProgramRoute(entry)))
-    {
-        const program_case = Case{
-            .name = entry.name,
-            .source = entry.source,
-            .path = if (entry.path.len > 0) entry.path else entry.name,
-            .is_tsx = entry.is_tsx,
-            .is_declaration_file = entry.is_declaration_file,
-            .strict_flags = entry.strict_flags,
-            .always_strict = entry.always_strict,
-            .syntax_target_es2015 = entry.syntax_target_es2015,
-            .target_emit_es5 = entry.target_emit_es5,
-            .emit_target = entry.emit_target,
-            .report_deprecated_target_es5 = entry.report_deprecated_target_es5,
-            .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
-            .raw_source = entry.raw_source,
-            .baseline_module_resolution = entry.baseline_module_resolution,
-            .baseline_module_kind = entry.baseline_module_kind,
-            .allow_importing_ts_extensions = entry.allow_importing_ts_extensions,
-            .deduplicate_packages = entry.deduplicate_packages,
-        };
-        const program_result = (try runProgram(gpa, program_case)) orelse try run(gpa, program_case);
-        defer if (program_result.detail.len > 0) gpa.free(program_result.detail);
-        if (program_result.actual_diag_count > 0) {
-            return .{ .name = name_owned, .outcome = .passed };
-        }
-        return .{
-            .name = name_owned,
-            .outcome = .failed,
-            .detail = try gpa.dupe(u8, "expected at least one diagnostic; got none"),
-        };
-    }
-    const directive_source = if (entry.raw_source.len > 0) entry.raw_source else entry.source;
-    var compilation = ts_driver.compileSource(gpa, entry.source, .{
+    var result = try run(gpa, .{
+        .name = entry.name,
+        .source = entry.source,
+        .path = if (entry.path.len > 0) entry.path else entry.name,
+        .expected_errors = if (entry.use_exact_errors) entry.expected_errors else "",
         .is_tsx = entry.is_tsx,
         .is_declaration_file = entry.is_declaration_file,
         .strict_flags = entry.strict_flags,
         .always_strict = entry.always_strict,
-        .syntax_target_es2015 = entry.syntax_target_es2015,
-        .emit = .{ .es_target = effectiveEmitTarget(entry.target_emit_es5, entry.emit_target) },
-        .resource_management_helpers_required = selectedResourceManagementHelpersRequired(
-            effectiveEmitTarget(entry.target_emit_es5, entry.emit_target),
-        ),
-        .allow_js = directiveBool(directive_source, "allowJs") orelse false,
+        // Honor an embedded `// @target: es2015`(+) directive even when
+        // the pinned entry didn't set the flag explicitly, so
+        // target-gated diagnostics (e.g. TS18028 private identifiers)
+        // don't fire on fixtures that target ES2015 or higher.
+        .syntax_target_es2015 = if (entry.target_emit_es5)
+            false
+        else
+            entry.syntax_target_es2015 or directiveTargetEs2015OrLater(entry.source),
+        .target_emit_es5 = entry.target_emit_es5,
+        .emit_target = entry.emit_target,
+        .report_deprecated_target_es5 = entry.report_deprecated_target_es5,
         .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
-        .continue_on_error = true,
-        .no_emit = true,
-        .importer_path = entry.path,
-    }) catch |err| {
-        const detail = try std.fmt.allocPrint(gpa, "compile crash: {s}", .{@errorName(err)});
-        return .{
-            .name = name_owned,
-            .outcome = .failed,
-            .detail = detail,
-        };
-    };
-    const modeled_clean = !entry.expects_error and hasHarnessModeledExpectedClean(entry.name, entry.source);
-    // For expected-clean fixtures we ignore option-deprecation
-    // diagnostics: upstream baselines drop them (see
-    // `isOptionValidationDiagnostic` / `baselineHasOnlyOptionDeprecation`)
-    // so a fixture whose only "errors" are TS5101/TS5107 deprecation
-    // notices counts as clean both in baseline and here.
-    const non_option_diag_count = countNonOptionValidationDiagnostics(compilation);
-    const driver_has_non_option_errors = non_option_diag_count > 0;
-    const driver_has_errors = driver_has_non_option_errors;
-    const had_errors = !modeled_clean and (driver_has_errors or
-        hasNoLibReferenceLib(entry.source) or
-        hasCompilerOptionCompatibilityDiagnostic(entry.source) or
-        (entry.expects_error and directiveTargetDeprecated(entry.source)) or
-        (entry.expects_error and directiveModuleDeprecated(entry.source)) or
-        (entry.expects_error and entry.baseline_has_no_position_lib_diagnostics) or
-        (entry.expects_error and hasHarnessModeledExpectedError(entry.name, entry.source)));
-    const first_actual_detail: ?[]u8 = if (firstNonOptionValidationDiagnostic(compilation, entry.expects_error)) |d| blk: {
-        const pos = ts_diagnostics.positionToLineCol(entry.source, d.pos);
-        break :blk try std.fmt.allocPrint(
-            gpa,
-            "first diagnostic {d}:{d} TS{d}: {s}",
-            .{ pos.line, pos.col, d.code, d.message },
-        );
-    } else null;
-    defer if (first_actual_detail) |detail| gpa.free(detail);
-    compilation.deinit();
-    gpa.destroy(compilation);
-    const passed = if (entry.expects_error) had_errors else !had_errors;
-    if (passed) {
-        return .{ .name = name_owned, .outcome = .passed, .actual_diag_count = non_option_diag_count };
+        .raw_source = entry.raw_source,
+        .baseline_module_resolution = entry.baseline_module_resolution,
+        .baseline_module_kind = entry.baseline_module_kind,
+        .allow_importing_ts_extensions = entry.allow_importing_ts_extensions,
+        .deduplicate_packages = entry.deduplicate_packages,
+    });
+    errdefer if (result.detail.len > 0) gpa.free(result.detail);
+    result.name = try gpa.dupe(u8, entry.name);
+    if (!entry.use_exact_errors) {
+        const had_errors = result.actual_diag_count > 0;
+        const passed = if (entry.expects_error) had_errors else !had_errors;
+        result.outcome = if (passed) .passed else .failed;
+        if (passed or !had_errors) {
+            if (result.detail.len > 0) gpa.free(result.detail);
+            result.detail = "";
+            if (!passed) result.detail = try gpa.dupe(u8, "expected at least one diagnostic; got none");
+        }
     }
-    const detail = if (entry.expects_error)
-        try gpa.dupe(u8, "expected at least one diagnostic; got none")
-    else if (first_actual_detail) |actual|
-        try std.fmt.allocPrint(gpa, "expected no diagnostics; got at least one ({s})", .{actual})
-    else
-        try gpa.dupe(u8, "expected no diagnostics; got at least one");
-    return .{
-        .name = name_owned,
-        .outcome = .failed,
-        .detail = detail,
-        .actual_diag_count = non_option_diag_count,
-    };
+    return result;
 }
 
 /// Run every entry in `corpus` and append a `Result` per case.
@@ -56760,7 +53432,6 @@ test "conformance: parserharness matches its exact optional-parameter diagnostic
             .emit_target = entry.emit_target,
             .report_deprecated_target_es5 = entry.report_deprecated_target_es5,
             .suppress_js_check_diagnostics = entry.suppress_js_check_diagnostics,
-            .baseline_has_no_position_lib_diagnostics = entry.baseline_has_no_position_lib_diagnostics,
             .raw_source = entry.raw_source,
             .baseline_module_resolution = entry.baseline_module_resolution,
             .baseline_module_kind = entry.baseline_module_kind,
@@ -56786,300 +53457,92 @@ test "conformance: Node resolver fixtures stay in full-program harness bucket" {
         \\import "pkg";
     ;
     try T.expect(isNodeResolutionFullProgramFixture("nodeModulesPackageExports", node_source));
-    try T.expect(hasHarnessModeledExpectedError("nodeModulesPackageExports", node_source));
-    try T.expect(hasHarnessModeledExpectedClean("nodeModulesPackageExports", node_source));
     try T.expect(!isNodeResolutionFullProgramFixture("nodeLikeLocalName", "const nodeModules = 1;"));
 }
 
-test "conformance: retired ambient/globalThis/misc shim names return false" {
-    // 2026-05-16: Removed 29 dead-code shim entries from
-    // `hasHarnessModeledExpectedError`. None of the fixtures matched
-    // those names live in a test-loaded category (e.g. `es2019/`,
-    // `ambient/`, `salsa/`, `references/`, `es2020/`,
-    // `importAttributes/`, `es2017/`, `typings/`, `es6/yieldExpressions/`,
-    // `statements/`, `importDefer/`), so the shim was never consulted.
-    // This test guards against accidental re-shimming.
-    const empty: []const u8 = "";
-    // globalThis cluster
-    try T.expect(!hasHarnessModeledExpectedError("globalThisUnknown", empty));
-    try T.expect(!hasHarnessModeledExpectedError("globalThisBlockscopedProperties", empty));
-    try T.expect(!hasHarnessModeledExpectedError("globalThisReadonlyProperties", empty));
-    try T.expect(!hasHarnessModeledExpectedError("globalThisPropertyAssignment", empty));
-    // Ambient cluster
-    try T.expect(!hasHarnessModeledExpectedError("ambientExternalModuleInsideNonAmbient", empty));
-    try T.expect(!hasHarnessModeledExpectedError("ambientDeclarationsPatterns", empty));
-    try T.expect(!hasHarnessModeledExpectedError("ambientErrors", empty));
-    // JS-special cluster (salsa/)
-    try T.expect(!hasHarnessModeledExpectedError("importingExportingTypes", empty));
-    try T.expect(!hasHarnessModeledExpectedError("moduleExportsAliasLoop", empty));
-    try T.expect(!hasHarnessModeledExpectedError("plainJSTypeErrors", empty));
-    try T.expect(!hasHarnessModeledExpectedError("thisPropertyAssignmentComputed", empty));
-    try T.expect(!hasHarnessModeledExpectedError("typeFromPrototypeAssignment", empty));
-    try T.expect(!hasHarnessModeledExpectedError("lateBoundAssignmentDeclarationSupport1", empty));
-    // Misc cluster
-    try T.expect(!hasHarnessModeledExpectedError("library-reference-15", empty));
-    try T.expect(!hasHarnessModeledExpectedError("library-reference-5", empty));
-    try T.expect(!hasHarnessModeledExpectedError("constructBigint", empty));
-    try T.expect(!hasHarnessModeledExpectedError("exportAsNamespace_exportAssignment", empty));
-    try T.expect(!hasHarnessModeledExpectedError("exportAsNamespace_missingEmitHelpers", empty));
-    try T.expect(!hasHarnessModeledExpectedError("exportAsNamespace_nonExistent", empty));
-    try T.expect(!hasHarnessModeledExpectedError("importAttributes9", empty));
-    try T.expect(!hasHarnessModeledExpectedError("useObjectValuesAndEntries3", empty));
-    try T.expect(!hasHarnessModeledExpectedError("typingsLookup3", empty));
-    // Switch + for cluster
-    try T.expect(!hasHarnessModeledExpectedError("switchBreakStatements", empty));
-    try T.expect(!hasHarnessModeledExpectedError("invalidSwitchBreakStatement", empty));
-    try T.expect(!hasHarnessModeledExpectedError("forStatementsMultipleValidDecl", empty));
-    // Generator cluster
-    try T.expect(!hasHarnessModeledExpectedError("generatorTypeCheck8", empty));
-    try T.expect(!hasHarnessModeledExpectedError("generatorTypeCheck31", empty));
-    // Import-defer cluster
-    try T.expect(!hasHarnessModeledExpectedError("importDeferComments", empty));
-    try T.expect(!hasHarnessModeledExpectedError("importDefaultBindingDefer", empty));
-    // Surviving shim: `genericCallWithGenericSignatureArguments2` is
-    // still load-bearing — it lives under `types/typeRelationships/
-    // typeInference/` which IS in the baseline-aware survey.
-    try T.expect(hasHarnessModeledExpectedError("genericCallWithGenericSignatureArguments2", empty));
+test "conformance: honest results retain actual mismatches for former exception names" {
+    for ([_][]const u8{
+        "variableDeclaratorResolvedDuringContextualTyping",
+        "recursiveBaseCheck",
+        "conditionalTypeDoesntSpinForever",
+        "nodeModulesPackageExports",
+        "defineProperty",
+        "mixinAbstractClasses",
+        "dissallowSymbolAsWeakType",
+        "jsxClassAttributeResolution",
+        "optionalPropertiesSyntax",
+        "awaitedType",
+        "umdGlobalAugmentationNoCrash",
+    }) |name| {
+        const result = try runOneEntry(T.allocator, .{
+            .name = name,
+            .source = "const actual: number = \"wrong\";",
+            .path = "actual.ts",
+            .expects_error = false,
+            .expected_errors = "",
+            .use_exact_errors = true,
+        });
+        defer {
+            T.allocator.free(result.name);
+            if (result.detail.len > 0) T.allocator.free(result.detail);
+        }
+        try T.expectEqual(Outcome.failed, result.outcome);
+        try T.expectEqual(@as(u32, 1), result.actual_diag_count);
+        try T.expect(std.mem.indexOf(u8, result.detail, "TS2322") != null);
+    }
 }
 
-test "conformance: bulk-retired parser/jsdoc/class/module shim names return false" {
-    // Bulk retirement of ~200 dead-code shim entries from
-    // `hasHarnessModeledExpectedError`. Each fixture name below lives
-    // in a conformance subtree (`parser/`, `jsdoc/`, `salsa/`,
-    // `classes/`, `externalModules/`, `internalModules/`,
-    // `statements/`, `emitter/`, `async/`, `enums/`) that the active
-    // baseline-aware/category/smoke tests do NOT load. The shim was
-    // therefore never consulted and removing it is a no-op for the
-    // current ratchet. If a future test adds one of these directories,
-    // any regression will surface in that test, not silently here.
-    const empty: []const u8 = "";
-    // parser/* cluster (former parser-block shims)
-    try T.expect(!hasHarnessModeledExpectedError("parserSymbolProperty5", empty));
-    try T.expect(!hasHarnessModeledExpectedError("parserClass1", empty));
-    try T.expect(!hasHarnessModeledExpectedError("parserRealSource13", empty));
-    try T.expect(!hasHarnessModeledExpectedError("parser509693", empty));
-    try T.expect(!hasHarnessModeledExpectedError("parserModule1", empty));
-    try T.expect(!hasHarnessModeledExpectedError("parser_breakTarget", empty));
-    try T.expect(!hasHarnessModeledExpectedError("TupleType6", empty));
-    // jsdoc/* cluster
-    try T.expect(!hasHarnessModeledExpectedError("jsdocImplements_interface_multiple", empty));
-    try T.expect(!hasHarnessModeledExpectedError("jsdocTemplateTag", empty));
-    try T.expect(!hasHarnessModeledExpectedError("checkJsdocSatisfiesTag9", empty));
-    try T.expect(!hasHarnessModeledExpectedError("importTag10", empty));
-    try T.expect(!hasHarnessModeledExpectedError("typedefScope1", empty));
-    try T.expect(!hasHarnessModeledExpectedError("extendsTag2", empty));
-    try T.expect(!hasHarnessModeledExpectedError("paramTagNestedWithoutTopLevelObject", empty));
-    try T.expect(!hasHarnessModeledExpectedError("topLevelAwaitErrors.6", empty));
-    // classes/* cluster
-    try T.expect(!hasHarnessModeledExpectedError("classAbstractConstructor", empty));
-    try T.expect(!hasHarnessModeledExpectedError("classAbstractInAModule", empty));
-    try T.expect(!hasHarnessModeledExpectedError("classExtendsItself", empty));
-    try T.expect(!hasHarnessModeledExpectedError("classStaticBlock8", empty));
-    try T.expect(!hasHarnessModeledExpectedError("classStaticBlock16", empty));
-    try T.expect(!hasHarnessModeledExpectedError("classConstructorAccessibility", empty));
-    try T.expect(!hasHarnessModeledExpectedError("readonlyInAmbientClass", empty));
-    try T.expect(!hasHarnessModeledExpectedError("decoratorOnClassConstructor2", empty));
-    try T.expect(!hasHarnessModeledExpectedError("decoratorOnClassConstructor3", empty));
-    try T.expect(!hasHarnessModeledExpectedError("autoAccessor11", empty));
-    try T.expect(!hasHarnessModeledExpectedError("mixinAbstractClasses.2", empty));
-    try T.expect(!hasHarnessModeledExpectedError("accessorsOverrideMethod", empty));
-    try T.expect(!hasHarnessModeledExpectedError("privateIndexer", empty));
-    // salsa/* cluster (typeFromPropertyAssignment etc.)
-    try T.expect(!hasHarnessModeledExpectedError("typeFromPropertyAssignment21", empty));
-    try T.expect(!hasHarnessModeledExpectedError("typeFromPropertyAssignment36", empty));
-    try T.expect(!hasHarnessModeledExpectedError("constructorFunctions", empty));
-    try T.expect(!hasHarnessModeledExpectedError("plainJSRedeclare", empty));
-    try T.expect(!hasHarnessModeledExpectedError("thisPropertyAssignment", empty));
-    try T.expect(!hasHarnessModeledExpectedError("expandoOnAlias", empty));
-    // esDecorators/* cluster
-    try T.expect(!hasHarnessModeledExpectedError("esDecorators-classDeclaration-missingEmitHelpers-1", empty));
-    try T.expect(!hasHarnessModeledExpectedError("esDecorators-classExpression-missingEmitHelpers-1", empty));
-    try T.expect(!hasHarnessModeledExpectedError("esDecorators-privateFieldAccess", empty));
-    // externalModules/internalModules cluster
-    try T.expect(!hasHarnessModeledExpectedError("exportNamespace1", empty));
-    try T.expect(!hasHarnessModeledExpectedError("exportNamespace12", empty));
-    try T.expect(!hasHarnessModeledExpectedError("circular1", empty));
-    try T.expect(!hasHarnessModeledExpectedError("circular4", empty));
-    try T.expect(!hasHarnessModeledExpectedError("importEquals3", empty));
-    try T.expect(!hasHarnessModeledExpectedError("importNonExternalModule", empty));
-    try T.expect(!hasHarnessModeledExpectedError("typeOnlyMerge2", empty));
-    try T.expect(!hasHarnessModeledExpectedError("ModuleWithExportedAndNonExportedEnums", empty));
-    try T.expect(!hasHarnessModeledExpectedError("FunctionAndModuleWithSameNameAndCommonRoot", empty));
-    try T.expect(!hasHarnessModeledExpectedError("preserveValueImports_mixedImports", empty));
-    try T.expect(!hasHarnessModeledExpectedError("verbatimModuleSyntaxCompat4", empty));
-    try T.expect(!hasHarnessModeledExpectedError("namespaceImportTypeQuery3", empty));
-    // statements/* (using declarations)
-    try T.expect(!hasHarnessModeledExpectedError("usingDeclarations.9", empty));
-    try T.expect(!hasHarnessModeledExpectedError("usingDeclarations.14", empty));
-    try T.expect(!hasHarnessModeledExpectedError("awaitUsingDeclarations.9", empty));
-    try T.expect(!hasHarnessModeledExpectedError("awaitUsingDeclarationsWithImportHelpers", empty));
-    // emitter/async/enums cluster
-    try T.expect(!hasHarnessModeledExpectedError("emitArrowFunctionWhenUsingArguments10", empty));
-    try T.expect(!hasHarnessModeledExpectedError("emitArrowFunctionThisCapturing", empty));
-    try T.expect(!hasHarnessModeledExpectedError("arraySpreadImportHelpers", empty));
-    try T.expect(!hasHarnessModeledExpectedError("asyncFunctionDeclaration13_es2017", empty));
-    try T.expect(!hasHarnessModeledExpectedError("asyncArrowFunction10_es6", empty));
-    try T.expect(!hasHarnessModeledExpectedError("enumConstantMembers", empty));
-    try T.expect(!hasHarnessModeledExpectedError("enumConstantMemberWithTemplateLiteralsEmitDeclaration", empty));
-    // privateName/moduleResolution cluster
-    try T.expect(!hasHarnessModeledExpectedError("privateNameBadDeclaration", empty));
-    try T.expect(!hasHarnessModeledExpectedError("moduleResolutionWithoutExtension", empty));
-    // The es5-target unicode template/strings shim is gone too.
-    try T.expect(!hasHarnessModeledExpectedError("unicodeExtendedEscapesInStrings19", "// @target: es5\nlet x = 1;"));
-    // Surviving shim stays load-bearing.
-    try T.expect(hasHarnessModeledExpectedError("genericCallWithGenericSignatureArguments2", empty));
-}
+test "conformance: honest results retain option diagnostics and library expectations" {
+    const baseline = "error TS5107: Option 'module=AMD' is deprecated.\nlib.es5.d.ts(--,--): error TS2318: Cannot find global type 'Object'.";
+    const headers = try extractDiagnosticHeaders(T.allocator, baseline);
+    defer T.allocator.free(headers);
+    try T.expectEqualStrings(baseline, headers);
 
-test "conformance: option-deprecation shim entries retired (driver now emits)" {
-    // `@outFile:` and `@module: amd/AMD/system/System` used to live in
-    // `hasHarnessModeledExpectedError` as coarse-mode rescues for the
-    // TS5101 / TS5107 deprecation diagnostics our in-memory driver
-    // wasn't emitting. The driver now emits both, so the shim entries
-    // are gone — this test guards against accidental re-shimming and
-    // confirms that fixtures matching only these patterns no longer
-    // claim a harness-modeled rescue.
-    try T.expect(!hasHarnessModeledExpectedError("anything", "// @outFile: out.js\nconst x = 1;"));
-    try T.expect(!hasHarnessModeledExpectedError("x", "// @module: amd\nconst x = 1;"));
-    try T.expect(!hasHarnessModeledExpectedError("x", "// @module: AMD\nconst x = 1;"));
-    try T.expect(!hasHarnessModeledExpectedError("x", "// @module: system\nconst x = 1;"));
-    try T.expect(!hasHarnessModeledExpectedError("x", "// @module: System\nconst x = 1;"));
-}
-
-test "conformance: typesVersions resolver shim entries retired" {
-    // The two named typesVersionsDeclarationEmit entries lived under
-    // `declarationEmit/` (not in the active baseline survey) and the
-    // `"typesVersions"` + `export * from "../"` source pattern was
-    // structurally unreachable from the stripped single-source path
-    // (the package.json that carries `"typesVersions"` is dropped by
-    // `stripNonCodeVirtualSections`). Removed; this test guards
-    // against accidental re-shimming.
-    const empty: []const u8 = "";
-    try T.expect(!hasHarnessModeledExpectedError("typesVersionsDeclarationEmit.multiFileBackReferenceToSelf", empty));
-    try T.expect(!hasHarnessModeledExpectedError("typesVersionsDeclarationEmit.multiFileBackReferenceToUnmapped", empty));
-    // The catch-all `"typesVersions"` + `export * from "../"` source
-    // pattern is gone — the stripped source never contains the
-    // package.json carrying `"typesVersions"`.
-    const orphan_src =
-        \\"typesVersions"
-        \\export * from "../"
-    ;
-    try T.expect(!hasHarnessModeledExpectedError("anyName", orphan_src));
-}
-
-test "conformance: option-validation diagnostics filtered from coarse expected-clean count" {
-    // The driver now emits TS5101 / TS5107 from option-deprecation
-    // directives. Fixtures whose ONLY error in the upstream baseline
-    // is a deprecation diagnostic are flagged as expected-clean
-    // (`baselineHasOnlyOptionDeprecation` → `expects_error = false`),
-    // so the coarse path must ignore the driver-emitted deprecation
-    // when computing `had_errors` — otherwise we'd over-report.
-    const r = try runOneEntry(T.allocator, .{
+    const coarse = try runOneEntry(T.allocator, .{
         .name = "outFileCleanFixture",
-        .source =
-        \\// @outFile: bundle.js
-        \\const x: number = 1;
-        ,
+        .source = "// @outFile: bundle.js\nconst x: number = 1;",
         .path = "outFileCleanFixture.ts",
         .expects_error = false,
     });
     defer {
-        T.allocator.free(r.name);
-        if (r.detail.len > 0) T.allocator.free(r.detail);
+        T.allocator.free(coarse.name);
+        if (coarse.detail.len > 0) T.allocator.free(coarse.detail);
     }
-    try T.expectEqual(Outcome.passed, r.outcome);
-}
+    try T.expectEqual(Outcome.failed, coarse.outcome);
+    try T.expect(coarse.actual_diag_count > 0);
 
-test "conformance: option-deprecation diagnostic alone passes coarse expected-error" {
-    // Coarse-mode expected-error fixtures pass when any diagnostic
-    // fires. The driver's deprecation diagnostic now satisfies that
-    // contract for AMD/System/outFile fixtures that previously needed
-    // a `hasHarnessModeledExpectedError` shim.
-    const r = try runOneEntry(T.allocator, .{
-        .name = "amdDeprecationFixture",
-        .source =
-        \\// @module: amd
-        \\export const x = 1;
-        ,
-        .path = "amdDeprecationFixture.ts",
-        .expects_error = true,
+    const absent = try run(T.allocator, .{
+        .name = "awaitedType",
+        .source = "const ok = 1;",
+        .path = "actual.ts",
+        .expected_errors = baseline,
     });
-    defer {
-        T.allocator.free(r.name);
-        if (r.detail.len > 0) T.allocator.free(r.detail);
+    defer if (absent.detail.len > 0) T.allocator.free(absent.detail);
+    try T.expectEqual(Outcome.failed, absent.outcome);
+    try T.expectEqual(@as(u32, 0), absent.actual_diag_count);
+}
+
+test "conformance: honest results preserve virtual-file diagnostics independently of baselines" {
+    const source =
+        \\// @filename: actual.ts
+        \\const actual: number = "wrong";
+    ;
+    for ([_][]const u8{ "", "lib.es5.d.ts(--,--): error TS2318: Cannot find global type 'Object'." }) |expected| {
+        const case = Case{
+            .name = "awaitedType",
+            .source = source,
+            .raw_source = source,
+            .path = "actual.ts",
+            .expected_errors = expected,
+        };
+        try T.expect(shouldRouteThroughProgram(case));
+        const result = (try runProgram(T.allocator, case)) orelse return error.TestUnexpectedResult;
+        defer if (result.detail.len > 0) T.allocator.free(result.detail);
+        try T.expectEqual(Outcome.failed, result.outcome);
+        try T.expectEqual(@as(u32, 1), result.actual_diag_count);
+        try T.expect(std.mem.indexOf(u8, result.detail, "+ actual.ts(1,7): error TS2322:") != null);
+        try T.expect(std.mem.indexOf(u8, result.detail, "+ lib.es5.d.ts") == null);
     }
-    try T.expectEqual(Outcome.passed, r.outcome);
-}
-
-test "conformance: option-deprecation filter drops spurious TS5107 in exact-mode actual stream" {
-    // Regression for amdImportAsPrimaryExpression /
-    // amdImportNotAsPrimaryExpression / importImportOnlyModule /
-    // exportAssignmentTopLevelFundule: fixtures whose ONLY upstream
-    // diagnostic is the `module=AMD` deprecation flip to expected-
-    // clean (`baselineHasOnlyOptionDeprecation` filters the baseline
-    // entry out of `expected_errors`). The driver still emits TS5107
-    // when it sees `@module: amd`; the harness must drop it from the
-    // actual stream so the empty/empty exact comparison succeeds.
-    // Pre-fix the filter was gated on `exact_mode and …`, but the
-    // gate now applies unconditionally — option-validation
-    // diagnostics never belong in the actual stream because the
-    // baseline pipeline drops them upstream.
-    const r = try run(T.allocator, .{
-        .name = "amdExpectedCleanFixture",
-        .source =
-        \\// @module: amd
-        \\const x = 1;
-        \\export {};
-        ,
-        .path = "amdExpectedCleanFixture.ts",
-        .expected_errors = "",
-    });
-    defer {
-        if (r.detail.len > 0) T.allocator.free(r.detail);
-    }
-    try T.expectEqual(Outcome.passed, r.outcome);
-}
-
-test "conformance: option-validation diagnostic filter recognizes outFile/AMD" {
-    try T.expect(diagnosticIsOptionValidation(.{
-        .code = @as(u32, 5101),
-        .message = @as([]const u8, "Option 'outFile' is deprecated..."),
-    }));
-    try T.expect(diagnosticIsOptionValidation(.{
-        .code = @as(u32, 5107),
-        .message = @as([]const u8, "Option 'module=AMD' is deprecated..."),
-    }));
-    try T.expect(diagnosticIsOptionValidation(.{
-        .code = @as(u32, 5107),
-        .message = @as([]const u8, "Option 'module=System' is deprecated..."),
-    }));
-    try T.expect(diagnosticIsOptionValidation(.{
-        .code = @as(u32, 5107),
-        .message = @as([]const u8, "Option 'module=UMD' is deprecated..."),
-    }));
-    // `target=ES5` is still produced by the driver and kept in baselines
-    // — it must NOT be filtered (parity with isOptionValidationDiagnostic).
-    try T.expect(!diagnosticIsOptionValidation(.{
-        .code = @as(u32, 5107),
-        .message = @as([]const u8, "Option 'target=ES5' is deprecated..."),
-    }));
-    try T.expect(!diagnosticIsOptionValidation(.{
-        .code = @as(u32, 2322),
-        .message = @as([]const u8, "Type X is not assignable to type Y."),
-    }));
-}
-
-test "conformance: actual target deprecation follows selected baseline" {
-    const target = "error TS5107: Option 'target=ES5' is deprecated...";
-    try T.expect(shouldDropActualOptionValidationDiagnostic(target, ""));
-    try T.expect(!shouldDropActualOptionValidationDiagnostic(target, target));
-    try T.expect(shouldDropActualOptionValidationDiagnostic(
-        "error TS5107: Option 'module=AMD' is deprecated...",
-        "error TS5107: Option 'module=AMD' is deprecated...",
-    ));
-    try T.expect(!shouldDropActualOptionValidationDiagnostic(
-        "file.ts(1,1): error TS2322: Type mismatch.",
-        "",
-    ));
 }
 
 test "conformance: suppressOutputPathCheck suppresses allowJs virtual output-path model" {
@@ -57101,7 +53564,7 @@ test "conformance: suppressOutputPathCheck suppresses allowJs virtual output-pat
     try T.expect(!hasCompilerOptionCompatibilityDiagnostic(suppressed));
 }
 
-test "conformance: exact-error path honors modeled Node resolver bucket" {
+test "conformance: exact-error path rejects absent expected diagnostics" {
     const r = try runOneEntry(T.allocator, .{
         .name = "nodeModulesPackageExports",
         .source = "const ok = 1;",
@@ -57114,7 +53577,8 @@ test "conformance: exact-error path honors modeled Node resolver bucket" {
         T.allocator.free(r.name);
         if (r.detail.len > 0) T.allocator.free(r.detail);
     }
-    try T.expectEqual(Outcome.passed, r.outcome);
+    try T.expectEqual(Outcome.failed, r.outcome);
+    try T.expectEqual(@as(u32, 0), r.actual_diag_count);
 }
 
 // §6 JSDoc-parity — coarse-mode probe pinning `typeTagPrototypeAssignment`
@@ -57618,25 +54082,6 @@ test "conformance: countLines" {
     try T.expectEqual(@as(u32, 1), countLines("one"));
     try T.expectEqual(@as(u32, 2), countLines("one\ntwo"));
     try T.expectEqual(@as(u32, 3), countLines("one\ntwo\nthree"));
-}
-
-test "conformance: inherited Object diagnostics promote the requested chain root" {
-    const object_message = "The 'Object' type is assignable to very few other types. Did you mean to use the 'any' type instead?";
-    const chain = [_]ts_driver.DiagnosticChainEntry{.{
-        .code = 2696,
-        .message = object_message,
-    }};
-    const classic_headers =
-        "object.ts(8,1): error TS2696: " ++ object_message;
-    const tsgo_headers =
-        "object.ts(8,1): error TS2322: Type 'Object' is not assignable to type 'I'.";
-
-    try T.expectEqualStrings(
-        object_message,
-        baselineObjectFewTypesRoot(classic_headers, "object.ts", 8, 1, 2322, &chain).?,
-    );
-    try T.expect(baselineObjectFewTypesRoot(tsgo_headers, "object.ts", 8, 1, 2322, &chain) == null);
-    try T.expect(baselineObjectFewTypesRoot(classic_headers, "object.ts", 9, 1, 2322, &chain) == null);
 }
 
 test "conformance: extracts diagnostic headers from upstream baseline text" {
@@ -58238,7 +54683,7 @@ fn runOptInTsSuiteFamily(
     } else if (name_filter == null) {
         try T.expectEqual(@as(u32, @intCast(corpus.len)), stats.total());
     }
-    if (want_exact) try T.expectEqual(@as(u32, 0), stats.failed);
+    try T.expectEqual(@as(u32, 0), stats.failed);
 }
 
 // NOTE: an always-on exact-baseline ratchet test was prototyped
@@ -58388,7 +54833,7 @@ test "conformance: opt-in full local TypeScript corpus survey" {
     // Exact mode is a regression gate, not a reporting-only survey. Keep the
     // coarse corpus behavior independent, but make every byte-for-byte
     // diagnostic mismatch fail the test process after its diff is printed.
-    if (want_exact) try T.expectEqual(@as(u32, 0), stats.failed);
+    try T.expectEqual(@as(u32, 0), stats.failed);
 }
 
 test "compiler: opt-in local TypeScript compiler corpus survey" {
@@ -58762,8 +55207,6 @@ test "conformance: runOwnedCorpus flips synthetic @target: es5 fixture to passed
 
     // Sanity: confirm the synthetic name does NOT appear in either
     // shim's list, so we're really exercising the helper path.
-    try T.expect(!hasHarnessModeledExpectedError(owned[0].name, owned[0].source));
-    try T.expect(!hasHarnessModeledExpectedClean(owned[0].name, owned[0].source));
 
     var results: std.ArrayListUnmanaged(Result) = .empty;
     defer {

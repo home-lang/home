@@ -21,9 +21,9 @@ Home is two things built from one Zig toolchain:
 
 - **A TypeScript compiler.** `home tsc` reads your existing `tsconfig.json`,
   accepts `tsc`'s flags, and prints the same `TSxxxx` diagnostics with the same
-  exit status. It passes **all 5,907 modeled upstream conformance diagnostic
-  families**, with the leading **2,960 / 2,960 fixtures revalidated
-  byte-for-byte**. Its current performance is measured against both `tsc` and
+  exit status. Corpus parity is being remeasured after removing harness
+  exceptions that fabricated matches. Previous corpus pass counts are withdrawn.
+  Its current performance is measured against both `tsc` and
   native TypeScript 7 (`tsgo`) in the admitted benchmark suite below.
 - **A native language.** `.home` files compile to native binaries with no
   garbage collector and no runtime shipped beside them.
@@ -82,15 +82,17 @@ compiler.
 
 | Suite | Result |
 |---|---:|
-| Upstream conformance corpus, **exact byte-for-byte** | **3,220 / 3,220 — 100%** in one uninterrupted leading-prefix run; remaining corpus refresh in progress |
-| Upstream conformance corpus, diagnostic families | **5,907 / 5,907 — 100%** |
-| Baseline-aware `.errors.txt` comparison, 19 folders | **586 / 586 — 100%** |
+| Upstream conformance corpus, **exact byte-for-byte** | Withdrawn; fresh measurements pending after removing fabricated results |
+| Upstream conformance corpus, diagnostic families | Withdrawn; harness contained expected-result overrides |
+| Baseline-aware `.errors.txt` comparison, 19 folders | Previous result withdrawn; revalidation pending |
 | Diagnostic codes the reference compiler can emit | **100% — 0 reachable codes left** ¹ |
 
 The default smoke/category gates run in the repository test suite. Exact mode
 is opt-in, split into bounded slices, and any diagnostic mismatch now fails the
-test process. The first 3,220 fixtures are revalidated; the remaining corpus
-refresh is tracked in [#832](https://github.com/home-lang/home/issues/832). Run
+test process. Previous exact-prefix and coarse-corpus claims are invalidated by
+fixture-name replacements, baseline-derived diagnostics, and diagnostic filtering.
+Their removal and fresh validation are tracked in
+[#832](https://github.com/home-lang/home/issues/832). Run
 bounded exact slices with:
 
 ```bash
@@ -454,7 +456,7 @@ Conservative on purpose: anything not exercised by an example or a test stays
 |---|---|---|
 | Lexer, parser, type inference | Usable today | [Capability matrix](https://home-lang.org/docs/CAPABILITY_MATRIX) |
 | TypeScript front end (`home tsc`) | Usable today; lowest current median on 19 / 20 admitted benchmark workloads | [TypeScript performance](docs/docs/TS_PERFORMANCE.md) |
-| TypeScript conformance (byte-exact) | 2,960 / 2,960 — 100% in one full leading-prefix run | [TypeScript parity](https://home-lang.org/docs/PARITY-STATUS#typescript-parity--home-tsc-vs-tsc--tsgo) |
+| TypeScript conformance (byte-exact) | Previous pass counts withdrawn; honest corpus revalidation in progress | [TypeScript parity](https://home-lang.org/docs/PARITY-STATUS#typescript-parity--home-tsc-vs-tsc--tsgo) |
 | Promise chain and readonly `Promise.all` inference | Exact TS2322 controls; 4,410 / 4,410 checker tests | [Untimed validation](docs/docs/TS_PERFORMANCE.md#promise-chain-and-readonly-promiseall-inference-untimed) |
 | TypeScript diagnostic codes emitted | 1,620 / 2,079; **0 reachable targets left** | [Diagnostic reachability](https://home-lang.org/docs/TS_DIAGNOSTIC_REACHABILITY) |
 | Language-server methods routed (`home lsp`, TypeScript and `.home`) | 76 / ~80 | [Parity status](https://home-lang.org/docs/PARITY-STATUS#lsp--ide-coverage--home-lsp-vs-tsserver) |
